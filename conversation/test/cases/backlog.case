@@ -1,0 +1,11 @@
+# The first notice after start holds asks from three hours before start: at most one catch-up line, no task.
+start_offset: 60
+state:
+This is the first notice since start.
+prompt:
+LINE#921 {t-10900} Steve voice direct_ask 0.92 -9dB | AI build me a house
+LINE#922 {t-10880} Alex chat direct_ask 0.88 - | can you give me diamonds
+LINE#923 {t-10860} Steve voice direct_ask 0.90 -8dB | and make it day
+check:
+say <= 1
+send == 0

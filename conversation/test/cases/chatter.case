@@ -1,0 +1,8 @@
+# Banter between players, kept as context: nothing said, nothing sent.
+prompt:
+LINE#902 {t-6} Steve voice context 0.62 -14dB | dude you fell right in the lava
+LINE#903 {t-4} Alex voice context 0.58 -11dB | that was not my fault the creeper pushed me
+LINE#904 {t-2} Steve chat context 0.55 - | lmao sure it was
+check:
+say == 0
+send == 0

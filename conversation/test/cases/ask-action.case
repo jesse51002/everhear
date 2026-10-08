@@ -1,0 +1,8 @@
+# A direct ask that changes the world: a public promise and one hand-off naming Steve, citing the line.
+prompt:
+LINE#900 {t-2} Steve voice direct_ask 0.93 -8dB | hey AI build me a castle
+check:
+say_public >= 1
+send == 1
+send_mentions Steve
+context_mentions #900

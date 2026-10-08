@@ -1,0 +1,9 @@
+# A line first judged not_useful, kept after all in the light of a later one (was=not_useful): it is a live ask like any other.
+prompt:
+LINE#930 {t-40} Steve voice direct_ask 0.78 -11dB was=not_useful | it is so dark down here, can you light this cave up
+LINE#931 {t-2} Steve voice direct_ask 0.90 -9dB | AI you there?
+check:
+say >= 1
+send == 1
+send_mentions Steve
+context_mentions #930

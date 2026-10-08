@@ -1,0 +1,22 @@
+[Unit]
+Description=Minecraft server, vanilla 26.3
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ec2-user
+WorkingDirectory=/opt/mc
+Environment=TZ=UTC MC_HEAP=12G
+ExecStart=/usr/bin/java -Xms${MC_HEAP} -Xmx${MC_HEAP} -jar server.jar nogui
+# 26.3 logs nothing when SIGTERM stops it; this line in console.log is the bridge's "server stopped".
+ExecStopPost=/usr/bin/date -u "+[%%H:%%M:%%S] [vfg/INFO]: Server stopped"
+StandardInput=null
+StandardOutput=append:/opt/mc/console.log
+StandardError=append:/opt/mc/console.log
+SuccessExitStatus=143
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

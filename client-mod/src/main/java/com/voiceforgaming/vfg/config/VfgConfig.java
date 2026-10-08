@@ -1,0 +1,308 @@
+package com.voiceforgaming.vfg.config;
+
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.voiceforgaming.vfg.session.ServerAddressMatch;
+import com.voiceforgaming.vfg.setup.Assets;
+import java.io.IOException;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * {@code <gameDir>/config/vfg-client.json}: loaded, validated and saved here.
+ *
+ * <p>The client token (§11) lives in this file and nowhere else on the player's PC; it
+ * is never logged and {@link #toString()} leaves it out. For development the environment
+ * variables {@code VFG_SERVER_ADDRESS}, {@code VFG_BRIDGE_URL} and {@code VFG_CLIENT_TOKEN}
+ * override the file when set, and are never written back: the fields hold the file's
+ * values, and the {@code effective…()} methods apply the overrides.
+ */
+public final class VfgConfig {
+	private static final Logger LOG = LoggerFactory.getLogger("vfg");
+	private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
+
+	public static final String FILE_NAME = "vfg-client.json";
+	/** The default: Parakeet TDT 110M. A saved Moonshine value is kept, never migrated. */
+	public static final String MODEL_PARAKEET = Assets.PARAKEET_110M;
+	public static final String MODEL_BASE = Assets.MOONSHINE_BASE;
+	public static final String MODEL_TINY = Assets.MOONSHINE_TINY;
+	public static final List<String> MODELS = List.of(MODEL_PARAKEET, MODEL_BASE, MODEL_TINY);
+	public static final String DEFAULT_MODEL = MODEL_PARAKEET;
+	public static final List<String> CORNERS = List.of("top_left", "top_right", "bottom_left", "bottom_right");
+	public static final int DEFAULT_BRIDGE_PORT = 8787;
+
+	public static final double DEFAULT_SILENCE_SECONDS = 5;
+	public static final double DEFAULT_VAD_THRESHOLD = 0.5;
+	public static final int DEFAULT_STT_THREADS = 2;
+
+	public String serverAddress = "";
+	public String bridgeUrl = "";
+	public String clientToken = "";
+	public String micDevice = "";
+	public String model = DEFAULT_MODEL;
+	public String iconCorner = "top_left";
+	public boolean muted = false;
+	public double silenceSeconds = DEFAULT_SILENCE_SECONDS;
+	public double vadThreshold = DEFAULT_VAD_THRESHOLD;
+	public int sttThreads = DEFAULT_STT_THREADS;
+	public boolean logText = false;
+
+	private transient Map<String, String> env = System.getenv();
+
+	public VfgConfig copy() {
+		VfgConfig c = new VfgConfig();
+		c.serverAddress = serverAddress;
+		c.bridgeUrl = bridgeUrl;
+		c.clientToken = clientToken;
+		c.micDevice = micDevice;
+		c.model = model;
+		c.iconCorner = iconCorner;
+		c.muted = muted;
+		c.silenceSeconds = silenceSeconds;
+		c.vadThreshold = vadThreshold;
+		c.sttThreads = sttThreads;
+		c.logText = logText;
+		c.env = env;
+		return c;
+	}
+
+	/** Use these environment variables instead of the process's (tests). */
+	public VfgConfig withEnv(Map<String, String> env) {
+		this.env = env;
+		return this;
+	}
+
+	// --- effective values: the file, with the development overrides on top ---
+
+	private String override(String name, String fileValue) {
+		String v = env == null ? null : env.get(name);
+		return v != null && !v.isBlank() ? v.trim() : fileValue;
+	}
+
+	public String effectiveServerAddress() {
+		return override("VFG_SERVER_ADDRESS", serverAddress);
+	}
+
+	public String effectiveBridgeUrl() {
+		return override("VFG_BRIDGE_URL", bridgeUrl);
+	}
+
+	public String effectiveClientToken() {
+		return override("VFG_CLIENT_TOKEN", clientToken);
+	}
+
+	/** Whether any development override is set. */
+	public boolean hasEnvOverrides() {
+		return !override("VFG_SERVER_ADDRESS", "").isEmpty() || !override("VFG_BRIDGE_URL", "").isEmpty()
+			|| !override("VFG_CLIENT_TOKEN", "").isEmpty();
+	}
+
+	public boolean hasToken() {
+		String t = effectiveClientToken();
+		return t != null && !t.isBlank();
+	}
+
+	/** The full {@code …/v1/lines} URL, or {@code null} when there is no bridge to post to. */
+	public String linesUrl() {
+		return linesUrl(effectiveBridgeUrl(), effectiveServerAddress());
+	}
+
+	/** An empty bridge URL means {@code http://<host of server address>:8787}. */
+	public static String linesUrl(String bridgeUrl, String serverAddress) {
+		String base = bridgeUrl == null ? "" : bridgeUrl.trim();
+		if (base.isEmpty()) {
+			String host = ServerAddressMatch.host(serverAddress);
+			if (host == null) {
+				return null;
+			}
+			base = "http://" + host + ":" + DEFAULT_BRIDGE_PORT;
+		}
+		while (base.endsWith("/")) {
+			base = base.substring(0, base.length() - 1);
+		}
+		return base + "/v1/lines";
+	}
+
+	/** Whether a non-empty bridge URL is http or https with a host. An empty one is valid. */
+	public static boolean isValidBridgeUrl(String url) {
+		if (url == null || url.isBlank()) {
+			return true;
+		}
+		try {
+			URI u = URI.create(url.trim());
+			String scheme = u.getScheme() == null ? "" : u.getScheme().toLowerCase(Locale.ROOT);
+			return (scheme.equals("http") || scheme.equals("https")) && u.getHost() != null && !u.getHost().isEmpty();
+		} catch (IllegalArgumentException e) {
+			return false;
+		}
+	}
+
+	// --- load and save ---
+
+	/**
+	 * Loads the file; writes the defaults if it is missing; if it does not parse, renames
+	 * it {@code vfg-client.json.bad}, uses the defaults and logs one line.
+	 */
+	public static VfgConfig load(Path file) {
+		if (!Files.exists(file)) {
+			VfgConfig c = new VfgConfig();
+			c.saveQuietly(file);
+			return c;
+		}
+		try {
+			String text = Files.readString(file, StandardCharsets.UTF_8);
+			JsonElement root = JsonParser.parseString(text);
+			if (!root.isJsonObject()) {
+				throw new IllegalStateException("not a JSON object");
+			}
+			return fromJson(root.getAsJsonObject());
+		} catch (IOException | RuntimeException e) {
+			Path bad = file.resolveSibling(file.getFileName() + ".bad");
+			LOG.warn("{} does not parse ({}); renamed it {} and using the defaults", file.getFileName(),
+				e.getClass().getSimpleName(), bad.getFileName());
+			try {
+				Files.move(file, bad, StandardCopyOption.REPLACE_EXISTING);
+			} catch (IOException moveError) {
+				LOG.warn("could not rename {}: {}", file.getFileName(), moveError.getMessage());
+			}
+			VfgConfig c = new VfgConfig();
+			c.saveQuietly(file);
+			return c;
+		}
+	}
+
+	static VfgConfig fromJson(JsonObject o) {
+		VfgConfig c = new VfgConfig();
+		c.serverAddress = string(o, "server_address", "");
+		c.bridgeUrl = string(o, "bridge_url", "");
+		c.clientToken = string(o, "client_token", "");
+		c.micDevice = string(o, "mic_device", "");
+		c.model = string(o, "model", DEFAULT_MODEL);
+		if (c.model.equals("parakeet-110m")) {
+			c.model = MODEL_PARAKEET; // the short name works too
+		}
+		if (!MODELS.contains(c.model)) {
+			LOG.warn("config: model \"{}\" is not one of {}; using {}", c.model, MODELS, DEFAULT_MODEL);
+			c.model = DEFAULT_MODEL;
+		}
+		c.iconCorner = string(o, "icon_corner", "top_left");
+		if (!CORNERS.contains(c.iconCorner)) {
+			LOG.warn("config: icon_corner \"{}\" is not one of {}; using top_left", c.iconCorner, CORNERS);
+			c.iconCorner = "top_left";
+		}
+		c.muted = bool(o, "muted", false);
+		c.silenceSeconds = number(o, "silence_seconds", DEFAULT_SILENCE_SECONDS, 2, 30);
+		c.vadThreshold = number(o, "vad_threshold", DEFAULT_VAD_THRESHOLD, 0.1, 0.9);
+		double threads = number(o, "stt_threads", DEFAULT_STT_THREADS, 1, 8);
+		if (threads != Math.rint(threads)) {
+			LOG.warn("config: stt_threads {} is not a whole number; using {}", threads, DEFAULT_STT_THREADS);
+			threads = DEFAULT_STT_THREADS;
+		}
+		c.sttThreads = (int) threads;
+		c.logText = bool(o, "log_text", false);
+		return c;
+	}
+
+	private static String string(JsonObject o, String key, String fallback) {
+		JsonElement e = o.get(key);
+		if (e == null || e.isJsonNull()) {
+			return fallback;
+		}
+		if (!e.isJsonPrimitive() || !e.getAsJsonPrimitive().isString()) {
+			LOG.warn("config: {} is not a string; using the default", key);
+			return fallback;
+		}
+		return e.getAsString();
+	}
+
+	private static boolean bool(JsonObject o, String key, boolean fallback) {
+		JsonElement e = o.get(key);
+		if (e == null || e.isJsonNull()) {
+			return fallback;
+		}
+		if (!e.isJsonPrimitive() || !e.getAsJsonPrimitive().isBoolean()) {
+			LOG.warn("config: {} is not true or false; using {}", key, fallback);
+			return fallback;
+		}
+		return e.getAsBoolean();
+	}
+
+	private static double number(JsonObject o, String key, double fallback, double min, double max) {
+		JsonElement e = o.get(key);
+		if (e == null || e.isJsonNull()) {
+			return fallback;
+		}
+		if (!e.isJsonPrimitive() || !e.getAsJsonPrimitive().isNumber()) {
+			LOG.warn("config: {} is not a number; using {}", key, fallback);
+			return fallback;
+		}
+		double v = e.getAsDouble();
+		if (!(v >= min && v <= max)) {
+			LOG.warn("config: {} = {} is outside {}–{}; using {}", key, v, min, max, fallback);
+			return fallback;
+		}
+		return v;
+	}
+
+	public JsonObject toJson() {
+		JsonObject o = new JsonObject();
+		o.addProperty("server_address", serverAddress);
+		o.addProperty("bridge_url", bridgeUrl);
+		o.addProperty("client_token", clientToken);
+		o.addProperty("mic_device", micDevice);
+		o.addProperty("model", model);
+		o.addProperty("icon_corner", iconCorner);
+		o.addProperty("muted", muted);
+		if (silenceSeconds == Math.rint(silenceSeconds)) {
+			o.addProperty("silence_seconds", (long) silenceSeconds);
+		} else {
+			o.addProperty("silence_seconds", silenceSeconds);
+		}
+		o.addProperty("vad_threshold", vadThreshold);
+		o.addProperty("stt_threads", sttThreads);
+		o.addProperty("log_text", logText);
+		return o;
+	}
+
+	/** Writes the file values (never the environment overrides), through a temp file. */
+	public void save(Path file) throws IOException {
+		Files.createDirectories(file.getParent());
+		Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
+		Files.writeString(tmp, GSON.toJson(toJson()) + "\n", StandardCharsets.UTF_8);
+		try {
+			// The token is in here: readable by the player only, where the file system allows it.
+			Files.setPosixFilePermissions(tmp, PosixFilePermissions.fromString("rw-------"));
+		} catch (UnsupportedOperationException | IOException ignored) {
+			// Windows: the file inherits the user's profile permissions
+		}
+		Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
+	}
+
+	public void saveQuietly(Path file) {
+		try {
+			save(file);
+		} catch (IOException e) {
+			LOG.warn("could not write {}: {}", file.getFileName(), e.getMessage());
+		}
+	}
+
+	@Override
+	public String toString() {
+		return "VfgConfig[server_address=" + serverAddress + ", bridge_url=" + bridgeUrl + ", client_token="
+			+ (clientToken.isEmpty() ? "(empty)" : "(set)") + ", mic_device=" + micDevice + ", model=" + model
+			+ ", icon_corner=" + iconCorner + ", muted=" + muted + ", silence_seconds=" + silenceSeconds
+			+ ", vad_threshold=" + vadThreshold + ", stt_threads=" + sttThreads + ", log_text=" + logText + "]";
+	}
+}

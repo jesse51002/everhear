@@ -1,0 +1,30 @@
+# gradle
+.gradle/
+build/
+out/
+classes/
+
+# the fetched sherpa-onnx jar
+libs/
+
+# fabric dev runs, and logs from a run in the wrong folder
+run/
+logs/
+
+# editors
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+bin/
+
+# java
+hs_err_*.log
+replay_*.log
+*.hprof
+*.jfr
+
+# python
+__pycache__/

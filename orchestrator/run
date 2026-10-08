@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$(readlink -f "$0")")"
+[ -d node_modules ] || bun install --frozen-lockfile
+exec bun run src/main.ts

@@ -1,0 +1,9 @@
+# Alex's task failed: Alex is told and offered something simpler, which is not sent without a yes.
+task_start: 9
+state:
+T8 is Alex’s dragon: Alex asked for a pet dragon a minute ago and you promised to try.
+prompt:
+ORCH#916 {t-2} T8 failed | the ender dragon cannot be spawned as a pet outside the End
+check:
+say >= 1
+send == 0

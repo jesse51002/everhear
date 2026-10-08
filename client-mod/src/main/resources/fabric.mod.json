@@ -1,0 +1,19 @@
+{
+	"schemaVersion": 1,
+	"id": "vfg",
+	"version": "${version}",
+	"name": "VFG Voice",
+	"description": "Turns what you say on a VoiceForGaming server into text on your own PC and sends each line to that server's AI. No audio leaves your PC.",
+	"authors": ["VoiceForGaming"],
+	"icon": "assets/vfg/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"client": ["com.voiceforgaming.vfg.VfgClient"]
+	},
+	"depends": {
+		"fabricloader": ">=0.19.5",
+		"minecraft": "~26.3",
+		"java": ">=25",
+		"fabric-api": "*"
+	}
+}

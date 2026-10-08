@@ -1,0 +1,55 @@
+# ~/.vfg/config: every Everhear setting on your PC, KEY=value, mode 600.
+# toolkit/install.sh copies this file there. The vfg toolkit, bridge/deploy/*.sh,
+# jev/deploy.sh, installer/publish.sh and conversation/start all read it.
+# An environment variable of the same name wins. An empty value means the default.
+# No secret goes here: the key's path only, never the key.
+
+# --- You ---
+# Your Minecraft name. The conversation treats this player as the server's owner:
+# only the owner may ask for op, bans, the whitelist, stopping the server and the like.
+# conversation/start writes it into conversation/CLAUDE.local.md the first time. Required.
+VFG_OWNER=
+
+# --- The EC2 box ---
+# The box's public IP or DNS name; new each time the instance is launched or started. Required.
+VFG_SSH_HOST=
+# Default: ec2-user
+VFG_SSH_USER=
+# Path to the SSH private key of VFG_KEY_PAIR, e.g. ~/.ssh/everhear.pem (only the path is read). Required.
+VFG_SSH_KEY=
+# The AWS region the box and the installer bucket live in. Default: us-east-2
+VFG_AWS_REGION=
+# Default: m7i.xlarge
+VFG_INSTANCE_TYPE=
+# The EC2 key pair ec2.sh launch puts on the box. Default: everhear
+VFG_KEY_PAIR=
+# Where ec2.sh retire keeps the world's backups and deploy.sh provision --restore
+# finds them. Default: ~/everhear/backups
+VFG_BACKUP_DIR=
+# Set it to true once you have read and accepted Minecraft's EULA
+# (https://aka.ms/MinecraftEULA); deploy.sh provision needs it for a new world.
+VFG_ACCEPT_EULA=
+
+# --- The installer link (installer/publish.sh) ---
+# The private S3 bucket; publish.sh makes one and writes its name here on the first run.
+VFG_INSTALL_BUCKET=
+# The address players join. Default: VFG_SSH_HOST
+VFG_INSTALL_ADDRESS=
+# Where the built mod jar is. Default: client-mod/build/libs in this repo
+VFG_CLIENT_JAR_DIR=
+
+# --- The vfg toolkit ---
+# What vfg say puts first, in aqua. Default: "[AI] " (quote it to keep the space).
+VFG_CHAT_PREFIX=
+# Where orchestrator/run and scripts/ are. Default: the repo the toolkit is in
+VFG_REPO=
+# The bridge's folder on EC2. Default: /opt/vfg
+VFG_REMOTE_VFG=
+# The Minecraft server's folder on EC2. Default: /opt/mc
+VFG_REMOTE_MC=
+# Most lines vfg watch replays after a gap. Default: 100
+VFG_WATCH_CATCHUP=
+# The valve: most lines vfg watch prints in any minute. Default: 120
+VFG_WATCH_MAX_PER_MIN=
+# The ssh binary. Default: ssh
+VFG_SSH=

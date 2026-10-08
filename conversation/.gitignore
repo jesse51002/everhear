@@ -1,0 +1,5 @@
+test/out/
+__pycache__/
+# The owner's own file: ./start writes it from VFG_OWNER.
+CLAUDE.local.md
+.claude/settings.local.json

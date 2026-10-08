@@ -1,0 +1,50 @@
+# Everhear. Each part may add its own .gitignore beside it.
+
+# --- Secrets and per-person files: never committed ---
+.env
+.env.*
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+# The owner's own instructions, written by conversation/start from VFG_OWNER.
+CLAUDE.local.md
+.claude/settings.local.json
+
+# --- Built, fetched or downloaded ---
+node_modules/
+.gradle/
+build/
+out/
+client-mod/libs/
+client-mod/run/
+*.class
+# Speech models, natives, recordings and archives the mod and its tests download.
+*.onnx
+*.tar.bz2
+*.tgz
+*.wav
+vfg-test-assets/
+
+# --- Run output ---
+__pycache__/
+*.pyc
+logs/
+conversation/test/out/
+hs_err_*.log
+replay_*.log
+*.hprof
+*.jfr
+*.db
+*.db-wal
+*.db-shm
+
+# --- Editors and OS ---
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+.DS_Store
+Thumbs.db

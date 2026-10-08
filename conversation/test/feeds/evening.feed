@@ -1,0 +1,26 @@
+# The interactive dry run's feed, replayed by the fake vfg's `watch` (about three
+# minutes): a join, asks, banter, a hand-off's progress and done, one seq written
+# twice (#1005), a death; then, with VFG_FAKE_WATCH_EXIT=1, the watch exits.
+# The repeated #1005 is on purpose: the real `vfg watch` never prints a seq twice,
+# but the spec's dry run checks that the session's seq rule would answer it once.
+# `sleep N` waits N seconds; {now} becomes the time the line is printed.
+sleep 5
+GAME#1001 {now} join Steve | Steve joined the game
+sleep 20
+LINE#1002 {now} Steve voice direct_ask 0.93 -8dB | hey AI can you build me a small stone castle right here
+sleep 15
+LINE#1003 {now} Alex chat context 0.61 - | lol steve always wants castles
+LINE#1004 {now} Steve voice context 0.55 -12dB | shut up alex
+sleep 20
+LINE#1005 {now} Alex voice direct_ask 0.90 -9dB | AI how do i make a beacon
+sleep 20
+LINE#1005 {now} Alex voice direct_ask 0.90 -9dB | AI how do i make a beacon
+sleep 20
+ORCH#1006 {now} T1 progress | walls going up
+sleep 30
+ORCH#1007 {now} T1 done | small stone castle built at Steve's position, 9x9 with a door facing spawn
+sleep 20
+GAME#1008 {now} death Steve | Steve was slain by Zombie
+sleep 15
+LINE#1009 {now} Alex voice context 0.52 -13dB | ha the castle did not save you
+sleep 10

@@ -1,0 +1,86 @@
+Starting net.minecraft.server.Main
+[18:00:00] [ServerMain/INFO]: Environment: Environment[sessionHost=https://sessionserver.mojang.com, servicesHost=https://api.minecraftservices.com, name=PROD]
+[18:00:01] [Server thread/INFO]: Starting minecraft server version 26.3
+[18:00:01] [Server thread/INFO]: Loading properties
+[18:00:01] [Server thread/INFO]: Default game type: SURVIVAL
+[18:00:02] [Server thread/INFO]: Starting Minecraft server on *:25565
+[18:00:04] [Server thread/INFO]: Preparing level "world"
+[18:00:06] [Server thread/INFO]: Preparing spawn area: 100%
+[18:00:06] [Server thread/INFO]: Done (3.412s)! For help, type "help"
+[18:00:06] [Server thread/INFO]: Starting remote control listener
+[18:00:06] [Server thread/INFO]: Thread RCON Listener started
+[18:00:06] [Server thread/INFO]: RCON running on 0.0.0.0:25575
+[18:01:10] [User Authenticator #1/INFO]: UUID of player Steve is 00000000-0000-4000-8000-000000000001
+[18:01:10] [Server thread/INFO]: Steve[/203.0.113.10:51234] logged in with entity id 312 at (12.5, 64.0, -8.5)
+[18:01:10] [Server thread/INFO]: System chat: Steve joined the game
+[18:01:30] [User Authenticator #2/INFO]: UUID of player Alex is 00000000-0000-4000-8000-000000000002
+[18:01:30] [Server thread/INFO]: Alex[/203.0.113.11:40022] logged in with entity id 313 at (0.5, 70.0, 0.5)
+[18:01:30] [Server thread/INFO]: Alex joined the game
+[18:01:40] [Server thread/INFO]: System chat: Notch_2 (formerly known as Notch) joined the game
+[18:02:00] [Server thread/INFO]: <Steve> build me a castle
+[18:02:05] [Server thread/INFO]: [Not Secure] <Alex> that cave by spawn
+[18:02:06] [Server thread/INFO]: <Notch_2>    lots of   space   
+[18:02:07] [Server thread/INFO]: <Steve> [brackets] are fine in chat
+[18:02:10] [Server thread/INFO]: System chat: Steve has made the advancement [Stone Age]
+[18:02:11] [Server thread/INFO]: System chat: Alex has completed the challenge [How Did We Get Here?]
+[18:02:12] [Server thread/INFO]: Steve has reached the goal [Sky's the Limit]
+[18:03:00] [Server thread/INFO]: System chat: Steve was slain by Zombie
+[18:03:01] [Server thread/INFO]: System chat: Alex was shot by Skeleton
+[18:03:02] [Server thread/INFO]: System chat: Steve drowned
+[18:03:03] [Server thread/INFO]: System chat: Alex blew up
+[18:03:04] [Server thread/INFO]: Steve was blown up by Creeper
+[18:03:05] [Server thread/INFO]: System chat: Alex burned to death
+[18:03:06] [Server thread/INFO]: System chat: Steve fell from a high place
+[18:03:07] [Server thread/INFO]: System chat: Alex froze to death
+[18:03:08] [Server thread/INFO]: System chat: Steve starved to death
+[18:03:09] [Server thread/INFO]: System chat: Alex suffocated in a wall
+[18:03:10] [Server thread/INFO]: System chat: Steve withered away
+[18:03:11] [Server thread/INFO]: System chat: Alex went up in flames
+[18:03:12] [Server thread/INFO]: System chat: Steve walked into the danger zone due to Magma Block
+[18:03:13] [Server thread/INFO]: System chat: Alex tried to swim in lava
+[18:03:14] [Server thread/INFO]: System chat: Steve hit the ground too hard
+[18:03:15] [Server thread/INFO]: System chat: Alex experienced kinetic energy
+[18:03:16] [Server thread/INFO]: System chat: Steve discovered the floor was lava
+[18:03:17] [Server thread/INFO]: System chat: Alex didn't want to live in the same world as Steve
+[18:03:18] [Server thread/INFO]: System chat: Steve left the confines of this world
+[18:03:19] [Server thread/INFO]: System chat: Alex died
+[18:04:00] [Server thread/INFO]: System chat: [Rcon: Summoned new Zombie]
+[18:04:01] [Server thread/INFO]: [Rcon: Summoned new Zombie]
+[18:04:02] [Server thread/INFO]: System chat: [Steve: Played sound minecraft:entity.ender_dragon.growl to Steve]
+[18:04:03] [Server thread/INFO]: System chat: [Rcon: Set spawn point to 0, 64, 0 [0.0] in minecraft:overworld for Steve]
+[18:04:04] [Server thread/INFO]: [Not Secure] [Bat] mod
+[18:04:05] [Server thread/INFO]: [Not Secure] [Steve] hello from say
+[18:04:06] [RCON Listener #1/INFO]: Thread RCON Client /127.0.0.1 started
+[18:04:06] [RCON Client /127.0.0.1 #2/INFO]: Thread RCON Client /127.0.0.1 shutting down
+[18:04:07] [Server thread/INFO]: Alex lost connection: Disconnected
+[18:04:07] [Server thread/INFO]: System chat: Alex left the game
+[18:04:08] [Server thread/WARN]: Can't keep up! Is the server overloaded? Running 2043ms or 40 ticks behind
+[18:04:09] [Server thread/WARN]: Steve was slain by Zombie
+[18:04:10] [Netty Epoll IO #7/WARN]: Failed to send packet
+io.netty.channel.StacklessClosedChannelException: null
+	at io.netty.channel.AbstractChannel.close(ChannelPromise)(Unknown Source)
+[18:04:11] [Server thread/INFO]: Player Steve standing on air - force-sending blocks below
+[18:04:12] [Server thread/INFO]: * Steve waves
+[18:04:13] [Server thread/INFO]: Villager Villager['Villager'/1061, l='ServerLevel[world]', x=10.50, y=64.00, z=-3.50] died, message: 'Villager was slain by Zombie'
+[18:04:14] [Server thread/INFO]: Saving chunks for level 'ServerLevel[world]'/minecraft:overworld
+[18:04:15] [Server thread/INFO]: ThreadedAnvilChunkStorage (world): All chunks are saved
+[18:04:20] [User Authenticator #3/INFO]: UUID of player Alex is 00000000-0000-4000-8000-000000000002
+[18:04:20] [Server thread/INFO]: Alex[IP hidden] logged in with entity id 314 at (0.5, 70.0, 0.5)
+[18:04:20] [Server thread/INFO]: System chat: [Crew] Alex joined the game
+[18:04:21] [Server thread/INFO]: [Not Secure] [[Crew] Alex] pos-check
+[18:04:22] [Server thread/INFO]: [Not Secure] [Rcon] Alex_STUCK
+[18:04:23] [Server thread/INFO]: [Rcon] Alex joined the game
+[18:04:24] [Server thread/INFO]: [Alex] Steve died
+[18:04:25] [Server thread/INFO]: System chat: [Alex: Set own game mode to Creative Mode]
+[18:04:26] [Server thread/INFO]: System chat: [Crew] Alex was slain by [Red] Steve
+[18:04:27] [Server thread/INFO]: System chat: [Crew] Alex has made the advancement [Stone Age]
+[18:04:28] [Server thread/INFO]: <[Crew] Alex> hi from a team
+[18:04:29] [Server thread/INFO]: System chat: death.attack.magic.item
+[18:04:30] [Server thread/INFO]: Named entity Zombie['Bob'/2041, l='ServerLevel[world]', x=1.50, y=64.00, z=2.50] died: Bob was slain by Alex
+[18:04:31] [Server thread/INFO]: Server empty for 60 seconds, pausing
+[18:04:32] [Server thread/INFO]: System chat: Alex [VIP] left the game
+[18:04:33] [Server thread/INFO]: System chat: [Crew] Alex left the game
+[18:05:00] [Server thread/INFO]: Stopping server
+[18:05:00] [Server thread/INFO]: Saving players
+[18:05:00] [Server thread/INFO]: Steve left the game
+[18:05:01] [vfg/INFO]: Server stopped

@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Fake systemctl for the tests: unit states live in files under $FAKE_UNITS.
+#   $FAKE_UNITS/<unit>        the state (active, inactive, failed); no file = no such unit
+#   $FAKE_UNITS/<unit>.fail   present: `start` fails and leaves the unit failed
+set -u
+dir="${FAKE_UNITS:?FAKE_UNITS not set}"
+case "${1:-}" in
+  is-active)
+    u="$2"
+    if [ -f "$dir/$u" ]; then s=$(cat "$dir/$u"); else s=inactive; fi
+    echo "$s"
+    [ "$s" = active ] ;;
+  show)
+    # systemctl show -p LoadState --value <unit>
+    u="${!#}"
+    if [ -f "$dir/$u" ]; then echo loaded; else echo not-found; fi ;;
+  start)
+    u="$2"
+    if [ ! -f "$dir/$u" ]; then echo "Failed to start $u.service: Unit $u.service not found." >&2; exit 5; fi
+    if [ -f "$dir/$u.fail" ]; then echo failed > "$dir/$u"; echo "Job for $u.service failed." >&2; exit 1; fi
+    echo active > "$dir/$u" ;;
+  *)
+    echo "fake systemctl: unsupported: $*" >&2; exit 1 ;;
+esac

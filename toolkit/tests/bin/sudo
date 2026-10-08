@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Fake sudo for the tests: drops -n and runs the rest (from PATH, so the fakes).
+[ "${1:-}" = "-n" ] && shift
+exec "$@"

@@ -1,0 +1,213 @@
+import java.security.MessageDigest
+
+plugins {
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+}
+
+version = project.mod_version
+group = project.maven_group
+base { archivesName = 'vfg-client' }
+
+java {
+	// Gradle uses an installed JDK 25, or downloads one (settings.gradle) when there is none.
+	toolchain { languageVersion = JavaLanguageVersion.of(25) }
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 25
+	it.options.encoding = 'UTF-8'
+}
+
+// ---------------------------------------------------------------------------
+// sherpa-onnx's Java API: fetched once from its GitHub release into libs/,
+// checked against a pinned SHA-256, compiled against, and unzipped into the
+// mod jar. Its natives are not here: the mod downloads them on first run.
+// ---------------------------------------------------------------------------
+
+abstract class FetchPinnedFile extends DefaultTask {
+	@Input abstract Property<String> getUrl()
+	@Input abstract Property<String> getSha256()
+	@OutputFile abstract RegularFileProperty getDestination()
+
+	@TaskAction
+	void fetch() {
+		File dest = destination.get().asFile
+		if (dest.isFile() && sha256Of(dest) == sha256.get()) {
+			return
+		}
+		dest.parentFile.mkdirs()
+		File part = new File(dest.parentFile, dest.name + '.part')
+		logger.lifecycle("Downloading ${url.get()}")
+		def connection = URI.create(url.get()).toURL().openConnection()
+		connection.connectTimeout = 15000
+		connection.readTimeout = 60000
+		connection.inputStream.withCloseable { input -> part.withOutputStream { out -> out << input } }
+		String actual = sha256Of(part)
+		if (actual != sha256.get()) {
+			part.delete()
+			throw new GradleException("${dest.name}: SHA-256 is ${actual}, expected ${sha256.get()}")
+		}
+		dest.delete()
+		if (!part.renameTo(dest)) {
+			throw new GradleException("could not move ${part} to ${dest}")
+		}
+	}
+
+	static String sha256Of(File f) {
+		MessageDigest md = MessageDigest.getInstance('SHA-256')
+		f.withInputStream { input ->
+			byte[] buf = new byte[65536]
+			int n
+			while ((n = input.read(buf)) > 0) {
+				md.update(buf, 0, n)
+			}
+		}
+		return md.digest().encodeHex().toString()
+	}
+}
+
+def sherpaJarFile = file("libs/sherpa-onnx-jvm-${project.sherpa_onnx_version}.jar")
+
+def fetchSherpaOnnx = tasks.register('fetchSherpaOnnx', FetchPinnedFile) {
+	group = 'build setup'
+	description = 'Fetches the pinned sherpa-onnx Java API jar into libs/.'
+	url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v${project.sherpa_onnx_version}/sherpa-onnx-jvm-${project.sherpa_onnx_version}.jar"
+	sha256 = project.sherpa_onnx_jvm_sha256
+	destination = sherpaJarFile
+}
+
+def sherpaJar = files(sherpaJarFile) { builtBy fetchSherpaOnnx }
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	// Compiled against; its classes are copied into the jar below, so nothing else ships.
+	compileOnly sherpaJar
+	testImplementation sherpaJar
+	// So `./gradlew runClient` finds the classes the shipped jar carries inside it.
+	runtimeOnly sherpaJar
+
+	testImplementation platform("org.junit:junit-bom:${project.junit_version}")
+	testImplementation 'org.junit.jupiter:junit-jupiter'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+processResources {
+	def version = project.version
+	inputs.property 'version', version
+	filesMatching('fabric.mod.json') {
+		expand 'version': version
+	}
+}
+
+jar {
+	dependsOn fetchSherpaOnnx
+	inputs.file(sherpaJarFile)
+	from({ zipTree(sherpaJarFile) }) {
+		exclude 'META-INF/**'
+	}
+	from('LICENSE-sherpa-onnx.txt')
+}
+
+// ---------------------------------------------------------------------------
+// Tests. `test` is JUnit with no natives and no internet; `engineTest` runs the
+// tests tagged "engine" against the real natives and model, which it installs
+// once into build/vfg-test-assets/ through the mod's own AssetInstaller.
+// ---------------------------------------------------------------------------
+
+// Minecraft's log4j config is on the test classpath and writes logs/ where the tests run.
+def testRunDir = layout.buildDirectory.dir('test-run').get().asFile
+
+test {
+	useJUnitPlatform {
+		excludeTags 'engine', 'speech'
+	}
+	workingDir = testRunDir
+	doFirst { testRunDir.mkdirs() }
+	systemProperty 'vfg.projectDir', projectDir.absolutePath
+	testLogging {
+		events 'failed', 'skipped'
+		exceptionFormat = 'full'
+	}
+}
+
+tasks.register('engineTest', Test) {
+	group = 'verification'
+	description = 'Runs the real VAD and Moonshine over the model\'s test clip (downloads about 120 MB once).'
+	testClassesDirs = sourceSets.test.output.classesDirs
+	classpath = sourceSets.test.runtimeClasspath
+	useJUnitPlatform {
+		includeTags 'engine'
+	}
+	workingDir = testRunDir
+	doFirst { testRunDir.mkdirs() }
+	systemProperty 'vfg.testAssets', layout.buildDirectory.dir('vfg-test-assets').get().asFile.absolutePath
+	jvmArgs '--enable-native-access=ALL-UNNAMED'
+	outputs.upToDateWhen { false }
+	testLogging {
+		events 'passed', 'failed', 'skipped'
+		exceptionFormat = 'full'
+		showStandardStreams = true
+	}
+}
+
+tasks.register('speechTest', Test) {
+	group = 'verification'
+	description = 'Plays real and TTS speech in real time through the mod\'s pipeline; checks lines, splits, words and latency.'
+	testClassesDirs = sourceSets.test.output.classesDirs
+	classpath = sourceSets.test.runtimeClasspath
+	useJUnitPlatform {
+		includeTags 'speech'
+	}
+	workingDir = testRunDir
+	doFirst { testRunDir.mkdirs() }
+	systemProperty 'vfg.testAssets', layout.buildDirectory.dir('vfg-test-assets').get().asFile.absolutePath
+	systemProperty 'vfg.speechOut', layout.buildDirectory.dir('speech-test').get().asFile.absolutePath
+	jvmArgs '--enable-native-access=ALL-UNNAMED'
+	outputs.upToDateWhen { false }
+	testLogging {
+		events 'passed', 'failed', 'skipped'
+		exceptionFormat = 'full'
+		showStandardStreams = true
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ./gradlew micCheck: the mod's pipeline on a real microphone, no Minecraft.
+// Options go in --args, e.g. ./gradlew micCheck --args="--device 2 --bridge http://127.0.0.1:8787"
+// ---------------------------------------------------------------------------
+
+tasks.register('micCheck', JavaExec) {
+	group = 'verification'
+	description = 'Listens on a real mic through the mod\'s own pipeline and prints every line it would send.'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'com.voiceforgaming.vfg.tools.MicCheck'
+	jvmArgs '--enable-native-access=ALL-UNNAMED'
+	systemProperty 'vfg.projectDir', projectDir.absolutePath
+	systemProperty 'vfg.testAssets', layout.buildDirectory.dir('vfg-test-assets').get().asFile.absolutePath
+	def runDir = layout.buildDirectory.dir('mic-check').get().asFile
+	workingDir = runDir
+	doFirst { runDir.mkdirs() }
+	standardInput = System.in
+}
+
+// ---------------------------------------------------------------------------
+// ./gradlew sttCompare: Moonshine base (the mod's), Moonshine tiny and Parakeet on the
+// same audio and the same VAD segments. A measurement; it changes nothing in the mod.
+// Downloads about 620 MB of models once into build/vfg-test-assets/.
+// ---------------------------------------------------------------------------
+
+tasks.register('sttCompare', JavaExec) {
+	group = 'verification'
+	description = 'Compares speech-to-text models on the speech test audio: WER, speed, size, memory.'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'com.voiceforgaming.vfg.tools.SttCompare'
+	jvmArgs '--enable-native-access=ALL-UNNAMED'
+	systemProperty 'vfg.testAssets', layout.buildDirectory.dir('vfg-test-assets').get().asFile.absolutePath
+	def runDir = layout.buildDirectory.dir('stt-compare').get().asFile
+	systemProperty 'vfg.compareOut', runDir.absolutePath
+	workingDir = runDir
+	doFirst { runDir.mkdirs() }
+}

@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>VFG voice setup</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --card: #ffffff; --ink: #1d1d1b; --muted: #5d5c57; --line: #dedcd4;
+    --accent: #2f7d32; --accent-ink: #ffffff; --code: #efeee8; --warn: #8a5a00;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161614; --card: #1f1f1c; --ink: #ecebe6; --muted: #a3a29b; --line: #34332f;
+      --accent: #5cb860; --accent-ink: #0d1a0e; --code: #2a2a26; --warn: #e2b04a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 48px; }
+  h1 { font-size: 1.75rem; line-height: 1.2; margin: 0 0 6px; }
+  .lede { color: var(--muted); margin: 0 0 28px; }
+  ol.steps { list-style: none; counter-reset: step; padding: 0; margin: 0; }
+  ol.steps > li {
+    counter-increment: step; position: relative; background: var(--card);
+    border: 1px solid var(--line); border-radius: 12px; padding: 18px 18px 18px 64px; margin: 0 0 14px;
+  }
+  ol.steps > li::before {
+    content: counter(step); position: absolute; left: 18px; top: 16px; width: 32px; height: 32px;
+    border-radius: 50%; background: var(--accent); color: var(--accent-ink);
+    font-weight: 700; display: grid; place-items: center;
+  }
+  h2 { font-size: 1.15rem; margin: 4px 0 10px; }
+  p { margin: 0 0 10px; }
+  p:last-child { margin-bottom: 0; }
+  .os { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 4px; }
+  .os > div { border: 1px solid var(--line); border-radius: 10px; padding: 12px; min-width: 0; }
+  .os h3 { font-size: 0.95rem; margin: 0 0 8px; }
+  body[data-os="windows"] .os .win, body[data-os="unix"] .os .unix { border-color: var(--accent); }
+  body[data-os="unix"] .os .unix { order: -1; }
+  a.button {
+    display: inline-block; background: var(--accent); color: var(--accent-ink); text-decoration: none;
+    font-weight: 600; padding: 9px 14px; border-radius: 8px; margin-bottom: 8px;
+  }
+  a.button:focus-visible, button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .small { font-size: 0.9rem; color: var(--muted); }
+  .small strong { color: var(--ink); }
+  .codeline { display: flex; gap: 8px; align-items: stretch; margin: 6px 0 8px; }
+  code {
+    font: 0.85rem/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--code);
+    border-radius: 6px; padding: 2px 6px;
+  }
+  .codeline code {
+    flex: 1; min-width: 0; padding: 8px 10px; overflow-x: auto; white-space: nowrap; display: block;
+  }
+  button.copy {
+    flex: none; border: 1px solid var(--line); background: var(--card); color: var(--ink);
+    border-radius: 6px; padding: 0 12px; font: inherit; font-size: 0.85rem; cursor: pointer;
+  }
+  .note { color: var(--warn); }
+  footer { margin-top: 22px; }
+  @media (max-width: 600px) {
+    .os { grid-template-columns: 1fr; }
+    ol.steps > li { padding-left: 18px; padding-top: 58px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Voice for Minecraft @@VFG_MC_VERSION@@</h1>
+  <p class="lede">This server listens to what you say. Three steps, a couple of minutes.
+    Speech is turned into text on your own computer; no audio ever leaves it.</p>
+
+  <ol class="steps">
+    <li>
+      <h2>Download the installer</h2>
+      <div class="os">
+        <div class="win">
+          <h3>Windows</h3>
+          <a class="button" href="@@VFG_CMD_URL@@" download="vfg-install.cmd">Download for Windows</a>
+          <p class="small">If the browser asks, choose <strong>Keep</strong>. If Windows says
+            &ldquo;Windows protected your PC&rdquo;, click <strong>More info</strong>, then
+            <strong>Run anyway</strong>.</p>
+          <p class="small">Or skip the warning (and step 2), or if Windows will not run it at all: open
+            <strong>PowerShell</strong> from the Start menu and paste this.</p>
+          <div class="codeline"><code id="ps">@@VFG_PS_COMMAND@@</code><button class="copy" data-copy="ps" type="button">Copy</button></div>
+        </div>
+        <div class="unix">
+          <h3>Mac or Linux</h3>
+          <a class="button" href="@@VFG_SH_URL@@" download="vfg-install.sh">Download for Mac / Linux</a>
+        </div>
+      </div>
+    </li>
+    <li>
+      <h2>Run it</h2>
+      <p><strong>Windows:</strong> double-click <code>vfg-install.cmd</code> in your Downloads.</p>
+      <p><strong>Mac or Linux:</strong> open Terminal and run</p>
+      <div class="codeline"><code id="sh">bash ~/Downloads/vfg-install.sh</code><button class="copy" data-copy="sh" type="button">Copy</button></div>
+      <p class="small">You need Minecraft Java Edition, and its launcher opened at least once.
+        Close the launcher first; if it is open, the installer waits for you to close it.
+        Your other installations and mods are not touched.</p>
+    </li>
+    <li>
+      <h2>Play</h2>
+      <p>Open the Minecraft launcher, pick <strong>VFG @@VFG_MC_VERSION@@</strong> next to the Play button, and press Play.
+        Then <strong>Multiplayer &rarr; VFG &rarr; Join Server</strong>.</p>
+      <div class="codeline"><code id="addr">@@VFG_SERVER_ADDRESS@@</code><button class="copy" data-copy="addr" type="button">Copy</button></div>
+      <p class="small">That is the server address, if you would rather add it yourself.</p>
+      <p>In the game, press <strong>K</strong> to pick your microphone. <strong>M</strong> mutes.
+        The first start downloads the speech engine in the background; the mic icon in the corner shows its progress.</p>
+    </li>
+  </ol>
+
+  <footer class="small">
+    <p>This link works until <time id="expires" datetime="@@VFG_EXPIRES_ISO@@">@@VFG_EXPIRES_TEXT@@</time>.
+      Each time the server starts it gets a new address and you get a new link: run the new
+      installer and it updates everything, keeping your mic and settings.</p>
+    <p class="note">Keep this link among friends: the installer carries the key that lets the mod talk to the server.</p>
+  </footer>
+</main>
+<script>
+  (function () {
+    var ua = navigator.userAgent || "";
+    document.body.setAttribute("data-os", /Windows/i.test(ua) ? "windows" : /Mac|Linux|X11|CrOS/i.test(ua) ? "unix" : "");
+    var t = document.getElementById("expires");
+    var d = new Date(t.getAttribute("datetime"));
+    if (!isNaN(d.getTime())) {
+      t.textContent = d.toLocaleString(undefined, { weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" });
+    }
+    var buttons = document.querySelectorAll("button.copy");
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].addEventListener("click", function (e) {
+        var b = e.currentTarget, el = document.getElementById(b.getAttribute("data-copy"));
+        var done = function () { b.textContent = "Copied"; setTimeout(function () { b.textContent = "Copy"; }, 1500); };
+        var fallback = function () {
+          var r = document.createRange(); r.selectNodeContents(el);
+          var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+          try { document.execCommand("copy"); done(); } catch (err) { /* the text stays selected */ }
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(el.textContent).then(done, fallback);
+        } else {
+          fallback();
+        }
+      });
+    }
+  })();
+</script>
+</body>
+</html>

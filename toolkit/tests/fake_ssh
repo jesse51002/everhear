@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""A local stand-in for ssh: VFG_SSH points at it in the tests.
+
+It drops the options and the destination and runs the remote command with
+`bash -c` here, stdin, stdout and stderr passed through. Like real ssh, it
+carries none of the caller's environment: the remote side gets only PATH,
+HOME, USER, LOGNAME and LANG (the "box's" login environment) and FAKE_UNITS
+(the fake box's unit states), so a remote program that needs a setting must be
+given it in ARGS or in its command. `-O check` and
+`-O exit` answer 255 (no master, so the direct path is tested); `-N` (a
+master start) exits 0 without making a socket.
+
+  FAKE_SSH_DOWN=1          exit 255 with "Connection timed out"
+  FAKE_SSH_DOWN_FILE=path  the same while that file exists
+  FAKE_SSH_DROP_AFTER=S    kill the remote side after S seconds, exit 255
+  FAKE_SSH_DELAY=S         wait S seconds before running the remote command
+  FAKE_SSH_LOG=path        append each argv as one JSON line
+"""
+import ctypes
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+
+WITH_ARG = set("BbcDEeFIiJLlmOoPpQRSWw")
+
+
+def main():
+    argv = sys.argv[1:]
+    log = os.environ.get("FAKE_SSH_LOG")
+    if log:
+        with open(log, "a") as f:
+            f.write(json.dumps(argv) + "\n")
+    ctl = None
+    no_cmd = False
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--":
+            i += 1
+            break
+        if not a.startswith("-") or a == "-":
+            break
+        flags = a[1:]
+        j = 0
+        while j < len(flags):
+            c = flags[j]
+            if c in WITH_ARG:
+                val = flags[j + 1:] or (argv[i + 1] if i + 1 < len(argv) else "")
+                if not flags[j + 1:]:
+                    i += 1
+                if c == "O":
+                    ctl = val
+                break
+            if c == "N":
+                no_cmd = True
+            j += 1
+        i += 1
+    dest = argv[i] if i < len(argv) else ""
+    command = " ".join(argv[i + 1:])
+    host = dest.split("@")[-1]
+
+    down_file = os.environ.get("FAKE_SSH_DOWN_FILE")
+    if os.environ.get("FAKE_SSH_DOWN") == "1" or (down_file and os.path.exists(down_file)):
+        sys.stderr.write("ssh: connect to host %s port 22: Connection timed out\n" % host)
+        return 255
+    if ctl is not None:
+        return 255
+    if no_cmd:
+        return 0
+    if os.environ.get("FAKE_SSH_DELAY"):
+        time.sleep(float(os.environ["FAKE_SSH_DELAY"]))
+
+    libc = ctypes.CDLL(None)
+
+    def child_setup():
+        os.setsid()
+        libc.prctl(1, signal.SIGKILL, 0, 0, 0)  # dies with this fake
+
+    env = {k: os.environ[k] for k in ("PATH", "HOME", "USER", "LOGNAME", "FAKE_UNITS")
+           if k in os.environ}
+    env["LANG"] = "C.UTF-8"
+    proc = subprocess.Popen(["bash", "-c", command], preexec_fn=child_setup, env=env)
+
+    def stop(signum, frame):
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        os._exit(255)
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    drop = os.environ.get("FAKE_SSH_DROP_AFTER")
+    if drop:
+        deadline = time.time() + float(drop)
+        while proc.poll() is None and time.time() < deadline:
+            time.sleep(0.05)
+        if proc.poll() is None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            proc.wait()
+            sys.stderr.write("Connection to %s closed by remote host.\n" % host)
+            return 255
+    return proc.wait()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

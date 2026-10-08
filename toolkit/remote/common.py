@@ -1,0 +1,233 @@
+# common.py: prepended to every program vfg sends to EC2.
+# Python 3.9, standard library only. The PC appends `ARGS = json.loads(...)`
+# and then the program itself; the program answers with stdout, one line on
+# stderr and its exit code.
+import json
+import os
+import socket
+import struct
+import sys
+import time
+from datetime import datetime, timezone
+
+
+def die(code, msg):
+    """Print one line on stderr and exit with `code`."""
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+    sys.stderr.write("vfg: " + msg + "\n")
+    sys.stderr.flush()
+    sys.exit(code)
+
+
+def warn(msg):
+    sys.stderr.write("vfg: " + msg + "\n")
+    sys.stderr.flush()
+
+
+def now_iso(t=None):
+    """ISO-8601 UTC with milliseconds: 2026-10-07T18:22:31.412Z."""
+    if t is None:
+        t = time.time()
+    d = datetime.fromtimestamp(t, timezone.utc)
+    return d.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (d.microsecond // 1000)
+
+
+def hms(t=None):
+    if t is None:
+        t = time.time()
+    return datetime.fromtimestamp(t, timezone.utc).strftime("%H:%M:%S")
+
+
+def atomic_write(path, data, mode=0o644):
+    """Write `path.tmp`, then os.replace it over `path`."""
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        os.fchmod(fd, mode)
+        view = memoryview(data)
+        while view:
+            n = os.write(fd, view)
+            view = view[n:]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp, path)
+
+
+_CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def ulid(t=None):
+    """48 bits of milliseconds and 80 random bits, Crockford base32."""
+    ms = int((time.time() if t is None else t) * 1000)
+    n = (ms << 80) | int.from_bytes(os.urandom(10), "big")
+    out = []
+    for _ in range(26):
+        out.append(_CROCKFORD[n & 31])
+        n >>= 5
+    return "".join(reversed(out))
+
+
+def db_uri(path, mode):
+    from urllib.parse import quote
+    return "file:" + quote(path) + "?mode=" + mode
+
+
+def pid_with_marker(pid, marker):
+    """True when `pid` is alive and its environment holds `marker` (KEY=value).
+
+    A zombie or a recycled pid has no such marker, so it never matches."""
+    try:
+        with open("/proc/%d/environ" % int(pid), "rb") as f:
+            env = f.read().split(b"\0")
+    except (OSError, ValueError):
+        return False
+    return marker.encode() in env
+
+
+def read_pid(path):
+    try:
+        with open(path) as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def last_feed_seq(path):
+    """The highest seq in the last 4 KiB of feed.log, or None without a feed."""
+    import re
+    rx = re.compile(rb"^(LINE|GAME|ORCH|SYS)#(\d+) ")
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - 4096))
+            tail = f.read()
+    except OSError:
+        return None
+    best = 0
+    for line in tail.split(b"\n"):
+        m = rx.match(line)
+        if m:
+            best = max(best, int(m.group(2)))
+    return best
+
+
+def read_props(path):
+    props = {}
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line[0] in "#!" or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            props[k.strip()] = v.strip()
+    return props
+
+
+# ---------------------------------------------------------------- RCON
+
+class RconDown(Exception):
+    """Minecraft is not answering RCON: exit 5."""
+
+
+def mc_refused(out):
+    """Minecraft's own refusals of a command."""
+    return (out.startswith("Unknown or incomplete command")
+            or out.startswith("Incorrect argument for command")
+            or "<--[HERE]" in out)
+
+
+class Rcon(object):
+    """A vanilla RCON client: one packet per write, a reply read by size.
+
+    Vanilla reads each request into a 1460-byte buffer and expects exactly
+    one packet per read, so nothing is sent before the last packet was
+    answered (no empty sentinel packet). A reply longer than 4096
+    characters arrives as several packets: while the last body was 4000
+    bytes or more, one more packet is read with a 1 s timeout."""
+
+    def __init__(self, mc_dir):
+        path = os.path.join(mc_dir, "server.properties")
+        try:
+            props = read_props(path)
+        except OSError:
+            raise RconDown("minecraft is not set up (%s missing)" % path)
+        try:
+            self.port = int(props.get("rcon.port") or 25575)
+        except ValueError:
+            self.port = 25575
+        refused = "minecraft is not running (RCON on 127.0.0.1:%d refused)" % self.port
+        if props.get("enable-rcon", "false").lower() != "true":
+            raise RconDown(refused)
+        password = props.get("rcon.password", "")
+        try:
+            self.sock = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+        except socket.timeout:
+            raise RconDown("minecraft did not answer RCON within 10 s")
+        except OSError:
+            raise RconDown(refused)
+        del props
+        self._send(1, 3, password)
+        rid, _typ, _body = self._read()
+        password = None
+        if rid == -1:
+            raise RconDown("RCON refused the password")
+
+    def _send(self, rid, typ, body):
+        b = body.encode("utf-8")
+        self.sock.sendall(struct.pack("<iii", len(b) + 10, rid, typ) + b + b"\x00\x00")
+
+    def _exact(self, n):
+        chunks = []
+        while n > 0:
+            try:
+                c = self.sock.recv(n)
+            except socket.timeout:
+                raise
+            except OSError as e:
+                raise RconDown("minecraft dropped the RCON connection (%s)" % e)
+            if not c:
+                raise RconDown("minecraft closed the RCON connection")
+            chunks.append(c)
+            n -= len(c)
+        return b"".join(chunks)
+
+    def _read(self):
+        try:
+            (length,) = struct.unpack("<i", self._exact(4))
+            if length < 10 or length > (1 << 20):
+                raise RconDown("minecraft sent a bad RCON packet")
+            data = self._exact(length)
+        except socket.timeout:
+            raise RconDown("minecraft did not answer RCON within 10 s")
+        rid, typ = struct.unpack("<ii", data[:8])
+        return rid, typ, data[8:-2]
+
+    def command(self, cmd):
+        self._send(2, 2, cmd)
+        rid, _typ, body = self._read()
+        parts = [body]
+        while len(body) >= 4000:
+            self.sock.settimeout(1.0)
+            try:
+                (length,) = struct.unpack("<i", self._exact(4))
+                data = self._exact(length)
+                body = data[8:-2]
+                parts.append(body)
+            except socket.timeout:
+                break
+            finally:
+                self.sock.settimeout(10)
+        return b"".join(parts).decode("utf-8", errors="replace")
+
+    def close(self):
+        try:
+            self.sock.close()
+        except Exception:
+            pass

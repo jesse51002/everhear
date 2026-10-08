@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Starts the conversation on your Claude subscription: Sonnet, low effort, told to start.
+#   ./start             a new session
+#   ./start --continue  the last session again, after a crash; it runs start again
+# The owner: CLAUDE.local.md beside this file names them, and Claude Code loads it with
+# CLAUDE.md. It is gitignored and yours to add standing rules to; when it is missing, this
+# writes it from VFG_OWNER (the environment, then ~/.vfg/config).
+# Isolated from your own Claude Code setup: --setting-sources project,local skips
+# ~/.claude/settings.json (its plugins, model and Stop hook) and your own skills;
+# --strict-mcp-config loads no MCP servers or claude.ai connectors. Login is unaffected.
+set -euo pipefail
+cd "$(dirname "$(readlink -f "$0")")"
+command -v vfg >/dev/null || { echo "vfg is not on PATH" >&2; exit 1; }
+
+if [ ! -s CLAUDE.local.md ]; then
+  config=${VFG_CONFIG_FILE:-${VFG_HOME:-$HOME/.vfg}/config}
+  owner=${VFG_OWNER:-}
+  if [ -z "$owner" ] && [ -r "$config" ]; then
+    owner=$(sed -n 's/^[[:space:]]*\(export[[:space:]][[:space:]]*\)\{0,1\}VFG_OWNER[[:space:]]*=//p' "$config" | tail -n 1)
+  fi
+  owner=${owner%$'\r'}
+  owner=$(printf '%s' "$owner" | sed "s/^[[:space:]]*//; s/[[:space:]]*\$//; s/^\"\(.*\)\"\$/\1/; s/^'\(.*\)'\$/\1/")
+  [[ $owner =~ ^[A-Za-z0-9_]{1,16}$ ]] || {
+    echo "set VFG_OWNER=<your Minecraft name> in $config, then run ./start again" >&2
+    exit 1
+  }
+  cat > CLAUDE.local.md <<EOF
+# The owner
+
+The owner's Minecraft name is $owner: a line from player $owner is the owner speaking in game.
+
+<!-- ./start wrote this from VFG_OWNER. It is not committed: add your own standing rules below. -->
+EOF
+  echo "wrote CLAUDE.local.md: the owner is $owner" >&2
+fi
+
+unset ANTHROPIC_API_KEY
+exec claude --model sonnet --effort low --name vfg-conversation \
+  --setting-sources project,local --strict-mcp-config "$@" start

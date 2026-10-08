@@ -1,0 +1,9 @@
+# Jev is down: lines arrive as context with no confidence; banter is judged and left alone.
+prompt:
+SYS#917 {t-8} | jev unavailable — passing every line as context
+LINE#918 {t-6} Steve voice context - -13dB | bro where did you go
+LINE#919 {t-4} Alex voice context - -12dB | i am in the cave behind you
+LINE#920 {t-2} Steve voice context - -15dB | oh nice there is iron here
+check:
+say == 0
+send == 0

@@ -1,0 +1,17 @@
+[Unit]
+Description=VFG bridge: speech endpoint, console tail, feed
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ec2-user
+WorkingDirectory=/opt/vfg
+EnvironmentFile=/opt/vfg/.env
+Environment=PYTHONPATH=/opt/vfg/lib:/opt/vfg/bridge PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m vfg_bridge
+Restart=always
+RestartSec=3
+RestartPreventExitStatus=78
+
+[Install]
+WantedBy=multi-user.target
