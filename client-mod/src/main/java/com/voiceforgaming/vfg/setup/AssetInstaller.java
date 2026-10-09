@@ -31,7 +31,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Downloads, verifies and unpacks the pinned natives, VAD and model into
+ * Downloads, verifies and unpacks the pinned natives, VAD, model and turn model into
  * {@code <gameDir>/vfg/}.
  *
  * <p>For each one: if its folder's {@code .ok} holds the source's SHA-256 it is skipped;
@@ -136,6 +136,7 @@ public final class AssetInstaller {
 				case NATIVES -> unpackNatives(file, folder, a.variant());
 				case MODEL -> unpackModel(file, folder, a);
 				case VAD -> move(file, folder.resolve(Assets.VAD_FILE));
+				case TURN -> move(file, folder.resolve(a.fileName()));
 			}
 			Files.writeString(folder.resolve(OK_FILE), a.sha256() + "\n", StandardCharsets.UTF_8);
 			Files.deleteIfExists(file);
@@ -166,7 +167,7 @@ public final class AssetInstaller {
 	}
 
 	private void download(Assets.Asset a, Path file) throws SetupException, InterruptedException {
-		String url = baseUrl + a.path();
+		String url = a.url(baseUrl);
 		Exception last = null;
 		for (int attempt = 1; attempt <= TRIES; attempt++) {
 			try {

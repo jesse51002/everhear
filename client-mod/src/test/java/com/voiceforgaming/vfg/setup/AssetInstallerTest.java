@@ -3,10 +3,12 @@ package com.voiceforgaming.vfg.setup;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.sun.net.httpserver.HttpServer;
+import com.voiceforgaming.vfg.turn.TurnDetectors;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -31,7 +33,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-/** The installer against a local HttpServer serving small stand-ins for the natives, the VAD and a model. */
+/** The installer against a local HttpServer serving small stand-ins for the natives, the VAD, a model and the turn models. */
 class AssetInstallerTest {
 	@TempDir
 	Path dir;
@@ -260,6 +262,67 @@ class AssetInstallerTest {
 		}
 		assertFalse(Files.exists(folder.resolve("test_wavs/0.wav")), "only the model's files");
 		assertEquals(model.sha256(), Files.readString(folder.resolve(".ok")).trim());
+	}
+
+	/** As huggingface.co serves them: a whole URL, nothing to do with the release the base URL points at. */
+	@Test
+	void turnModelsComeFromTheirOwnUrlIntoTheirOwnFolders() throws Exception {
+		byte[] smart = "smart turn graph".getBytes(StandardCharsets.UTF_8);
+		byte[] mini = "turn-1-mini graph".getBytes(StandardCharsets.UTF_8);
+		files.put("soniqo/resolve/b48f/smart-turn-v3.2-int8.onnx", smart);
+		files.put("p99lab/resolve/076c/onnx/turn-1-mini.step.int8dyn.onnx", mini);
+		Assets.Asset smartAsset = new Assets.Asset(Assets.Kind.TURN, TurnDetectors.SMART_TURN,
+			base + "soniqo/resolve/b48f/smart-turn-v3.2-int8.onnx", smart.length, sha256(smart));
+		Assets.Asset miniAsset = new Assets.Asset(Assets.Kind.TURN, TurnDetectors.TURN_1_MINI,
+			base + "p99lab/resolve/076c/onnx/turn-1-mini.step.int8dyn.onnx", mini.length, sha256(mini));
+		Path root = dir.resolve("vfg");
+		AssetInstaller installer = new AssetInstaller(base + "k2-fsa/releases/download/", root, sleeps::add, null);
+		installer.installAll(List.of(smartAsset, miniAsset));
+
+		assertEquals(List.of("soniqo/resolve/b48f/smart-turn-v3.2-int8.onnx",
+			"p99lab/resolve/076c/onnx/turn-1-mini.step.int8dyn.onnx"), requests);
+		Path smartFile = root.resolve("models/turn/smart-turn-v3.2/smart-turn-v3.2-int8.onnx");
+		Path miniFile = root.resolve("models/turn/turn-1-mini/turn-1-mini.step.int8dyn.onnx");
+		assertEquals(smartFile, Assets.turnFile(root, smartAsset));
+		assertEquals(miniFile, Assets.turnFile(root, miniAsset));
+		assertArrayEquals(smart, Files.readAllBytes(smartFile));
+		assertArrayEquals(mini, Files.readAllBytes(miniFile));
+		assertEquals(smartAsset.sha256(), Files.readString(smartFile.resolveSibling(".ok")).trim());
+		assertEquals(miniAsset.sha256(), Files.readString(miniFile.resolveSibling(".ok")).trim());
+		try (var left = Files.list(root.resolve("downloads"))) {
+			assertEquals(0, left.count(), "the downloads are moved in");
+		}
+
+		installer.install(smartAsset); // its .ok holds its hash: no request
+		assertEquals(2, requests.size());
+	}
+
+	@Test
+	void turnModelsArePinned() {
+		Assets.Asset smart = Assets.turn(TurnDetectors.SMART_TURN);
+		assertEquals(Assets.Kind.TURN, smart.kind());
+		assertEquals(11123370L, smart.bytes());
+		assertEquals("00cd131551e8d1e9011f31345edb632a26116dd83e159782c4ddff610718ea31", smart.sha256());
+		assertEquals("https://huggingface.co/soniqo/Smart-Turn-v3.2-ONNX/resolve/b48fdbe20772bcec1fef02f4a1a355236ef6359e/"
+			+ "smart-turn-v3.2-int8.onnx", smart.url(Assets.BASE_URL));
+		assertEquals("smart-turn-v3.2-int8.onnx", smart.fileName());
+		assertEquals(Path.of("r/models/turn/smart-turn-v3.2/smart-turn-v3.2-int8.onnx"), Assets.turnFile(Path.of("r"), smart));
+
+		Assets.Asset mini = Assets.turn(TurnDetectors.TURN_1_MINI);
+		assertEquals(7000932L, mini.bytes());
+		assertEquals("a59a5b627190e7bf52a46dd25026ec8d4d0b01e1b0146643bb39161808c0619e", mini.sha256());
+		assertEquals("https://huggingface.co/p99lab/turn-1-mini/resolve/076c86d1744a231d3a4cce31f3bbbd1211b4c281/onnx/"
+			+ "turn-1-mini.step.int8dyn.onnx", mini.url(Assets.BASE_URL));
+		assertEquals(Path.of("r/models/turn/turn-1-mini"), Assets.folder(Path.of("r"), mini));
+		assertEquals(Path.of("r/models/turn/turn-1-mini/turn-1-mini.step.int8dyn.onnx"), Assets.turnFile(Path.of("r"), mini));
+
+		assertNull(Assets.turn(TurnDetectors.OFF));
+		for (String model : TurnDetectors.MODELS) {
+			assertEquals(model.equals(TurnDetectors.OFF), Assets.turn(model) == null, model);
+		}
+		assertThrows(IllegalArgumentException.class, () -> Assets.turn("smart-turn-v4"));
+		assertEquals(Assets.BASE_URL + "asr-models/silero_vad.onnx", Assets.vad().url(Assets.BASE_URL),
+			"a path without a scheme is below the base URL");
 	}
 
 	@Test

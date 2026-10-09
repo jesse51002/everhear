@@ -109,6 +109,7 @@ jar {
 		exclude 'META-INF/**'
 	}
 	from('LICENSE-sherpa-onnx.txt')
+	from('LICENSE-smart-turn.txt', 'LICENSE-turn-1-mini.txt', 'NOTICE-turn-1-mini.txt')
 }
 
 // ---------------------------------------------------------------------------

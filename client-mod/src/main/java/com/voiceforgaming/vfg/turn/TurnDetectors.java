@@ -1,5 +1,8 @@
 package com.voiceforgaming.vfg.turn;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
@@ -19,9 +22,22 @@ public final class TurnDetectors {
 
 	/**
 	 * Loads {@code turnModel}'s detector from {@code modelFile}, on the ONNX Runtime library
-	 * sherpa-onnx loads from {@code nativesDir}.
+	 * sherpa-onnx loads from {@code nativesDir}. {@code off} has no detector. Throws
+	 * {@link OnnxRuntime.OrtException} when ONNX Runtime refuses the model, and
+	 * {@link IllegalStateException} when the library is not there.
 	 */
 	public static TurnDetector load(String turnModel, Path nativesDir, Path modelFile) {
-		throw new UnsupportedOperationException("turn models are not built yet");
+		if (!turnModel.equals(SMART_TURN) && !turnModel.equals(TURN_1_MINI)) {
+			throw new IllegalArgumentException("no turn model called " + turnModel);
+		}
+		OnnxRuntime runtime = OnnxRuntime.open(nativesDir);
+		byte[] model;
+		try {
+			model = Files.readAllBytes(modelFile);
+		} catch (IOException e) {
+			throw new UncheckedIOException("could not read " + modelFile, e);
+		}
+		OnnxRuntime.Session session = runtime.session(model);
+		return turnModel.equals(SMART_TURN) ? new SmartTurn(session) : new TurnOneMini(session);
 	}
 }

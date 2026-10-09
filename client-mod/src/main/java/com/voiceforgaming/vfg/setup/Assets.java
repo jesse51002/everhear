@@ -1,5 +1,6 @@
 package com.voiceforgaming.vfg.setup;
 
+import com.voiceforgaming.vfg.turn.TurnDetectors;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Locale;
@@ -13,13 +14,21 @@ public final class Assets {
 	public static final String SHERPA_VERSION = "1.13.8";
 	public static final String MODEL_DATE = "2026-02-27";
 
-	public enum Kind { NATIVES, VAD, MODEL }
+	public enum Kind { NATIVES, VAD, MODEL, TURN }
 
-	/** One pinned file: {@code path} is relative to {@link #BASE_URL}. */
+	/**
+	 * One pinned file: {@code path} is relative to {@link #BASE_URL}, or a whole URL when it
+	 * has a scheme (the turn models are on huggingface.co, not in sherpa-onnx's release).
+	 */
 	public record Asset(Kind kind, String variant, String path, long bytes, String sha256) {
 		/** The file name, the last segment of the path. */
 		public String fileName() {
 			return path.substring(path.lastIndexOf('/') + 1);
+		}
+
+		/** Where it is downloaded from: {@code path} itself when it is a whole URL, else below {@code baseUrl}. */
+		public String url(String baseUrl) {
+			return path.contains("://") ? path : baseUrl + path;
 		}
 	}
 
@@ -40,7 +49,13 @@ public final class Assets {
 			"9ec31b342d8fa3240c3b81b8f82e1cf7e3ac467c93ca5a999b741d5887164f8d"),
 		new Asset(Kind.MODEL, "parakeet-110m",
 			"asr-models/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8.tar.bz2", 108035095L,
-			"f628312e9fdf8686374cb01a69425c41732529d540860311f16f37cbc32cfe9b"));
+			"f628312e9fdf8686374cb01a69425c41732529d540860311f16f37cbc32cfe9b"),
+		new Asset(Kind.TURN, TurnDetectors.SMART_TURN, "https://huggingface.co/soniqo/Smart-Turn-v3.2-ONNX/resolve/"
+			+ "b48fdbe20772bcec1fef02f4a1a355236ef6359e/smart-turn-v3.2-int8.onnx", 11123370L,
+			"00cd131551e8d1e9011f31345edb632a26116dd83e159782c4ddff610718ea31"),
+		new Asset(Kind.TURN, TurnDetectors.TURN_1_MINI, "https://huggingface.co/p99lab/turn-1-mini/resolve/"
+			+ "076c86d1744a231d3a4cce31f3bbbd1211b4c281/onnx/turn-1-mini.step.int8dyn.onnx", 7000932L,
+			"a59a5b627190e7bf52a46dd25026ec8d4d0b01e1b0146643bb39161808c0619e"));
 
 	/** The config's {@code model} values, the default first. */
 	public static final String PARAKEET_110M = "parakeet-110m-en";
@@ -127,14 +142,17 @@ public final class Assets {
 		throw new IllegalArgumentException("no pinned " + kind + " for " + variant);
 	}
 
-	/** The pinned file for a config {@code turn_model} value, or {@code null} for {@code off}. Not built yet. */
+	/**
+	 * The pinned file for a config {@code turn_model} value ({@code smart-turn-v3.2} or
+	 * {@code turn-1-mini}), or {@code null} for {@code off}.
+	 */
 	public static Asset turn(String turnModel) {
-		return null;
+		return turnModel.equals(TurnDetectors.OFF) ? null : find(Kind.TURN, turnModel);
 	}
 
-	/** Where a turn model's {@code .onnx} file is once installed. Not built yet. */
+	/** Where a turn model's {@code .onnx} file is once installed: in its folder, under its own name. */
 	public static Path turnFile(Path vfgRoot, Asset turnModel) {
-		throw new UnsupportedOperationException("turn models are not built yet");
+		return folder(vfgRoot, turnModel).resolve(turnModel.fileName());
 	}
 
 	// --- where things live under <gameDir>/vfg/ ---
@@ -155,6 +173,7 @@ public final class Assets {
 			case MODEL -> vfgRoot.resolve("models").resolve(isParakeet(a)
 				? "parakeet-tdt-110m-en-36000-int8"
 				: "moonshine-" + a.variant() + "-en-" + MODEL_DATE);
+			case TURN -> vfgRoot.resolve("models").resolve("turn").resolve(a.variant());
 		};
 	}
 }

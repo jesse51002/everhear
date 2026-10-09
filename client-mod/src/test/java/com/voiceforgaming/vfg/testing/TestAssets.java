@@ -3,6 +3,8 @@ package com.voiceforgaming.vfg.testing;
 import com.voiceforgaming.vfg.setup.AssetInstaller;
 import com.voiceforgaming.vfg.setup.Assets;
 import com.voiceforgaming.vfg.speech.SpeechEngine;
+import com.voiceforgaming.vfg.turn.TurnDetector;
+import com.voiceforgaming.vfg.turn.TurnDetectors;
 import java.io.BufferedInputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -76,6 +78,26 @@ public final class TestAssets {
 		return SpeechEngine.load(Assets.folder(root(), natives), Assets.isParakeet(modelAsset),
 			Assets.folder(root(), modelAsset), Assets.folder(root(), vad).resolve(Assets.VAD_FILE), sttThreads,
 			vadThreshold);
+	}
+
+	/** This PC's natives folder, where {@link #engine} installs them. */
+	public static Path nativesDir() {
+		return Assets.folder(root(), Assets.natives(Assets.currentPlatform()));
+	}
+
+	/** Installs (once) the file for a config {@code turn_model} value through the mod's installer, and returns it. */
+	public static Path turnModel(String turnModel) throws Exception {
+		Assets.Asset asset = Assets.turn(turnModel);
+		installer().install(asset);
+		return Assets.turnFile(root(), asset);
+	}
+
+	/**
+	 * Installs (once) and loads a config {@code turn_model}'s detector exactly as the mod does, on
+	 * the ONNX Runtime of the natives {@link #engine} loaded; load the engine first, as the mod does.
+	 */
+	public static TurnDetector turnDetector(String turnModel) throws Exception {
+		return TurnDetectors.load(turnModel, nativesDir(), turnModel(turnModel));
 	}
 
 	/** A pinned extra file, fetched once into {@code downloads/} through the mod's installer. */
