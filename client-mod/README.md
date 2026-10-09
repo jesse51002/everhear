@@ -64,7 +64,7 @@ cd client-mod            # from the repo's root
 ./gradlew build         # build/libs/vfg-client-<version>.jar, under 1 MB; also runs the tests
 ./gradlew test          # unit tests: no natives, no internet (the fake-bridge test needs python3)
 ./gradlew engineTest    # the real VAD and all three models; installs ~260 MB into build/vfg-test-assets/ once
-./gradlew speechTest    # real speech through the mod's pipeline in real time, about 90 s (below)
+./gradlew speechTest    # real speech through the mod's pipeline in real time, about 4 min (below)
 ./gradlew micCheck      # your own mic through the mod's pipeline, no Minecraft (below)
 ./gradlew sttCompare    # the models side by side on the same audio: errors, speed, size, memory (below)
 ./gradlew turnCompare   # the two turn models on real and game speech: cut-offs, waits, speed (below; needs uv)
@@ -126,22 +126,31 @@ same one in Voice settings in the game.
 ### Real-speech test: `./gradlew speechTest`
 
 Plays speech into the mod's pipeline **in real time**, through `MicCapture` itself with a
-stand-in sound card that delivers samples as the wall clock runs — once at 16 kHz, and once
-at 48 kHz so the mod's resampling path is used — and checks how many lines come out,
-where they split, which words they hold, and how long after the end of speech each was
-ready (5 s of silence, plus 0.5 s grace, plus at most a 250 ms tick; speech-to-text runs
-during the silence, so it adds nothing).
+stand-in sound card that delivers samples as the wall clock runs — at 16 kHz, and at 48 kHz
+so the mod's resampling path is used — and checks how many lines come out, where they split,
+which words they hold, and how long after the end of speech each was ready.
 
-- Real recordings from sherpa-onnx: the Kennedy clip, "how do I get to Dublin?", and 18 s
-  of unbroken lecture.
-- Minecraft phrases ("Build me a castle by the cave", "Make it day", "Who's winning?",
-  "Give everyone diamonds", "Spawn a zombie behind Steve", "Turn off the rain, please")
-  spoken by Kitten TTS (sherpa-onnx, ~27 MB, pinned by SHA-256) in six voices at three
-  speeds.
-- Pauses of 1.5, 2, 3 and 4.5 s must not split a line; 5.5 and 6.5 s must.
+- **With the mod's defaults** (Smart Turn at its own threshold, `silence_seconds` 3): 12
+  short Minecraft requests ("Build me a castle by the cave", "Summon an ender dragon", …)
+  spoken by Kokoro TTS in eleven voices must each become their own line, **within 1 s of the
+  last word, median** (0.76 s on 2026-10-09: the VAD's 0.6 s, then speech-to-text and the
+  turn model's score), and every line, whatever the model heard, by `silence_seconds` +
+  0.5 s. Kokoro, because Smart Turn hears most of Kitten's finished sentences as unfinished
+  (`reports/turn-compare.md`).
+- **Pauses mid-sentence:** 8 requests spoken whole, then split at a gap between words with
+  1.5 to 2 s of silence put in. How many become two lines is reported, not checked (3 of 8 on
+  2026-10-09); only that every word arrives, once and in order.
+- **With `turn_model: off` and `silence_seconds: 5`**, the rule before the turn model: real
+  recordings from sherpa-onnx (the Kennedy clip, "how do I get to Dublin?", 18 s of unbroken
+  lecture) and Kitten TTS phrases in six voices at three speeds. Pauses of 1.5, 2, 3 and
+  4.5 s must not split a line, 5.5 and 6.5 s must, and each line is ready 5 to 7 s after its
+  speech (5 s of silence, plus 0.5 s grace, plus at most a 250 ms tick; speech-to-text runs
+  during the silence, so it adds nothing).
 
-It takes about a minute and a half. What it played is left in `build/speech-test/*.wav`, and what it
-heard in `build/speech-test/report.txt`.
+The TTS models (Kitten ~27 MB, Kokoro ~103 MB) are pinned by SHA-256, and the Kokoro takes are
+kept in `build/vfg-test-assets/speech-test-tts/` so every run hears the same audio. It takes
+about four minutes. What it played is left in `build/speech-test/*.wav`, and what it heard,
+with each turn decision, in `build/speech-test/report.txt`.
 
 ### Compare speech-to-text models: `./gradlew sttCompare`
 
