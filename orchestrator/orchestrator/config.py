@@ -6,9 +6,7 @@ import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Literal, Mapping
-
-Mode = Literal["hybrid", "implementers", "direct"]
+from typing import Mapping
 
 HERE = os.path.dirname(os.path.abspath(__file__))  # orchestrator/orchestrator
 ORCH = os.path.dirname(HERE)  # orchestrator/
@@ -27,9 +25,7 @@ class Config:
     fresh_file: str
     # orchestrator/prompts, beside the package.
     prompts_dir: str
-    # "hybrid" (default): simple tasks itself, the rest to implementer subagents. "implementers":
-    # every task to an implementer. "direct": every task itself.
-    mode: Mode
+    # Every task goes to an implementer; the session itself runs no command.
     model: str
     effort: str
     # The implementer subagents' own effort (AgentDefinition.effort).
@@ -82,7 +78,6 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
     if env is None:
         env = os.environ
     orch_dir = os.path.abspath(expand_home(env.get("VFG_ORCH_DIR") or "~/.vfg/orch"))
-    mode = env.get("VFG_ORCH_MODE")
     return Config(
         repo=_real(env.get("VFG_REPO") or os.path.dirname(ORCH)),
         orch_dir=orch_dir,
@@ -91,7 +86,6 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         lock_file=os.path.join(orch_dir, "lock"),
         fresh_file=os.path.join(orch_dir, "fresh"),
         prompts_dir=os.path.join(ORCH, "prompts"),
-        mode=mode if mode in ("direct", "implementers") else "hybrid",
         model=env.get("VFG_ORCH_MODEL") or "opus",
         effort=env.get("VFG_ORCH_EFFORT") or "low",
         implementer_model=env.get("VFG_IMPL_MODEL") or env.get("VFG_IMPLEMENTER_MODEL") or "sonnet",
@@ -101,6 +95,12 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         stale_minutes=_int(env.get("VFG_ORCH_STALE_MINUTES"), 10),
         implementer_minutes=_int(env.get("VFG_IMPLEMENTER_MINUTES"), 10),
     )
+
+
+def ignored_mode(env: Mapping[str, str] | None = None) -> str | None:
+    """VFG_ORCH_MODE when it asks for a mode that no longer exists: implementers is the only one."""
+    mode = (os.environ if env is None else env).get("VFG_ORCH_MODE") or ""
+    return mode if mode and mode != "implementers" else None
 
 
 _quiet = False

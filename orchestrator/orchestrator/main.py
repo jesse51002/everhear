@@ -6,7 +6,7 @@ import signal
 import sys
 import traceback
 
-from .config import Config, load_config, log, now_ms
+from .config import Config, ignored_mode, load_config, log, now_ms
 from .inbox import InboxFollower
 from .reply import Outbox
 from .session import MSG, FatalError, Prompts, Session
@@ -83,12 +83,8 @@ def _read(path: str) -> str:
 
 
 def load_prompts(cfg: Config) -> Prompts | None:
-    """The session's prompt, and the implementer's: hybrid.md and implementer.md (hybrid),
-    orchestrator.md and implementer.md (implementers), direct.md alone (direct)."""
-    if cfg.mode == "direct":
-        d = os.path.join(cfg.prompts_dir, "direct.md")
-        return Prompts(orchestrator=_read(d), implementer="") if os.path.exists(d) else None
-    o = os.path.join(cfg.prompts_dir, "hybrid.md" if cfg.mode == "hybrid" else "orchestrator.md")
+    """The session's prompt and the implementer's: orchestrator.md and implementer.md."""
+    o = os.path.join(cfg.prompts_dir, "orchestrator.md")
     i = os.path.join(cfg.prompts_dir, "implementer.md")
     if not os.path.exists(o) or not os.path.exists(i):
         return None
@@ -99,10 +95,11 @@ async def _run(exit_) -> int | None:
     """Everything up to the running loops. Returns an exit code to stop at once, or None to run
     until `exit_` is called."""
     cfg = load_config()
-    log("main", "starting: pid %d, %s mode, %s at %s effort%s, repo %s, state %s" % (
-        os.getpid(), cfg.mode, cfg.model, cfg.effort,
-        ", implementers %s at %s effort" % (cfg.implementer_model, cfg.implementer_effort) if cfg.mode != "direct" else "",
-        cfg.repo, cfg.orch_dir))
+    log("main", "starting: pid %d, %s at %s effort, implementers %s at %s effort, repo %s, state %s" % (
+        os.getpid(), cfg.model, cfg.effort, cfg.implementer_model, cfg.implementer_effort, cfg.repo, cfg.orch_dir))
+    mode = ignored_mode()
+    if mode:
+        log("main", "warning: VFG_ORCH_MODE=%s is ignored: every task goes to an implementer" % mode)
 
     # 2. Fatal: no vfg, or a prompt missing.
     if not shutil.which("vfg"):
@@ -128,7 +125,7 @@ async def _run(exit_) -> int | None:
 
     outbox = Outbox(store, vfg)
     store.on_reply = outbox.kick
-    usage = UsageMeter(store, vfg, cfg.mode, cfg.implementer_model)
+    usage = UsageMeter(store, vfg, cfg.implementer_model)
     follower: InboxFollower | None = None
     session: Session | None = None
 
@@ -210,12 +207,12 @@ async def _run(exit_) -> int | None:
 
     # 8. Tell the session what the restart closed.
     if interrupted:
-        session.push(MSG.restarted(now_ms(), interrupted, cfg.mode))
+        session.push(MSG.restarted(now_ms(), interrupted))
 
     # 9. The inbox follower, the outbox and the watchdog.
     def on_task(tid: str, message: str) -> None:
         usage.note([tid])
-        session.push_task(tid, message)
+        session.push(message)
 
     follower = InboxFollower(inbox=cfg.inbox, store=store, stale_minutes=cfg.stale_minutes, on_task=on_task)
     follower.start(250)

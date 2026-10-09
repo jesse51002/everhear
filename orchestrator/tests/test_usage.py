@@ -78,14 +78,6 @@ def test_each_row_carries_its_own_models_cost_sonnet_is_priced_as_sonnet():
 
 # ---------------------------------------------------------------- the usage meter
 
-async def test_direct_mode_every_row_is_the_orchestrators():
-    d = temp_dir()
-    fake = use_fake_vfg(d)
-    store = new_store(d)
-    await UsageMeter(store, vfg, "direct").on_result({HAIKU: mu(50, 5, 0.01)})
-    assert [c[3] for c in fake.calls() if c[0] == "usage"] == ["orchestrator"]
-
-
 async def test_rows_go_to_vfg_usage_add_with_the_tasks_open_since_the_previous_row():
     d = temp_dir()
     fake = use_fake_vfg(d)

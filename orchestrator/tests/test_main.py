@@ -47,10 +47,12 @@ def runner_stand_in():
 
 def test_vfg_not_on_the_path_exit_2():
     d = temp_dir()
-    code, out = run(ORCH, env(d, "/usr/bin:/bin"))
+    code, out = run(ORCH, {**env(d, "/usr/bin:/bin"), "VFG_ORCH_MODE": "hybrid"})
     assert code == 2
     assert "fatal: vfg is not on the PATH" in out
     assert re.search(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z main ", out, re.M)
+    # Not in the TypeScript test: a mode that is gone is named in a warning, and ignored.
+    assert "main warning: VFG_ORCH_MODE=hybrid is ignored: every task goes to an implementer" in out
 
 
 def test_a_prompt_missing_exit_2():
@@ -77,17 +79,19 @@ def test_another_live_runner_holds_the_lock_exit_1():
         assert read(os.path.join(d, "orch", "lock")).strip() == str(pid)
 
 
-def test_the_prompts_load_in_both_modes():
+def test_the_prompts_load():
     d = temp_dir()
-    direct = load_prompts(config_in(d, {"VFG_ORCH_MODE": "direct"}))
-    assert "%REPO%" in direct.orchestrator
-    assert "reply(task, status, text)" in direct.orchestrator
-    hybrid = load_prompts(config_in(d))
-    assert "DO IT YOURSELF, OR START AN IMPLEMENTER" in hybrid.orchestrator
-    assert "RESULT: done | failed" in hybrid.implementer
-    impl = load_prompts(config_in(d, {"VFG_ORCH_MODE": "implementers"}))
-    assert "%MAX_IMPLEMENTERS%" in impl.orchestrator
-    assert "RESULT: done | failed" in impl.implementer
+    prompts = load_prompts(config_in(d))
+    assert "%MAX_IMPLEMENTERS%" in prompts.orchestrator
+    assert "%REPO%" in prompts.orchestrator
+    assert "reply(task, status, text)" in prompts.orchestrator
+    assert "RESULT: done | failed" in prompts.implementer
+    assert load_prompts(config_in(d, {"VFG_ORCH_MODE": "direct"})) == prompts  # the mode is ignored
+    assert sorted(os.listdir(os.path.join(ORCH, "prompts"))) == ["implementer.md", "orchestrator.md"]
+    # saved places, in both
+    assert "SAVED PLACES" in prompts.orchestrator and "vfg place list" in prompts.orchestrator
+    assert "vfg place save <name> --at <x> <y> <z> --by <task id>" in prompts.implementer
+    assert "PLACE: " in prompts.implementer
 
 
 def test_a_dead_pids_lock_is_taken_over_and_released():

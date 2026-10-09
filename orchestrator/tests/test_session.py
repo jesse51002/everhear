@@ -93,13 +93,13 @@ def notified(task_id, status="completed"):
     return {"type": "system", "subtype": "task_notification", "task_id": task_id, "status": status, "summary": "done", "output_file": ""}
 
 
-def setup(info=None, mode="implementers", extra=None):
+def setup(info=None, extra=None):
     d = temp_dir()
     fake = use_fake_vfg(d)
-    cfg = config_in(d, {"VFG_ORCH_MODE": mode, **(extra or {})})
+    cfg = config_in(d, extra)
     store = new_store(d)
     outbox = Outbox(store, vfg, [5], 5)
-    usage = UsageMeter(store, vfg, mode)
+    usage = UsageMeter(store, vfg)
     queries: list[FakeQuery] = []
     clock = [1_000_000]
 
@@ -128,7 +128,7 @@ async def stop_keeper(s, keeper):
     await keeper
 
 
-# ====================================================== session, implementers mode (the default)
+# ====================================================== the session
 
 async def test_the_session_id_of_the_first_message_is_saved():
     s = setup()
@@ -327,166 +327,23 @@ async def test_stop_fails_every_open_task_as_stopped():
     s.session.close_query()
 
 
-# ====================================================== session, direct mode (VFG_ORCH_MODE=direct)
-
 def task(tid):
     return "TASK %s at 00:00:00 UTC\ndo %s" % (tid, tid)
 
 
-async def test_direct_tasks_go_to_the_session_one_at_a_time():
-    s = setup(None, "direct")
-    await s.session.open()
-    s.open("T1")
-    s.open("T2")
-    s.session.push_task("T1", task("T1"))
-    s.session.push_task("T2", task("T2"))
-    await until(lambda: len(s.q().received) == 1)
-    await tick()
-    assert s.q().received == [task("T1")]
-    assert [w["id"] for w in s.session.waiting] == ["T2"]
-    s.store.reply("T1", "done", "ok")
-    s.q().emit(**result())
-    await until(lambda: len(s.q().received) == 2)
-    assert s.q().received[1] == task("T2")
-    s.store.reply("T2", "done", "ok")
-    s.q().emit(**result())
-    await tick()
-    assert len(s.q().received) == 2
-
-
-async def test_direct_a_waiting_task_is_never_nudged_delivered_ones_are_after_the_queue_is_through():
-    s = setup(None, "direct")
-    await s.session.open()
-    s.open("T1")
-    s.open("T2")
-    s.session.push_task("T1", task("T1"))
-    s.session.push_task("T2", task("T2"))
-    await until(lambda: len(s.q().received) == 1)
-    s.q().emit(**result())  # T1's turn ended without a reply: T2 goes in, nobody is nudged yet
-    await until(lambda: len(s.q().received) == 2)
-    assert s.q().received[1] == task("T2")
-    assert s.store.get("T1").nudged is False
-    s.q().emit(**result())
-    await until(lambda: len(s.q().received) == 3)
-    assert s.q().received[2] == MSG.nudge(["T1", "T2"], "direct")
-    assert "do what it needs" in MSG.nudge(["T1"], "direct")
-
-
-async def test_direct_a_task_closed_while_waiting_is_skipped():
-    s = setup(None, "direct")
+# Not in the TypeScript tests: what was implementers mode's alone is now the only behaviour.
+async def test_tasks_go_in_at_once_also_during_a_turn_and_together_when_handed_together():
+    s = setup()
     await s.session.open()
     for tid in ("T1", "T2", "T3"):
         s.open(tid)
-    for tid in ("T1", "T2", "T3"):
-        s.session.push_task(tid, task(tid))
+    s.session.push(task("T1"))
     await until(lambda: len(s.q().received) == 1)
-    s.store.reply("T2", "failed", "cancelled")
-    s.store.reply("T1", "done", "ok")
-    s.q().emit(**result())
-    await until(lambda: len(s.q().received) == 2)
-    assert s.q().received[1] == task("T3")
-
-
-async def test_direct_a_session_restart_fails_the_task_in_hand_and_keeps_the_waiting_ones():
-    s = setup(None, "direct")
-    await s.session.open()
-    keeper = asyncio.create_task(s.session.keep_alive(0))
-    s.open("T1")
-    s.open("T2")
-    s.session.push_task("T1", task("T1"))
-    s.session.push_task("T2", task("T2"))
-    await until(lambda: len(s.q().received) == 1)
-    s.advance(60_000)
-    s.q().end()
-    await until(lambda: len(s.queries) == 2)
-    assert s.store.get("T1").status == "failed"
-    assert s.store.get("T1").replies[0].text == MSG.interrupted
-    assert s.store.get("T2").status == "open"
-    await until(lambda: len(s.queries[1].received) == 1)
-    assert "Work in progress was cut off" in s.queries[1].received[0]
-    s.queries[1].emit(**result())  # the note's turn ends: T2 goes in
-    await until(lambda: len(s.queries[1].received) == 2)
-    assert s.queries[1].received[1] == task("T2")
-    await stop_keeper(s, keeper)
-
-
-async def test_direct_a_turn_over_the_time_limit_is_interrupted_and_told_to_reply_failed():
-    s = setup(None, "direct")
-    await s.session.open()
-    s.open("T1")
-    s.session.push_task("T1", task("T1"))
-    await until(lambda: len(s.q().received) == 1)
-    s.advance(9 * 60_000)
-    s.session.tick()
-    assert s.q().interrupts == 0
-    s.advance(2 * 60_000)
-    s.session.tick()
-    s.session.tick()
-    await tick()
-    assert s.q().interrupts == 1
-    await until(lambda: len(s.q().received) == 2)
-    assert s.q().received[1] == MSG.overtime(10)
-
-
-async def test_direct_stop_fails_waiting_tasks_too():
-    s = setup(None, "direct")
-    await s.session.open()
-    s.open("T1")
-    s.open("T2")
-    s.session.push_task("T1", task("T1"))
-    s.session.push_task("T2", task("T2"))
-    assert await s.session.stop() == ["T1", "T2"]
-    assert s.session.waiting == []
-    s.session.close_query()
-
-
-async def test_direct_usage_rows_are_the_orchestrators_whatever_the_model():
-    s = setup(None, "direct")
-    await s.session.open()
-    s.q().emit(**result(modelUsage={"claude-haiku-4-6": {"inputTokens": 3, "outputTokens": 1, "cacheReadInputTokens": 0,
-                                                         "cacheCreationInputTokens": 0, "costUSD": 0.001}}))
-    await until(lambda: any(c[0] == "usage" for c in s.fake.calls()))
-    await s.session.settled()
-    assert "orchestrator" in next(c for c in s.fake.calls() if c[0] == "usage")
-
-
-# ====================================================== session, hybrid mode (the default)
-
-async def test_hybrid_a_quick_task_goes_in_while_an_implementer_works_and_waits_only_for_the_sessions_own_turn():
-    s = setup(None, "hybrid")
-    await s.session.open()
-    s.open("T3")
-    s.session.push_task("T3", task("T3"))
-    await until(lambda: len(s.q().received) == 1)
-    s.q().emit(**started("k1", "T3 build a house", "u1"))  # the house goes to an implementer
-    s.q().emit(**result())
-    await until(lambda: len(s.session.running) == 1 and not s.session.busy)
-    s.open("T4")
-    s.session.push_task("T4", task("T4"))  # a quick one, while the house is built
-    await until(lambda: len(s.q().received) == 2)
-    assert s.q().received[1] == task("T4")
-    s.open("T5")
-    s.session.push_task("T5", task("T5"))  # the session is busy with T4: T5 waits
-    await tick()
-    assert len(s.q().received) == 2
-    s.store.reply("T4", "done", "rain")
-    s.q().emit(**result())
+    assert s.session.busy is True  # T1's turn is under way
+    s.session.push(task("T2"))
+    s.session.push(task("T3"))
     await until(lambda: len(s.q().received) == 3)
-    assert s.q().received[2] == task("T5")
-
-
-async def test_hybrid_an_implementer_running_keeps_the_session_from_being_idle():
-    s = setup(None, "hybrid")
-    await s.session.open()
-    s.open("T3")
-    s.session.push_task("T3", task("T3"))
-    await until(lambda: len(s.q().received) == 1)
-    s.q().emit(**started("k1", "T3 build a house", "u1"))
-    s.q().emit(**result())
-    await until(lambda: len(s.session.running) == 1)
-    s.session.tick()
-    await tick()
-    assert len(s.q().received) == 1  # no nudge
+    assert s.q().received == [task("T1"), task("T2"), task("T3")]
 
 
 # ====================================================== context rollover (VFG_ORCH_MAX_CONTEXT, default 70000)
@@ -510,7 +367,7 @@ def history(s):
 
 
 async def test_over_budget_at_an_idle_point_a_fresh_session_with_the_handoff_the_open_task_survives_and_is_answered_once():
-    s = setup(None, "hybrid")
+    s = setup()
     history(s)
     s.store.state.session_id = "S1"
     await s.session.open("S1")
@@ -546,7 +403,7 @@ async def test_over_budget_at_an_idle_point_a_fresh_session_with_the_handoff_the
 
 
 async def test_not_while_an_implementer_runs_it_rolls_over_once_the_implementer_has_reported():
-    s = setup(None, "hybrid")
+    s = setup()
     history(s)
     await s.session.open()
     keeper = asyncio.create_task(s.session.keep_alive(0))
@@ -568,7 +425,7 @@ async def test_not_while_an_implementer_runs_it_rolls_over_once_the_implementer_
 
 async def test_under_the_budget_or_with_the_budget_off_no_rollover():
     for extra, n in (({}, 69_000), ({"VFG_ORCH_MAX_CONTEXT": "0"}, 500_000)):
-        s = setup(None, "hybrid", extra)
+        s = setup(None, extra)
         await s.session.open()
         s.q().emit(**big(n))
         s.q().emit(**result())
@@ -581,7 +438,7 @@ async def test_under_the_budget_or_with_the_budget_off_no_rollover():
 
 
 async def test_a_subagents_large_context_does_not_count_only_the_main_threads():
-    s = setup(None, "hybrid")
+    s = setup()
     await s.session.open()
     s.q().emit(**{**big(200_000), "parent_tool_use_id": "toolu_1"})
     s.q().emit(**result())
@@ -589,28 +446,6 @@ async def test_a_subagents_large_context_does_not_count_only_the_main_threads():
     assert s.session.context_tokens == 0
     assert len(s.queries) == 1
     s.session.close_query()
-
-
-async def test_a_task_waiting_during_the_rollover_goes_in_after_the_handoff():
-    s = setup(None, "hybrid")
-    await s.session.open()
-    keeper = asyncio.create_task(s.session.keep_alive(0))
-    s.open("T4")
-    s.open("T5")
-    s.session.push_task("T4", task("T4"))
-    await until(lambda: len(s.q().received) == 1)
-    s.session.push_task("T5", task("T5"))  # waits: the session is busy with T4
-    s.store.reply("T4", "done", "rain")
-    s.q().emit(**big(80_000))
-    s.q().emit(**result())
-    await until(lambda: len(s.queries) == 2)
-    await until(lambda: len(s.queries[1].received) == 1)
-    assert "1 more task(s) are waiting" in s.queries[1].received[0]
-    assert "Open tasks: none." in s.queries[1].received[0]
-    s.queries[1].emit(**result())  # the handoff's turn
-    await until(lambda: len(s.queries[1].received) == 2)
-    assert s.queries[1].received[1] == task("T5")
-    await stop_keeper(s, keeper)
 
 
 # ====================================================== options
@@ -622,65 +457,20 @@ def guard(cfg, **over):
     return GuardContext(**fields)
 
 
-def test_direct_mode_no_agent_no_implementer_the_implementers_tools_under_the_guard_low_effort():
-    d = temp_dir()
-    cfg = config_in(d, {"VFG_ORCH_MODE": "direct"})
-    assert cfg.mode == "direct"
-    assert cfg.model == "opus"
-    assert cfg.effort == "low"
-    o = build_options(cfg, Prompts(orchestrator="direct %REPO%", implementer=""), new_store(d), guard(cfg))
-    assert o.model == "opus"
-    assert o.effort == "low"
-    assert o.tools == ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]
-    assert o.agents is None
-    assert o.allowed_tools == rules(cfg.repo, "direct")
-    assert "Agent" not in o.allowed_tools
-    assert "TaskStop" not in o.allowed_tools
-    assert "mcp__orch__reply" in o.allowed_tools
-    assert "Bash(vfg cmd *)" in o.allowed_tools
-    assert "Write(/%s/scripts/**)" % cfg.repo in o.allowed_tools
-    assert o.system_prompt == "direct " + cfg.repo
-    assert o.permission_mode == "dontAsk"
-    over = config_in(d, {"VFG_ORCH_MODE": "direct", "VFG_ORCH_MODEL": "haiku", "VFG_ORCH_EFFORT": "medium"})
-    assert [over.model, over.effort] == ["haiku", "medium"]
-
-
-def test_defaults_hybrid_mode_opus_low_sonnet_implementers_at_low_all_overridable():
+def test_defaults_opus_low_sonnet_implementers_at_low_all_overridable():
     d = temp_dir()
     c = config_in(d)
-    assert [c.mode, c.model, c.effort, c.implementer_model, c.implementer_effort] == ["hybrid", "opus", "low", "sonnet", "low"]
-    assert config_in(d, {"VFG_ORCH_MODE": "implementers"}).mode == "implementers"
-    assert config_in(d, {"VFG_ORCH_MODE": "direct"}).mode == "direct"
-    assert config_in(d, {"VFG_ORCH_MODE": "nonsense"}).mode == "hybrid"
+    assert [c.model, c.effort, c.implementer_model, c.implementer_effort] == ["opus", "low", "sonnet", "low"]
+    over = config_in(d, {"VFG_ORCH_MODEL": "haiku", "VFG_ORCH_EFFORT": "medium"})
+    assert [over.model, over.effort] == ["haiku", "medium"]
     o = config_in(d, {"VFG_IMPL_MODEL": "haiku", "VFG_IMPL_EFFORT": "medium", "VFG_ORCH_EFFORT": "high"})
     assert [o.implementer_model, o.implementer_effort, o.effort] == ["haiku", "medium", "high"]
     assert config_in(d, {"VFG_IMPLEMENTER_MODEL": "haiku"}).implementer_model == "haiku"  # the older name still works
 
 
-def test_hybrid_mode_agent_and_bash_no_write_or_edit_for_the_session_implementers_as_before():
-    d = temp_dir()
-    cfg = config_in(d)
-    o = build_options(cfg, Prompts(orchestrator="hybrid %REPO% %MAX_IMPLEMENTERS%", implementer="impl"), new_store(d),
-                      guard(cfg, implementer_model="sonnet", main_thread_rule=True, hybrid=True))
-    assert [o.model, o.effort] == ["opus", "low"]
-    assert "Agent" in o.tools
-    assert "Bash" in o.tools
-    assert o.allowed_tools == rules(cfg.repo, "hybrid")
-    assert "Agent" in o.allowed_tools
-    assert "Bash(vfg cmd *)" in o.allowed_tools
-    assert o.agents["implementer"].model == "sonnet"
-    assert o.agents["implementer"].effort == "low"
-    assert o.system_prompt == "hybrid %s 4" % cfg.repo
-
-
-def test_the_sessions_guard_holds_the_direct_main_thread_to_the_implementers_rules():
-    s = setup(None, "direct")
-    assert s.session.guard_context().main_thread_rule is False
-    s2 = setup(None, "implementers")
-    assert s2.session.guard_context().main_thread_rule is True
-    assert s2.session.guard_context().hybrid is False
-    s3 = setup(None, "hybrid")
-    assert [s3.session.guard_context().main_thread_rule, s3.session.guard_context().hybrid] == [True, True]
+def test_the_sessions_guard_keeps_the_main_thread_to_orchestrating():
+    assert setup().session.guard_context().main_thread_rule is True
+    assert setup(None, {"VFG_ORCH_MODE": "direct"}).session.guard_context().main_thread_rule is True  # ignored
 
 
 def test_the_clis_environment_leaves_out_keys_and_the_parent_session():
@@ -688,6 +478,7 @@ def test_the_clis_environment_leaves_out_keys_and_the_parent_session():
         "PATH": "/bin", "HOME": "/h", "VFG_REPO": "/r", "ANTHROPIC_API_KEY": "k", "ANTHROPIC_AUTH_TOKEN": "t",
         "ANTHROPIC_BASE_URL": "http://proxy", "CLAUDECODE": "1", "CLAUDE_CODE_ENTRYPOINT": "cli", "CLAUDE_CODE_SESSION_ID": "s",
         "CLAUDE_CODE_SSE_PORT": "1", "CLAUDE_PID": "9", "CLAUDE_CODE_OAUTH_TOKEN": "subscription-token", "CLAUDE_EFFORT": "low",
+        "NODE_OPTIONS": "--inspect", "DEBUG": "1",  # dropped as the TypeScript SDK dropped them
     })
     assert sorted(env) == ["CLAUDE_CODE_OAUTH_TOKEN", "HOME", "PATH", "VFG_REPO"]
 
@@ -695,7 +486,7 @@ def test_the_clis_environment_leaves_out_keys_and_the_parent_session():
 def test_implementers_mode_the_sessions_options():
     d = temp_dir()
     os.environ["ANTHROPIC_API_KEY"] = "sk-test-not-real"
-    cfg = config_in(d, {"VFG_ORCH_MODE": "implementers", "VFG_ORCH_MODEL": "haiku", "VFG_ORCH_MAX_IMPLEMENTERS": "3"})
+    cfg = config_in(d, {"VFG_ORCH_MODEL": "haiku", "VFG_ORCH_MAX_IMPLEMENTERS": "3"})
     o = build_options(cfg, Prompts(orchestrator="repo %REPO% max %MAX_IMPLEMENTERS%", implementer="impl %REPO%"),
                       new_store(d), guard(cfg, max_implementers=3, main_thread_rule=True), resume="S9")
     del os.environ["ANTHROPIC_API_KEY"]
@@ -725,13 +516,16 @@ def test_implementers_mode_the_sessions_options():
     assert "Write(/%s/scripts/**)" % cfg.repo in o.allowed_tools
     assert ("Read(/%s/**)" % cfg.repo).startswith("Read(//")
     assert not any("vfg say" in r for r in o.allowed_tools)
+    # saved places: implementers save and list them; nobody forgets one
+    assert {"Bash(vfg place save *)", "Bash(vfg place list)", "Bash(vfg place list *)"} <= set(o.allowed_tools)
+    assert not any("vfg place forget" in r for r in o.allowed_tools)
 
 
 # Not in the TypeScript tests: what the Python SDK needs done differently.
 
 def test_the_probes_options_run_the_implementer_as_the_main_thread_through_the_agent_flag():
     d = temp_dir()
-    cfg = config_in(d, {"VFG_ORCH_MODE": "implementers"})
+    cfg = config_in(d)
     prompts = Prompts(orchestrator="o", implementer="i")
     assert build_options(cfg, prompts, new_store(d), guard(cfg)).extra_args == {}
     o = build_options(cfg, prompts, new_store(d), guard(cfg), agent="implementer")

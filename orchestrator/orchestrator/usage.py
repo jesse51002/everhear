@@ -92,11 +92,9 @@ def _by_ref(a: str, b: str) -> int:
 class UsageMeter:
     """Tracks the task ids open at any time since the previous row, and writes the rows."""
 
-    def __init__(self, store: Store, run: VfgRunner, mode: str = "implementers", implementer_model: str = "sonnet"):
+    def __init__(self, store: Store, run: VfgRunner, implementer_model: str = "sonnet"):
         self.store = store
         self.run = run
-        # In direct mode every model call is the orchestrator's.
-        self.mode = mode
         self.implementer_model = implementer_model
         self._refs: set[str] = set()
 
@@ -111,9 +109,6 @@ class UsageMeter:
         """After a result: write a row per model whose totals moved."""
         self.note(self.store.open_ids())
         rows, snapshot = usage_deltas(self.store.state.usage, model_usage, self.sorted_refs(), self.implementer_model)
-        if self.mode == "direct":
-            for r in rows:
-                r["component"] = "orchestrator"
         self.store.state.usage = snapshot
         self.store.save()
         if rows:

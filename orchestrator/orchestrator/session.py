@@ -10,7 +10,7 @@ from typing import Any, AsyncIterator, Callable, Mapping
 
 from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
 
-from .config import Config, Mode, hms, js_round, log, now_ms, parse_time
+from .config import Config, hms, js_round, log, now_ms, parse_time
 from .guard import GuardContext, brief, make_guard, task_id_of
 from .reply import REPLY_TOOL, Outbox, create_reply_server
 from .tasks import Store
@@ -31,38 +31,33 @@ class MSG:
         return "The orchestrator could not run: %s" % err[:120]
 
     @staticmethod
-    def nudge(ids: list[str], mode: Mode = "implementers") -> str:
-        what = ("do what it needs" if mode == "direct" else
-                "do it or start the implementer it needs" if mode == "hybrid" else
-                "start the implementer it needs")
-        return "RUNNER: still open with nothing running: %s. Reply done or failed for each now, or %s." % (", ".join(ids), what)
+    def nudge(ids: list[str]) -> str:
+        return ("RUNNER: still open with nothing running: %s. Reply done or failed for each now, or start the "
+                "implementer it needs." % ", ".join(ids))
 
     @staticmethod
     def closed(ids: list[str]) -> str:
         return "RUNNER: closed %s as failed." % ", ".join(ids)
 
     @staticmethod
-    def restarted(at: float, ids: list[str], mode: Mode = "implementers") -> str:
-        cut = ("Work in progress was cut off; scripts started on the server may still be running." if mode == "direct" else
-               "Implementers from before are gone; scripts they started on the server may still be running.")
-        return "RUNNER: restarted at %s UTC. Closed as failed: %s. %s" % (hms(at), ", ".join(ids), cut)
-
-    @staticmethod
-    def overtime(minutes: int) -> str:
-        return "RUNNER: this task ran over %d minutes and was stopped. Reply failed for it, saying how far it got." % minutes
+    def restarted(at: float, ids: list[str]) -> str:
+        return ("RUNNER: restarted at %s UTC. Closed as failed: %s. Implementers from before are gone; scripts they "
+                "started on the server may still be running." % (hms(at), ", ".join(ids)))
 
 
-def rules(repo: str, mode: Mode = "implementers") -> list[str]:
-    """The allow rules; with permission mode "dontAsk" everything else is denied without a prompt."""
+def rules(repo: str) -> list[str]:
+    """The allow rules; with permission mode "dontAsk" everything else is denied without a prompt.
+    Implementers run under them too: the session never writes, and runs only `vfg place list`
+    (the guard refuses the rest on the main thread)."""
     return [
-        REPLY_TOOL, *(["Agent", "TaskStop"] if mode != "direct" else []),
+        REPLY_TOOL, "Agent", "TaskStop",
         "Read(/%s/**)" % repo, "Glob", "Grep",
-        # hybrid: the session never writes; implementers (who run under these rules too) do
         "Edit(/%s/scripts/**)" % repo, "Write(/%s/scripts/**)" % repo,
         "Bash(vfg cmd *)",
         "Bash(vfg script deploy)", "Bash(vfg script deploy *)",
         "Bash(vfg script run *)", "Bash(vfg script stop *)", "Bash(vfg script logs *)",
         "Bash(vfg script list)",
+        "Bash(vfg place save *)", "Bash(vfg place list)", "Bash(vfg place list *)",
         "Bash(vfg history)", "Bash(vfg history *)",
         "Bash(python3 -m py_compile *)",
         "Bash(sleep *)",
@@ -89,6 +84,8 @@ def session_env(source: Mapping[str, str]) -> dict[str, str]:
             continue
         if k in ("CLAUDECODE", "CLAUDE_PID", "CLAUDE_EFFORT", "CLAUDE_AGENT_SDK_VERSION"):
             continue
+        if k in ("NODE_OPTIONS", "DEBUG"):  # the TypeScript SDK took these out of the CLI's environment too
+            continue
         if k.startswith("CLAUDE_CODE_") and k != "CLAUDE_CODE_OAUTH_TOKEN":
             continue
         env[k] = v
@@ -112,7 +109,6 @@ def build_options(cfg: Config, prompts: Prompts, store: Store, guard: GuardConte
     env = session_env(os.environ)
     env["CLAUDE_AGENT_SDK_CLIENT_APP"] = "vfg-orchestrator/0.1"
     env["PYTHONPYCACHEPREFIX"] = os.path.join(cfg.orch_dir, "pycache")  # py_compile leaves no __pycache__ in scripts/
-    direct = cfg.mode == "direct"
     opts = ClaudeAgentOptions(
         model=cfg.model,
         effort=cfg.effort,
@@ -122,19 +118,15 @@ def build_options(cfg: Config, prompts: Prompts, store: Store, guard: GuardConte
         skills=[],
         strict_mcp_config=True,
         mcp_servers={"orch": create_reply_server(store)},
-        # direct: the session works itself with the implementer's tools. hybrid: it runs simple
-        # commands itself and briefs implementers; it has no Write or Edit (the guard refuses them
-        # on the main thread). Write and Edit stay in the list so implementers can have them.
-        tools=(["Bash", "Read", "Write", "Edit", "Glob", "Grep"] if direct else
-               ["Agent", "TaskStop", "Bash", "Read", "Write", "Edit", "Glob", "Grep"]),
-        allowed_tools=rules(cfg.repo, cfg.mode),
+        # Bash, Write and Edit are here so implementers can have them; the guard keeps the session
+        # itself to orchestrating (and `vfg place list`).
+        tools=["Agent", "TaskStop", "Bash", "Read", "Write", "Edit", "Glob", "Grep"],
+        allowed_tools=rules(cfg.repo),
         permission_mode="dontAsk",
         hooks={"PreToolUse": [HookMatcher(hooks=[make_guard(guard)])]},
         env=env,
         stderr=stderr if stderr is not None else (lambda line: log("cli", line.rstrip())),
-    )
-    if not direct:
-        opts.agents = {
+        agents={
             "implementer": AgentDefinition(
                 description="Carries out one job on the Minecraft server with vfg commands and the scripts folder, then reports.",
                 prompt=fill_prompt(prompts.implementer, cfg),
@@ -144,7 +136,8 @@ def build_options(cfg: Config, prompts: Prompts, store: Store, guard: GuardConte
                 background=True,
                 maxTurns=40,
             ),
-        }
+        },
+    )
     if resume:
         opts.resume = resume
     if agent:
@@ -353,50 +346,17 @@ class Session:
         # Context rollovers so far.
         self.rollovers = 0
         self._rollover_at: int | None = None
-        # Direct mode: tasks waiting for the session to finish the one before.
-        self.waiting: list[dict] = []
-        self._turn_started_at = 0.0
-        self._turn_overtime = False
 
         def on_pull():
-            if not self.busy:
-                self._turn_started_at = self.now()
-                self._turn_overtime = False
             self.busy = True  # a turn is coming
 
         self.input.on_pull = on_pull
 
-    @property
-    def direct(self) -> bool:
-        """direct and hybrid: tasks go to the session one at a time, and a turn has a time limit."""
-        return self.cfg.mode != "implementers"
-
     def push(self, text: str) -> None:
+        """Into the session at once; a task can fold into a running turn, and tasks handed together
+        arrive together."""
         log("session", "push: %s" % text.split("\n")[0])
         self.input.push(text)
-
-    def push_task(self, tid: str, message: str) -> None:
-        """A task from the inbox. Implementers mode: straight in, so it can fold into a running
-        turn. Direct and hybrid: one at a time; it waits until the session has finished the turn before."""
-        if not self.direct:
-            return self.push(message)
-        self.waiting.append({"id": tid, "message": message})
-        log("session", "queued %s; %d waiting" % (tid, len(self.waiting)))
-        self.deliver()
-
-    def deliver(self) -> None:
-        """Direct mode: hand the next waiting task to the session when it is between turns."""
-        if not self.direct or self.stopping or not self.q or not self.waiting:
-            return
-        if self.busy or self.queued_turns > 0 or self.input.length > 0:
-            return
-        while self.waiting:
-            nxt = self.waiting.pop(0)
-            t = self.store.get(nxt["id"])
-            if t is None or t.status != "open":
-                continue  # closed meanwhile
-            self.push(nxt["message"])
-            return
 
     def guard_context(self) -> GuardContext:
         cfg, store = self.cfg, self.store
@@ -408,8 +368,7 @@ class Session:
             repo=cfg.repo,
             max_implementers=cfg.max_implementers,
             implementer_model=cfg.implementer_model,
-            main_thread_rule=cfg.mode != "direct",  # direct: the main thread is held to the implementer's rules
-            hybrid=cfg.mode == "hybrid",  # hybrid: it orchestrates, and runs simple commands under the implementer's rules
+            main_thread_rule=True,  # the main thread only orchestrates
             open_task_ids=store.open_ids,
             active_implementers=lambda: len(self.running) + len(self.pending),
             on_agent_allowed=on_agent_allowed,
@@ -586,7 +545,6 @@ class Session:
         self._chain_usage(msg.get("modelUsage"))
         if self.maybe_rollover():
             return
-        self.deliver()
         self.idle_check()
 
     def _chain_usage(self, model_usage) -> None:
@@ -613,8 +571,7 @@ class Session:
         if self.stopping or not self.is_idle():
             return
         store = self.store
-        waiting = {w["id"] for w in self.waiting}
-        open_ids = [tid for tid in store.open_ids() if tid not in waiting]
+        open_ids = store.open_ids()
         if not open_ids:
             return
         to_close = [tid for tid in open_ids if store.get(tid).nudged]
@@ -629,22 +586,13 @@ class Session:
             for tid in to_nudge:
                 store.get(tid).nudged = True
             store.save()
-            self.push(MSG.nudge(to_nudge, self.cfg.mode))
+            self.push(MSG.nudge(to_nudge))
 
     def tick(self) -> None:
-        """Every 10 s: stale allowances, the implementer (or direct turn) time limit, delivery, the idle check."""
+        """Every 10 s: stale allowances, the implementer time limit, the idle check."""
         now = self.now()
-        limit_min = self.cfg.implementer_minutes
-        if (self.direct and self.busy and not self._turn_overtime and self._turn_started_at
-                and now - self._turn_started_at > limit_min * 60_000):
-            self._turn_overtime = True
-            log("session", "a turn ran over %d min: interrupting it" % limit_min)
-            if self.q:
-                self._spawn(self.q.interrupt(), "interrupt failed")
-            self.push(MSG.overtime(limit_min))
         if self.maybe_rollover():
             return
-        self.deliver()
         for k, v in list(self.pending.items()):
             if now - v["at"] > 60_000:
                 del self.pending[k]
@@ -681,11 +629,9 @@ class Session:
             except Exception:
                 log("main", "uncaught exception: %s" % traceback.format_exc())
 
-    def close_open(self, text: str, all_tasks: bool = False) -> list[str]:
-        """Closes every open task as failed; returns their ids. Tasks still waiting to start stay,
-        unless `all_tasks`."""
-        waiting = set() if all_tasks else {w["id"] for w in self.waiting}
-        ids = [tid for tid in self.store.open_ids() if tid not in waiting]
+    def close_open(self, text: str) -> list[str]:
+        """Closes every open task as failed; returns their ids."""
+        ids = self.store.open_ids()
         for tid in ids:
             self.store.fail(tid, text)
         return ids
@@ -707,14 +653,13 @@ class Session:
 
     def handoff(self, tokens: int) -> str:
         """What a fresh session needs from the last one, from the runner's own records."""
-        store, cfg = self.store, self.cfg
+        store = self.store
 
         def clip(t: str, n: int) -> str:
             x = re.sub(r"\s+", " ", t).strip()
             return x[:n - 1] + "…" if len(x) > n else x
 
-        waiting = {w["id"] for w in self.waiting}
-        open_ids = [tid for tid in store.open_ids() if tid not in waiting]
+        open_ids = store.open_ids()
         lines = ["RUNNER: this is a fresh session: the last one had grown to %d tokens of context. What you need from it:" % tokens]
         lines.append("Open tasks, each still needing exactly one done or failed reply:" if open_ids else "Open tasks: none.")
         for tid in open_ids:
@@ -724,8 +669,7 @@ class Session:
             lines.append("- %s (sent %s UTC): %s" % (tid, hms(at) if at is not None else "?", clip(t.task, 300))
                          + (" Context: %s" % clip(t.context, 300) if t.context.strip() else "")
                          + (" Said so far: %s" % clip(last.text, 200) if last else ""))
-        if cfg.mode != "direct":
-            lines.append("Implementers running: none (a fresh session starts only when none are).")
+        lines.append("Implementers running: none (a fresh session starts only when none are).")
         recent = []
         for tid, t in store.state.tasks.items():
             if t.status == "open":
@@ -738,8 +682,6 @@ class Session:
                      if recent else "Recent answers: none.")
         for tid, r in recent:
             lines.append("- %s %s: %s" % (tid, r.status, clip(r.text, 300)))
-        if self.waiting:
-            lines.append("%d more task(s) are waiting; they come one at a time." % len(self.waiting))
         return "\n".join(lines)
 
     async def keep_alive(self, first_started_at: float) -> None:
@@ -774,12 +716,10 @@ class Session:
                 handoff = self.handoff(tokens)
                 self.input.unshift(handoff)  # ahead of anything that came in meanwhile
                 self.rollovers += 1
-                waiting = {w["id"] for w in self.waiting}
-                carried = [tid for tid in self.store.open_ids() if tid not in waiting]
+                carried = self.store.open_ids()
                 log("session", "rollover #%d done: %s at %d tokens -> a fresh session; handoff %d characters, open tasks carried: %s"
                     % (self.rollovers, old or "the last session", tokens, len(handoff), ", ".join(carried) or "none"))
                 resumed = None
-                self.deliver()
                 continue
             ran_for = self.now() - started_at
             resume_failed = (bool(resumed) and self.turns_this_query == 0
@@ -800,8 +740,7 @@ class Session:
             resumed = self.store.state.session_id
             await self.open(resumed)
             if closed:
-                self.push(MSG.restarted(self.now(), closed, self.cfg.mode))
-            self.deliver()
+                self.push(MSG.restarted(self.now(), closed))
 
     async def _restart_delay(self, ms: float) -> None:
         wake = self._wake_restart = asyncio.Event()
@@ -825,9 +764,7 @@ class Session:
         self._watchdog = None
         if self._wake_restart:
             self._wake_restart.set()
-        closed = self.close_open(MSG.stopped, True)
-        self.waiting.clear()
-        return closed
+        return self.close_open(MSG.stopped)
 
     def close_query(self) -> None:
         try:

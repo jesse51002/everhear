@@ -55,6 +55,11 @@ TABLE = [
     ("main-thread Grep", main("Grep", {"pattern": "tnt", "path": REPO + "/scripts"}), None),
     ("main-thread TaskStop", main("TaskStop", {"task_id": "x"}), None),
     ("main-thread reply", main("mcp__orch__reply", {"task": "T7", "status": "done", "text": "ok"}), None),
+    ("main-thread vfg place list", main("Bash", {"command": "vfg place list"}), None),
+    ("main-thread vfg place list --json", main("Bash", {"command": "vfg place list --json"}), DENY.main_thread),
+    ("main-thread vfg place list chained", main("Bash", {"command": "vfg place list && vfg cmd 'time set day'"}), DENY.main_thread),
+    ("main-thread vfg place list in the background", main("Bash", {"command": "vfg place list", "run_in_background": True}), DENY.main_thread),
+    ("main-thread vfg place save", main("Bash", {"command": "vfg place save castle --at 1 2 3 --by T7"}), DENY.main_thread),
     # Agent
     ("Agent ok", agent(), None),
     ("Agent another type", agent(subagent_type="general-purpose"), DENY.agent_type),
@@ -116,6 +121,13 @@ TABLE = [
     ("logs --follow never ends", bash("vfg script logs tnt_rain --follow"), DENY.follow),
     ("sleep with a variable", bash("sleep $N"), DENY.shape),
     ("a > inside quotes is no redirection", bash("""vfg cmd 'tellraw @a {"text":"a > b"}'"""), None),
+    # saved places
+    ("place save at coordinates", bash("vfg place save castle --at 197 68 251 --by T7"), None),
+    ("place save where a player stands", bash("vfg place save home --player Steve --by T7"), None),
+    ("place list", bash("vfg place list"), None),
+    ("place list --json", bash("vfg place list --json"), None),
+    ("place save with no name", bash("vfg place save"), DENY.shape),
+    ("place forget is not for implementers", bash("vfg place forget castle"), DENY.shape),
     # implementer files
     ("Write a new script", impl("Write", {"file_path": REPO + "/scripts/torch_ring/main.py"}), None),
     ("Write _lib", impl("Write", {"file_path": REPO + "/scripts/_lib/mc.py"}), DENY.lib),
@@ -140,50 +152,8 @@ def test_the_guard(call, want, over):
     assert decide(call, ctx(**over)) == want
 
 
-def test_direct_mode_the_main_thread_works_held_to_the_implementers_rules():
-    g = ctx(main_thread_rule=False)
-    assert decide(main("Bash", {"command": "vfg cmd 'time set day'"}), g) is None
-    assert decide(main("Bash", {"command": "vfg script run tnt_rain && sleep 3 && vfg script logs tnt_rain -n 20"}), g) is None
-    assert decide(main("Bash", {"command": "vfg cmd 'op Steve'"}), g) == DENY.owner
-    assert decide(main("Bash", {"command": "cat scripts/zoo/README.md"}), g) == DENY.shape
-    assert decide(main("Bash", {"command": "vfg script run zoo Steve", "run_in_background": True}), g) == DENY.background
-    assert decide(main("Write", {"file_path": REPO + "/scripts/torch_ring/main.py"}), g) is None
-    assert decide(main("Write", {"file_path": REPO + "/scripts/_lib/mc.py"}), g) == DENY.lib
-    assert decide(main("Read", {"file_path": "~/.vfg/config"}), g) == DENY.read_outside
-    assert decide(main("Agent", {"subagent_type": "implementer", "description": "T7 x", "prompt": "p"}), g) == DENY.no_agents
-    assert decide(main("mcp__orch__reply", {"task": "T7", "status": "done", "text": "ok"}), g) is None
-
-
-def test_hybrid_mode_the_session_runs_guarded_commands_and_briefs_implementers_never_writes():
-    g = ctx(main_thread_rule=True, hybrid=True)
-    assert decide(main("Bash", {"command": "vfg cmd 'time set day'"}), g) is None
-    assert decide(main("Bash", {"command": "vfg cmd 'give Steve minecraft:diamond_sword 1'"}), g) is None
-    assert decide(main("Bash", {"command": "vfg script run tnt_rain && vfg script list"}), g) is None
-    assert decide(main("Bash", {"command": "vfg cmd 'op Steve'"}), g) == DENY.owner
-    assert decide(main("Bash", {"command": "vfg cmd 'execute as @a run stop'"}), g) == DENY.owner
-    assert decide(main("Bash", {"command": "cat scripts/zoo/README.md"}), g) == DENY.shape
-    assert decide(main("Bash", {"command": "vfg script run zoo Steve", "run_in_background": True}), g) == DENY.background
-    assert decide(main("Write", {"file_path": REPO + "/scripts/house/main.py", "content": ""}), g) == DENY.hybrid_write
-    assert decide(main("Edit", {"file_path": REPO + "/scripts/zoo/main.py"}), g) == DENY.hybrid_write
-    assert decide(main("WebFetch", {"url": "x"}), g) == DENY.hybrid_other
-    assert decide(main("Read", {"file_path": REPO + "/scripts/README.md"}), g) is None
-    assert decide(main("Read", {"file_path": "~/.vfg/config"}), g) == DENY.read_outside
-    assert decide(main("Grep", {"pattern": "house", "path": REPO + "/scripts"}), g) is None
-    assert decide(main("TaskStop", {"task_id": "x"}), g) is None
-    assert decide(main("mcp__orch__reply", {"task": "T7", "status": "done", "text": "ok"}), g) is None
-    # Agent: the usual implementer checks
-    assert decide(agent(), g) is None
-    assert decide(agent(subagent_type="general-purpose"), g) == DENY.agent_type
-    assert decide(agent(run_in_background=False), g) == DENY.foreground
-    assert decide(agent(), ctx(main_thread_rule=True, hybrid=True, active_implementers=lambda: 4)) == \
-        "4 implementers are running; wait for a report."
-    # the implementers it starts keep their own rules, Write included
-    assert decide(impl("Write", {"file_path": REPO + "/scripts/house/main.py"}), g) is None
-    assert decide(impl("Bash", {"command": "vfg cmd 'kick Steve'"}), g) == DENY.owner
-
-
-def test_server_wide_settings_refused_for_implementers_allowed_for_the_session_itself():
-    g = ctx(main_thread_rule=True, hybrid=True)
+def test_server_wide_settings_refused_for_implementers_and_the_probe():
+    g = ctx()
     for cmd, word in [
         ("vfg cmd 'setworldspawn'", "setworldspawn"),
         ("vfg cmd 'setworldspawn 0 64 0'", "setworldspawn"),
@@ -195,9 +165,9 @@ def test_server_wide_settings_refused_for_implementers_allowed_for_the_session_i
         ("vfg cmd setworldspawn 1 2 3", "setworldspawn"),
     ]:
         assert decide(impl("Bash", {"command": cmd}), g) == DENY.server_wide(word)
-        assert decide(main("Bash", {"command": cmd}), g) is None  # hybrid session: a player asked
-        assert decide(main("Bash", {"command": cmd}), ctx(main_thread_rule=False)) is None  # direct session
-    assert "orchestrator" in DENY.server_wide("difficulty")
+        assert decide(main("Bash", {"command": cmd}), g) == DENY.main_thread  # the session runs no command
+        assert decide(main("Bash", {"command": cmd}), ctx(main_thread_rule=False)) == DENY.server_wide(word)  # the probe
+    assert "report" in DENY.server_wide("difficulty")
     assert decide(impl("Bash", {"command": "vfg cmd 'say difficulty is hard'"}), g) is None
     assert decide(impl("Bash", {"command": "vfg cmd 'time set day'"}), g) is None
     assert decide(impl("Bash", {"command": "vfg script run demon_lord"}), g) is None  # scripts are not refused
@@ -222,9 +192,11 @@ async def test_the_hooks_output_shape_and_allowed_agent_calls_are_counted():
     denied = await hook({**base, "tool_name": "Bash", "tool_input": {"command": "x"}, "tool_use_id": "u1"}, "u1", {"signal": None})
     assert denied == {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                              "permissionDecisionReason": DENY.main_thread}}
-    ok = await hook({**base, "tool_name": "Agent", "tool_input": {"subagent_type": "implementer", "description": "T9 tnt", "prompt": "p"},
-                     "tool_use_id": "u2"}, "u2", {"signal": None})
-    assert ok == {}
+    brief = {"subagent_type": "implementer", "description": "T9 tnt", "prompt": "p"}
+    ok = await hook({**base, "tool_name": "Agent", "tool_input": brief, "tool_use_id": "u2"}, "u2", {"signal": None})
+    # allowed: no permissionDecision, so the allow rules still decide; the brief gets the saved places (the fake vfg has none)
+    assert ok == {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                                         "updatedInput": {**brief, "prompt": "p\n\nSAVED PLACES: none"}}}
     assert g.allowed == ["T9:u2"]
 
 

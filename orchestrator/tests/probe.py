@@ -38,11 +38,11 @@ async def run_probe(env, tmp: str, say: Say, record: Record) -> None:
     prompts = load_prompts(cfg)
     store = Store(os.path.join(tmp, "probe-state.json"))
     opts = build_options(
-        # Direct mode: the session itself is the worker. Implementers mode: run the implementer as main.
+        # The implementer runs as the main thread, held to its own rules.
         cfg, prompts, store,
         GuardContext(repo=cfg.repo, max_implementers=4, implementer_model=cfg.implementer_model, main_thread_rule=False,
                      open_task_ids=lambda: [], active_implementers=lambda: 0, on_agent_allowed=lambda t, u: None),
-        agent="implementer" if cfg.mode == "implementers" else None,
+        agent="implementer",
         stderr=lambda line: None,
     )
     opts.max_turns = 12

@@ -6,19 +6,19 @@ import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from . import brief as briefing  # guard.brief() is the log helper below
 from .config import log
 from .reply import REPLY_TOOL
 
 # Server commands that are the owner's to run. scripts/_lib/mc.py refuses the same words.
 REFUSED = frozenset(["stop", "op", "deop", "ban", "ban-ip", "pardon", "pardon-ip", "whitelist", "kick", "save-off"])
 
-# Server-wide settings an implementer may not change: the orchestrator decides those itself, when
-# a player asked for it (scripts/_lib/mc.py does not refuse them: seeded games use the world border).
+# Server-wide settings an implementer may not change (scripts/_lib/mc.py does not refuse them:
+# seeded games use the world border).
 SERVER_WIDE = frozenset(["setworldspawn", "defaultgamemode", "difficulty", "worldborder"])
 
+# The main thread orchestrates: these, and Bash for `vfg place list` alone.
 MAIN_THREAD_TOOLS = frozenset(["Agent", "TaskStop", "Read", "Glob", "Grep", REPLY_TOOL])
-# Hybrid: the orchestrator's tools plus Bash (under the implementer's rules); never Write or Edit.
-HYBRID_TOOLS = MAIN_THREAD_TOOLS | {"Bash"}
 
 
 class DENY:
@@ -27,8 +27,7 @@ class DENY:
 
     @staticmethod
     def server_wide(word: str) -> str:
-        return ("%s changes the whole server: implementers may not run it. Leave it out and say in your "
-                "report that the orchestrator should do it if a player asked." % word)
+        return "%s changes the whole server: implementers may not run it. Leave it out and say so in your report." % word
 
     lib = "Never edit scripts/_lib/: it is shared by every script. Copy what you need into your own script."
     expansion = "Write the server command literally inside single quotes: no $( ), backticks or variables in a vfg cmd."
@@ -38,7 +37,7 @@ class DENY:
     overrides = "Leave model, mode and isolation out: the implementer definition sets them."
     shape = (
         "Refused, but Bash works: only these run, each as a plain command (join several with && or ;): "
-        "vfg cmd '<command>' | vfg script deploy|run|stop|logs|list ... | vfg history ... | "
+        "vfg cmd '<command>' | vfg script deploy|run|stop|logs|list ... | vfg place save|list ... | vfg history ... | "
         "python3 -m py_compile <file> | sleep N. No cd, echo, ls, cat, grep, sed, ps, find, $?, pipes into "
         "other programs, or redirections: vfg's output and exit status come back to you as they are, and the "
         "Read, Glob and Grep tools look at files. Send the allowed command again on its own."
@@ -47,8 +46,6 @@ class DENY:
     outside = "Only the repository can be searched: give a path inside it, or none."
     read_outside = "Only files in the repository can be read."
     no_agents = "There are no implementers: do the task yourself with Bash, Read, Write, Edit, Glob and Grep."
-    hybrid_write = "You do not write files: scripts are written by implementers. Start one with the Agent tool."
-    hybrid_other = "Do simple tasks with vfg commands in Bash; give everything else to an implementer."
     background = "Run commands in the foreground: scripts already run detached on the server (vfg script run)."
 
 
@@ -57,17 +54,14 @@ class GuardContext:
     repo: str
     max_implementers: int
     implementer_model: str
-    # True in implementers mode: the main thread only orchestrates. False in direct mode (and the
-    # permission probe): the main thread does the work, held to the implementer's rules.
+    # True for the runner: the main thread only orchestrates. False for the permission probe, whose
+    # main thread is the implementer, held to the implementer's rules.
     main_thread_rule: bool
     open_task_ids: Callable[[], list[str]]
     # Implementers running plus those allowed and not yet started.
     active_implementers: Callable[[], int]
     # An Agent call was allowed: count it until its task_started arrives.
     on_agent_allowed: Callable[[str, str], None]
-    # Hybrid mode: the main thread orchestrates and also runs simple commands, under the
-    # implementer's Bash rules.
-    hybrid: bool = False
 
 
 def task_id_of(description) -> str | None:
@@ -189,6 +183,8 @@ def allowed_form(words: list[str]) -> bool:
         return len(words) >= 3
     if b == "history":
         return True
+    if b == "place":
+        return c == "list" or (c == "save" and len(words) >= 4)
     if b != "script":
         return False
     if c == "list":
@@ -198,13 +194,12 @@ def allowed_form(words: list[str]) -> bool:
     return c in ("run", "stop", "logs") and len(words) >= 4
 
 
-def check_bash(command: str, implementer: bool = False) -> str | None:
+def check_bash(command: str) -> str | None:
     """Why an implementer's Bash command is refused, or None to let the rules decide. Claude Code's
     own refusal of a disallowed command reads as if Bash itself were off, and a small model stops
     trying; this one says which commands do run."""
     cmds = split_shell(command)
-    # Server commands that are the owner's, however they are dressed up; and, for an implementer,
-    # the server-wide settings that are the orchestrator's.
+    # Server commands that are the owner's, however they are dressed up, and the server-wide settings.
     for cmd in cmds:
         w = list(cmd.words)
         while w and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", w[0]):
@@ -216,11 +211,10 @@ def check_bash(command: str, implementer: bool = False) -> str | None:
         for a in [" ".join(args)] + args:
             if refused_word(a):
                 return DENY.owner
-        if implementer:
-            for a in [" ".join(args)] + args:
-                word = command_word_in(a, SERVER_WIDE)
-                if word:
-                    return DENY.server_wide(word)
+        for a in [" ".join(args)] + args:
+            word = command_word_in(a, SERVER_WIDE)
+            if word:
+                return DENY.server_wide(word)
     for cmd in cmds:
         w = cmd.words
         is_cmd = len(w) >= 2 and w[0] == "vfg" and w[1] == "cmd"
@@ -233,23 +227,28 @@ def check_bash(command: str, implementer: bool = False) -> str | None:
     return None
 
 
+def place_list_only(inp: dict) -> bool:
+    """Is this Bash call exactly `vfg place list`, the one command the main thread may run?"""
+    cmds = split_shell(str(inp.get("command") or ""))
+    return (inp.get("run_in_background") is not True and len(cmds) == 1 and cmds[0].words == ["vfg", "place", "list"]
+            and not cmds[0].expands and not cmds[0].redirects)
+
+
 def decide(call: dict, g: GuardContext) -> str | None:
     """The guard's decision for one tool call: a reason to deny it, or None to let the rules decide."""
     name = call.get("tool_name")
     inp = call.get("tool_input") or {}
     main_thread = not call.get("agent_id")
-    hybrid = main_thread and bool(g.hybrid) and g.main_thread_rule
-    if hybrid and name not in HYBRID_TOOLS:
-        return DENY.hybrid_write if name in ("Write", "Edit") else DENY.hybrid_other
-    if main_thread and g.main_thread_rule and not hybrid and name not in MAIN_THREAD_TOOLS:
+    if (main_thread and g.main_thread_rule and name not in MAIN_THREAD_TOOLS
+            and not (name == "Bash" and place_list_only(inp))):
         return DENY.main_thread
-    # Bash and file rules as for an implementer: implementers themselves, the direct-mode session
-    # (and the permission probe, with the main-thread rule off), and the hybrid session's own commands.
-    implementer = not main_thread or not g.main_thread_rule or hybrid
+    # Bash and file rules as for an implementer: implementers themselves, and the permission probe
+    # (the main-thread rule off).
+    implementer = not main_thread or not g.main_thread_rule
 
     if name in ("Agent", "Task"):
-        if implementer and not hybrid:
-            return DENY.no_agents  # direct mode (or an implementer): nobody to brief
+        if implementer:
+            return DENY.no_agents  # an implementer (or the probe): nobody to brief
         if inp.get("subagent_type") != "implementer":
             return DENY.agent_type
         tid = task_id_of(inp.get("description"))
@@ -271,9 +270,8 @@ def decide(call: dict, g: GuardContext) -> str | None:
     if name == "Bash" and implementer:
         if inp.get("run_in_background") is True:
             return DENY.background
-        # A real implementer (a subagent) may not change server-wide settings; the session itself may.
         command = inp.get("command")
-        return check_bash("" if command is None else str(command), bool(call.get("agent_id")))
+        return check_bash("" if command is None else str(command))
 
     # The Glob and Grep allow rules are unrestricted: keep them, and Read, inside the repository.
     if name in ("Glob", "Grep") and inp.get("path") and not within(g.repo, str(inp["path"])):
@@ -316,10 +314,29 @@ def make_guard(g: GuardContext) -> HookCallback:
             return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                            "permissionDecisionReason": reason}}
         if call["tool_name"] in ("Agent", "Task"):
-            g.on_agent_allowed(task_id_of((call["tool_input"] or {}).get("description")), call["tool_use_id"] or "")
+            tool_input = call["tool_input"] or {}
+            g.on_agent_allowed(task_id_of(tool_input.get("description")), call["tool_use_id"] or "")
+            return await _rewritten(tool_input)
         return {}
 
     return hook
+
+
+async def _rewritten(tool_input: dict) -> dict:
+    """The brief as briefing.rewrite() makes it, as the call's updatedInput. With no permissionDecision
+    the CLI runs the call with the new input and the allow rules still decide; nothing here can
+    stop the call."""
+    prompt = tool_input.get("prompt")
+    if not isinstance(prompt, str):
+        return {}
+    try:
+        new = await briefing.rewrite(prompt, tool_input)
+    except Exception as e:
+        log("brief", "rewrite failed, the brief goes as it was: %s" % e)
+        return {}
+    if new == prompt:
+        return {}
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": {**tool_input, "prompt": new}}}
 
 
 def realish(p: str) -> str:
