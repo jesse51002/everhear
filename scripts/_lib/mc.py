@@ -1,7 +1,8 @@
 """Shared helpers for every script in the scripts folder.
 
-On EC2 a script runs as `python3 -u /opt/vfg/scripts/<name>/main.py`, in its own
-folder, with PYTHONPATH=/opt/vfg/scripts/_lib, so it starts with
+On EC2 a script runs as `python3 -u <folder>/main.py key=value ...`, in its own folder,
+with PYTHONPATH=/opt/vfg/scripts/_lib and VFG_INSTANCE=<instance>. It imports the kit
+(_lib/kit), and this for whatever the kit does not do:
 
     from mc import rcon, say, players, pos, spawn, on_stop, log, TAG
 
@@ -23,13 +24,21 @@ import threading
 import time
 from typing import Optional, Tuple
 
-# This script's folder name, from sys.argv[0], and the tag for everything it summons.
+# This script's folder name, from sys.argv[0]; the instance it runs as (VFG_INSTANCE, which
+# `vfg script run` sets, else the folder name); and the tag for everything it makes.
 NAME = os.path.basename(os.path.dirname(os.path.abspath(sys.argv[0] or "."))) or "script"
-TAG = "vfg_" + NAME
+INSTANCE = os.environ.get("VFG_INSTANCE", "").strip()
+if not re.match(r"^[a-z0-9][a-z0-9_-]{0,47}$", INSTANCE):
+    INSTANCE = NAME
+TAG = "vfg_" + INSTANCE
 
 PROPERTIES = os.environ.get("VFG_MC_PROPERTIES", "/opt/mc/server.properties")
 HOST = os.environ.get("VFG_RCON_HOST", "127.0.0.1")
 TIMEOUT = 10.0
+# RCON reads a command in one 1460-byte packet: a longer one is cut, so it is refused here.
+MAX_COMMAND = 1446
+# On SIGTERM every cleanup has this long, so a script is gone within 2 s.
+STOP_BUDGET = 1.5
 
 # The server's owner: VFG_OWNER, which `vfg script run` sets from ~/.vfg/config; "" when unset.
 OWNER = os.environ.get("VFG_OWNER", "").strip()
@@ -47,11 +56,13 @@ _conn = None
 _settings = None
 _next_id = [1]
 _stoppers = []
+_stopping = threading.Event()
+_stop = {"thread": None, "deadline": 0.0, "conn": None}
 
 
 def log(*parts) -> None:
-    """Print "HH:MM:SS NAME parts" (UTC) and flush; it is what `vfg script logs` shows."""
-    line = "%s %s %s" % (time.strftime("%H:%M:%S", time.gmtime()), NAME,
+    """Print "HH:MM:SS INSTANCE parts" (UTC) and flush; it is what `vfg script logs` shows."""
+    line = "%s %s %s" % (time.strftime("%H:%M:%S", time.gmtime()), INSTANCE,
                          " ".join(str(p) for p in parts))
     try:
         sys.stdout.write(line + "\n")
@@ -125,11 +136,11 @@ def _new_id() -> int:
     return _next_id[0]
 
 
-def _connect() -> socket.socket:
+def _connect(timeout: float = TIMEOUT) -> socket.socket:
     password, port = _read_settings()
-    s = socket.create_connection((HOST, port), timeout=TIMEOUT)
+    s = socket.create_connection((HOST, port), timeout=timeout)
     try:
-        s.settimeout(TIMEOUT)
+        s.settimeout(timeout)
         auth_id = _new_id()
         _send(s, auth_id, 3, password)
         while True:
@@ -163,11 +174,35 @@ def _drop() -> None:
     _conn = None
 
 
+def _stop_rcon(cmd: str) -> str:
+    """rcon while the script is stopping: only the cleanup's thread, on a connection of its
+    own with short timeouts, and nothing once STOP_BUDGET is spent."""
+    left = _stop["deadline"] - time.time()
+    if left <= 0.05:
+        log("cleanup out of time, not sent:", cmd[:80])
+        return ""
+    try:
+        if _stop["conn"] is None:
+            _stop["conn"] = _connect(timeout=left)
+        _stop["conn"].settimeout(left)
+        return _exchange(_stop["conn"], cmd)
+    except Exception as e:
+        _stop["conn"] = None
+        log("rcon error:", type(e).__name__, e)
+        return ""
+
+
+def stopping() -> bool:
+    """True once the script has been told to stop (SIGTERM or SIGINT)."""
+    return _stopping.is_set()
+
+
 def rcon(cmd: str) -> str:
     """Run one server command and return its output; "" on failure or refusal (logged).
 
     One connection is kept open. Responses are read as one packet, so a reply over
-    about 4 KB is cut: ask narrow questions.
+    about 4 KB is cut: ask narrow questions. A command over MAX_COMMAND bytes is refused.
+    Once the script is stopping, only its cleanup may send.
     """
     global _conn
     cmd = (cmd or "").strip()
@@ -179,6 +214,14 @@ def rcon(cmd: str) -> str:
     if bad:
         log("refused:", repr(bad), "is the server owner's to do")
         return ""
+    if len(cmd.encode("utf-8")) > MAX_COMMAND:
+        log("refused: command is %d bytes, over the %d RCON takes:" % (len(cmd.encode("utf-8")), MAX_COMMAND),
+            cmd[:80] + "...")
+        return ""
+    if _stopping.is_set():
+        if threading.get_ident() != _stop["thread"]:
+            return ""
+        return _stop_rcon(cmd)
     if getattr(_local, "inside", False):
         # This thread is already inside rcon: an on_stop cleanup interrupted a call
         # mid-read. Use a fresh connection of its own.
@@ -216,10 +259,19 @@ def say(text, to="@a", who="AI", color="aqua") -> None:
     rcon("tellraw %s %s" % (to, json.dumps(msg)))
 
 
+def bare(name: str) -> str:
+    """A player's name without the rank a team or plugin puts round it: "[Owner] Steve" -> "Steve"."""
+    n = re.sub(r"\u00a7.", "", name)                       # formatting codes
+    n = re.sub(r"\[[^\]]*\]|\([^)]*\)|<[^>]*>", " ", n)    # [Owner], (AFK), <VIP>
+    words = [w for w in re.split(r"[^A-Za-z0-9_]+", n) if w]
+    return words[-1] if words else name.strip()
+
+
 def players(alive=False) -> list:
-    """Who is online, from "list". alive=True keeps only those with Health > 0."""
+    """Who is online, from "list", as bare names ("[Owner] Steve" is "Steve").
+    alive=True keeps only those with Health > 0."""
     m = re.search(r"online:(.*)", rcon("list"))
-    names = [p.strip() for p in m.group(1).split(",") if p.strip()] if m else []
+    names = [bare(p) for p in m.group(1).split(",") if p.strip()] if m else []
     if not alive:
         return names
     out = []
@@ -273,11 +325,11 @@ def score(player, objective) -> int:
     return int(m.group(1)) if m else 0
 
 
-def spawn(player, mob, nbt="", spread=6, y=1) -> bool:
+def spawn(player, mob, nbt="", spread=6, y=1, tags=()) -> bool:
     """Summon a mob at a safe spot near a player (2 blocks of room above solid
-    ground, never on top of them), tagged ["vfg", TAG] and persistent.
+    ground, never on top of them), tagged ["vfg", TAG, *tags] and persistent.
     y > 3 summons in the air that many blocks up. False when no safe spot was found."""
-    tags = 'Tags:["vfg","%s"],PersistenceRequired:1b' % TAG
+    tags = "Tags:[%s],PersistenceRequired:1b" % ",".join('"%s"' % t for t in ["vfg", TAG] + list(tags))
     data = "{" + tags + ("," + nbt if nbt else "") + "}"
     for _ in range(12):
         a = random.uniform(0, 6.283)
@@ -297,13 +349,19 @@ def spawn(player, mob, nbt="", spread=6, y=1) -> bool:
 
 
 def _on_signal(signum, frame) -> None:
+    if _stopping.is_set():
+        return
+    _stop["thread"] = threading.get_ident()
+    _stop["deadline"] = time.time() + STOP_BUDGET
+    _stopping.set()
     log("stopping (signal %d)" % signum)
     for fn in reversed(list(_stoppers)):
         try:
             fn()
         except Exception as e:
             log("cleanup error:", type(e).__name__, e)
-    # Anything summoned with TAG goes too, even if a cleanup forgot it.
+    # Anything summoned with TAG goes too, even if a cleanup forgot it or ran out of time.
+    _stop["deadline"] = max(_stop["deadline"], time.time() + 0.3)
     rcon("kill @e[tag=%s]" % TAG)
     log("stopped")
     try:
@@ -316,7 +374,8 @@ def _on_signal(signum, frame) -> None:
 
 def on_stop(fn) -> None:
     """Run fn when the script is stopped (SIGTERM or SIGINT). Every fn runs, newest
-    first; then everything tagged TAG is killed and the script exits 0."""
+    first; then everything tagged TAG is killed and the script exits 0. Other threads'
+    commands are dropped from then on, and the whole stop takes at most STOP_BUDGET s."""
     _stoppers.append(fn)
 
 

@@ -41,10 +41,13 @@ def answer(cmd: str) -> str:
 
 class FakeRcon:
     def __init__(self, password: str, port: int = 0, delay_on: Optional[str] = None,
-                 delay_s: float = 0.0):
+                 delay_s: float = 0.0, responder=None):
         self.password = password
         self.delay_on = delay_on  # a command starting with this is answered late
         self.delay_s = delay_s
+        # responder(cmd) -> str or None: answers first (fake_world.World.respond); None falls
+        # back to answer().
+        self.responder = responder
         self.commands = []
         self.logins = 0
         self.failed_logins = 0
@@ -141,7 +144,8 @@ class FakeRcon:
                     self.commands.append((time.time(), body))
                 if self.delay_on and body.startswith(self.delay_on):
                     time.sleep(self.delay_s)
-                self._send(conn, req_id, 0, answer(body))
+                reply = self.responder(body) if self.responder else None
+                self._send(conn, req_id, 0, answer(body) if reply is None else reply)
         except Exception:
             pass
         finally:

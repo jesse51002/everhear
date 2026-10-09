@@ -130,6 +130,7 @@ class Box(object):
         self.ssh_log = j("ssh.jsonl")
         self.rcon_log = j("rcon.jsonl")
         open(self.rcon_log, "w").close()
+        self.world = j("world.json")  # what the fake RCON says about players, time, weather
         self.port = free_port()
         self.password = secrets.token_hex(8)
         self.write_props(self.password)
@@ -220,10 +221,15 @@ class Box(object):
 
     def start_rcon(self):
         self.rcon = subprocess.Popen([PY, os.path.join(TESTS, "fake_rcon.py"),
-                                      os.path.join(self.rmc, "server.properties"), self.rcon_log],
+                                      os.path.join(self.rmc, "server.properties"), self.rcon_log,
+                                      self.world],
                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         line = self.rcon.stdout.readline()
         assert line.strip() == b"ready", line
+
+    def write_world(self, world):
+        with open(self.world, "w") as f:
+            json.dump(world, f)
 
     def stop_rcon(self):
         if self.rcon:
@@ -1415,6 +1421,750 @@ class TestWatch(Case):
         p.stdout = None
         self.assertEqual(p.wait(10), 0)
         self.assertEqual(p.stderr.read(), b"")
+
+
+# ============================================================ the library
+
+REPO = os.path.dirname(TOOLKIT)
+
+# A stand-in for scripts/_lib/kit in these tests: values() only, reading what
+# kit.values reads — defaults, then argv key=value, then for live keys
+# <VFG_RUN_DIR>/<VFG_INSTANCE>.values.json, again on every read.
+FAKE_KIT = '''"""A stand-in for the kit: values() only."""
+import json
+import os
+import sys
+
+
+def _cast(entry, raw):
+    t = entry["type"]
+    if t == "int":
+        return int(float(raw))
+    if t == "number":
+        x = float(raw)
+        return int(x) if x.is_integer() else x
+    if t == "bool":
+        return str(raw).lower() in ("true", "1", "yes", "on", "y")
+    if t == "list":
+        return json.loads(raw) if str(raw).startswith("[") else [p for p in str(raw).split(",") if p]
+    return raw
+
+
+class _Values(object):
+    def __init__(self, VALUES):
+        self.spec = VALUES
+        self.argv = {}
+        for a in sys.argv[1:]:
+            k, _, raw = a.partition("=")
+            if k in VALUES:
+                self.argv[k] = _cast(VALUES[k], raw)
+        self.path = os.path.join(os.environ.get("VFG_RUN_DIR", "/opt/vfg/run"),
+                                 os.environ.get("VFG_INSTANCE", "") + ".values.json")
+
+    def __getitem__(self, key):
+        entry = self.spec[key]
+        value = self.argv.get(key, entry["default"])
+        if entry.get("live"):
+            try:
+                with open(self.path) as f:
+                    live = json.load(f)
+                if key in live:
+                    value = live[key]
+            except (OSError, ValueError):
+                pass
+        return value
+
+
+def values(VALUES):
+    return _Values(VALUES)
+'''
+
+BEAM = '''"""Beam: prints its values every 0.1 s, so a test can see them change."""
+ASKS = ["a beam", "a laser that goes further"]
+import json
+import time
+from kit import values
+
+VALUES = {
+    "player":   {"type": "player", "default": "@a"},
+    "length":   {"type": "int", "min": 5, "max": 200, "default": 60},
+    "cooldown": {"type": "number", "min": 0, "max": 60, "default": 10, "live": True},
+    "colour":   {"type": "enum", "of": ["red", "blue"], "default": "red", "live": True},
+}
+
+v = values(VALUES)
+while True:
+    print(json.dumps(dict((k, v[k]) for k in VALUES), sort_keys=True), flush=True)
+    time.sleep(0.1)
+'''
+
+GALICK = '''"""Galick Gun: a beam that hurts what it hits and leaves a crater."""
+ASKS = ["galick gun", "a big purple beam"]
+from kit import values, aim, area
+
+VALUES = {
+    "player":        {"type": "player", "default": "@a"},
+    "damage":        {"type": "number", "min": 0, "max": 100, "default": 20},
+    "crater_radius": {"type": "int", "min": 2, "max": 64, "default": 4, "live": True},
+    "crater_leave":  {"type": "enum", "of": ["air", "lava", "fire"], "default": "air", "live": True},
+}
+
+
+# --- preset: crater (copied from _presets/crater.py) ---
+def crater(at, v):
+    _crater_carve(at, v["crater_radius"], v["crater_leave"])
+
+
+def _crater_carve(at, r, block):
+    area.sphere(at, r, block=block, spare_protected=True)
+
+
+v = values(VALUES)
+crater(aim.ray(v["player"], 60).end, v)
+'''
+
+CRATER = '''"""Carve a sphere out of the world at a place, leaving air, lava or fire."""
+from kit import area
+
+VALUES = {
+    "crater_radius": {"type": "int", "min": 2, "max": 64, "default": 8, "live": True},
+    "crater_leave":  {"type": "enum", "of": ["air", "lava", "fire"], "default": "air", "live": True},
+}
+
+
+def crater(at, v):
+    _crater_carve(at, v["crater_radius"], v["crater_leave"])
+
+
+def _crater_carve(at, r, block):
+    area.sphere(at, r, block=block, spare_protected=True)
+'''
+
+EXPLOSION = '''"""An explosion at a place: one blast, a ring or a plus."""
+import math
+from mc import rcon
+
+VALUES = {
+    "explosion_power":  {"type": "number", "min": 0, "max": 20, "default": 4, "live": True},
+    "explosion_layout": {"type": "enum", "of": ["one", "ring", "plus"], "default": "one"},
+}
+
+
+def explosion(at, v):
+    for dx, dz in _explosion_spots(v["explosion_layout"]):
+        rcon("summon tnt %s %s %s" % (at[0] + dx, at[1], at[2] + dz))
+
+
+def _explosion_spots(layout):
+    n = {"one": 1, "ring": 8, "plus": 4}[layout]
+    return [(round(4 * math.cos(i * 6.28 / n)), round(4 * math.sin(i * 6.28 / n))) for i in range(n)]
+'''
+
+ICE_STAFF = '''"""Ice Staff: lays ice where the player looks."""
+ASKS = ["an ice staff"]
+import random
+from kit import values, aim
+from mc import rcon
+
+VALUES = {
+    "player":   {"type": "player", "default": "@a"},
+    "length":   {"type": "int", "min": 5, "max": 200, "default": 60, "live": True},
+    "ice_rate": {"type": "number", "min": 0, "max": 1, "default": 0.5},
+}
+
+ICE_BLOCKS = ["ice", "packed_ice"]
+
+
+def ice_path(p, v):
+    """Lay ice along where a player looks, some of it packed."""
+    for at in aim.ray(p, v["length"]).points:
+        _lay(at, v)
+
+
+def _lay(at, v):
+    if random.random() < v["ice_rate"]:
+        rcon("setblock %d %d %d %s" % (at[0], at[1], at[2], random.choice(ICE_BLOCKS)))
+
+
+def shout(p):
+    rcon("say %s" % p)
+
+
+def loud_path(p, v):
+    shout(p)
+    ice_path(p, v)
+
+
+v = values(VALUES)
+'''
+
+
+def load_library_module():
+    import importlib.util
+    sys.dont_write_bytecode = True
+    spec = importlib.util.spec_from_file_location("vfg_library", os.path.join(TOOLKIT, "lib", "library.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def values_of(path):
+    """VALUES of a file, keys in order, read with ast as library.py does."""
+    import ast
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) == "VALUES":
+            return ast.literal_eval(node.value)
+    return None
+
+
+class LibraryCase(Case):
+    """A box whose repo has two example scripts, two presets and a fake kit."""
+
+    def setUp(self):
+        Case.setUp(self)
+        self.write("scripts/beam/main.py", BEAM)
+        self.write("scripts/galick/main.py", GALICK)
+        self.write("scripts/_presets/crater.py", CRATER)
+        self.write("scripts/_presets/explosion.py", EXPLOSION)
+        self.write("scripts/_lib/kit/__init__.py", FAKE_KIT)
+
+    def write(self, rel, text):
+        path = os.path.join(self.box.repo, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+        return path
+
+    def read(self, rel):
+        with open(os.path.join(self.box.repo, rel)) as f:
+            return f.read()
+
+    def made(self, *p):
+        return os.path.join(self.box.repo, "made", "main", *p)
+
+
+class TestScriptNew(LibraryCase):
+    def test_new_from_an_example_with_presets_then_check_passes(self):
+        r = self.box.vfg("script", "new", "beam_boom", "--from", "beam", "--preset", "crater",
+                         "--preset", "explosion")
+        self.assertOk(r)
+        self.assertEqual(r.stdout.splitlines()[:3], [
+            "made made/main/scripts/beam_boom/ from scripts/beam/ (library)",
+            "  + crater (library): crater_radius, crater_leave",
+            "  + explosion (library): explosion_power, explosion_layout"])
+        self.assertIn("check: ok", r.stdout)
+        path = self.made("scripts", "beam_boom", "main.py")
+        values = values_of(path)
+        self.assertEqual(list(values), ["player", "length", "cooldown", "colour", "crater_radius",
+                                        "crater_leave", "explosion_power", "explosion_layout"])
+        self.assertEqual(values["crater_radius"], {"type": "int", "min": 2, "max": 64, "default": 8, "live": True})
+        text = self.read("made/main/scripts/beam_boom/main.py")
+        self.assertIn('    "crater_radius":    {"type": "int", "min": 2, "max": 64, "default": 8, "live": True},\n',
+                      text)
+        self.assertIn("from kit import values, area\n", text)
+        self.assertIn("import math\n", text)
+        self.assertIn("from mc import rcon\n", text)
+        crater = text.index("# --- preset: crater (copied from _presets/crater.py) ---\ndef crater(at, v):")
+        boom = text.index("# --- preset: explosion (copied from _presets/explosion.py) ---\ndef explosion(at, v):")
+        wiring = text.index("v = values(VALUES)")
+        self.assertLess(crater, boom)
+        self.assertLess(boom, wiring)
+        self.assertTrue(text.startswith(BEAM.split("\n")[0]))
+        compile(text, path, "exec")
+        r = self.box.vfg("script", "check", "beam_boom")
+        self.assertOk(r)
+        self.assertEqual(r.stdout, "ok: made/main/scripts/beam_boom/main.py\n")
+        # A made preset and a made script are found the same way.
+        r = self.box.vfg("script", "new", "boom2", "--from", "beam_boom")
+        self.assertOk(r)
+        self.assertIn("from made/main/scripts/beam_boom/ (made)", r.stdout)
+
+    def test_a_preset_the_script_already_holds_and_one_it_does_not(self):
+        r = self.box.vfg("script", "new", "galick2", "--from", "galick", "--preset", "crater")
+        self.assertOneLine(r, 1, "^vfg: cannot copy crater in: it already holds crater$")
+        self.assertFalse(os.path.exists(self.made("scripts", "galick2")))
+        r = self.box.vfg("script", "new", "galick2", "--from", "galick", "--preset", "explosion")
+        self.assertOk(r)
+        self.assertIn("check: ok", r.stdout)
+        text = self.read("made/main/scripts/galick2/main.py")
+        self.assertEqual(text.count("# --- preset: "), 2)
+        self.assertLess(text.index("# --- preset: crater"), text.index("# --- preset: explosion"))
+        self.assertLess(text.index("# --- preset: explosion"), text.index("v = values(VALUES)"))
+
+    def test_names_are_never_taken_twice(self):
+        self.assertOneLine(self.box.vfg("script", "new", "beam"), 1, r"^vfg: beam is taken: scripts/beam — ")
+        self.assertOneLine(self.box.vfg("script", "new", "hello"), 1, "hello is taken")
+        self.assertOk(self.box.vfg("script", "new", "mine", "--from", "beam"))
+        self.assertOneLine(self.box.vfg("script", "new", "mine"), 1, r"mine is taken: made/main/scripts/mine")
+        self.assertOneLine(self.box.vfg("script", "new", "mine", "--library"), 1, "mine is taken")
+        self.assertOneLine(self.box.vfg("script", "new", "Bad.Name"), 2)
+        self.assertOneLine(self.box.vfg("script", "new", "x", "--preset", "nosuch"), 1, "no preset nosuch")
+        self.assertOneLine(self.box.vfg("script", "new", "x", "--from", "nosuch"), 1, "no script nosuch")
+        self.assertOneLine(self.box.vfg("script", "new", "x", "--preset", "crater", "--preset", "crater"), 2)
+        r = self.box.vfg("script", "new", "x", "--from", "hello", "--preset", "crater")
+        self.assertOneLine(r, 1, r"hello has no VALUES \(a seed script\)")
+        self.assertFalse(os.path.exists(self.made("scripts", "x")))
+
+    def test_new_from_nothing_must_be_filled_in(self):
+        r = self.box.vfg("script", "new", "fresh", "--preset", "crater")
+        self.assertOk(r)
+        self.assertIn("made made/main/scripts/fresh/ from nothing", r.stdout)
+        self.assertIn("first line is still a TODO", r.stdout)
+        self.assertIn("ASKS is empty", r.stdout)
+        values = values_of(self.made("scripts", "fresh", "main.py"))
+        self.assertEqual(list(values), ["player", "crater_radius", "crater_leave"])
+        r = self.box.vfg("script", "check", "fresh")
+        self.assertOneLine(r, 1, r"^vfg: 2 problems in 1 of 1 file$")
+        self.assertEqual(len(r.stdout.splitlines()), 2)
+
+    def test_library_flag_writes_into_scripts(self):
+        r = self.box.vfg("script", "new", "beam_too", "--from", "beam", "--library")
+        self.assertOk(r)
+        self.assertTrue(os.path.isfile(os.path.join(self.box.repo, "scripts", "beam_too", "main.py")))
+        self.assertFalse(os.path.exists(self.made("scripts", "beam_too")))
+
+
+BAD = {
+    # (kind, text, what the problem line says)
+    "not_literal": ("script", '"""Bad: x."""\nASKS = ["x"]\nR = 5\nVALUES = {"r": {"type": "int", "default": R}}\n',
+                    r":4: VALUES is not a literal"),
+    "outside": ("script", '"""Bad: x."""\nASKS = ["x"]\nVALUES = {"r": {"type": "int", "min": 1, "max": 5, '
+                          '"default": 9}}\n', r":3: r: default 9 is outside its limits \(1\.\.5\)"),
+    "unknown_type": ("script", '"""Bad: x."""\nASKS = ["x"]\nVALUES = {"c": {"type": "colour", "default": 1}}\n',
+                     r":3: c: type 'colour' is not one of int, number"),
+    "twice": ("script", '"""Bad: x."""\nASKS = ["x"]\nVALUES = {\n    "crater_radius": {"type": "int", '
+                        '"default": 3},\n    "crater_radius": {"type": "int", "default": 4},\n}\n',
+              r":5: crater_radius is in VALUES twice \(lines 4 and 5\)"),
+    "undeclared": ("script", '"""Bad: x."""\nASKS = ["x"]\nVALUES = {"a": {"type": "int", "default": 3}}\n'
+                             'v = {}\nprint(v["b"])\n', r':5: v\["b"\] is read but VALUES does not declare it'),
+    "no_doc": ("script", 'ASKS = ["x"]\nVALUES = {}\n', r":1: line 1 must be a docstring"),
+    "no_asks": ("script", '"""Bad: x."""\nVALUES = {}\n', r":1: no ASKS"),
+    "imports_presets": ("script", '"""Bad: x."""\nASKS = ["x"]\nfrom _presets import crater\nVALUES = {}\n',
+                        r":3: imports from _presets"),
+    "py310": ("script", '"""Bad: x."""\nASKS = ["x"]\nVALUES = {}\nmatch 1:\n    case 1:\n        pass\n',
+              r":\d+: not valid Python 3\.9"),
+    "blast": ("preset", '"""A preset whose value lacks its name."""\nVALUES = {"power": {"type": "number", '
+                        '"default": 1}}\n\n\ndef blast(at, v):\n    return v["power"]\n',
+              r":2: power does not start with the preset's name: blast_"),
+}
+
+
+class TestScriptCheck(LibraryCase):
+    def test_check_refuses_each_bad_case(self):
+        for name, (kind, text, want) in sorted(BAD.items()):
+            rel = ("made/main/scripts/%s/main.py" % name) if kind == "script" else "made/main/presets/%s.py" % name
+            self.write(rel, text)
+            r = self.box.vfg("script", "check", name)
+            self.assertOneLine(r, 1, r"^vfg: \d+ problems? in 1 of 1 file$")
+            self.assertRegex(r.stdout, "^" + re.escape(rel) + want, name)
+            # Also by path.
+            r = self.box.vfg("script", "check", os.path.join(self.box.repo, rel))
+            self.assertEqual(r.returncode, 1, name)
+
+    def test_check_everything_passes_and_counts(self):
+        r = self.box.vfg("script", "check")
+        self.assertOk(r)
+        self.assertEqual(r.stdout, "ok: 4 scripts (2 seeds) and 2 presets\n")
+        self.write("made/main/presets/blast.py", BAD["blast"][1])
+        r = self.box.vfg("script", "check")
+        self.assertOneLine(r, 1, r"^vfg: 1 problem in 1 of 7 files$")
+        self.assertOneLine(self.box.vfg("script", "check", "nosuch"), 1, "no script or preset nosuch")
+
+    def test_a_preset_helper_carries_its_name_and_a_script_defines_nothing_twice(self):
+        self.write("made/main/presets/twin.py", CRATER.replace("def crater(", "def twin(")
+                   .replace('"crater_', '"twin_').replace('v["crater_', 'v["twin_'))
+        r = self.box.vfg("script", "check", "twin")
+        self.assertOneLine(r, 1)
+        self.assertIn("_crater_carve: a preset's helpers are private and carry its name: _twin_", r.stdout)
+        self.write("made/main/scripts/double/main.py", GALICK.replace(
+            "\n\nv = values(VALUES)", "\n\ndef _crater_carve(at, r, block):\n    pass\n\n\nv = values(VALUES)"))
+        r = self.box.vfg("script", "check", "double")
+        self.assertOneLine(r, 1)
+        self.assertRegex(r.stdout, r"main\.py:\d+: _crater_carve is defined twice")
+
+
+class TestPresetSave(LibraryCase):
+    def setUp(self):
+        LibraryCase.setUp(self)
+        self.write("made/main/scripts/ice_staff/main.py", ICE_STAFF)
+
+    def test_lift_a_function_then_copy_it_into_a_script(self):
+        r = self.box.vfg("preset", "save", "ice_staff", "ice_path", "ice_trail")
+        self.assertOk(r)
+        self.assertEqual(r.stdout.splitlines()[0],
+                         "saved made/main/presets/ice_trail.py from ice_staff.ice_path: values "
+                         "ice_trail_length (was length), ice_rate; helpers _ice_trail_lay")
+        self.assertIn("check: ok", r.stdout)
+        path = self.made("presets", "ice_trail.py")
+        text = self.read("made/main/presets/ice_trail.py")
+        self.assertTrue(text.startswith('"""Lay ice along where a player looks, some of it packed."""\n'))
+        self.assertEqual(list(values_of(path)), ["ice_trail_length", "ice_rate"])
+        self.assertIn("def ice_trail(p, v):", text)
+        self.assertIn('aim.ray(p, v["ice_trail_length"])', text)
+        self.assertIn("def _ice_trail_lay(at, v):", text)
+        self.assertIn("ICE_BLOCKS = ", text)
+        for imp in ("import random\n", "from kit import aim\n", "from mc import rcon\n"):
+            self.assertIn(imp, text)
+        self.assertNotIn("values", text.split("VALUES")[0])
+        self.assertNotIn("def shout", text)
+        # The script it came from is not touched.
+        self.assertEqual(self.read("made/main/scripts/ice_staff/main.py"), ICE_STAFF)
+        r = self.box.vfg("script", "new", "beam_ice", "--from", "beam", "--preset", "ice_trail")
+        self.assertOk(r)
+        self.assertIn("  + ice_trail (made): ice_trail_length, ice_rate", r.stdout)
+        self.assertIn("check: ok", r.stdout)
+        self.assertIn("# --- preset: ice_trail (copied from made/main/presets/ice_trail.py) ---",
+                      self.read("made/main/scripts/beam_ice/main.py"))
+
+    def test_refusals(self):
+        self.assertOk(self.box.vfg("preset", "save", "ice_staff", "ice_path", "ice_trail"))
+        self.assertOneLine(self.box.vfg("preset", "save", "ice_staff", "ice_path", "ice_trail"), 1,
+                           "ice_trail is taken: made/main/presets/ice_trail.py")
+        self.assertOneLine(self.box.vfg("preset", "save", "ice_staff", "ice_path", "crater"), 1,
+                           "crater is taken: scripts/_presets/crater.py")
+        self.assertOneLine(self.box.vfg("preset", "save", "ice_staff", "nosuch", "x"), 1,
+                           "ice_staff has no top-level function nosuch")
+        self.assertOneLine(self.box.vfg("preset", "save", "ice_staff", "loud_path", "loud"), 1,
+                           r"loud_path calls ice_path, shout, which is public in ice_staff")
+        self.assertOneLine(self.box.vfg("preset", "save", "nosuch", "f", "x"), 1, "no script nosuch")
+        self.assertOneLine(self.box.vfg("preset", "save", "ice_staff", "ice_path", "Bad"), 2)
+        r = self.box.vfg("preset", "save", "ice_staff", "shout", "shout_out")
+        self.assertOk(r)  # saved, but its first line is a TODO to fill in
+        self.assertIn("first line is still a TODO", r.stdout)
+        self.assertIn("def shout_out(p, v):", self.read("made/main/presets/shout_out.py"))
+
+
+class TestInstances(LibraryCase):
+    def box_file(self, name):
+        with open(os.path.join(self.box.rvfg, "run", name)) as f:
+            return json.load(f)
+
+    def log_values(self, instance, after=0):
+        """The values the fake beam printed last, read from its log."""
+        with open(os.path.join(self.box.rvfg, "run", instance + ".log")) as f:
+            rows = [json.loads(l) for l in f.read().splitlines()[1:] if l.startswith("{")]
+        return rows[-1] if len(rows) > after else None
+
+    def started(self, r, name):
+        self.assertOk(r)
+        m = re.search(r"^running %s pid (\d+) — vfg script logs %s$" % (name, name), r.stdout, re.M)
+        self.assertTrue(m, r.stdout)
+        return int(m.group(1))
+
+    def test_two_instances_live_set_restart_stop_one_save(self):
+        a = self.started(self.box.vfg("script", "run", "beam", "as=beam-a", "player=Steve", "cooldown=5",
+                                      "--task", "T5"), "beam-a")
+        b = self.started(self.box.vfg("script", "run", "beam", "player=Alex", "as=beam-b"), "beam-b")
+        self.assertNotEqual(a, b)
+        r = self.box.vfg("script", "run", "beam", "as=beam-a")
+        self.assertOneLine(r, 1, r"^vfg: beam-a is running \(pid %d\) — vfg script stop beam-a$" % a)
+        with open("/proc/%d/environ" % a, "rb") as f:
+            env = f.read().split(b"\0")
+        for want in (b"VFG_INSTANCE=beam-a", b"VFG_SCRIPT=beam-a", b"VFG_LIVE_POLL_S=0.5",
+                     b"VFG_RUN_DIR=" + os.path.join(self.box.rvfg, "run").encode()):
+            self.assertIn(want, env)
+        with open("/proc/%d/cmdline" % a, "rb") as f:
+            argv = f.read().split(b"\0")
+        self.assertEqual(argv[-3:], [b"player=Steve", b"cooldown=5", b""])
+        meta = self.box_file("beam-a.json")
+        self.assertEqual({k: meta[k] for k in ("instance", "script", "source", "values", "task")},
+                         {"instance": "beam-a", "script": "beam", "source": "library",
+                          "values": {"player": "Steve", "cooldown": 5}, "task": "T5"})
+        self.assertRegex(meta["started"], ISO_RE)
+        self.assertTrue(wait_for(lambda: self.log_values("beam-a") is not None, 5))
+        self.assertEqual(self.log_values("beam-a"), {"player": "Steve", "length": 60, "cooldown": 5,
+                                                     "colour": "red"})
+        # A live value: the file changes, the pid does not, the script reads it.
+        r = self.box.vfg("script", "set", "beam-a", "cooldown=0", "colour=BLUE")
+        self.assertOk(r)
+        self.assertEqual(r.stdout, "beam-a: cooldown=0 colour=blue — live, read again within 0.5 s\n")
+        self.assertEqual(self.box_file("beam-a.values.json"), {"cooldown": 0, "colour": "blue"})
+        self.assertTrue(alive(a))
+        self.assertTrue(wait_for(lambda: (self.log_values("beam-a") or {}).get("cooldown") == 0, 5))
+        # Not live: a restart, with the rest kept.
+        r = self.box.vfg("script", "set", "beam-a", "length=1000")
+        self.assertOk(r)
+        lines = r.stdout.splitlines()
+        self.assertEqual(lines[0], "length=1000 is above its max: clamped to 200")
+        m = re.match(r"^beam-a restarted: length is not live, pid (\d+); kept player=Steve cooldown=0 "
+                     r"colour=blue$", lines[1])
+        self.assertTrue(m, lines)
+        a2 = int(m.group(1))
+        self.assertNotEqual(a2, a)
+        self.assertTrue(wait_for(lambda: not alive(a), 5))
+        self.assertTrue(alive(a2))
+        self.assertEqual(self.box_file("beam-a.json")["values"], {"player": "Steve", "cooldown": 5, "length": 200})
+        self.assertEqual(self.box_file("beam-a.values.json"), {"cooldown": 0, "colour": "blue"})
+        self.assertTrue(wait_for(lambda: self.log_values("beam-a") == {"player": "Steve", "length": 200,
+                                                                         "cooldown": 0, "colour": "blue"}, 5))
+        # list: each instance, its script, task and what differs from the defaults.
+        r = self.box.vfg("script", "list")
+        self.assertOk(r)
+        self.assertRegex(r.stdout, r"^beam-a running pid %d since \d\d:\d\d:\d\d — beam, T5, player=Steve "
+                                   r"length=200 cooldown=0 colour=blue\nbeam-b running pid %d since "
+                                   r"\d\d:\d\d:\d\d — beam, player=Alex\n$" % (a2, b))
+        # Stopping one leaves the other running.
+        self.assertEqual(self.box.vfg("script", "stop", "beam-a").stdout, "stopped beam-a\n")
+        self.assertTrue(wait_for(lambda: not alive(a2), 5))
+        self.assertTrue(alive(b))
+        r = self.box.vfg("script", "list")
+        self.assertRegex(r.stdout, r"^beam-a stopped — beam, T5, player=Steve length=200 cooldown=0 colour=blue\n"
+                                   r"beam-b running pid %d " % b)
+        # save: the instance's values become a made script's defaults.
+        self.assertOk(self.box.vfg("script", "set", "beam-b", "cooldown=2.5"))
+        r = self.box.vfg("script", "save", "beam-b", "beam_alex")
+        self.assertOk(r)
+        self.assertEqual(r.stdout.splitlines()[0], "saved made/main/scripts/beam_alex/ from beam-b (beam), "
+                                                   "with player=Alex cooldown=2.5 as its defaults")
+        self.assertIn("check: ok", r.stdout)
+        values = values_of(self.made("scripts", "beam_alex", "main.py"))
+        self.assertEqual([values[k]["default"] for k in values], ["Alex", 60, 2.5, "red"])
+        self.assertOneLine(self.box.vfg("script", "save", "beam-b", "beam_alex"), 1, "beam_alex is taken")
+        # A made script runs from the server's folder on the box.
+        c = self.started(self.box.vfg("script", "run", "beam_alex"), "beam_alex")
+        self.assertTrue(os.path.isfile(os.path.join(self.box.rvfg, "made", "main", "scripts", "beam_alex",
+                                                    "main.py")))
+        self.assertEqual(self.box_file("beam_alex.json")["source"], "made")
+        self.assertTrue(wait_for(lambda: (self.log_values("beam_alex") or {}).get("player") == "Alex", 5))
+        r = self.box.vfg("script", "list")
+        self.assertIn("beam_alex running pid %d since" % c, r.stdout)
+        self.assertRegex(r.stdout, r"beam_alex running pid \d+ since \d\d:\d\d:\d\d — beam_alex \(made\)\n")
+        for name in ("beam-b", "beam_alex"):
+            self.assertOk(self.box.vfg("script", "stop", name))
+
+    def test_values_are_checked_before_anything_is_sent(self):
+        before = len(self.box.ssh_calls())
+        for args, code, pattern in (
+                (["nope=1"], 2, r"^vfg: beam: nope is not one of its values: player, length, cooldown, colour$"),
+                (["Steve"], 2, r"^vfg: beam: 'Steve' is not key=value"),
+                (["colour=green"], 2, r"colour is one of red, blue, not 'green'"),
+                (["length=3.5"], 2, r"length takes a whole number"),
+                (["player=@e[type=zombie]"], 2, r"player is @a, @r, @p or player names"),
+                (["as=Bad!"], 2, r"as=Bad! is not an instance name"),
+                (["--task", "7"], 2, r"--task is T<n>")):
+            self.assertOneLine(self.box.vfg("script", "run", "beam", *args), code, pattern)
+        self.assertEqual(len(self.box.ssh_calls()), before)
+        r = self.box.vfg("script", "run", "beam", "cooldown=-4", "player=Steve,Alex")
+        self.started(r, "beam")
+        self.assertTrue(r.stdout.startswith("cooldown=-4 is below its min: clamped to 0\n"))
+        self.assertEqual(self.box_file("beam.json")["values"], {"cooldown": 0, "player": "Steve,Alex"})
+        self.assertOk(self.box.vfg("script", "stop", "beam"))
+
+    def test_set_refusals(self):
+        self.assertOneLine(self.box.vfg("script", "set", "beam", "cooldown=1"), 1, "no instance beam")
+        self.started(self.box.vfg("script", "run", "beam"), "beam")
+        self.assertOneLine(self.box.vfg("script", "set", "beam", "nope=1"), 2, "nope is not one of its values")
+        self.assertOneLine(self.box.vfg("script", "set", "beam", "cooldown"), 2, "is not key=value")
+        self.assertOk(self.box.vfg("script", "stop", "beam"))
+        self.assertOneLine(self.box.vfg("script", "set", "beam", "cooldown=1"), 1, "^vfg: beam is not running")
+        self.started(self.box.vfg("script", "run", "loop", "as=loop2"), "loop2")
+        self.assertOneLine(self.box.vfg("script", "set", "loop2", "x=1"), 1, "loop2 \\(loop\\) has no VALUES")
+        self.assertOk(self.box.vfg("script", "stop", "loop2"))
+
+    def test_a_seed_keeps_its_words_and_runs_as_an_instance(self):
+        r = self.box.vfg("script", "run", "hello", "as=hello-two", "a=b", "world", "--wait", "5")
+        self.assertOk(r)
+        self.assertEqual(r.stdout, "hello a=b world\nlib fake mc script hello-two\n")
+        meta = self.box_file("hello-two.json")
+        self.assertEqual((meta["script"], meta["values"], meta["args"]), ("hello", None, ["a=b", "world"]))
+        self.assertIn("hello-two stopped — hello, a=b world", self.box.vfg("script", "list").stdout)
+
+    def test_deploy_takes_made_scripts_too(self):
+        self.assertOk(self.box.vfg("script", "new", "mine", "--from", "beam"))
+        r = self.box.vfg("script", "deploy")
+        self.assertOk(r)
+        self.assertEqual(r.stdout, "deployed: _lib beam galick hello loop\ndeployed made/main: mine\n")
+        r = self.box.vfg("script", "deploy", "mine")
+        self.assertEqual(r.stdout, "deployed: _lib\ndeployed made/main: mine\n")
+
+
+class TestState(LibraryCase):
+    WORLD = {"players": {"Steve": {"pos": [120.7, 64.0, -40.2], "dim": "minecraft:overworld",
+                                   "shown": "[Owner] Steve"},
+                         "Alex": {"pos": [98.0, 70.0, -12.5], "dim": "minecraft:the_nether"}},
+             "daytime": 18000, "day": 3, "raining": False, "thundering": False}
+
+    def test_state_in_one_call(self):
+        self.box.write_world(self.WORLD)
+        r = self.box.vfg("script", "run", "beam", "as=beam-a", "player=Steve", "--task", "T5")
+        self.assertOk(r)
+        self.assertOk(self.box.vfg("script", "run", "loop", "Alex", "as=hi"))
+        before = len(self.box.ssh_calls())
+        r = self.box.vfg("state")
+        self.assertOk(r)
+        calls = [c for c in self.box.ssh_calls()[before:] if c[-1] == "python3 -u -"]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(r.stdout.splitlines(), [
+            "online    Steve 120 64 -41 overworld, Alex 98 70 -13 the_nether",
+            "time      night (18000), day 3",
+            "weather   clear",
+            "running   beam-a — beam, T5, player=Steve; touches Steve",
+            "running   hi — loop, Alex; touches Alex",
+        ])
+        r = self.box.vfg("state", "--json")
+        self.assertOk(r)
+        got = json.loads(r.stdout)
+        self.assertEqual(got["online"][0], {"name": "Steve", "pos": [120, 64, -41], "dimension": "overworld"})
+        self.assertEqual(got["time"], {"daytime": 18000, "day": 3, "phase": "night"})
+        self.assertEqual(got["weather"], "clear")
+        beam = [i for i in got["instances"] if i["instance"] == "beam-a"][0]
+        self.assertEqual((beam["script"], beam["source"], beam["task"], beam["touches"], beam["changed"]),
+                         ("beam", "library", "T5", ["Steve"], {"player": "Steve"}))
+        self.assertEqual(beam["values"], {"player": "Steve", "length": 60, "cooldown": 10, "colour": "red"})
+        self.assertLess(got["ms"], 1000)
+        self.box.write_world(dict(self.WORLD, raining=True, thundering=True, daytime=6000))
+        got = json.loads(self.box.vfg("state", "--json").stdout)
+        self.assertEqual((got["weather"], got["time"]["phase"]), ("thunder", "day"))
+        self.box.write_world(dict(self.WORLD, raining=True))
+        self.assertIn("weather   rain\n", self.box.vfg("state").stdout)
+        for name in ("beam-a", "hi"):
+            self.assertOk(self.box.vfg("script", "stop", name))
+
+    def test_nobody_online_and_minecraft_down(self):
+        self.box.write_world({"players": {}, "daytime": 23500, "day": 0})
+        r = self.box.vfg("state")
+        self.assertOk(r)
+        self.assertEqual(r.stdout.splitlines(), ["online    nobody", "time      dawn (23500), day 0",
+                                                 "weather   clear", "running   nothing"])
+        self.assertOk(self.box.vfg("script", "run", "beam"))
+        self.box.stop_rcon()
+        r = self.box.vfg("state")
+        self.assertOneLine(r, 5, r"^vfg: minecraft is not running")
+        self.assertRegex(r.stdout, r"^minecraft minecraft is not running .*\nrunning   beam; touches @a\n$")
+        self.assertOk(self.box.vfg("script", "stop", "beam"))
+
+
+class TestHelpLists(Case):
+    def test_new_commands_are_listed(self):
+        r = self.box.vfg("--help")
+        for c in ("preset", "state"):
+            self.assertRegex(r.stdout, r"\n\s+%s\s" % c)
+        r = self.box.vfg("script", "--help")
+        for w in ("new", "check", "set", "save"):
+            self.assertIn(w, r.stdout)
+        self.assertIn("--task", self.box.vfg("script", "run", "--help").stdout)
+
+
+# ========================================================== the real kit
+
+REAL_LIB = os.path.join(REPO, "scripts", "_lib")
+
+TICKER = '''"""Ticker: logs its values every 0.1 s."""
+ASKS = ["tick"]
+import time
+from kit import values
+from mc import log
+
+VALUES = {
+    "cooldown": {"type": "number", "min": 0, "max": 60, "default": 10, "live": True},
+    "length":   {"type": "int", "min": 1, "max": 9, "default": 3},
+}
+
+v = values(VALUES)
+while True:
+    log("cooldown", v["cooldown"], "length", v["length"])
+    time.sleep(0.1)
+'''
+
+
+@unittest.skipUnless(os.path.isfile(os.path.join(REAL_LIB, "kit", "values.py")), "no scripts/_lib/kit yet")
+class TestRealKit(Case):
+    """The repo's own scripts/_lib (mc.py and the kit) on the fake box: what vfg script run
+    and set write is what kit.values reads, and the tag follows the instance."""
+
+    def setUp(self):
+        Case.setUp(self)
+        lib = os.path.join(self.box.repo, "scripts", "_lib")
+        shutil.rmtree(lib)
+        shutil.copytree(REAL_LIB, lib, ignore=shutil.ignore_patterns("__pycache__"))
+        os.makedirs(os.path.join(self.box.repo, "scripts", "ticker"))
+        with open(os.path.join(self.box.repo, "scripts", "ticker", "main.py"), "w") as f:
+            f.write(TICKER)
+
+    def log(self, name):
+        with open(os.path.join(self.box.rvfg, "run", name + ".log")) as f:
+            return f.read()
+
+    def test_live_value_reaches_the_kit_and_stop_kills_the_instance_tag(self):
+        r = self.box.vfg("script", "run", "ticker", "as=tick-a", "length=5", "cooldown=4")
+        self.assertOk(r)
+        pid = int(re.search(r"pid (\d+)", r.stdout).group(1))
+        self.assertTrue(wait_for(lambda: re.search(r"tick-a cooldown 4(\.0)? length 5", self.log("tick-a")), 10),
+                        self.log("tick-a")[-500:])
+        r = self.box.vfg("script", "set", "tick-a", "cooldown=0")
+        self.assertOk(r)
+        self.assertTrue(wait_for(lambda: re.search(r"tick-a cooldown 0(\.0)? length 5", self.log("tick-a")), 3),
+                        self.log("tick-a")[-500:])
+        self.assertTrue(alive(pid))
+        r = self.box.vfg("script", "stop", "tick-a")
+        self.assertEqual(r.stdout, "stopped tick-a\n")
+        self.assertTrue(wait_for(lambda: not alive(pid), 3))
+        self.assertIn("kill @e[tag=vfg_tick-a]", self.box.rcon_commands())
+
+
+# ======================================================= the real library
+
+LIVE_LIBRARY = os.path.isdir(os.path.join(REPO, "scripts", "_presets"))
+
+
+@unittest.skipUnless(LIVE_LIBRARY, "no scripts/_presets/ in this repo yet")
+class TestRealLibrary(unittest.TestCase):
+    """The repo's own examples and presets, read in place, never written."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.L = load_library_module()
+        cls.lib = cls.L.Library(REPO, "test-never-made")
+
+    def test_every_library_script_and_preset_passes_check(self):
+        problems = []
+        for it in self.lib.scripts() + self.lib.presets():
+            problems.extend(self.L.check(it, self.lib))
+        self.assertEqual(problems, [])
+
+    def test_new_from_any_example_with_any_preset_passes_check(self):
+        L, lib = self.L, self.lib
+        examples = [s for s in lib.scripts() if not s.legacy and not L.check(s, lib)]
+        presets = [p for p in lib.presets() if not L.check(p, lib)]
+        failed = []
+        for s in examples:
+            for p in presets:
+                if p.name in s.holds:
+                    continue
+                try:
+                    text, _keys, _imps = L.add_preset(s.text, p, "main")
+                except ValueError as e:
+                    if "is in both" in str(e):
+                        continue  # the example already has those values under another marker
+                    failed.append("%s + %s: %s" % (s.name, p.name, e))
+                    continue
+                path = os.path.join(tempfile.mkdtemp(prefix="vfg-new-"), s.name + "_plus", "main.py")
+                os.makedirs(os.path.dirname(path))
+                with open(path, "w") as f:
+                    f.write(text)
+                got = L.check(L.parse(path, "script", s.name + "_plus", "made", path), lib)
+                shutil.rmtree(os.path.dirname(os.path.dirname(path)), ignore_errors=True)
+                if got:
+                    failed.append("%s + %s: %s" % (s.name, p.name, got[0]))
+        self.assertEqual(failed, [])
+
+    def test_every_preset_into_one_script(self):
+        L, lib = self.L, self.lib
+        text = L.SKELETON.replace("TODO <Title>: say what it does in one line.", "All: every preset.") \
+            .replace("ASKS = []", 'ASKS = ["everything"]')
+        for p in lib.presets():
+            if not L.check(p, lib):
+                text, _k, _i = L.add_preset(text, p, "main")
+        path = os.path.join(tempfile.mkdtemp(prefix="vfg-all-"), "all", "main.py")
+        os.makedirs(os.path.dirname(path))
+        with open(path, "w") as f:
+            f.write(text)
+        try:
+            self.assertEqual(L.check(L.parse(path, "script", "all", "made", path), lib), [])
+        finally:
+            shutil.rmtree(os.path.dirname(os.path.dirname(path)), ignore_errors=True)
 
 
 # ======================================================== the real feed writer

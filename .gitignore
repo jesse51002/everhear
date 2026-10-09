@@ -38,6 +38,11 @@ replay_*.log
 *.db
 *.db-wal
 *.db-shm
+# integration/realmc's test server: the jar, the worlds, the stand-in box and its .env
+integration/realmc/.server/
+# What each server's implementers made (vfg script new|save, vfg preset save): the
+# server's, never the library's until a review promotes it into scripts/.
+/made/
 
 # --- Editors and OS ---
 .idea/

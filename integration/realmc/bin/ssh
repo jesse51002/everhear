@@ -1,0 +1,10 @@
+#!/bin/sh
+# ssh to realmc's stand-in box: toolkit/tests/fake_ssh runs the remote command here, on the
+# box's PATH (Python 3.9 as python3, then the fake sudo, systemctl and journalctl).
+bin=$(dirname "$(readlink -f "$0")")
+realmc=$(dirname "$bin")
+repo=$(dirname "$(dirname "$realmc")")
+state=${REALMC_DIR:-$realmc/.server}
+py=$(command -v python3)
+export PATH="$state/box/bin:$repo/toolkit/tests/bin:$PATH" FAKE_UNITS="$state/box/units"
+exec "$py" "$repo/toolkit/tests/fake_ssh" "$@"

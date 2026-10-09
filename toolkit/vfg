@@ -211,6 +211,8 @@ class Config(object):
         "VFG_WATCH_CATCHUP": "100",
         "VFG_WATCH_MAX_PER_MIN": "120",
         "VFG_SSH": "ssh",
+        "VFG_SERVER": "main",
+        "VFG_LIVE_POLL_S": "0.5",
     }
     PATHS = ("VFG_SSH_KEY", "VFG_REPO", "VFG_SSH")
 
@@ -641,12 +643,15 @@ def cmd_usage(cfg, a, started):
         raise Fail(2, "--model is a model name")
     if a.in_ < 0 or a.out < 0:
         raise Fail(2, "--in and --out are whole numbers, 0 or more")
+    if (a.cache_read or 0) < 0 or (a.cache_write or 0) < 0:
+        raise Fail(2, "--cache-read and --cache-write are whole numbers, 0 or more")
     if a.cost is not None and (a.cost < 0 or math.isnan(a.cost) or math.isinf(a.cost)):
         raise Fail(2, "--cost is a number, 0 or more")
     if a.ref is not None and len(a.ref) > 64:
         raise Fail(2, "--ref is at most 64 characters")
     row = {"at": now_iso(started), "component": a.component, "model": a.model.strip(),
-           "input_tokens": a.in_, "output_tokens": a.out, "cost_usd": a.cost, "ref": a.ref}
+           "input_tokens": a.in_, "output_tokens": a.out, "cost_usd": a.cost, "ref": a.ref,
+           "cache_read_tokens": a.cache_read, "cache_write_tokens": a.cache_write}
     cfg.ensure_home()
     pending = Pending(cfg.home)
     rows = pending.claim() + [row]
@@ -892,22 +897,69 @@ def scripts_dir(cfg):
     return os.path.join(cfg.repo, "scripts")
 
 
-def script_problem(cfg, name):
-    """Why scripts/<name> is not a script, or None."""
-    folder = os.path.join(scripts_dir(cfg), name)
+def server_name(cfg):
+    """VFG_SERVER: the server this PC drives, and the name of its folder under made/."""
+    name = cfg.get("VFG_SERVER") or "main"
+    if not NAME_RE.match(name):
+        raise Fail(3, "not configured: VFG_SERVER must be a name (a-z, 0-9, _ and -, at most 48)")
+    return name
+
+
+def made_scripts_dir(cfg):
+    return os.path.join(cfg.repo, "made", server_name(cfg), "scripts")
+
+
+def load_library(cfg):
+    """toolkit/lib/library.py, and the library and this server's folder read through it."""
+    library = lib_module("library")
+    return library, library.Library(cfg.repo, server_name(cfg))
+
+
+def live_poll(cfg):
+    raw = cfg.get("VFG_LIVE_POLL_S") or "0.5"
+    try:
+        v = float(raw)
+    except ValueError:
+        v = 0
+    if not 0 < v <= 60:
+        raise Fail(3, "not configured: VFG_LIVE_POLL_S must be seconds, more than 0")
+    return v
+
+
+def looks_like_script(folder):
+    """main.py with a README.md beside it (a seed), or a main.py that starts with its docstring."""
+    main = os.path.join(folder, "main.py")
+    if not os.path.isfile(main):
+        return False
+    if os.path.isfile(os.path.join(folder, "README.md")):
+        return True
+    try:
+        with open(main, encoding="utf-8", errors="replace") as f:
+            head = f.read(4096).lstrip()
+    except OSError:
+        return False
+    return head[:1] in ("'", '"') or head[:2].lower() in ('r"', "r'", 'u"', "u'")
+
+
+def script_problem(cfg, name, root=None):
+    """Why <root>/<name> (scripts/ by default) is not a script, or None."""
+    root = root or scripts_dir(cfg)
+    folder = os.path.join(root, name)
+    where = os.path.relpath(folder, cfg.repo)
     if not NAME_RE.match(name):
         return "%s is not a script name (a-z, 0-9, _ and -, at most 48)" % name
     if not os.path.isdir(folder):
-        return "no scripts/%s/ in %s" % (name, tilde(cfg.repo))
-    for f in ("main.py", "README.md"):
-        if not os.path.isfile(os.path.join(folder, f)):
-            return "scripts/%s/ has no %s" % (name, f)
+        return "no %s/ in %s" % (where, tilde(cfg.repo))
+    if not os.path.isfile(os.path.join(folder, "main.py")):
+        return "%s/ has no main.py" % where
+    if not looks_like_script(folder):
+        return "%s/ has no README.md, and its main.py does not start with a docstring" % where
     return None
 
 
-def pack(cfg, names):
+def pack(cfg, names, root=None):
     """The folders as a gzipped tar in memory, base64; no caches, no dotfiles."""
-    root = scripts_dir(cfg)
+    root = root or scripts_dir(cfg)
     buf = io.BytesIO()
 
     def tidy(ti):
@@ -942,32 +994,66 @@ def with_lib(cfg, names):
     return (["_lib"] if os.path.isdir(lib) else []) + list(names)
 
 
+def made_root(cfg):
+    """made/<server>/scripts as the box names it, below /opt/vfg."""
+    return "made/%s/scripts" % server_name(cfg)
+
+
+def tars_for(cfg, source, names):
+    """What one deploy sends: _lib/ (with kit/) and library scripts into scripts/,
+    made scripts into made/<server>/scripts/."""
+    if source == "made":
+        tars = [{"root": "scripts", "tar": pack(cfg, with_lib(cfg, []))}] if with_lib(cfg, []) else []
+        return tars + [{"root": made_root(cfg), "tar": pack(cfg, names, made_scripts_dir(cfg))}]
+    return [{"root": "scripts", "tar": pack(cfg, with_lib(cfg, names))}]
+
+
+def scan_scripts(cfg, root):
+    names, skipped = [], []
+    try:
+        listing = sorted(os.listdir(root))
+    except OSError:
+        return names, skipped
+    for name in listing:
+        if name.startswith((".", "_")) or not os.path.isdir(os.path.join(root, name)):
+            continue
+        if script_problem(cfg, name, root):
+            skipped.append(os.path.relpath(os.path.join(root, name), scripts_dir(cfg))
+                           if root == scripts_dir(cfg) else os.path.relpath(os.path.join(root, name), cfg.repo))
+        else:
+            names.append(name)
+    return names, skipped
+
+
 def cmd_script_deploy(cfg, a):
     root = scripts_dir(cfg)
     if not os.path.isdir(root):
         raise Fail(1, "no scripts folder at %s" % tilde(root))
-    skipped = []
+    made = made_scripts_dir(cfg)
+    skipped, lib_names, made_names = [], [], []
     if a.name:
         if not NAME_RE.match(a.name):
             raise Fail(2, "%s is not a script name" % a.name)
-        why = script_problem(cfg, a.name)
+        if not os.path.isdir(os.path.join(root, a.name)) and os.path.isdir(os.path.join(made, a.name)):
+            why = script_problem(cfg, a.name, made)
+            made_names = [a.name]
+        else:
+            why = script_problem(cfg, a.name)
+            lib_names = [a.name]
         if why:
             raise Fail(1, why)
-        names = [a.name]
     else:
-        names = []
-        for name in sorted(os.listdir(root)):
-            if name.startswith((".", "_")) or not os.path.isdir(os.path.join(root, name)):
-                continue
-            if script_problem(cfg, name):
-                skipped.append(name)
-            else:
-                names.append(name)
-    rc, o, e = remote(cfg, a, "scripts.py", {"op": "deploy", "tar": pack(cfg, with_lib(cfg, names))}, 30)
+        lib_names, skipped = scan_scripts(cfg, root)
+        made_names, skipped_made = scan_scripts(cfg, made)
+        skipped += skipped_made
+    tars = [{"root": "scripts", "tar": pack(cfg, with_lib(cfg, lib_names))}]
+    if made_names:
+        tars.append({"root": made_root(cfg), "tar": pack(cfg, made_names, made)})
+    rc, o, e = remote(cfg, a, "scripts.py", {"op": "deploy", "tars": tars}, 30)
     finish(rc, o, e)
     if skipped:
-        raise Fail(1, "skipped, not scripts (a script is <name>/main.py plus README.md): %s"
-                   % ", ".join(skipped))
+        raise Fail(1, "skipped, not scripts (a script is <name>/main.py starting with its docstring, "
+                      "or with a README.md): %s" % ", ".join(skipped))
     return 0
 
 
@@ -976,59 +1062,435 @@ WAIT_BARE = 30.0      # a bare --wait: up to 30 s for a script that ends by itse
 SECONDS_RE = re.compile(r"^(\d+(\.\d*)?|\.\d+)$")
 
 
-def cmd_script_run(cfg, a):
-    """`run [--wait [S]] [--no-deploy] <name> [args…]`, parsed by hand.
+def run_words(a):
+    """`run [--wait [S]] [--no-deploy] [--task T7] <name> [as=<instance>] [words…]`, by hand.
 
     rewrite_argv hands every word after `run` over untouched (behind one
-    `--`), so `--wait` and `--no-deploy` count before or after the name until
-    a `--` of the caller's; `--wait` takes seconds only when the next word is
-    a plain number, so `--wait hello` waits 30 s and runs hello."""
+    `--`), so the flags and `as=` count before or after the name until a `--`
+    of the caller's; `--wait` takes seconds only when the next word is a plain
+    number, so `--wait hello` waits 30 s and runs hello."""
     rest = list(a.rest)
     if rest[:1] == ["--"]:
         rest = rest[1:]
-    wait, deploy, name, args = None, not a.no_deploy, None, []
+    r = argparse.Namespace(wait=None, deploy=not a.no_deploy, name=None, words=[], instance=None,
+                           task=None)
     i = 0
     while i < len(rest):
         tok = rest[i]
         if tok == "--":
-            args.extend(rest[i + 1:])
+            r.words.extend(rest[i + 1:])
             break
         if tok == "--no-deploy":
-            deploy = False
+            r.deploy = False
         elif tok == "--wait":
             if i + 1 < len(rest) and SECONDS_RE.match(rest[i + 1]):
-                wait = float(rest[i + 1])
+                r.wait = float(rest[i + 1])
                 i += 1
             else:
-                wait = WAIT_BARE
+                r.wait = WAIT_BARE
         elif tok.startswith("--wait="):
             val = tok[len("--wait="):]
             if not SECONDS_RE.match(val):
                 raise Fail(2, "--wait takes seconds, like --wait 10 or --wait=10")
-            wait = float(val)
-        elif name is None:
-            name = tok
+            r.wait = float(val)
+        elif tok == "--task":
+            if i + 1 >= len(rest):
+                raise Fail(2, "--task takes the task, like --task T7")
+            r.task = rest[i + 1]
+            i += 1
+        elif tok.startswith("--task="):
+            r.task = tok[len("--task="):]
+        elif tok.startswith("as="):
+            r.instance = tok[3:]
+        elif r.name is None:
+            r.name = tok
         else:
-            args.append(tok)
+            r.words.append(tok)
         i += 1
-    if name is None:
-        raise Fail(2, "which script? vfg script run <name> [args…]")
-    if not NAME_RE.match(name):
-        raise Fail(2, "%s is not a script name" % name)
-    check_home(args)
-    if wait is None:
-        wait = WAIT_DEFAULT
-    tar = None
-    if deploy:
-        why = script_problem(cfg, name)
+    return r
+
+
+def cmd_script_run(cfg, a):
+    """Start one instance of a script: its values checked here, then one SSH call."""
+    r = run_words(a)
+    if r.name is None:
+        raise Fail(2, "which script? vfg script run <name> [as=<instance>] [key=value …]")
+    if not NAME_RE.match(r.name):
+        raise Fail(2, "%s is not a script name" % r.name)
+    instance = r.instance if r.instance is not None else r.name
+    if not NAME_RE.match(instance):
+        raise Fail(2, "as=%s is not an instance name (a-z, 0-9, _ and -, at most 48)" % instance)
+    if r.task is not None and not TASK_RE.match(r.task):
+        raise Fail(2, "--task is T<n>, like T7")
+    check_home(r.words)
+    wait = WAIT_DEFAULT if r.wait is None else r.wait
+    library, lib = load_library(cfg)
+    item = lib.script(r.name)
+    if item is None and r.deploy:
+        raise Fail(1, "no scripts/%s/ in %s, nor made/%s/scripts/%s/"
+                   % (r.name, tilde(cfg.repo), server_name(cfg), r.name))
+    source = item.source if item is not None else "library"
+    values, argv = None, list(r.words)
+    if item is not None and item.values_node is not None:
+        if item.values is None:
+            raise Fail(1, "%s's VALUES is not a literal — vfg script check %s" % (r.name, r.name))
+        try:
+            values, notes = library.parse_given(item.values, r.words, lib.gone)
+        except library.ValueProblem as e:
+            raise Fail(2, "%s: %s" % (r.name, e))
+        argv = ["%s=%s" % (k, library.argv_word(v)) for k, v in values.items()]
+        for note in notes:
+            out(note)
+    tars = []
+    if r.deploy:
+        why = script_problem(cfg, r.name, made_scripts_dir(cfg) if source == "made" else None)
         if why:
             raise Fail(1, why)
-        tar = pack(cfg, with_lib(cfg, [name]))
+        tars = tars_for(cfg, source, [r.name])
     owner = cfg.get("VFG_OWNER")
     if owner and not PLAYER_RE.match(owner):
         raise Fail(3, "not configured: VFG_OWNER must be a Minecraft name")
-    args_ = {"op": "run", "name": name, "args": args, "wait": wait, "tar": tar, "owner": owner}
+    args_ = {"op": "run", "instance": instance, "script": r.name, "source": source,
+             "server": server_name(cfg), "values": values, "argv": argv, "task": r.task,
+             "wait": wait, "tars": tars, "owner": owner, "poll": live_poll(cfg)}
     return finish(*remote(cfg, a, "scripts.py", args_, wait + 30))
+
+
+def remote_json(cfg, a, args, timeout=30):
+    """A remote op that answers one JSON line, last; anything printed before it (a
+    restarted script's output) is passed on, and failures pass through as they are."""
+    rc, o, e = remote(cfg, a, "scripts.py", args, timeout)
+    if rc != 0:
+        finish(rc, o, e)
+    lines = o.decode("utf-8", "replace").rstrip("\n").split("\n")
+    try:
+        got = json.loads(lines[-1])
+    except ValueError:
+        raise Fail(1, "scripts.py answered something that is not JSON")
+    if len(lines) > 1:
+        out("\n".join(lines[:-1]))
+    return got
+
+
+def instance_item(cfg, library, info):
+    """The local script an instance runs, as the box recorded it, or None."""
+    script = info.get("script") or ""
+    if not NAME_RE.match(script):
+        return None
+    if info.get("source") == "made":
+        server = info.get("server") or server_name(cfg)
+        root = os.path.join(cfg.repo, "made", server, "scripts")
+    else:
+        root = scripts_dir(cfg)
+    path = os.path.join(root, script, "main.py")
+    if not os.path.isfile(path):
+        return None
+    return library.parse(path, "script", script, info.get("source") or "library",
+                         os.path.relpath(path, cfg.repo))
+
+
+def current_values(item, info):
+    """An instance's values now: the command's, then the live file's live keys."""
+    cur = dict(info.get("values") or {})
+    vals = item.values if item is not None and isinstance(item.values, dict) else None
+    for k, v in (info.get("live") or {}).items():
+        if vals is None or (isinstance(vals.get(k), dict) and vals[k].get("live")):
+            cur[k] = v
+    return cur
+
+
+def cmd_script_set(cfg, a):
+    """Live values into the running instance's values file; any other value restarts it."""
+    if not NAME_RE.match(a.instance):
+        raise Fail(2, "%s is not an instance name" % a.instance)
+    check_home(a.values)
+    library, lib = load_library(cfg)
+    info = remote_json(cfg, a, {"op": "info", "instance": a.instance})
+    if not info.get("pid"):
+        raise Fail(1, "%s is not running — vfg script list" % a.instance)
+    item = instance_item(cfg, library, info)
+    if item is None:
+        raise Fail(1, "%s runs %s, which is not in %s here" % (a.instance, info.get("script"),
+                                                              "made/%s/scripts/" % (info.get("server") or
+                                                                                    server_name(cfg))
+                                                              if info.get("source") == "made" else "scripts/"))
+    if item.values_node is None or item.values is None:
+        raise Fail(1, "%s (%s) has no VALUES to set: stop it, then run it again with new arguments"
+                   % (a.instance, item.name))
+    try:
+        given, notes = library.parse_given(item.values, a.values, lib.gone)
+    except library.ValueProblem as e:
+        raise Fail(2, "%s: %s" % (item.name, e))
+    live = dict((k, v) for k, v in given.items() if item.values[k].get("live"))
+    fixed = dict((k, v) for k, v in given.items() if not item.values[k].get("live"))
+    restart = None
+    if fixed:
+        command = dict(info.get("values") or {})
+        command.update(fixed)
+        restart = {"values": command,
+                   "argv": ["%s=%s" % (k, library.argv_word(v)) for k, v in command.items()]}
+    got = remote_json(cfg, a, {"op": "set", "instance": a.instance, "live": live, "restart": restart,
+                               "wait": WAIT_DEFAULT}, WAIT_DEFAULT + 30)
+    for note in notes:
+        out(note)
+    if live:
+        out("%s: %s — live, read again within %s s" % (a.instance, library.show(live), fmt_s(live_poll(cfg))))
+    if fixed:
+        info["values"] = restart["values"]
+        info["live"] = got.get("live") or {}
+        kept = library.differs(item.values, current_values(item, info))
+        for k in fixed:
+            kept.pop(k, None)
+        line = "%s restarted: %s %s not live" % (a.instance, ", ".join(fixed),
+                                                 "is" if len(fixed) == 1 else "are")
+        if got.get("restarted"):
+            line += ", pid %d" % got["restarted"]
+        line += "; kept %s" % (library.show(kept) if kept else "every other value at its default")
+        out(line)
+    return 0
+
+
+def instance_line(library, item, info):
+    """One `vfg script list` line: an instance, its script, task and changed values."""
+    name = info["instance"]
+    if info.get("pid"):
+        head = "%s running pid %d since %s" % (name, info["pid"], info.get("since") or "?")
+    else:
+        head = "%s stopped" % name
+    bits = []
+    script = info.get("script") or name
+    if script != name or info.get("source") == "made":
+        bits.append(script + (" (made)" if info.get("source") == "made" else ""))
+    if info.get("task"):
+        bits.append(info["task"])
+    cur = current_values(item, info)
+    vals = item.values if item is not None and isinstance(item.values, dict) else None
+    changed = library.differs(vals, cur) if vals is not None else cur
+    if changed:
+        bits.append(library.show(changed))
+    if info.get("args"):
+        bits.append(" ".join(info["args"]))
+    return head + (" — " + ", ".join(bits) if bits else "")
+
+
+def cmd_script_list(cfg, a):
+    library, lib = load_library(cfg)
+    rows = remote_json(cfg, a, {"op": "instances"})
+    lines = [instance_line(library, instance_item(cfg, library, r), r) for r in rows]
+    if lines:
+        out("\n".join(lines))
+    return 0
+
+
+def copy_script(src_folder, dest, text):
+    """src_folder (or nothing) copied to dest, its main.py replaced by text; all or nothing."""
+    import shutil
+    parent = os.path.dirname(dest)
+    os.makedirs(parent, exist_ok=True)
+    tmp = os.path.join(parent, ".%s.new-%d" % (os.path.basename(dest), os.getpid()))
+    shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        if src_folder:
+            shutil.copytree(src_folder, tmp, ignore=shutil.ignore_patterns("__pycache__", ".*", "*.pyc"))
+        else:
+            os.makedirs(tmp)
+        with open(os.path.join(tmp, "main.py"), "w", encoding="utf-8") as f:
+            f.write(text)
+        os.rename(tmp, dest)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def report_check(library, lib, path, kind, name, source):
+    """Run check on what was just written; print its problems. True when it passes."""
+    item = library.parse(path, kind, name, source, os.path.relpath(path, lib.repo))
+    problems = library.check(item, lib)
+    if problems:
+        out("check: %d to fix before it is done:" % len(problems))
+        out("\n".join("  " + p for p in problems))
+    else:
+        out("check: ok")
+    return not problems
+
+
+def cmd_script_new(cfg, a):
+    """A new script: a copy of --from (or an empty one), each --preset copied in."""
+    if not NAME_RE.match(a.name):
+        raise Fail(2, "%s is not a script name (a-z, 0-9, _ and -, at most 48)" % a.name)
+    library, lib = load_library(cfg)
+    taken = lib.taken(a.name, "script")
+    if taken:
+        raise Fail(1, "%s is taken: %s — pick another name" % (a.name, taken))
+    presets = []
+    for p in a.preset or []:
+        it = lib.preset(p)
+        if it is None:
+            raise Fail(1, "no preset %s in scripts/_presets/ or made/%s/presets/" % (p, lib.server))
+        if it.problem:
+            raise Fail(1, "%s: %s" % (it.rel, it.problem))
+        if any(x.name == p for x in presets):
+            raise Fail(2, "--preset %s is given twice" % p)
+        presets.append(it)
+    src = None
+    if a.source:
+        src = lib.script(a.source)
+        if src is None:
+            raise Fail(1, "no script %s in scripts/ or made/%s/scripts/" % (a.source, lib.server))
+        if src.problem:
+            raise Fail(1, "%s: %s" % (src.rel, src.problem))
+        if presets and src.values_node is None:
+            raise Fail(1, "%s has no VALUES (a seed script): presets go into a script that has them "
+                          "— start from an example, or from none" % a.source)
+        text = src.text
+    else:
+        text = library.SKELETON
+    added = []
+    for p in presets:
+        try:
+            text, keys, imports = library.add_preset(text, p, lib.server)
+        except ValueError as e:
+            raise Fail(1, "cannot copy %s in: %s" % (p.name, e))
+        added.append((p, keys, imports))
+    dest = os.path.join(scripts_dir(cfg) if a.library else lib.made_scripts, a.name)
+    copy_script(src.folder if src else None, dest, text)
+    rel = os.path.relpath(dest, cfg.repo)
+    out("made %s/ %s" % (rel, "from %s/ (%s)" % (os.path.dirname(src.rel), src.source) if src
+                          else "from nothing"))
+    for p, keys, imports in added:
+        out("  + %s (%s): %s" % (p.name, p.source, ", ".join(keys) if keys else "no values"))
+    report_check(library, lib, os.path.join(dest, "main.py"), "script", a.name,
+                 "library" if a.library else "made")
+    out("next: edit its first line, ASKS and the wiring, then vfg script check %s" % a.name)
+    return 0
+
+
+def check_targets(cfg, library, lib, target):
+    """Items for one `vfg script check` argument: a name (script, preset or both) or a path."""
+    found = []
+    if NAME_RE.match(target) and "/" not in target:
+        for it in (lib.script(target), lib.preset(target)):
+            if it is not None:
+                found.append(it)
+        if found:
+            return found
+    path = os.path.abspath(target)
+    if os.path.isdir(path):
+        path = os.path.join(path, "main.py")
+    if not os.path.isfile(path):
+        raise Fail(1, "no script or preset %s (a name, a script's folder or a .py)" % target)
+    rel = os.path.relpath(path, cfg.repo)
+    rel = path if rel.startswith("..") else rel
+    source = "made" if rel.startswith("made/") else "library"
+    parent = os.path.basename(os.path.dirname(path))
+    if os.path.basename(path) == "main.py":
+        return [library.parse(path, "script", parent, source, rel)]
+    if parent in ("_presets", "presets"):
+        return [library.parse(path, "preset", None, source, rel)]
+    it = library.parse(path, "script", os.path.splitext(os.path.basename(path))[0], source, rel)
+    if it.asks is None and not it.problem:
+        it = library.parse(path, "preset", None, source, rel)
+    return [it]
+
+
+def cmd_script_check(cfg, a):
+    library, lib = load_library(cfg)
+    if a.targets:
+        items = []
+        for t in a.targets:
+            items.extend(check_targets(cfg, library, lib, t))
+    else:
+        items = lib.scripts() + lib.presets()
+    problems, bad = [], 0
+    for it in items:
+        got = library.check(it, lib)
+        problems.extend(got)
+        bad += 1 if got else 0
+    if problems:
+        out("\n".join(problems))
+        raise Fail(1, "%d problem%s in %d of %d file%s" % (len(problems), "" if len(problems) == 1 else "s",
+                                                           bad, len(items), "" if len(items) == 1 else "s"))
+    scripts = [i for i in items if i.kind == "script"]
+    seeds = [i for i in scripts if i.legacy and i.source == "library"]
+    presets = [i for i in items if i.kind == "preset"]
+    if a.targets and len(items) <= 3:
+        out("ok: " + ", ".join(i.rel for i in items))
+    else:
+        out("ok: %d script%s%s and %d preset%s" % (len(scripts), "" if len(scripts) == 1 else "s",
+                                                  " (%d seeds)" % len(seeds) if seeds else "",
+                                                  len(presets), "" if len(presets) == 1 else "s"))
+    return 0
+
+
+def cmd_script_save(cfg, a):
+    """An instance's script, with its values now as the defaults, into made/<server>/scripts/."""
+    if not NAME_RE.match(a.instance):
+        raise Fail(2, "%s is not an instance name" % a.instance)
+    if not NAME_RE.match(a.new_name):
+        raise Fail(2, "%s is not a script name (a-z, 0-9, _ and -, at most 48)" % a.new_name)
+    library, lib = load_library(cfg)
+    taken = lib.taken(a.new_name, "script")
+    if taken:
+        raise Fail(1, "%s is taken: %s — pick another name" % (a.new_name, taken))
+    info = remote_json(cfg, a, {"op": "info", "instance": a.instance})
+    item = instance_item(cfg, library, info)
+    if item is None:
+        raise Fail(1, "%s runs %s, which is not here to copy" % (a.instance, info.get("script")))
+    if item.values is None:
+        raise Fail(1, "%s (%s) has no VALUES to save as defaults" % (a.instance, item.name))
+    cur, skipped = {}, []
+    for k, v in current_values(item, info).items():
+        entry = item.values.get(k)
+        if not isinstance(entry, dict):
+            skipped.append(k)
+            continue
+        try:
+            cur[k], _note = library.coerce(k, entry, v, lib.gone)
+        except library.ValueProblem:
+            skipped.append(k)
+    text = library.set_defaults(item.text, cur)
+    dest = lib.made_script_dir(a.new_name)
+    copy_script(item.folder, dest, text)
+    changed = library.differs(item.values, cur)
+    out("saved %s/ from %s (%s), with %s" % (os.path.relpath(dest, cfg.repo), a.instance, item.name,
+                                             library.show(changed) + " as its defaults" if changed
+                                             else "the same defaults"))
+    if skipped:
+        out("left at their defaults, no longer in its VALUES: %s" % ", ".join(skipped))
+    report_check(library, lib, os.path.join(dest, "main.py"), "script", a.new_name, "made")
+    out("next: put the player's words in its ASKS, then vfg script check %s" % a.new_name)
+    return 0
+
+
+def cmd_preset_save(cfg, a):
+    """Lift a function out of a script into made/<server>/presets/<name>.py."""
+    library, lib = load_library(cfg)
+    if not library.PRESET_RE.match(a.name):
+        raise Fail(2, "%s is not a preset name (a-z, 0-9 and _, starting with a letter)" % a.name)
+    taken = lib.taken(a.name, "preset")
+    if taken:
+        raise Fail(1, "%s is taken: %s — pick another name" % (a.name, taken))
+    item = lib.script(a.script)
+    if item is None:
+        raise Fail(1, "no script %s in scripts/ or made/%s/scripts/" % (a.script, lib.server))
+    if item.problem:
+        raise Fail(1, "%s: %s" % (item.rel, item.problem))
+    try:
+        text, renames, helpers = library.lift(item, a.function, a.name)
+    except ValueError as e:
+        raise Fail(1, str(e))
+    dest = lib.made_preset_path(a.name)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    atomic_write(dest, text, 0o644)
+    vals = ", ".join(new if new == old else "%s (was %s)" % (new, old) for old, new in renames.items())
+    out("saved %s from %s.%s: values %s%s" % (os.path.relpath(dest, cfg.repo), a.script, a.function,
+                                              vals or "none",
+                                              "; helpers " + ", ".join(helpers) if helpers else ""))
+    report_check(library, lib, dest, "preset", a.name, "made")
+    return 0
+
+
+def cmd_preset(cfg, a):
+    return cmd_preset_save(cfg, a)
 
 
 def cmd_script(cfg, a):
@@ -1036,19 +1498,133 @@ def cmd_script(cfg, a):
         return cmd_script_deploy(cfg, a)
     if a.op == "run":
         return cmd_script_run(cfg, a)
-    if a.op in ("stop", "logs") and not NAME_RE.match(a.name):
-        raise Fail(2, "%s is not a script name" % a.name)
+    if a.op == "new":
+        return cmd_script_new(cfg, a)
+    if a.op == "check":
+        return cmd_script_check(cfg, a)
+    if a.op == "set":
+        return cmd_script_set(cfg, a)
+    if a.op == "save":
+        return cmd_script_save(cfg, a)
+    if a.op == "list":
+        return cmd_script_list(cfg, a)
+    if not NAME_RE.match(a.name):
+        raise Fail(2, "%s is not an instance name" % a.name)
     if a.op == "stop":
         return finish(*remote(cfg, a, "scripts.py", {"op": "stop", "name": a.name}, 30))
-    if a.op == "logs":
-        if a.n < 0:
-            raise Fail(2, "-n is 0 or more")
-        follow = bool(a.follow)
-        args = {"op": "logs", "name": a.name, "n": a.n, "follow": follow}
-        if follow:
-            return follow_call(cfg, program("scripts.py", dict(args, vfg=cfg.rvfg, mc=cfg.rmc)))
-        return finish(*remote(cfg, a, "scripts.py", args, 30))
-    return finish(*remote(cfg, a, "scripts.py", {"op": "list"}, 30))
+    if a.n < 0:
+        raise Fail(2, "-n is 0 or more")
+    follow = bool(a.follow)
+    args = {"op": "logs", "name": a.name, "n": a.n, "follow": follow}
+    if follow:
+        return follow_call(cfg, program("scripts.py", dict(args, vfg=cfg.rvfg, mc=cfg.rmc)))
+    return finish(*remote(cfg, a, "scripts.py", args, 30))
+
+
+# ------------------------------------------------------------------ state
+
+def day_phase(t):
+    t %= 24000
+    return "day" if t < 12000 else "dusk" if t < 13000 else "night" if t < 23000 else "dawn"
+
+
+def touches(item, info, cur, online):
+    """Who an instance acts on: its player-type values (a list of players too); for a
+    script without VALUES, the online players its arguments name."""
+    vals = item.values if item is not None and isinstance(item.values, dict) else None
+    out_ = []
+    if vals is None:
+        names = dict((p.lower(), p) for p in online)
+        for w in info.get("args") or []:
+            if w.lower() in names and names[w.lower()] not in out_:
+                out_.append(names[w.lower()])
+        return out_
+    full = dict((k, e.get("default")) for k, e in vals.items() if isinstance(e, dict))
+    full.update(cur)
+    for k, e in vals.items():
+        if not isinstance(e, dict):
+            continue
+        v = full.get(k)
+        if e.get("type") == "player" and isinstance(v, str):
+            got = [x.strip() for x in v.split(",") if x.strip()]
+        elif e.get("type") == "list" and e.get("of") == "player" and isinstance(v, list):
+            got = [x for x in v if isinstance(x, str)]
+        else:
+            continue
+        for x in got:
+            if x not in out_:
+                out_.append(x)
+    return out_
+
+
+def cmd_state(cfg, a):
+    """Who is online, where, the time, the weather and every running instance: one SSH call."""
+    t0 = time.monotonic()
+    library, lib = load_library(cfg)
+    rc, o, e = remote(cfg, a, "scripts.py", {"op": "state"}, 30)
+    if rc not in (0, 5):
+        finish(rc, o, e)
+    try:
+        world = json.loads(o.decode("utf-8"))
+    except ValueError:
+        finish(rc, o, e)
+        raise Fail(1, "scripts.py answered something that is not JSON")
+    names = [p["name"] for p in world.get("online") or []]
+    running = []
+    for info in world.get("instances") or []:
+        item = instance_item(cfg, library, info)
+        cur = current_values(item, info)
+        vals = item.values if item is not None and isinstance(item.values, dict) else None
+        full = library.defaults(vals) if vals is not None else {}
+        full.update(cur)
+        running.append({"instance": info["instance"], "script": info.get("script"),
+                        "source": info.get("source"), "task": info.get("task"), "pid": info.get("pid"),
+                        "since": info.get("since"), "started": info.get("started"),
+                        "values": full, "changed": library.differs(vals, cur) if vals is not None else cur,
+                        "args": info.get("args") or [], "touches": touches(item, info, cur, names)})
+    weather = None
+    if world.get("raining") is not None:
+        weather = "thunder" if world.get("thundering") else "rain" if world.get("raining") else "clear"
+    daytime = world.get("daytime")
+    result = {"online": world.get("online") or [],
+              "time": {"daytime": daytime, "day": world.get("day"),
+                       "phase": day_phase(daytime) if isinstance(daytime, int) else None},
+              "weather": weather, "instances": running, "rcon": world.get("rcon"),
+              "ms": int((time.monotonic() - t0) * 1000)}
+    if a.json:
+        out(json.dumps(result, ensure_ascii=False))
+    else:
+        rows = []
+        if world.get("rcon"):
+            rows.append(("minecraft", world["rcon"]))
+        else:
+            people = ["%s %s %s" % (p["name"], " ".join(str(c) for c in p["pos"]) if p.get("pos") else "?",
+                                    p.get("dimension") or "?") for p in result["online"]]
+            rows.append(("online", ", ".join(people) if people else "nobody"))
+            t = result["time"]
+            rows.append(("time", "%s (%s)%s" % (t["phase"] or "?", "?" if daytime is None else daytime,
+                                                ", day %d" % t["day"] if isinstance(t["day"], int) else "")))
+            rows.append(("weather", weather or "unknown"))
+        for r in running:
+            bits = []
+            if r["script"] != r["instance"] or r["source"] == "made":
+                bits.append(r["script"] + (" (made)" if r["source"] == "made" else ""))
+            if r["task"]:
+                bits.append(r["task"])
+            if r["changed"]:
+                bits.append(library.show(r["changed"]))
+            if r["args"]:
+                bits.append(" ".join(r["args"]))
+            line = r["instance"] + (" — " + ", ".join(bits) if bits else "")
+            if r["touches"]:
+                line += "; touches " + ", ".join(r["touches"])
+            rows.append(("running", line))
+        if not running:
+            rows.append(("running", "nothing"))
+        out("\n".join("%-10s%s" % row for row in rows))
+    if rc == 5:
+        finish(rc, b"", e)
+    return 0
 
 
 class _Stop(Exception):
@@ -1068,6 +1644,158 @@ def follow_call(cfg, data):
     except _Stop:
         return 0
     return finish(rc, o, e)
+
+
+# ------------------------------------------------------------------ route
+
+LIB = os.path.join(HERE, "lib")
+
+
+def lib_module(name):
+    """A module from toolkit/lib/, imported on first use."""
+    if LIB not in sys.path:
+        sys.path.insert(0, LIB)
+    return __import__(name)
+
+
+def task_record(cfg, tid):
+    """(task, context) for `tid` from the orchestrator's records, or None.
+
+    Its entry in state.json, else its line in inbox.jsonl (Contracts §9). The
+    one place vfg route reads the runner's files, so a change of their shape
+    is one change here."""
+    try:
+        with open(os.path.join(cfg.orch, "state.json"), encoding="utf-8") as f:
+            t = (json.load(f).get("tasks") or {}).get(tid)
+        if isinstance(t, dict) and t.get("task"):
+            return t.get("task") or "", t.get("context") or ""
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    for r in read_jsonl(os.path.join(cfg.orch, "inbox.jsonl")):
+        if r.get("id") == tid:
+            return r.get("task") or "", r.get("context") or ""
+    return None
+
+
+def setting(cfg, key, default, lo, hi):
+    """A number setting within [lo, hi]; an empty one is the default."""
+    raw = cfg.get(key)
+    try:
+        v = float(raw) if raw else default
+    except ValueError:
+        raise Fail(3, "not configured: %s must be a number" % key)
+    if not lo <= v <= hi:
+        raise Fail(3, "not configured: %s must be from %s to %s" % (key, fmt_s(lo), fmt_s(hi)))
+    return v
+
+
+def jev_ask(cfg, state, questions, budget):
+    """One Jev call through remote/jev.py, everything within `budget` seconds.
+
+    Raises route.JevFailed for anything short of an answer: not configured,
+    EC2 unreachable, Jev down or refusing, or no answer in time. A late answer
+    is never waited for, and the shared SSH master is left up for the next."""
+    route = lib_module("route")
+    deadline = time.monotonic() + budget
+    spent = route.estimate(state, questions)
+    try:
+        ssh = Ssh(cfg)
+    except Fail as f:
+        raise route.JevFailed(f.msg)
+    via_master = ssh.ensure_master(deadline)
+    for direct in ([False, True] if via_master else [True]):
+        left = deadline - time.monotonic()
+        if left <= 0.05:
+            raise route.JevFailed("jev did not answer within %s s" % fmt_s(budget), tokens=spent)
+        data = program("jev.py", {"vfg": cfg.rvfg, "mc": cfg.rmc, "state": state,
+                                  "questions": questions, "timeout": round(max(0.2, left - 0.05), 2)})
+        try:
+            p = subprocess.Popen(ssh.argv(direct=direct), stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except OSError as e:
+            raise route.JevFailed("cannot run %s (%s)" % (cfg.get("VFG_SSH"), e.strerror))
+        try:
+            o, e = p.communicate(data, timeout=left)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.communicate()
+            raise route.JevFailed("jev did not answer within %s s" % fmt_s(budget), tokens=spent)
+        if p.returncode == 255 and not direct:
+            txt = e.decode("utf-8", "replace")
+            if "Host key verification failed" not in txt and "IDENTIFICATION HAS CHANGED" not in txt:
+                continue
+        break
+    if p.returncode == 255:
+        raise route.JevFailed(ssh.unreachable(e).msg)
+    if p.returncode != 0:
+        lines = [l.strip() for l in e.decode("utf-8", "replace").splitlines() if l.strip()]
+        line = lines[-1] if lines else "jev.py exited %d" % p.returncode
+        line = line[5:] if line.startswith("vfg: ") else line
+        if line.startswith("jev did not answer within"):
+            # the box gave up first, on what was left of the budget
+            raise route.JevFailed("jev did not answer within %s s" % fmt_s(budget), tokens=spent)
+        raise route.JevFailed(line)
+    try:
+        got = json.loads(o.decode("utf-8"))
+    except ValueError:
+        raise route.JevFailed("jev.py answered something that is not JSON")
+    if not isinstance(got, dict):
+        raise route.JevFailed("jev.py answered something that is not an object")
+    return got
+
+
+def usage_later(cfg, ref, tokens):
+    """The router's usage row, by `vfg usage add` in its own session: the picks
+    are printed without waiting for it, and it queues the row if EC2 is down."""
+    cost = "%.9f" % (tokens * 0.000000042)   # $42 per billion input tokens, output free
+    argv = [sys.executable, os.path.join(HERE, "vfg"), "usage", "add", "--component", "jev",
+            "--model", "jev-latest", "--in", str(tokens), "--out", "0", "--cost", cost]
+    if ref:
+        argv += ["--ref", ref]
+    try:
+        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+    except OSError as e:
+        warn("usage row not written: cannot run vfg (%s)" % e.strerror)
+
+
+def cmd_route(cfg, a):
+    """The example scripts and presets for one implementer's brief, as JSON."""
+    t0 = time.monotonic()
+    if a.task is not None and not TASK_RE.match(a.task):
+        raise Fail(2, "--task is T<n>, like T7")
+    ref = a.ref if a.ref is not None else a.task
+    if ref is not None and not 0 < len(ref) <= 64:
+        raise Fail(2, "--ref is 1 to 64 characters")
+    if sys.stdin is None or sys.stdin.isatty():
+        raise Fail(2, "the brief goes on stdin: vfg route --task T7 < brief.txt")
+    brief = sys.stdin.buffer.read().decode("utf-8", "replace").strip()
+    task, context = "", ""
+    if a.task:
+        found = task_record(cfg, a.task)
+        if found is None:
+            warn("%s is in neither state.json nor inbox.jsonl — routing on the brief alone" % a.task)
+        else:
+            task, context = found
+    if not brief and not task:
+        raise Fail(2, "no brief on stdin")
+    budget = setting(cfg, "VFG_ROUTE_TIMEOUT_S", 3.0, 0.1, 60)
+    load = setting(cfg, "VFG_ROUTE_LOAD", 0.3, 0.0, 1.0)
+    route = lib_module("route")
+    cards = route.load_cards(cfg.repo, server_name(cfg))
+    result = route.route(cards, brief, a.task, task, context,
+                         lambda st, qs, b: jev_ask(cfg, st, qs, b), load, budget, t0)
+    out(json.dumps(result, ensure_ascii=False))
+    usage_later(cfg, ref, result["tokens"])
+    sys.stderr.write(route.log_line(result) + "\n")
+    sys.stderr.flush()
+    return 0
+
+
+def cmd_prefix(cfg, a):
+    """The implementer's static system prompt, exactly: the same bytes every time."""
+    out_bytes(lib_module("prefix").build(cfg.repo).encode("utf-8"))
+    return 0
 
 
 # ------------------------------------------------------------------ watch
@@ -1458,26 +2186,74 @@ def build_parser():
     w.add_argument("fields", help="the fields; empty for SYS")
     w.add_argument("text")
 
-    s = sub.add_parser("script", help="deploy, run, stop, read and list scripts on EC2")
-    ss = s.add_subparsers(dest="op", metavar="deploy|run|stop|logs|list")
+    s = sub.add_parser("script", help="make, check, deploy, run, change, save, stop, read and "
+                       "list scripts and their instances")
+    ss = s.add_subparsers(dest="op", metavar="new|check|deploy|run|set|save|stop|logs|list")
     ss.required = True
-    w = ss.add_parser("deploy", help="copy scripts/ (or one) and _lib/ to /opt/vfg/scripts/")
+    w = ss.add_parser("new", help="a new script in made/<VFG_SERVER>/scripts/<name>/: a copy of "
+                      "--from, or an empty one, with each --preset copied in and its VALUES merged")
+    w.add_argument("name")
+    w.add_argument("--from", dest="source", metavar="SCRIPT", help="the script to copy, ours or the server's")
+    w.add_argument("--preset", action="append", metavar="NAME", help="a preset to copy in (repeats)")
+    w.add_argument("--library", action="store_true", help="into scripts/ instead (coding sessions only)")
+    w = ss.add_parser("check", help="refuse what would break: VALUES not a literal, a default "
+                      "outside its limits, a value read but not declared, two presets with one "
+                      "name, not Python 3.9; no argument checks everything")
+    w.add_argument("targets", nargs="*", metavar="name|path")
+    w = ss.add_parser("deploy", help="copy scripts/ and made/<VFG_SERVER>/scripts/ (or one) and "
+                      "_lib/ to /opt/vfg/")
     w.add_argument("name", nargs="?")
-    w = ss.add_parser("run", help="deploy, then run detached; refuses if it is running",
-                      usage="vfg script run [--wait [S]] [--no-deploy] <name> [args…]")
+    w = ss.add_parser("run", help="deploy, then run an instance detached; refuses if it is running",
+                      usage="vfg script run [--wait [S]] [--no-deploy] [--task T7] <name> "
+                            "[as=<instance>] [key=value …|args…]")
     w.add_argument("--wait", nargs="?", metavar="S",
                    help="wait up to S seconds for it to end and print its output; a bare --wait "
                         "waits %d s; without --wait, %d s (before or after the name)"
                         % (WAIT_BARE, WAIT_DEFAULT))
     w.add_argument("--no-deploy", action="store_true", help="run what is on EC2 as it is")
-    w.add_argument("rest", nargs=argparse.REMAINDER, metavar="<name> [args…]")
-    w = ss.add_parser("stop", help="SIGTERM its process group, SIGKILL after 5 s")
-    w.add_argument("name")
-    w = ss.add_parser("logs", help="the last N lines of its log")
-    w.add_argument("name")
+    w.add_argument("--task", metavar="T7", help="the task that started it, shown by list and state")
+    w.add_argument("rest", nargs=argparse.REMAINDER,
+                   metavar="<name> [as=<instance>] [key=value …|args…]",
+                   help="as=<instance> runs another instance of it; key=value are checked "
+                        "against its VALUES first (a seed script takes its words as they are)")
+    w = ss.add_parser("set", help="change a running instance's values: live ones in place, "
+                      "any other restarts it with the rest kept")
+    w.add_argument("instance")
+    w.add_argument("values", nargs="+", metavar="key=value")
+    w = ss.add_parser("save", help="copy an instance's script, with its values now as the "
+                      "defaults, into made/<VFG_SERVER>/scripts/<new_name>/")
+    w.add_argument("instance")
+    w.add_argument("new_name")
+    w = ss.add_parser("stop", help="SIGTERM an instance's process group, SIGKILL after 5 s")
+    w.add_argument("name", metavar="instance")
+    w = ss.add_parser("logs", help="the last N lines of an instance's log")
+    w.add_argument("name", metavar="instance")
     w.add_argument("-n", type=int, default=40, metavar="N")
     w.add_argument("--follow", action="store_true", help="keep printing until killed (never in a Bash call)")
-    ss.add_parser("list", help="every script on EC2, running or stopped")
+    ss.add_parser("list", help="every instance on EC2, running or stopped: its script, task "
+                  "and every value that differs from the default")
+
+    s = sub.add_parser("preset", help="lift a function out of a script into made/<VFG_SERVER>/presets/")
+    ps = s.add_subparsers(dest="op", metavar="save")
+    ps.required = True
+    w = ps.add_parser("save", help="the function, the private helpers it calls and the values it "
+                      "reads, as made/<VFG_SERVER>/presets/<name>.py; then check")
+    w.add_argument("script")
+    w.add_argument("function")
+    w.add_argument("name")
+
+    s = sub.add_parser("state", help="who is online and where, the time, the weather and every "
+                       "running instance, in one call")
+    s.add_argument("--json", action="store_true", help="as JSON, for code")
+
+    s = sub.add_parser("route", help="the example scripts and presets for an implementer's brief "
+                       "(on stdin), picked by Jev; prints JSON")
+    s.add_argument("--task", metavar="T7", help="the task the brief is for; its text and context "
+                   "come from the orchestrator's records")
+    s.add_argument("--ref", metavar="REF", help="the usage row's ref (default: the task)")
+
+    sub.add_parser("prefix", help="print the implementer's static system prompt: how a script is "
+                   "written, the kit, and every library script's and preset's first line and values")
 
     s = sub.add_parser("usage", help="write a usage row; queued locally when EC2 is down")
     us = s.add_subparsers(dest="op", metavar="add")
@@ -1489,6 +2265,8 @@ def build_parser():
     w.add_argument("--out", type=int, required=True, metavar="N")
     w.add_argument("--cost", type=float, metavar="X")
     w.add_argument("--ref", metavar="T7")
+    w.add_argument("--cache-read", type=int, metavar="N", help="input tokens read from the cache")
+    w.add_argument("--cache-write", type=int, metavar="N", help="input tokens written to the cache")
     return p
 
 
@@ -1582,6 +2360,14 @@ def run(argv, started):
         return cmd_feed(cfg, a)
     if a.command == "script":
         return cmd_script(cfg, a)
+    if a.command == "preset":
+        return cmd_preset(cfg, a)
+    if a.command == "state":
+        return cmd_state(cfg, a)
+    if a.command == "route":
+        return cmd_route(cfg, a)
+    if a.command == "prefix":
+        return cmd_prefix(cfg, a)
     if a.command == "usage":
         return cmd_usage(cfg, a, started)
     raise Fail(2, "unknown command")

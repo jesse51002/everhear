@@ -42,7 +42,32 @@ class TestSchema(Box):
             ("index", "lines_at"), ("index", "lines_player_at"), ("index", "events_at"),
         })
         self.assertEqual(self.query("PRAGMA journal_mode"), [("wal",)])
-        self.assertEqual(self.query("PRAGMA user_version"), [(1,)])
+        self.assertEqual(self.query("PRAGMA user_version"), [(2,)])
+        columns = [row[1] for row in self.query("PRAGMA table_info(usage)")]
+        self.assertEqual(columns[-2:], ["cache_read_tokens", "cache_write_tokens"])
+
+    def test_a_history_from_before_the_cache_columns_gets_them_on_start(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.executescript(CONTRACT_DDL)
+        conn.execute("PRAGMA user_version=1")
+        conn.execute("INSERT INTO usage (at, component, model, input_tokens, output_tokens)"
+                     " VALUES ('2026-10-08T05:00:00.000Z', 'jev', 'jev-latest', 10, 0)")
+        conn.commit()
+        conn.close()
+        for _ in range(2):
+            result = run(["-m", "vfg_bridge", "--init-db"])
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.query("PRAGMA user_version"), [(2,)])
+        self.assertEqual(self.query("SELECT input_tokens, cache_read_tokens, cache_write_tokens FROM usage"),
+                         [(10, None, None)])
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("INSERT INTO usage (at, component, model, input_tokens, output_tokens,"
+                     " cache_read_tokens, cache_write_tokens)"
+                     " VALUES ('2026-10-08T05:01:00.000Z', 'implementer', 'haiku', 5, 1, 900, 40)")
+        conn.commit()
+        conn.close()
+        self.assertEqual(self.query("SELECT cache_read_tokens, cache_write_tokens FROM usage WHERE id = 2"),
+                         [(900, 40)])
 
     def test_init_db_needs_no_token(self):
         result = run(["-m", "vfg_bridge", "--init-db"], env=subprocess_env({"VFG_CLIENT_TOKEN": ""}))
