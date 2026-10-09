@@ -31,7 +31,7 @@ Every timestamp is ISO-8601 UTC with milliseconds (`2026-10-07T18:22:31.412Z`). 
 
 - `202 {"id": "<line id>"}` stored; `400` bad body; `401` bad token. The token is checked before the body, so an empty `{}` with a good token gets `400` — the mod's connection test relies on it. Repeating a `client_line_id` returns the first id and stores nothing. An empty `player_uuid` is stored as NULL, the same as an AI line.
 - Plain HTTP is accepted for the prototype: the token only lets someone post lines.
-- The mod captures only while connected to the server whose address matches its configured `server_address`; a line captured then is still delivered after the player leaves, within its 60 s. A line is speech ended by **5 s of silence** (`silence_seconds`, default 5). `text` is 1–2000 characters after trimming. On failure it retries with backoff for up to 60 s, then drops the line.
+- The mod captures only while connected to the server whose address matches its configured `server_address`; a line captured then is still delivered after the player leaves, within its 60 s. A line is speech ended when the mod's turn model hears it finished, or by **`silence_seconds` of silence** (default 3). `text` is 1–2000 characters after trimming. On failure it retries with backoff for up to 60 s, then drops the line.
 
 ## 3. Chat and game events — Minecraft server → bridge
 
