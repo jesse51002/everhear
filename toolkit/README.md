@@ -93,6 +93,6 @@ No EC2 and no network: `tests/fake_ssh` runs the remote command locally,
 bridge's writer (and `TestRealFeedWriter` uses `../bridge/vfg_feed.py` when it is
 there), and `tests/bin/` holds fake `systemctl`, `sudo` and `journalctl`. The place
 tests, and a run of the real `teleport` handler, answer RCON with
-`../scripts/_test/fake_world.py`, a small world speaking Minecraft 26.3's recorded
+`../scripts/_test/fake_places_world.py`, a small world speaking Minecraft 26.3's recorded
 replies; a fake `java` stands in for the data generator. Two environment knobs exist
 for the tests only: `VFG_WATCH_SILENCE_S` (35) and `VFG_WATCH_UNREACHABLE_S` (60).

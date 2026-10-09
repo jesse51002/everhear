@@ -9,7 +9,7 @@ every command, and answers a few the way the fake toolkit does.
     anything else                 (nothing)
 
 A `responder` (a callable taking the command and returning its reply, or None to fall
-back to the answers above) makes it any server a test needs: fake_world.FakeWorld is one,
+back to the answers above) makes it any server a test needs: fake_places_world.FakeWorld is one,
 speaking Minecraft 26.3's real replies.
 
 Use it in-process (FakeRcon) or on its own:

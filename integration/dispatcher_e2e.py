@@ -10,7 +10,7 @@ Real:  the dispatcher (`vfg orch start` runs dispatcher/run), its model calls th
        the action handlers run on Python 3.9 through the fake ssh), actions/, and
        scripts/_lib/mc.py on the box.
 Stand-ins: SSH (toolkit/tests/fake_ssh, which runs the remote command here), Minecraft
-       (scripts/_test/fake_world.py over scripts/_test/fake_rcon.py, in this process: 26.3's
+       (scripts/_test/fake_places_world.py over scripts/_test/fake_rcon.py, in this process: 26.3's
        recorded replies, and a world that keeps its players, effects and places), the
        bridge's feed writer (toolkit/tests/fake_vfg_feed.py, so `vfg orch reply` works),
        the orchestrator runner (a shell loop: handed tasks stay in ~orch/inbox.jsonl), the
@@ -102,7 +102,7 @@ def read_jsonl(path):
 
 
 def scripts_test(name):
-    """scripts/_test/<name>.py; fake_world imports mc_26_3 beside it."""
+    """scripts/_test/<name>.py; fake_places_world imports mc_26_3 beside it."""
     if SCRIPTS_TEST not in sys.path:
         sys.path.insert(0, SCRIPTS_TEST)
     return __import__(name)
@@ -268,8 +268,8 @@ class Box:
                                                           self.rvfg, self.rmc, self.repo, self.dispatch))
         os.chmod(cfg, 0o600)
         self.refs = seed_refs(self.dispatch)
-        fake_world, fake_rcon = scripts_test("fake_world"), scripts_test("fake_rcon")
-        self.world = fake_world.FakeWorld(players=players)
+        fake_places_world, fake_rcon = scripts_test("fake_places_world"), scripts_test("fake_rcon")
+        self.world = fake_places_world.FakeWorld(players=players)
         self.rcon = fake_rcon.FakeRcon(self.password, port=self.port, responder=self.world.respond).start()
 
     # -- environments

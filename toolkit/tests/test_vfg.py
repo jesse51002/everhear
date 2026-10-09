@@ -7,7 +7,7 @@ VFG_REMOTE_VFG and VFG_REMOTE_MC point into. VFG_SSH is fake_ssh, which runs
 the remote command here with bash; a python3 shim for the interpreter running
 the tests goes first on PATH, so the remote programs run on it too (3.9 under
 `uv run --python 3.9`). The place and handler tests answer RCON with
-../scripts/_test/fake_world.py, Minecraft 26.3's recorded replies.
+../scripts/_test/fake_places_world.py, Minecraft 26.3's recorded replies.
 """
 import base64
 import contextlib
@@ -1378,14 +1378,14 @@ class TestScripts(Case):
 def scripts_test(name):
     """A module from ../scripts/_test, by path: tests/ has a fake_rcon.py of its own."""
     if SCRIPTS_TEST not in sys.path:
-        sys.path.append(SCRIPTS_TEST)  # fake_world imports mc_26_3
+        sys.path.append(SCRIPTS_TEST)  # fake_places_world imports mc_26_3
     spec = importlib.util.spec_from_file_location("scripts_test_" + name, os.path.join(SCRIPTS_TEST, name + ".py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
 
 
-HAVE_WORLD = all(os.path.isfile(os.path.join(SCRIPTS_TEST, n)) for n in ("fake_world.py", "fake_rcon.py", "mc_26_3.py"))
+HAVE_WORLD = all(os.path.isfile(os.path.join(SCRIPTS_TEST, n)) for n in ("fake_places_world.py", "fake_rcon.py", "mc_26_3.py"))
 REAL_MC = os.path.join(REPO, "scripts", "_lib", "mc.py")
 
 PROBE = """import sys
@@ -1405,14 +1405,14 @@ def run(args):
 
 
 class World(Case):
-    """RCON answered by fake_world.FakeWorld, Minecraft 26.3's recorded replies."""
+    """RCON answered by fake_places_world.FakeWorld, Minecraft 26.3's recorded replies."""
     box_kwargs = {"rcon": False}
 
     def setUp(self):
         if not HAVE_WORLD:
-            self.skipTest("no scripts/_test/fake_world.py beside the toolkit")
+            self.skipTest("no scripts/_test/fake_places_world.py beside the toolkit")
         Case.setUp(self)
-        self.world = scripts_test("fake_world").FakeWorld(players={"Steve": (197.5, 68.0, 251.5)})
+        self.world = scripts_test("fake_places_world").FakeWorld(players={"Steve": (197.5, 68.0, 251.5)})
         self.world.add("Alex", (10.2, -5.0, 3.9), dim="minecraft:the_nether")
         self.server = scripts_test("fake_rcon").FakeRcon(self.box.password, port=self.box.port,
                                                          responder=self.world.respond).start()
@@ -1518,10 +1518,10 @@ class TestAction(Case):
         self.assertOneLine(r, 124, "within 1 s$")
 
     @unittest.skipUnless(HAVE_WORLD and os.path.isfile(os.path.join(REPO, "actions", "teleport", "handler.py")),
-                         "no actions/teleport/handler.py or scripts/_test/fake_world.py beside the toolkit")
+                         "no actions/teleport/handler.py or scripts/_test/fake_places_world.py beside the toolkit")
     def test_the_real_teleport_handler_reaches_a_saved_place(self):
         self.box.stop_rcon()
-        world = scripts_test("fake_world").FakeWorld(players={"Steve": (0.5, 64.0, 0.5)})
+        world = scripts_test("fake_places_world").FakeWorld(players={"Steve": (0.5, 64.0, 0.5)})
         world.save_place("castle", [197, 68, 251], by="T23")
         server = scripts_test("fake_rcon").FakeRcon(self.box.password, port=self.box.port,
                                                     responder=world.respond).start()

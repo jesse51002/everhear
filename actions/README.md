@@ -64,7 +64,7 @@ def run(args):
   26.3 prints them: [`scripts/_test/mc_26_3.py`](../scripts/_test/mc_26_3.py) has the recorded ones.
 - **Nothing else to register:** the dispatcher loads every folder with an `action.py` at start.
   Add its menu line to `MENU` in [`tests/test_classes.py`](tests/test_classes.py), and test the
-  handler against [`scripts/_test/fake_world.py`](../scripts/_test/fake_world.py) as
+  handler against [`scripts/_test/fake_places_world.py`](../scripts/_test/fake_places_world.py) as
   [`tests/test_handlers.py`](tests/test_handlers.py) does.
 
 ## Test

@@ -31,7 +31,7 @@ for p in (str(REPO), str(TEST_LIB)):
         sys.path.insert(0, p)
 
 from fake_rcon import FakeRcon  # noqa: E402
-from fake_world import FakeWorld  # noqa: E402
+from fake_places_world import FakeWorld  # noqa: E402
 
 PY39 = shutil.which("python3.9") or sys.executable
 
