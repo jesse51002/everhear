@@ -194,7 +194,7 @@ public final class SttCompare {
 	}
 
 	/** What a 48 kHz sound card and the mod make of it: 16-bit samples, then the mod's Resampler. */
-	private static float[] micPath(float[] at48k) {
+	static float[] micPath(float[] at48k) {
 		float[] q = new float[at48k.length];
 		for (int i = 0; i < q.length; i++) {
 			q[i] = Wav.toShort(at48k[i]) / 32768f;
@@ -464,7 +464,7 @@ public final class SttCompare {
 		return editsAndWords[1] == 0 ? "-" : String.format(Locale.ROOT, "%.1f%%", 100.0 * editsAndWords[0] / editsAndWords[1]);
 	}
 
-	private static String cpu() {
+	static String cpu() {
 		try {
 			for (String line : Files.readAllLines(Path.of("/proc/cpuinfo"))) {
 				if (line.startsWith("model name")) {

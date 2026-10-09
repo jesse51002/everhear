@@ -212,3 +212,31 @@ tasks.register('sttCompare', JavaExec) {
 	workingDir = runDir
 	doFirst { runDir.mkdirs() }
 }
+
+// ---------------------------------------------------------------------------
+// ./gradlew turnCompare: Smart Turn v3.2 (the mod's default) and turn-1-mini on the same
+// clips, framed as the mod frames a line at a pause. A measurement; it changes nothing in
+// the mod. turnData prepares its public set first, in Python through uv (486 MB, once).
+// ---------------------------------------------------------------------------
+
+tasks.register('turnData', Exec) {
+	group = 'verification'
+	description = 'Prepares turnCompare\'s public set: the English clips of one pinned Smart Turn test shard, as WAVs.'
+	def assets = layout.buildDirectory.dir('vfg-test-assets').get().asFile
+	commandLine 'uv', 'run', '--quiet', '--with', 'pyarrow', '--with', 'soundfile', 'tools/turn_data.py',
+		'--root', assets.absolutePath
+}
+
+tasks.register('turnCompare', JavaExec) {
+	group = 'verification'
+	description = 'Compares the turn models on a public set and a game set: accuracy, cut-offs, waits, time per score.'
+	dependsOn 'turnData'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'com.voiceforgaming.vfg.tools.TurnCompare'
+	jvmArgs '--enable-native-access=ALL-UNNAMED'
+	systemProperty 'vfg.testAssets', layout.buildDirectory.dir('vfg-test-assets').get().asFile.absolutePath
+	def runDir = layout.buildDirectory.dir('turn-compare').get().asFile
+	systemProperty 'vfg.compareOut', runDir.absolutePath
+	workingDir = runDir
+	doFirst { runDir.mkdirs() }
+}

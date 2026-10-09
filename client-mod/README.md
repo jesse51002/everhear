@@ -65,6 +65,7 @@ cd client-mod            # from the repo's root
 ./gradlew speechTest    # real speech through the mod's pipeline in real time, about 90 s (below)
 ./gradlew micCheck      # your own mic through the mod's pipeline, no Minecraft (below)
 ./gradlew sttCompare    # the models side by side on the same audio: errors, speed, size, memory (below)
+./gradlew turnCompare   # the two turn models on real and game speech: cut-offs, waits, speed (below; needs uv)
 ```
 
 The version is `mod_version` in `gradle.properties`. **Raise it for every build you hand
@@ -158,6 +159,41 @@ models only, with `modified_beam_search`, `modelingUnit=bpe` and a `bpe.vocab`. 
 archives do not ship one, so it is made from `tokens.txt` (pieces in order, scored by
 minus their rank). Moonshine has no hotword support.
 
+### Compare turn models: `./gradlew turnCompare`
+
+A measurement; it changes nothing in the mod. It is how turn-1-mini's threshold was picked
+(on 2026-10-09: 0.35, the one at which it cuts off unfinished clips as often as Smart Turn
+v3.2 does at 0.5, 10%; there it keeps 47% of finished clips waiting, against Smart Turn's
+5%), and it is what to read before switching from Smart Turn.
+Each clip is given to both models as the mod gives them a line at a pause: from 0.5 s before
+the first speech the mod's own VAD finds to 0.2 s after the last.
+
+- **Public set:** the 789 English clips of one shard of Pipecat's
+  [Smart Turn v3.2 test set](https://huggingface.co/datasets/pipecat-ai/smart-turn-data-v3.2-test)
+  (CC-BY-4.0; real people and TTS, each labelled finished or not). The task first runs
+  `turnData`, which runs `tools/turn_data.py` with `uv run --with pyarrow --with soundfile`:
+  it downloads the shard once (486 MB, pinned by revision and SHA-256), writes its English
+  clips as 16 kHz WAVs and a labels file into `build/vfg-test-assets/turn-data/public/`, and
+  deletes the shard. It needs [uv](https://docs.astral.sh/uv/); a second run does nothing.
+- **Game set:** the 118 direct asks of 4 to 12 words players said in the 2026-10-08
+  playtest, from `build/vfg-test-assets/turn/game-asks.txt`. That file is players' speech
+  and is not in the repo; without it the game set is skipped. Each ask is spoken by Kokoro TTS
+  (int8, 11 voices, 103 MB, pinned) whole (finished), cut at a gap between words near the
+  middle (not finished), and said again with "uh" or "um" in that gap and cut just after it
+  (not finished). Gaps come from Parakeet's word timestamps, and a cut is kept only when both
+  halves, transcribed alone, meet where the whole's words do. The same asks spoken by Kitten
+  are scored too: Smart Turn hears most of Kitten's finished sentences as unfinished, so the
+  game set is not Kitten's.
+
+It reports, per model and set, accuracy, the share of unfinished clips scored finished (cut
+off), the share of finished ones kept waiting, and the time per score; the game set by form;
+Smart Turn at thresholds around 0.5; and both models asked later, 0.6 s into the pause. It
+writes `build/turn-compare/report.md`, with every clip's scores in `scores.tsv` and every
+cut tried, with what Parakeet heard in each half, in `cuts.tsv`. The latest report is kept
+in [`reports/turn-compare.md`](reports/turn-compare.md). The first run downloads about
+600 MB and says about 4,400 TTS takes, about an hour in all; the takes are kept, so a second
+run hears the same audio, gives the same scores, and takes about 20 minutes.
+
 ### Dev run
 
 ```sh
@@ -243,6 +279,8 @@ as it streams. Only this PC's natives, the VAD and the chosen model are fetched.
 build.gradle  settings.gradle  gradle.properties  gradlew  gradlew.bat  gradle/wrapper/
 libs/                               the fetched sherpa-onnx-jvm jar (gitignored)
 tools/fake_bridge.py                stand-in bridge, Python 3 stdlib
+tools/turn_data.py                  turnCompare's public set, from Pipecat's test shard (run through uv)
+reports/turn-compare.md             turnCompare's report, as last run
 src/main/java/com/voiceforgaming/vfg/
   VfgClient.java                    entrypoint; Fabric events, keys, HUD, the Voice… button
   VoiceService.java                 everything wired together, no Minecraft classes
@@ -268,6 +306,7 @@ src/main/java/com/voiceforgaming/vfg/
 src/test/java/com/voiceforgaming/vfg/   unit tests; EngineSmokeTest is tagged "engine", SpeechTest "speech"
   tools/MicCheck.java               ./gradlew micCheck
   tools/SttCompare.java             ./gradlew sttCompare
-  testing/                          the engine for tests, WAV files, Kitten TTS, the stand-in sound card,
-                                    the models sttCompare measures (SttModels)
+  tools/TurnCompare.java            ./gradlew turnCompare
+  testing/                          the engine for tests, WAV files, Kitten and Kokoro TTS, the stand-in
+                                    sound card, the models sttCompare measures (SttModels)
 ```
