@@ -103,7 +103,8 @@ class PipelineTest {
 	void setUp() {
 		LineAssembler assembler = new LineAssembler(5, now::get, lines::add);
 		Transcriber words = s -> "phrase" + (++said);
-		stt = new SttWorker(() -> words, assembler, () -> capture.speaking(), heard::add, () -> false);
+		stt = new SttWorker(() -> words, () -> null, null, assembler, () -> capture.speaking(), heard::add,
+			() -> false);
 		capture = new CaptureProcessor(() -> vad, stt::submit);
 	}
 

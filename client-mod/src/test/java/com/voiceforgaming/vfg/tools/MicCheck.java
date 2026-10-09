@@ -6,6 +6,7 @@ import com.voiceforgaming.vfg.audio.WindowListener.StopReason;
 import com.voiceforgaming.vfg.config.VfgConfig;
 import com.voiceforgaming.vfg.net.BridgeClient;
 import com.voiceforgaming.vfg.net.LinePayload;
+import com.voiceforgaming.vfg.setup.Assets;
 import com.voiceforgaming.vfg.speech.LineAssembler;
 import com.voiceforgaming.vfg.speech.Levels;
 import com.voiceforgaming.vfg.speech.SpeechEngine;
@@ -15,6 +16,8 @@ import com.voiceforgaming.vfg.testing.SpeechTimeline;
 import com.voiceforgaming.vfg.testing.SttModels;
 import com.voiceforgaming.vfg.testing.TestAssets;
 import com.voiceforgaming.vfg.testing.Wav;
+import com.voiceforgaming.vfg.turn.TurnDetector;
+import com.voiceforgaming.vfg.turn.TurnDetectors;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
@@ -31,11 +34,12 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * {@code ./gradlew micCheck}: the mod's own speech pipeline on a real microphone, with no
- * Minecraft — {@link MicCapture} (OpenAL) → the Silero VAD → Moonshine → the line
- * assembler, the same {@link VoicePipeline} the mod runs. It shows a level meter and what
- * the VAD thinks, every segment it transcribes, and every line exactly as the mod would
- * send it; with {@code --bridge} it posts each line (docs/CONTRACTS.md §2) and shows the
- * answer. Nothing here is in the mod's jar.
+ * Minecraft — {@link MicCapture} (OpenAL) → the Silero VAD → speech-to-text and the turn
+ * model → the line assembler, the same {@link VoicePipeline} the mod runs. It shows a level
+ * meter and what the VAD thinks, every segment it transcribes, and every line exactly as
+ * the mod would send it; with {@code --bridge} it posts each line (docs/CONTRACTS.md §2)
+ * and shows the answer. The mod's log comes out here too, with each decision on a line's
+ * end as it is made ({@code turn 0.93 in 31 ms: closed}). Nothing here is in the mod's jar.
  */
 public final class MicCheck {
 	private static final String HELP = """
@@ -55,7 +59,11 @@ public final class MicCheck {
 		                         482 MB, about 0.9 GB of memory; for comparison only, not in the mod)
 		  --hotwords <w,w,...>   Parakeet only: names and words to favour, e.g. SteveJM,Alex,creeper
 		                         (experimental; see ./gradlew sttCompare)
-		  --silence <s>          seconds of silence that end a line (default 5, as in the mod)
+		  --turn <m>             the turn model: smart-turn-v3.2 (the mod's default), turn-1-mini, or off
+		                         (lines end on silence alone)
+		  --turn-threshold <x>   0.05-0.95: the score at which a line is finished (default: the model's own)
+		  --silence <s>          seconds of silence that end a line the turn model keeps waiting
+		                         (default 3, as in the mod)
 		  --vad-threshold <x>    0.1-0.9 (default 0.5)
 		  --threads <n>          speech-to-text threads (default 2)
 		""";
@@ -93,7 +101,8 @@ public final class MicCheck {
 
 		List<String> devices = MicCapture.listDevices();
 		String systemDefault = MicCapture.defaultDeviceName();
-		say("VFG mic check: the mod's own pipeline (OpenAL mic -> Silero VAD -> Moonshine -> lines), no Minecraft.");
+		say("VFG mic check: the mod's own pipeline (OpenAL mic -> Silero VAD -> speech-to-text -> turn model -> lines),"
+			+ " no Minecraft.");
 		say("");
 		say("Microphones:");
 		say("  %2d  System default%s   (the mod's default)", 0, systemDefault == null ? "" : " -> " + systemDefault);
@@ -166,6 +175,7 @@ public final class MicCheck {
 		long t0 = System.nanoTime();
 		SpeechEngine engine = SttModels.engine(model, o.threads, hotwords, 1.5f, (float) o.vadThreshold);
 		say("Loaded in %.2f s.", (System.nanoTime() - t0) / 1e9);
+		TurnDetector turn = loadTurn(o.turn);
 
 		UUID playerUuid = UUID.nameUUIDFromBytes(("OfflinePlayer:" + o.player).getBytes(StandardCharsets.UTF_8));
 		AtomicInteger lineCount = new AtomicInteger();
@@ -183,8 +193,8 @@ public final class MicCheck {
 		};
 
 		Meter meter = new Meter(o.silence);
-		VoicePipeline pipeline = new VoicePipeline(opener, () -> engine, () -> timed, o.silence,
-			System::currentTimeMillis, () -> false, new VoicePipeline.Events() {
+		VoicePipeline pipeline = new VoicePipeline(opener, () -> engine, () -> timed, () -> turn, o.turnThreshold,
+			o.silence, System::currentTimeMillis, () -> false, new VoicePipeline.Events() {
 				@Override
 				public void line(LineAssembler.Line line) {
 					long ready = System.currentTimeMillis();
@@ -247,6 +257,9 @@ public final class MicCheck {
 			say("Done: %d line%s from %d segment%s; speech-to-text took %d ms per segment on average.", lineCount.get(),
 				lineCount.get() == 1 ? "" : "s", segments, segments == 1 ? "" : "s",
 				segments == 0 ? 0 : sttTotal.get() / segments);
+			if (turn != null) {
+				turn.close();
+			}
 			engine.close();
 		};
 		Runtime.getRuntime().addShutdownHook(new Thread(finish, "vfg-mic-check-stop"));
@@ -254,7 +267,8 @@ public final class MicCheck {
 		pipeline.start();
 		pipeline.startCapture(device, true);
 		say("");
-		say("Listening on: %s. A line ends after %s s of silence.%s", deviceLabel, fmt(o.silence),
+		say("Listening on: %s. A line ends %safter %s s of silence.%s", deviceLabel,
+			turn == null ? "" : "when " + o.turn + " hears it finished, or ", fmt(o.silence),
 			linesUrl == null ? "" : " Lines go to " + linesUrl + ".");
 		if (o.seconds > 0) {
 			say("Stopping after %d s (or press Enter).", o.seconds);
@@ -340,6 +354,32 @@ public final class MicCheck {
 		}
 	}
 
+	/**
+	 * The turn model, installed once into the test assets and loaded as the mod loads it, on
+	 * the runtime the engine loaded; {@code null} for {@code off}, or when it will not load.
+	 */
+	private static TurnDetector loadTurn(String turnModel) {
+		if (turnModel.equals(TurnDetectors.OFF)) {
+			return null;
+		}
+		try {
+			Assets.Asset asset = Assets.turn(turnModel);
+			if (asset == null) {
+				throw new IllegalStateException("it has no download");
+			}
+			TestAssets.installer().install(asset);
+			Path natives = Assets.folder(TestAssets.root(), Assets.natives(Assets.currentPlatform()));
+			long t0 = System.nanoTime();
+			TurnDetector loaded = TurnDetectors.load(turnModel, natives, Assets.turnFile(TestAssets.root(), asset));
+			say("Loaded the turn model, %s, in %.2f s.", turnModel, (System.nanoTime() - t0) / 1e9);
+			return loaded;
+		} catch (Exception | LinkageError e) {
+			say("The turn model %s did not load (%s): lines end on silence alone, as in the mod.", turnModel,
+				e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
+			return null;
+		}
+	}
+
 	private static String pick(String wanted, List<String> devices) {
 		if (wanted == null || wanted.isBlank() || wanted.equals("0")) {
 			return "";
@@ -388,6 +428,8 @@ public final class MicCheck {
 		String hotwords;
 		String player = "MicCheck";
 		String model = "parakeet-110m";
+		String turn = TurnDetectors.DEFAULT;
+		Double turnThreshold;
 		double silence = VfgConfig.DEFAULT_SILENCE_SECONDS;
 		double vadThreshold = VfgConfig.DEFAULT_VAD_THRESHOLD;
 		int threads = VfgConfig.DEFAULT_STT_THREADS;
@@ -412,6 +454,14 @@ public final class MicCheck {
 						}
 					}
 					case "--hotwords" -> o.hotwords = value(a, ++i, k);
+					case "--turn" -> {
+						o.turn = value(a, ++i, k);
+						if (!TurnDetectors.MODELS.contains(o.turn)) {
+							throw new IllegalArgumentException("--turn is one of "
+								+ String.join(", ", TurnDetectors.MODELS));
+						}
+					}
+					case "--turn-threshold" -> o.turnThreshold = number(value(a, ++i, k), k, 0.05, 0.95);
 					case "--silence" -> o.silence = number(value(a, ++i, k), k, 2, 30);
 					case "--vad-threshold" -> o.vadThreshold = number(value(a, ++i, k), k, 0.1, 0.9);
 					case "--threads" -> o.threads = (int) number(value(a, ++i, k), k, 1, 8);

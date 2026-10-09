@@ -3,10 +3,12 @@ package com.voiceforgaming.vfg.config;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.voiceforgaming.vfg.session.ServerAddressMatch;
 import com.voiceforgaming.vfg.setup.Assets;
+import com.voiceforgaming.vfg.turn.TurnDetectors;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -28,10 +30,15 @@ import org.slf4j.LoggerFactory;
  * variables {@code VFG_SERVER_ADDRESS}, {@code VFG_BRIDGE_URL} and {@code VFG_CLIENT_TOKEN}
  * override the file when set, and are never written back: the fields hold the file's
  * values, and the {@code effective…()} methods apply the overrides.
+ *
+ * <p>{@code turn_threshold} is written as {@code null} while it is not set, so the file
+ * shows the key without fixing a number: each turn model then uses its own threshold, and
+ * switching models never carries one model's over to the other.
  */
 public final class VfgConfig {
 	private static final Logger LOG = LoggerFactory.getLogger("vfg");
-	private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
+	private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().serializeNulls()
+		.create();
 
 	public static final String FILE_NAME = "vfg-client.json";
 	/** The default: Parakeet TDT 110M. A saved Moonshine value is kept, never migrated. */
@@ -43,7 +50,10 @@ public final class VfgConfig {
 	public static final List<String> CORNERS = List.of("top_left", "top_right", "bottom_left", "bottom_right");
 	public static final int DEFAULT_BRIDGE_PORT = 8787;
 
-	public static final double DEFAULT_SILENCE_SECONDS = 5;
+	/** The silence that ends a line the turn model keeps waiting; it was 5 s before there was one. */
+	public static final double DEFAULT_SILENCE_SECONDS = 3;
+	/** What every file saved before the turn model says, unless the player changed it. */
+	public static final double OLD_SILENCE_SECONDS = 5;
 	public static final double DEFAULT_VAD_THRESHOLD = 0.5;
 	public static final int DEFAULT_STT_THREADS = 2;
 
@@ -54,6 +64,9 @@ public final class VfgConfig {
 	public String model = DEFAULT_MODEL;
 	public String iconCorner = "top_left";
 	public boolean muted = false;
+	public String turnModel = TurnDetectors.DEFAULT;
+	/** {@code null}: the turn model's own threshold. */
+	public Double turnThreshold = null;
 	public double silenceSeconds = DEFAULT_SILENCE_SECONDS;
 	public double vadThreshold = DEFAULT_VAD_THRESHOLD;
 	public int sttThreads = DEFAULT_STT_THREADS;
@@ -70,6 +83,8 @@ public final class VfgConfig {
 		c.model = model;
 		c.iconCorner = iconCorner;
 		c.muted = muted;
+		c.turnModel = turnModel;
+		c.turnThreshold = turnThreshold;
 		c.silenceSeconds = silenceSeconds;
 		c.vadThreshold = vadThreshold;
 		c.sttThreads = sttThreads;
@@ -154,6 +169,11 @@ public final class VfgConfig {
 	/**
 	 * Loads the file; writes the defaults if it is missing; if it does not parse, renames
 	 * it {@code vfg-client.json.bad}, uses the defaults and logs one line.
+	 *
+	 * <p>A file with no {@code turn_model} key was written before the turn model, when every
+	 * save wrote {@code silence_seconds: 5}: its 5 becomes 3, and the file is written back
+	 * once, with the new keys, so the move never happens again. Any other silence was the
+	 * player's own and is kept.
 	 */
 	public static VfgConfig load(Path file) {
 		if (!Files.exists(file)) {
@@ -167,7 +187,16 @@ public final class VfgConfig {
 			if (!root.isJsonObject()) {
 				throw new IllegalStateException("not a JSON object");
 			}
-			return fromJson(root.getAsJsonObject());
+			JsonObject o = root.getAsJsonObject();
+			VfgConfig c = fromJson(o);
+			if (!o.has("turn_model")) {
+				if (c.silenceSeconds == OLD_SILENCE_SECONDS) {
+					c.silenceSeconds = DEFAULT_SILENCE_SECONDS;
+					LOG.info("config: silence_seconds 5 is now 3, the default with the turn model");
+				}
+				c.saveQuietly(file);
+			}
+			return c;
 		} catch (IOException | RuntimeException e) {
 			Path bad = file.resolveSibling(file.getFileName() + ".bad");
 			LOG.warn("{} does not parse ({}); renamed it {} and using the defaults", file.getFileName(),
@@ -203,6 +232,13 @@ public final class VfgConfig {
 			c.iconCorner = "top_left";
 		}
 		c.muted = bool(o, "muted", false);
+		c.turnModel = string(o, "turn_model", TurnDetectors.DEFAULT);
+		if (!TurnDetectors.MODELS.contains(c.turnModel)) {
+			LOG.warn("config: turn_model \"{}\" is not one of {}; using {}", c.turnModel, TurnDetectors.MODELS,
+				TurnDetectors.DEFAULT);
+			c.turnModel = TurnDetectors.DEFAULT;
+		}
+		c.turnThreshold = optionalNumber(o, "turn_threshold", 0.05, 0.95);
 		c.silenceSeconds = number(o, "silence_seconds", DEFAULT_SILENCE_SECONDS, 2, 30);
 		c.vadThreshold = number(o, "vad_threshold", DEFAULT_VAD_THRESHOLD, 0.1, 0.9);
 		double threads = number(o, "stt_threads", DEFAULT_STT_THREADS, 1, 8);
@@ -256,6 +292,24 @@ public final class VfgConfig {
 		return v;
 	}
 
+	/** A number in range, or {@code null} when the key is missing, {@code null}, or anything else. */
+	private static Double optionalNumber(JsonObject o, String key, double min, double max) {
+		JsonElement e = o.get(key);
+		if (e == null || e.isJsonNull()) {
+			return null;
+		}
+		if (!e.isJsonPrimitive() || !e.getAsJsonPrimitive().isNumber()) {
+			LOG.warn("config: {} is not a number; using the model's own", key);
+			return null;
+		}
+		double v = e.getAsDouble();
+		if (!(v >= min && v <= max)) {
+			LOG.warn("config: {} = {} is outside {}–{}; using the model's own", key, v, min, max);
+			return null;
+		}
+		return v;
+	}
+
 	public JsonObject toJson() {
 		JsonObject o = new JsonObject();
 		o.addProperty("server_address", serverAddress);
@@ -265,6 +319,12 @@ public final class VfgConfig {
 		o.addProperty("model", model);
 		o.addProperty("icon_corner", iconCorner);
 		o.addProperty("muted", muted);
+		o.addProperty("turn_model", turnModel);
+		if (turnThreshold == null) {
+			o.add("turn_threshold", JsonNull.INSTANCE);
+		} else {
+			o.addProperty("turn_threshold", turnThreshold);
+		}
 		if (silenceSeconds == Math.rint(silenceSeconds)) {
 			o.addProperty("silence_seconds", (long) silenceSeconds);
 		} else {
@@ -302,7 +362,8 @@ public final class VfgConfig {
 	public String toString() {
 		return "VfgConfig[server_address=" + serverAddress + ", bridge_url=" + bridgeUrl + ", client_token="
 			+ (clientToken.isEmpty() ? "(empty)" : "(set)") + ", mic_device=" + micDevice + ", model=" + model
-			+ ", icon_corner=" + iconCorner + ", muted=" + muted + ", silence_seconds=" + silenceSeconds
+			+ ", icon_corner=" + iconCorner + ", muted=" + muted + ", turn_model=" + turnModel + ", turn_threshold="
+			+ (turnThreshold == null ? "(the model's own)" : turnThreshold) + ", silence_seconds=" + silenceSeconds
 			+ ", vad_threshold=" + vadThreshold + ", stt_threads=" + sttThreads + ", log_text=" + logText + "]";
 	}
 }

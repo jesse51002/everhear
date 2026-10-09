@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 class LineAssemblerTest {
 	private final AtomicLong now = new AtomicLong();
 	private final List<LineAssembler.Line> lines = new ArrayList<>();
+	private final List<String> decisions = new ArrayList<>();
 	private LineAssembler assembler;
 
 	@BeforeEach
@@ -32,10 +33,19 @@ class LineAssemblerTest {
 
 	/** Advances the clock in 250 ms ticks, as vfg-stt does. */
 	private void runUntil(long t) {
+		runUntil(assembler, t);
+	}
+
+	private void runUntil(LineAssembler a, long t) {
 		while (now.get() < t) {
 			now.addAndGet(250);
-			assembler.tick(false, false);
+			a.tick(false, false);
 		}
+	}
+
+	/** The assembler as the mod has it now: 3 s of silence, and the turn model's verdicts. */
+	private LineAssembler withTurns() {
+		return new LineAssembler(3, now::get, lines::add, decisions::add);
 	}
 
 	@Test
@@ -209,6 +219,170 @@ class LineAssemblerTest {
 		now.set(10_000 + 10_500);
 		tenSeconds.tick(false, false);
 		assertEquals("one two", lines.get(0).text());
+	}
+
+	// --- the turn model's verdicts ---
+
+	@Test
+	void aLineHeardFinishedClosesAtItsPause() {
+		LineAssembler a = withTurns();
+		a.accept(seg("build me a castle", 1000, 2300));
+		now.set(2900); // the VAD's 0.6 s, then the score
+		a.turn("turn 0.93 in 31 ms", true);
+		assertTrue(a.finished());
+		a.tick(false, false);
+		assertEquals(1, lines.size());
+		assertEquals("build me a castle", lines.get(0).text());
+		assertEquals(2300, lines.get(0).endedAtMillis());
+		assertEquals(2900, lines.get(0).closedAtMillis(), "at the pause, not 3.5 s after it");
+		assertEquals(List.of("turn 0.93 in 31 ms: closed"), decisions);
+	}
+
+	@Test
+	void aLineNotFinishedWaitsAndTheNextSegmentJoinsIt() {
+		LineAssembler a = withTurns();
+		a.accept(seg("build me a castle", 1000, 2300));
+		now.set(2900);
+		a.turn("turn 0.18 in 29 ms", false);
+		runUntil(a, 4500);
+		assertTrue(lines.isEmpty(), "waiting");
+		a.accept(seg("out of diamond", 3700, 4800));
+		assertEquals(2, a.segments());
+		now.set(5400);
+		a.turn("turn 0.91 in 30 ms", true);
+		a.tick(false, false);
+		assertEquals(1, lines.size());
+		assertEquals("build me a castle out of diamond", lines.get(0).text());
+		assertEquals(1000, lines.get(0).startedAtMillis());
+		assertEquals(4800, lines.get(0).endedAtMillis());
+		assertEquals(List.of("turn 0.18 in 29 ms: waiting", "turn 0.91 in 30 ms: closed"), decisions);
+	}
+
+	@Test
+	void speechStartingAgainClearsTheMark() {
+		LineAssembler a = withTurns();
+		a.accept(seg("build me a castle", 1000, 2300));
+		now.set(2900);
+		a.turn("turn 0.93 in 31 ms", true);
+		a.tick(true, false); // they started talking again
+		assertFalse(a.finished());
+		assertTrue(lines.isEmpty());
+		now.set(3500);
+		a.tick(false, false); // whatever they said was dropped: the line waits for the silence now
+		assertTrue(lines.isEmpty());
+		now.set(2300 + 3500);
+		a.tick(false, false);
+		assertEquals(1, lines.size());
+		assertEquals(List.of("turn 0.93 in 31 ms: waiting, speech again", "closed after 3.5 s of silence"), decisions);
+	}
+
+	@Test
+	void aSegmentJoiningClearsTheMark() {
+		LineAssembler a = withTurns();
+		a.accept(seg("build me a castle", 1000, 2300));
+		now.set(2900);
+		a.turn("turn 0.93 in 31 ms", true);
+		a.tick(false, true); // another segment waits to be transcribed
+		assertTrue(lines.isEmpty());
+		a.accept(seg("out of diamond", 2700, 3600));
+		assertFalse(a.finished(), "the joined segment is scored at its own pause");
+		a.tick(false, false);
+		assertTrue(lines.isEmpty());
+		assertEquals(List.of("turn 0.93 in 31 ms: waiting, speech again"), decisions);
+	}
+
+	@Test
+	void aFinishedLineWaitsForASegmentBeingTranscribedAndClosesIfItIsDropped() {
+		LineAssembler a = withTurns();
+		a.accept(seg("make it day", 1000, 1900));
+		now.set(2500);
+		a.turn("turn 0.88 in 30 ms", true);
+		a.tick(false, true);
+		assertTrue(lines.isEmpty());
+		assertEquals(LineAssembler.Rejection.NO_LETTER_OR_DIGIT, a.accept(seg("...", 2200, 2600)));
+		a.tick(false, false);
+		assertEquals(1, lines.size());
+		assertEquals("make it day", lines.get(0).text());
+		assertEquals(List.of("turn 0.88 in 30 ms: closed"), decisions);
+	}
+
+	@Test
+	void silenceClosesALineTheModelKeepsWaitingAt3PlusHalfASecond() {
+		LineAssembler a = withTurns();
+		a.accept(seg("build me a", 1000, 2000));
+		now.set(2600);
+		a.turn("turn 0.10 in 30 ms", false);
+		now.set(2000 + 3000 + 499);
+		a.tick(false, false);
+		assertTrue(lines.isEmpty());
+		now.set(2000 + 3500);
+		a.tick(true, false); // speech in progress still holds it open
+		a.tick(false, true); // and so does a segment waiting to be transcribed
+		assertTrue(lines.isEmpty());
+		a.tick(false, false);
+		assertEquals(1, lines.size());
+		assertEquals(5500, lines.get(0).closedAtMillis());
+		assertEquals(List.of("turn 0.10 in 30 ms: waiting", "closed after 3.5 s of silence"), decisions);
+	}
+
+	@Test
+	void aSegmentAfterTheSilenceClosesTheLineBeforeIt() {
+		LineAssembler a = withTurns();
+		a.accept(seg("build me a", 1000, 2000));
+		a.turn("turn 0.10 in 30 ms", false);
+		a.accept(seg("castle", 5200, 6000)); // 3.2 s later: started in the grace, while speech held the line
+		assertEquals(1, lines.size());
+		assertEquals("build me a", lines.get(0).text());
+		assertEquals(List.of("turn 0.10 in 30 ms: waiting", "closed after 3.2 s of silence"), decisions);
+	}
+
+	@Test
+	void theCapsHoldWhileTheModelWaits() {
+		LineAssembler a = withTurns();
+		for (int i = 0; i < 6; i++) {
+			long start = i * 11_000L;
+			a.accept(seg("segment " + i, start, start + 10_000));
+			a.turn("turn 0.10 in 30 ms", false);
+		}
+		assertEquals(1, lines.size(), "closed the moment it held 60 s");
+		assertFalse(a.isOpen());
+
+		a.accept(seg(words(1400), 70_000, 105_000));
+		a.turn("turn 0.10 in 30 ms", false);
+		a.accept(seg(words(200), 106_000, 111_000));
+		assertEquals(2, lines.size(), "closed the moment it held 1500 characters");
+		a.turn("turn 0.99 in 30 ms", true); // no line is open to mark
+		assertFalse(a.finished());
+	}
+
+	@Test
+	void leavingOrDiscardingDropsTheMark() {
+		LineAssembler a = withTurns();
+		a.accept(seg("build me a castle", 1000, 2300));
+		a.turn("turn 0.93 in 31 ms", true);
+		a.closeNow();
+		assertEquals(1, lines.size());
+		a.accept(seg("make it day", 5000, 5900));
+		assertFalse(a.finished(), "a new line starts unmarked");
+		a.turn("turn 0.95 in 31 ms", true);
+		a.discard();
+		assertFalse(a.finished());
+		a.tick(false, false);
+		assertEquals(1, lines.size());
+		assertTrue(decisions.isEmpty(), "leaving and muting are not the turn model's decisions");
+	}
+
+	@Test
+	void withNoVerdictsTheLineEndsOnSilenceAsBefore() {
+		LineAssembler five = new LineAssembler(5, now::get, lines::add, decisions::add);
+		five.accept(seg("hello there", 1000, 2000));
+		now.set(2000 + 5499);
+		five.tick(false, false);
+		assertTrue(lines.isEmpty());
+		now.set(2000 + 5500);
+		five.tick(false, false);
+		assertEquals(7500, lines.get(0).closedAtMillis());
+		assertEquals(List.of("closed after 5.5 s of silence"), decisions);
 	}
 
 	private static String words(int length) {

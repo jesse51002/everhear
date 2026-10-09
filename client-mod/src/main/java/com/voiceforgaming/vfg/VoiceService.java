@@ -14,6 +14,8 @@ import com.voiceforgaming.vfg.speech.LineAssembler;
 import com.voiceforgaming.vfg.speech.SpeechEngine;
 import com.voiceforgaming.vfg.speech.Transcriber;
 import com.voiceforgaming.vfg.speech.VoiceDetector;
+import com.voiceforgaming.vfg.turn.TurnDetector;
+import com.voiceforgaming.vfg.turn.TurnDetectors;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
@@ -26,9 +28,13 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Everything the mod does, wired together, without a Minecraft class: the config, the
- * setup thread, the speech engine, the mic, the STT thread, the sender, the session gate
- * and the status board. {@link VfgClient} feeds it Fabric's events and draws what it
- * publishes.
+ * setup thread, the speech engine and the turn model, the mic, the STT thread, the sender,
+ * the session gate and the status board. {@link VfgClient} feeds it Fabric's events and
+ * draws what it publishes.
+ *
+ * <p>The turn model is installed with the engine, under the same progress, and loaded
+ * after it, on the runtime it loaded. One that will not download or load costs only
+ * speed: it is logged once, and lines end on silence alone.
  */
 public final class VoiceService {
 	private static final Logger LOG = LoggerFactory.getLogger("vfg");
@@ -43,6 +49,7 @@ public final class VoiceService {
 
 	private final StatusBoard status = new StatusBoard();
 	private final AtomicReference<SpeechEngine> engine = new AtomicReference<>();
+	private final AtomicReference<TurnDetector> turn = new AtomicReference<>();
 	private volatile String requestedModel;
 	private Thread setupThread;
 	private final Object setupLock = new Object();
@@ -68,8 +75,8 @@ public final class VoiceService {
 		LOG.info("config: {}", config);
 
 		this.pipeline = new VoicePipeline(MicCapture.OPENAL, () -> (VoiceDetector) engine.get(),
-			() -> (Transcriber) engine.get(), config.silenceSeconds, System::currentTimeMillis, () -> config.logText,
-			new VoicePipeline.Events() {
+			() -> (Transcriber) engine.get(), turn::get, config.turnThreshold, config.silenceSeconds,
+			System::currentTimeMillis, () -> config.logText, new VoicePipeline.Events() {
 				@Override
 				public void line(LineAssembler.Line line) {
 					lineClosed(line);
@@ -139,10 +146,7 @@ public final class VoiceService {
 		if (s != null) {
 			s.interrupt();
 		}
-		SpeechEngine e = engine.getAndSet(null);
-		if (e != null) {
-			e.close();
-		}
+		releaseEngine();
 	}
 
 	// --- reading ---
@@ -312,13 +316,19 @@ public final class VoiceService {
 			finishSetup(VoiceStatus.Setup.UNSUPPORTED, "unsupported platform");
 			return;
 		}
+		VfgConfig c = config;
 		Assets.Asset natives = Assets.natives(platform);
 		Assets.Asset vad = Assets.vad();
 		Assets.Asset modelAsset = Assets.model(model);
+		Assets.Asset turnAsset = Assets.turn(c.turnModel);
+		List<Assets.Asset> speech = List.of(natives, vad, modelAsset);
+		long speechBytes = speech.stream().mapToLong(Assets.Asset::bytes).sum();
+		long allBytes = speechBytes + (turnAsset == null ? 0 : turnAsset.bytes());
+		long[] doneBefore = {0};
 		AssetInstaller installer = new AssetInstaller(vfgRoot,
-			(done, total) -> status.setupRunning(total <= 0 ? 0 : (int) (done * 100 / total)));
+			(done, total) -> status.setupRunning((int) ((doneBefore[0] + done) * 100 / allBytes)));
 		try {
-			installer.installAll(List.of(natives, vad, modelAsset));
+			installer.installAll(speech);
 		} catch (AssetInstaller.SetupException e) {
 			LOG.warn("setup failed: {}", e.getMessage());
 			finishSetup(VoiceStatus.Setup.SETUP_FAILED, e.getMessage());
@@ -326,21 +336,32 @@ public final class VoiceService {
 		} catch (InterruptedException e) {
 			return;
 		}
+		boolean turnInstalled = false;
+		if (turnAsset != null) {
+			doneBefore[0] = speechBytes;
+			try {
+				installer.installAll(List.of(turnAsset));
+				turnInstalled = true;
+			} catch (AssetInstaller.SetupException | RuntimeException e) {
+				LOG.warn("turn model {} not installed ({}); lines end on silence alone", c.turnModel, e.getMessage());
+			} catch (InterruptedException e) {
+				return;
+			}
+		} else if (!c.turnModel.equals(TurnDetectors.OFF)) {
+			LOG.warn("turn model {} has no download; lines end on silence alone", c.turnModel);
+		}
 		if (Thread.currentThread().isInterrupted()) {
 			return;
 		}
-		SpeechEngine old = engine.getAndSet(null);
-		if (old != null) {
-			old.close();
-		}
+		releaseEngine();
 		try {
 			long t0 = System.nanoTime();
-			VfgConfig c = config;
 			SpeechEngine loaded = SpeechEngine.load(Assets.folder(vfgRoot, natives), Assets.isParakeet(modelAsset),
 				Assets.folder(vfgRoot, modelAsset), Assets.folder(vfgRoot, vad).resolve(Assets.VAD_FILE), c.sttThreads,
 				(float) c.vadThreshold);
-			engine.set(loaded);
 			LOG.info("speech engine loaded ({}, {} ms)", model, (System.nanoTime() - t0) / 1_000_000);
+			turn.set(turnInstalled ? loadTurn(c.turnModel, natives, turnAsset) : null);
+			engine.set(loaded);
 			finishSetup(VoiceStatus.Setup.READY, null);
 		} catch (Throwable t) {
 			String message = t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
@@ -349,6 +370,40 @@ public final class VoiceService {
 			}
 			LOG.error("engine failed: {}", message, t);
 			finishSetup(VoiceStatus.Setup.ENGINE_FAILED, message);
+		}
+	}
+
+	/**
+	 * Loads the turn model on the ONNX Runtime the engine has just loaded; {@code null}, with
+	 * one warning, when it will not load.
+	 */
+	private TurnDetector loadTurn(String turnModel, Assets.Asset natives, Assets.Asset turnAsset) {
+		try {
+			long t0 = System.nanoTime();
+			TurnDetector loaded = TurnDetectors.load(turnModel, Assets.folder(vfgRoot, natives),
+				Assets.turnFile(vfgRoot, turnAsset));
+			LOG.info("turn model loaded ({}, {} ms)", turnModel, (System.nanoTime() - t0) / 1_000_000);
+			return loaded;
+		} catch (Throwable t) {
+			LOG.warn("turn model {} failed to load ({}); lines end on silence alone", turnModel,
+				t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage());
+			return null;
+		}
+	}
+
+	/** Releases the turn model, then the engine whose runtime it runs on. */
+	private void releaseEngine() {
+		TurnDetector oldTurn = turn.getAndSet(null);
+		if (oldTurn != null) {
+			try {
+				oldTurn.close();
+			} catch (RuntimeException e) {
+				LOG.warn("closing the turn model: {}", e.toString());
+			}
+		}
+		SpeechEngine old = engine.getAndSet(null);
+		if (old != null) {
+			old.close();
 		}
 	}
 

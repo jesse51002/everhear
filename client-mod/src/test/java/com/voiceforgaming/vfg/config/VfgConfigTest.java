@@ -9,6 +9,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -25,16 +26,17 @@ class VfgConfigTest {
 		assertTrue(Files.exists(file));
 		JsonObject o = JsonParser.parseString(Files.readString(file)).getAsJsonObject();
 		assertEquals(List.of("server_address", "bridge_url", "client_token", "mic_device", "model", "icon_corner", "muted",
-			"silence_seconds", "vad_threshold", "stt_threads", "log_text"), List.copyOf(o.keySet()));
+			"turn_model", "turn_threshold", "silence_seconds", "vad_threshold", "stt_threads", "log_text"),
+			List.copyOf(o.keySet()));
 		assertEquals("parakeet-110m-en", o.get("model").getAsString());
 		assertEquals("top_left", o.get("icon_corner").getAsString());
-		assertEquals(5, o.get("silence_seconds").getAsInt());
-		assertEquals("5", o.get("silence_seconds").toString());
+		assertEquals(3, o.get("silence_seconds").getAsInt());
+		assertEquals("3", o.get("silence_seconds").toString());
 		assertEquals(0.5, o.get("vad_threshold").getAsDouble());
 		assertEquals(2, o.get("stt_threads").getAsInt());
 		assertFalse(o.get("muted").getAsBoolean());
 		assertFalse(o.get("log_text").getAsBoolean());
-		assertEquals(5.0, c.silenceSeconds);
+		assertEquals(3.0, c.silenceSeconds);
 	}
 
 	@Test
@@ -56,7 +58,7 @@ class VfgConfigTest {
 			""");
 		VfgConfig c = VfgConfig.load(file);
 		assertEquals("play.example.com", c.serverAddress);
-		assertEquals(5.0, c.silenceSeconds);
+		assertEquals(3.0, c.silenceSeconds);
 		assertEquals(0.5, c.vadThreshold);
 		assertEquals(2, c.sttThreads);
 		assertEquals("parakeet-110m-en", c.model, "an unknown model falls back to the default");
@@ -102,6 +104,145 @@ class VfgConfigTest {
 		assertTrue(c.muted);
 		assertTrue(c.logText);
 		assertEquals("abc", c.clientToken);
+	}
+
+	@Test
+	void theTurnModelIsSmartTurnWithItsOwnThresholdWrittenAsNull() throws Exception {
+		Path file = dir.resolve("vfg-client.json");
+		VfgConfig c = VfgConfig.load(file);
+		assertEquals("smart-turn-v3.2", c.turnModel);
+		assertNull(c.turnThreshold);
+		JsonObject o = JsonParser.parseString(Files.readString(file)).getAsJsonObject();
+		assertEquals("smart-turn-v3.2", o.get("turn_model").getAsString());
+		assertTrue(o.get("turn_threshold").isJsonNull());
+		assertTrue(Files.readString(file).contains("\"turn_threshold\": null"), "the key is there, with no number");
+	}
+
+	@Test
+	void turnModelIsOneOfTheModelsOrTheDefault() throws Exception {
+		Path file = dir.resolve("vfg-client.json");
+		for (String model : List.of("smart-turn-v3.2", "turn-1-mini", "off")) {
+			Files.writeString(file, "{ \"turn_model\": \"" + model + "\" }");
+			assertEquals(model, VfgConfig.load(file).turnModel);
+		}
+		Files.writeString(file, "{ \"turn_model\": \"semantic-vad\" }");
+		assertEquals("smart-turn-v3.2", VfgConfig.load(file).turnModel);
+		Files.writeString(file, "{ \"turn_model\": 3 }");
+		assertEquals("smart-turn-v3.2", VfgConfig.load(file).turnModel);
+	}
+
+	@Test
+	void turnThresholdIs005To095AndAnythingElseIsTheModelsOwn() throws Exception {
+		Path file = dir.resolve("vfg-client.json");
+		for (double kept : new double[] {0.05, 0.5, 0.72, 0.95}) {
+			Files.writeString(file, "{ \"turn_model\": \"off\", \"turn_threshold\": " + kept + " }");
+			assertEquals(kept, VfgConfig.load(file).turnThreshold);
+		}
+		for (String unset : List.of("0.04", "0.96", "-1", "\"0.6\"", "true", "null")) {
+			Files.writeString(file, "{ \"turn_model\": \"off\", \"turn_threshold\": " + unset + " }");
+			assertNull(VfgConfig.load(file).turnThreshold, unset);
+		}
+		Files.writeString(file, "{ \"turn_model\": \"off\" }");
+		assertNull(VfgConfig.load(file).turnThreshold, "no key");
+	}
+
+	@Test
+	void aSetThresholdIsWrittenAsANumberAndAnUnsetOneStaysUnsetAcrossModels() throws Exception {
+		Path file = dir.resolve("vfg-client.json");
+		VfgConfig c = VfgConfig.load(file);
+		c.turnThreshold = 0.7;
+		c.save(file);
+		assertEquals(0.7, JsonParser.parseString(Files.readString(file)).getAsJsonObject().get("turn_threshold")
+			.getAsDouble());
+		assertEquals(0.7, VfgConfig.load(file).turnThreshold);
+
+		c.turnThreshold = null;
+		c.save(file);
+		VfgConfig smart = VfgConfig.load(file);
+		smart.turnModel = "turn-1-mini"; // a player switches models
+		smart.save(file);
+		VfgConfig mini = VfgConfig.load(file);
+		assertEquals("turn-1-mini", mini.turnModel);
+		assertNull(mini.turnThreshold, "no threshold carried over from the other model");
+	}
+
+	@Test
+	void silenceSecondsIsStill2To30() throws Exception {
+		Path file = dir.resolve("vfg-client.json");
+		for (double kept : new double[] {2, 3, 4.5, 30}) {
+			Files.writeString(file, "{ \"turn_model\": \"off\", \"silence_seconds\": " + kept + " }");
+			assertEquals(kept, VfgConfig.load(file).silenceSeconds);
+		}
+		for (double out : new double[] {1.9, 30.5}) {
+			Files.writeString(file, "{ \"turn_model\": \"off\", \"silence_seconds\": " + out + " }");
+			assertEquals(3.0, VfgConfig.load(file).silenceSeconds, "falls back to the default, 3");
+		}
+	}
+
+	@Test
+	void aFileFromBeforeTheTurnModelMovesFrom5To3AndIsWrittenBackOnce() throws Exception {
+		Path file = dir.resolve("vfg-client.json");
+		Files.writeString(file, """
+			{ "server_address": "play.example.com", "client_token": "abc", "model": "parakeet-110m-en",
+			  "muted": false, "silence_seconds": 5, "vad_threshold": 0.5, "stt_threads": 2, "log_text": false }
+			""");
+		VfgConfig c = VfgConfig.load(file);
+		assertEquals(3.0, c.silenceSeconds);
+		assertEquals("smart-turn-v3.2", c.turnModel);
+		JsonObject o = JsonParser.parseString(Files.readString(file)).getAsJsonObject();
+		assertEquals("3", o.get("silence_seconds").toString(), "written back");
+		assertEquals("smart-turn-v3.2", o.get("turn_model").getAsString());
+		assertTrue(o.get("turn_threshold").isJsonNull());
+		assertEquals("play.example.com", o.get("server_address").getAsString());
+		assertEquals("abc", o.get("client_token").getAsString());
+
+		// Read again: nothing moves and nothing is written.
+		String written = Files.readString(file);
+		FileTime before = FileTime.fromMillis(1_000_000);
+		Files.setLastModifiedTime(file, before);
+		assertEquals(3.0, VfgConfig.load(file).silenceSeconds);
+		assertEquals(written, Files.readString(file));
+		assertEquals(before, Files.getLastModifiedTime(file));
+
+		// A 5 chosen after the move is the player's, and stays.
+		Files.writeString(file, written.replace("\"silence_seconds\": 3", "\"silence_seconds\": 5"));
+		String chosen = Files.readString(file);
+		Files.setLastModifiedTime(file, before);
+		assertEquals(5.0, VfgConfig.load(file).silenceSeconds);
+		assertEquals(chosen, Files.readString(file));
+		assertEquals(before, Files.getLastModifiedTime(file));
+	}
+
+	@Test
+	void theMoveKeepsASilenceThePlayerChose() throws Exception {
+		Path file = dir.resolve("vfg-client.json");
+		Files.writeString(file, "{ \"silence_seconds\": 8 }");
+		assertEquals(8.0, VfgConfig.load(file).silenceSeconds);
+		JsonObject o = JsonParser.parseString(Files.readString(file)).getAsJsonObject();
+		assertEquals("8", o.get("silence_seconds").toString());
+		assertEquals("smart-turn-v3.2", o.get("turn_model").getAsString(), "written back with the new keys");
+	}
+
+	@Test
+	void offWithFiveSecondsIsReadAsWritten() throws Exception {
+		Path file = dir.resolve("vfg-client.json");
+		Files.writeString(file, "{ \"turn_model\": \"off\", \"silence_seconds\": 5 }");
+		VfgConfig c = VfgConfig.load(file);
+		assertEquals("off", c.turnModel);
+		assertEquals(5.0, c.silenceSeconds);
+	}
+
+	@Test
+	void copyAndToStringCarryTheTurnKeys() {
+		VfgConfig c = new VfgConfig();
+		c.turnModel = "turn-1-mini";
+		c.turnThreshold = 0.42;
+		VfgConfig copy = c.copy();
+		assertEquals("turn-1-mini", copy.turnModel);
+		assertEquals(0.42, copy.turnThreshold);
+		assertTrue(c.toString().contains("turn_model=turn-1-mini"), c.toString());
+		assertTrue(c.toString().contains("turn_threshold=0.42"), c.toString());
+		assertTrue(new VfgConfig().toString().contains("turn_threshold=(the model's own)"));
 	}
 
 	@Test

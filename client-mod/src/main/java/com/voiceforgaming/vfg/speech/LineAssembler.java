@@ -2,22 +2,34 @@ package com.voiceforgaming.vfg.speech;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Turns transcribed speech segments into lines.
  *
  * <p>A segment that starts within {@code silenceSeconds} of the open line's end joins it,
- * so a shorter pause never splits a line. {@link #tick} closes the open line once no
- * speech is in progress, no segment waits to be transcribed, and
+ * so a shorter pause never splits a line. At each pause the turn model's verdict on the
+ * line comes in through {@link #turn}: a line it heard finished is marked, and
+ * {@link #tick} closes it as soon as no speech is in progress and no segment waits to be
+ * transcribed. Speech starting again clears the mark, and so does a segment joining the
+ * line, which is scored at its own pause. A line that is not finished closes once no
+ * speech is in progress, no segment waits, and
  * {@code now >= ended_at + silenceSeconds + 0.5 s}. A line also closes early at 60 s of
  * speech or 1500 characters. {@code ended_at} is always the end of the last speech, not
  * of the silence after it.
  *
+ * <p>Each decision is logged at INFO, never with the text: {@code turn 0.93 in 31 ms: closed},
+ * {@code turn 0.18 in 29 ms: waiting}, {@code closed after 3.6 s of silence}. A score that
+ * failed never reaches here; {@link SttWorker} logs it.
+ *
  * <p>Owned by one thread ({@code vfg-stt}); not thread-safe.
  */
 public final class LineAssembler {
+	private static final Logger LOG = LoggerFactory.getLogger("vfg");
 	public static final int SAMPLE_RATE = 16000;
 	public static final long GRACE_MILLIS = 500;
 	public static final long MAX_SPEECH_SAMPLES = 60L * SAMPLE_RATE;
@@ -39,6 +51,7 @@ public final class LineAssembler {
 	private final long silenceMillis;
 	private final LongSupplier clock;
 	private final Consumer<Line> sink;
+	private final Consumer<String> decisions;
 
 	private final List<String> texts = new ArrayList<>();
 	private int textLength;
@@ -47,15 +60,33 @@ public final class LineAssembler {
 	private float peak;
 	private double sumOfSquares;
 	private long samples;
+	private boolean finished;
+	private String verdict; // the turn model's words that marked the open line finished
 
 	public LineAssembler(double silenceSeconds, LongSupplier clock, Consumer<Line> sink) {
+		this(silenceSeconds, clock, sink, decision -> {});
+	}
+
+	/** {@code decisions} also gets the words of each decision, as they are logged. */
+	public LineAssembler(double silenceSeconds, LongSupplier clock, Consumer<Line> sink, Consumer<String> decisions) {
 		this.silenceMillis = Math.round(silenceSeconds * 1000.0);
 		this.clock = clock;
 		this.sink = sink;
+		this.decisions = decisions;
 	}
 
 	public boolean isOpen() {
 		return !texts.isEmpty();
+	}
+
+	/** How many segments the open line holds. */
+	public int segments() {
+		return texts.size();
+	}
+
+	/** Whether the turn model heard the open line finished, and no speech has come since. */
+	public boolean finished() {
+		return finished;
 	}
 
 	public long endedAtMillis() {
@@ -84,8 +115,8 @@ public final class LineAssembler {
 	}
 
 	/**
-	 * Adds a segment: it joins the open line, or opens one. Returns why it was dropped,
-	 * or {@link Rejection#NONE} when it was used.
+	 * Adds a segment: it joins the open line, clearing the turn model's mark, or opens one.
+	 * Returns why it was dropped, or {@link Rejection#NONE} when it was used.
 	 */
 	public Rejection accept(Heard heard) {
 		String text = clean(heard.text());
@@ -94,9 +125,12 @@ public final class LineAssembler {
 			return why;
 		}
 		if (isOpen() && heard.startMillis() - endedAt > silenceMillis) {
+			decide(finished ? verdict + ": closed" : silence(heard.startMillis() - endedAt));
 			close();
 		}
-		if (!isOpen()) {
+		if (isOpen()) {
+			unmark();
+		} else {
 			startedAt = heard.startMillis();
 			endedAt = heard.endMillis();
 			peak = 0f;
@@ -116,12 +150,46 @@ public final class LineAssembler {
 		return Rejection.NONE;
 	}
 
-	/** Closes the open line once the silence after it has run out. */
-	public void tick(boolean speechInProgress, boolean segmentsPending) {
-		if (!isOpen() || speechInProgress || segmentsPending) {
+	/**
+	 * The turn model's verdict on the open line, at the pause after the segment that just
+	 * joined or opened it. {@code verdict} is its words, such as {@code turn 0.93 in 31 ms}.
+	 * A finished line is marked, and closes at the next {@link #tick} that finds no speech in
+	 * progress and nothing waiting; one that is not finished waits for more speech, or for
+	 * the silence to run out.
+	 */
+	public void turn(String verdict, boolean finished) {
+		if (!isOpen()) {
 			return;
 		}
-		if (clock.getAsLong() >= endedAt + silenceMillis + GRACE_MILLIS) {
+		this.finished = finished;
+		this.verdict = finished ? verdict : null;
+		if (!finished) {
+			decide(verdict + ": waiting");
+		}
+	}
+
+	/**
+	 * Closes the open line once no speech is in progress and no segment waits: at once if
+	 * the turn model heard it finished, otherwise once the silence after it has run out.
+	 * Speech in progress clears the turn model's mark.
+	 */
+	public void tick(boolean speechInProgress, boolean segmentsPending) {
+		if (!isOpen()) {
+			return;
+		}
+		if (speechInProgress) {
+			unmark();
+			return;
+		}
+		if (segmentsPending) {
+			return;
+		}
+		long now = clock.getAsLong();
+		if (finished) {
+			decide(verdict + ": closed");
+			close();
+		} else if (now >= endedAt + silenceMillis + GRACE_MILLIS) {
+			decide(silence(now - endedAt));
 			close();
 		}
 	}
@@ -137,6 +205,26 @@ public final class LineAssembler {
 	public void discard() {
 		texts.clear();
 		textLength = 0;
+		finished = false;
+		verdict = null;
+	}
+
+	/** More speech after the turn model heard the line finished: the line goes on. */
+	private void unmark() {
+		if (finished) {
+			decide(verdict + ": waiting, speech again");
+			finished = false;
+			verdict = null;
+		}
+	}
+
+	private static String silence(long millis) {
+		return String.format(Locale.ROOT, "closed after %.1f s of silence", millis / 1000.0);
+	}
+
+	private void decide(String decision) {
+		LOG.info("{}", decision);
+		decisions.accept(decision);
 	}
 
 	private void close() {

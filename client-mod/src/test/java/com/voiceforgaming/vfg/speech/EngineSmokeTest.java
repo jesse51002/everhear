@@ -70,7 +70,7 @@ class EngineSmokeTest {
 				return text;
 			};
 			CaptureProcessor[] cp = new CaptureProcessor[1];
-			stt = new SttWorker(() -> timed, assembler, () -> cp[0].speaking(), t -> {}, () -> false);
+			stt = new SttWorker(() -> timed, () -> null, null, assembler, () -> cp[0].speaking(), t -> {}, () -> false);
 			cp[0] = new CaptureProcessor(() -> engine, stt::submit);
 			capture = cp[0];
 			capture.onStarted(true);

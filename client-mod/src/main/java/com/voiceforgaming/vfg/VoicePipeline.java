@@ -8,20 +8,24 @@ import com.voiceforgaming.vfg.speech.LineAssembler;
 import com.voiceforgaming.vfg.speech.SttWorker;
 import com.voiceforgaming.vfg.speech.Transcriber;
 import com.voiceforgaming.vfg.speech.VoiceDetector;
+import com.voiceforgaming.vfg.turn.TurnDetector;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 /**
- * Speech in, lines out: the mic ({@code vfg-capture}) → the VAD and the sample clock →
- * speech-to-text ({@code vfg-stt}) → the line assembler. The mod runs exactly this, and so
- * do {@code ./gradlew micCheck} and {@code ./gradlew speechTest}; nothing here knows about
- * Minecraft, the session or the bridge.
+ * Speech in, lines out: the mic ({@code vfg-capture}) → the VAD, the sample clock and the
+ * last 9 s of audio → speech-to-text and the turn model ({@code vfg-stt}) → the line
+ * assembler. The mod runs exactly this, and so do {@code ./gradlew micCheck} and
+ * {@code ./gradlew speechTest}; nothing here knows about Minecraft, the session or the bridge.
  */
 public final class VoicePipeline {
 	/** What the pipeline reports. {@code live} is called on {@code vfg-capture}, the rest on {@code vfg-stt}. */
 	public interface Events {
-		/** A line closed: silence ran out, it hit a cap, or capture stopped for leaving. */
+		/**
+		 * A line closed: the turn model heard it finished, silence ran out, it hit a cap, or
+		 * capture stopped for leaving.
+		 */
 		default void line(LineAssembler.Line line) {}
 
 		/** A segment's text, cleaned, whether or not it went into a line (the mic test shows it). */
@@ -42,13 +46,17 @@ public final class VoicePipeline {
 	/**
 	 * @param vad the VAD, or {@code null} while the engine is not loaded
 	 * @param transcriber speech-to-text, or {@code null} while the engine is not loaded
+	 * @param turn the turn model, or {@code null} while none is loaded; lines then end on silence alone
+	 * @param turnThreshold the score at or above which a line is finished, or {@code null} for the model's own
 	 * @param clock wall-clock milliseconds, for the silence timer
 	 */
 	public VoicePipeline(MicCapture.DeviceOpener devices, Supplier<VoiceDetector> vad, Supplier<Transcriber> transcriber,
-			double silenceSeconds, LongSupplier clock, BooleanSupplier logText, Events events) {
+			Supplier<TurnDetector> turn, Double turnThreshold, double silenceSeconds, LongSupplier clock,
+			BooleanSupplier logText, Events events) {
 		LineAssembler assembler = new LineAssembler(silenceSeconds, clock, events::line);
 		CaptureProcessor[] cp = new CaptureProcessor[1];
-		this.stt = new SttWorker(transcriber, assembler, () -> cp[0].speaking(), events::heard, logText);
+		this.stt = new SttWorker(transcriber, turn, turnThreshold, assembler, () -> cp[0].speaking(), events::heard,
+			logText);
 		this.capture = new CaptureProcessor(vad, stt::submit);
 		cp[0] = capture;
 		WindowListener publishing = new WindowListener() {
