@@ -18,8 +18,12 @@ import java.util.Map;
  * not on what was scored before. The attention reaches back 1.2 s per layer.
  */
 public final class TurnOneMini implements TurnDetector {
-	/** Its scores are not calibrated; this stands until a measurement on our own audio picks one. */
-	public static final double THRESHOLD = 0.5;
+	/**
+	 * Its scores are not calibrated: this is where it cuts off as many unfinished clips of
+	 * Pipecat's test set as Smart Turn does at 0.5 ({@code ./gradlew turnCompare},
+	 * reports/turn-compare.md).
+	 */
+	public static final double THRESHOLD = 0.35;
 	/** 160 ms at 16 kHz. */
 	public static final int STEP = 2560;
 	public static final int MAX_STEPS = 16;
