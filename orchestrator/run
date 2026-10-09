@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
-[ -d node_modules ] || bun install --frozen-lockfile
-exec bun run src/main.ts
+# The dependencies, from uv.lock (a no-op when they are already there). Then exec, so the runner
+# is this process: the pid vfg orch start records is the one that takes the lock and gets SIGTERM.
+uv sync --frozen --inexact --no-dev --quiet
+exec .venv/bin/python -m orchestrator

@@ -1,0 +1,27 @@
+[project]
+name = "vfg-orchestrator"
+version = "0.1.0"
+description = "The EverHear orchestrator runner: one Claude Agent SDK session that answers the conversation's tasks."
+requires-python = ">=3.12"
+dependencies = [
+    "claude-agent-sdk==0.2.165",
+    "pydantic>=2.14.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.uv]
+# Not a package to build: `python -m orchestrator`, run from this folder (orchestrator/run does).
+package = false
+
+[tool.pytest.ini_options]
+# No model and no network: the live checks (tests/integration.py, tests/probe.py,
+# tests/live_box.py) are scripts, not test_*.py files, so they are never collected.
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

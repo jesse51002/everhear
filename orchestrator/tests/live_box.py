@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """The orchestrator live, against a local stand-in box, with the REAL vfg.
 
-    python3 test/live_box.py --preflight          no model: the box and every vfg shape an
+    python3 tests/live_box.py --preflight         no model: the box and every vfg shape an
                                                   implementer uses, plus the guard on each
-    VFG_ORCH_MODEL=haiku python3 test/live_box.py the live run: your subscription, once
+    VFG_ORCH_MODEL=haiku python3 tests/live_box.py the live run: your subscription, once
                                                   (hybrid by default; VFG_ORCH_MODE=implementers|direct)
-    python3 test/live_box.py --quick              the real defaults (Opus, Sonnet implementers): two tasks, timed
-    python3 test/live_box.py --hybrid             hybrid: direct tasks, a delegated house, a quick task during it
+    python3 tests/live_box.py --quick             the real defaults (Opus, Sonnet implementers): two tasks, timed
+    python3 tests/live_box.py --hybrid            hybrid: direct tasks, a delegated house, a quick task during it
 
 The box is integration/harness.py's Box (imported, read-only): the real bridge, Jev filter and
 feed writer on Python 3.9, the toolkit's fake_ssh, and a temp VFG_HOME whose config points into
-it. In place of the toolkit's bare fake RCON this runs test/realistic_rcon.py on the box's RCON
+it. In place of the toolkit's bare fake RCON this runs tests/realistic_rcon.py on the box's RCON
 port, so an implementer can confirm what it did. The runner is started and stopped with
 `vfg orch start|stop`, tasks are sent with `vfg orch send`, and every answer is checked in the
 feed (`vfg history --feed`): exactly one `ORCH … done|failed` per task.
@@ -286,8 +286,9 @@ def preflight(H):
         import shlex
         lines = [" ".join(shlex.quote(w) for w in argv) for argv in SHAPES]
         guard = subprocess.run(
-            ["bun", "-e", 'import { checkBash } from "./src/guard"; for (const l of JSON.parse(process.argv[1])) '
-                          'console.log(JSON.stringify([l, checkBash(l)]));', json.dumps(lines)],
+            [UV, "run", "--project", ORCH, "--frozen", "python", "-c",
+             "import json, sys\nfrom orchestrator.guard import check_bash\n"
+             "for l in json.loads(sys.argv[1]):\n    print(json.dumps([l, check_bash(l)]))", json.dumps(lines)],
             cwd=ORCH, stdout=subprocess.PIPE, universal_newlines=True)
         for row in guard.stdout.splitlines():
             line, why = json.loads(row)
@@ -323,7 +324,7 @@ def preflight(H):
 
 def probe(live):
     env = dict(live.env)
-    r = subprocess.run(["bun", "run", os.path.join(HERE, "probe.ts")], cwd=ORCH, env=env, stdout=subprocess.PIPE,
+    r = subprocess.run([UV, "run", "--project", ORCH, "--frozen", "python", os.path.join(HERE, "probe.py")], cwd=ORCH, env=env, stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE, universal_newlines=True, timeout=400)
     for line in r.stderr.splitlines():
         if line.startswith("[") or "probe" in line:
