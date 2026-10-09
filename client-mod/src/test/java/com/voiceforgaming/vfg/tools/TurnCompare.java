@@ -525,6 +525,24 @@ public final class TurnCompare {
 		}
 	}
 
+	/**
+	 * Where to split {@code audio}, 16 kHz speech of {@code text}, at a gap between its words: the
+	 * clean gap nearest the middle ({@link #cutBefore}), as {@code {sample, words before it}}, or
+	 * {@code null} when no gap cuts cleanly. The speech test's mid-sentence pauses go there.
+	 */
+	public static int[] cutNearMiddle(OfflineRecognizer recognizer, float[] audio, String text) {
+		List<String> words = List.of(text.split("\\s+"));
+		List<Word> said = transcribe(recognizer, audio);
+		List<String> tries = new ArrayList<>();
+		for (int k : gapsFromMiddle(words)) {
+			int cut = cutBefore(recognizer, tries, text, audio, said, words, k, false);
+			if (cut > 0) {
+				return new int[] {cut, k};
+			}
+		}
+		return null;
+	}
+
 	/** The word gaps that may be cut, nearest the middle first; never after a full stop or a question mark. */
 	static List<Integer> gapsFromMiddle(List<String> words) {
 		List<Integer> gaps = new ArrayList<>();

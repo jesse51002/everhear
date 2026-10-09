@@ -32,19 +32,44 @@ public final class SpeechTimeline {
 	/** Adds speech, trimmed to its first and last sample above -34 dBFS. */
 	public SpeechTimeline speech(String label, List<String> keywords, Wav.Audio audio) {
 		float[] at48k = to48k(audio);
-		int from = 0;
-		while (from < at48k.length && Math.abs(at48k[from]) < SPEECH_THRESHOLD) {
-			from++;
-		}
-		int to = at48k.length;
-		while (to > from && Math.abs(at48k[to - 1]) < SPEECH_THRESHOLD) {
-			to--;
-		}
+		int from = firstLoud(at48k);
+		int to = lastLoud(at48k, from);
 		float[] speech = java.util.Arrays.copyOfRange(at48k, from, to);
 		clips.add(new Clip(label, keywords, length, length + speech.length));
 		parts.add(speech);
 		length += speech.length;
 		return this;
+	}
+
+	/**
+	 * Adds speech as it is, its quiet edges kept, where {@link #speech} trims them: for the halves
+	 * of one take cut at a gap between words, whose edges are the quiet ends of words. The clip is
+	 * still where the speech is, from its first sample above -34 dBFS to its last.
+	 */
+	public SpeechTimeline speechAsIs(String label, List<String> keywords, Wav.Audio audio) {
+		float[] at48k = to48k(audio);
+		int from = firstLoud(at48k);
+		clips.add(new Clip(label, keywords, length + from, length + lastLoud(at48k, from)));
+		parts.add(at48k);
+		length += at48k.length;
+		return this;
+	}
+
+	private static int firstLoud(float[] a) {
+		int from = 0;
+		while (from < a.length && Math.abs(a[from]) < SPEECH_THRESHOLD) {
+			from++;
+		}
+		return from;
+	}
+
+	/** One past the last sample above -34 dBFS, and no earlier than {@code from}. */
+	private static int lastLoud(float[] a, int from) {
+		int to = a.length;
+		while (to > from && Math.abs(a[to - 1]) < SPEECH_THRESHOLD) {
+			to--;
+		}
+		return to;
 	}
 
 	public List<Clip> clips() {
