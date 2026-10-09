@@ -60,6 +60,10 @@ TABLE = [
     ("main-thread vfg place list chained", main("Bash", {"command": "vfg place list && vfg cmd 'time set day'"}), DENY.main_thread),
     ("main-thread vfg place list in the background", main("Bash", {"command": "vfg place list", "run_in_background": True}), DENY.main_thread),
     ("main-thread vfg place save", main("Bash", {"command": "vfg place save castle --at 1 2 3 --by T7"}), DENY.main_thread),
+    ("main-thread vfg script list", main("Bash", {"command": "vfg script list"}), None),
+    ("main-thread vfg script list chained", main("Bash", {"command": "vfg script list; vfg state"}), DENY.main_thread),
+    ("main-thread vfg script set", main("Bash", {"command": "vfg script set x cooldown=0"}), DENY.main_thread),
+    ("main-thread vfg state", main("Bash", {"command": "vfg state"}), DENY.main_thread),
     # Agent
     ("Agent ok", agent(), None),
     ("Agent another type", agent(subagent_type="general-purpose"), DENY.agent_type),
@@ -128,10 +132,44 @@ TABLE = [
     ("place list --json", bash("vfg place list --json"), None),
     ("place save with no name", bash("vfg place save"), DENY.shape),
     ("place forget is not for implementers", bash("vfg place forget castle"), DENY.shape),
-    # implementer files
-    ("Write a new script", impl("Write", {"file_path": REPO + "/scripts/torch_ring/main.py"}), None),
-    ("Write _lib", impl("Write", {"file_path": REPO + "/scripts/_lib/mc.py"}), DENY.lib),
-    ("Edit _lib", impl("Edit", {"file_path": REPO + "/scripts/_lib/mc.py"}), DENY.lib),
+    # the script library's commands
+    ("script new from a script with presets", bash("vfg script new galick_ice --from galick_gun --preset replace_blocks"), None),
+    ("script new then check", bash("vfg script new storm --preset lightning && vfg script check storm"), None),
+    ("script new into the library", bash("vfg script new storm --library --preset lightning"), DENY.library_flag),
+    ("script new with no name", bash("vfg script new"), DENY.shape),
+    ("script set", bash("vfg script set galick-alex cooldown=0 crater_radius=30"), None),
+    ("script set with no value", bash("vfg script set galick-alex"), DENY.shape),
+    ("script save", bash("vfg script save galick-alex galick_no_cooldown"), None),
+    ("script save with one name", bash("vfg script save galick-alex"), DENY.shape),
+    ("script check everything", bash("vfg script check"), None),
+    ("script check some", bash("vfg script check galick_ice crater"), None),
+    ("script run with values and a task", bash("vfg script run --task T7 spirit_bomb player=Steve as=bomb-steve"), None),
+    ("preset save", bash("vfg preset save galick_ice ice_path ice_trail"), None),
+    ("preset save short", bash("vfg preset save galick_ice ice_path"), DENY.shape),
+    ("preset list is not a command", bash("vfg preset list"), DENY.shape),
+    ("state", bash("vfg state"), None),
+    ("state --json", bash("vfg state --json"), None),
+    ("state with other words", bash("vfg state Steve"), DENY.shape),
+    ("route is the runner's", bash("vfg route --task T7"), DENY.shape),
+    ("prefix is the runner's", bash("vfg prefix"), DENY.shape),
+    ("a server command after script new", bash("vfg script new x --preset crater; vfg cmd 'op Steve'"), DENY.owner),
+    # implementer files: only this server's folder, never the library
+    ("Write a new script in made/", impl("Write", {"file_path": REPO + "/made/main/scripts/torch_ring/main.py"}), None),
+    ("Edit a made script", impl("Edit", {"file_path": REPO + "/made/main/scripts/torch_ring/main.py"}), None),
+    ("Write a made preset", impl("Write", {"file_path": REPO + "/made/main/presets/ice_trail.py"}), None),
+    ("Edit a made script by a relative path", impl("Edit", {"file_path": "made/main/scripts/x/main.py"}), None),
+    ("Write a new script in scripts/", impl("Write", {"file_path": REPO + "/scripts/torch_ring/main.py"}), DENY.library("main")),
+    ("Edit a library script", impl("Edit", {"file_path": REPO + "/scripts/tnt_rain/main.py"}), DENY.library("main")),
+    ("Edit a library preset", impl("Edit", {"file_path": REPO + "/scripts/_presets/crater.py"}), DENY.library("main")),
+    ("Write scripts/README.md", impl("Write", {"file_path": REPO + "/scripts/README.md"}), DENY.library("main")),
+    ("Write _lib", impl("Write", {"file_path": REPO + "/scripts/_lib/mc.py"}), DENY.library("main")),
+    ("Edit _lib", impl("Edit", {"file_path": REPO + "/scripts/_lib/mc.py"}), DENY.library("main")),
+    ("Edit the kit", impl("Edit", {"file_path": REPO + "/scripts/_lib/kit/area.py"}), DENY.library("main")),
+    ("Write another server's folder", impl("Write", {"file_path": REPO + "/made/other/scripts/x/main.py"}), DENY.made_only("main")),
+    ("Write made/ itself", impl("Write", {"file_path": REPO + "/made/x.py"}), DENY.made_only("main")),
+    ("Write out of made/ with ..", impl("Write", {"file_path": REPO + "/made/main/../../scripts/x/main.py"}), DENY.library("main")),
+    ("Write elsewhere in the repo", impl("Write", {"file_path": REPO + "/toolkit/vfg"}), DENY.made_only("main")),
+    ("Write /tmp", impl("Write", {"file_path": "/tmp/x.py"}), DENY.made_only("main")),
     ("Glob outside the repo", impl("Glob", {"pattern": "*", "path": "~/.ssh"}), DENY.outside),
     ("Grep outside the repo", impl("Grep", {"pattern": ".", "path": HOME + "/.vfg"}), DENY.outside),
     ("Grep with ..", impl("Grep", {"pattern": ".", "path": REPO + "/../.."}), DENY.outside),
@@ -142,7 +180,7 @@ TABLE = [
     ("Read ~/.vfg/config", impl("Read", {"file_path": "~/.vfg/config"}), DENY.read_outside),
     ("Read ~/.ssh", impl("Read", {"file_path": HOME + "/.ssh/id_ed25519"}), DENY.read_outside),
     ("Read /etc", main("Read", {"file_path": "/etc/passwd"}), DENY.read_outside),
-    ("Write _lib by a relative path", impl("Write", {"file_path": "scripts/_lib/mc.py"}), DENY.lib),
+    ("Write _lib by a relative path", impl("Write", {"file_path": "scripts/_lib/mc.py"}), DENY.library("main")),
 ]
 
 
@@ -182,7 +220,8 @@ def test_the_probe_implementer_checks_on_the_main_thread_when_its_rule_is_off():
     g = ctx(main_thread_rule=False)
     assert decide(main("Bash", {"command": "ls ~"}), g) == DENY.shape
     assert decide(main("Bash", {"command": "vfg cmd 'op x'"}), g) == DENY.owner
-    assert decide(main("Write", {"file_path": REPO + "/scripts/_probe/README.md"}), g) is None
+    assert decide(main("Write", {"file_path": REPO + "/made/main/scripts/_probe/README.md"}), g) is None
+    assert decide(main("Write", {"file_path": REPO + "/scripts/_probe/README.md"}), g) == DENY.library("main")
 
 
 async def test_the_hooks_output_shape_and_allowed_agent_calls_are_counted():
@@ -207,7 +246,8 @@ def test_a_symlinked_path_to_the_repo_counts_as_inside():
     os.symlink(real, link)
     g = ctx(repo=real)
     assert decide(impl("Read", {"file_path": link + "/scripts/x.md"}), g) is None
-    assert decide(impl("Write", {"file_path": link + "/scripts/_lib/mc.py"}), g) == DENY.lib
+    assert decide(impl("Write", {"file_path": link + "/scripts/_lib/mc.py"}), g) == DENY.library("main")
+    assert decide(impl("Write", {"file_path": link + "/made/main/scripts/x/main.py"}), g) is None
     assert decide(impl("Grep", {"pattern": "x", "path": link}), g) is None
 
 

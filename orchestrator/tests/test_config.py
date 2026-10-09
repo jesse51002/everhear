@@ -24,3 +24,21 @@ def test_a_mode_other_than_implementers_is_ignored():
 def test_vfg_repo_wins():
     d = os.path.realpath(HERE)
     assert load_config({"VFG_REPO": d}).repo == d
+
+
+# Not in the TypeScript tests: the script library's settings, read as vfg reads them.
+def test_the_library_settings_from_the_environment_else_vfgs_config_file():
+    d = os.path.realpath(HERE)
+    c = load_config({"VFG_REPO": d, "VFG_HOME": "/nonexistent"})
+    assert [c.server, c.route_timeout_s, c.subagent_cache_ttl, c.implementer_model] == ["main", 3.0, "5m", "claude-haiku-5-5"]
+    import tempfile
+    home = tempfile.mkdtemp(prefix="vfg-config-")
+    with open(os.path.join(home, "config"), "w") as f:
+        f.write("# comment\nVFG_SERVER=lobby\nexport VFG_ROUTE_TIMEOUT_S='2.5'\nVFG_SUBAGENT_CACHE_TTL=\"1h\"\n")
+    c = load_config({"VFG_REPO": d, "VFG_HOME": home})
+    assert [c.server, c.route_timeout_s, c.subagent_cache_ttl] == ["lobby", 2.5, "1h"]
+    c = load_config({"VFG_REPO": d, "VFG_HOME": home, "VFG_SERVER": "main", "VFG_ROUTE_TIMEOUT_S": "4"})
+    assert [c.server, c.route_timeout_s, c.subagent_cache_ttl] == ["main", 4.0, "1h"]  # the environment wins
+    bad = load_config({"VFG_REPO": d, "VFG_HOME": "/nonexistent", "VFG_SERVER": "../x", "VFG_ROUTE_TIMEOUT_S": "soon",
+                       "VFG_SUBAGENT_CACHE_TTL": "forever"})
+    assert [bad.server, bad.route_timeout_s, bad.subagent_cache_ttl] == ["main", 3.0, "5m"]

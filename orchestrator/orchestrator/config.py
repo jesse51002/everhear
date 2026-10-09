@@ -32,10 +32,16 @@ class Config:
     implementer_effort: str
     # A fresh session once a main-thread call's input passes this many tokens (0: never).
     max_context: int
+    # Haiku 5.5 for now (the prototype runs on the owner's subscription); VFG_IMPL_MODEL changes it.
     implementer_model: str
     max_implementers: int
     stale_minutes: int
     implementer_minutes: int
+    # The script library's settings, read as vfg reads them (vfg_setting): the server whose
+    # made/<server>/ implementers write in, how long vfg route may take, the implementers' cache life.
+    server: str = "main"
+    route_timeout_s: float = 3.0
+    subagent_cache_ttl: str = "5m"
 
 
 def expand_home(p: str) -> str:
@@ -74,9 +80,48 @@ def _int(v: str | None, default: int, minimum: int = 1) -> int:
     return math.floor(n) if math.isfinite(n) and n >= minimum else default
 
 
+_SERVER_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
+CACHE_TTLS = ("5m", "1h")
+
+
+def vfg_config(env: Mapping[str, str]) -> dict[str, str]:
+    """$VFG_HOME/config (~/.vfg/config), KEY=value lines, as toolkit/vfg reads it; {} when unreadable."""
+    path = os.path.join(expand_home(env.get("VFG_HOME") or "~/.vfg"), "config")
+    out: dict[str, str] = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                if line.startswith("export "):
+                    line = line[7:].lstrip()
+                key, value = line.split("=", 1)
+                key, value = key.strip(), value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                    value = value[1:-1]
+                out[key] = value
+    except OSError:
+        pass
+    return out
+
+
+def vfg_setting(env: Mapping[str, str], file: Mapping[str, str], key: str) -> str:
+    """A VFG_* setting the way vfg takes it: the environment, else ~/.vfg/config; "" for the default."""
+    return env.get(key) or file.get(key) or ""
+
+
+def _seconds_setting(v: str, default: float, lo: float, hi: float) -> float:
+    n = js_number(v) if v else math.nan
+    return n if math.isfinite(n) and lo <= n <= hi else default
+
+
 def load_config(env: Mapping[str, str] | None = None) -> Config:
     if env is None:
         env = os.environ
+    file = vfg_config(env)
+    server = vfg_setting(env, file, "VFG_SERVER")
+    ttl = vfg_setting(env, file, "VFG_SUBAGENT_CACHE_TTL")
     orch_dir = os.path.abspath(expand_home(env.get("VFG_ORCH_DIR") or "~/.vfg/orch"))
     return Config(
         repo=_real(env.get("VFG_REPO") or os.path.dirname(ORCH)),
@@ -88,12 +133,16 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         prompts_dir=os.path.join(ORCH, "prompts"),
         model=env.get("VFG_ORCH_MODEL") or "opus",
         effort=env.get("VFG_ORCH_EFFORT") or "low",
-        implementer_model=env.get("VFG_IMPL_MODEL") or env.get("VFG_IMPLEMENTER_MODEL") or "sonnet",
+        implementer_model=env.get("VFG_IMPL_MODEL") or env.get("VFG_IMPLEMENTER_MODEL") or "claude-haiku-5-5",
         implementer_effort=env.get("VFG_IMPL_EFFORT") or "low",
         max_context=0 if env.get("VFG_ORCH_MAX_CONTEXT") == "0" else _int(env.get("VFG_ORCH_MAX_CONTEXT"), 70_000),
         max_implementers=_int(env.get("VFG_ORCH_MAX_IMPLEMENTERS"), 4),
         stale_minutes=_int(env.get("VFG_ORCH_STALE_MINUTES"), 10),
         implementer_minutes=_int(env.get("VFG_IMPLEMENTER_MINUTES"), 10),
+        # A name vfg would refuse is never joined into a path here; vfg itself says what is wrong.
+        server=server if _SERVER_RE.match(server) else "main",
+        route_timeout_s=_seconds_setting(vfg_setting(env, file, "VFG_ROUTE_TIMEOUT_S"), 3.0, 0.1, 60),
+        subagent_cache_ttl=ttl if ttl in CACHE_TTLS else "5m",
     )
 
 

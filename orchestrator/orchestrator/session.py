@@ -1,6 +1,7 @@
 """The one session: its options, the input queue that never ends, the message loop, the idle
 check that makes sure every task is answered, the watchdog, and resume and restart."""
 import asyncio
+import json
 import os
 import re
 import traceback
@@ -10,6 +11,7 @@ from typing import Any, AsyncIterator, Callable, Mapping
 
 from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
 
+from . import prefix as implementer_prefix
 from .config import Config, hms, js_round, log, now_ms, parse_time
 from .guard import GuardContext, brief, make_guard, task_id_of
 from .reply import REPLY_TOOL, Outbox, create_reply_server
@@ -45,18 +47,22 @@ class MSG:
                 "started on the server may still be running." % (hms(at), ", ".join(ids)))
 
 
-def rules(repo: str) -> list[str]:
+def rules(repo: str, server: str = "main") -> list[str]:
     """The allow rules; with permission mode "dontAsk" everything else is denied without a prompt.
-    Implementers run under them too: the session never writes, and runs only `vfg place list`
-    (the guard refuses the rest on the main thread)."""
+    Implementers run under them too: the session never writes, and runs only `vfg place list` and
+    `vfg script list` (the guard refuses the rest on the main thread). Implementers write only in
+    this server's folder, made/<server>/; the library in scripts/ is read-only during play."""
     return [
         REPLY_TOOL, "Agent", "TaskStop",
         "Read(/%s/**)" % repo, "Glob", "Grep",
-        "Edit(/%s/scripts/**)" % repo, "Write(/%s/scripts/**)" % repo,
+        "Edit(/%s/made/%s/**)" % (repo, server), "Write(/%s/made/%s/**)" % (repo, server),
         "Bash(vfg cmd *)",
         "Bash(vfg script deploy)", "Bash(vfg script deploy *)",
         "Bash(vfg script run *)", "Bash(vfg script stop *)", "Bash(vfg script logs *)",
         "Bash(vfg script list)",
+        "Bash(vfg script new *)", "Bash(vfg script set *)", "Bash(vfg script save *)",
+        "Bash(vfg script check)", "Bash(vfg script check *)", "Bash(vfg preset save *)",
+        "Bash(vfg state)", "Bash(vfg state *)",
         "Bash(vfg place save *)", "Bash(vfg place list)", "Bash(vfg place list *)",
         "Bash(vfg history)", "Bash(vfg history *)",
         "Bash(python3 -m py_compile *)",
@@ -68,10 +74,14 @@ def rules(repo: str) -> list[str]:
 class Prompts:
     orchestrator: str
     implementer: str
+    # `vfg prefix`: the kit and the library's first lines, after the implementer's rules in its
+    # system prompt. Read again each time a session opens (prefix.load); "" when vfg could not give it.
+    prefix: str = ""
 
 
 def fill_prompt(text: str, cfg: Config) -> str:
-    return text.replace("%REPO%", cfg.repo).replace("%MAX_IMPLEMENTERS%", str(cfg.max_implementers))
+    return (text.replace("%REPO%", cfg.repo).replace("%MAX_IMPLEMENTERS%", str(cfg.max_implementers))
+            .replace("%SERVER%", cfg.server))
 
 
 def session_env(source: Mapping[str, str]) -> dict[str, str]:
@@ -119,17 +129,21 @@ def build_options(cfg: Config, prompts: Prompts, store: Store, guard: GuardConte
         strict_mcp_config=True,
         mcp_servers={"orch": create_reply_server(store)},
         # Bash, Write and Edit are here so implementers can have them; the guard keeps the session
-        # itself to orchestrating (and `vfg place list`).
+        # itself to orchestrating (and `vfg place list`, `vfg script list`).
         tools=["Agent", "TaskStop", "Bash", "Read", "Write", "Edit", "Glob", "Grep"],
-        allowed_tools=rules(cfg.repo),
+        allowed_tools=rules(cfg.repo, cfg.server),
         permission_mode="dontAsk",
         hooks={"PreToolUse": [HookMatcher(hooks=[make_guard(guard)])]},
         env=env,
+        # The implementers' cache life (VFG_SUBAGENT_CACHE_TTL), as a flag setting: the CLI reads
+        # subagentPromptCacheTtl from --settings whatever setting_sources says, and session_env
+        # leaves out its CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL variable.
+        settings=json.dumps({"subagentPromptCacheTtl": cfg.subagent_cache_ttl}),
         stderr=stderr if stderr is not None else (lambda line: log("cli", line.rstrip())),
         agents={
             "implementer": AgentDefinition(
                 description="Carries out one job on the Minecraft server with vfg commands and the scripts folder, then reports.",
-                prompt=fill_prompt(prompts.implementer, cfg),
+                prompt=implementer_prefix.system_prompt(fill_prompt(prompts.implementer, cfg), prompts.prefix),
                 model=cfg.implementer_model,
                 effort=cfg.implementer_effort,
                 tools=["Bash", "Read", "Write", "Edit", "Glob", "Grep"],
@@ -372,6 +386,7 @@ class Session:
             open_task_ids=store.open_ids,
             active_implementers=lambda: len(self.running) + len(self.pending),
             on_agent_allowed=on_agent_allowed,
+            server=cfg.server,
         )
 
     def options(self, resume: str | None = None) -> ClaudeAgentOptions:
@@ -398,6 +413,8 @@ class Session:
         self.pending.clear()
         self._stderr_tail = []
         self.context_tokens = 0
+        # The implementers' static prefix, the same bytes for every implementer of this session.
+        self.prompts.prefix = await implementer_prefix.load()
         q = self.query_fn(prompt=self.input.attach(), options=self.options(resume))
         self.q = q
         self._loop_done = asyncio.get_running_loop().create_task(self._loop(q))

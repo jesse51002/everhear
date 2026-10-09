@@ -1,9 +1,10 @@
 """Task states and state.json, rewritten whole (temp file, then rename) after every change.
 
 state.json keeps the TypeScript runner's shape, so either one loads what the other wrote:
-{"inboxOffset", "usage": {model: {"in", "out", "cost"}}, "tasks": {id: {"at", "task", "context",
-"seenAt", "status", "nudged", "replies": [{"status", "text", "sent", "n"}], "closedAt"}},
-"nextReply", "sessionId"}.
+{"inboxOffset", "usage": {model: {"in", "out", "cost", "cacheRead", "cacheWrite"}}, "tasks": {id: {"at", "task", "context",
+"seenAt", "status", "nudged", "replies": [{"status", "text", "sent", "n"}], "closedAt",
+"implementers": [{"description", "at", "route", "loaded", ...}]}}, "nextReply", "sessionId"}.
+"implementers" is new with the script library (route.record writes it) and left out while empty.
 """
 import functools
 import json
@@ -18,8 +19,10 @@ from .config import iso, js_number, log, now_ms, parse_time
 TaskStatus = Literal["open", "done", "failed"]
 ReplyStatus = Literal["progress", "done", "failed"]
 
-# The usage snapshot of one model: tokens in (fresh, cache read, cache written), out, cost in USD.
-ModelTotals = TypedDict("ModelTotals", {"in": int, "out": int, "cost": float})
+# The usage snapshot of one model: tokens in (fresh, cache read, cache written), out, cost in USD,
+# and of the tokens in, those read from and written to the cache (absent in a snapshot from before).
+ModelTotals = TypedDict("ModelTotals", {"in": int, "out": int, "cost": float, "cacheRead": int, "cacheWrite": int},
+                        total=False)
 
 
 @dataclass
@@ -48,19 +51,24 @@ class Task:
     nudged: bool
     replies: list[Reply]
     closed_at: str | None = None
+    # One entry per implementer briefed for this task: what the router picked for it (route.record).
+    implementers: list[dict] = field(default_factory=list)
 
     def to_json(self) -> dict:
         d = {"at": self.at, "task": self.task, "context": self.context, "seenAt": self.seen_at,
              "status": self.status, "nudged": self.nudged, "replies": [r.to_json() for r in self.replies]}
         if self.closed_at is not None:
             d["closedAt"] = self.closed_at
+        if self.implementers:
+            d["implementers"] = self.implementers
         return d
 
     @staticmethod
     def from_json(d: dict) -> "Task":
         return Task(at=d.get("at"), task=d.get("task", ""), context=d.get("context", ""),
                     seen_at=d.get("seenAt"), status=d.get("status"), nudged=bool(d.get("nudged")),
-                    replies=[Reply.from_json(r) for r in d.get("replies") or []], closed_at=d.get("closedAt"))
+                    replies=[Reply.from_json(r) for r in d.get("replies") or []], closed_at=d.get("closedAt"),
+                    implementers=[i for i in d.get("implementers") or [] if isinstance(i, dict)])
 
 
 @dataclass
