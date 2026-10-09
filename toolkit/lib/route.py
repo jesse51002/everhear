@@ -10,13 +10,14 @@ I/O: the cards, the questions, the picks, the fallback to words, the log line.
 THE PICKS are generous on purpose: every script whose runs_it and close
 together reach VFG_ROUTE_LOAD (0.3), those that run the job first, and every
 preset whose use reaches it that no loaded script already holds (a script holds
-a preset when it has its `# --- preset: <name>` marker). A script loaded that
+a preset when it has its `# --- preset: <name>` marker). A picked preset a
+loaded script holds is listed under "held", with the script it is in. A script loaded that
 was not needed costs a cached read; one left out costs the implementer a turn.
 
 THE FALLBACK, when Jev is slow or down: the job's words against each card's
-name, first line, asks and value names; every card that shares a word with the
-job is loaded, leaving out words on more than a quarter of the cards. A card
-Jev did not answer for is judged by words the same way.
+name, first line and asks; every card whose name shares a word with the job,
+or one of whose asks is all in it, or that shares three, is loaded, leaving out words on more than a quarter of
+the cards. A card Jev did not answer for is judged by words the same way.
 
 Python 3.9+, standard library only, like toolkit/vfg.
 """
@@ -27,10 +28,18 @@ import time
 
 import library
 
+# runs_it is judged on what the players would get, not on how the brief says to
+# get it: briefs say "edit scripts/x/main.py" or "write scripts/x/", and asked
+# "does this script do what the job asks?" Jev answered close for a job that was
+# exactly an example with other values (4% runs_it over the run's briefs, 35% over
+# short asks that only change values; with these words 20% and 95%), loading the same.
 SCRIPT_LABELS = {
-    "runs_it": "This script, as it is or with other values, does what the job asks.",
-    "close": "It does not, but it is a place to start or a part of the answer.",
-    "no": "It has nothing to do with this job.",
+    "runs_it": "Yes: run as it is, or with its values set for this job — damage, radius, range, cooldown, "
+               "who it is for or targets, a switch on or off, anything its values can set — it gives the "
+               "players what the job asks for.",
+    "close": "Only in part: it gives some of what the job asks for, or something like it, and its code "
+             "would have to be changed or added to.",
+    "no": "No: it has nothing to do with this job.",
 }
 # Measured live on the run's 116 briefs (2026-10-09): asked "is this preset part of
 # what the job needs", Jev loaded 55% of the labelled presets at 0.3; asked whether
@@ -95,7 +104,9 @@ def make_questions(cards):
     qs = {}
     for c in cards:
         if c["kind"] == "script":
-            ask = "An implementer is about to do the job in the state. %s Does this script do what the job asks?"
+            ask = ("An implementer is about to do the job in the state. %s The job may describe code to write "
+                   "or change; judge only what it should do in the game. If this script were run, with its "
+                   "values set for this job, would the players get that?")
             qs[qname(c)] = {"type": "choice", "instructions": ask % card_text(c),
                             "criteria": dict(SCRIPT_LABELS)}
         else:
@@ -167,11 +178,19 @@ def picks(cards, answers, load):
 
 
 def drop_held(scripts, presets):
-    """Presets no loaded script already holds."""
-    held = set()
+    """(presets no loaded script holds, the rest): each of the rest gets `in`, the
+    first loaded script that holds it, whose copy the implementer reads instead."""
+    holder = {}
     for s in scripts:
-        held.update(s.get("_presets") or [])
-    return [p for p in presets if p["name"] not in held]
+        for name in s.get("_presets") or []:
+            holder.setdefault(name, s["name"])
+    free, held = [], []
+    for p in presets:
+        if p["name"] in holder:
+            held.append(dict(p, **{"in": holder[p["name"]]}))
+        else:
+            free.append(p)
+    return free, held
 
 
 # --------------------------------------------------------------------- words
@@ -192,7 +211,7 @@ minute minutes within never near nearby far until stop stopped online everyone a
 stay take call long short small big bigger huge while whole already look add added tell told
 show shows check work works working fix need needs try test tested update start started
 restart done made write wrote line lines file files readme main vfg cmd command commands
-minecraft server verify traceback instead keep kept don't won't isn't doesn't
+minecraft server verify traceback instead don't won't isn't doesn't
 """.split())
 WORD = re.compile(r"[a-z0-9]+")
 
@@ -202,7 +221,7 @@ def stem(w):
     if len(w) > 4 and w.endswith("ies"):
         return w[:-3] + "y"
     for suffix in ("ing", "ed"):
-        if len(w) > len(suffix) + 2 and w.endswith(suffix):
+        if len(w) > len(suffix) + 3 and w.endswith(suffix):
             w = w[:-len(suffix)]
             return w[:-1] if len(w) > 3 and w[-1] == w[-2] else w
     if len(w) > 4 and w.endswith(("shes", "ches", "xes", "zes", "sses")):
@@ -219,15 +238,19 @@ def words(text):
 
 
 def card_words(card):
-    return words(" ".join([card["name"], card["first"], " ".join(card["asks"]),
-                           " ".join(sorted(card["values"]))]))
+    """A card's words: its name's, its first line's and its asks'. Value names are
+    left out: damage_amount, cooldown and player are on half the library."""
+    return words(" ".join([card["name"], card["first"], " ".join(card["asks"])]))
 
 
 def word_picks(cards, text, among=None):
-    """(scripts, presets): every card sharing a word with the text, most shared first.
+    """(scripts, presets): every card whose name shares a word with the text, or
+    one of whose asks is all in it, or that shares three words with it; most
+    shared first.
 
     A word on more than a quarter of the library's cards (`among`, default
-    `cards`) says nothing about any one of them and is not counted."""
+    `cards`) says nothing about any one of them and is not counted. Over the
+    run's briefs this loaded every labelled item with about 21 of 83 cards."""
     job = words(text)
     among = cards if among is None else among
     seen = {}
@@ -238,7 +261,9 @@ def word_picks(cards, text, among=None):
     scripts, presets = [], []
     for c in cards:
         shared = sorted((job & card_words(c)) - common)
-        if not shared:
+        named = (job & words(c["name"])) - common or any(
+            ask and ask <= job for ask in (words(a) - common for a in c["asks"]))
+        if not named and len(shared) < 3:
             continue
         if c["kind"] == "script":
             scripts.append({"name": c["name"], "source": c["source"], "verdict": "words",
@@ -302,12 +327,16 @@ def route(cards, brief, task_id, task, context, ask, load, budget, t0=None):
         scripts, presets = word_picks(cards, text)
         unanswered = []
         fallback = bool(cards)
-    presets = drop_held(scripts, presets)
-    for item in scripts + presets:
+    presets, held = drop_held(scripts, presets)
+    for item in scripts + presets + held:
         for k in [k for k in item if k.startswith("_")]:
             del item[k]
     result = {"task": task_id, "scripts": scripts, "presets": presets, "fallback": fallback,
               "ms": int((time.monotonic() - t0) * 1000), "tokens": int(tokens)}
+    if held:
+        # picked, and already in a loaded script: not loaded again, but said, so the
+        # brief can point at the copy (Jev's "beam_clash use 0.68" is not lost)
+        result["held"] = held
     if why:
         result["why"] = why
     if unanswered:
@@ -326,6 +355,8 @@ def log_line(result):
             parts.append("%s %s %.2f" % (s["name"], s["verdict"], p))
     for p in result["presets"]:
         parts.append(p["name"] if p["p_use"] is None else "%s use %.2f" % (p["name"], p["p_use"]))
+    for p in result.get("held") or []:
+        parts.append("%s%s in %s" % (p["name"], "" if p["p_use"] is None else " use %.2f" % p["p_use"], p["in"]))
     n = len(result["scripts"]) + len(result["presets"])
     head = "route %s%s" % (result["task"] or "-", " words (%s):" % result.get("why", "no answer")
                            if result["fallback"] else "")

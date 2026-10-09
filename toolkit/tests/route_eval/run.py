@@ -3,12 +3,15 @@
 
     python3 toolkit/tests/route_eval/run.py              live: `vfg route` on each brief, Jev on the box
     python3 toolkit/tests/route_eval/run.py --words      the fallback alone, no network: a baseline
+    ... --briefs toolkit/tests/route_eval/value_asks.jsonl   20 short asks an example does with its values
     ... [--only E001,E007] [--limit N] [--misses] [--out results.jsonl]
 
 briefs.jsonl holds each brief as the orchestrator wrote it on 2026-10-08, its
 task and context from the inbox, and its labels: every example script and
 preset that is part of the job, from what the implementer actually did, with
-players' names replaced (Steve, Alex, Sam). It runs against whatever is in the
+players' names replaced (Steve, Alex, Sam); `values_only` marks the 19 jobs the
+examples now do by their VALUES alone, where the labelled script should come
+back runs_it rather than close. It runs against whatever is in the
 library now (VFG_REPO, default this repo), never this server's made/ folder.
 
 A brief passes when every labelled script is among the loaded scripts and
@@ -119,7 +122,10 @@ def main():
         ms, mp = judge(b, got, holds)
         absent = [s for s in b["scripts"] if ("script", s) not in have] + \
                  [p for p in b["presets"] if ("preset", p) not in have]
+        verdicts = {s["name"]: s["verdict"] for s in got["scripts"]}
         row = {"id": b["id"], "task": b["task"], "pass": not ms and not mp, "missed_scripts": ms,
+               "verdicts": {s: verdicts[s] for s in b["scripts"] if s in verdicts},
+               "values_only": bool(b.get("values_only")),
                "missed_presets": mp, "absent": absent, "labelled": bool(b["scripts"] or b["presets"]),
                "loaded": len(got["scripts"]) + len(got["presets"]), "wall_ms": wall, "ms": got["ms"],
                "tokens": got["tokens"], "fallback": got["fallback"], "why": got.get("why"),
@@ -169,6 +175,11 @@ def main():
         print("%ss alone, labels in the library: every one loaded for %d/%d briefs (%.0f%%); %d/%d items (%.0f%%)" % (
             kind, n_ok, len(want), 100.0 * n_ok / max(1, len(want)), n_items - n_miss, n_items,
             100.0 * (n_items - n_miss) / max(1, n_items)))
+    for title, group in (("all briefs", rows), ("jobs its values alone do", [r for r in rows if r["values_only"]])):
+        vs = [v for r in group for v in r["verdicts"].values()]
+        if vs and not a.words:
+            print("labelled scripts loaded, %s: %d runs_it (%.0f%%), %d close" % (
+                title, vs.count("runs_it"), 100.0 * vs.count("runs_it") / len(vs), vs.count("close")))
     print("loaded per brief: median %s, mean %.1f, max %d, of %d in the library" % (
         statistics.median(loaded) if loaded else 0, statistics.mean(loaded) if loaded else 0,
         max(loaded) if loaded else 0, len(cards)))
