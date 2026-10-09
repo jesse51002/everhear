@@ -6,8 +6,8 @@ the implementer's static prompt (prefix.py). Nothing here touches EC2.
 
 Where things are (scripts/README.md):
 
-    <repo>/scripts/<name>/main.py                 a library script: an example, or a seed
-                                                  (a seed has a README.md and no VALUES)
+    <repo>/scripts/<name>/main.py                 a library script (one written the old way has a
+                                                  README.md and no VALUES)
     <repo>/scripts/_presets/<name>.py             a library preset
     <repo>/made/<server>/scripts/<name>/main.py   a script this server's implementers made
     <repo>/made/<server>/presets/<name>.py        a preset lifted out of one of them
@@ -24,11 +24,11 @@ Reading:
       .name .kind ("script"|"preset") .source ("library"|"made")
       .path      the .py, absolute          .folder  a script's folder (None for a preset)
       .rel       the path from the repo, for showing: scripts/galick_gun/main.py
-      .text      the whole source           .first_line  docstring line 1 (a seed: README line 1)
+      .text      the whole source           .first_line  docstring line 1 (old-style: README line 1)
       .asks      ASKS as a list, or None    .values  VALUES as a dict, or None
       .holds     the presets a script holds, from its "# --- preset: <name>" markers
       .functions its top-level function names, in order
-      .legacy    True for a seed script     .problem  why it could not be read, or None
+      .legacy    True when old-style        .problem  why it could not be read, or None
 
 Values (the PC checks every value before anything is sent):
 
@@ -609,7 +609,7 @@ def check(item, lib=None):
     for line, msg in _fstring_problems(item.text):
         bad(line, msg)
     if item.legacy and item.source == "library":
-        # A seed: README.md beside it says what it does; it reads plain arguments.
+        # Old-style: README.md beside it says what it does; it reads plain arguments.
         if not item.readme_line:
             bad(1, "its README.md's first line should say what it does")
         _check_imports(tree, bad)
@@ -667,6 +667,12 @@ def check(item, lib=None):
                 bad(line, "%s is taken by vfg script run (as=<instance>)" % key)
             if item.kind == "preset" and not prefixed(item.name, key):
                 bad(line, "%s does not start with the preset's name: %s_..." % (key, item.name))
+            elif item.kind == "preset" and lib is not None:
+                other = theirs(item.name, key, lib)
+                if other:
+                    bad(line, "%s starts with %s_, another preset's name: the two in one script would "
+                              "ask for one value; use %s_... or a short form no other preset has"
+                        % (key, other, item.name))
             for msg in check_entry(key, entry, lib.gone if lib is not None else None):
                 bad(line, msg)
     for key, line in _reads(tree):
@@ -684,6 +690,15 @@ def check(item, lib=None):
                 else:
                     seen[name] = node.lineno
     return out
+
+
+def theirs(preset, key, lib):
+    """Another preset whose name `key` starts with, so a script holding both could be asked
+    for the same value twice (projectile_lands' projectile_kind is projectile's), or None."""
+    for q in sorted(set(p.name for p in lib.presets()) - set([preset]), key=len, reverse=True):
+        if key.startswith(q + "_") and (len(q) > len(preset) or not key.startswith(preset + "_")):
+            return q
+    return None
 
 
 def _key_lines(node):
@@ -967,12 +982,38 @@ def _insert_import(text, tree, line):
     return "".join(lines)
 
 
+def _of_preset(name, preset):
+    """Is a module-level name one of `preset`'s: _projectile_n, _CRATER_LOCK, damage_n?"""
+    bare = name.lstrip("_").lower()
+    return bare == preset or prefixed(preset, bare)
+
+
+def _belongs(node, preset):
+    """Is a top-level statement part of `preset`'s copied code: an assignment to its names
+    (_projectile_n = [0]), or a call on one (_crater_queue.clear())?"""
+    if isinstance(node, ast.Assign):
+        targets = node.targets
+    elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+        targets = [node.target]
+    elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+        f = node.value.func
+        while isinstance(f, ast.Attribute):
+            f = f.value
+        targets = [f]
+    else:
+        return False
+    names = [n.id for t in targets for n in ast.walk(t) if isinstance(n, ast.Name)]
+    return bool(names) and all(_of_preset(n, preset) for n in names)
+
+
 def wiring_line(text):
     """The line the wiring starts on, presets go above it: the first top-level statement
-    after VALUES that is not a def, a class, an import or an UPPERCASE constant, with the
-    comments right above it. None when there is none (the presets go at the end)."""
+    after VALUES that is not a def, a class, an import or an UPPERCASE constant, nor part of
+    the preset block it sits in (a `_<preset>...` variable under that preset's marker), with
+    the comments right above it. None when there is none (the presets go at the end)."""
     tree = ast.parse(text, feature_version=(3, 9))
     lines = text.splitlines()
+    markers = [(i + 1, MARKER_RE.match(l).group(1)) for i, l in enumerate(lines) if MARKER_RE.match(l)]
     after_values = False
     for node in tree.body:
         if _assigned(node) == "VALUES":
@@ -985,6 +1026,9 @@ def wiring_line(text):
         name = _assigned(node)
         if name and name.lstrip("_").isupper():
             continue   # the script's own constants stay above the presets
+        above = [p for line, p in markers if line < node.lineno]
+        if above and _belongs(node, above[-1]):
+            continue   # a variable of the preset whose block this is
         at = node.lineno
         if getattr(node, "decorator_list", None):
             at = min(d.lineno for d in node.decorator_list)

@@ -219,11 +219,13 @@ class Box(object):
             with open(path, "w") as f:
                 f.write(text)
 
-    def start_rcon(self):
+    def start_rcon(self, shared=False):
+        """shared=True: one reply buffer for every connection, as vanilla's."""
+        env = dict(os.environ, FAKE_RCON_SHARED="1" if shared else "0")
         self.rcon = subprocess.Popen([PY, os.path.join(TESTS, "fake_rcon.py"),
                                       os.path.join(self.rmc, "server.properties"), self.rcon_log,
                                       self.world],
-                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
         line = self.rcon.stdout.readline()
         assert line.strip() == b"ready", line
 
@@ -322,6 +324,10 @@ class Box(object):
                     os.killpg(int(f.read().strip()), signal.SIGKILL)
             except (OSError, ValueError):
                 pass
+        try:
+            os.remove("/tmp/vfg-rcon-%d.lock" % self.port)  # the remote side's RCON lock
+        except OSError:
+            pass
         shutil.rmtree(self.root, ignore_errors=True)
 
 
@@ -1560,6 +1566,51 @@ def _explosion_spots(layout):
     return [(round(4 * math.cos(i * 6.28 / n)), round(4 * math.sin(i * 6.28 / n))) for i in range(n)]
 '''
 
+COUNTER = '''"""Count what happens at a place, once each."""
+from mc import log
+
+VALUES = {
+    "counter_every": {"type": "int", "min": 1, "max": 10, "default": 1},
+}
+
+_counter_n = [0]
+
+
+def counter(at, v):
+    _counter_n[0] += 1
+    _counter_seen.add(at)
+    if _counter_n[0] % v["counter_every"] == 0:
+        log("count", _counter_n[0])
+
+
+_counter_seen = set()
+'''
+
+TALLY = '''"""Tally the players a script touched."""
+VALUES = {
+    "tally_max": {"type": "int", "min": 1, "max": 99, "default": 9},
+}
+
+_tally_known = {}
+
+
+def tally(p, v):
+    _tally_known[p] = min(v["tally_max"], _tally_known.get(p, 0) + 1)
+'''
+
+
+def preset_blocks(text):
+    """{preset: the code under its marker, up to the next marker or the wiring}."""
+    lines = text.split("\n")
+    marks = [i for i, l in enumerate(lines) if l.startswith("# --- preset: ")]
+    wiring = lines.index("v = values(VALUES)")
+    out = {}
+    for k, i in enumerate(marks):
+        end = marks[k + 1] if k + 1 < len(marks) else wiring
+        out[re.match(r"# --- preset: (\w+)", lines[i]).group(1)] = "\n".join(lines[i + 1:end]).strip()
+    return out
+
+
 ICE_STAFF = '''"""Ice Staff: lays ice where the player looks."""
 ASKS = ["an ice staff"]
 import random
@@ -1681,6 +1732,22 @@ class TestScriptNew(LibraryCase):
         self.assertOk(r)
         self.assertIn("from made/main/scripts/beam_boom/ (made)", r.stdout)
 
+    def test_a_presets_own_variables_stay_in_its_block(self):
+        self.write("scripts/_presets/counter.py", COUNTER)
+        self.write("scripts/_presets/tally.py", TALLY)
+        r = self.box.vfg("script", "new", "counted", "--from", "beam", "--preset", "counter",
+                         "--preset", "tally", "--preset", "crater")
+        self.assertOk(r)
+        self.assertIn("check: ok", r.stdout)
+        text = self.read("made/main/scripts/counted/main.py")
+        L = load_library_module()
+        lib = L.Library(self.box.repo, "main")
+        blocks = preset_blocks(text)
+        self.assertEqual(list(blocks), ["counter", "tally", "crater"])
+        for name in blocks:
+            self.assertEqual(blocks[name], L.preset_body(lib.preset(name)).strip(), name)
+        self.assertLess(text.index("_counter_seen = set()"), text.index("# --- preset: tally"))
+
     def test_a_preset_the_script_already_holds_and_one_it_does_not(self):
         r = self.box.vfg("script", "new", "galick2", "--from", "galick", "--preset", "crater")
         self.assertOneLine(r, 1, "^vfg: cannot copy crater in: it already holds crater$")
@@ -1704,7 +1771,7 @@ class TestScriptNew(LibraryCase):
         self.assertOneLine(self.box.vfg("script", "new", "x", "--from", "nosuch"), 1, "no script nosuch")
         self.assertOneLine(self.box.vfg("script", "new", "x", "--preset", "crater", "--preset", "crater"), 2)
         r = self.box.vfg("script", "new", "x", "--from", "hello", "--preset", "crater")
-        self.assertOneLine(r, 1, r"hello has no VALUES \(a seed script\)")
+        self.assertOneLine(r, 1, r"hello has no VALUES \(written the old way\)")
         self.assertFalse(os.path.exists(self.made("scripts", "x")))
 
     def test_new_from_nothing_must_be_filled_in(self):
@@ -1766,11 +1833,18 @@ class TestScriptCheck(LibraryCase):
     def test_check_everything_passes_and_counts(self):
         r = self.box.vfg("script", "check")
         self.assertOk(r)
-        self.assertEqual(r.stdout, "ok: 4 scripts (2 seeds) and 2 presets\n")
+        self.assertEqual(r.stdout, "ok: 4 scripts (2 old-style) and 2 presets\n")
         self.write("made/main/presets/blast.py", BAD["blast"][1])
         r = self.box.vfg("script", "check")
         self.assertOneLine(r, 1, r"^vfg: 1 problem in 1 of 7 files$")
         self.assertOneLine(self.box.vfg("script", "check", "nosuch"), 1, "no script or preset nosuch")
+
+    def test_a_preset_value_never_starts_with_another_presets_name(self):
+        self.write("made/main/presets/crater_rim.py", CRATER.replace("def crater(", "def crater_rim(")
+                   .replace("def _crater_carve(", "def _crater_rim_carve(").replace("_crater_carve(at,", "_crater_rim_carve(at,"))
+        r = self.box.vfg("script", "check", "crater_rim")
+        self.assertOneLine(r, 1, r"^vfg: 2 problems in 1 of 1 file$")
+        self.assertIn("crater_radius starts with crater_, another preset's name", r.stdout)
 
     def test_a_preset_helper_carries_its_name_and_a_script_defines_nothing_twice(self):
         self.write("made/main/presets/twin.py", CRATER.replace("def crater(", "def twin(")
@@ -1863,7 +1937,8 @@ class TestInstances(LibraryCase):
         with open("/proc/%d/environ" % a, "rb") as f:
             env = f.read().split(b"\0")
         for want in (b"VFG_INSTANCE=beam-a", b"VFG_SCRIPT=beam-a", b"VFG_LIVE_POLL_S=0.5",
-                     b"VFG_RUN_DIR=" + os.path.join(self.box.rvfg, "run").encode()):
+                     b"VFG_RUN_DIR=" + os.path.join(self.box.rvfg, "run").encode(),
+                     b"VFG_PROTECTED=" + os.path.join(self.box.rvfg, "protected.json").encode()):
             self.assertIn(want, env)
         with open("/proc/%d/cmdline" % a, "rb") as f:
             argv = f.read().split(b"\0")
@@ -1990,7 +2065,7 @@ class TestInstances(LibraryCase):
         self.assertEqual(self.box_file("beam.json")["values"], {"player": "Alex"})
         self.assertOk(self.box.vfg("script", "stop", "beam"))
 
-    def test_a_seed_keeps_its_words_and_runs_as_an_instance(self):
+    def test_an_old_style_script_keeps_its_words_and_runs_as_an_instance(self):
         r = self.box.vfg("script", "run", "hello", "as=hello-two", "a=b", "world", "--wait", "5")
         self.assertOk(r)
         self.assertEqual(r.stdout, "hello a=b world\nlib fake mc script hello-two\n")
@@ -2131,6 +2206,49 @@ class TestRealKit(Case):
         self.assertIn("kill @e[tag=vfg_tick-a]", self.box.rcon_commands())
 
 
+class TestRealPresetsTogether(Case):
+    """The repo's own presets with module-level variables of their own (_projectile_n,
+    _meteor_fall_n, _replace_blocks_known), and two more, copied into one script: each
+    preset's code stays whole under its marker, check passes, and it runs on the real kit."""
+    PRESETS = ["projectile", "meteor_fall", "replace_blocks", "crater", "explosion"]
+
+    def setUp(self):
+        Case.setUp(self)
+        have = [os.path.isfile(os.path.join(REPO, "scripts", "_presets", p + ".py")) for p in self.PRESETS]
+        if not all(have) or not os.path.isfile(os.path.join(REAL_LIB, "kit", "values.py")):
+            self.skipTest("needs scripts/_presets/{%s}.py and scripts/_lib/kit" % ",".join(self.PRESETS))
+        lib = os.path.join(self.box.repo, "scripts", "_lib")
+        shutil.rmtree(lib)
+        shutil.copytree(REAL_LIB, lib, ignore=shutil.ignore_patterns("__pycache__"))
+        os.makedirs(os.path.join(self.box.repo, "scripts", "_presets"))
+        for p in self.PRESETS:
+            shutil.copy(os.path.join(REPO, "scripts", "_presets", p + ".py"),
+                        os.path.join(self.box.repo, "scripts", "_presets", p + ".py"))
+
+    def test_five_presets_in_one_script_each_whole_under_its_marker(self):
+        args = ["script", "new", "together"]
+        for p in self.PRESETS:
+            args += ["--preset", p]
+        self.assertOk(self.box.vfg(*args))
+        path = os.path.join(self.box.repo, "made", "main", "scripts", "together", "main.py")
+        with open(path) as f:
+            text = f.read()
+        L = load_library_module()
+        lib = L.Library(self.box.repo, "main")
+        blocks = preset_blocks(text)
+        self.assertEqual(list(blocks), self.PRESETS)
+        for name in self.PRESETS:
+            self.assertEqual(blocks[name], L.preset_body(lib.preset(name)).strip(), name)
+        text = text.replace("TODO <Title>: say what it does in one line.", "Together: five presets in one.") \
+            .replace("ASKS = []", 'ASKS = ["all of them at once"]')
+        with open(path, "w") as f:
+            f.write(text)
+        r = self.box.vfg("script", "check", "together")
+        self.assertOk(r)
+        r = self.box.vfg("script", "run", "together", "--wait", "10")
+        self.assertOk(r)
+
+
 # ======================================================= the real library
 
 LIVE_LIBRARY = os.path.isdir(os.path.join(REPO, "scripts", "_presets"))
@@ -2192,6 +2310,192 @@ class TestRealLibrary(unittest.TestCase):
             self.assertEqual(L.check(L.parse(path, "script", "all", "made", path), lib), [])
         finally:
             shutil.rmtree(os.path.dirname(os.path.dirname(path)), ignore_errors=True)
+
+
+# ================================================================ RCON lock
+
+def raw_rcon(port, password):
+    """A bare RCON client with no lock: a function that sends one command and returns the reply."""
+    import struct
+    s = socket.create_connection(("127.0.0.1", port), timeout=10)
+
+    def exact(n):
+        data = b""
+        while len(data) < n:
+            chunk = s.recv(n - len(data))
+            if not chunk:
+                raise OSError("closed")
+            data += chunk
+        return data
+
+    def ask(rid, typ, body):
+        b = body.encode()
+        s.sendall(struct.pack("<iii", len(b) + 10, rid, typ) + b + b"\0\0")
+        (n,) = struct.unpack("<i", exact(4))
+        return exact(n)[8:-2].decode()
+    ask(1, 3, password)
+    command = lambda cmd: ask(2, 2, cmd)
+    command.close = s.close
+    return command
+
+
+MC_CLIENT = """
+import sys
+import mc
+wrong = 0
+for i in range(int(sys.argv[1])):
+    want = "script-%d" % i
+    if mc.rcon("echo " + want) != want:
+        wrong += 1
+print(wrong)
+"""
+
+
+class TestRconLock(Case):
+    """Vanilla answers every RCON connection from one buffer (RconConsoleSource): two clients
+    with a command out at once get each other's output. Every client holds one lock file from
+    send to reply; the fake answers from one shared buffer, as vanilla does."""
+    box_kwargs = {"rcon": False}
+
+    def setUp(self):
+        Case.setUp(self)
+        self.box.start_rcon(shared=True)
+        self.saved = os.environ.get("VFG_RCON_LOCK")
+        os.environ["VFG_RCON_LOCK"] = os.path.join(self.box.root, "rcon.lock")
+        self.opened = []
+
+    def tearDown(self):
+        for c in self.opened:
+            c.close()
+        if self.saved is None:
+            os.environ.pop("VFG_RCON_LOCK", None)
+        else:
+            os.environ["VFG_RCON_LOCK"] = self.saved
+        Case.tearDown(self)
+
+    def common(self):
+        """toolkit/remote/common.py, which vfg puts in front of every remote program."""
+        ns = {"__name__": "vfg_remote_common"}
+        with open(os.path.join(TOOLKIT, "remote", "common.py")) as f:
+            exec(compile(f.read(), "common.py", "exec"), ns)
+        return ns
+
+    def hammer(self, makers, n=150):
+        """One thread per client, n echoes each, all at once: the replies that were wrong."""
+        wrong = []
+
+        def run(tag, make):
+            ask = make()
+            for i in range(n):
+                want = "%s-%d" % (tag, i)
+                got = ask(want)
+                if got != want:
+                    wrong.append((want, got))
+        threads = [threading.Thread(target=run, args=(tag, make)) for tag, make in makers]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(60)
+        return wrong
+
+    def test_without_the_lock_replies_mix(self):
+        def bare():
+            ask = raw_rcon(self.box.port, self.box.password)
+            self.opened.append(ask)
+            return lambda w: ask("echo " + w)
+        wrong = self.hammer([("a", bare), ("b", bare)])
+        self.assertGreater(len(wrong), 10)
+        self.assertTrue(any(len(got) > len(want) for want, got in wrong), wrong[:3])  # glued
+
+    def test_with_the_lock_vfg_scripts_and_realmc_never_mix(self):
+        C = self.common()
+        r = C["Rcon"](self.box.rmc)
+        self.opened.append(r)
+        self.assertEqual(r.lock_path, os.environ["VFG_RCON_LOCK"])
+
+        def vfg():
+            r = C["Rcon"](self.box.rmc)
+            self.opened.append(r)
+            return lambda w: r.command("echo " + w)
+        makers = [("vfg1", vfg), ("vfg2", vfg)]
+        realmc_py = os.path.join(REPO, "integration", "realmc", "realmc.py")
+        if os.path.isfile(realmc_py):
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("realmc_for_test", realmc_py)
+            realmc = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(realmc)
+
+            def real():
+                r = realmc.Rcon(os.path.join(self.box.rmc, "server.properties"))
+                self.opened.append(r)
+                return lambda w: r.command("echo " + w)
+            makers.append(("realmc", real))
+        # A script's own mc.rcon in another process, with the same lock, at the same time.
+        lib = REAL_LIB if os.path.isfile(os.path.join(REAL_LIB, "mc.py")) else None
+        script = None
+        with open(os.path.join(lib or REAL_LIB, "mc.py")) if lib else io.StringIO("") as f:
+            has_lock = "lock_path" in f.read()
+        if has_lock:
+            script = subprocess.Popen([PY, "-c", MC_CLIENT, "150"], stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE, universal_newlines=True,
+                                      env=dict(os.environ, PYTHONPATH=lib, VFG_INSTANCE="locktest",
+                                               VFG_MC_PROPERTIES=os.path.join(self.box.rmc,
+                                                                              "server.properties")))
+        wrong = self.hammer(makers)
+        self.assertEqual(wrong, [])
+        if script is not None:
+            o, e = script.communicate(timeout=60)
+            self.assertEqual(o.strip(), "0", e)
+
+    def test_a_thread_holding_the_lock_takes_it_again_others_wait(self):
+        """live_kit.py once held mc's lock around players.cmd; realmc's client takes the lock
+        itself now, and a second flock in one process on another fd would wait forever. A
+        thread that holds it re-enters through any client; another thread still waits."""
+        lib = REAL_LIB
+        realmc_py = os.path.join(REPO, "integration", "realmc", "realmc.py")
+        if not os.path.isfile(os.path.join(lib, "mc.py")) or not os.path.isfile(realmc_py):
+            self.skipTest("needs scripts/_lib/mc.py and integration/realmc/realmc.py")
+        code = """
+import importlib.util, os, signal, sys, threading, time
+import mc
+signal.signal(signal.SIGALRM, lambda *a: (print("deadlock"), os._exit(3)))
+signal.alarm(10)
+common = {"__name__": "common"}
+exec(compile(open(sys.argv[1]).read(), "common.py", "exec"), common)
+spec = importlib.util.spec_from_file_location("realmc", sys.argv[2])
+realmc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(realmc)
+props = os.environ["VFG_MC_PROPERTIES"]
+vfg, real = common["Rcon"](os.path.dirname(props)), realmc.Rcon(props)
+outer = mc._Flock()
+outer.acquire()
+got = []
+other = threading.Thread(target=lambda: got.append(common["Rcon"](os.path.dirname(props)).command("echo other")))
+other.start()
+inner = [vfg.command("echo vfg"), real.command("echo realmc"), mc.rcon("echo mc")]
+time.sleep(0.3)
+waited = list(got)
+outer.release()
+other.join(5)
+print(inner, waited, got)
+"""
+        env = dict(os.environ, PYTHONPATH=lib, VFG_INSTANCE="reentry",
+                   VFG_MC_PROPERTIES=os.path.join(self.box.rmc, "server.properties"))
+        r = subprocess.run([PY, "-c", code, os.path.join(TOOLKIT, "remote", "common.py"), realmc_py],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+                           env=env, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.strip(), "['vfg', 'realmc', 'mc'] [] ['other']")
+
+    def test_the_default_lock_path(self):
+        os.environ.pop("VFG_RCON_LOCK")
+        C = self.common()
+        self.assertEqual(C["rcon_lock_path"](25575), "/tmp/vfg-rcon-25575.lock")
+        r = C["Rcon"](self.box.rmc)
+        self.assertEqual(r.lock_path, "/tmp/vfg-rcon-%d.lock" % self.box.port)
+        self.assertEqual(r.command("echo hi"), "hi")
+        r.close()
+        os.environ["VFG_RCON_LOCK"] = os.path.join(self.box.root, "rcon.lock")
 
 
 # ======================================================== the real feed writer

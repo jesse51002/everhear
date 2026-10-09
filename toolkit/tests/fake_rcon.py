@@ -9,6 +9,11 @@ Nobody, `Unknown or incomplete command…` to bogus, and 9000 bytes in
 4096-byte packets to big. Like vanilla, it closes the connection when one
 read holds more than one packet. Prints `ready` once it listens.
 
+With FAKE_RCON_SHARED=1 it answers like vanilla's RconConsoleSource: one output buffer for
+every connection, cleared when a command arrives, written while the command runs (one at a
+time, as on the server thread) and read back after, so two clients with a command out at
+once get each other's output glued into their replies. `echo <words>` answers its words.
+
 world.json, read again for every command when it is given, holds what `vfg
 state` asks about, answered in 26.3's words (`time query day` is the day timeline,
 `time query time` the clock): {"players": {"Steve": {"pos": [x, y, z], "dim":
@@ -17,12 +22,14 @@ state` asks about, answered in 26.3's words (`time query day` is the day timelin
 0.5 64 0.5 in the overworld.
 """
 import json
+import os
 import re
 import socket
 import socketserver
 import struct
 import sys
 import threading
+import time
 
 PROPS, RECORD = sys.argv[1], sys.argv[2]
 WORLD = sys.argv[3] if len(sys.argv) > 3 else None
@@ -35,6 +42,9 @@ with open(PROPS) as f:
 PORT = int(props.get("rcon.port", 25575))
 PASSWORD = props.get("rcon.password", "")
 lock = threading.Lock()
+SHARED = os.environ.get("FAKE_RCON_SHARED") == "1"
+shared_out = []                  # vanilla's one buffer for every RCON connection
+server_thread = threading.Lock()  # commands run one at a time, as on the server thread
 
 
 def world():
@@ -46,6 +56,8 @@ def world():
 
 
 def answer(cmd):
+    if cmd.startswith("echo "):
+        return [cmd[5:]]
     if cmd == "list":
         players = world().get("players") or {}
         shown = [p.get("shown") or name for name, p in players.items()]
@@ -116,6 +128,15 @@ class Handler(socketserver.BaseRequestHandler):
             with lock:
                 with open(RECORD, "a") as f:
                     f.write(json.dumps(body) + "\n")
+            if SHARED:
+                # prepareForCommand, then the command on the server thread, then the reply.
+                del shared_out[:]
+                time.sleep(0.002)
+                with server_thread:
+                    shared_out.append("".join(answer(body)))
+                time.sleep(0.002)
+                s.sendall(packet(rid, 0, "".join(shared_out)))
+                continue
             for part in answer(body):
                 s.sendall(packet(rid, 0, part))
 

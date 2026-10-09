@@ -927,7 +927,7 @@ def live_poll(cfg):
 
 
 def looks_like_script(folder):
-    """main.py with a README.md beside it (a seed), or a main.py that starts with its docstring."""
+    """main.py with a README.md beside it (written the old way), or a main.py that starts with its docstring."""
     main = os.path.join(folder, "main.py")
     if not os.path.isfile(main):
         return False
@@ -1396,7 +1396,7 @@ def cmd_script_new(cfg, a):
         if src.problem:
             raise Fail(1, "%s: %s" % (src.rel, src.problem))
         if presets and src.values_node is None:
-            raise Fail(1, "%s has no VALUES (a seed script): presets go into a script that has them "
+            raise Fail(1, "%s has no VALUES (written the old way): presets go into a script that has them "
                           "— start from an example, or from none" % a.source)
         text = src.text
     else:
@@ -1467,13 +1467,13 @@ def cmd_script_check(cfg, a):
         raise Fail(1, "%d problem%s in %d of %d file%s" % (len(problems), "" if len(problems) == 1 else "s",
                                                            bad, len(items), "" if len(items) == 1 else "s"))
     scripts = [i for i in items if i.kind == "script"]
-    seeds = [i for i in scripts if i.legacy and i.source == "library"]
+    old = [i for i in scripts if i.legacy and i.source == "library"]
     presets = [i for i in items if i.kind == "preset"]
     if a.targets and len(items) <= 3:
         out("ok: " + ", ".join(i.rel for i in items))
     else:
         out("ok: %d script%s%s and %d preset%s" % (len(scripts), "" if len(scripts) == 1 else "s",
-                                                  " (%d seeds)" % len(seeds) if seeds else "",
+                                                  " (%d old-style)" % len(old) if old else "",
                                                   len(presets), "" if len(presets) == 1 else "s"))
     return 0
 
@@ -2272,7 +2272,7 @@ def build_parser():
     w.add_argument("rest", nargs=argparse.REMAINDER,
                    metavar="<name> [as=<instance>] [key=value …|args…]",
                    help="as=<instance> runs another instance of it; key=value are checked "
-                        "against its VALUES first (a seed script takes its words as they are)")
+                        "against its VALUES first (one written the old way, with no VALUES, takes its words as they are)")
     w = ss.add_parser("set", help="change a running instance's values: live ones in place, "
                       "any other restarts it with the rest kept")
     w.add_argument("instance")

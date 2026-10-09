@@ -282,9 +282,94 @@ def backup_file(name):
 
 # ------------------------------------------------------------------ RCON
 
+def rcon_lock_path(port):
+    """The lock file every RCON client of the server on `port` holds from send to reply, as
+    scripts/_lib/mc.py and toolkit/remote/common.py do: VFG_RCON_LOCK, else
+    /tmp/vfg-rcon-<port>.lock (never $TMPDIR: the stand-in's scripts do not see this shell's)."""
+    return os.environ.get("VFG_RCON_LOCK") or "/tmp/vfg-rcon-%d.lock" % port
+
+
+def open_lock(path):
+    """A descriptor flock can hold on `path`, made if missing; read-only, and without O_CREAT
+    when it exists (flock needs neither write access nor ownership)."""
+    for _ in range(3):
+        try:
+            return os.open(path, os.O_RDONLY)
+        except FileNotFoundError:
+            pass
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        except FileExistsError:
+            continue
+        try:
+            os.fchmod(fd, 0o666)
+        except OSError:
+            pass
+        return fd
+    return os.open(path, os.O_RDONLY)
+
+
+def held_locks():
+    """This process's RCON locks, {path: [thread ident, depth, the fd that holds the flock]},
+    shared through one entry in sys.modules with every other RCON client loaded in the process
+    (scripts/_lib/mc.py's is the same), so a thread that already holds the lock takes it again
+    without waiting on itself; other threads and processes still wait."""
+    import threading
+    h = sys.modules.get("_vfg_rcon_held")
+    if h is None:
+        h = type(sys)("_vfg_rcon_held")
+        h.locks, h.guard = {}, threading.RLock()
+        h = sys.modules.setdefault("_vfg_rcon_held", h)
+    return h
+
+
+def take_lock(path, fd, deadline=None):
+    """Hold the RCON lock `path` through `fd` (re-entrant per thread); False past `deadline`."""
+    import fcntl
+    import threading
+    held, me = held_locks(), threading.get_ident()
+    with held.guard:
+        got = held.locks.get(path)
+        if got and got[0] == me:
+            got[1] += 1
+            return True
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | (fcntl.LOCK_NB if deadline is not None else 0))
+            break
+        except OSError:
+            if deadline is None or time.time() >= deadline:
+                return False
+            time.sleep(0.002)
+    with held.guard:
+        held.locks[path] = [me, 1, fd]
+    return True
+
+
+def drop_lock(path, fd):
+    """Let go of take_lock's hold: count down, or unlock the fd that took it."""
+    import fcntl
+    import threading
+    held, me = held_locks(), threading.get_ident()
+    with held.guard:
+        got = held.locks.get(path)
+        if got and got[0] == me:
+            if got[1] > 1:
+                got[1] -= 1
+                return
+            del held.locks[path]
+            fd = got[2]
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except (OSError, TypeError):
+        pass
+
+
 class Rcon(object):
     """A vanilla RCON client, like toolkit/remote/common.py's: one packet per write (vanilla
-    reads one packet per read), and a reply over 4096 characters read in parts."""
+    reads one packet per read), and a reply over 4096 characters read in parts. Vanilla answers
+    every connection from one shared buffer, so each command holds rcon_lock_path(port) from
+    its send to its reply, as scripts and vfg do; otherwise replies get each other's output."""
 
     def __init__(self, props, timeout=10.0):
         p = read_props(props)
@@ -293,7 +378,13 @@ class Rcon(object):
         except ValueError:
             port = 25575
         self.port = port
-        self.sock = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+        self.lock_path = rcon_lock_path(port)
+        self.lock_fd = open_lock(self.lock_path)
+        try:
+            self.sock = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+        except OSError:
+            os.close(self.lock_fd)   # `up` retries while the server starts: no fd per try
+            raise
         self._send(1, 3, p.get("rcon.password", ""))
         del p
         rid, _typ, _body = self._read()
@@ -326,30 +417,38 @@ class Rcon(object):
     def command(self, cmd, timeout=None):
         """Run one command; its output as text. `timeout`: seconds for this one's answer (default
         10), for a command the server takes long over, like forceload generating chunks."""
-        self._send(2, 2, cmd)
-        if timeout:
-            self.sock.settimeout(timeout)
+        take_lock(self.lock_path, self.lock_fd)
         try:
-            _rid, _typ, body = self._read()
-        finally:
+            self._send(2, 2, cmd)
             if timeout:
-                self.sock.settimeout(10.0)
-        parts = [body]
-        while len(body) >= 4000:
-            self.sock.settimeout(1.0)
+                self.sock.settimeout(timeout)
             try:
-                (length,) = struct.unpack("<i", self._exact(4))
-                body = self._exact(length)[8:-2]
-                parts.append(body)
-            except socket.timeout:
-                break
+                _rid, _typ, body = self._read()
             finally:
-                self.sock.settimeout(10.0)
+                if timeout:
+                    self.sock.settimeout(10.0)
+            parts = [body]
+            while len(body) >= 4000:
+                self.sock.settimeout(1.0)
+                try:
+                    (length,) = struct.unpack("<i", self._exact(4))
+                    body = self._exact(length)[8:-2]
+                    parts.append(body)
+                except socket.timeout:
+                    break
+                finally:
+                    self.sock.settimeout(10.0)
+        finally:
+            drop_lock(self.lock_path, self.lock_fd)
         return b"".join(parts).decode("utf-8", "replace")
 
     def close(self):
         try:
             self.sock.close()
+        except OSError:
+            pass
+        try:
+            os.close(self.lock_fd)
         except OSError:
             pass
 
@@ -1058,6 +1157,7 @@ def cmd_env(a):
     print("export REALMC_DIR=%s" % q(srv.dir))
     print("export VFG_HOME=%s" % q(srv.vhome))
     print("export VFG_MC_PROPERTIES=%s" % q(srv.props))
+    print("export VFG_PROTECTED=%s" % q(os.path.join(srv.vfg, "protected.json")))
     print("export PATH=%s:\"$PATH\"" % q(os.path.join(HERE, "bin")))
     return 0
 

@@ -43,7 +43,7 @@ vfg script deploy                              # or: vfg script deploy castle
 vfg script run spirit_bomb player=Steve        # values checked here first; deploys it and _lib first
 vfg script run galick_gun player=Alex cooldown=0 as=galick-alex --task T5   # a second instance
 vfg script run hello --wait                    # waits up to 30 s for it to end; --wait 10 or --wait=10
-vfg script run zeus Steve                      # a seed script takes its words as they are
+vfg script run zeus player=Steve               # every script takes key=value, checked against its VALUES
 vfg script set galick-alex cooldown=0          # live: read again within 0.5 s; any other value restarts it
 vfg script save galick-alex galick_no_cooldown # its values now as the defaults, into made/<VFG_SERVER>/
 vfg script logs galick-alex -n 40              # --follow only under Monitor or by a person
@@ -70,7 +70,8 @@ and `preset save` refuse one that is taken in either.
 
 - **Values are checked on the PC before anything is sent**: an unknown key, a bad enum or
   a word that is not `key=value` exits 2; a number out of range is clamped and the output
-  says so. A seed script (a `README.md` and no `VALUES`) takes its words as they are.
+  says so. A script written the old way (a `README.md` beside it and no `VALUES`) is
+  handed its words as they are.
 - **An instance** is one run: the script's name, or `as=<instance>`, each with its own tag
   `vfg_<instance>`. On the box, `/opt/vfg/run/<instance>.json` says what was started
   (script, source, the command's values, task, started) and `<instance>.values.json` holds
@@ -80,9 +81,11 @@ and `preset save` refuse one that is taken in either.
   command's values and the live ones as the new script's defaults.
 - **`check`** exits 1 with one line per problem: `VALUES` not a literal, a default outside
   its limits, an unknown type, a value name twice, `v["key"]` read but not declared, a
-  preset's value or helper without its name in front, no first-line docstring, no `ASKS`,
-  an import from `_presets` or of what the box lacks, syntax Python 3.9 cannot read. A seed
-  is checked for its README's first line and its imports only.
+  preset's value or helper without its name in front, a preset's value that starts with
+  another preset's name (the two in one script would ask for one value), no first-line
+  docstring, no `ASKS`, an import from `_presets` or of what the box lacks, syntax Python 3.9
+  cannot read. An old-style library script (a `README.md`, no `VALUES`) is checked for its
+  README's first line and its imports only.
 - **`set`** on an instance this PC started is one SSH call: `run` keeps what it started in
   `~/.vfg/instances.json`, and the box checks the instance still runs that script before it
   changes anything; otherwise it asks the box first, a second call.

@@ -143,6 +143,47 @@ class LiveFacts(unittest.TestCase):
         self.assertRegex(mc.rcon("time query gametime"), r"The game time is \d+ tick")
 
 
+class LiveKitMore(unittest.TestCase):
+    def tearDown(self):
+        mc.rcon("kill @e[tag=vfg_kit_live]")
+        mc.rcon("kill @e[tag=%s]" % mc.TAG)
+        mc.rcon("fill %d %d %d %d %d %d air" % (X - 12, SKY - 2, Z - 12, X + 12, SKY + 6, Z + 12))
+        area.release()
+
+    def test_near_a_place_and_mark(self):
+        mc.rcon("fill %d %d %d %d %d %d glass" % (X - 8, SKY, Z - 8, X + 8, SKY, Z + 8))
+        nbt = 'NoAI:1b,Tags:["vfg_kit_live"]'
+        for dx in (0, 2, 9):
+            mc.rcon("summon zombie %d.5 %d %d.5 {%s}" % (X + dx, SKY + 1, Z, nbt))
+        mc.rcon("summon villager %d.5 %d %d.5 {%s}" % (X + 1, SKY + 1, Z, nbt))
+        hits = aim.near(world.Pos(X + 0.5, SKY + 1, Z + 0.5), 4)
+        self.assertEqual([h.name for h in hits], ["Zombie", "Zombie"])
+        self.assertEqual(aim.mark(hits + hits, "vfg_kit_hit"), 2)
+        self.assertRegex(mc.rcon("execute if entity @e[tag=vfg_kit_hit]"), r"[Cc]ount: 2")
+        mc.rcon("tag @e[tag=vfg_kit_hit] remove vfg_kit_hit")
+
+    def test_mobs_round_a_place_and_a_boss_with_attributes(self):
+        mc.rcon("fill %d %d %d %d %d %d glass" % (X - 8, SKY, Z - 8, X + 8, SKY, Z + 8))
+        got = mobs.around(world.Pos(X + 0.5, SKY + 1, Z + 0.5), "zombie", 3, nbt="NoAI:1b", spread=3)
+        self.assertEqual(got, 3)
+        boss = mobs.Boss("Attr Boss", "zombie", health=30, nbt="NoAI:1b", attributes={"attack_damage": 12})
+        self.assertEqual(boss.spawn(at=(X + 0.5, SKY + 1, Z + 0.5)), 1)
+        self.assertIn("12", mc.rcon("attribute @e[tag=%s,limit=1] minecraft:attack_damage base get" % boss.tag))
+        self.assertEqual(boss.update(), 1)
+        self.assertEqual(boss.total, 30.0)
+        boss.remove()
+
+    def test_sounds_records_and_release_by_box(self):
+        self.assertTrue(ok(mc.rcon("execute positioned %d %d %d run playsound minecraft:entity.zombie.step master "
+                                   "NobodyAtAll ~ ~ ~ 1 1" % (X, SKY, Z))))
+        self.assertTrue(ok(mc.rcon("stopsound @a * minecraft:music_disc.pigstep")))
+        added = area.forceload((X + 300, 0, Z + 300, X + 340, 0, Z + 340), wait=0)
+        added += area.forceload((X + 500, 0, Z + 500, X + 510, 0, Z + 510), wait=0)
+        area.release((X + 300, 0, Z + 300, X + 340, 0, Z + 340))
+        self.assertIn("not marked", mc.rcon("forceload query %d %d" % (X + 320, Z + 320)))
+        self.assertIn("is marked", mc.rcon("forceload query %d %d" % (X + 505, Z + 505)))
+
+
 class LiveKit(unittest.TestCase):
     def tearDown(self):
         mc.rcon("kill @e[tag=vfg_kit_live]")
@@ -286,6 +327,8 @@ REALMC = os.path.join(os.path.dirname(os.path.dirname(HERE)), "integration", "re
 sys.path.insert(0, REALMC)
 try:
     import players as fake_players  # noqa: E402
+    # players.py talks RCON on a connection of its own; realmc's client holds the same lock as
+    # mc.rcon for each command (26.3 answers every client from one buffer), so nothing glues.
     PLAYERS = fake_players.on()
     CARPET = "Unknown or incomplete" not in PLAYERS.cmd("carpet")
 except Exception:   # no Carpet on this server, or no realmc beside the repo
@@ -380,6 +423,40 @@ class LiveClicks(unittest.TestCase):
         out = self.stop(proc)
         self.assertEqual(out.count("fired Steve"), 1, out)
         self.assertFalse(items.has("Steve", "Kit Bomb"))        # taken back on stop
+
+    def test_scores_of_three_players_one_with_none(self):
+        """26.3 answers "execute as @a run scoreboard players get @s x" with the players who
+        have a score, glued ("Steve has 5 [x]Alex has 7 [x]"), and nothing for one who has none."""
+        PLAYERS.spawn("Alex")
+        PLAYERS.spawn("Sam")
+        obj = "vfg_kit_live_s"
+        mc.rcon("scoreboard objectives add %s dummy" % obj)
+        try:
+            mc.rcon("scoreboard players set Steve %s 5" % obj)
+            mc.rcon("scoreboard players set Sam %s 9" % obj)
+            reply = mc.rcon("execute as @a run scoreboard players get @s %s" % obj)
+            self.assertNotIn("Alex", reply)
+            self.assertNotIn("none is set", reply)
+            stat = items.Stat(obj, "dummy")
+            stat.seeded = time.time()                          # read it as it is first
+            self.assertEqual(stat.scores(), {"Steve": 5, "Sam": 9})
+            stat.seeded = 0.0                                  # then every player gets a score
+            self.assertEqual(stat.scores(), {"Steve": 5, "Alex": 0, "Sam": 9})
+        finally:
+            mc.rcon("scoreboard objectives remove %s" % obj)
+
+    def test_a_first_click_ever_counts(self):
+        PLAYERS.spawn("Alex")
+        mc.rcon("scoreboard players reset Alex vfg_click")
+        PLAYERS.hotbar("Alex", 1)
+        PLAYERS.clear("Alex")
+        items.give("Alex", "Kit Wand")
+        a = self.start("kitwand", "Wand", 'clicks("Alex", "Kit Wand", give="never", every=0.05)')
+        time.sleep(3.0)
+        PLAYERS.use("Alex")
+        time.sleep(0.8)
+        out = self.stop(a)
+        self.assertEqual(out.count("fired Alex"), 1, out)
 
     def test_sneaking(self):
         items.sneaking()

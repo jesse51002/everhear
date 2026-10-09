@@ -193,8 +193,10 @@ def start(meta, argv, wait):
     # VFG_SCRIPT is the pid marker (running_pid); VFG_INSTANCE names its tag, vfg_<instance>.
     env["VFG_SCRIPT"] = name
     env["VFG_INSTANCE"] = name
-    # kit.values reads <VFG_RUN_DIR>/<instance>.values.json again every VFG_LIVE_POLL_S.
+    # kit.values reads <VFG_RUN_DIR>/<instance>.values.json again every VFG_LIVE_POLL_S, and
+    # kit.world.protected() the places nothing may touch from VFG_PROTECTED.
     env["VFG_RUN_DIR"] = RUN
+    env["VFG_PROTECTED"] = os.path.join(BASE, "protected.json")
     env["VFG_LIVE_POLL_S"] = str(ARGS.get("poll") or 0.5)
     env["PYTHONPATH"] = os.path.join(SCRIPTS, "_lib")
     env["PYTHONUNBUFFERED"] = "1"

@@ -21,7 +21,6 @@ import signal
 import socket
 import struct
 import sys
-import tempfile
 import threading
 import time
 from typing import Optional, Tuple
@@ -139,13 +138,49 @@ def _read_packet(s: socket.socket) -> Tuple[int, int, str]:
 
 
 def lock_path() -> str:
-    """The lock file every RCON client of this server holds while it sends and reads."""
-    return RCON_LOCK or os.path.join(tempfile.gettempdir(), "vfg-rcon-%d.lock" % _read_settings()[1])
+    """The lock file every RCON client of this server holds while it sends and reads: always
+    under /tmp, never $TMPDIR, so a client run from another shell finds the same file."""
+    return RCON_LOCK or "/tmp/vfg-rcon-%d.lock" % _read_settings()[1]
+
+
+def _open_lock(path: str) -> int:
+    """A descriptor flock can hold on `path`, made if missing. Read-only and without O_CREAT
+    when it exists: flock needs neither write access nor ownership, and a sticky /tmp refuses
+    O_CREAT on another user's file (fs.protected_regular)."""
+    for _ in range(3):
+        try:
+            return os.open(path, os.O_RDONLY)
+        except FileNotFoundError:
+            pass
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        except FileExistsError:
+            continue
+        try:
+            os.fchmod(fd, 0o666)
+        except OSError:
+            pass
+        return fd
+    return os.open(path, os.O_RDONLY)
+
+
+def held_locks():
+    """This process's RCON locks, {path: [thread ident, depth, the fd that holds the flock]},
+    shared through one entry in sys.modules by every RCON client loaded in the process (mc,
+    toolkit/remote/common.py, integration/realmc), so a thread that already holds the lock on
+    one connection takes it again on another without waiting on itself; other threads and
+    processes still wait. The guard is an RLock: a stop's signal handler may run inside it."""
+    h = sys.modules.get("_vfg_rcon_held")
+    if h is None:
+        h = type(sys)("_vfg_rcon_held")
+        h.locks, h.guard = {}, threading.RLock()
+        h = sys.modules.setdefault("_vfg_rcon_held", h)
+    return h
 
 
 class _Flock(object):
     """Holds the RCON lock file. One per connection, so the cleanup's own connection waits
-    for another thread's too."""
+    for another thread's too; a thread that holds it already only counts up (held_locks)."""
 
     def __init__(self):
         self.fd, self.path = None, None
@@ -155,25 +190,44 @@ class _Flock(object):
         if self.path != path:
             if self.fd is not None:
                 os.close(self.fd)
-            self.fd, self.path = os.open(path, os.O_RDWR | os.O_CREAT, 0o666), path
+            self.fd, self.path = _open_lock(path), path
+        held, me = held_locks(), threading.get_ident()
+        with held.guard:
+            got = held.locks.get(path)
+            if got and got[0] == me:
+                got[1] += 1
+                return True
         if deadline is None:
             fcntl.flock(self.fd, fcntl.LOCK_EX)
-            return True
-        while True:
-            try:
-                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return True
-            except OSError:
-                if time.time() >= deadline:
-                    return False
-                time.sleep(0.002)
+        else:
+            while True:
+                try:
+                    fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.time() >= deadline:
+                        return False
+                    time.sleep(0.002)
+        with held.guard:
+            held.locks[path] = [me, 1, self.fd]
+        return True
 
     def release(self):
-        if self.fd is not None:
-            try:
-                fcntl.flock(self.fd, fcntl.LOCK_UN)
-            except OSError:
-                pass
+        if self.fd is None:
+            return
+        held, me, fd = held_locks(), threading.get_ident(), self.fd
+        with held.guard:
+            got = held.locks.get(self.path)
+            if got and got[0] == me and got[1] > 1:
+                got[1] -= 1
+                return
+            if got and (got[0] == me or got[2] == self.fd):
+                del held.locks[self.path]
+                fd = got[2] if got[0] == me else self.fd
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
 
 
 _flock = _Flock()          # the shared connection's
