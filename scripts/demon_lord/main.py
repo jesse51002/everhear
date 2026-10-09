@@ -1,15 +1,23 @@
-#!/usr/bin/env python3
+"""Demon Lord: a game master that runs round after round of mob waves and minigames, with a boss every fourth round, harder or easier as players fare."""
+ASKS = ["make sure to add a boss fight at the end", "don't just do zombies, do skeletons, wither skeletons, creepers, silverfish, do everything",
+        "a game master that sends waves at us"]
 # Demon Lord game master: event -> wait until its mobs are dead or 30 s pass with no
-# kills -> 1 min break -> next round, escalating. Every 4th round is a boss.
+# kills -> a break -> next round, escalating. Every 4th round is a boss.
 import json
 import math
 import random
 import re
-import sys
 import threading
 import time
 
 from mc import rcon, players, pos, spawn, score, count, on_stop, log, TAG
+from kit import values
+
+VALUES = {
+    "round":   {"type": "int", "min": 1, "max": 1000, "default": 1},
+    "level":   {"type": "number", "min": 0, "max": 1000, "default": 0},
+    "break_s": {"type": "number", "min": 0, "max": 600, "default": 60, "live": True},
+}
 
 PROP = TAG + "_prop"     # markers, labels, Gregor: tagged TAG and PROP, never counted as mobs
 LABEL = TAG + "_label"
@@ -20,13 +28,6 @@ PROP_TAGS = '"vfg","%s","%s"' % (TAG, PROP)
 MOB_TAGS = '"vfg","%s"' % TAG
 
 state = {"border": False, "rules": False, "blocks": [], "bossbar": False}
-
-
-def num(i, default, cast=float):
-    try:
-        return cast(sys.argv[i])
-    except (IndexError, ValueError):
-        return default
 
 
 def speak(msg, title=None, sound="entity.wither.spawn"):
@@ -510,8 +511,9 @@ def cleanup():
     rcon("scoreboard objectives remove " + DEATHS)
 
 
-ROUND = num(1, 1, int)
-lvl = num(2, float(ROUND))
+v = values(VALUES)
+ROUND = v["round"]
+lvl = float(v["level"] or ROUND)     # level 0: start at the round's own difficulty
 on_stop(cleanup)
 rcon("scoreboard objectives add %s deathCount" % DEATHS)
 log("starting at round", ROUND, "level", lvl)
@@ -544,4 +546,4 @@ while True:
         lvl += 1
     log("round", ROUND, "over:", d, "deaths -> level", round(lvl, 1))
     ROUND += 1
-    time.sleep(60)
+    time.sleep(v["break_s"])
