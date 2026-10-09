@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
 """The orchestrator live, against a local stand-in box, with the REAL vfg.
 
-    python3 test/live_box.py --preflight          no model: the box and every vfg shape an
+    python3 tests/live_box.py --preflight         no model: the box and every vfg shape an
                                                   implementer uses, plus the guard on each
-    VFG_ORCH_MODEL=haiku python3 test/live_box.py the live run: your subscription, once
-                                                  (hybrid by default; VFG_ORCH_MODE=implementers|direct)
-    python3 test/live_box.py --quick              the real defaults (Opus, Sonnet implementers): two tasks, timed
-    python3 test/live_box.py --hybrid             hybrid: direct tasks, a delegated house, a quick task during it
+    VFG_ORCH_MODEL=haiku python3 tests/live_box.py the live run: your subscription, once
+    python3 tests/live_box.py --quick             the real defaults (Opus, Sonnet implementers): two tasks, timed
 
 The box is integration/harness.py's Box (imported, read-only): the real bridge, Jev filter and
 feed writer on Python 3.9, the toolkit's fake_ssh, and a temp VFG_HOME whose config points into
-it. In place of the toolkit's bare fake RCON this runs test/realistic_rcon.py on the box's RCON
-port, so an implementer can confirm what it did. The runner is started and stopped with
-`vfg orch start|stop`, tasks are sent with `vfg orch send`, and every answer is checked in the
-feed (`vfg history --feed`): exactly one `ORCH … done|failed` per task.
+it. In place of the toolkit's bare fake RCON this runs tests/realistic_rcon.py on the box's RCON
+port, so an implementer can confirm what it did. `vfg orch start|stop` starts and stops the
+dispatcher alongside the runner; tasks go in with `vfg orch send`, as the conversation sends them,
+so the dispatcher does the quick ones itself and hands the rest on (two tasks meant to arrive
+together still go straight in with `vfg orch hand`); and every answer is checked in the feed
+(`vfg history --feed`): exactly one `ORCH … done|failed` per task.
+
+The dispatcher's model key: OPEN_ROUTER_API from the environment, else the first .env above the
+repo that holds it, else the file ~/.vfg/openrouter.key names; it reaches `vfg orch start` only.
+Its command references are seeded from dispatcher/tests/fixtures/refs, as
+integration/dispatcher_e2e.py seeds them, so nothing is fetched.
 """
 import argparse
 import fcntl
@@ -33,6 +38,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ORCH = os.path.dirname(HERE)
 VFG_ROOT = os.path.dirname(ORCH)
 HARNESS = os.path.join(VFG_ROOT, "integration", "harness.py")
+E2E = os.path.join(VFG_ROOT, "integration", "dispatcher_e2e.py")
+DISPATCHER = os.path.join(VFG_ROOT, "dispatcher")
+ACTIONS = os.path.join(VFG_ROOT, "actions")
 TOOLKIT = os.path.join(VFG_ROOT, "toolkit")
 SCRIPTS = os.path.join(VFG_ROOT, "scripts")
 REAL_VFG = os.path.expanduser("~/.local/bin/vfg")
@@ -56,8 +64,8 @@ def record(name, ok, detail):
     say("PASS" if ok else "FAIL", name, "-", detail)
 
 
-def load_harness():
-    spec = importlib.util.spec_from_file_location("vfg_integration_harness", HARNESS)
+def load_harness(path=HARNESS, name="vfg_integration_harness"):
+    spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -79,22 +87,35 @@ class Live:
         b.start_bridge()
         b.start_jev()
         shutil.copytree(SCRIPTS, os.path.join(b.repo, "scripts"), ignore=shutil.ignore_patterns("__pycache__"))
-        os.symlink(ORCH, os.path.join(b.repo, "orchestrator"))  # vfg orch start runs <repo>/orchestrator/run
+        # vfg orch start runs <repo>/orchestrator/run and <repo>/dispatcher/run; vfg action run reads <repo>/actions.
+        os.symlink(ORCH, os.path.join(b.repo, "orchestrator"))
+        os.symlink(DISPATCHER, os.path.join(b.repo, "dispatcher"))
+        os.symlink(ACTIONS, os.path.join(b.repo, "actions"))
         self.orch_dir = os.path.join(b.vhome, "orch")
+        self.dispatch_dir = os.path.join(b.vhome, "dispatch")
         self.runner_log = os.path.join(self.orch_dir, "runner.log")
+        self.dispatcher_log = os.path.join(self.dispatch_dir, "dispatcher.log")
+        e2e = load_harness(E2E, "vfg_dispatcher_e2e")
+        e2e.seed_refs(self.dispatch_dir)                 # the command references, never fetched here
+        e2e.server_jar(b.mc_dir)                         # what vfg action refs --version reads
+        lib = os.path.join(b.vfg_dir, "scripts", "_lib")  # mc.py for the action handlers
+        os.makedirs(lib, exist_ok=True)
+        shutil.copy(os.path.join(SCRIPTS, "_lib", "mc.py"), lib)
+        key, _ = e2e.find_key()
+        self.key_env = {"OPEN_ROUTER_API": key} if key else \
+            {"VFG_OPENROUTER_KEY": os.environ.get("VFG_OPENROUTER_KEY") or os.path.join(REAL_HOME, ".vfg", "openrouter.key")}
         self.seeds = set(os.listdir(os.path.join(b.repo, "scripts")))
-        m = os.environ.get("VFG_ORCH_MODE")
-        self.model_mode = m if m in ("direct", "implementers") else "hybrid"
         self.env = b.base_env()
         if model:
             self.env["VFG_ORCH_MODEL"] = model  # unset: the runner's own default (opus)
         for k in ("VFG_ORCH_EFFORT", "VFG_IMPL_MODEL", "VFG_IMPL_EFFORT"):
             if os.environ.get(k):
                 self.env[k] = os.environ[k]
+        self.env.pop("OPEN_ROUTER_API", None)  # the dispatcher's only: see start()
         self.env.update({
             "HOME": REAL_HOME,  # the CLI's own Claude login; vfg finds its config by VFG_HOME
             "VFG_HOME": b.vhome, "VFG_REPO": b.repo, "VFG_ORCH_DIR": self.orch_dir,
-            "VFG_ORCH_MODE": self.model_mode,
+            "VFG_DISPATCH_DIR": self.dispatch_dir,
             "FAKE_UNITS": b.units,
             # the box's python3 (3.9) first: fake_ssh runs the remote side with this PATH
             "PATH": os.pathsep.join([b.ec2bin, os.path.dirname(REAL_VFG), os.path.join(TOOLKIT, "tests", "bin"),
@@ -102,9 +123,9 @@ class Live:
         })
         say("box %s; RCON port %d; vfg = %s" % (self.root, b.rcon_port, os.path.realpath(REAL_VFG)))
 
-    def vfg(self, *args, timeout=120):
-        return subprocess.run([REAL_VFG] + list(args), env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              universal_newlines=True, timeout=timeout)
+    def vfg(self, *args, timeout=120, env=None):
+        return subprocess.run([REAL_VFG] + list(args), env=dict(self.env, **(env or {})), stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, universal_newlines=True, timeout=timeout)
 
     def rcon(self, since=0.0):
         out = []
@@ -133,12 +154,15 @@ class Live:
     def closes(self, tid):
         return [(st, text) for _, t, st, text in self.feed_orch() if t == tid and st in ("done", "failed")]
 
-    def log(self):
+    def log(self, path=None):
         try:
-            with open(self.runner_log, encoding="utf-8", errors="replace") as f:
+            with open(path or self.runner_log, encoding="utf-8", errors="replace") as f:
                 return f.read()
         except FileNotFoundError:
             return ""
+
+    def dlog(self):
+        return self.log(self.dispatcher_log)
 
     def wait(self, cond, secs, step=1.0):
         end = time.time() + secs
@@ -155,11 +179,40 @@ class Live:
             return None
 
     def start(self):
-        mark = len(self.log())
-        r = self.vfg("orch", "start")
+        """`vfg orch start`: the runner and the dispatcher, the dispatcher's key in this call's environment only."""
+        mark, dmark = len(self.log()), len(self.dlog())
+        r = self.vfg("orch", "start", env=self.key_env)
         ok = r.returncode == 0 and self.wait(lambda: " main following " in self.log()[mark:], 120, 0.25)
-        say("vfg orch start: %s %s; runner %s" % (r.stdout.strip(), r.stderr.strip(), "following" if ok else "NOT up"))
-        return ok
+        dok = r.returncode == 0 and (re.search(r"^dispatcher +running pid", r.stdout, re.M)  # still up from before
+                                     or self.wait(lambda: re.search(r" start pid \d+", self.dlog()[dmark:]), 120, 0.25))
+        say("vfg orch start: %s %s; runner %s; dispatcher %s" % (r.stdout.strip(), r.stderr.strip(),
+            "following" if ok else "NOT up", "following" if dok else "NOT up"))
+        return ok and dok
+
+    def last_id(self):
+        """The highest task number in either inbox, as vfg orch send counts them."""
+        n = 0
+        for folder in (self.orch_dir, self.dispatch_dir):
+            try:
+                with open(os.path.join(folder, "inbox.jsonl")) as f:
+                    for line in f:
+                        m = re.match(r'\{"id": ?"T(\d+)"', line)
+                        if m:
+                            n = max(n, int(m.group(1)))
+            except FileNotFoundError:
+                pass
+        return n
+
+    def hand(self, *tasks):
+        """(task, context) pairs into the orchestrator's inbox in one `vfg orch hand`, as the dispatcher
+        hands tasks on. Returns their ids, None for one that was not handed."""
+        n = self.last_id()
+        at = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+        lines = [{"id": "T%d" % (n + i + 1), "at": at, "task": task, "context": context} for i, (task, context) in enumerate(tasks)]
+        r = self.vfg("orch", "hand", json.dumps(lines))
+        ids = [x["id"] if r.returncode == 0 and ("handed %s" % x["id"]) in r.stdout.split("\n") else None for x in lines]
+        say("vfg orch hand %s -> %s %s" % ([t for t, _ in tasks], ids, (r.stdout + " " + r.stderr).strip().replace("\n", " / ")))
+        return ids
 
     def send(self, task, context=""):
         r = self.vfg("orch", "send", task, "--context", context)
@@ -167,18 +220,20 @@ class Live:
         say("vfg orch send %r -> %s %s" % (task, tid, r.stderr.strip()))
         return tid
 
+    def who(self, tid):
+        """Which part did it: the dispatcher, or the orchestrator (it was handed on)."""
+        try:
+            with open(os.path.join(self.orch_dir, "inbox.jsonl")) as f:
+                return "orchestrator" if any(json.loads(l).get("id") == tid for l in f if l.strip()) else "dispatcher"
+        except (OSError, ValueError):
+            return "dispatcher"
+
     def send_stale(self, task):
-        """An hour-old task, appended as vfg orch send would (vfg cannot backdate one)."""
+        """An hour-old task, appended as vfg orch hand would (vfg cannot backdate one)."""
         inbox = os.path.join(self.orch_dir, "inbox.jsonl")
         with open(os.path.join(self.orch_dir, "inbox.lock"), "a") as lk:
             fcntl.flock(lk, fcntl.LOCK_EX)
-            n = 0
-            with open(inbox) as f:
-                for line in f:
-                    m = re.match(r'\{"id": "T(\d+)"', line)
-                    if m:
-                        n = max(n, int(m.group(1)))
-            tid = "T%d" % (n + 1)
+            tid = "T%d" % (self.last_id() + 1)
             at = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 3600))
             with open(inbox, "a") as f:
                 f.write(json.dumps({"id": tid, "at": at, "task": task, "context": ""}) + "\n")
@@ -237,7 +292,7 @@ class Live:
 
     def close(self):
         try:
-            if self.runner_pid():
+            if self.runner_pid() or os.path.exists(os.path.join(self.dispatch_dir, "dispatcher.pid")):
                 self.vfg("orch", "stop", timeout=60)
         except Exception:
             pass
@@ -286,8 +341,9 @@ def preflight(H):
         import shlex
         lines = [" ".join(shlex.quote(w) for w in argv) for argv in SHAPES]
         guard = subprocess.run(
-            ["bun", "-e", 'import { checkBash } from "./src/guard"; for (const l of JSON.parse(process.argv[1])) '
-                          'console.log(JSON.stringify([l, checkBash(l)]));', json.dumps(lines)],
+            [UV, "run", "--project", ORCH, "--frozen", "python", "-c",
+             "import json, sys\nfrom orchestrator.guard import check_bash\n"
+             "for l in json.loads(sys.argv[1]):\n    print(json.dumps([l, check_bash(l)]))", json.dumps(lines)],
             cwd=ORCH, stdout=subprocess.PIPE, universal_newlines=True)
         for row in guard.stdout.splitlines():
             line, why = json.loads(row)
@@ -323,7 +379,7 @@ def preflight(H):
 
 def probe(live):
     env = dict(live.env)
-    r = subprocess.run(["bun", "run", os.path.join(HERE, "probe.ts")], cwd=ORCH, env=env, stdout=subprocess.PIPE,
+    r = subprocess.run([UV, "run", "--project", ORCH, "--frozen", "python", os.path.join(HERE, "probe.py")], cwd=ORCH, env=env, stdout=subprocess.PIPE,
                        stderr=subprocess.PIPE, universal_newlines=True, timeout=400)
     for line in r.stderr.splitlines():
         if line.startswith("[") or "probe" in line:
@@ -358,7 +414,8 @@ def scenarios(live):
         f = lambda x: time.mktime(time.strptime(x[:19], "%Y-%m-%dT%H:%M:%S")) + float("0" + x[19:23])  # noqa: E731
         inner = "; runner saw it -> reply tool %.1f s" % (f(m_reply.group(1)) - f(m_open.group(1)))
     record("1. make it day", len(c) == 1 and c[0][0] == "done" and any(re.match(r"time set (day|1000)\b", x) for x in cmds),
-           "send -> ORCH done in the feed %.1f s%s; feed=%s rcon=%s" % (took, inner, c, [x for x in cmds if x.startswith("time")]))
+           "send -> ORCH done in the feed %.1f s%s, by the %s; feed=%s rcon=%s"
+           % (took, inner, live.who(t1), c, [x for x in cmds if x.startswith("time")]))
 
     # 2. rain TNT on everyone
     t = time.time()
@@ -404,31 +461,26 @@ def scenarios(live):
     record("4. op Steve refused", len(c) == 1 and c[0][0] == "failed" and not any(re.match(r"/?op\b", x, re.I) for x in cmds),
            "feed=%s; op sent to RCON: %s" % (c, [x for x in cmds if re.match(r"/?op\b", x, re.I)]))
 
-    # 5. two tasks back to back: each answered once; the second waits for the first's turn
+    # 5. two tasks handed together: both reach the session at once, each answered once
     mark = len(live.log())
-    t5 = live.send("give Steve a diamond", "Steve asked for a diamond.")
-    t6 = live.send("make it rain", "Alex wants rain.")
+    t5, t6 = live.hand(("give Steve a diamond", "Steve asked for a diamond."), ("make it rain", "Alex wants rain."))
     ids += [t5, t6]
     live.wait(lambda: live.closes(t5) and live.closes(t6), 300)
     time.sleep(3)
     seg = live.log()[mark:]
     p5, p6 = seg.find("push: TASK %s " % t5), seg.find("push: TASK %s " % t6)
     end5 = seg.find(" session turn ", p5) if p5 >= 0 else -1
-    in_order = 0 <= p5 < end5 < p6
-    record("5. two tasks back to back, each answered once, one at a time",
-           len(live.closes(t5)) == 1 and len(live.closes(t6)) == 1 and in_order,
-           "%s=%s %s=%s; %s reached the session only after %s's turn ended: %s"
-           % (t5, live.closes(t5), t6, live.closes(t6), t6, t5, in_order))
+    together = 0 <= p5 < p6 and (end5 < 0 or p6 < end5)
+    record("5. two tasks handed together, each answered once",
+           len(live.closes(t5)) == 1 and len(live.closes(t6)) == 1,
+           "%s=%s %s=%s; both reached the session before %s's turn ended: %s; two implementers at once: %s"
+           % (t5, live.closes(t5), t6, live.closes(t6), t5, together, "; 2 running" in seg))
 
     # 6. kill -9 while a task is open, then start again
     mark = len(live.log())
     t7 = live.send("build a small stone hut next to Steve", "Steve wants shelter for the night.")
     ids.append(t7)
-    if live.model_mode == "implementers":
-        started = live.wait(lambda: re.search(r"implementer (started|seen): %s\b" % t7, live.log()[mark:]), 180, 0.2)
-    else:  # direct: the orchestrator's own first tool call on it
-        started = live.wait(lambda: re.search(r"push: TASK %s .*?\n(?:.*\n)*?\S+ orch (Bash|Read|Write|Edit|Glob|Grep) " % t7,
-                                              live.log()[mark:]), 180, 0.1)
+    started = live.wait(lambda: re.search(r"implementer (started|seen): %s\b" % t7, live.log()[mark:]), 180, 0.2)
     open_at_kill = not live.closes(t7)
     pid = live.runner_pid()
     say("kill -9 runner %s; work on %s under way: %s; open: %s" % (pid, t7, bool(started), open_at_kill))
@@ -475,7 +527,7 @@ def timed(live, task, context, check):
     time.sleep(2)
     c = live.closes(tid)
     ok, evidence = check(live.rcon(t))
-    record("%s (send -> ORCH done %.1f s)" % (task, took), len(c) == 1 and c[0][0] == "done" and ok,
+    record("%s (send -> ORCH done %.1f s, by the %s)" % (task, took, live.who(tid)), len(c) == 1 and c[0][0] == "done" and ok,
            "feed=%s; %s" % (c, evidence))
     return took
 
@@ -500,86 +552,14 @@ def quick_run(H, model):
                             "ROUND(SUM(cost_usd), 4) cost FROM usage GROUP BY component, model")
         say("usage rows: %s" % rows)
         comps = {(r["component"], r["model"]) for r in rows}
-        record("usage: orchestrator rows on opus, implementer rows on sonnet, each priced",
-               any(c == "orchestrator" and "opus" in m for c, m in comps) and any(c == "implementer" and "sonnet" in m for c, m in comps)
-               and all((r["cost"] or 0) > 0 for r in rows), str(rows))
+        if live.last_id() and os.path.exists(os.path.join(live.orch_dir, "inbox.jsonl")):
+            record("usage: orchestrator rows on opus, implementer rows on sonnet, each priced",
+                   any(c == "orchestrator" and "opus" in m for c, m in comps) and any(c == "implementer" and "sonnet" in m for c, m in comps)
+                   and all((r["cost"] or 0) > 0 for r in rows), str(rows))
+        else:
+            say("usage: the dispatcher did both tasks, so the orchestrator wrote no rows: %s" % rows)
         r = live.vfg("orch", "stop", timeout=60)
         record("vfg orch stop", r.returncode == 0, r.stdout.strip())
-    finally:
-        live.close()
-        say("box and logs kept in %s" % live.root)
-
-
-def hybrid_run(H, model):
-    """The real defaults (hybrid: Opus orchestrator, Sonnet implementers), timed, with the route
-    each task took: done by the orchestrator itself, or by an implementer."""
-    live = Live(H, model)
-    try:
-        if not live.start():
-            record("runner starts", False, live.log()[-1500:])
-            return
-        say("runner: " + " ".join(l[25:] for l in live.log().splitlines() if " main starting" in l))
-
-        def route(tid):
-            return "implementer" if re.search(r"implementer (started|seen): %s\b" % tid, live.log()) else "itself"
-
-        def run(task, context, want_route, check, wait=600):
-            t = time.time()
-            tid = live.send(task, context)
-            live.wait(lambda: live.closes(tid), wait, 0.25)
-            took = time.time() - t
-            c = live.closes(tid)
-            ok, ev = check(live.rcon(t))
-            r = route(tid)
-            record("%s: %s, send -> done %.1f s" % (task, r, took), len(c) == 1 and c[0][0] == "done" and r == want_route and ok,
-                   "feed=%s; %s" % (c, ev))
-            return tid, took
-
-        run("make it day", "Steve asked for daytime.", "itself",
-            lambda cmds: (any(re.match(r"time set (day|1000)\b", x) for x in cmds), [x for x in cmds if x.startswith("time")]))
-        run("give Steve a diamond sword", "Steve asked for a diamond sword.", "itself",
-            lambda cmds: (any(x.startswith("give Steve") and "diamond_sword" in x for x in cmds), [x for x in cmds if x.startswith("give")]))
-
-        # the house goes to an implementer; a quick task goes in while it is built
-        t3s = time.time()
-        t3 = live.send("build a small house at spawn", "Steve wants a small house at spawn to sleep in.")
-        delegated = live.wait(lambda: route(t3) == "implementer", 180, 0.25)
-        still_building = not live.closes(t3)
-        t4s = time.time()
-        t4 = live.send("make it rain", "Alex wants rain.")
-        live.wait(lambda: live.closes(t4), 300, 0.25)
-        t4took = time.time() - t4s
-        t4_before_t3 = bool(live.closes(t4)) and not live.closes(t3)
-        live.wait(lambda: live.closes(t3), 900, 0.5)
-        t3took = time.time() - t3s
-        c3, c4 = live.closes(t3), live.closes(t4)
-        cmds = live.rcon(t3s)
-        build = [x for x in cmds if x.split(" ")[0] in ("fill", "setblock") or " run fill " in x or " run setblock " in x]
-        record("build a small house at spawn: %s, send -> done %.1f s" % (route(t3), t3took),
-               delegated and len(c3) == 1 and c3[0][0] == "done" and build,
-               "feed=%s; %d fill/setblock commands, e.g. %s" % (c3, len(build), build[:2]))
-        record("make it rain, sent while the house was being built: %s, send -> done %.1f s" % (route(t4), t4took),
-               still_building and len(c4) == 1 and c4[0][0] == "done" and route(t4) == "itself" and t4_before_t3
-               and any(x.startswith("weather rain") for x in cmds),
-               "house still building when sent: %s; rain done before the house: %s; feed=%s" % (still_building, t4_before_t3, c4))
-
-        time.sleep(10)
-        for l in live.log().splitlines():
-            if " effort " in l or " implementer started" in l or " orch Agent " in l:
-                say("  " + l[25:200])
-        rows = live.box.sql("SELECT component, model, COUNT(*) n, ROUND(SUM(cost_usd), 4) cost FROM usage GROUP BY component, model")
-        say("usage rows: %s" % rows)
-        feed = live.feed_orch()
-        counts = {}
-        for _, t, st, _ in feed:
-            if st in ("done", "failed"):
-                counts[t] = counts.get(t, 0) + 1
-        record("every task answered exactly once", counts and all(n == 1 for n in counts.values()), str(counts))
-        r = live.vfg("orch", "stop", timeout=60)
-        record("vfg orch stop", r.returncode == 0, r.stdout.strip())
-        say("refused tool calls:")
-        for who, use, text in live.refusals():
-            say("  %s %s %r -> %s" % (who, use[0], str(use[1])[:120], text[:100]))
     finally:
         live.close()
         say("box and logs kept in %s" % live.root)
@@ -593,11 +573,8 @@ def live_run(H, model):
         # 8. usage rows, in the box's vfg.db
         rows = live.box.sql("SELECT component, model, COUNT(*) n FROM usage GROUP BY component, model")
         comps = {r["component"] for r in rows}
-        if live.model_mode == "direct":
-            ok = comps == {"orchestrator"}
-        else:
-            ok = "implementer" in comps and ("haiku" in model or "orchestrator" in comps)
-        record("8. usage rows land in the box", ok, "%s (%s mode)" % (rows, live.model_mode))
+        ok = "implementer" in comps and ("haiku" in model or "orchestrator" in comps)
+        record("8. usage rows land in the box", ok, str(rows))
         feed = live.feed_orch()
         counts = {tid: len([1 for _, t, st, _ in feed if t == tid and st in ("done", "failed")]) for tid in ids if tid}
         record("every task: exactly one ORCH done|failed in the feed", counts and all(n == 1 for n in counts.values()),
@@ -627,15 +604,12 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--preflight", action="store_true", help="no model: the box, every vfg shape, the guard")
     ap.add_argument("--quick", action="store_true", help="the real defaults: make it day and one seeded script, timed")
-    ap.add_argument("--hybrid", action="store_true", help="hybrid with the real defaults: two direct tasks, a house, a quick task during it")
     args = ap.parse_args()
     H = load_harness()
     if args.preflight:
         preflight(H)
     elif args.quick:
         quick_run(H, os.environ.get("VFG_ORCH_MODEL", ""))
-    elif args.hybrid:
-        hybrid_run(H, os.environ.get("VFG_ORCH_MODEL", ""))
     else:
         live_run(H, os.environ.get("VFG_ORCH_MODEL", "haiku"))
     passed = sum(1 for _, ok, _ in RESULTS if ok)

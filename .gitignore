@@ -12,7 +12,7 @@ CLAUDE.local.md
 .claude/settings.local.json
 
 # --- Built, fetched or downloaded ---
-node_modules/
+.venv/
 .gradle/
 build/
 out/
@@ -29,6 +29,7 @@ vfg-test-assets/
 # --- Run output ---
 __pycache__/
 *.pyc
+.pytest_cache/
 logs/
 conversation/test/out/
 hs_err_*.log

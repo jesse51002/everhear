@@ -5,6 +5,7 @@ HOW YOU REACH THE SERVER (nothing else does; any other command is refused)
 - vfg script run <name> [args...]  deploys scripts/<name>/ to the server, then starts it detached. It refuses (exit 1) if the script is already running: vfg script stop <name> first. With --wait it waits for a script that ends by itself.
 - vfg script stop <name>   vfg script logs <name> [-n N] (prints the last lines and exits; never use --follow)   vfg script list
 - vfg script deploy [<name>]  copies scripts (and scripts/_lib/) to the server without running them.
+- vfg place save <name> --at <x> <y> <z> --by <task id>  saves a place under a name everyone can use; saving a name again moves it.   vfg place list  the saved places, one per line.
 - vfg history ...  what players said, what the AI told them (--source ai) and what happened (--events); --feed shows the feed. Read-only. Use it to see what was promised.
 - python3 -m py_compile scripts/<name>/main.py  syntax check before deploying.
 - sleep N  to wait for something in the game.
@@ -34,6 +35,10 @@ WRITING A SCRIPT
 THEN
 - py_compile, run (it deploys first), sleep 5, logs: no traceback. Check the world with vfg cmd (execute if entity @e[tag=vfg_<name>] prints "Test passed" or a count). If it failed, fix and repeat, at most three times.
 
+SAVED PLACES
+- Your job ends with a line "SAVED PLACES: castle 197 68 251 overworld (T23); ...": the server's named places (name, x y z, dimension, the task that saved it). When the job names a place ("the castle", "home"), use its coordinates from that line.
+- The LAST step of any build players may want to go back to (a house, a castle, an arena, a farm), once it is checked: vfg place save <name> --at <x> <y> <z> --by <task id>, at the spot a player should arrive (the doorstep, or the middle of the floor). The name is the one your job gives, else a short lowercase snake_case one (castle, steve_house).
+
 MINECRAFT 26.3 NOTES (learned on this server)
 - The scripts already in the folder ran on this version: copy their syntax for item components (diamond_sword[item_name="...",enchantments={...}]), entity NBT, mannequins, attributes and tellraw JSON.
 - "execute if ..." prints "Test passed", or "Count: N" with a capital C.
@@ -50,4 +55,5 @@ RESULT: done | failed
 WHAT: what now exists or happened in the game, where (coordinates), for whom
 SCRIPT: <name> <args>, running until stopped | finished | none
 STOP: how to stop or undo it (vfg script stop <name>), or nothing
+PLACE: the name you saved it under, with x y z, or none
 NOTES: errors, limits, anything the orchestrator should know, or none

@@ -5,6 +5,8 @@
 #   cmd data get entity Steve Pos Steve has the following entity data: [10.5d, 64.0d, -3.5d]
 #   any other cmd, script ...     nothing
 #   orch reply ...                exit 1 while the number in $VFG_FAKE_FAIL_REPLIES is above 0 (it is decremented)
+#   place list                    the file $VFG_FAKE_PLACES, else "none"; with $VFG_FAKE_PLACES_FAIL set, that
+#                                 text on stderr and exit 1; with $VFG_FAKE_PLACES_SLEEP, it sleeps that long first
 #   everything else               exit 0
 set -u
 
@@ -38,6 +40,14 @@ case "${1:-}" in
       "list") echo "There are 1 of a max of 20 players online: Steve" ;;
       "data get entity Steve Pos") echo "Steve has the following entity data: [10.5d, 64.0d, -3.5d]" ;;
     esac
+    exit 0
+    ;;
+  place)
+    if [ "${2:-}" = "list" ]; then
+      if [ -n "${VFG_FAKE_PLACES_SLEEP:-}" ]; then exec sleep "$VFG_FAKE_PLACES_SLEEP"; fi
+      if [ -n "${VFG_FAKE_PLACES_FAIL:-}" ]; then echo "vfg: $VFG_FAKE_PLACES_FAIL" >&2; exit 1; fi
+      if [ -n "${VFG_FAKE_PLACES:-}" ] && [ -f "$VFG_FAKE_PLACES" ]; then cat "$VFG_FAKE_PLACES"; else echo none; fi
+    fi
     exit 0
     ;;
   orch)
