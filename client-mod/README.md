@@ -2,14 +2,16 @@
 
 A client-only Fabric mod for Minecraft Java 26.3. While you are connected to the one
 server it is set up for, it turns what you say into text **on your own PC** and posts
-each line — ended by 5 s of silence, with its time and its volume — to that server's
-bridge (`POST /v1/lines`, docs/CONTRACTS.md §2). No audio ever leaves your PC, and it
-never uses Minecraft's own networking, so it works on a vanilla server.
+each line — with its time and its volume — to that server's bridge (`POST /v1/lines`,
+docs/CONTRACTS.md §2) as soon as you have finished saying it. No audio ever leaves your
+PC, and it never uses Minecraft's own networking, so it works on a vanilla server.
 
 Speech-to-text is [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 1.13.8 with the
 Silero VAD and NVIDIA's Parakeet TDT 110M (English, int8; CC-BY-4.0). Moonshine base and
-tiny can be chosen instead. The jar is small; the engine and model (about 120 MB)
-download once on first start, pinned by SHA-256.
+tiny can be chosen instead. A line ends when a small turn model,
+[Smart Turn v3.2](https://huggingface.co/pipecat-ai/smart-turn-v3) (Pipecat, BSD-2-Clause),
+hears at a pause that you have finished, or after 3 s of silence (below). The jar is
+small; the engine and models (about 130 MB) download once on first start, pinned by SHA-256.
 
 ## For players: install
 
@@ -19,7 +21,7 @@ Windows, and the same elsewhere:
    (<https://fabricmc.net/use/installer/>). It adds a launcher profile.
 2. Put **Fabric API `0.162.0+26.3`** and **`vfg-client-<version>.jar`** (the server's owner
    sends it) in your `.minecraft/mods/` folder.
-3. Start that profile. The first start downloads about 120 MB in the background;
+3. Start that profile. The first start downloads about 130 MB in the background;
    Voice settings shows the progress.
 4. **Multiplayer → `Voice…`** (top right): the server address exactly as it is in your
    server list, the client token the owner gave you, your microphone. Press `Test mic`,
@@ -79,7 +81,7 @@ release once, checks its SHA-256, and copies its classes into the mod jar.
 Runs the mod's own speech pipeline — the same `VoicePipeline` class the mod runs: OpenAL
 mic, Silero VAD, Parakeet, line assembler — on a real microphone, without Minecraft.
 It lists the mics, prints a level meter once a second with what the VAD thinks
-(`listening`, `SPEECH`, `silence, line open: closes in 3.8 s`), every segment it
+(`listening`, `SPEECH`, `silence, line open: closes in 2.3 s`), every segment it
 transcribes with its speech-to-text time, and every line exactly as the mod would send
 it: text, `started_at` → `ended_at`, peak and mean dBFS, the number of segments, how long
 after the end of speech it was ready, and the §2 JSON body. Press Enter (or Ctrl-C) to
@@ -95,9 +97,13 @@ VFG_CLIENT_TOKEN=test ./gradlew micCheck --args="--device 9 --bridge http://127.
                                                    # play a recording in instead of a mic
 ```
 
+It prints each decision on a line's end as the mod logs it (`turn 0.93 in 31 ms: closed`,
+`turn 0.18 in 29 ms: waiting`, `closed after 3.5 s of silence`). `--turn turn-1-mini` or
+`--turn off` hears it with the other model, or none.
+
 Other options: `--seconds N`, `--token T`, `--player NAME` (the posted `player_name`,
-default `MicCheck`), `--silence S`, `--vad-threshold X`, `--threads N`; `--args="--help"`
-lists them.
+default `MicCheck`), `--turn-threshold X`, `--silence S`, `--vad-threshold X`,
+`--threads N`; `--args="--help"` lists them.
 
 It uses the mod's default model, Parakeet TDT 110M. To hear the others on your own voice:
 `--model base` or `--model tiny` (Moonshine, which the mod can also use), or `--model
@@ -212,6 +218,26 @@ id for a repeated `client_line_id` — and prints one line per accepted request.
 `--fail N` answers `500` to the first N requests, `--status CODE` forces a code,
 `--delay S` waits before answering.
 
+## How a line ends
+
+The Silero VAD ends a segment of speech at 0.6 s of silence. At that pause, once the segment
+is transcribed, the turn model scores the line's audio — from 0.5 s before its first speech
+to 0.2 s after its last, the last 8 s of that at most — for whether you have finished. At or
+above its threshold the line goes at once, about 0.7 s after your last word; below it the
+line stays open, and speech that follows joins it and is scored again at its own pause. A
+line the model keeps waiting goes at `silence_seconds` (3) + 0.5 s after the last speech.
+Speech starting again before a line goes keeps it open. A thought cut off is not repaired:
+the rest arrives as the next line. The caps are as before: 60 s of speech or 1500 characters.
+
+The model runs on `vfg-stt`, one CPU thread, about 35 ms a score, on the ONNX Runtime
+library sherpa-onnx has already loaded: `turn/OnnxRuntime.java` calls its C API through
+`java.lang.foreign`. (ONNX Runtime's own Java API would load a second copy of the runtime.)
+It installs and loads after the speech engine is ready, so it never holds up voice; until
+it is in, or if it cannot download or load, lines end on silence alone, with one warning in
+the log. A segment the VAD cut at its 7 s limit while you were still talking is not scored.
+`turn_model: turn-1-mini` swaps in [turn-1-mini](https://huggingface.co/p99lab/turn-1-mini)
+(p99lab, Apache-2.0); `./gradlew turnCompare` is how the two were measured.
+
 ## Configuration
 
 `<game folder>/config/vfg-client.json`, written by Voice settings:
@@ -219,7 +245,8 @@ id for a repeated `client_line_id` — and prints one line per accepted request.
 ```json
 { "server_address": "", "bridge_url": "", "client_token": "", "mic_device": "",
   "model": "parakeet-110m-en", "icon_corner": "top_left", "muted": false,
-  "silence_seconds": 5, "vad_threshold": 0.5, "stt_threads": 2, "log_text": false }
+  "turn_model": "smart-turn-v3.2", "turn_threshold": null, "silence_seconds": 3,
+  "vad_threshold": 0.5, "stt_threads": 2, "log_text": false }
 ```
 
 - `client_token` is `VFG_CLIENT_TOKEN`. It lives only in this file, is shown masked, and
@@ -230,19 +257,26 @@ id for a repeated `client_line_id` — and prints one line per accepted request.
   config written by an earlier version says `moonshine-base-en`, so that player stays on
   Moonshine until they pick Parakeet in Voice settings (Model) or edit the file. Changing it
   downloads the new model (if it is not there yet) and reloads the engine after Done.
-- File only: `silence_seconds` (2–30), `vad_threshold` (0.1–0.9), `stt_threads` (1–8),
-  `log_text` (logs what was heard and sent). Out-of-range values fall back to the
-  default with a log line.
+- File only: `turn_model` (`smart-turn-v3.2`, the default; `turn-1-mini`; or `off`, which
+  ends lines on silence alone), `turn_threshold` (0.05–0.95; `null` is the model's own, 0.5
+  for Smart Turn and 0.35 for turn-1-mini), `silence_seconds` (2–30, default 3: the most a
+  line waits after its last speech when the turn model keeps it open), `vad_threshold`
+  (0.1–0.9), `stt_threads` (1–8), `log_text` (logs what was heard and sent). Out-of-range
+  values fall back to the default with a log line. `turn_model: off` with
+  `silence_seconds: 5` is the mod before the turn model.
+- A file with no `turn_model` key was written before the turn model: when it is read, a
+  `silence_seconds` of 5 becomes 3 (any other value stays) and the file is written back once.
 - A file that does not parse is renamed `vfg-client.json.bad` and the defaults are used.
 
-The engine and models live in `<game folder>/vfg/` (about 175 MB unpacked for Parakeet;
-each other model chosen adds its own folder). The log is
+The engine and models live in `<game folder>/vfg/` (about 185 MB unpacked for Parakeet and
+Smart Turn; each other model chosen adds its own folder). The log is
 the game's `logs/latest.log`, logger `vfg`.
 
 ## Downloads
 
-From `https://github.com/k2-fsa/sherpa-onnx/releases/download/`, each checked by SHA-256
-as it streams. Only this PC's natives, the VAD and the chosen model are fetched.
+Each checked by SHA-256 as it streams. Only this PC's natives, the VAD, the chosen speech
+model and the chosen turn model are fetched. From
+`https://github.com/k2-fsa/sherpa-onnx/releases/download/`:
 
 | File | Bytes | SHA-256 |
 |---|---|---|
@@ -255,19 +289,30 @@ as it streams. Only this PC's natives, the VAD and the chosen model are fetched.
 | `asr-models/sherpa-onnx-moonshine-base-en-quantized-2026-02-27.tar.bz2` | 111266225 | `43232c1d13013d37317163baec3135bd771a186a4356f28c889bab453bb0e891` |
 | `asr-models/sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27.tar.bz2` | 29858559 | `9ec31b342d8fa3240c3b81b8f82e1cf7e3ac467c93ca5a999b741d5887164f8d` |
 
+The turn models, from Hugging Face at pinned revisions, into
+`<game folder>/vfg/models/turn/<turn_model>/`:
+
+| File | Bytes | SHA-256 |
+|---|---|---|
+| `soniqo/Smart-Turn-v3.2-ONNX/resolve/b48fdbe20772bcec1fef02f4a1a355236ef6359e/smart-turn-v3.2-int8.onnx` (default) | 11123370 | `00cd131551e8d1e9011f31345edb632a26116dd83e159782c4ddff610718ea31` |
+| `p99lab/turn-1-mini/resolve/076c86d1744a231d3a4cce31f3bbbd1211b4c281/onnx/turn-1-mini.step.int8dyn.onnx` | 7000932 | `a59a5b627190e7bf52a46dd25026ec8d4d0b01e1b0146643bb39161808c0619e` |
+
 ## Notes
 
 - Singleplayer and LAN worlds never listen.
-- Java 25 logs a warning that `System::load` is a restricted method; it is harmless. If a
-  later Java blocks it, add `--enable-native-access=ALL-UNNAMED` to the profile's JVM
-  arguments.
+- Java 25 logs a warning that `System::load` is a restricted method, and another the first
+  time the turn model calls into ONNX Runtime through `java.lang.foreign`; both are
+  harmless. If a later Java blocks them, add `--enable-native-access=ALL-UNNAMED` to the
+  profile's JVM arguments.
 - Under the Flatpak launcher on Fedora the game folder is inside
   `~/.var/app/com.mojang.Minecraft/`, and the mic comes through its PulseAudio socket.
 - `started_at` uses the PC's clock; a clock that is far off misorders that player's lines
   on the server.
 - macOS is not tested; its natives download the same way and may simply work.
 - The model is NVIDIA's Parakeet TDT 110M (from `nvidia/parakeet-tdt_ctc-110m`), CC-BY-4.0,
-  converted by sherpa-onnx; Moonshine is MIT, Silero VAD MIT, sherpa-onnx Apache-2.0.
+  converted by sherpa-onnx; Moonshine is MIT, Silero VAD MIT, sherpa-onnx Apache-2.0. Smart
+  Turn is BSD-2-Clause (Daily) and turn-1-mini Apache-2.0 (p99lab); the jar carries their
+  `LICENSE-*.txt` and `NOTICE-turn-1-mini.txt`.
 - Moonshine returns no text for a clip of about 9.3 s or more, so the VAD ends a segment
   after 7 s of unbroken speech (at the quietest point after it; segments run to about 8 s),
   and the engine decodes anything longer than 9 s in pieces. A pause shorter than the
@@ -293,10 +338,14 @@ src/main/java/com/voiceforgaming/vfg/
   audio/Resampler.java              48 kHz to 16 kHz
   speech/SpeechEngine.java          VAD and recognizer (the only sherpa-onnx code)
   speech/CaptureProcessor.java      windows to the VAD, segments timed and queued
-  speech/SttWorker.java             the vfg-stt thread
-  speech/LineAssembler.java         segments into lines, silence timer, caps
+  speech/SttWorker.java             the vfg-stt thread; asks the turn model at each pause
+  speech/LineAssembler.java         segments into lines, finished or silence, caps
+  speech/SampleRing.java            the last 9 s of audio, for the turn model
   speech/Levels.java                peak and RMS to dBFS
   speech/SampleClock.java           sample index to wall-clock instant
+  turn/TurnDetector.java            whether a line is finished, from its audio
+  turn/SmartTurn.java  turn/TurnOneMini.java   the two models
+  turn/OnnxRuntime.java             ONNX Runtime's C API, on sherpa-onnx's own library
   net/LinePayload.java              the §2 body and its JSON
   net/BridgeClient.java             the sender, retries, delivery status, connection test
   session/ServerAddressMatch.java   normalising and comparing addresses
