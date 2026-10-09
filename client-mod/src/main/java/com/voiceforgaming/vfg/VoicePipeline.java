@@ -28,6 +28,13 @@ public final class VoicePipeline {
 		 */
 		default void line(LineAssembler.Line line) {}
 
+		/**
+		 * A decision on a line's end, in the words it is logged with, just before the line it
+		 * closes: the turn model's score and whether the line closed or waits, or the silence
+		 * that closed it. Never the text.
+		 */
+		default void decided(String decision) {}
+
 		/** A segment's text, cleaned, whether or not it went into a line (the mic test shows it). */
 		default void heard(String text) {}
 
@@ -53,7 +60,7 @@ public final class VoicePipeline {
 	public VoicePipeline(MicCapture.DeviceOpener devices, Supplier<VoiceDetector> vad, Supplier<Transcriber> transcriber,
 			Supplier<TurnDetector> turn, Double turnThreshold, double silenceSeconds, LongSupplier clock,
 			BooleanSupplier logText, Events events) {
-		LineAssembler assembler = new LineAssembler(silenceSeconds, clock, events::line);
+		LineAssembler assembler = new LineAssembler(silenceSeconds, clock, events::line, events::decided);
 		CaptureProcessor[] cp = new CaptureProcessor[1];
 		this.stt = new SttWorker(transcriber, turn, turnThreshold, assembler, () -> cp[0].speaking(), events::heard,
 			logText);
