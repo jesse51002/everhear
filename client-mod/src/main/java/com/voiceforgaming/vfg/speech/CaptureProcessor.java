@@ -11,14 +11,29 @@ import org.slf4j.LoggerFactory;
  * the {@link SampleClock} turns every popped segment's sample range into wall-clock
  * instants, and the segment is queued to {@code vfg-stt}. It also keeps whether speech
  * is in progress and the live peak, for the icon and the mic test.
+ *
+ * <p>For the turn model it keeps the last 9 s of samples in a {@link SampleRing}, and gives
+ * each segment for a line a copy of it up to 0.2 s past the segment's last sample: what
+ * Smart Turn hears upstream, where Pipecat asks it after 0.2 s of silence. That sample is
+ * already in the ring, because the VAD pops a segment only after 0.6 s of silence. A
+ * segment popped sooner was cut while the player was still talking, and gets no copy.
  */
 public final class CaptureProcessor implements WindowListener {
 	private static final Logger LOG = LoggerFactory.getLogger("vfg");
 	private static final float PEAK_DECAY = 0.85f;
+	/** The silence after a segment's last sample that the turn model hears. */
+	public static final int TAIL_SAMPLES = SampleClock.SAMPLE_RATE / 5;
+	/**
+	 * A segment popped with less silence after it than this, half of 0.6 s, was cut mid-speech:
+	 * the VAD pops one 0.6 s after a pause, and 0.1 s after a cut at its 7 s cap.
+	 */
+	private static final long CUT_BELOW_SAMPLES =
+		Math.round(SpeechEngine.MIN_SILENCE_SECONDS * SampleClock.SAMPLE_RATE / 2);
 
 	private final Supplier<VoiceDetector> detector;
 	private final Consumer<SttWorker.Item> out;
 	private final SampleClock clock = new SampleClock();
+	private final SampleRing ring = new SampleRing();
 	private boolean forLine;
 	private volatile boolean speaking;
 	private volatile float livePeak;
@@ -48,6 +63,7 @@ public final class CaptureProcessor implements WindowListener {
 	public void onStarted(boolean forLine) {
 		this.forLine = forLine;
 		clock.reset();
+		ring.reset();
 		VoiceDetector vad = detector.get();
 		if (vad != null) {
 			try {
@@ -64,6 +80,7 @@ public final class CaptureProcessor implements WindowListener {
 	@Override
 	public void onWindow(float[] window, long readWallMillis) {
 		clock.recordRead(window.length, readWallMillis);
+		ring.write(window);
 		livePeak = Math.max(Levels.peak(window), livePeak * PEAK_DECAY);
 		VoiceDetector vad = detector.get();
 		if (vad == null) {
@@ -72,7 +89,7 @@ public final class CaptureProcessor implements WindowListener {
 		}
 		try {
 			vad.accept(window);
-			emit(vad);
+			emit(vad, false);
 			speaking = vad.speaking();
 		} catch (IllegalStateException e) {
 			speaking = false;
@@ -86,7 +103,7 @@ public final class CaptureProcessor implements WindowListener {
 		try {
 			if (reason == StopReason.LEAVE && vad != null) {
 				vad.flush();
-				emit(vad);
+				emit(vad, true);
 			}
 			if (vad != null) {
 				vad.reset();
@@ -101,7 +118,8 @@ public final class CaptureProcessor implements WindowListener {
 		}
 	}
 
-	private void emit(VoiceDetector vad) {
+	/** Queues every segment the VAD popped; {@code flushed} when capture stopped in the middle of one. */
+	private void emit(VoiceDetector vad, boolean flushed) {
 		for (VoiceDetector.RawSegment raw : vad.drain()) {
 			float[] samples = raw.samples();
 			if (samples.length == 0 || clock.totalSamples() == 0) {
@@ -109,7 +127,14 @@ public final class CaptureProcessor implements WindowListener {
 			}
 			long first = raw.start();
 			long last = first + samples.length - 1;
-			Segment segment = Segment.of(samples, clock.instantOf(first), clock.instantOf(last), forLine);
+			boolean cut = flushed || ring.total() - (last + 1) < CUT_BELOW_SAMPLES;
+			long audioStart = ring.oldest();
+			float[] audio = null;
+			if (forLine && !cut) {
+				audio = ring.copy(audioStart, Math.max(audioStart, Math.min(ring.total(), last + 1 + TAIL_SAMPLES)));
+			}
+			Segment segment = Segment.of(samples, clock.instantOf(first), clock.instantOf(last), forLine, first, cut,
+				audioStart, audio);
 			LOG.debug("segment of {} samples", samples.length);
 			out.accept(new SttWorker.SegmentItem(segment));
 		}

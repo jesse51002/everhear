@@ -39,6 +39,13 @@ public final class SpeechEngine implements VoiceDetector, Transcriber, AutoClose
 	public static final double MAX_DECODE_SECONDS = 9.0;
 	private static final double PIECE_SECONDS = 8.0;
 
+	/**
+	 * The silence that ends a segment: the VAD pops it once this much silence follows its last
+	 * sample. Past {@link #MAX_SPEECH_SECONDS} it ends one at the first 0.1 s dip instead, and pops
+	 * it 0.1 s after its last sample, while the player is still talking.
+	 */
+	public static final float MIN_SILENCE_SECONDS = 0.6f;
+
 	private final Object vadLock = new Object();
 	private final Object sttLock = new Object();
 	private Vad vad;
@@ -94,7 +101,7 @@ public final class SpeechEngine implements VoiceDetector, Transcriber, AutoClose
 		var recognizer = new OfflineRecognizer(recognizerConfig.get());
 		try {
 			var silero = SileroVadModelConfig.builder().setModel(vadFile.toAbsolutePath().toString())
-				.setThreshold(vadThreshold).setMinSilenceDuration(0.6f).setMinSpeechDuration(0.25f)
+				.setThreshold(vadThreshold).setMinSilenceDuration(MIN_SILENCE_SECONDS).setMinSpeechDuration(0.25f)
 				.setMaxSpeechDuration(MAX_SPEECH_SECONDS).setWindowSize(WINDOW).build();
 			var vad = new Vad(VadModelConfig.builder().setSileroVadModelConfig(silero)
 				.setSampleRate(SAMPLE_RATE).setNumThreads(1).setDebug(false).build());

@@ -38,7 +38,7 @@ import org.junit.jupiter.api.Test;
  */
 @Tag("speech")
 class SpeechTest {
-	private static final double SILENCE_SECONDS = 5.0;
+	private static final double SILENCE_SECONDS = 5.0; // with no turn model: the rule these checks were written for
 
 	private static SpeechEngine engine;
 	private static Tts tts;
@@ -96,8 +96,8 @@ class SpeechTest {
 			segments.add(new Segment(samples.length / 16000.0, (System.nanoTime() - t) / 1_000_000, text));
 			return text;
 		};
-		VoicePipeline pipeline = new VoicePipeline(device, () -> engine, () -> timed, SILENCE_SECONDS,
-			System::currentTimeMillis, () -> false, new VoicePipeline.Events() {
+		VoicePipeline pipeline = new VoicePipeline(device, () -> engine, () -> timed, () -> null, null,
+			SILENCE_SECONDS, System::currentTimeMillis, () -> false, new VoicePipeline.Events() {
 				@Override
 				public void line(LineAssembler.Line line) {
 					lines.add(new Got(line, System.currentTimeMillis()));
