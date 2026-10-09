@@ -27,6 +27,11 @@ public final class TestAssets {
 		"tts-models/kitten-nano-en-v0_2-fp16.tar.bz2", 26586708L,
 		"0345a8a2f4a710cb8f7912c9a731ded8b3e1e69b33a871efa95c2e64651518fe");
 
+	/** Kokoro (int8, English, 11 voices; Apache-2.0), which turnCompare speaks the playtest's asks with, pinned. */
+	public static final Assets.Asset KOKORO_TTS = new Assets.Asset(Assets.Kind.MODEL, "kokoro-int8-en-v0_19",
+		"tts-models/kokoro-int8-en-v0_19.tar.bz2", 103248205L,
+		"c9f0dd393615805b0bab050c340834d5e684e732aec91c0e860cd30e982c08bd");
+
 	/** sherpa-onnx's 60 s English VAD test recording: real speech with real pauses. */
 	public static final Assets.Asset SILERO_TEST_WAV = new Assets.Asset(Assets.Kind.VAD, "test",
 		"asr-models/test_silero_vad.wav", 1920044L,
