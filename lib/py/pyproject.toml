@@ -1,0 +1,29 @@
+[project]
+name = "vfg-lib"
+version = "0.1.0"
+description = "Python shared by every EverHear part: structured(), the one way to ask a model for a pydantic object."
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.1",
+    "pydantic>=2.14.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["vfg_llm.py"]
+
+[tool.uv]
+# Dependents install this by path; rebuild it there when the code changes, not only this file.
+cache-keys = [{ file = "pyproject.toml" }, { file = "*.py" }]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

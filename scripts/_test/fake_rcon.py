@@ -8,6 +8,10 @@ every command, and answers a few the way the fake toolkit does.
     scoreboard players get ...    Steve has 0 [x]
     anything else                 (nothing)
 
+A `responder` (a callable taking the command and returning its reply, or None to fall
+back to the answers above) makes it any server a test needs: fake_world.FakeWorld is one,
+speaking Minecraft 26.3's real replies.
+
 Use it in-process (FakeRcon) or on its own:
     python3 fake_rcon.py --port 25575 --password secret
 """
@@ -17,7 +21,7 @@ import socket
 import struct
 import threading
 import time
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 ONLINE = "There are 1 of a max of 20 players online: Steve"
 
@@ -41,8 +45,9 @@ def answer(cmd: str) -> str:
 
 class FakeRcon:
     def __init__(self, password: str, port: int = 0, delay_on: Optional[str] = None,
-                 delay_s: float = 0.0):
+                 delay_s: float = 0.0, responder: Optional[Callable[[str], Optional[str]]] = None):
         self.password = password
+        self.responder = responder  # cmd -> reply, or None for answer(cmd)
         self.delay_on = delay_on  # a command starting with this is answered late
         self.delay_s = delay_s
         self.commands = []
@@ -63,11 +68,20 @@ class FakeRcon:
         return self
 
     def stop(self) -> None:
+        """Stop listening, as a stopped server does: a new connection is refused at once.
+        close() alone does not do it on Linux while the accept thread is blocked in
+        accept(); shutdown() wakes that thread and closes the listening socket."""
         self._stopped = True
+        try:
+            self._srv.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         try:
             self._srv.close()
         except Exception:
             pass
+        if self._thread.is_alive() and self._thread is not threading.current_thread():
+            self._thread.join(2)
         self.drop_all()
 
     def drop_all(self) -> None:
@@ -97,6 +111,9 @@ class FakeRcon:
             try:
                 conn, _ = self._srv.accept()
             except OSError:
+                return
+            if self._stopped:  # accepted in the moment stop() ran
+                conn.close()
                 return
             with self._lock:
                 self._clients.append(conn)
@@ -141,7 +158,8 @@ class FakeRcon:
                     self.commands.append((time.time(), body))
                 if self.delay_on and body.startswith(self.delay_on):
                     time.sleep(self.delay_s)
-                self._send(conn, req_id, 0, answer(body))
+                reply = self.responder(body) if self.responder is not None else None
+                self._send(conn, req_id, 0, answer(body) if reply is None else reply)
         except Exception:
             pass
         finally:

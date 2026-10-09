@@ -3,8 +3,9 @@
 
 Python 3.9+, standard library only. Every remote action is one SSH call whose
 remote command is the constant `python3 -u -`, with remote/common.py, a line
-`ARGS = json.loads(...)` and one program from remote/ on its stdin, so nothing
-an agent typed ever meets a shell on either machine. The one exception is
+`ARGS = json.loads(...)`, any library it uses (remote/places.py) as a module of
+its own, and one program from remote/ on its stdin, so nothing an agent typed
+ever meets a shell on either machine. The one exception is
 `vfg feed post`, whose remote command the contract fixes (with VFG_DB and
 VFG_FEED set in front through `env`); it is built with shlex.join. See README.md.
 """
@@ -44,6 +45,9 @@ NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 TASK_RE = re.compile(r"^T[1-9][0-9]*$")
 ORCH_FIELDS_RE = re.compile(r"^T[1-9][0-9]* (progress|done|failed)$")
 FEED_LINE_RE = re.compile(r"^(LINE|GAME|ORCH|SYS)#(\d+) \d\d:\d\d:\d\d ")
+PLACE_RE = re.compile(r"^[a-z0-9_]{1,32}$")
+COORD_RE = re.compile(r"^-?(\d+(\.\d*)?|\.\d+)$")
+DIM_RE = re.compile(r"^([a-z0-9_.-]+:)?[a-z0-9_./-]+$")
 RCON_MAX = 1400
 DEPLOY_MAX = 20 * 1024 * 1024
 LOG_MAX = 5 * 1024 * 1024
@@ -56,6 +60,10 @@ class Fail(Exception):
         Exception.__init__(self, msg)
         self.code = code
         self.msg = msg
+
+
+class TimedOut(Fail):
+    """EC2 did not answer in time: exit 4 (vfg action run makes it 124)."""
 
 
 # ------------------------------------------------------------------ helpers
@@ -266,6 +274,11 @@ class Config(object):
     def orch(self):
         return os.path.expanduser(os.environ.get("VFG_ORCH_DIR") or os.path.join(self.home, "orch"))
 
+    @property
+    def dispatch(self):
+        # The environment, then the config file, as the dispatcher reads it.
+        return os.path.expanduser(self.get("VFG_DISPATCH_DIR") or os.path.join(self.home, "dispatch"))
+
     def require_ssh(self):
         where = tilde(self.path)
         for key in ("VFG_SSH_HOST", "VFG_SSH_KEY"):
@@ -281,13 +294,36 @@ class Config(object):
 
 # ---------------------------------------------------------------------- ssh
 
-def program(name, args):
-    """remote/common.py, then ARGS, then the program: what goes on stdin."""
-    with open(os.path.join(REMOTE, "common.py"), encoding="utf-8") as f:
-        common = f.read()
-    with open(os.path.join(REMOTE, name), encoding="utf-8") as f:
-        body = f.read()
-    return (common + "\nARGS = json.loads(" + repr(json.dumps(args)) + ")\n\n" + body).encode("utf-8")
+def read_text(path):
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+# Ahead of a program that uses libraries: each one's source becomes a module of its
+# own, in sys.modules and bound to its name, so its names never shadow the program's.
+LIBRARY = '''
+def _library(name, source):
+    import types
+    mod = types.ModuleType(name)
+    mod.__file__ = name + ".py"
+    sys.modules[name] = mod
+    exec(compile(source, mod.__file__, "exec"), mod.__dict__)
+    return mod
+
+'''
+
+
+def program(name, args, libs=()):
+    """remote/common.py, then ARGS, then each of `libs` from remote/ as a module
+    (places.py becomes `places`), then the program: what goes on stdin."""
+    text = read_text(os.path.join(REMOTE, "common.py"))
+    text += "\nARGS = json.loads(" + repr(json.dumps(args)) + ")\n"
+    if libs:
+        text += LIBRARY
+        for lib in libs:
+            mod = os.path.splitext(lib)[0]
+            text += "%s = _library(%r, %r)\n" % (mod, mod, read_text(os.path.join(REMOTE, lib)))
+    return (text + "\n" + read_text(os.path.join(REMOTE, name))).encode("utf-8")
 
 
 class Ssh(object):
@@ -360,7 +396,7 @@ class Ssh(object):
                            "ssh-keygen -R %s -f ~/.vfg/known_hosts" % (self.host, self.host))
         return Fail(4, "cannot reach EC2 (%s): %s" % (self.dest, lines[-1] if lines else "ssh exited 255"))
 
-    def _run(self, argv, data, timeout, deadline, stream):
+    def _run(self, argv, data, timeout, deadline, stream, keep_master):
         try:
             p = subprocess.Popen(argv, stdin=subprocess.PIPE,
                                  stdout=None if stream else subprocess.PIPE,
@@ -374,23 +410,28 @@ class Ssh(object):
         except subprocess.TimeoutExpired:
             p.kill()
             p.communicate()
-            self.exit_master()
-            raise Fail(4, "EC2 did not answer within %s s" % fmt_s(timeout))
+            if not keep_master:
+                self.exit_master()
+            raise TimedOut(4, "EC2 did not answer within %s s" % fmt_s(timeout))
         except BaseException:
             p.kill()
             p.wait()
             raise
         return p.returncode, o or b"", e or b""
 
-    def call(self, data, timeout, remote_cmd=REMOTE_CMD, stream=False):
-        """One SSH call: (exit code, stdout, stderr). SSH failures raise."""
+    def call(self, data, timeout, remote_cmd=REMOTE_CMD, stream=False, keep_master=False):
+        """One SSH call: (exit code, stdout, stderr). SSH failures raise.
+
+        A timeout closes the shared master, taken for a dead link; with keep_master
+        it stays up, for a call that may just be slow (an action) while others share it."""
         deadline = None if timeout is None else time.monotonic() + timeout
         via_master = self.ensure_master(deadline)
-        rc, o, e = self._run(self.argv(remote_cmd), data, timeout, deadline, stream)
+        rc, o, e = self._run(self.argv(remote_cmd), data, timeout, deadline, stream, keep_master)
         if rc == 255 and via_master:
             txt = e.decode("utf-8", "replace")
             if "Host key verification failed" not in txt and "IDENTIFICATION HAS CHANGED" not in txt:
-                rc, o, e = self._run(self.argv(remote_cmd, direct=True), data, timeout, deadline, stream)
+                rc, o, e = self._run(self.argv(remote_cmd, direct=True), data, timeout, deadline, stream,
+                                     keep_master)
         if rc == 255:
             raise self.unreachable(e)
         return rc, o, e
@@ -411,13 +452,13 @@ def finish(rc, o, e):
     raise Fail(rc, line)
 
 
-def remote(cfg, a, name, args, timeout, stream=False):
+def remote(cfg, a, name, args, timeout, stream=False, libs=()):
     args = dict(args)
     args.setdefault("vfg", cfg.rvfg)
     args.setdefault("mc", cfg.rmc)
     if a.timeout is not None and timeout is not None:
         timeout = a.timeout
-    return Ssh(cfg).call(program(name, args), timeout, stream=stream)
+    return Ssh(cfg).call(program(name, args, libs), timeout, stream=stream)
 
 
 # ----------------------------------------------------------------- commands
@@ -722,12 +763,26 @@ class Pending(object):
 
 # ----------------------------------------------------------------- orch
 
-def runner_pid(cfg):
-    path = os.path.join(cfg.orch, "runner.pid")
+# The two processes vfg orch runs, in the order a task meets them: `vfg orch send`
+# writes the dispatcher's inbox, and the dispatcher hands whatever it cannot do
+# quickly to the orchestrator's (`vfg orch hand`), which the runner reads.
+Part = collections.namedtuple("Part", "name run folder log pidfile marker")
+
+
+def parts(cfg):
+    return [Part("dispatcher", os.path.join(cfg.repo, "dispatcher", "run"), cfg.dispatch,
+                 "dispatcher.log", "dispatcher.pid", "VFG_DISPATCHER=1"),
+            Part("orchestrator", os.path.join(cfg.repo, "orchestrator", "run"), cfg.orch,
+                 "runner.log", "runner.pid", "VFG_ORCH_RUNNER=1")]
+
+
+def part_pid(part):
+    """Its pid when it is running; a stale pid file is removed."""
+    path = os.path.join(part.folder, part.pidfile)
     pid = read_int(path)
     if pid is None:
         return None
-    if pid_with_marker(pid, "VFG_ORCH_RUNNER=1"):
+    if pid_with_marker(pid, part.marker):
         return pid
     try:
         os.remove(path)
@@ -736,74 +791,159 @@ def runner_pid(cfg):
     return None
 
 
-def open_tasks(cfg):
-    closed = set(r.get("id") for r in read_jsonl(os.path.join(cfg.orch, "replies.jsonl"))
-                 if r.get("status") in ("done", "failed"))
+def runner_pid(cfg):
+    return part_pid(parts(cfg)[1])
+
+
+def not_running(names):
+    names = ["orchestrator runner" if n == "orchestrator" else n for n in names]
+    return "%s %s not running" % (" and ".join(names), "is" if len(names) == 1 else "are")
+
+
+def task_ids(path):
+    """Every T<n> in an inbox, in order, once each."""
     seen, ids = set(), []
-    for r in read_jsonl(os.path.join(cfg.orch, "inbox.jsonl")):
+    for r in read_jsonl(path):
         tid = r.get("id")
-        if isinstance(tid, str) and TASK_RE.match(tid) and tid not in closed and tid not in seen:
+        if isinstance(tid, str) and TASK_RE.match(tid) and tid not in seen:
             seen.add(tid)
             ids.append(tid)
     return ids
+
+
+def open_tasks(cfg):
+    """Every task not yet done or failed, by number, and which of them the orchestrator holds."""
+    closed = set(r.get("id") for r in read_jsonl(os.path.join(cfg.orch, "replies.jsonl"))
+                 if r.get("status") in ("done", "failed"))
+    handed = set(task_ids(os.path.join(cfg.orch, "inbox.jsonl")))
+    ids = sorted((set(task_ids(os.path.join(cfg.dispatch, "inbox.jsonl"))) | handed) - closed,
+                 key=lambda t: int(t[1:]))
+    return ids, [t for t in ids if t in handed]
 
 
 def cmd_orch_send(cfg, a):
     task = " ".join(a.task).strip()
     if not task:
         raise Fail(2, "empty task")
-    os.makedirs(cfg.orch, mode=0o700, exist_ok=True)
-    inbox = os.path.join(cfg.orch, "inbox.jsonl")
-    with flocked(os.path.join(cfg.orch, "inbox.lock")):
-        n = 0
-        for r in read_jsonl(inbox):
-            tid = r.get("id")
-            if isinstance(tid, str) and TASK_RE.match(tid):
-                n = max(n, int(tid[1:]))
-        tid = "T%d" % (n + 1)
+    os.makedirs(cfg.dispatch, mode=0o700, exist_ok=True)
+    inbox = os.path.join(cfg.dispatch, "inbox.jsonl")
+    with flocked(os.path.join(cfg.dispatch, "inbox.lock")):
+        # The orchestrator's inbox counts too, so a task sent before the dispatcher
+        # (or handed with an id of its own) never shares its id with a new one.
+        used = task_ids(inbox) + task_ids(os.path.join(cfg.orch, "inbox.jsonl"))
+        tid = "T%d" % (max([0] + [int(t[1:]) for t in used]) + 1)
         append_line(inbox, json.dumps({"id": tid, "at": now_iso(), "task": task,
                                        "context": a.context or ""}, ensure_ascii=False) + "\n")
     out(tid)
-    if not runner_pid(cfg):
+    down = [p.name for p in parts(cfg) if not part_pid(p)]
+    if down:
+        warn(not_running(down) + " — vfg orch start")
+    return 0
+
+
+def hand_lines(text):
+    """The task lines for `vfg orch hand`, checked, in the inbox's own shape."""
+    try:
+        rows = json.loads(text)
+    except ValueError:
+        raise Fail(2, "the task lines are not JSON")
+    if not isinstance(rows, list) or not rows:
+        raise Fail(2, 'the task lines are a JSON list: [{"id": "T7", "task": "…"}, …]')
+    lines = []
+    for i, r in enumerate(rows, 1):
+        if not isinstance(r, dict):
+            raise Fail(2, "line %d is not a JSON object" % i)
+        tid, task, at, context = r.get("id"), r.get("task"), r.get("at"), r.get("context")
+        if not isinstance(tid, str) or not TASK_RE.match(tid):
+            raise Fail(2, "line %d: the id is T<n>, like T7" % i)
+        if not isinstance(task, str) or not task.strip():
+            raise Fail(2, "%s: empty task" % tid)
+        if at is not None and not isinstance(at, str):
+            raise Fail(2, "%s: at is an ISO-8601 time" % tid)
+        if context is not None and not isinstance(context, str):
+            raise Fail(2, "%s: context is text" % tid)
+        lines.append({"id": tid, "at": at or now_iso(), "task": task, "context": context or ""})
+    return lines
+
+
+def cmd_orch_hand(cfg, a):
+    lines = hand_lines(a.lines)
+    os.makedirs(cfg.orch, mode=0o700, exist_ok=True)
+    inbox = os.path.join(cfg.orch, "inbox.jsonl")
+    said, data = [], []
+    with flocked(os.path.join(cfg.orch, "inbox.lock")):
+        have = set(task_ids(inbox))
+        for line in lines:
+            if line["id"] in have:
+                said.append("skipped %s (already handed)" % line["id"])
+                continue
+            have.add(line["id"])
+            data.append(json.dumps(line, ensure_ascii=False) + "\n")
+            said.append("handed %s" % line["id"])
+        if data:
+            # One write: the runner sees them arrive together and folds them into one turn.
+            append_line(inbox, "".join(data))
+    out("\n".join(said))
+    if data and not runner_pid(cfg):
         warn("orchestrator runner is not running — vfg orch start")
     return 0
 
 
-def cmd_orch_start(cfg, a):
-    pid = runner_pid(cfg)
-    if pid:
-        out("running pid %d" % pid)
-        return 0
-    run = os.path.join(cfg.repo, "orchestrator", "run")
-    if not (os.path.isfile(run) and os.access(run, os.X_OK)):
-        raise Fail(1, "%s is missing or not executable" % tilde(run))
-    os.makedirs(cfg.orch, mode=0o700, exist_ok=True)
-    log = os.path.join(cfg.orch, "runner.log")
+def spawn(cfg, part):
+    """Run it detached in a process group of its own, its output appended to its log."""
+    os.makedirs(part.folder, mode=0o700, exist_ok=True)
+    log = os.path.join(part.folder, part.log)
     append_line(log, "--- vfg orch start %s ---\n" % now_iso())
     env = dict(os.environ)
-    env.pop("CLAUDECODE", None)
-    env.pop("CLAUDE_CODE_ENTRYPOINT", None)
-    env["VFG_ORCH_RUNNER"] = "1"
+    for k in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "VFG_ORCH_RUNNER", "VFG_DISPATCHER"):
+        env.pop(k, None)
+    key, value = part.marker.split("=", 1)
+    env[key] = value
     env.setdefault("VFG_ORCH_DIR", cfg.orch)
+    env["VFG_DISPATCH_DIR"] = cfg.dispatch
     env.setdefault("VFG_REPO", cfg.repo)
     logf = open(log, "ab")
     try:
-        p = subprocess.Popen([run], cwd=os.path.dirname(run), stdin=subprocess.DEVNULL,
+        p = subprocess.Popen([part.run], cwd=os.path.dirname(part.run), stdin=subprocess.DEVNULL,
                              stdout=logf, stderr=subprocess.STDOUT, start_new_session=True, env=env)
     finally:
         logf.close()
-    pidfile = os.path.join(cfg.orch, "runner.pid")
-    atomic_write(pidfile, "%d\n" % p.pid)
-    try:
-        code = p.wait(timeout=3)
-    except subprocess.TimeoutExpired:
-        out("started pid %d" % p.pid)
-        return 0
-    try:
-        os.remove(pidfile)
-    except OSError:
-        pass
-    raise Fail(1, "runner exited at once (code %d) — see %s" % (code, tilde(log)))
+    atomic_write(os.path.join(part.folder, part.pidfile), "%d\n" % p.pid)
+    return p
+
+
+def cmd_orch_start(cfg, a):
+    """Start each that is not running, the orchestrator first so a hand-off has a
+    reader; one that exits within 3 s did not start."""
+    said, started, failed = {}, [], []
+    for part in reversed(parts(cfg)):
+        pid = part_pid(part)
+        if pid:
+            said[part.name] = "running pid %d" % pid
+        elif not (os.path.isfile(part.run) and os.access(part.run, os.X_OK)):
+            said[part.name] = "not started"
+            failed.append("%s is missing or not executable" % tilde(part.run))
+        else:
+            started.append((part, spawn(cfg, part)))
+    deadline = time.monotonic() + 3
+    for part, p in started:
+        try:
+            code = p.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            said[part.name] = "started pid %d" % p.pid
+            continue
+        try:
+            os.remove(os.path.join(part.folder, part.pidfile))
+        except OSError:
+            pass
+        said[part.name] = "exited at once (code %d)" % code
+        failed.append("%s exited at once (code %d) — see %s"
+                      % (part.name, code, tilde(os.path.join(part.folder, part.log))))
+    for part in parts(cfg):
+        out("%-14s%s" % (part.name, said[part.name]))
+    if failed:
+        raise Fail(1, "; ".join(failed))
+    return 0
 
 
 def group_alive(pgid):
@@ -816,11 +956,8 @@ def group_alive(pgid):
         return True
 
 
-def cmd_orch_stop(cfg, a):
-    pid = runner_pid(cfg)
-    if not pid:
-        out("not running")
-        return 0
+def stop_group(pid):
+    """SIGTERM the process group, SIGKILL after 15 s."""
     try:
         os.killpg(pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -836,28 +973,43 @@ def cmd_orch_stop(cfg, a):
         end = time.monotonic() + 3
         while group_alive(pid) and time.monotonic() < end:
             time.sleep(0.05)
-    try:
-        os.remove(os.path.join(cfg.orch, "runner.pid"))
-    except OSError:
-        pass
-    out("stopped pid %d" % pid)
+
+
+def cmd_orch_stop(cfg, a):
+    """The dispatcher first, waited for: on SIGTERM it hands its unfinished tasks to
+    the orchestrator's inbox. Then the orchestrator."""
+    for part in parts(cfg):
+        pid = part_pid(part)
+        if not pid:
+            out("%-14snot running" % part.name)
+            continue
+        stop_group(pid)
+        try:
+            os.remove(os.path.join(part.folder, part.pidfile))
+        except OSError:
+            pass
+        out("%-14sstopped pid %d" % (part.name, pid))
     return 0
 
 
 def cmd_orch_status(cfg, a):
-    pid = runner_pid(cfg)
-    if pid:
+    down = []
+    for part in parts(cfg):
+        pid = part_pid(part)
+        if not pid:
+            down.append(part.name)
+            out("%-14sstopped" % part.name)
+            continue
         try:
-            since = hms(os.stat(os.path.join(cfg.orch, "runner.pid")).st_mtime)
+            since = hms(os.stat(os.path.join(part.folder, part.pidfile)).st_mtime)
         except OSError:
             since = "?"
-        out("running pid %d since %s" % (pid, since))
-    else:
-        out("stopped")
-    ids = open_tasks(cfg)
+        out("%-14srunning pid %d since %s" % (part.name, pid, since))
+    ids, handed = open_tasks(cfg)
     out("open: " + (" ".join(ids) if ids else "none"))
-    if not pid:
-        raise Fail(1, "orchestrator runner is not running")
+    out("with the orchestrator: " + (" ".join(handed) if handed else "none"))
+    if down:
+        raise Fail(1, not_running(down))
     return 0
 
 
@@ -883,7 +1035,7 @@ def cmd_orch_reply(cfg, a):
 
 def cmd_orch(cfg, a):
     return {"start": cmd_orch_start, "stop": cmd_orch_stop, "status": cmd_orch_status,
-            "send": cmd_orch_send, "reply": cmd_orch_reply}[a.op](cfg, a)
+            "send": cmd_orch_send, "hand": cmd_orch_hand, "reply": cmd_orch_reply}[a.op](cfg, a)
 
 
 # --------------------------------------------------------------- scripts
@@ -1068,6 +1220,124 @@ def follow_call(cfg, data):
     except _Stop:
         return 0
     return finish(rc, o, e)
+
+
+# ---------------------------------------------------------------- actions
+
+ACTION_TIMEOUT = 30.0
+REFS_TIMEOUT = 300.0
+
+
+def command_list(fields):
+    """The `command` action's commands, each checked as vfg cmd checks one."""
+    extra = sorted(set(fields) - {"commands"})
+    if extra:
+        raise Fail(2, "command takes only commands, not %s" % ", ".join(extra))
+    cmds = fields.get("commands")
+    if not isinstance(cmds, list) or not cmds or not all(isinstance(c, str) for c in cmds):
+        raise Fail(2, "commands is a list of at least one command")
+    clean = []
+    for c in cmds:
+        c = c.strip()
+        if c.startswith("/"):
+            c = c[1:].strip()
+        if not c:
+            raise Fail(2, "empty command")
+        check_home(c.split())
+        n = len(c.encode("utf-8"))
+        if n > RCON_MAX:
+            raise Fail(1, "command is %d bytes; RCON takes at most %d — put it in a script" % (n, RCON_MAX))
+        clean.append(c)
+    return clean
+
+
+def result_line(o):
+    """The one JSON line remote/action.py prints, or None."""
+    lines = o.decode("utf-8", "replace").strip().splitlines()
+    if len(lines) != 1:
+        return None
+    try:
+        r = json.loads(lines[0])
+    except ValueError:
+        return None
+    return r if isinstance(r, dict) and isinstance(r.get("ok"), bool) else None
+
+
+def cmd_action_run(cfg, a):
+    """actions/<name>/handler.py runs on EC2 as a module, with places.py; `command`
+    has no handler and runs its commands. pydantic checked the fields on the PC;
+    this checks only their shape."""
+    if not NAME_RE.match(a.name):
+        raise Fail(2, "%s is not an action name" % a.name)
+    if not TASK_RE.match(a.task):
+        raise Fail(2, "--task is T<n>, like T7")
+    try:
+        fields = json.loads(a.fields)
+    except ValueError:
+        raise Fail(2, "--args is not JSON")
+    if not isinstance(fields, dict):
+        raise Fail(2, "--args is a JSON object of the action's fields")
+    if fields.pop("action", a.name) != a.name:
+        raise Fail(2, "--args is not for %s" % a.name)
+    timeout = a.action_timeout if a.action_timeout is not None else a.timeout
+    timeout = ACTION_TIMEOUT if timeout is None else timeout
+    if not timeout > 0:
+        raise Fail(2, "--timeout is seconds, more than 0")
+    folder = os.path.join(cfg.repo, "actions", a.name)
+    handler = os.path.join(folder, "handler.py")
+    if not os.path.isdir(folder):
+        raise Fail(1, "no actions/%s/ in %s" % (a.name, tilde(cfg.repo)))
+    if os.path.isfile(handler):
+        args = {"mode": "handler", "name": a.name, "task": a.task, "args": fields,
+                "handler": read_text(handler), "places": read_text(os.path.join(REMOTE, "places.py"))}
+    elif a.name == "command":
+        args = {"mode": "commands", "task": a.task, "commands": command_list(fields)}
+    else:
+        raise Fail(1, "actions/%s/ has no handler.py, and only command runs without one" % a.name)
+    args.update(vfg=cfg.rvfg, mc=cfg.rmc)
+    try:
+        rc, o, e = Ssh(cfg).call(program("action.py", args), timeout, keep_master=True)
+    except TimedOut:
+        raise Fail(124, "timed out: %s did not finish within %s s" % (a.name, fmt_s(timeout)))
+    if rc == 0 and result_line(o) is None:
+        out_bytes(o)
+        raise Fail(1, "%s printed no result line" % a.name)
+    return finish(rc, o, e)
+
+
+def cmd_action_refs(cfg, a):
+    if a.version_only:
+        return finish(*remote(cfg, a, "refs.py", {"op": "version"}, 30))
+    timeout = a.timeout if a.timeout is not None else REFS_TIMEOUT
+    # The generator is stopped before the call gives up, so EC2 always cleans up.
+    limit = timeout - 10 if timeout > 20 else timeout / 2
+    return finish(*remote(cfg, a, "refs.py", {"op": "commands", "limit": limit}, REFS_TIMEOUT))
+
+
+def cmd_action(cfg, a):
+    return {"run": cmd_action_run, "refs": cmd_action_refs}[a.op](cfg, a)
+
+
+# ----------------------------------------------------------------- places
+
+def cmd_place(cfg, a):
+    if a.op == "list":
+        return finish(*remote(cfg, a, "place.py", {"op": "list", "json": a.json}, 30, libs=["places.py"]))
+    if not PLACE_RE.match(a.name):
+        raise Fail(2, "%s is not a place name (a-z, 0-9 and _, at most 32)" % a.name)
+    if a.op == "forget":
+        return finish(*remote(cfg, a, "place.py", {"op": "forget", "name": a.name}, 30, libs=["places.py"]))
+    if a.player is not None and not PLAYER_RE.match(a.player):
+        raise Fail(2, "--player must be a player name (letters, digits, _; at most 16)")
+    if a.at is not None and not all(COORD_RE.match(v) for v in a.at):
+        raise Fail(2, "--at is three numbers, x y z")
+    dim = None if a.dim is None else a.dim.strip().lower()
+    if dim is not None and (a.at is None or not DIM_RE.match(dim)):
+        raise Fail(2, "--dim goes with --at: overworld, the_nether or the_end")
+    if a.by is not None and not TASK_RE.match(a.by):
+        raise Fail(2, "--by is a task id, like T7")
+    args = {"op": "save", "name": a.name, "player": a.player, "at": a.at, "dim": dim, "by": a.by or ""}
+    return finish(*remote(cfg, a, "place.py", args, 30, libs=["places.py"]))
 
 
 # ------------------------------------------------------------------ watch
@@ -1381,10 +1651,11 @@ class Parser(argparse.ArgumentParser):
 def build_parser():
     p = Parser(prog="vfg", description="The one command every agent uses to reach the EC2 box. "
                "Exit 0 done, 1 refused or failed, 2 bad arguments, 3 not configured, "
-               "4 EC2 unreachable or no answer in time, 5 Minecraft not answering RCON.")
+               "4 EC2 unreachable or no answer in time, 5 Minecraft not answering RCON, "
+               "124 vfg action run out of time.")
     p.add_argument("--version", action="version", version="vfg " + VERSION)
     p.add_argument("--timeout", type=float, metavar="S",
-                   help="seconds to wait for EC2 (default 30; vfg up 120, usage add 15)")
+                   help="seconds to wait for EC2 (default 30; vfg up 120, usage add 15, action refs 300)")
     sub = p.add_subparsers(dest="command", metavar="<command>", title="commands")
     sub.required = True
 
@@ -1436,15 +1707,20 @@ def build_parser():
     w.add_argument("text", nargs="+", help="1 to 8000 characters, or - to read stdin")
     ls.add_parser("show", help="print lookout.md")
 
-    s = sub.add_parser("orch", help="the orchestrator runner and its inbox")
-    os_ = s.add_subparsers(dest="op", metavar="start|stop|status|send|reply")
+    s = sub.add_parser("orch", help="the dispatcher, the orchestrator runner and their inboxes")
+    os_ = s.add_subparsers(dest="op", metavar="start|stop|status|send|hand|reply")
     os_.required = True
-    os_.add_parser("start", help="start the runner detached (prints its pid if it is running)")
-    os_.add_parser("stop", help="SIGTERM the runner, SIGKILL after 15 s")
-    os_.add_parser("status", help="running or stopped, and the open tasks")
-    w = os_.add_parser("send", help="append a task to the inbox; prints T<n>")
+    os_.add_parser("start", help="start the dispatcher and the runner detached "
+                   "(prints the pid of each already running)")
+    os_.add_parser("stop", help="SIGTERM the dispatcher, then the runner; each SIGKILLed after 15 s")
+    os_.add_parser("status", help="each running or stopped, the open tasks and those the orchestrator holds")
+    w = os_.add_parser("send", help="append a task to the dispatcher's inbox; prints T<n>")
     w.add_argument("task", nargs="+")
     w.add_argument("--context", metavar="TEXT", default="")
+    w = os_.add_parser("hand", help="append task lines to the orchestrator's inbox in one write, "
+                       "skipping ids already there; the dispatcher's")
+    w.add_argument("lines", metavar="JSON", help='a JSON list of task lines: '
+                   '[{"id": "T7", "at": "…", "task": "…", "context": "…"}, …]')
     w = os_.add_parser("reply", help="write an ORCH line to the feed")
     w.add_argument("task", metavar="T<n>")
     w.add_argument("status", choices=STATUSES)
@@ -1478,6 +1754,43 @@ def build_parser():
     w.add_argument("-n", type=int, default=40, metavar="N")
     w.add_argument("--follow", action="store_true", help="keep printing until killed (never in a Bash call)")
     ss.add_parser("list", help="every script on EC2, running or stopped")
+
+    s = sub.add_parser("action", help="run one of the dispatcher's actions on EC2, or read the "
+                       "server's command references")
+    as_ = s.add_subparsers(dest="op", metavar="run|refs")
+    as_.required = True
+    w = as_.add_parser("run", help="run actions/<name> on EC2; prints one JSON line {ok, summary, …}, "
+                       "exit 0 even when ok is false",
+                       usage="vfg action run <name> --args '<json>' --task T<n> [--timeout S]")
+    w.add_argument("name", help="a folder in actions/: its handler.py, or command's commands")
+    w.add_argument("--args", dest="fields", required=True, metavar="JSON",
+                   help="the action's fields as a JSON object, without action")
+    w.add_argument("--task", required=True, metavar="T<n>")
+    w.add_argument("--timeout", dest="action_timeout", type=float, metavar="S",
+                   help="seconds for the whole action (default %d); exit 124 when they run out"
+                        % ACTION_TIMEOUT)
+    w = as_.add_parser("refs", help="the server's command tree from its data generator, as one JSON "
+                       "object {version, commands} (300 s)")
+    w.add_argument("--version", dest="version_only", action="store_true",
+                   help="only the server's version, from server.jar's version.json")
+
+    s = sub.add_parser("place", help="save, list and forget named places, kept in Minecraft's "
+                       "storage everhear:places")
+    ps = s.add_subparsers(dest="op", metavar="save|list|forget")
+    ps.required = True
+    w = ps.add_parser("save", help="save where a player stands, or x y z, under a name; prints "
+                      "saved <name> at x y z in <dim>",
+                      usage="vfg place save <name> (--player P | --at X Y Z [--dim D]) [--by T<n>]")
+    w.add_argument("name", help="a-z, 0-9 and _, at most 32; an old place of that name is replaced")
+    g = w.add_mutually_exclusive_group(required=True)
+    g.add_argument("--player", metavar="P", help="where this online player stands, in their dimension")
+    g.add_argument("--at", nargs=3, metavar=("X", "Y", "Z"), help="these coordinates, as whole blocks")
+    w.add_argument("--dim", metavar="D", help="with --at: overworld (default), the_nether or the_end")
+    w.add_argument("--by", metavar="T<n>", help="the task that saved it")
+    w = ps.add_parser("list", help="one line per place: name x y z dim (task); or none")
+    w.add_argument("--json", action="store_true", help="every place as one JSON object")
+    w = ps.add_parser("forget", help="remove a place; exit 1 if there was none")
+    w.add_argument("name")
 
     s = sub.add_parser("usage", help="write a usage row; queued locally when EC2 is down")
     us = s.add_subparsers(dest="op", metavar="add")
@@ -1582,6 +1895,10 @@ def run(argv, started):
         return cmd_feed(cfg, a)
     if a.command == "script":
         return cmd_script(cfg, a)
+    if a.command == "action":
+        return cmd_action(cfg, a)
+    if a.command == "place":
+        return cmd_place(cfg, a)
     if a.command == "usage":
         return cmd_usage(cfg, a, started)
     raise Fail(2, "unknown command")

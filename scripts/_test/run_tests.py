@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -97,6 +98,13 @@ class McTests(unittest.TestCase):
         finally:
             mc._drop()
             mc._settings = good
+
+    def test_a_stopped_fake_refuses_connections(self):
+        """FakeRcon.stop() is a server going down: no new connection gets in."""
+        fake = FakeRcon(secrets.token_hex(8)).start()
+        fake.stop()
+        with self.assertRaises(ConnectionRefusedError):
+            socket.create_connection(("127.0.0.1", fake.port), timeout=2).close()
 
     def test_refuses_the_owners_commands(self):
         for cmd in ("op Steve", "/OP Steve", "deop Steve", "ban Steve", "ban-ip 1.2.3.4", "pardon Steve",

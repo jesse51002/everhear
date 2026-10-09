@@ -1,6 +1,6 @@
 # Everhear contracts
 
-_The contract the parts were built to (draft, 2026-10-07). Code comments cite it as "Contracts §N". Where the code has moved on — model choices, the `start` script — the code and the part's README are current._
+_The contract the parts were built to (draft, 2026-10-07; the dispatcher, §14, 2026-10-09). Code comments cite it as "Contracts §N". Where the code has moved on — model choices, the `start` script — the code and the part's README are current._
 
 **What every part of the prototype takes in and puts out, so each part can be built from its own spec in one prompt and still fit the others.** A part's spec may decide anything inside the part; it may not change anything here. Where a part needs this page to change, the change is made here first.
 
@@ -10,13 +10,13 @@ _The contract the parts were built to (draft, 2026-10-07). Code comments cite it
 
 - **EC2** (one Amazon Linux 2023 instance): the Minecraft Java server, vanilla 26.3, in `/opt/mc`, systemd unit `minecraft`, its console written to `/opt/mc/console.log`; the **bridge** (`vfg-bridge`) and the **Jev filter** (`vfg-jev`) in `/opt/vfg`; the database `/opt/vfg/vfg.db`; the feed `/opt/vfg/feed.log`; deployed scripts in `/opt/vfg/scripts/`. Open to the internet: Minecraft `25565` and the bridge's speech port `8787`. SSH only from the owner's IP. RCON `25575` is never reachable from outside — vanilla binds every interface, so the security group and a host firewall rule keep it in. Every unit runs as `ec2-user`, which owns `/opt/mc` and `/opt/vfg` (the database and its `-wal` and `-shm` files included) and has passwordless `sudo` for `systemctl` and `journalctl`, as Amazon Linux 2023 sets it up.
 - **Players' PCs**: Minecraft Java 26.3 with Fabric and the **client mod**.
-- **The owner's PC**: this repo; the **`vfg` toolkit**; the **conversation** (a Claude Code session the owner starts); the **orchestrator** runner and its **implementers**; the **scripts folder** `scripts/`. It reaches EC2 only over SSH.
+- **The owner's PC**: this repo; the **`vfg` toolkit**; the **conversation** (a Claude Code session the owner starts); the **dispatcher** and its **actions** `actions/`; the **orchestrator** runner and its **implementers**; the **scripts folder** `scripts/`. It reaches EC2 only over SSH; the dispatcher also calls OpenRouter.
 
 Every timestamp is ISO-8601 UTC with milliseconds (`2026-10-07T18:22:31.412Z`). Every id is a ULID unless stated.
 
 **The units** start the server jar in `/opt/mc` (`minecraft`), `/usr/bin/python3 -m vfg_bridge` (`vfg-bridge`) and `/usr/bin/python3 -u /opt/vfg/jev/jev_filter.py` (`vfg-jev`).
 
-**The code** is one repo, a folder per part: `client-mod/`, `bridge/`, `jev/`, `toolkit/`, `orchestrator/`, `conversation/`, `scripts/`. What runs on EC2 is deployed to `/opt/vfg/`.
+**The code** is one repo, a folder per part: `client-mod/`, `bridge/`, `jev/`, `toolkit/`, `dispatcher/`, `actions/`, `lib/py/` (`structured()`, every model call that wants a structure back), `orchestrator/`, `conversation/`, `scripts/`. What runs on EC2 is deployed to `/opt/vfg/`, except an action's handler, which `vfg action run` sends with each call.
 
 ## 2. Speech in — client mod → bridge
 
@@ -109,7 +109,7 @@ SYS#816 18:25:00 | jev unavailable — passing every line as context
 
 ## 8. The `vfg` toolkit — the owner's PC
 
-**Every agent acts through these commands, and nothing else touches EC2.** Output is plain text. Exit 0 means success. A failure exits non-zero with one line on stderr. Configuration lives in `~/.vfg/config`, as `KEY=value` lines: `VFG_SSH_HOST`, `VFG_SSH_USER`, `VFG_SSH_KEY`; an environment variable of the same name wins.
+**Every agent acts through these commands, and nothing else touches EC2.** Output is plain text. Exit 0 means success. A failure exits non-zero with one line on stderr. Configuration lives in `~/.vfg/config`, as `KEY=value` lines: `VFG_SSH_HOST`, `VFG_SSH_USER`, `VFG_SSH_KEY`, and the dispatcher's (§14); an environment variable of the same name wins.
 
 | Command | Does |
 |---|---|
@@ -120,26 +120,32 @@ SYS#816 18:25:00 | jev unavailable — passing every line as context
 | `vfg history [--since <iso\|-10m>] [--until <iso>] [--player <name>] [--class <c>] [--source voice\|chat\|ai] [--events] [--limit N]` | Queries the transcript history, or `events` with `--events` |
 | `vfg watchers set <kind,…> [--players a,b] [--contains <regex>]` / `vfg watchers show` | Writes or prints `watch.json` |
 | `vfg lookout set "<text>"` / `vfg lookout show` | Writes or prints `lookout.md` |
-| `vfg orch start\|stop\|status` | Starts, stops or checks the orchestrator runner, as a background process on the owner's PC; `start` when it is already running prints its pid and succeeds; `stop` sends SIGTERM and waits 15 s before SIGKILL, so open tasks can be failed and queued replies sent |
-| `vfg orch send "<task>" [--context "<text>"]` | Appends to the orchestrator inbox; prints the task id `T<n>` |
+| `vfg orch start\|stop\|status` | Starts, stops or checks the dispatcher and the orchestrator runner, background processes on the owner's PC; `start` when one is already running prints its pid and succeeds; `stop` stops the dispatcher first and waits for it, so it hands on what it holds, then the runner: SIGTERM each, SIGKILL after 15 s, so open tasks can be failed and queued replies sent; `status` also lists the open tasks and those the orchestrator holds |
+| `vfg orch send "<task>" [--context "<text>"]` | Appends to the dispatcher's inbox (§14); prints the task id `T<n>`, one past the highest in either inbox; warns when the dispatcher or the runner is not running |
+| `vfg orch hand '<json list of task lines>'` | The dispatcher's: appends the lines to the orchestrator's inbox (§9) in one write, skipping an id already there; prints `handed T7` or `skipped T7 (already handed)` per line; exits 2 on a bad line |
 | `vfg orch reply <task> progress\|done\|failed "<text>"` | Writes an `ORCH` line to the feed |
 | `vfg feed post <TYPE> "<fields>" "<text>"` | Low-level append to the feed, used by the commands above |
 | `vfg script deploy [<name>]` | Copies the scripts folder, or one script, to `/opt/vfg/scripts/`; `_lib/` goes with every deploy |
 | `vfg script run <name> [args…]` / `stop <name>` / `logs <name> [-n N] [--follow]` | Runs a script detached on EC2 (`setsid nohup python3 …/main.py`), refusing if it is already running — stop it first; stops it; prints the last N lines of its log and exits, or follows with `--follow` |
 | `vfg usage add --component <c> --model <m> --in N --out N [--cost X] [--ref T7]` | Writes a `usage` row; queues it locally when EC2 is down. `--ref` is at most 64 characters |
+| `vfg action run <name> --args '<json>' --task <T7> [--timeout S]` | Runs one action on EC2 and prints one JSON line (§14) |
+| `vfg action refs [--version]` | The server's version, from `server.jar`; or, without `--version`, `{"version", "commands"}`, the data generator's `commands.json` (300 s at most) |
+| `vfg place save <name> (--player <p> \| --at <x> <y> <z> [--dim <d>]) [--by <T7>]` / `list [--json]` / `forget <name>` | Saves, lists or forgets a named place (§14): `saved castle at 197 68 251 in overworld`; one `castle 197 68 251 overworld (T23)` per place, or `none`; `forgot castle`, exit 1 when there was none |
 
 Small additions a part may rely on: `vfg watch --tail N` (for a person at a terminal), `vfg script list`, `--wait [S]` (default 30 s) and `--no-deploy` on `vfg script run`, and `--feed` and `--source ai` on `vfg history`.
 
 ## 9. The orchestrator — the owner's PC
 
-- **Inbox** `~/.vfg/orch/inbox.jsonl`, one task per line: `{"id": "T7", "at": "…", "task": "…", "context": "…"}`. Only `vfg orch send` appends to it.
-- **The runner**'s entry point is the executable `orchestrator/run`. `vfg orch start` runs it detached, with its log in `~/.vfg/orch/runner.log` and its pid in `~/.vfg/orch/runner.pid`. It is one Claude Agent SDK process on Opus, logged in with the owner's Claude subscription, always running. It reads the inbox; every task becomes a message in its one long-running conversation. It starts implementer subagents (Haiku) in parallel.
-- It answers every task with exactly one `done` or `failed` through `vfg orch reply`, plus any number of `progress` replies.
+- **Inbox** `~/.vfg/orch/inbox.jsonl`, one task per line: `{"id": "T7", "at": "…", "task": "…", "context": "…"}`. Only `vfg orch hand` appends to it, for the dispatcher (§14). Tasks handed together arrive together, and the runner folds them into one turn.
+- **The runner**'s entry point is the executable `orchestrator/run`. `vfg orch start` runs it detached, with its log in `~/.vfg/orch/runner.log` and its pid in `~/.vfg/orch/runner.pid`. It is one Claude Agent SDK process on Opus, logged in with the owner's Claude subscription, always running. It reads the inbox; every task becomes a message in its one long-running conversation.
+- **Implementers only.** Every task goes to an implementer subagent (Sonnet), several in parallel; the orchestrator runs no command on the server itself, and its one command is `vfg place list`. The runner's hook on `Agent` adds `SAVED PLACES: …` (§14), read fresh, to every implementer's brief as it starts.
+- It answers every task with exactly one `done` or `failed` through `vfg orch reply`, plus any number of `progress` replies. A task the dispatcher handed on has had its `progress` lines already; the orchestrator's answer closes it.
 - It never talks to a player. It writes `usage` rows with `component` set to `orchestrator` or `implementer`.
 
 ## 10. Implementers and the scripts folder
 
-- Implementers act on the server only through `vfg cmd` and `vfg script …`.
+- Implementers act on the server only through `vfg cmd`, `vfg script …` and `vfg place save|list`.
+- **The last step of any build players may want to go back to**, once it is checked, is `vfg place save <name> --at <x> <y> <z> --by <task>`, at the spot a player should arrive: the name the brief gives, else a short lowercase one (`castle`, `steve_house`).
 - A script is `scripts/<name>/main.py` plus `README.md`. The README's first line is one sentence saying what it does; usage and arguments follow.
 - Scripts are Python 3, standard library only, and use the shared helpers in `scripts/_lib/mc.py`: `rcon`, `say`, `players`, `pos`, `spawn`. They start from the old `rcon.py` and `demon.py`.
 - On EC2 a script runs as `python3 -u /opt/vfg/scripts/<name>/main.py`, with its own folder as the working directory and `PYTHONPATH=/opt/vfg/scripts/_lib`, so it does `import mc`. One instance per script; `vfg script run` deploys it first.
@@ -148,7 +154,7 @@ Small additions a part may rely on: `vfg watch --tail N` (for a person at a term
 ## 11. Secrets
 
 - On EC2, `TYPESAFE_API_KEY` and `VFG_CLIENT_TOKEN` live in `/opt/vfg/.env` with mode 600.
-- On the owner's PC, settings live in `~/.vfg/config`. The client token also lives in each player's mod config.
+- On the owner's PC, settings live in `~/.vfg/config`. The client token also lives in each player's mod config. The OpenRouter key is `OPEN_ROUTER_API` in the environment, or alone in the file `VFG_OPENROUTER_KEY` names (default `~/.vfg/openrouter.key`, mode 600); the config holds the path, never the key, and only `structured()` reads it.
 - The RCON password never leaves `server.properties` on EC2.
 - No secret goes in the repo.
 
@@ -166,5 +172,18 @@ Small additions a part may rely on: `vfg watch --tail N` (for a person at a term
 - **Server and bridge**, on EC2 — [`bridge/`](../bridge/README.md)
 - **Jev filter**, on EC2 — [`jev/`](../jev/README.md)
 - **`vfg` toolkit**, on the owner's PC — [`toolkit/`](../toolkit/README.md)
+- **Dispatcher and actions**, on the owner's PC — [`dispatcher/`](../dispatcher/README.md), [`actions/`](../actions/README.md), [`lib/py/`](../lib/py/vfg_llm.py)
 - **Orchestrator and implementers**, on the owner's PC — [`orchestrator/`](../orchestrator/README.md), [`scripts/`](../scripts/README.md)
 - **Conversation**, on the owner's PC — [`conversation/`](../conversation/README.md)
+
+## 14. The dispatcher — the owner's PC
+
+**Every task the conversation sends goes through it first.** It does at once what plain actions can do, and hands the rest to the orchestrator (§9). Its entry point is the executable `dispatcher/run`; `vfg orch start` runs it beside the runner.
+
+- **Files**, in `$VFG_DISPATCH_DIR` (default `~/.vfg/dispatch`): `inbox.jsonl` and `inbox.lock`; `state.json` (the inbox's byte offset, the tasks in flight, the batch waiting to be handed, the answers not yet sent); `lock`; `dispatcher.pid`; `dispatcher.log`, one `<ISO time> <area> <message>` per line; and `refs/<version>/`, the server's command tree and the wiki's command pages, fetched once per server version.
+- **Inbox**: the §9 line. Only `vfg orch send` appends to it, under `inbox.lock`; a new id is one past the highest in this inbox and the orchestrator's, so ids never repeat.
+- **Answers**, all through `vfg orch reply`: each action's report as `progress` the moment it finishes, the last as `done`; a drop as `progress` (`dropped: <what> — <why>`), or `failed` when every pick was dropped; a hand-on as `progress` (`handed on to the orchestrator: <task>`), after which the orchestrator closes the task. Handed tasks wait `VFG_DISPATCH_WINDOW_S` (10 s), then go in one `vfg orch hand`, the context ending `Dispatcher: done …; failed … because …`.
+- **Saved places** live in Minecraft's command storage `everhear:places`, one entry per name (`^[a-z0-9_]{1,32}$`): `{pos: [x, y, z], dim: "minecraft:overworld", by: "T23"}`, whole blocks. Only `vfg place` and `toolkit/remote/places.py` (which the `teleport` action uses) read or write them. Every prompt — the dispatcher's models', every implementer's brief — carries them as one line: `SAVED PLACES: castle 197 68 251 overworld (T23); …`, or `SAVED PLACES: none`.
+- **`vfg action run <name> --args '<json>' --task <T7> [--timeout S]`** runs `actions/<name>/`: its `handler.py` as a module on EC2 (Python 3.9, `import mc`, `import places`), or, for `command`, its commands through RCON in order, stopping at the first reply Minecraft marks as an error. When the action ran, it prints exactly one line, `{"ok": true|false, "summary": "…", …facts}`, and exits 0, even when `ok` is false. It exits non-zero, with one line on stderr, only when the action could not run: 1 no such action, no handler, or a command over 1,400 bytes; 2 bad arguments; 3 not configured, or `scripts/_lib/mc.py` not deployed; 4 EC2 unreachable; 5 RCON not answering; 124 `--timeout` (default 30 s) ran out, and it may still have happened.
+- **No action places or removes blocks.** `command` refuses `setblock`, `fill`, `clone`, `place` and `fillbiome`, alone or after `execute … run`, and the owner's commands, before anything is sent. Building is the orchestrator's.
+- **Settings**, from the environment, then `~/.vfg/config`: `VFG_DISPATCH_DIR`, `VFG_DISPATCH_MODEL`, `VFG_DISPATCH_RETRIES` (1), `VFG_DISPATCH_WINDOW_S` (10), `VFG_DISPATCH_ACTION_TIMEOUT_S` (20), and the OpenRouter key (§11).

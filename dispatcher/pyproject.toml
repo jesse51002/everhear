@@ -1,0 +1,27 @@
+[project]
+name = "vfg-dispatcher"
+version = "0.1.0"
+description = "The EverHear dispatcher: runs simple Minecraft asks as quick actions and batches the rest to the orchestrator."
+requires-python = ">=3.12"
+dependencies = [
+    "vfg-lib",
+    "pydantic>=2.14.0",
+    "httpx>=0.28.1",
+]
+
+[tool.uv.sources]
+vfg-lib = { path = "../lib/py" }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
