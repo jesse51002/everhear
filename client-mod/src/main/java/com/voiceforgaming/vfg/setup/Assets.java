@@ -127,6 +127,16 @@ public final class Assets {
 		throw new IllegalArgumentException("no pinned " + kind + " for " + variant);
 	}
 
+	/** The pinned file for a config {@code turn_model} value, or {@code null} for {@code off}. Not built yet. */
+	public static Asset turn(String turnModel) {
+		return null;
+	}
+
+	/** Where a turn model's {@code .onnx} file is once installed. Not built yet. */
+	public static Path turnFile(Path vfgRoot, Asset turnModel) {
+		throw new UnsupportedOperationException("turn models are not built yet");
+	}
+
 	// --- where things live under <gameDir>/vfg/ ---
 
 	public static Path root(Path gameDir) {
