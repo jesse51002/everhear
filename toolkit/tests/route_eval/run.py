@@ -160,6 +160,15 @@ def main():
               sum(r["pass"] for r in labelled), len(labelled), 100.0 * sum(r["pass"] for r in labelled) / max(1, len(labelled)),
               sum(r["pass"] for r in present), len(present), 100.0 * sum(r["pass"] for r in present) / max(1, len(present))))
     print("labelled items loaded: %d/%d (%.0f%%)" % (items - missed, items, 100.0 * (items - missed) / max(1, items)))
+    for kind, key, miss in (("script", "scripts", "missed_scripts"), ("preset", "presets", "missed_presets")):
+        # each kind alone, over the labels the library has: what a partial library can show
+        want = [(b, r) for b, r in zip(briefs, rows) if any((kind, x) in have for x in b[key])]
+        n_items = sum(sum(1 for x in b[key] if (kind, x) in have) for b, _ in want)
+        n_miss = sum(sum(1 for x in r[miss] if (kind, x) in have) for _, r in want)
+        n_ok = sum(1 for b, r in want if not [x for x in r[miss] if (kind, x) in have])
+        print("%ss alone, labels in the library: every one loaded for %d/%d briefs (%.0f%%); %d/%d items (%.0f%%)" % (
+            kind, n_ok, len(want), 100.0 * n_ok / max(1, len(want)), n_items - n_miss, n_items,
+            100.0 * (n_items - n_miss) / max(1, n_items)))
     print("loaded per brief: median %s, mean %.1f, max %d, of %d in the library" % (
         statistics.median(loaded) if loaded else 0, statistics.mean(loaded) if loaded else 0,
         max(loaded) if loaded else 0, len(cards)))

@@ -51,7 +51,10 @@ vfg script list                                # every instance, its script, tas
 vfg script stop galick-alex
 vfg preset save galick_ice ice_path ice_trail  # a function lifted out into made/<VFG_SERVER>/presets/
 vfg state                                      # who is online and where, time, weather, what runs; --json
+vfg route --task T7 < brief.txt                # the examples and presets for that brief, picked by Jev; JSON
+vfg prefix                                     # the implementer's static system prompt, the same bytes each time
 vfg usage add --component conversation --model sonnet --in 10 --out 5 --cost 0.001 --ref ab12cd34
+vfg usage add --component implementer --model haiku --in 900 --out 120 --cache-read 15000 --cache-write 2000
 ```
 
 Exit codes: 0 done, 1 refused or failed, 2 bad arguments, 3 not configured, 4 EC2
@@ -80,9 +83,36 @@ and `preset save` refuse one that is taken in either.
   preset's value or helper without its name in front, no first-line docstring, no `ASKS`,
   an import from `_presets` or of what the box lacks, syntax Python 3.9 cannot read. A seed
   is checked for its README's first line and its imports only.
-- **`state`** is one SSH call: `list`, each player's `Pos` and `Dimension`, `time query`,
-  and the weather from an inline `weather_check` predicate, with every running instance and
-  who it touches (its `player` values).
+- **`set`** on an instance this PC started is one SSH call: `run` keeps what it started in
+  `~/.vfg/instances.json`, and the box checks the instance still runs that script before it
+  changes anything; otherwise it asks the box first, a second call.
+- **`state`** is one SSH call: `list`, each player's `Pos` and `Dimension`, `time query day`
+  (26.3's day timeline) and `time query time` (the clock, for the day number), and the
+  weather from an inline predicate, `{"type":"minecraft:weather_check","raining":true}`,
+  which follows `weather …` within a few seconds, as the rain players see fades in. Then
+  every running instance and who it touches (its `player` values).
+
+## The router and the implementer's prompt
+
+- **`vfg route --task T7 [--ref R] < brief`** reads the implementer's brief on stdin, and the
+  task's text and context from the orchestrator's `state.json` or `inbox.jsonl`. It makes one
+  card per example script and preset, ours and `made/<VFG_SERVER>/`'s, and asks Jev about all
+  of them in one call through `remote/jev.py` on the box: `runs_it`, `close` or `no` per
+  script, `use` or `no` per preset. It prints JSON on stdout: `{"task", "scripts":
+  [{"name", "source", "verdict", "p_runs_it", "p_close", "path"}], "presets": [{"name",
+  "source", "p_use", "path"}], "fallback", "ms", "tokens"}`, with a log line on stderr.
+- **Picks:** every script whose `runs_it` and `close` reach `VFG_ROUTE_LOAD` (0.3), those that
+  run the job first, and every preset whose `use` reaches it that no loaded script holds.
+  Past `VFG_ROUTE_TIMEOUT_S` (3), or on any error, it picks by words instead: every card
+  sharing a word with the job (`"fallback": true`). It writes one usage row, `--component
+  jev --ref T7`, in the background.
+- **`vfg prefix`** prints the part of an implementer's system prompt that never changes
+  between spawns, so the provider reads it from the cache: `scripts/README.md`, the kit in
+  full (`_lib/mc.py`, every file in `_lib/kit/`), then the first line and `VALUES` of every
+  library preset and example script, by name. Nothing from `made/`, no date, no count.
+- **`--cache-read N` and `--cache-write N`** on `vfg usage add` are the input tokens read from
+  and written to the prompt cache, in two columns of `usage` that the bridge adds on start;
+  until it has, the row goes in without them and one line on stderr says so.
 
 ## Tests
 

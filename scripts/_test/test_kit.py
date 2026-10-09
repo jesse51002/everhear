@@ -215,6 +215,25 @@ class McKitTests(KitCase):
                                  universal_newlines=True).stdout.strip()
             self.assertEqual(out, want, inst)
 
+    def test_every_command_holds_the_rcon_lock(self):
+        """26.3 answers every RCON client from one buffer: two clients at once get each
+        other's output. mc holds a lock file from send to reply, so a command waits for it."""
+        import fcntl
+        fd = os.open(mc.lock_path(), os.O_RDWR | os.O_CREAT, 0o666)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            got = []
+            th = threading.Thread(target=lambda: got.append(mc.rcon("list")))
+            th.start()
+            time.sleep(0.4)
+            self.assertEqual(got, [])                 # waiting for the lock
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            th.join(2)
+            self.assertEqual(len(got), 1)
+            self.assertIn("players online", got[0])
+        finally:
+            os.close(fd)
+
     def test_a_command_too_long_for_rcon_is_refused(self):
         self.assertEqual(mc.rcon("say " + "x" * 1500), "")
         self.assertEqual(self.world.commands, [])
@@ -300,6 +319,22 @@ class ItemsTests(KitCase):
         self.assertLess(got[0][1] - start, 1.3)
         self.assertTrue(self.sent("actionbar"), "no charge shown")
 
+    def test_a_player_with_no_score_hides_nobody_and_a_first_click_counts(self):
+        self.world.add_player("Alex", (0.5, 64.0, 0.5))
+        self.world.hold("Alex", main="alpha_wand")
+        self.world.hold("Steve", main="alpha_wand")
+        got, _ = collect(items.clicks("@a", "Alpha Wand", every=0.05), 3)
+        time.sleep(0.4)
+        self.world.click("Alex")                   # Alex's first click ever, Steve never clicked
+        time.sleep(0.4)
+        self.assertEqual([p for p, _ in got], ["Alex"])
+        self.assertTrue(self.sent("scoreboard players add @a vfg_click 0"))
+        s = items.Stat("vfg_x", "dummy")
+        self.world.objectives["vfg_x"] = "dummy"
+        self.world.scores[("vfg_x", "Alex")] = 4
+        self.assertEqual(items._SCORE.findall("Can't get value of x for Steve; none is setAlex has 4 [x]"), [])
+        self.assertEqual(s.scores(), {"Steve": 0, "Alex": 4})
+
     def test_sneaking_from_the_shared_objective(self):
         self.assertEqual(items.sneaking(), set())
         self.world.sneak("Steve", 4)
@@ -352,6 +387,7 @@ class AimTests(KitCase):
         self.world.add_entity("wolf", (25.5, 64.0, -3.5), owner="Steve")                 # a pet
         self.world.add_entity("armor_stand", (26.5, 64.0, -3.5))
         self.world.add_entity("marker", (27.5, 65.0, -3.5), health=None)                 # not alive
+        self.world.add_entity("item", (28.5, 64.0, -3.5), health=5.0, name="Rotten Flesh")  # an item has a Health
         self.world.add_player("Alex", (40.5, 64.0, -3.0))
         self.world.add_player("Sam", (45.5, 64.0, -3.0), gamemode="creative")
         r = aim.ray("Steve", 60)
@@ -366,6 +402,28 @@ class AimTests(KitCase):
         for c in self.world.commands:
             self.assertNotIn("type=!potion", c)
             self.assertNotRegex(c, r"@a\[[^\]]*type=")
+
+
+class AimNearTests(KitCase):
+    def test_who_is_near_a_place_and_marking_each_once(self):
+        z1 = self.world.add_entity("zombie", (20.5, 64.0, 0.5))
+        z2 = self.world.add_entity("zombie", (22.5, 64.0, 0.5))
+        self.world.add_entity("zombie", (40.5, 64.0, 0.5))                       # too far
+        self.world.add_entity("villager", (21.5, 64.0, 0.5))
+        self.world.add_player("Alex", (19.5, 64.0, 0.5))
+        hits = aim.near(world.Pos(20.5, 64.0, 0.5), 4, shooter="Steve")
+        self.assertEqual([(h.name, round(h.t, 1)) for h in hits], [("Zombie", 0.0), ("Alex", 1.0), ("Zombie", 2.0)])
+        self.assertEqual(aim.mark(hits + hits[:1], "vfg_hit"), 3)                   # listed twice, tagged once
+        self.assertIn("vfg_hit", z1["tags"])
+        self.assertIn("vfg_hit", z2["tags"])
+        self.assertIn("vfg_hit", self.world.players["Alex"]["tags"])
+
+    def test_a_crowded_place_is_asked_in_smaller_boxes(self):
+        for i in range(80):
+            self.world.add_entity("zombie", (20.5 + (i % 9) * 0.5, 64.0, 0.5 + (i // 9) * 0.5), name="Zombie Number %d" % i)
+        hits = aim.near(world.Pos(22.5, 64.0, 2.5), 5)
+        self.assertEqual(len(hits), 80)
+        self.assertTrue(self.sent("if entity @s[dx="))
 
 
 # ---- area --------------------------------------------------------------------------------
@@ -404,6 +462,16 @@ class AreaTests(KitCase):
         self.assertEqual(n, 61 * 12 * 61)
         self.assertEqual(sum(area.volume(b) for _, b, blk, _ in self.world.fills if blk == "packed_ice"), shell)
 
+    def test_a_box_keeps_its_dimension(self):
+        b = area.box(world.Pos(0.5, 64, 0.5, "minecraft:the_nether"), 2)
+        self.assertEqual((tuple(b), b.dim), ((-2, 62, -2, 2, 66, 2), "minecraft:the_nether"))
+        self.assertEqual(area.norm(b).dim, "minecraft:the_nether")
+        self.assertEqual(area.chunk_box(1, 2, 0, 10, "minecraft:the_end").dim, "minecraft:the_end")
+        self.assertEqual(area.fill(b, "glowstone"), 125)
+        self.assertEqual(self.world.fills[0][0], "minecraft:the_nether")
+        self.assertTrue(self.sent("execute in minecraft:the_nether run fill"))
+        self.assertIsNone(area.box((0, 64, 0), 1).dim)
+
     def test_never_bedrock(self):
         self.assertEqual(area.fill((0, -64, 0, 5, -60, 5), "packed_ice", "replace minecraft:bedrock"), 0)
         area.fill((0, -64, 0, 5, -50, 5), "air", keep_bedrock=True)
@@ -433,6 +501,19 @@ class AreaTests(KitCase):
         self.assertGreater(len(cells & ball) / float(len(ball)), 0.97)
         self.assertLess(len(cells - ball) / float(len(ball)), 0.08)
         self.assertLess(len(self.world.fills), 120)
+
+    def test_release_only_the_chunks_under_a_box(self):
+        area.forceload((0, 0, 0, 40, 0, 40), wait=0)
+        area.forceload((200, 0, 200, 210, 0, 210), wait=0)
+        self.assertEqual(len(self.world.forced), 13)                # 3 x 3 and 2 x 2 chunks
+        area.release((0, 0, 0, 15, 0, 15))
+        self.assertEqual(len(self.world.forced), 12)
+        area.release(world.Box(195, 0, 195, 215, 0, 215))
+        self.assertEqual(len(self.world.forced), 8)
+        area.release("minecraft:the_nether")          # nothing there
+        self.assertEqual(len(self.world.forced), 8)
+        area.release()
+        self.assertEqual(self.world.forced, set())
 
     def test_forceload_owns_what_it_adds_and_releases_it(self):
         self.world.forced.add(("minecraft:overworld", 0, 0))         # someone else's
@@ -494,6 +575,20 @@ class MobsTests(KitCase):
         self.assertEqual(boss.update(), 0)
         self.assertNotIn(boss.bar, self.world.bossbars)
 
+    def test_mobs_round_a_place_and_a_boss_with_attributes(self):
+        self.assertEqual(mobs.around(world.Pos(30.5, 64.0, 30.5), "wither", 2, spread=2), 2)
+        ws = [e for e in self.world.entities if e["type"] == "wither"]
+        self.assertTrue(all(abs(e["pos"][0] - 30.5) <= 2.1 and abs(e["pos"][2] - 30.5) <= 2.1 for e in ws))
+        boss = mobs.Boss("King", "zombie", health=100, attributes={"attack_damage": 12, "generic.movement_speed": 0.3})
+        boss.spawn(at=(0, 64, 0))
+        summon = self.sent("summon zombie")[-1]
+        self.assertIn('{id:"attack_damage",base:12}', summon)
+        self.assertIn('{id:"movement_speed",base:0.3}', summon)
+        self.assertEqual(boss.total, 100.0)
+        [e for e in self.world.entities if boss.tag in e["tags"]][0]["health"] = 40.0
+        boss.update()
+        self.assertEqual((boss.alive, boss.total), (1, 40.0))
+
     def test_mobs_around_a_player(self):
         self.assertEqual(mobs.around("Steve", "zombie", 4, spread=6, tags=("horde",)), 4)
         zs = [e for e in self.world.entities if e["type"] == "zombie"]
@@ -514,6 +609,19 @@ class FxTests(KitCase):
                       "minecraft:entity.generic.explode master @a ~ ~ ~ 2 1", cs)
         self.assertEqual(len(self.sent("particle end_rod")), 6)
 
+    def test_a_sound_from_a_place_to_one_player(self):
+        fx.sound("entity.zombie.step", (5, 64, 5), to="Steve")
+        fx.sound("entity.zombie.step", "Steve", to="Steve")
+        self.assertEqual(self.sent("playsound")[0],
+                         "execute positioned 5.00 64.00 5.00 run playsound minecraft:entity.zombie.step master Steve ~ ~ ~ 1 1")
+        self.assertEqual(self.sent("playsound")[1],
+                         "execute as Steve at @s run playsound minecraft:entity.zombie.step master @s ~ ~ ~ 1 1")
+
+    def test_a_music_disc_is_stopped_with_its_melody(self):
+        fx.melody([(0, "music_disc.pigstep", 12, 2)], "Steve", key="boss").join(2)
+        fx.stop_melody("boss")
+        self.assertIn("stopsound @a * minecraft:music_disc.pigstep", self.world.commands)
+
     def test_a_newer_melody_cuts_the_older_off(self):
         fx.melody([(0, "pling", 12, 1), (0.6, "bell", 12, 1)], "Steve", key="t")
         time.sleep(0.2)
@@ -526,6 +634,12 @@ class FxTests(KitCase):
 
 
 class ExcludeTests(KitCase):
+    def test_one_type_alone(self):
+        frag = exclude.mobs("type=zombie,distance=..4")
+        self.assertNotIn("type=!", frag)
+        self.assertEqual(mc.rcon("execute positioned 0 64 0 %s run say x" % frag), "")
+        self.assertIn("isn't applicable", mc.rcon("execute if entity @e[type=zombie,type=!villager]"))
+
     def test_ids_26_3_accepts(self):
         frag = exclude.mobs("distance=..4", spare="Alex")
         for gone in ("type=!potion", "type=!boat", "type=!chest_boat"):

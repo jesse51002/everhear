@@ -32,9 +32,13 @@ SCRIPT_LABELS = {
     "close": "It does not, but it is a place to start or a part of the answer.",
     "no": "It has nothing to do with this job.",
 }
+# Measured live on the run's 116 briefs (2026-10-09): asked "is this preset part of
+# what the job needs", Jev loaded 55% of the labelled presets at 0.3; asked whether
+# having its code would help, with this yes, 97%, about 5 presets a brief of 29.
 PRESET_LABELS = {
-    "use": "This preset is part of what the job needs.",
-    "no": "It is not part of what the job needs.",
+    "use": "Yes: some part of the job — when it acts, what it targets, what it does, or a show of "
+           "sound, music or particles — is what this preset does, or something like it, or a change to it.",
+    "no": "No: nothing in the job is like what this preset does.",
 }
 SOURCES = {"library": "ours", "made": "made on this server"}
 
@@ -95,7 +99,8 @@ def make_questions(cards):
             qs[qname(c)] = {"type": "choice", "instructions": ask % card_text(c),
                             "criteria": dict(SCRIPT_LABELS)}
         else:
-            ask = "An implementer is about to do the job in the state. %s Is this preset part of what the job needs?"
+            ask = ("An implementer is about to do the job in the state, by writing a script or changing one. "
+                   "%s Would it help the implementer to have this preset's code in front of it for this job?")
             qs[qname(c)] = {"type": "choice", "instructions": ask % card_text(c),
                             "criteria": dict(PRESET_LABELS)}
     return qs

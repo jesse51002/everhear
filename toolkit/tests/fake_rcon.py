@@ -10,7 +10,8 @@ Nobody, `Unknown or incomplete command…` to bogus, and 9000 bytes in
 read holds more than one packet. Prints `ready` once it listens.
 
 world.json, read again for every command when it is given, holds what `vfg
-state` asks about: {"players": {"Steve": {"pos": [x, y, z], "dim":
+state` asks about, answered in 26.3's words (`time query day` is the day timeline,
+`time query time` the clock): {"players": {"Steve": {"pos": [x, y, z], "dim":
 "minecraft:overworld", "shown": "[Owner] Steve"}}, "daytime": 18000, "day": 3,
 "raining": false, "thundering": false}. Without it, Steve alone is online, at
 0.5 64 0.5 in the overworld.
@@ -58,11 +59,13 @@ def answer(cmd):
             x, y, z = p.get("pos") or [0.5, 64.0, 0.5]
             return ["%s has the following entity data: [%sd, %sd, %sd]" % (m.group(1), float(x), float(y), float(z))]
         return ['%s has the following entity data: "%s"' % (m.group(1), p.get("dim") or "minecraft:overworld")]
-    if cmd == "time query daytime":
-        return ["The time is %d" % world().get("daytime", 1000)]
+    # As 26.3 answers: the day timeline is the time of day, the clock every tick so far.
     if cmd == "time query day":
-        return ["The time is %d" % world().get("day", 0)]
-    m = re.match(r'^execute if predicate \{"condition":"minecraft:weather_check","(raining|thundering)":true\}$', cmd)
+        return ["Timeline minecraft:day is at %d tick(s)" % world().get("daytime", 1000)]
+    if cmd == "time query time":
+        w = world()
+        return ["Clock minecraft:overworld is at %d tick(s)" % (w.get("day", 0) * 24000 + w.get("daytime", 1000))]
+    m = re.match(r'^execute if predicate \{"type":"minecraft:weather_check","(raining|thundering)":true\}$', cmd)
     if m:
         return ["Test passed" if world().get(m.group(1)) else "Test failed"]
     if cmd.startswith("tellraw Nobody "):

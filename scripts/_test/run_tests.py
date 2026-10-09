@@ -10,7 +10,8 @@ A seed (README.md beside main.py) runs with its Usage line's arguments. An examp
 against fake_world with Steve and Alex online; Steve tries every item it gives him (a
 click, a 1.5 s hold) and crouches; then SIGTERM. It must send commands, raise nothing,
 exit 0 within 2 s of the stop, and leave nothing tagged vfg_<name>: no entity, bossbar,
-forceload or objective. The kit's tests (test_kit.py) run with them.
+forceload or objective. The kit's tests (test_kit.py) and every preset test file
+(test_presets_*.py) run with them.
 """
 import json
 import os
@@ -349,10 +350,10 @@ def play(world, until):
             time.sleep(0.2)
 
 
-def run_example(name, seconds=4.0):
+def run_example(name, seconds=4.0, folder=None):
     """An example started as on EC2, with its defaults (no arguments), against a fake world
     with Steve and Alex online: it plays a little, then SIGTERM if it is still running."""
-    folder = os.path.join(SCRIPTS, name)
+    folder = folder or os.path.join(SCRIPTS, name)
     res = {"name": name, "example": True}
     with open(os.path.join(folder, "main.py"), encoding="utf-8") as f:
         source = f.read()
@@ -479,6 +480,53 @@ class ScriptTests(unittest.TestCase):
             self.assertIn("kill @e[tag=vfg_%s]" % name, res["after"], "no cleanup sent after SIGTERM")
 
 
+DEMO = '''"""Demo Wand: a click fires a beam that hurts what it hits and leaves a small crater."""
+ASKS = ["a demo wand"]
+from kit import values, items, aim, area, mobs, loop
+
+VALUES = {
+    "player":        {"type": "player", "default": "@a"},
+    "cooldown":      {"type": "number", "min": 0, "max": 60, "default": 0, "live": True},
+    "crater_radius": {"type": "int", "min": 2, "max": 16, "default": 3, "live": True},
+}
+
+v = values(VALUES)
+mobs.Boss("Demo Boss", "zombie", health=40).spawn(near="Steve")
+area.forceload((100, 0, 100, 130, 0, 130), wait=0)
+for p in loop(items.clicks(v["player"], "Demo Wand", cooldown=v["cooldown"])):
+    r = aim.ray(p, 60)
+    if r:
+        for h in aim.near_line(r, 1.5, shooter=p):
+            aim.run_on(h, "damage @s 5 minecraft:magic")
+        area.sphere(r.end, v["crater_radius"], "air")%s
+'''
+
+
+class ExampleHarnessTests(unittest.TestCase):
+    """The example path itself, on a demo example and on one with a bug in its body."""
+
+    check_example = ScriptTests.check_example
+
+    def demo(self, name, extra=""):
+        folder = os.path.join(TMP, "examples", name)
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "main.py"), "w") as f:
+            f.write(DEMO % extra)
+        return run_example(name, folder=folder)
+
+    def test_a_good_example_passes(self):
+        res = self.demo("demo_wand")
+        self.check_example("demo_wand", res)
+        self.assertTrue(any(c.startswith("fill ") for c in res["cmds"]), "Steve's click never reached the body")
+
+    def test_a_bug_in_the_body_is_caught(self):
+        res = self.demo("demo_broken", "\n        oops()")
+        with self.assertRaises(AssertionError):
+            self.check_example("demo_broken", res)
+        self.assertIn("NameError", res["output"])
+
+
+
 def _add_script_tests():
     for name in script_names():
         def test(self, n=name):
@@ -492,6 +540,21 @@ _add_script_tests()
 
 from test_kit import (ValuesTests, McKitTests, ItemsTests, AimTests, AreaTests, WorldTests,  # noqa: E402,F401
                       MobsTests, FxTests, ExcludeTests, KitScriptTests)
+
+# ---- the presets: every test_presets_*.py beside this file -------------------------------------
+
+def _add_preset_tests():
+    import glob
+    import importlib
+    for path in sorted(glob.glob(os.path.join(HERE, "test_presets_*.py"))):
+        mod = importlib.import_module(os.path.basename(path)[:-3])
+        for name in dir(mod):
+            obj = getattr(mod, name)
+            if isinstance(obj, type) and issubclass(obj, unittest.TestCase) and obj.__module__ == mod.__name__:
+                globals()["%s__%s" % (mod.__name__, name)] = obj
+
+
+_add_preset_tests()
 
 if __name__ == "__main__":
     try:

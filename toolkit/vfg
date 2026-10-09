@@ -1153,7 +1153,10 @@ def cmd_script_run(cfg, a):
     args_ = {"op": "run", "instance": instance, "script": r.name, "source": source,
              "server": server_name(cfg), "values": values, "argv": argv, "task": r.task,
              "wait": wait, "tars": tars, "owner": owner, "poll": live_poll(cfg)}
-    return finish(*remote(cfg, a, "scripts.py", args_, wait + 30))
+    rc, o, e = remote(cfg, a, "scripts.py", args_, wait + 30)
+    if rc == 0:
+        remember_instance(cfg, instance, r.name, source, server_name(cfg))
+    return finish(rc, o, e)
 
 
 def remote_json(cfg, a, args, timeout=30):
@@ -1199,46 +1202,100 @@ def current_values(item, info):
     return cur
 
 
+def instances_file(cfg):
+    return os.path.join(cfg.home, "instances.json")
+
+
+def remember_instance(cfg, instance, script, source, server):
+    """What `run` started from this PC, so `set` can check its values and send them in one
+    SSH call; the box still confirms the instance runs that script before it acts."""
+    try:
+        cfg.ensure_home()
+        path = instances_file(cfg)
+        with flocked(path + ".lock"):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    known = json.load(f)
+            except (OSError, ValueError):
+                known = {}
+            if not isinstance(known, dict):
+                known = {}
+            known[instance] = {"script": script, "source": source, "server": server}
+            atomic_write(path, json.dumps(known, sort_keys=True) + "\n")
+    except OSError:
+        pass
+
+
+def recalled_instance(cfg, instance):
+    try:
+        with open(instances_file(cfg), encoding="utf-8") as f:
+            got = json.load(f).get(instance)
+    except (OSError, ValueError, AttributeError):
+        return None
+    return got if isinstance(got, dict) and got.get("script") else None
+
+
+def send_set(cfg, a, item, given, expect):
+    """One SSH call: live keys into the values file, the others by a restart."""
+    live = dict((k, v) for k, v in given.items() if item.values[k].get("live"))
+    fixed = dict((k, v) for k, v in given.items() if not item.values[k].get("live"))
+    return remote_json(cfg, a, {"op": "set", "instance": a.instance, "live": live, "fixed": fixed,
+                                "expect": {"script": expect["script"],
+                                           "source": expect.get("source") or "library"},
+                                "wait": WAIT_DEFAULT}, WAIT_DEFAULT + 30)
+
+
 def cmd_script_set(cfg, a):
-    """Live values into the running instance's values file; any other value restarts it."""
+    """Live values into the running instance's values file; any other value restarts it.
+
+    An instance this PC started is checked against its script here and set in one SSH
+    call; any other first asks the box what it runs."""
     if not NAME_RE.match(a.instance):
         raise Fail(2, "%s is not an instance name" % a.instance)
     check_home(a.values)
     library, lib = load_library(cfg)
-    info = remote_json(cfg, a, {"op": "info", "instance": a.instance})
-    if not info.get("pid"):
-        raise Fail(1, "%s is not running — vfg script list" % a.instance)
-    item = instance_item(cfg, library, info)
-    if item is None:
-        raise Fail(1, "%s runs %s, which is not in %s here" % (a.instance, info.get("script"),
-                                                              "made/%s/scripts/" % (info.get("server") or
-                                                                                    server_name(cfg))
-                                                              if info.get("source") == "made" else "scripts/"))
-    if item.values_node is None or item.values is None:
-        raise Fail(1, "%s (%s) has no VALUES to set: stop it, then run it again with new arguments"
-                   % (a.instance, item.name))
-    try:
-        given, notes = library.parse_given(item.values, a.values, lib.gone)
-    except library.ValueProblem as e:
-        raise Fail(2, "%s: %s" % (item.name, e))
+    got = None
+    guess = recalled_instance(cfg, a.instance)
+    item = instance_item(cfg, library, guess) if guess else None
+    if item is not None and item.values_node is not None and item.values is not None:
+        try:
+            given, notes = library.parse_given(item.values, a.values, lib.gone)
+        except library.ValueProblem:
+            item = None   # the record may be old: what the box says decides
+        else:
+            got = send_set(cfg, a, item, given, guess)
+            if "mismatch" in got:
+                got = None
+    else:
+        item = None
+    if got is None:
+        info = remote_json(cfg, a, {"op": "info", "instance": a.instance})
+        if not info.get("pid"):
+            raise Fail(1, "%s is not running — vfg script list" % a.instance)
+        item = instance_item(cfg, library, info)
+        if item is None:
+            raise Fail(1, "%s runs %s, which is not in %s here" % (
+                a.instance, info.get("script"), "made/%s/scripts/" % (info.get("server") or server_name(cfg))
+                if info.get("source") == "made" else "scripts/"))
+        if item.values_node is None or item.values is None:
+            raise Fail(1, "%s (%s) has no VALUES to set: stop it, then run it again with new arguments"
+                       % (a.instance, item.name))
+        try:
+            given, notes = library.parse_given(item.values, a.values, lib.gone)
+        except library.ValueProblem as e:
+            raise Fail(2, "%s: %s" % (item.name, e))
+        got = send_set(cfg, a, item, given, info)
+        if "mismatch" in got:
+            raise Fail(1, "%s was started again as something else meanwhile — vfg script list" % a.instance)
     live = dict((k, v) for k, v in given.items() if item.values[k].get("live"))
     fixed = dict((k, v) for k, v in given.items() if not item.values[k].get("live"))
-    restart = None
-    if fixed:
-        command = dict(info.get("values") or {})
-        command.update(fixed)
-        restart = {"values": command,
-                   "argv": ["%s=%s" % (k, library.argv_word(v)) for k, v in command.items()]}
-    got = remote_json(cfg, a, {"op": "set", "instance": a.instance, "live": live, "restart": restart,
-                               "wait": WAIT_DEFAULT}, WAIT_DEFAULT + 30)
     for note in notes:
         out(note)
     if live:
         out("%s: %s — live, read again within %s s" % (a.instance, library.show(live), fmt_s(live_poll(cfg))))
     if fixed:
-        info["values"] = restart["values"]
-        info["live"] = got.get("live") or {}
-        kept = library.differs(item.values, current_values(item, info))
+        now_ = current_values(item, {"values": got.get("values") or {}, "live": got.get("live") or {}})
+        kept = library.differs(item.values, now_)
         for k in fixed:
             kept.pop(k, None)
         line = "%s restarted: %s %s not live" % (a.instance, ", ".join(fixed),

@@ -4,8 +4,8 @@
 #   {"vfg": "/opt/vfg", "op": "run", "instance": "galick-alex", "script": "galick_gun",
 #    "source": "library"|"made", "server": "main", "values": {...}|null, "argv": [...],
 #    "task": "T7"|null, "wait": 2, "tars": [{"root": ..., "tar": ...}], "owner": ..., "poll": 0.5}
-#   {"vfg": "/opt/vfg", "op": "set", "instance": "galick-alex", "live": {...},
-#    "restart": null|{"values": {...}, "argv": [...]}, "wait": 2}
+#   {"vfg": "/opt/vfg", "op": "set", "instance": "galick-alex", "live": {...}, "fixed": {...},
+#    "expect": null|{"script": "galick_gun", "source": "library"}, "wait": 2}
 #   {"vfg": "/opt/vfg", "op": "info", "instance": "galick-alex"}
 #   {"vfg": "/opt/vfg", "op": "stop", "name": "galick-alex"}
 #   {"vfg": "/opt/vfg", "op": "logs", "name": "galick-alex", "n": 40, "follow": false}
@@ -310,12 +310,30 @@ def op_info():
     print(json.dumps(instance(name), ensure_ascii=False))
 
 
+def argv_word(value):
+    """A value as the command line carries it, as library.argv_word writes it on the PC."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float) and value.is_integer() and abs(value) < 1e15:
+        return "%d" % value
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return "%s" % (value,)
+
+
 def op_set():
-    """Live values into <instance>.values.json; a restart with new command values."""
+    """Live values into <instance>.values.json; any other value restarts it with them.
+
+    With "expect" ({"script", "source"}, what the PC checked the values against), an
+    instance that now runs something else changes nothing and answers {"mismatch": ...}."""
     name = ARGS["instance"]
     if not running_pid(name):
         die(1, "%s is not running — vfg script list" % name)
     meta = meta_of(name)
+    expect = ARGS.get("expect")
+    if expect and (meta.get("script"), meta.get("source") or "library") != (expect["script"], expect["source"]):
+        print(json.dumps({"mismatch": instance(name)}, ensure_ascii=False))
+        return
     live = ARGS.get("live") or {}
     if live:
         cur = read_json(livefile(name), {})
@@ -323,13 +341,16 @@ def op_set():
             cur = {}
         cur.update(live)
         atomic_write(livefile(name), json.dumps(cur, ensure_ascii=False) + "\n")
-    out = {"live": read_json(livefile(name), {}), "restarted": None}
-    restart = ARGS.get("restart")
-    if restart:
+    out = {"live": read_json(livefile(name), {}), "restarted": None, "values": meta.get("values")}
+    fixed = ARGS.get("fixed") or {}
+    if fixed:
+        command = dict(meta.get("values") or {})
+        command.update(fixed)
         stop_instance(name)
-        meta["values"] = restart["values"]
-        pid = start(meta, restart["argv"], ARGS.get("wait"))
-        out["restarted"] = pid
+        meta["values"] = command
+        out["values"] = command
+        out["restarted"] = start(meta, ["%s=%s" % (k, argv_word(v)) for k, v in command.items()],
+                                 ARGS.get("wait"))
     print(json.dumps(out, ensure_ascii=False))
 
 
@@ -432,6 +453,26 @@ def passes(r, cmd):
     return out.strip().lower().startswith("test passed")
 
 
+# Vanilla has no weather query; an inline predicate answers it ("Test passed" or "Test
+# failed"). 26.3 wants "type" in it, not the older "condition". It reads the rain and thunder
+# players see, which fade in and out over a few seconds after `weather ...`.
+WEATHER = 'execute if predicate {"type":"minecraft:weather_check","%s":true}'
+
+
+def time_of_day(r):
+    """(the time of day 0..23999, the day number). On 26.3 `time query day` is the day
+    timeline and `time query time` the overworld clock, every tick since the world began;
+    before it, `time query daytime` and `time query day` (the day number)."""
+    out = r.command("time query day")
+    m = re.search(r"Timeline \S+ is at (-?\d+)", out)
+    if m:
+        c = re.search(r"is at (-?\d+)", r.command("time query time"))
+        return int(m.group(1)) % 24000, (int(c.group(1)) // 24000 if c else None)
+    day = re.search(r"(-?\d+)", out)
+    d = re.search(r"(-?\d+)", r.command("time query daytime"))
+    return (int(d.group(1)) % 24000 if d else None), (int(day.group(1)) if day else None)
+
+
 def op_state():
     t0 = time.time()
     world = {"online": [], "daytime": None, "day": None, "raining": None, "thundering": None,
@@ -447,15 +488,9 @@ def op_state():
                     "name": p,
                     "pos": [int(float(x) // 1) for x in nums[:3]] if len(nums) >= 3 else None,
                     "dimension": dim.strip('"').split(":")[-1] if dim else None})
-            m = re.search(r"(-?\d+)", r.command("time query daytime"))
-            world["daytime"] = int(m.group(1)) if m else None
-            m = re.search(r"(-?\d+)", r.command("time query day"))
-            world["day"] = int(m.group(1)) if m else None
-            # Vanilla has no weather query; an inline predicate answers it.
-            world["raining"] = passes(r, 'execute if predicate {"condition":"minecraft:weather_check",'
-                                       '"raining":true}')
-            world["thundering"] = passes(r, 'execute if predicate {"condition":"minecraft:weather_check",'
-                                          '"thundering":true}')
+            world["daytime"], world["day"] = time_of_day(r)
+            world["raining"] = passes(r, WEATHER % "raining")
+            world["thundering"] = passes(r, WEATHER % "thundering")
         finally:
             r.close()
     except RconDown as e:

@@ -11,7 +11,7 @@ world, ports and stand-in, so builders testing at the same time never share one.
 ```sh
 integration/realmc/up                    # the server "main"; prepares everything on first use
 eval "$(integration/realmc/env)"         # this shell's vfg (and `import mc`) now reach it
-vfg cmd 'time query daytime'             # → The time is 6000
+vfg cmd 'time query day'                 # → Timeline minecraft:day is at 6000 tick(s)
 vfg script run tnt_rain                  # deployed to its stand-in, run there on Python 3.9
 integration/realmc/down                  # stops its scripts (their cleanup runs), then the server
 ```
@@ -42,23 +42,29 @@ A name is `a-z 0-9 _ -`, at most 24. Take one per builder or per test run (`p1`,
 `down`, `status`, `cmd` and `players.py` without a name all mean `p1`. Each server has its own
 game and RCON ports (free ones, on 127.0.0.1, picked when it is first made and checked at each
 start), its own RCON password, its own world, `run/`, `vfg.db` and scripts. They share the jar,
-its libraries, Carpet and the template world. Each takes up to 2 GB of heap (`REALMC_HEAP`),
-view distance 10 and simulation distance 6; six side by side fit this PC (12 cores, 38 GB).
+its libraries, Carpet and the template world. Each takes up to 2 GB of heap (`REALMC_HEAP`) and
+about 0.8 GB when idle, with view distance 10 and simulation distance 6; six ran side by side on
+this PC (12 cores, 38 GB) with room to spare.
+
+Measured on 2026-10-09, with five other servers and builders' tests loading the PC (load ~16):
+a server whose world exists is ready (RCON answering) in 15–18 s; a new one, copied from the
+template, in 15 s; `up --fresh` on a running one in 23 s, its stop included. The first `up` ever
+makes the template: 50 s, 28 of them generating 784 chunks. On an idle PC the same start is about
+5 s shorter.
 
 ## The world
 
-One normal world, made once from the fixed seed `20261009` and kept as `.server/template/world`;
-every server's world starts as a copy of it. Making it takes a minute or two, once; after that a
-server is ready in seconds.
+One normal world, made once from the fixed seed `20261009` and kept as `.server/template/world`
+(17 MB); every server's world starts as a copy of it. Making it took 50 s, once.
 
 - **Normal, not flat.** Scripts look for ground, trees, water, caves and spawn things 40 to 160
   blocks away; a flat world would test them somewhere no player plays. A fixed seed makes the
   terrain the same every time (same version, same seed), and the template makes it the same
   without generating it again.
 - **An arena for exact checks.** At the first dry, treeless spot near the origin the template
-  has a flat grass floor 32 x 32, cleared 32 blocks up, with the world spawn on it. Its centre
-  is in `status --json` under `arena` (`x`, `y`, `z` is where a player stands); a fake player
-  spawns there unless told otherwise.
+  has a flat grass floor 32 x 32, cleared 32 blocks up, with the world spawn on it: with this
+  seed, the floor is x -16..15, z -16..15 at y 84, and a player stands at 0 85 0. Its centre is
+  in `status --json` under `arena`; a fake player spawns there unless told otherwise.
 - **Loaded with nobody on.** 26.3 has no spawn chunks, so the template forceloads the area 32
   blocks around the arena, and has every chunk within 224 blocks of the origin already
   generated, so view distance 10 around the arena only reads from disk.
@@ -76,9 +82,12 @@ walking, and a right-click with a carrot_on_a_stick counts in
 
 ```sh
 integration/realmc/realmc.py carpet     # once: fabric-carpet-26.3+v260915.jar from the v26.3
-                                        # GitHub release, checked against its sha256
-integration/realmc/up p1 --fresh        # a server loads it when it starts
+                                        # GitHub release, checked against its sha256 (done 2026-10-09)
+integration/realmc/up p1 --fresh        # a server loads it only when it starts: restart one
+                                        # that was running before (down then up keeps its world)
 ```
+
+`list` and `status` say `carpet` for a server running it.
 
 The server then runs on Fabric Loader 0.19.5, the loader Fabric lists for 26.3, from jars
 already on this PC (a Minecraft launcher, another server, the Gradle cache), each checked
@@ -93,7 +102,7 @@ p = players.on("p1")                  # or players.on(): the server env named
 p.spawn("Steve")                      # on the arena, in survival; returns (x, y, z)
 p.give("Steve", "carrot_on_a_stick[custom_name='Spirit Bomb']")
 p.look("Steve", 90, -10)              # yaw, pitch
-p.use("Steve")                        # one right-click; use_continuous, use_interval, stop
+p.use("Steve")                        # one right-click; hold() holds it down as a person does; stop
 p.sneak("Steve"); p.move("Steve", "forward"); p.move("Steve", None)
 p.pos("Steve"); p.rotation("Steve")
 p.kill("Steve")                       # it leaves; kill_all() for every one
@@ -105,6 +114,25 @@ python3 integration/realmc/players.py --name p1 use Steve continuous
 ```
 
 Without Carpet every call raises `NoCarpet`, saying how to get it.
+
+What Carpet 26.3 does that a test must allow for, all seen on this server:
+
+- **`/player X spawn` from RCON makes a creative player** unless it ends `in survival`; it
+  answers nothing, and the player appears a moment later. `players.spawn` adds `in survival`
+  (the box's players are) and waits until `list` has him.
+- **`/player X look <yaw> <pitch>` swaps the two** (`look 0 45` gives yaw 45, pitch 0).
+  `players.look` uses vanilla `rotate X <yaw> <pitch>` instead; `look_at` (Carpet's
+  `look at x y z`) is right. Walking follows whichever was set.
+- **`use continuous` fires every tick**, 20 uses a second; a person holding right-click makes
+  5. `players.hold` is `use interval 4`, the person's rate (1 s → +5 on `vfg_click`); a single
+  `use` or `stop` ends either.
+- A use with a carrot_on_a_stick adds exactly 1 to `minecraft.used:minecraft.carrot_on_a_stick`,
+  so the kit's `vfg_click` path works as for a person: one use → 1, a 1 s hold → 5, and a click
+  with a different carrot_on_a_stick in hand is not counted for the item.
+- `sneak`/`unsneak`, `move forward` (about 4.7 blocks a second) and `move` to stop, `jump`,
+  `drop` (the selected slot's item, onto the ground), `hotbar N`, `attack`, `sprint` all work;
+  `kill` takes him off the server (he leaves; he does not die).
+- `vfg state` shows a fake player as `online    Steve 0 85 0 overworld`.
 
 ## The box's .env, and the TypeSafe key
 
@@ -126,6 +154,24 @@ ignores. To check it is there without showing it: `grep -c '^TYPESAFE_API_KEY=.'
 `up` writes `eula=true` into a server's folder only while the owner's `~/.vfg/config` has
 `VFG_ACCEPT_EULA=true`, the same line `deploy.sh provision` needs for the box (their acceptance
 of https://aka.ms/MinecraftEULA). Without it, `up` prepares everything and stops with exit 3.
+
+## 26.3 answers worth knowing
+
+Seen on this server; a test that matches output should match these.
+
+| Command | 26.3 answers |
+|---|---|
+| `time query daytime` | refused: `Can't find element 'minecraft:daytime' of type 'minecraft:timeline'` |
+| `time query day` | `Timeline minecraft:day is at 6000 tick(s)` (also `time query time`, `gametime`) |
+| `time set noon` | `Set minecraft:overworld to time marker minecraft:noon` |
+| `execute if blocks … all` | `Test passed. Count: 27`, or `Test failed` |
+| `execute if block …` | `Test passed` or `Test failed` |
+| `fill …` | `Successfully filled 27 block(s)` |
+| an unknown command | `Unknown or incomplete command. See below for error…<--[HERE]` |
+| `give`/`tp` to nobody | `No player was found` / `No entity was found` |
+| `execute if predicate {condition:…}` | refused: `No key type`; 26.3's inline predicates take `type:` |
+| `execute as Steve if predicate {type:…}` | `Test passed`, or nothing at all when it fails |
+| `execute if items entity Steve weapon.mainhand *[custom_data~{…}]` | `Test passed. Count: 1` or `Test failed` |
 
 ## What differs from the box
 
@@ -151,10 +197,13 @@ survival, allow-flight), with its password and secrets left out. The console goe
 integration/realmc/smoke.sh [NAME] [--keep]    # NAME defaults to smoke
 ```
 
-Up with a fresh world, `vfg cmd 'time query daytime'`, a gold box filled and compared with its
-twin by `execute if blocks` (then one block changed, and the test fails as it should), with
-Carpet a fake player that turns, right-clicks a carrot_on_a_stick and sneaks, `tnt_rain` run,
-checked and stopped (its cleanup takes its TNT away), down. PASS or FAIL per check.
+Up with a fresh world, `vfg cmd 'time query day'` (26.3 has no `time query daytime`), a gold box
+filled and compared with its twin by `execute if blocks` (then one block changed, and the test
+fails as it should). With Carpet, Steve: spawned in survival, seen by `vfg state`, turned and
+aimed at a point, given a carrot_on_a_stick with custom_data, one use counted exactly once on
+`vfg_click`, `use continuous` stopped by a `use`, a hold at a person's rate, sneak and unsneak,
+walking and stopping, a jump, a drop. Then `tnt_rain` run on him, checked and stopped (its
+cleanup takes its TNT away), Steve taken off, down. PASS or FAIL per check; 35 pass on Carpet.
 
 ## Settings
 

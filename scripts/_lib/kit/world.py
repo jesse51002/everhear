@@ -6,6 +6,7 @@ A command sent over RCON runs in the overworld. Anything at coordinates in anoth
 dimension goes through run(dim, cmd) or prefix(dim), which add "execute in <dim>".
 """
 import json
+import math
 import os
 import re
 import threading
@@ -32,9 +33,29 @@ GONE = {
     "#minecraft:tall_flowers": "block tag: name the flowers (sunflower, lilac, rose_bush, peony)",
     "#minecraft:mineable/sword": "block tag: #minecraft:sword_efficient",
 }
-# Gamerules are snake_case on 26.3; the old camelCase names are refused.
-GAMERULES = {"doDaylightCycle": "advance_time", "mobGriefing": "mob_griefing",
-             "keepInventory": "keep_inventory", "fallDamage": "fall_damage"}
+# Gamerules are snake_case on 26.3, and the old camelCase names are refused. Each name here
+# was asked of a 26.3 server. disableRaids is now raids, doFireTick fire_spread_radius_around_player
+# (a number) and disableElytraMovementCheck elytra_movement_check: each the other way round.
+GAMERULES = {
+    "doDaylightCycle": "advance_time", "doWeatherCycle": "advance_weather", "doMobSpawning": "spawn_mobs",
+    "doInsomnia": "spawn_phantoms", "doPatrolSpawning": "spawn_patrols", "doTraderSpawning": "spawn_wandering_traders",
+    "doWardenSpawning": "spawn_wardens", "doImmediateRespawn": "immediate_respawn",
+    "naturalRegeneration": "natural_health_regeneration", "randomTickSpeed": "random_tick_speed",
+    "showDeathMessages": "show_death_messages", "commandBlockOutput": "command_block_output",
+    "sendCommandFeedback": "send_command_feedback", "drowningDamage": "drowning_damage", "fireDamage": "fire_damage",
+    "freezeDamage": "freeze_damage", "fallDamage": "fall_damage", "doEntityDrops": "entity_drops",
+    "doTileDrops": "block_drops", "doMobLoot": "mob_drops", "announceAdvancements": "show_advancement_messages",
+    "playersSleepingPercentage": "players_sleeping_percentage", "spawnRadius": "respawn_radius",
+    "universalAnger": "universal_anger", "forgiveDeadPlayers": "forgive_dead_players",
+    "maxEntityCramming": "max_entity_cramming", "doLimitedCrafting": "limited_crafting", "keepInventory": "keep_inventory",
+    "mobGriefing": "mob_griefing", "doVinesSpread": "spread_vines", "lavaSourceConversion": "lava_source_conversion",
+    "waterSourceConversion": "water_source_conversion", "projectilesCanBreakBlocks": "projectiles_can_break_blocks",
+    "enderPearlsVanishOnDeath": "ender_pearls_vanish_on_death", "globalSoundEvents": "global_sound_events",
+    "maxCommandChainLength": "max_command_sequence_length", "spectatorsGenerateChunks": "spectators_generate_chunks",
+    "snowAccumulationHeight": "max_snow_accumulation_height", "tntExplodes": "tnt_explodes",
+    "tntExplosionDropDecay": "tnt_explosion_drop_decay", "blockExplosionDropDecay": "block_explosion_drop_decay",
+    "mobExplosionDropDecay": "mob_explosion_drop_decay",
+}
 
 PROTECTED_FILE = os.environ.get("VFG_PROTECTED", "/opt/vfg/protected.json")
 
@@ -62,8 +83,24 @@ class Pos(tuple):
         return int(self[0] // 1), int(self[1] // 1), int(self[2] // 1)
 
 
+class Box(tuple):
+    """(x1, y1, z1, x2, y2, z2) as ints, low corner first, that also knows its dimension:
+    box.dim, None for the overworld. area.box and area.chunk_box make one; a plain 6-tuple
+    is a box in the overworld (or in the dim= given with it)."""
+
+    def __new__(cls, x1, y1, z1, x2, y2, z2, dim=None):
+        b = [int(math.floor(v)) for v in (x1, y1, z1, x2, y2, z2)]
+        t = tuple.__new__(cls, (min(b[0], b[3]), min(b[1], b[4]), min(b[2], b[5]),
+                                max(b[0], b[3]), max(b[1], b[4]), max(b[2], b[5])))
+        t.dim = None if dim == OVERWORLD else dim
+        return t
+
+    def __repr__(self):
+        return "Box(%d, %d, %d, %d, %d, %d%s)" % (self + ((", %r" % self.dim,) if self.dim else ("",)))
+
+
 def dim(at):
-    """The dimension of a place (a Pos's .dim), or None for the overworld."""
+    """The dimension of a place or a box (a Pos's or Box's .dim), or None for the overworld."""
     d = getattr(at, "dim", None)
     return None if d == OVERWORLD else d
 
@@ -130,8 +167,10 @@ def _groups(conds, d, budget=1200, most=32):
 def first_fail(conds, d=None):
     """The index of the first condition ("if block 1 64 2 #minecraft:replaceable", "if loaded
     16 64 32") that does not pass, and the server's reply to it alone ("Test failed",
-    "That position is not loaded", "That position is out of the world"); (None, "") when all
-    pass. Up to 32 are tested in one command, then the failing group is halved."""
+    "That position is not loaded", "That position is out of this world!"); (None, "") when
+    all pass. Up to 32 are tested in one command, then the failing group is halved. On 26.3 a
+    chain of several conditions answers "Test passed" or nothing at all (a failure and an
+    error look the same); only a condition alone says why."""
     for lo, hi in _groups(conds, d):
         if _passed(_test(conds[lo:hi], d)):
             continue
@@ -192,6 +231,8 @@ def mspt():
 def throttle(most=45.0, longest=10.0):
     """Wait while the server is slower than `most` ms per tick (50 is lag), up to `longest`
     seconds. Call it between big fills. Returns the last mspt read."""
+    if mc.cleaning():
+        return _ms["value"]
     end = time.time() + longest
     m = mspt()
     while m >= most and time.time() < end and not mc.stopping():

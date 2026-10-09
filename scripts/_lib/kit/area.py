@@ -4,13 +4,14 @@
     area.fill(box, "packed_ice", "replace #minecraft:ice")      # modes: replace <filter>, destroy, keep, hollow, outline
     area.sphere(r.end, 8, "air", spare_protected=True)          # a crater, carved from the middle out
 
-A box is (x1, y1, z1, x2, y2, z2): whole blocks, both corners inside, in any order. One fill
+A box is (x1, y1, z1, x2, y2, z2): whole blocks, both corners inside, in any order; a
+world.Box (area.box, area.chunk_box) also knows its dimension, as a Pos does. One fill
 is at most 32,768 blocks, and a chunk that is not loaded answers "That position is not
 loaded" to a fill that touches it, so a fill is split on chunk edges, only the loaded chunks
 are filled (the rest are logged as skipped: "the whole world" means its loaded part), and
-what is left is merged back into as few pieces under 32,768 as it makes. A place in another
-dimension says so: a Pos that knows it (aim's are), or dim=. Bedrock, barriers, command
-blocks and end portals are never a fill's filter.
+what is left is merged back into as few pieces under 32,768 as it makes. A place or box in
+another dimension says so: a Pos or Box that knows it (aim's and area.box's do), or dim=.
+Bedrock, barriers, command blocks and end portals are never a fill's filter.
 """
 import math
 import re
@@ -28,9 +29,8 @@ _lock = threading.Lock()
 
 
 def norm(box):
-    """A box as ints with its low corner first."""
-    b = [int(math.floor(v)) for v in box]
-    return (min(b[0], b[3]), min(b[1], b[4]), min(b[2], b[5]), max(b[0], b[3]), max(b[1], b[4]), max(b[2], b[5]))
+    """A box as a world.Box: ints, low corner first, keeping its dimension."""
+    return world.Box(*box[:6], dim=world.dim(box))
 
 
 def volume(box):
@@ -40,10 +40,11 @@ def volume(box):
 
 
 def box(at, r, ry=None):
-    """The box r blocks round a place in x and z, and ry (default r) in y."""
+    """The box r blocks round a place in x and z, and ry (default r) in y, in the place's
+    dimension."""
     x, y, z = (int(math.floor(v)) for v in at[:3])
     ry = r if ry is None else ry
-    return (x - r, y - ry, z - r, x + r, y + ry, z + r)
+    return world.Box(x - r, y - ry, z - r, x + r, y + ry, z + r, dim=world.dim(at))
 
 
 def chunk_of(x, z):
@@ -51,9 +52,9 @@ def chunk_of(x, z):
     return int(math.floor(x)) >> 4, int(math.floor(z)) >> 4
 
 
-def chunk_box(cx, cz, y1, y2):
-    """The box of one chunk between two heights."""
-    return (cx * 16, y1, cz * 16, cx * 16 + 15, y2, cz * 16 + 15)
+def chunk_box(cx, cz, y1, y2, dim=None):
+    """The box of one chunk between two heights, in a dimension."""
+    return world.Box(cx * 16, y1, cz * 16, cx * 16 + 15, y2, cz * 16 + 15, dim=dim)
 
 
 def chunks(b):
@@ -190,7 +191,7 @@ _FILLED = re.compile(r"(?:filled|changed) (\d+)", re.I)
 
 def fill(b, block, mode="", dim=None, spare_protected=False, keep_bedrock=False, most_mspt=45.0, loaded=None):
     """Fill a box with a block, of any size, where it is loaded; returns how many blocks
-    changed. mode: "" (replace everything), "replace <block or #tag>", "destroy", "keep",
+    changed (one that already was `block` does not count). mode: "" (replace everything), "replace <block or #tag>", "destroy", "keep",
     "hollow" (a shell of block, air inside) or "outline" (a shell, inside untouched).
     spare_protected leaves the protected boxes out; keep_bedrock stays clear of the bedrock
     floor (and the Nether's roof). Waits while the server is slower than most_mspt."""
@@ -301,6 +302,7 @@ def forceload(b, dim=None, wait=5.0):
     were forceloaded already are left alone, and never released by this script. Waits up to
     `wait` s for them to load. Returns how many chunks it added."""
     dim = dim or world.dim(b)
+    dim = None if dim == world.OVERWORLD else dim
     cs = chunks(b)
     reply = mc.rcon(world.run(dim, "forceload query"))
     if len(reply.encode("utf-8")) < world.MAX_REPLY - 100 and "force" in reply.lower():
@@ -318,7 +320,7 @@ def forceload(b, dim=None, wait=5.0):
     for cx1, cz1, cx2, cz2 in _rects(new):
         for r in _cap(cx1, cz1, cx2, cz2):
             mc.rcon(world.run(dim, "forceload add %d %d %d %d" % (r[0] * 16, r[1] * 16, r[2] * 16 + 15, r[3] * 16 + 15)))
-    if new and wait:
+    if new and wait and not mc.cleaning():
         end = time.time() + wait
         while time.time() < end and not mc.stopping():
             if len(loaded_chunks(new, dim)) == len(new):
@@ -343,10 +345,21 @@ def _cap(cx1, cz1, cx2, cz2):
     return out
 
 
-def release(dim=None):
-    """Stop force loading every chunk this script forceloaded (in one dimension, when given)."""
+def release(box=None, dim=None):
+    """Stop force loading the chunks this script forceloaded: those under a box (in its
+    dimension, or dim=), or with no box every one (in one dimension, when dim is given;
+    release("minecraft:the_nether") still means that dimension)."""
+    if isinstance(box, str):
+        box, dim = None, box
+    if box is not None:
+        dim = dim or world.dim(box)
+        under = set(chunks(box))
     with _lock:
-        mine = [c for c in _forced if dim is None or c[0] == dim]
+        if box is not None:
+            d = None if dim == world.OVERWORLD else dim
+            mine = [c for c in _forced if c[0] == d and (c[1], c[2]) in under]
+        else:
+            mine = [c for c in _forced if dim is None or c[0] == (None if dim == world.OVERWORLD else dim)]
         _forced.difference_update(mine)
     by_dim = {}
     for d, cx, cz in mine:

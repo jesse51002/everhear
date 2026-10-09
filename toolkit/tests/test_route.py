@@ -211,7 +211,8 @@ class TestCards(RouteCase):
         c = qs["preset_charge_up"]
         self.assertEqual(list(c["criteria"]), ["use", "no"])
         self.assertIn('Preset "charge_up" (made on this server)', c["instructions"])
-        self.assertIn("Is this preset part of what the job needs?", c["instructions"])
+        self.assertIn("Would it help the implementer to have this preset's code in front of it for this job?",
+                      c["instructions"])
         self.assertEqual(route.make_state("b", None, None), {"job": "b", "task": "", "context": ""})
 
 
@@ -471,15 +472,24 @@ class TestJevProgram(RouteCase):
         self.assertEqual(got["input_tokens"], sum(c["input_tokens"] for c in got["calls"]))
         for c in calls:
             body = json.dumps(c["body"], ensure_ascii=False).encode("utf-8")
-            self.assertLessEqual(len(body) / 3.0, 64000)
+            self.assertLessEqual(len(body) / 3.0, 56000)
 
-    def test_a_state_and_question_past_32k_are_refused_before_anything_is_sent(self):
-        r = self.box.jev_program({"state": {"job": "z" * 90000}, "timeout": 3,
+    def test_a_state_and_question_surely_past_32k_are_refused_before_anything_is_sent(self):
+        r = self.box.jev_program({"state": {"job": "z" * 190000}, "timeout": 3,
                                   "questions": {"script_a": self.q("a", 10000)}})
         self.assertEqual(r.returncode, 1)
-        self.assertRegex(r.stderr.strip(), r"^vfg: the state and its longest question are about \d+ tokens; "
+        self.assertRegex(r.stderr.strip(), r"^vfg: the state and its longest question are at least \d+ tokens; "
                                            r"Jev takes at most 32000 — nothing was cut and nothing was sent$")
         self.assertEqual(self.box.jev.calls, [])
+
+    def test_one_that_may_be_past_32k_is_sent_and_a_400_says_why_it_may_be(self):
+        self.box.jev.mode = "refuse"
+        r = self.box.jev_program({"state": {"job": "z" * 100000}, "timeout": 3,
+                                  "questions": {"script_a": self.q("a")}})
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(len(self.box.jev.calls), 1)
+        self.assertRegex(r.stderr.strip(), r"400 .* — the state and its longest question may be over its "
+                                           r"32000 tokens \(about \d+\)$")
 
     def test_the_key_is_never_printed(self):
         self.box.jev.mode = "refuse"

@@ -28,8 +28,10 @@ SNEAK = ("vfg_sneak", "minecraft.custom:minecraft.sneak_time")
 HOLD_GAP = 0.4      # a hold is over when no use has come for this long
 KEEP_EVERY = 5.0    # give="keep" gives a lost item back within this many seconds
 
-_SCORE = re.compile(r"([A-Za-z0-9_]{1,16}) has (-?\d+) \[")
-_UNSET = re.compile(r"for ([A-Za-z0-9_]{1,16}); none is set")
+# 26.3 glues the answers of an "execute as @a" together ("Steve has 5 [x]Alex has 7 [x]") and
+# says nothing for a player with no score; a name starts the reply or follows a "]".
+_SCORE = re.compile(r"(?:^|\]|\n)\s*([A-Za-z0-9_]{1,16}) has (-?\d+) \[")
+_UNSET = re.compile(r"(?:^|\]|\n)\s*Can't get value of \S+ for ([A-Za-z0-9_]{1,16}); none is set")
 _made = set()
 _lock = threading.Lock()
 
@@ -98,11 +100,17 @@ class Stat:
         self.objective, self.criterion = objective, criterion
         self.last = {}
         self.refused = None     # the server's answer when it refused the last command
+        self.seeded = 0.0
 
     def scores(self, cond=""):
         """{name: score} for every online player, or those `cond` ("if items entity @s ...")
         passes for, in one command."""
         _objective(self.objective, self.criterion)
+        if time.time() - self.seeded > 2.0:
+            # Every player gets a score (adding 0 changes none), so a player is never missing
+            # for want of one, and their first use counts.
+            self.seeded = time.time()
+            mc.rcon("scoreboard players add @a %s 0" % self.objective)
         reply = mc.rcon("execute as @a %srun scoreboard players get @s %s" % (cond + " " if cond else "", self.objective))
         if "unknown scoreboard objective" in reply.lower():
             with _lock:

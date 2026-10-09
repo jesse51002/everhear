@@ -13,7 +13,7 @@ here raises NoCarpet. Test names only: Steve, Alex.
     p.spawn("Steve")               # on the arena, facing south, in survival; returns (x, y, z)
     p.give("Steve", "carrot_on_a_stick[custom_name='Spirit Bomb']")
     p.look("Steve", 90, -10)       # yaw, pitch: what aim reads from the eyes
-    p.use("Steve")                 # one right-click; use_continuous, use_interval, stop
+    p.use("Steve")                 # one right-click; hold (as a person holds it), use_interval, stop
     p.sneak("Steve")               # sneak("Steve", False) stands up
     p.move("Steve", "forward")     # forward, backward, left, right; move("Steve", None) stops
     p.pos("Steve"), p.rotation("Steve")
@@ -21,7 +21,7 @@ here raises NoCarpet. Test names only: Steve, Alex.
 
     python3 integration/realmc/players.py [--name NAME] spawn Steve [X Y Z]
         look Steve YAW PITCH | look-at Steve X Y Z | use Steve [once|continuous|interval N]
-        attack Steve [...] | sneak Steve on|off | sprint Steve on|off | jump Steve
+        hold Steve | attack Steve [...] | drop Steve | sneak Steve on|off | sprint Steve on|off | jump Steve
         move Steve forward|backward|left|right|stop | stop Steve | hotbar Steve SLOT
         give Steve ITEM [COUNT] | tp Steve X Y Z [YAW PITCH] | pos Steve | kill Steve|all | list
 
@@ -161,7 +161,11 @@ class Players(object):
                 pass
 
     def look(self, name, yaw, pitch):
-        self.player(name, "look", "%g %g" % (yaw, pitch))
+        """Face (yaw, pitch), as Rotation reads them. Through vanilla /rotate: Carpet 26.3's
+        `look <yaw> <pitch>` sets them the wrong way round (`look 0 45` gives yaw 45, pitch 0)."""
+        out = self.cmd("rotate %s %g %g" % (name, yaw, pitch))
+        if not out.startswith("Rotated"):
+            raise Refused(out)
 
     def look_at(self, name, x, y, z):
         self.player(name, "look", "at", "%g %g %g" % (x, y, z))
@@ -184,6 +188,15 @@ class Players(object):
 
     def use_interval(self, name, ticks):
         return self._action(name, "use", int(ticks))
+
+    def hold(self, name):
+        """Right-click held down, as a person holds it: one use every 4 ticks (5 a second).
+        Carpet's `continuous` uses every tick, four times as fast as anyone can; stop() ends it."""
+        return self._action(name, "use", 4)
+
+    def drop(self, name, mode="once"):
+        """Drop one of what the selected hotbar slot holds (Carpet's `drop`)."""
+        return self._action(name, "drop", mode)
 
     def attack(self, name, mode="once"):
         return self._action(name, "attack", mode)
@@ -266,6 +279,10 @@ def main(argv=None):
             print(pl._action(x[0], a.action, mode))
         elif a.action == "jump":
             pl.jump(x[0])
+        elif a.action == "hold":
+            pl.hold(x[0])
+        elif a.action == "drop":
+            pl.drop(x[0])
         elif a.action in ("sneak", "sprint"):
             getattr(pl, a.action)(x[0], (x[1] if len(x) > 1 else "on") == "on")
         elif a.action == "move":

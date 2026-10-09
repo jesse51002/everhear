@@ -6,13 +6,16 @@
     r.path                              # a Pos every block from the eyes to r.end
     for hit in aim.near_line(r, 2.0, shooter=p):
         aim.run_on(hit, "damage @s 10 minecraft:player_attack by %s" % p)
+    hits = aim.near(r.end, 4, shooter=p)                # within 4 blocks of where it ended
+    aim.mark(hits, mc.TAG + "_hit")                     # tag each once, then act on them all at once
 
 The eyes are 1.62 above the feet (1.27 crouching). A look reads position and rotation once;
 everything after is worked out here, never with ^ ^ ^ in a command. A ray tests up to 32
 blocks in one command ("execute if block ... if block ..."), then halves the group that
 failed to find the first solid block, so a 100-block ray costs about ten commands; it stops
 at the first chunk that is not loaded ("That position is not loaded"). Who is near a line
-is asked in 10-block slices, because a reply over 4 KB is cut.
+is asked in 10-block slices, and who is near a place in smaller boxes when needed, because
+a reply over 4 KB is cut.
 """
 import collections
 import math
@@ -147,7 +150,7 @@ def cast(start, d, max_len=100, blocks=True):
     low = reply.lower()
     if "not loaded" in low or (not blocks and "test failed" in low):
         why = "unloaded"
-    elif "out of the world" in low:
+    elif "out of th" in low:            # "That position is out of this world!"
         why = "world"
     elif "test failed" in low:
         why = "block"
@@ -220,6 +223,58 @@ def near_line(r, radius=1.5, shooter="", spare=(), with_players=True, heights=(0
             hits.append(Hit(max(0.0, best), Pos(x, y, z, r.dim), mc.bare(name) if is_player else name, is_player))
     hits.sort(key=lambda h: h.t)
     return hits
+
+
+def near(at, radius, shooter="", spare=(), with_players=True):
+    """Everything a hit may touch (see exclude) within `radius` of a place, as Hits nearest
+    first (t is the distance from the place). Asked again in eight smaller boxes when a reply
+    is cut at 4 KB."""
+    at = at if isinstance(at, Pos) else Pos(*at[:3])
+    found = {}
+
+    def ask(lo, hi, depth=0):
+        """Entities within radius of `at` whose feet are in the box lo..hi."""
+        for i, frag in enumerate(exclude.targets(shooter, "distance=..%.2f" % radius, spare, with_players)):
+            if depth:
+                frag += " positioned %.2f %.2f %.2f if entity @s[dx=%.2f,dy=%.2f,dz=%.2f]" % (
+                    lo[0], lo[1], lo[2], hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2])
+            reply, ents = _dump(at.dim, at, frag)
+            if len(reply.encode("utf-8")) >= world.MAX_REPLY - 200 and depth < 3:
+                mid = [(lo[k] + hi[k]) / 2.0 for k in range(3)]
+                for cx in ((lo[0], mid[0]), (mid[0], hi[0])):
+                    for cy in ((lo[1], mid[1]), (mid[1], hi[1])):
+                        for cz in ((lo[2], mid[2]), (mid[2], hi[2])):
+                            ask((cx[0], cy[0], cz[0]), (cx[1], cy[1], cz[1]), depth + 1)
+                return
+            for name, x, y, z in ents:
+                found[(round(x, 3), round(y, 3), round(z, 3), i == 1)] = name
+
+    ask(tuple(v - radius for v in at), tuple(v + radius for v in at))
+    hits = []
+    for (x, y, z, is_player), name in found.items():
+        d = math.sqrt((x - at[0]) ** 2 + (y - at[1]) ** 2 + (z - at[2]) ** 2)
+        if d <= radius + 1e-6:
+            hits.append(Hit(d, Pos(x, y, z, at.dim), mc.bare(name) if is_player else name, is_player))
+    hits.sort(key=lambda h: h.t)
+    return hits
+
+
+def mark(hits, tag, spare=()):
+    """Tag each hit once, where it was (a player by name, a mob as the nearest within 1.5
+    blocks that a hit may touch), so one command can then act on all of them at once
+    (execute as @e[tag=<tag>] run damage @s ...) and a mob listed twice is hurt once. Take
+    the tag off after: tag @e[tag=<tag>] remove <tag>. Returns how many were newly tagged."""
+    n = 0
+    for h in hits:
+        if h.player:
+            reply = mc.rcon("tag %s add %s" % (h.name, tag))
+        else:
+            x, y, z = h.pos[:3]
+            frag = exclude.mobs("distance=..1.5,sort=nearest,limit=1", spare)
+            reply = mc.rcon(world.prefix(h.pos.dim) + "positioned %.3f %.3f %.3f %s run tag @s add %s"
+                            % (x, y, z, frag, tag))
+        n += 1 if "added tag" in reply.lower() else 0
+    return n
 
 
 def run_on(hit, cmd, spare=()):

@@ -5,8 +5,9 @@
 
 It changes blocks, so it runs only against a realmc test server (REALMC_NAME set, and
 VFG_MC_PROPERTIES inside that server's folder), never against the box. Everything it builds
-is at least 40 blocks above the arena's floor and is taken away again; the mobs it summons
-are killed. Nobody needs to be online.
+is at least 40 blocks above the arena's floor and is taken away again (leaving air where
+terrain reached that high; `up kit --fresh` puts the world back); the mobs it summons are
+killed. Nobody needs to be online.
 """
 import os
 import re
@@ -63,15 +64,31 @@ class LiveFacts(unittest.TestCase):
     """The 26.3 facts the kit is built on, asked of the server itself."""
 
     def test_many_block_conditions_in_one_command(self):
-        conds = ["if block %d %d %d #minecraft:replaceable" % (X + i, SKY, Z) for i in range(30)]
-        self.assertIn("Test passed", mc.rcon("execute " + " ".join(conds)))
+        mc.rcon("fill %d %d %d %d %d %d air" % (X - 8, SKY, Z, X + 21, SKY, Z))
+        conds = ["if block %d %d %d #minecraft:replaceable" % (X - 8 + i, SKY, Z) for i in range(30)]   # all loaded
+        self.assertEqual(mc.rcon("execute " + " ".join(conds)), "Test passed")
         self.assertEqual(world.first_fail(conds), (None, ""))
+        # One that fails, among several: the chain answers nothing; alone, "Test failed".
+        mc.rcon("setblock %d %d %d glass" % (X + 5, SKY, Z))
+        try:
+            self.assertEqual(mc.rcon("execute " + " ".join(conds)), "")
+            self.assertEqual(world.first_fail(conds), (13, "Test failed"))
+            self.assertEqual([i for i, good in enumerate(world.passes(conds)) if not good], [13])
+        finally:
+            mc.rcon("setblock %d %d %d air" % (X + 5, SKY, Z))
 
     def test_an_unloaded_chunk_and_the_edge_of_the_world(self):
         self.assertIn("not loaded", mc.rcon("execute if block 900000 64 900000 #minecraft:replaceable"))
         self.assertIn("Test failed", mc.rcon("execute if loaded 900000 64 900000"))
         self.assertIn("Test passed", mc.rcon("execute if loaded %d 64 %d" % (X, Z)))
-        self.assertIn("out of the world", mc.rcon("execute if block %d 400 %d #minecraft:replaceable" % (X, Z)))
+        self.assertIn("out of this world", mc.rcon("execute if block %d 400 %d #minecraft:replaceable" % (X, Z)))
+        # In a chain of several, an unloaded block answers nothing; alone, it says why.
+        two = "execute if block %d %d %d #minecraft:replaceable if block 900000 64 900000 #minecraft:replaceable"
+        self.assertEqual(mc.rcon(two % (X, SKY, Z)), "")
+        bad, reply = world.first_fail(["if block %d %d %d #minecraft:replaceable" % (X, SKY, Z),
+                                       "if block 900000 64 900000 #minecraft:replaceable"])
+        self.assertEqual(bad, 1)
+        self.assertIn("not loaded", reply)
         self.assertIn("not loaded", mc.rcon("fill 900000 64 900000 900001 64 900001 stone"))
 
     def test_the_fill_limit(self):
@@ -96,7 +113,12 @@ class LiveFacts(unittest.TestCase):
         self.assertIn("Invalid or unknown entity type", mc.rcon("execute if entity @e[type=potion]"))
         self.assertIn("Invalid or unknown entity type", mc.rcon("execute if entity @e[type=boat]"))
         self.assertTrue(ok(mc.rcon("execute if entity @e[type=!#minecraft:boat]")))
-        self.assertIn("isn't applicable", mc.rcon("execute if entity @a[type=player]"))
+        self.assertIn("isn't applicable", mc.rcon("execute if entity @e[type=zombie,type=!villager]"))
+        self.assertTrue(ok(mc.rcon("execute if entity @a[type=!villager]")))
+        frag = exclude.mobs("type=zombie,distance=..2")
+        self.assertTrue(ok(mc.rcon("execute positioned %d %d %d %s run say x" % (X, SKY, Z, frag))))
+        for t in exclude.SPARED_TYPES:
+            self.assertTrue(ok(mc.rcon("execute if entity @e[type=%s]" % t)), t)
 
     def test_gone_block_tags(self):
         self.assertFalse(ok(mc.rcon("execute if block %d %d %d #minecraft:tall_flowers" % (X, SKY, Z))))
@@ -116,18 +138,22 @@ class LiveFacts(unittest.TestCase):
                                    % (X, SKY, Z))))
         self.assertTrue(ok(mc.rcon("playsound minecraft:block.note_block.pling master @a %d %d %d 1 1" % (X, SKY, Z))))
         self.assertTrue(ok(mc.rcon('title @a actionbar {"text":"kit","color":"aqua"}')))
-        print("\n  time query daytime ->", mc.rcon("time query daytime")[:90])
-        print("  time query gametime ->", mc.rcon("time query gametime")[:90])
+        self.assertIn("Can't find element 'minecraft:daytime'", mc.rcon("time query daytime"))
+        self.assertRegex(mc.rcon("time query day"), r"Timeline minecraft:day is at \d+ tick")
+        self.assertRegex(mc.rcon("time query gametime"), r"The game time is \d+ tick")
 
 
 class LiveKit(unittest.TestCase):
     def tearDown(self):
         mc.rcon("kill @e[tag=vfg_kit_live]")
+        for b in mobs._bars:
+            b.remove()
         mc.rcon("fill %d %d %d %d %d %d air" % (X - 12, SKY - 2, Z - 12, X + 12, SKY + 22, Z + 12))
 
     def test_a_fill_split_under_32768_and_only_where_loaded(self):
-        box = (X - 70, SKY, Z - 70, X + 69, SKY + 3, Z + 69)        # 140 x 4 x 140 = 78,400
-        before = len(re.findall(r"\[", mc.rcon("forceload query")))
+        box = (X - 70, SKY, Z - 70, X + 69, SKY + 11, Z + 69)       # 140 x 12 x 140 = 235,200
+        before = mc.rcon("forceload query")
+        area.fill(box, "air")                                       # the loaded part, from a known start
         n = area.fill(box, "glass")
         loaded = area.loaded_chunks(area.chunks(box))
         want = sum(area.volume(b) for c in loaded for b in [(max(box[0], c[0] * 16), box[1], max(box[2], c[1] * 16),
@@ -135,8 +161,15 @@ class LiveKit(unittest.TestCase):
         print("\n  fill: %d of %d chunks loaded, %d blocks filled" % (len(loaded), len(area.chunks(box)), n))
         self.assertEqual(n, want)
         self.assertGreater(n, 32768)
-        self.assertEqual(area.fill(box, "air"), n)
-        self.assertEqual(len(re.findall(r"\[", mc.rcon("forceload query"))), before)
+        # Forceloaded, all of it: then the whole box, and back to air before letting go.
+        added = area.forceload(box, wait=20)
+        self.assertEqual(added, len(area.chunks(box)) - len(loaded))
+        self.assertEqual(len(area.loaded_chunks(area.chunks(box))), len(area.chunks(box)))
+        area.fill(box, "air")                                       # all of it now (terrain up here too)
+        self.assertEqual(area.fill(box, "glass"), area.volume(box))
+        self.assertEqual(area.fill(box, "air"), area.volume(box))
+        area.release()
+        self.assertEqual(mc.rcon("forceload query"), before)
 
     def test_a_sphere_carved_out_of_a_block(self):
         cube = (X - 10, SKY, Z - 10, X + 10, SKY + 20, Z + 10)
@@ -177,6 +210,8 @@ class LiveKit(unittest.TestCase):
         mc.rcon("summon villager %d.5 %d %d.5 {%s}" % (X + 5, y, Z, nbt))
         mc.rcon("summon wolf %d.5 %d %d.5 {%s,Owner:[I;1,2,3,4]}" % (X + 7, y, Z, nbt))
         mc.rcon("summon armor_stand %d.5 %d %d.5 {%s}" % (X + 12, y, Z, nbt))
+        mc.rcon('summon item %d.5 %d %d.5 {%s,Item:{id:"rotten_flesh",count:1}}' % (X + 13, y, Z, nbt))
+        mc.rcon("summon experience_orb %d.5 %d %d.5 {%s,Value:3}" % (X + 14, y, Z, nbt))
         r = aim.cast((X + 0.5, y + 1.62, Z + 0.5), (1.0, 0.0, 0.0), 25)
         hits = aim.near_line(r, 1.5, shooter="Steve")
         self.assertEqual([h.name for h in hits], ["Zombie"], hits)
@@ -189,7 +224,7 @@ class LiveKit(unittest.TestCase):
         mc.rcon("fill %d %d %d %d %d %d glass" % (X - 6, SKY, Z - 6, X + 6, SKY, Z + 6))
         boss = mobs.Boss("Kit Boss", "zombie", health=50, bodies=2, scale=1.5, nbt="NoAI:1b")
         self.assertEqual(boss.spawn(at=(X + 0.5, SKY + 1, Z + 0.5)), 2)
-        self.assertIn(boss.bar, mc.rcon("bossbar list"))
+        self.assertIn("maximum of 100", mc.rcon("bossbar get %s max" % boss.bar))
         self.assertEqual(boss.health(), (100.0, 2))
         mc.rcon("damage @e[tag=%s_0,limit=1] 20 minecraft:magic" % boss.tag)
         self.assertEqual(boss.update(), 2)
@@ -197,7 +232,7 @@ class LiveKit(unittest.TestCase):
         mc.rcon("kill @e[tag=%s]" % boss.tag)
         boss.update()
         self.assertEqual(boss.update(), 0)
-        self.assertNotIn(boss.bar, mc.rcon("bossbar list"))
+        self.assertIn("No bossbar exists", mc.rcon("bossbar get %s max" % boss.bar))
 
     def test_a_stop_puts_everything_back(self):
         old = world.gamerule("mob_griefing")
@@ -221,11 +256,13 @@ for p in loop(items.clicks(v["player"], "Probe Wand", every=0.05)):
         env = dict(os.environ, PYTHONPATH=LIB, VFG_INSTANCE="kitprobe", VFG_RUN_DIR=tempfile.mkdtemp())
         proc = subprocess.Popen([sys.executable, "-u", "main.py"], cwd=folder, env=env,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.addCleanup(lambda: proc.poll() is None and (proc.send_signal(signal.SIGTERM), proc.communicate(timeout=5)))
+        bar = "bossbar get vfg:kitprobe_boss1 max"
         deadline = time.time() + 20
-        while "vfg:kitprobe" not in mc.rcon("bossbar list") and time.time() < deadline:
+        while "No bossbar" in mc.rcon(bar) and time.time() < deadline:
             time.sleep(0.2)
         time.sleep(0.5)
-        self.assertIn("vfg:kitprobe", mc.rcon("bossbar list"))
+        self.assertIn("maximum of 40", mc.rcon(bar))
         self.assertNotEqual(world.gamerule("mob_griefing"), old)
         self.assertIn("vfg_kitprobe_kills", mc.rcon("scoreboard objectives list"))
         self.assertIn("is marked", mc.rcon("forceload query %d %d" % (X + 320, Z + 320)))
@@ -237,7 +274,7 @@ for p in loop(items.clicks(v["player"], "Probe Wand", every=0.05)):
         self.assertLess(took, 2.0)
         self.assertEqual(proc.returncode, 0, out)
         self.assertNotIn("Traceback", out)
-        self.assertNotIn("vfg:kitprobe", mc.rcon("bossbar list"))
+        self.assertIn("No bossbar exists", mc.rcon(bar))
         self.assertEqual(world.gamerule("mob_griefing"), old)
         self.assertNotIn("vfg_kitprobe_kills", mc.rcon("scoreboard objectives list"))
         self.assertIn("not marked", mc.rcon("forceload query %d %d" % (X + 320, Z + 320)))
@@ -295,35 +332,54 @@ class LiveClicks(unittest.TestCase):
         proc.send_signal(signal.SIGTERM)
         return proc.communicate(timeout=5)[0].decode()
 
-    def test_two_wands_on_one_player(self):
-        a = self.start("kitalpha", "Alpha", 'clicks(v["player"], "Alpha Wand", every=0.05)')
-        b = self.start("kitbeta", "Beta", 'clicks(v["player"], "Beta Wand", every=0.05)')
+    def hold(self, name):
+        """Wait until Steve has the item, then pick the hotbar slot it is in; that slot."""
         deadline = time.time() + 10
-        while not (items.has("Steve", "Alpha Wand") and items.has("Steve", "Beta Wand")) and time.time() < deadline:
+        while not items.has("Steve", name) and time.time() < deadline:
             time.sleep(0.2)
-        self.assertTrue(items.has("Steve", "Alpha Wand") and items.has("Steve", "Beta Wand"))
-        for slot in (1, 2, 3, 4, 5, 6, 7, 8, 9):
+        for slot in range(1, 10):
             PLAYERS.hotbar("Steve", slot)
             time.sleep(0.3)
-            if items.held("Steve", "Alpha Wand"):
-                break
+            if items.held("Steve", name):
+                return slot
+        return None
+
+    def click(self):
+        time.sleep(0.4)
         PLAYERS.use("Steve")
         time.sleep(0.6)
-        out_a, out_b = self.stop(a), self.stop(b)
-        self.assertEqual(out_a.count("fired Steve"), 1, out_a)
-        self.assertEqual(out_b.count("fired Steve"), 0, out_b)
-        self.assertFalse(items.has("Steve", "Alpha Wand"))      # taken back on stop
 
-    def test_a_charge_held_down(self):
+    def test_two_wands_on_one_player(self):
+        PLAYERS.hotbar("Steve", 1)
+        items.give("Steve", "Beta Wand")                 # hotbar slot 1
+        items.give("Steve", "Alpha Wand")                # hotbar slot 2
+        a = self.start("kitalpha", "Alpha", 'clicks(v["player"], "Alpha Wand", give="never", every=0.05)')
+        b = self.start("kitbeta", "Beta", 'clicks(v["player"], "Beta Wand", give="never", every=0.05)')
+        time.sleep(1.5)
+        PLAYERS.hotbar("Steve", 2)
+        self.click()                                     # Alpha in the main hand: Alpha
+        PLAYERS.player("Steve", "swapHands")             # Alpha to the off hand
+        time.sleep(0.3)
+        PLAYERS.hotbar("Steve", 1)
+        time.sleep(0.3)
+        self.assertTrue(items.held("Steve", "Alpha Wand") and items.held("Steve", "Beta Wand"))
+        self.click()                                     # Beta in the main hand takes it: Beta only
+        PLAYERS.hotbar("Steve", 2)                       # that slot is empty now
+        self.click()                                     # Alpha alone, in the off hand: Alpha
+        out_a, out_b = self.stop(a), self.stop(b)
+        self.assertEqual(out_a.count("fired Steve"), 2, out_a)
+        self.assertEqual(out_b.count("fired Steve"), 1, out_b)
+
+    def test_a_charge_held_down_and_the_item_given_and_taken_back(self):
         proc = self.start("kitbomb", "Bomb", 'charged(v["player"], "Kit Bomb", 1.0, every=0.05)')
-        deadline = time.time() + 10
-        while not items.held("Steve", "Kit Bomb") and time.time() < deadline:
-            time.sleep(0.2)
+        self.assertTrue(self.hold("Kit Bomb"))
+        time.sleep(0.3)
         PLAYERS.use_continuous("Steve")
         time.sleep(1.8)
         PLAYERS.stop("Steve")
         out = self.stop(proc)
         self.assertEqual(out.count("fired Steve"), 1, out)
+        self.assertFalse(items.has("Steve", "Kit Bomb"))        # taken back on stop
 
     def test_sneaking(self):
         items.sneaking()

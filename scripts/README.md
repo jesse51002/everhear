@@ -81,7 +81,7 @@ One-line docstring; imports; `VALUES`; **one public function named like the file
 
 ## The kit
 
-`from kit import values, items, aim, area, mobs, fx, world, exclude, loop`. Its source is the reference; each module's docstring shows it in use. A place is a `world.Pos` (x, y, z that knows its dimension) or a tuple; a box is `(x1, y1, z1, x2, y2, z2)`.
+`from kit import values, items, aim, area, mobs, fx, world, exclude, loop`. Its source is the reference; each module's docstring shows it in use. A place is a `world.Pos` (x, y, z that knows its dimension) or a tuple; a box is a `world.Box` (`(x1, y1, z1, x2, y2, z2)` that knows its dimension; `area.box` and `area.chunk_box` make one) or a 6-tuple.
 
 | Module | For |
 | --- | --- |
@@ -92,24 +92,30 @@ One-line docstring; imports; `VALUES`; **one public function named like the file
 | `area` | `area.fill(box, block, mode)` of any size, `area.sphere(at, r, block)`, `area.forceload(box)` / `area.release()`; `box`, `chunks`, `chunk_of`, `chunk_box`, `band`, `loaded_chunks`, `minus`, `split`, `plan`, `volume`, `norm` |
 | `mobs` | `mobs.around(p, mob, n)`, `mobs.count(tag)`, `mobs.Boss(name, mob, health, bodies, scale, nbt)` → `.spawn(near=p)` `.update()` `.dead()` `.health()` `.remove()` |
 | `fx` | `fx.particle`, `fx.line`, `fx.sound`, `fx.title`, `fx.actionbar`, `fx.melody(notes, at)`, `fx.stop_melody`, `fx.pitch` — each for everyone or `to=` one player |
-| `world` | `world.Pos`, `world.run(dim, cmd)`, `world.prefix(dim)`, `world.dim_of(p)`, `world.limits(dim)`, `world.passes(conds)`, `world.first_fail(conds)`, `world.loaded(x, z)`, `world.mspt()`, `world.throttle()`, `world.gamerule(name, value)` / `world.restore()`, `world.objective(criterion, name)`, `world.protected(dim)`, `world.is_protected(at)` |
+| `world` | `world.Pos`, `world.Box`, `world.run(dim, cmd)`, `world.prefix(dim)`, `world.dim_of(p)`, `world.limits(dim)`, `world.passes(conds)`, `world.first_fail(conds)`, `world.loaded(x, z)`, `world.mspt()`, `world.throttle()`, `world.gamerule(name, value)` / `world.restore()`, `world.objective(criterion, name)`, `world.protected(dim)`, `world.is_protected(at)` |
 | `exclude` | `exclude.mobs(where)`, `exclude.players(shooter, where)`, `exclude.targets(...)`: what a hit never touches, as `execute ... <fragment> run <command on @s>` |
 
 `mc` is under it: `rcon(cmd)`, `say`, `players()` (bare names), `bare(name)`, `pos(p)`, `spawn(p, mob, nbt, spread, y, tags)`, `count(selector)`, `score(p, obj)`, `on_stop(fn)`, `stopping()`, `log(...)`, `NAME`, `INSTANCE`, `TAG`, `OWNER`, `default_player()`, `owner_near(d)`, `not_owner()`.
 
 ## Minecraft 26.3
 
-- **Gamerules are snake_case:** `fall_damage`, `mob_griefing`, `keep_inventory`, `advance_time` (was `doDaylightCycle`). `keepInventory` is refused.
+Asked of a real 26.3 server (`scripts/_test/live_kit.py`), or seen in the run:
+
+- **Gamerules are snake_case:** `fall_damage`, `mob_griefing`, `keep_inventory`, `advance_time` (was `doDaylightCycle`), `advance_weather`, `spawn_mobs` (was `doMobSpawning`), `spawn_phantoms` (`doInsomnia`), `natural_health_regeneration`, `block_drops` (`doTileDrops`), `mob_drops` (`doMobLoot`), `show_advancement_messages` (`announceAdvancements`), `respawn_radius` (`spawnRadius`), `raids` (was `disableRaids`, the other way round), `fire_spread_radius_around_player` (a number, in place of `doFireTick`). camelCase is refused; `world.gamerule` translates the old names (`world.GAMERULES`).
 - **Not entity types:** `potion` (`splash_potion`, `lingering_potion`), `boat`, `chest_boat` (`oak_boat`..., or `#minecraft:boat`). One wrong type fails the whole selector, so the hit hits nothing.
-- **Gone block tags:** `#minecraft:tall_flowers`, `#minecraft:mineable/sword`.
-- `@a` takes no `type=` option. `damage` takes one target: `execute as <selector> run damage @s ...`.
-- **A fill is at most 32,768 blocks**, and a chunk that is not loaded answers `That position is not loaded` to anything in it: "the whole world" means the loaded part, or each chunk as a player enters it. `area.fill` handles both.
+- **A selector takes one `type=X` alone, or any number of `type=!X`, never both:** `@e[type=zombie,type=!villager]` is refused. `exclude.mobs("type=zombie")` drops its own `type=!` for that reason.
+- **Gone block tags:** `#minecraft:tall_flowers`, `#minecraft:mineable/sword` (`#minecraft:sword_efficient` is there).
+- **Items and experience orbs have a `Health`**, so `if data entity @s Health` alone does not mean alive; `exclude` leaves them out by type.
+- **`execute if A if B ...` answers `Test passed`, or nothing at all** when any fails or errors; only a single condition answers `Test failed` or why (`That position is not loaded`, `That position is out of this world!`). `world.first_fail` halves a chain down to the one that says why.
+- **A fill is at most 32,768 blocks**, a chunk that is not loaded answers `That position is not loaded` to anything in it, and `Successfully filled N` counts only blocks that changed. "The whole world" means the loaded part, or each chunk as a player enters it. `area.fill` handles all three.
+- **No spawn chunks:** with nobody near, nothing is loaded but what is forceloaded (`area.forceload`).
 - **A reply over 4 KB is cut; a command over about 1,400 characters is refused** (mc refuses it before sending). Ask about many entities in slices.
 - RCON runs in the overworld: anything at coordinates in another dimension needs `execute in <dim>` (`world.run`). The eyes are 1.62 above the feet (1.27 crouching).
-- Text in NBT and components is a component, not a JSON string: `CustomName:"Horde King"`, `item_name={"text":"Ice Staff","color":"aqua"}`. Attributes have no `generic.`: `{id:"max_health",base:800}`, `{id:"scale",base:3}`.
+- `damage` takes one target: `execute as <selector> run damage @s ...`.
+- Text in NBT and components is a component: `CustomName:"Horde King"`, `item_name={"text":"Ice Staff","color":"aqua"}`. Attributes have no `generic.`: `{id:"max_health",base:800}`, `{id:"scale",base:3}`.
 - A tamed animal has an `Owner`; `execute ... unless data entity @s Owner` spares pets.
-- **No spawn chunks:** with nobody near, nothing is loaded but what is forceloaded (`area.forceload`).
-- In the run, `time query daytime` answered `Can't find element 'minecraft:daytime' of type 'minecraft:timeline'`.
+- `bossbar list` shows names, not ids; `bossbar get <id> max` answers `No bossbar exists with the ID ...` for one that is gone.
+- **Time:** `time query daytime` is refused (`Can't find element 'minecraft:daytime' of type 'minecraft:timeline'`); `time query day` answers `Timeline minecraft:day is at 6000 tick(s)`, `time query gametime` `The game time is N tick(s)`.
 
 ## Running
 
@@ -122,5 +128,7 @@ uv run --python 3.9 python scripts/_test/run_tests.py     # mc, the kit, and eve
 uv run --python 3.9 python scripts/_test/test_kit.py      # the kit alone
 eval "$(integration/realmc/env kit)" && uv run --python 3.9 python scripts/_test/live_kit.py   # the kit on a real 26.3 server
 ```
+
+`run_tests.py` starts every example as on EC2 (its defaults, `VFG_INSTANCE` its folder name) against a fake world with Steve and Alex online; Steve tries each item it gives him (a click, a 1.5 s hold) and crouches; then it is stopped. It must send commands, raise nothing, exit 0 within 2 s, and leave nothing tagged `vfg_<name>`: no entity, bossbar, forceload or objective.
 
 `_test/fake_rcon.py` is a fake RCON server; `_test/fake_world.py` is a small fake 26.3 world behind it (players, blocks, chunks, scoreboards, fills, bossbars, forceloads). The fake proves the plumbing; a real 26.3 server is the bar for "it works": `live_kit.py` runs only against a realmc test server, never the box.

@@ -1,0 +1,34 @@
+"""Yields a player and the chunk's box once for each chunk a player walks into, in each dimension, while the script runs."""
+import mc
+from kit import area, loop, world
+
+VALUES = {
+    "enters_dims": {"type": "list", "of": ["overworld", "the_nether", "the_end"],
+                    "default": ["overworld", "the_nether", "the_end"], "live": True},
+    "enters_below": {"type": "int", "min": 0, "max": 384, "default": 32, "live": True},
+    "enters_above": {"type": "int", "min": 0, "max": 384, "default": 40, "live": True},
+}
+
+
+def enters_chunk(player, v):
+    """For each player a player value names ("@a", "Steve,Alex"), yield (name, the world.Box
+    of the chunk they are in, from enters_below blocks under their feet to enters_above over
+    them) the first time anyone is in that chunk of that dimension, in the dimensions
+    enters_dims names. A chunk is done once for as long as the script runs.
+
+        for p, box in loop(enters_chunk(v["player"], v)):
+            replace_blocks(box, v)
+    """
+    done = set()
+    while not mc.stopping():
+        for p in loop.who(player):
+            at, dim = mc.pos(p), world.dim_of(p)
+            if not at or (dim or world.OVERWORLD).split(":")[-1] not in v["enters_dims"]:
+                continue
+            cx, cz = area.chunk_of(at[0], at[2])
+            if (dim, cx, cz) in done:
+                continue
+            done.add((dim, cx, cz))
+            y1, y2 = area.band(at[1], v["enters_below"], v["enters_above"], dim)
+            yield p, area.chunk_box(cx, cz, y1, y2, dim)
+        loop.wait(0.5)

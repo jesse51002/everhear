@@ -1963,6 +1963,33 @@ class TestInstances(LibraryCase):
         self.assertOneLine(self.box.vfg("script", "set", "loop2", "x=1"), 1, "loop2 \\(loop\\) has no VALUES")
         self.assertOk(self.box.vfg("script", "stop", "loop2"))
 
+    def test_set_is_one_call_for_an_instance_this_pc_started(self):
+        def remote_calls(before):
+            return len([c for c in self.box.ssh_calls()[before:] if c[-1] == "python3 -u -"])
+        self.started(self.box.vfg("script", "run", "beam"), "beam")
+        before = len(self.box.ssh_calls())
+        self.assertOk(self.box.vfg("script", "set", "beam", "cooldown=1"))
+        self.assertEqual(remote_calls(before), 1)
+        # A record that names another script: what the box says decides, then it is set.
+        path = os.path.join(self.box.vhome, "instances.json")
+        with open(path) as f:
+            known = json.load(f)
+        self.assertEqual(known["beam"], {"script": "beam", "source": "library", "server": "main"})
+        known["beam"]["script"] = "galick"
+        with open(path, "w") as f:
+            json.dump(known, f)
+        before = len(self.box.ssh_calls())
+        r = self.box.vfg("script", "set", "beam", "cooldown=2")   # galick has no cooldown
+        self.assertEqual(r.stdout, "beam: cooldown=2 — live, read again within 0.5 s\n")
+        self.assertEqual(remote_calls(before), 2)
+        before = len(self.box.ssh_calls())
+        r = self.box.vfg("script", "set", "beam", "player=Alex")  # galick has one: the box refuses it
+        self.assertOk(r)
+        self.assertRegex(r.stdout, r"^beam restarted: player is not live, pid \d+; kept cooldown=2\n$")
+        self.assertEqual(remote_calls(before), 3)
+        self.assertEqual(self.box_file("beam.json")["values"], {"player": "Alex"})
+        self.assertOk(self.box.vfg("script", "stop", "beam"))
+
     def test_a_seed_keeps_its_words_and_runs_as_an_instance(self):
         r = self.box.vfg("script", "run", "hello", "as=hello-two", "a=b", "world", "--wait", "5")
         self.assertOk(r)

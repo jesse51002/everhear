@@ -11,6 +11,7 @@ Python 3.9, standard library only. Seeded from the old rcon.py and demon.py.
 The RCON password is read from server.properties on first use and kept only in
 memory: it is never printed, logged or written.
 """
+import fcntl
 import json
 import math
 import os
@@ -20,6 +21,7 @@ import signal
 import socket
 import struct
 import sys
+import tempfile
 import threading
 import time
 from typing import Optional, Tuple
@@ -39,6 +41,11 @@ TIMEOUT = 10.0
 MAX_COMMAND = 1446
 # On SIGTERM every cleanup has this long, so a script is gone within 2 s.
 STOP_BUDGET = 1.5
+# The server answers every RCON connection from one shared buffer, so two clients sending at
+# once get each other's output glued into their replies. Every command therefore holds this
+# lock file (flock) from send to reply, across every process on the machine; anything else
+# that talks RCON to the same server should take it too. Default /tmp/vfg-rcon-<port>.lock.
+RCON_LOCK = os.environ.get("VFG_RCON_LOCK", "")
 
 # The server's owner: VFG_OWNER, which `vfg script run` sets from ~/.vfg/config; "" when unset.
 OWNER = os.environ.get("VFG_OWNER", "").strip()
@@ -131,6 +138,48 @@ def _read_packet(s: socket.socket) -> Tuple[int, int, str]:
     return req_id, kind, data[8:-2].decode("utf-8", errors="replace")
 
 
+def lock_path() -> str:
+    """The lock file every RCON client of this server holds while it sends and reads."""
+    return RCON_LOCK or os.path.join(tempfile.gettempdir(), "vfg-rcon-%d.lock" % _read_settings()[1])
+
+
+class _Flock(object):
+    """Holds the RCON lock file. One per connection, so the cleanup's own connection waits
+    for another thread's too."""
+
+    def __init__(self):
+        self.fd, self.path = None, None
+
+    def acquire(self, deadline=None):
+        path = lock_path()
+        if self.path != path:
+            if self.fd is not None:
+                os.close(self.fd)
+            self.fd, self.path = os.open(path, os.O_RDWR | os.O_CREAT, 0o666), path
+        if deadline is None:
+            fcntl.flock(self.fd, fcntl.LOCK_EX)
+            return True
+        while True:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return True
+            except OSError:
+                if time.time() >= deadline:
+                    return False
+                time.sleep(0.002)
+
+    def release(self):
+        if self.fd is not None:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+
+
+_flock = _Flock()          # the shared connection's
+_stop_flock = _Flock()     # the cleanup's own
+
+
 def _new_id() -> int:
     _next_id[0] = _next_id[0] % 2000000000 + 1
     return _next_id[0]
@@ -154,14 +203,20 @@ def _connect(timeout: float = TIMEOUT) -> socket.socket:
         raise
 
 
-def _exchange(s: socket.socket, cmd: str) -> str:
-    req_id = _new_id()
-    _send(s, req_id, 2, cmd)
-    while True:
-        got, _, body = _read_packet(s)
-        if got == req_id:
-            return body
-        # A leftover chunk of an earlier, longer reply: skip it.
+def _exchange(s: socket.socket, cmd: str, lock=None, deadline=None) -> str:
+    lock = lock or _flock
+    if not lock.acquire(deadline):
+        raise OSError("the RCON lock is held by someone else")
+    try:
+        req_id = _new_id()
+        _send(s, req_id, 2, cmd)
+        while True:
+            got, _, body = _read_packet(s)
+            if got == req_id:
+                return body
+            # A leftover chunk of an earlier, longer reply: skip it.
+    finally:
+        lock.release()
 
 
 def _drop() -> None:
@@ -185,7 +240,7 @@ def _stop_rcon(cmd: str) -> str:
         if _stop["conn"] is None:
             _stop["conn"] = _connect(timeout=left)
         _stop["conn"].settimeout(left)
-        return _exchange(_stop["conn"], cmd)
+        return _exchange(_stop["conn"], cmd, _stop_flock, _stop["deadline"])
     except Exception as e:
         _stop["conn"] = None
         log("rcon error:", type(e).__name__, e)
@@ -193,8 +248,15 @@ def _stop_rcon(cmd: str) -> str:
 
 
 def stopping() -> bool:
-    """True once the script has been told to stop (SIGTERM or SIGINT)."""
-    return _stopping.is_set()
+    """True once the script has been told to stop (SIGTERM or SIGINT), so loops and
+    background work end. False in the cleanup itself, which may still use the kit (a fill,
+    a forceload released) within STOP_BUDGET."""
+    return _stopping.is_set() and threading.get_ident() != _stop["thread"]
+
+
+def cleaning() -> bool:
+    """True while this thread is running the stop's cleanup."""
+    return _stopping.is_set() and threading.get_ident() == _stop["thread"]
 
 
 def rcon(cmd: str) -> str:
@@ -228,7 +290,7 @@ def rcon(cmd: str) -> str:
         try:
             s = _connect()
             try:
-                return _exchange(s, cmd)
+                return _exchange(s, cmd, _stop_flock, time.time() + TIMEOUT)
             finally:
                 s.close()
         except Exception as e:
@@ -354,6 +416,7 @@ def _on_signal(signum, frame) -> None:
     _stop["thread"] = threading.get_ident()
     _stop["deadline"] = time.time() + STOP_BUDGET
     _stopping.set()
+    _flock.release()   # this thread may have been stopped holding it
     log("stopping (signal %d)" % signum)
     for fn in reversed(list(_stoppers)):
         try:

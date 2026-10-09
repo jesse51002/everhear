@@ -10,10 +10,17 @@
 # "questions"} with a bearer key, one attempt, answers keyed like the questions.
 #
 # A request holds at most 64k tokens, 32k of them the state plus its longest
-# question. Questions that do not fit one request go in several, each with the
-# whole state, sent at once; nothing is ever cut. A state and question that do
-# not fit 32k are refused here, before anything is sent. Sizes are estimated as
-# the Jev filter does: UTF-8 bytes of the JSON / 3, rounded up, deliberately high.
+# question (measured live on 2026-10-09: a 31.3k state answered, 33.3k was a 400;
+# 65.4k in all answered, about 72k was a 400). No limit on how many questions:
+# 860 in one request answered in 0.76 s. Questions that do not fit one request
+# go in several, each with the whole state, sent at once; nothing is ever cut.
+#
+# Sizes are estimated from the UTF-8 bytes of the JSON. A token was 2.6 to 6
+# bytes live: 3.4 for the router's questions, 2.6 for short questions heavy in
+# JSON, 6 for plain repeated words. So requests are split at the Jev filter's
+# estimate (bytes / 3) against 56k, room for the worst seen; and a state and
+# question are refused before sending only when even 6 bytes a token is over 32k.
+# Between the two, the request is sent, and a 400 says the size may be why.
 import math
 import threading
 import urllib.error
@@ -23,13 +30,15 @@ ENDPOINT = "https://api.typesafe.ai/v1/systemone"
 MODEL = "jev-latest"
 KEY_NAME = "TYPESAFE_API_KEY"
 REQUEST_MAX = 64000           # tokens in one request
+REQUEST_SPLIT = 56000         # what a request is split at, by the estimate (see above)
 STATE_AND_QUESTION_MAX = 32000
-OVERHEAD = 64                 # the body's own keys and the model's name, in tokens
+MOST_BYTES_PER_TOKEN = 6.0    # the most seen live: what is over the limit even at this, is
+OVERHEAD = 128                # the body's own keys, the model's name, Jev's own, in tokens
 REFUSED_STATUSES = (400, 413, 422)
 
 
-def estimate(obj):
-    return int(math.ceil(len(json.dumps(obj, ensure_ascii=False).encode("utf-8")) / 3.0))
+def estimate(obj, per=3.0):
+    return int(math.ceil(len(json.dumps(obj, ensure_ascii=False).encode("utf-8")) / per))
 
 
 def read_env(path):
@@ -78,7 +87,7 @@ def reason(body, key):
 
 def batches(state, questions):
     """The questions in order, split so each request with the whole state fits."""
-    room = REQUEST_MAX - estimate(state) - OVERHEAD
+    room = REQUEST_SPLIT - estimate(state) - OVERHEAD
     out, cur, used = [], {}, 0
     for name, q in questions.items():
         cost = estimate({name: q})
@@ -156,11 +165,12 @@ def main():
     url = env.get("VFG_JEV_URL") or ENDPOINT
     model = ARGS.get("model") or MODEL
 
-    biggest = max(estimate({n: q}) for n, q in questions.items())
-    size = estimate(state) + biggest
-    if size > STATE_AND_QUESTION_MAX:
-        die(1, "the state and its longest question are about %d tokens; Jev takes at most %d "
-               "— nothing was cut and nothing was sent" % (size, STATE_AND_QUESTION_MAX))
+    longest = max(questions.values(), key=lambda q: estimate(q))
+    least = estimate(state, MOST_BYTES_PER_TOKEN) + estimate(longest, MOST_BYTES_PER_TOKEN)
+    size = estimate(state) + estimate(longest)
+    if least > STATE_AND_QUESTION_MAX:
+        die(1, "the state and its longest question are at least %d tokens; Jev takes at most %d "
+               "— nothing was cut and nothing was sent" % (least, STATE_AND_QUESTION_MAX))
     groups = batches(state, questions)
     slots = [{} for _ in groups]
     t0 = time.monotonic()
@@ -175,6 +185,9 @@ def main():
         if t.is_alive() and not s:
             s["error"] = "jev did not answer within %g s" % timeout
     errors = [s["error"] for s in slots if "error" in s]
+    if errors and errors[0].startswith("jev refused the request: 400") and size > STATE_AND_QUESTION_MAX:
+        errors[0] += " — the state and its longest question may be over its %d tokens (about %d)" % (
+            STATE_AND_QUESTION_MAX, size)
     if errors:
         die(1, errors[0] + ("" if len(slots) == 1 else " (%d of %d requests failed)"
                                                        % (len(errors), len(slots))))
