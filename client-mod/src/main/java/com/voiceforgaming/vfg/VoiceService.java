@@ -32,9 +32,10 @@ import org.slf4j.LoggerFactory;
  * the session gate and the status board. {@link VfgClient} feeds it Fabric's events and
  * draws what it publishes.
  *
- * <p>The turn model is installed with the engine, under the same progress, and loaded
- * after it, on the runtime it loaded. One that will not download or load costs only
- * speed: it is logged once, and lines end on silence alone.
+ * <p>The turn model is installed and loaded once the engine is ready, on the setup thread,
+ * and swapped in when it is: voice never waits for it, and until then lines end on silence
+ * alone. One that will not install or load costs only speed: it is logged once, and lines
+ * stay on silence.
  */
 public final class VoiceService {
 	private static final Logger LOG = LoggerFactory.getLogger("vfg");
@@ -50,6 +51,7 @@ public final class VoiceService {
 	private final StatusBoard status = new StatusBoard();
 	private final AtomicReference<SpeechEngine> engine = new AtomicReference<>();
 	private final AtomicReference<TurnDetector> turn = new AtomicReference<>();
+	private final Object engineLock = new Object(); // releasing the engine, and swapping a turn model in beside it
 	private volatile String requestedModel;
 	private Thread setupThread;
 	private final Object setupLock = new Object();
@@ -320,15 +322,10 @@ public final class VoiceService {
 		Assets.Asset natives = Assets.natives(platform);
 		Assets.Asset vad = Assets.vad();
 		Assets.Asset modelAsset = Assets.model(model);
-		Assets.Asset turnAsset = Assets.turn(c.turnModel);
-		List<Assets.Asset> speech = List.of(natives, vad, modelAsset);
-		long speechBytes = speech.stream().mapToLong(Assets.Asset::bytes).sum();
-		long allBytes = speechBytes + (turnAsset == null ? 0 : turnAsset.bytes());
-		long[] doneBefore = {0};
 		AssetInstaller installer = new AssetInstaller(vfgRoot,
-			(done, total) -> status.setupRunning((int) ((doneBefore[0] + done) * 100 / allBytes)));
+			(done, total) -> status.setupRunning(total <= 0 ? 0 : (int) (done * 100 / total)));
 		try {
-			installer.installAll(speech);
+			installer.installAll(List.of(natives, vad, modelAsset));
 		} catch (AssetInstaller.SetupException e) {
 			LOG.warn("setup failed: {}", e.getMessage());
 			finishSetup(VoiceStatus.Setup.SETUP_FAILED, e.getMessage());
@@ -336,32 +333,18 @@ public final class VoiceService {
 		} catch (InterruptedException e) {
 			return;
 		}
-		boolean turnInstalled = false;
-		if (turnAsset != null) {
-			doneBefore[0] = speechBytes;
-			try {
-				installer.installAll(List.of(turnAsset));
-				turnInstalled = true;
-			} catch (AssetInstaller.SetupException | RuntimeException e) {
-				LOG.warn("turn model {} not installed ({}); lines end on silence alone", c.turnModel, e.getMessage());
-			} catch (InterruptedException e) {
-				return;
-			}
-		} else if (!c.turnModel.equals(TurnDetectors.OFF)) {
-			LOG.warn("turn model {} has no download; lines end on silence alone", c.turnModel);
-		}
 		if (Thread.currentThread().isInterrupted()) {
 			return;
 		}
 		releaseEngine();
+		SpeechEngine loaded;
 		try {
 			long t0 = System.nanoTime();
-			SpeechEngine loaded = SpeechEngine.load(Assets.folder(vfgRoot, natives), Assets.isParakeet(modelAsset),
+			loaded = SpeechEngine.load(Assets.folder(vfgRoot, natives), Assets.isParakeet(modelAsset),
 				Assets.folder(vfgRoot, modelAsset), Assets.folder(vfgRoot, vad).resolve(Assets.VAD_FILE), c.sttThreads,
 				(float) c.vadThreshold);
-			LOG.info("speech engine loaded ({}, {} ms)", model, (System.nanoTime() - t0) / 1_000_000);
-			turn.set(turnInstalled ? loadTurn(c.turnModel, natives, turnAsset) : null);
 			engine.set(loaded);
+			LOG.info("speech engine loaded ({}, {} ms)", model, (System.nanoTime() - t0) / 1_000_000);
 			finishSetup(VoiceStatus.Setup.READY, null);
 		} catch (Throwable t) {
 			String message = t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
@@ -370,40 +353,67 @@ public final class VoiceService {
 			}
 			LOG.error("engine failed: {}", message, t);
 			finishSetup(VoiceStatus.Setup.ENGINE_FAILED, message);
+			return;
 		}
+		setUpTurn(c.turnModel, natives, loaded);
 	}
 
 	/**
-	 * Loads the turn model on the ONNX Runtime the engine has just loaded; {@code null}, with
-	 * one warning, when it will not load.
+	 * Installs and loads the turn model once {@code beside} is loaded and setup is READY, still
+	 * on the setup thread and under its lock, then swaps it in: until then, and if it will not
+	 * install or load (one warning), lines end on silence alone. A setup replaced or stopped
+	 * meanwhile closes what it loaded instead of swapping it in, so none is left behind.
 	 */
-	private TurnDetector loadTurn(String turnModel, Assets.Asset natives, Assets.Asset turnAsset) {
+	private void setUpTurn(String turnModel, Assets.Asset natives, SpeechEngine beside) {
+		if (turnModel.equals(TurnDetectors.OFF)) {
+			return;
+		}
+		Assets.Asset asset = Assets.turn(turnModel);
+		try {
+			new AssetInstaller(vfgRoot, null).install(asset); // no progress: setup already says READY
+		} catch (AssetInstaller.SetupException | RuntimeException e) {
+			LOG.warn("turn model {} not installed ({}); lines end on silence alone", turnModel, e.getMessage());
+			return;
+		} catch (InterruptedException e) {
+			return;
+		}
+		TurnDetector loaded;
 		try {
 			long t0 = System.nanoTime();
-			TurnDetector loaded = TurnDetectors.load(turnModel, Assets.folder(vfgRoot, natives),
-				Assets.turnFile(vfgRoot, turnAsset));
+			loaded = TurnDetectors.load(turnModel, Assets.folder(vfgRoot, natives), Assets.turnFile(vfgRoot, asset));
 			LOG.info("turn model loaded ({}, {} ms)", turnModel, (System.nanoTime() - t0) / 1_000_000);
-			return loaded;
 		} catch (Throwable t) {
 			LOG.warn("turn model {} failed to load ({}); lines end on silence alone", turnModel,
 				t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage());
-			return null;
+			return;
 		}
+		synchronized (engineLock) {
+			if (!Thread.currentThread().isInterrupted() && engine.get() == beside) {
+				turn.set(loaded);
+				return;
+			}
+		}
+		closeTurn(loaded);
 	}
 
 	/** Releases the turn model, then the engine whose runtime it runs on. */
 	private void releaseEngine() {
-		TurnDetector oldTurn = turn.getAndSet(null);
-		if (oldTurn != null) {
+		synchronized (engineLock) {
+			closeTurn(turn.getAndSet(null));
+			SpeechEngine old = engine.getAndSet(null);
+			if (old != null) {
+				old.close();
+			}
+		}
+	}
+
+	private static void closeTurn(TurnDetector detector) {
+		if (detector != null) {
 			try {
-				oldTurn.close();
+				detector.close();
 			} catch (RuntimeException e) {
 				LOG.warn("closing the turn model: {}", e.toString());
 			}
-		}
-		SpeechEngine old = engine.getAndSet(null);
-		if (old != null) {
-			old.close();
 		}
 	}
 

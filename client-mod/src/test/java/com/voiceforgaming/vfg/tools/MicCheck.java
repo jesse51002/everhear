@@ -6,7 +6,6 @@ import com.voiceforgaming.vfg.audio.WindowListener.StopReason;
 import com.voiceforgaming.vfg.config.VfgConfig;
 import com.voiceforgaming.vfg.net.BridgeClient;
 import com.voiceforgaming.vfg.net.LinePayload;
-import com.voiceforgaming.vfg.setup.Assets;
 import com.voiceforgaming.vfg.speech.LineAssembler;
 import com.voiceforgaming.vfg.speech.Levels;
 import com.voiceforgaming.vfg.speech.SpeechEngine;
@@ -363,14 +362,8 @@ public final class MicCheck {
 			return null;
 		}
 		try {
-			Assets.Asset asset = Assets.turn(turnModel);
-			if (asset == null) {
-				throw new IllegalStateException("it has no download");
-			}
-			TestAssets.installer().install(asset);
-			Path natives = Assets.folder(TestAssets.root(), Assets.natives(Assets.currentPlatform()));
 			long t0 = System.nanoTime();
-			TurnDetector loaded = TurnDetectors.load(turnModel, natives, Assets.turnFile(TestAssets.root(), asset));
+			TurnDetector loaded = TestAssets.turnDetector(turnModel);
 			say("Loaded the turn model, %s, in %.2f s.", turnModel, (System.nanoTime() - t0) / 1e9);
 			return loaded;
 		} catch (Exception | LinkageError e) {
