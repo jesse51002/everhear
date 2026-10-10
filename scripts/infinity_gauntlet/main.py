@@ -1,25 +1,10 @@
 """Infinity Gauntlet: right-click it and the first thing you point at is gone, in a beam of flame, with no cooldown."""
 ASKS = ["give me the power of infinity", "an infinity gauntlet that kills whatever I point at",
         "it does not do enough damage", "no cooldown"]
-from kit import values, items, aim, fx, loop, exclude, world
+from kit import values, result, items, aim, fx, loop, exclude, world
 import itertools
 import math
 import mc
-
-VALUES = {
-    "player":        {"type": "player", "default": "@a"},
-    "item":          {"type": "str", "default": "Infinity Gauntlet"},
-    "cooldown":      {"type": "number", "min": 0, "max": 60, "default": 0, "live": True},
-    "range":         {"type": "int", "min": 4, "max": 300, "default": 80, "live": True},
-    "damage_amount": {"type": "number", "min": 0, "max": 100000, "default": 100, "live": True},
-    "damage_type":   {"type": "enum", "of": ["player_attack", "magic", "lightning_bolt", "explosion", "freeze", "on_fire", "sonic_boom", "arrow", "wither", "generic"], "default": "lightning_bolt", "live": True},
-    "damage_kill":   {"type": "bool", "default": True, "live": True},
-    "damage_what":   {"type": "enum", "of": ["all", "mobs", "hostile", "players"], "default": "all", "live": True},
-    "damage_most":   {"type": "int", "min": 0, "max": 1000, "default": 1, "live": True},
-    "damage_head":   {"type": "number", "min": 1, "max": 10, "default": 1, "live": True},
-    "damage_spare":  {"type": "list", "of": "player", "default": [], "live": True},
-}
-
 
 # --- preset: damage_hits (copied from _presets/damage_hits.py) ---
 def damage_hits(hits, shooter, v):
@@ -77,7 +62,9 @@ def _damage_on_head(h, look):
     return t > 0 and math.sqrt(sum((w[i] - t * d[i]) ** 2 for i in range(3))) <= 0.5
 
 
-v = values(VALUES)
+v = values()
+result("%s has the %s: right-click to %s the first thing they point at" % (
+    v["player"], v["item"], "kill" if v["damage_kill"] else "hurt"), player=v["player"], item=v["item"])
 for p in loop(items.clicks(v["player"], v["item"], cooldown=v["cooldown"], color="gold")):
     r = aim.ray(p, v["range"])
     if r is None:
