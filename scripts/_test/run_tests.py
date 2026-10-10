@@ -1,12 +1,14 @@
-"""Tests for the scripts folder, run under the Python EC2 has:
+"""Tests for the scripts folder, run under the Python EC2 has, with pydantic for the actions:
 
-    uv run --python 3.9 python scripts/_test/run_tests.py
+    uv run --no-project --python 3.12 --with pydantic python scripts/_test/run_tests.py
 
 They start fake_rcon.py on a free port with a temp server.properties, check
 _lib/mc.py, then run every script (every folder without a leading "_") the way
 EC2 does: `python3 -u main.py` in its own folder with PYTHONPATH=scripts/_lib.
 A seed (README.md beside main.py) runs with its Usage line's arguments. An example
-(main.py with ASKS and VALUES, no README.md) runs with its defaults and VFG_INSTANCE set,
+(main.py with ASKS, no README.md) runs with its defaults and VFG_INSTANCE set: one with
+VALUES reads them; one ported to its action (v = values()) gets the meta file `vfg action
+run` would write for its first action with nothing given (lib/py/vfg_actions.py). It runs
 against fake_world with Steve and Alex online; Steve tries every item it gives him (a
 click, a 1.5 s hold) and crouches; then SIGTERM. It must send commands, raise nothing,
 exit 0 within 2 s of the stop, and leave nothing tagged vfg_<name>: no entity, bossbar,
@@ -358,6 +360,33 @@ def play(world, until):
             time.sleep(0.2)
 
 
+_CATALOG = []
+_CATALOG_LOCK = threading.Lock()
+
+
+def action_meta(name, source):
+    """For a script ported to its action (no VALUES): the meta file of a copy of its first
+    action (the one named as the script, else the first by name) run with nothing given, as
+    vfg action run writes it; None for a script that still has VALUES."""
+    if re.search(r"^VALUES\s*=", source, re.M):
+        return None
+    with _CATALOG_LOCK:   # the scripts run in threads: the actions load once
+        if not _CATALOG:
+            sys.path.insert(0, os.path.join(os.path.dirname(SCRIPTS), "lib", "py"))
+            import vfg_actions
+            _CATALOG.append((vfg_actions, vfg_actions.Catalog(os.path.dirname(SCRIPTS), None)))
+        va, cat = _CATALOG[0]
+        meta_of = va.check_values
+    over = sorted(n for n in cat.names() if cat.get(n).script == name)
+    if not over:
+        raise AssertionError("%s has no VALUES and no action runs it" % name)
+    action = name if name in over else over[0]
+    with _CATALOG_LOCK:
+        checked = meta_of(cat.get(action), {})
+    return {"copy": name, "action": action, "script": name, "source": "library", "values": checked.values,
+            "live": checked.live, "runs": cat.get(action).runs, "task": None, "started": None}
+
+
 def run_example(name, seconds=4.0, folder=None):
     """An example started as on EC2, with its defaults (no arguments), against a fake world
     with Steve and Alex online: it plays a little, then SIGTERM if it is still running."""
@@ -379,8 +408,13 @@ def run_example(name, seconds=4.0, folder=None):
     fake = FakeRcon(password, responder=world.respond).start()
     out_path = os.path.join(TMP, name + ".out")
     env = script_env(properties(password, fake.port))
-    env.update(VFG_INSTANCE=name, VFG_RUN_DIR=tempfile.mkdtemp(dir=TMP), VFG_LIVE_POLL_S="0.5",
+    env.update(VFG_INSTANCE=name, VFG_SCRIPT=name, VFG_RUN_DIR=tempfile.mkdtemp(dir=TMP), VFG_LIVE_POLL_S="0.5",
                VFG_PROTECTED=os.path.join(TMP, "no-protected.json"))
+    meta = action_meta(name, source) if os.path.dirname(folder) == SCRIPTS else None
+    if meta is not None:
+        with open(os.path.join(env["VFG_RUN_DIR"], name + ".json"), "w") as f:
+            json.dump(meta, f)
+    res["action"] = meta and meta["action"]
     tag = "vfg_" + name
     try:
         with open(out_path, "wb") as out:

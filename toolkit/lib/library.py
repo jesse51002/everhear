@@ -1274,10 +1274,9 @@ def strip_values(text):
     first = node.lineno
     while first > 1 and lines[first - 2].strip().startswith("#"):
         first -= 1
-    end = node.end_lineno
-    while end < len(lines) and not lines[end].strip():
-        end += 1
-    text = "".join(lines[:first - 1] + lines[end:])
+    while first > 1 and not lines[first - 2].strip():
+        first -= 1        # the blank lines above it go; those below it stay, before what follows
+    text = "".join(lines[:first - 1] + lines[node.end_lineno:])
     return re.sub(r"\bvalues\(\s*VALUES\s*\)", "values()", text)
 
 
