@@ -435,6 +435,50 @@ def is_live(meta: tuple | list) -> bool:
     return any(m is LIVE for m in meta)
 
 
+def same_type(f: FieldInfo, g: FieldInfo) -> bool:
+    """Whether two fields take the same values: the same type, limits, pattern and live-ness,
+    whatever their defaults and descriptions."""
+    t1, m1 = unwrap(f.annotation, f.metadata)
+    t2, m2 = unwrap(g.annotation, g.metadata)
+    if t1 != t2 or len(m1) != len(m2):
+        return False
+    rest = list(m2)
+    for m in m1:
+        hit = next((i for i, r in enumerate(rest) if _same_meta(m, r)), None)
+        if hit is None:
+            return False
+        del rest[hit]
+    return True
+
+
+def _same_meta(a: object, b: object) -> bool:
+    if isinstance(a, Kind) and isinstance(b, Kind):
+        return a.name == b.name
+    if a == b:
+        return True
+    return type(a) is type(b) and hasattr(a, "__dict__") and vars(a) == vars(b)  # Field(pattern=) made twice
+
+
+def declares(k: type) -> list[str]:
+    """The fields class k writes itself, not those it inherits: its own annotations (read on
+    Python 3.14 too, where they are not in the class's __dict__)."""
+    try:
+        import annotationlib
+    except ImportError:  # Python 3.12, 3.13
+        return list(vars(k).get("__annotations__", {}))
+    return list(annotationlib.get_annotations(k, format=annotationlib.Format.FORWARDREF))
+
+
+def inherited(cls: type, name: str) -> tuple[type, FieldInfo] | None:
+    """Field `name` as cls inherits it, (the class it comes from, its field), whether or not
+    cls writes it again; None when no class cls inherits has it."""
+    for k in cls.__mro__[1:]:
+        f = (vars(k).get("__pydantic_fields__") or {}).get(name)
+        if f is not None and isinstance(k, type) and issubclass(k, Values):
+            return k, f
+    return None
+
+
 def type_problem(t: Any, meta: tuple | list = ()) -> str | None:
     """None when a field's type is one of this file's: bool, int, float, str, Literal[...],
     list[...] of these, Player, Players, MobId, BlockId, ItemId, ItemIdOrEmpty, ParticleId,
@@ -599,10 +643,13 @@ class Action(Values):
       takes      the fields the planner fills, the target first; the rest keep their default
       defaults   this action's own defaults for fields it inherits; still given and edited
       fixed      values this action sets; never given to a run, an edit may still change them
+      descriptions  this action's own words for fields it inherits; their type and limits stay
       timeout_s  for a once action slower than VFG_DISPATCH_ACTION_TIMEOUT_S
-    A variant subclasses an action: it inherits takes (or replaces them), and its defaults
-    and fixed merge over its parent's (a key it puts in defaults is no longer fixed). The
-    merged values are each field's default, so GatlingGun().fire is "hold".
+    A variant subclasses an action: it inherits takes (or replaces them), and its defaults,
+    fixed and descriptions merge over its parent's (a key it puts in defaults is no longer
+    fixed). The merged values are each field's default and description, so GatlingGun().fire
+    is "hold". A field is written again only to change its type or limits, with its whole
+    description under it.
     """
 
     script: ClassVar[str] = ""
@@ -610,6 +657,7 @@ class Action(Values):
     takes: ClassVar[list[str]] = []
     defaults: ClassVar[dict[str, Any]] = {}
     fixed: ClassVar[dict[str, Any]] = {}
+    descriptions: ClassVar[dict[str, str]] = {}
     timeout_s: ClassVar[int | None] = None
 
     @classmethod
@@ -619,25 +667,32 @@ class Action(Values):
 
 
 def _merge(cls: type[Action]) -> None:
-    """Merge defaults and fixed down from the class's parents, and make them its fields'
-    defaults. Kept in cls.__vfg__: each field's default as declared, after defaults
-    ("unfixed"), and the class's own defaults and fixed as written."""
+    """Merge defaults, fixed and descriptions down from the class's parents, and make them its
+    fields' defaults and descriptions; a field a class writes again drops the descriptions its
+    parents gave it. Kept in cls.__vfg__: each field's default as declared, after defaults
+    ("unfixed"), and the class's own defaults, fixed and descriptions as written."""
     own_defaults, own_fixed = dict(vars(cls).get("defaults") or {}), dict(vars(cls).get("fixed") or {})
-    defaults, fixed = {}, {}
+    own_words = dict(vars(cls).get("descriptions") or {})
+    own = declares(cls)
+    defaults, fixed, words = {}, {}, {}
     for k in reversed(cls.__mro__):
         if k is cls:
-            mine = (own_defaults, own_fixed)
+            mine, writes = (own_defaults, own_fixed, own_words), own
+        elif "__vfg__" in vars(k):
+            mine, writes = (*vars(k)["__vfg__"]["own"], vars(k)["__vfg__"]["descriptions"]), declares(k)
         else:
-            mine = getattr(k, "__vfg__", {}).get("own", ({}, {})) if "__vfg__" in vars(k) else ({}, {})
+            continue
+        for key in writes:
+            words.pop(key, None)
         for key, v in mine[0].items():
             defaults[key] = v
             fixed.pop(key, None)
         for key, v in mine[1].items():
             fixed[key] = v
             defaults.pop(key, None)
+        words.update(mine[2])
     declared = {}
     parents = [vars(k)["__vfg__"]["declared"] for k in cls.__mro__[1:] if "__vfg__" in vars(k)]
-    own = vars(cls).get("__annotations__", {})
     for name, f in cls.__pydantic_fields__.items():
         inherited = next((p[name] for p in parents if name in p), _UNSET)
         declared[name] = inherited if name not in own and inherited is not _UNSET else \
@@ -646,13 +701,16 @@ def _merge(cls: type[Action]) -> None:
     changed = False
     for name, f in list(cls.__pydantic_fields__.items()):
         want = fixed.get(name, unfixed[name])
-        if f.default_factory is not None or f.default is not want:
+        text = words.get(name)
+        text = text.strip() if isinstance(text, str) and text.strip() else f.description  # else check_action says
+        if f.default_factory is not None or f.default is not want or f.description != text:
             g = copy(f)
-            g.default, g.default_factory = want, None
+            g.default, g.default_factory, g.description = want, None, text
             cls.__pydantic_fields__[name] = g
             changed = True
-    cls.defaults, cls.fixed = defaults, fixed
-    cls.__vfg__ = {"declared": declared, "unfixed": unfixed, "own": (own_defaults, own_fixed)}
+    cls.defaults, cls.fixed, cls.descriptions = defaults, fixed, words
+    cls.__vfg__ = {"declared": declared, "unfixed": unfixed, "own": (own_defaults, own_fixed),
+                   "descriptions": own_words}
     if changed:
         cls.model_rebuild(force=True)
 

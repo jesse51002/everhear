@@ -7,12 +7,12 @@ class GodVisits(Action, preset("director")):
     script = "god_visits"
     runs = "until_stopped"
     takes = ["player", "director_events", "director_min_s", "director_max_s", "gifts"]
-    defaults = {"director_weights": [6, 4], "director_each": False}
+    defaults = {"director_weights": [6, 4], "director_each": False, "director_events": ["gift", "take"]}
+    descriptions = {"director_events": "what a visit does, one at random: gift (one of gifts), take (one of "
+                                       "take_items); also the director's sound, shadow, mob, message, dark"}
 
     player: Players = "@a"
     """who it may visit: a name, several separated by commas, or @a"""
-    director_events: Live[list[str]] = ["gift", "take"]
-    """what a visit does, one at random: gift (one of gifts), take (one of take_items); also the director's sound, shadow, mob, message, dark"""
     director_min_s: Live[float] = Field(180, ge=10, le=3600)
     """the shortest wait between visits, in seconds someone is online"""
     director_max_s: Live[float] = Field(360, ge=10, le=3600)

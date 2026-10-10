@@ -283,18 +283,30 @@ def _check(name: str, cls, repo: Path | None, source: str, server: str | None) -
         out.append("timeout_s is a whole number of seconds, or None")
     if source == "made" and repo is not None and (repo / "actions" / (name + ".py")).exists():
         out.append("%s is a library action's name: a made action needs its own" % name)
-    for attr in ("takes", "defaults", "fixed"):
+    for attr in ("takes", "defaults", "fixed", "descriptions"):
         if not isinstance(getattr(cls, attr), list if attr == "takes" else dict):
-            out.append("%s is a %s" % (attr, "list of field names" if attr == "takes" else "dict of field: value"))
+            out.append("%s is a %s" % (attr, "list of field names" if attr == "takes" else
+                                       "dict of field: words" if attr == "descriptions" else "dict of field: value"))
             return out
     fields = cls.model_fields
     own_defaults, own_fixed = cls.__vfg__["own"]
     for key in sorted(set(own_defaults) & set(own_fixed)):
         out.append("%s is in both defaults and fixed" % key)
-    for attr, given in (("defaults", cls.defaults), ("fixed", cls.fixed)):
+    for attr, given in (("defaults", cls.defaults), ("fixed", cls.fixed), ("descriptions", cls.descriptions)):
         for key in given:
             if key not in fields:
                 out.append("%s names %s, which is not one of its fields" % (attr, key))
+    own = set(T.declares(cls)) & set(fields)
+    for key, text in cls.descriptions.items():
+        if key in fields and not (isinstance(text, str) and text.strip()):
+            out.append("descriptions gives %s no words: write what it is, in players' words" % key)
+    for key in sorted(own & set(cls.__vfg__.get("descriptions", {}))):
+        out.append("descriptions names %s, which it writes itself: its description is the string under it" % key)
+    for key in [k for k in fields if k in own]:
+        hit = T.inherited(cls, key)
+        if hit is not None and T.same_type(fields[key], hit[1]):
+            out.append("%s is written again with %s's type and limits: drop the field and give its default in "
+                       "defaults, its words in descriptions" % (key, hit[0].__name__))
     for key in cls.takes:
         if key not in fields:
             out.append("takes names %s, which is not one of its fields" % key)
@@ -591,7 +603,8 @@ def entry(name: str, cls, source: str, file: str) -> dict:
                        "live": T.is_live(f.metadata), "description": (f.description or "").strip()}
     return {"line": menu_line(name, cls).split(" — ", 1)[1], "script": cls.script, "runs": cls.runs,
             "takes": list(cls.takes), "fixed": to_jsonable_python(cls.fixed),
-            "defaults": to_jsonable_python(cls.defaults), "timeout_s": cls.timeout_s, "source": source,
+            "defaults": to_jsonable_python(cls.defaults), "descriptions": dict(cls.descriptions),
+            "timeout_s": cls.timeout_s, "source": source,
             "file": file, "fields": fields, "describe": describe(name, cls)}
 
 
@@ -600,9 +613,9 @@ def cache(repo: Path, server: str, home: Path, *, catalog: Catalog | None = None
     reads the actions without loading them:
 
         {"built_at": epoch, "files": [every action file, from the repo],
-         "actions": {name: {"line", "script", "runs", "takes", "fixed", "defaults", "timeout_s",
-                            "source", "file", "fields": {field: {"type", "default", "ge", "le",
-                            "choices", "live", "description"}}, "describe"}},
+         "actions": {name: {"line", "script", "runs", "takes", "fixed", "defaults", "descriptions",
+                            "timeout_s", "source", "file", "fields": {field: {"type", "default", "ge",
+                            "le", "choices", "live", "description"}}, "describe"}},
          "errors": {file stem: why it was left out}}
 
     Built again when a file in actions/, made/<server>/actions/ or a presets folder is newer

@@ -7,7 +7,9 @@ class InfinityGauntlet(Action, preset("damage_hits")):
     script = "infinity_gauntlet"
     runs = "until_stopped"
     takes = ["player", "damage_kill", "damage_amount", "damage_what", "cooldown", "range"]
-    defaults = {"damage_type": "lightning_bolt", "damage_kill": True, "damage_most": 1}
+    defaults = {"damage_type": "lightning_bolt", "damage_kill": True, "damage_most": 1, "damage_amount": 100}
+    descriptions = {"damage_amount": "damage to what it hits, in half-hearts (a player has 20); does nothing while "
+                                     "damage_kill is on, and it is on by default: set damage_kill off for this to count"}
 
     player: Players = "@a"
     """who gets one: a name, several separated by commas, or @a"""
@@ -17,5 +19,3 @@ class InfinityGauntlet(Action, preset("damage_hits")):
     """seconds between uses"""
     range: Live[int] = Field(80, ge=4, le=300)
     """how far it reaches, in blocks"""
-    damage_amount: Live[float] = Field(100, ge=0, le=100000)
-    """damage to what it hits, in half-hearts (a player has 20); does nothing while damage_kill is on, and it is on by default: set damage_kill off for this to count"""

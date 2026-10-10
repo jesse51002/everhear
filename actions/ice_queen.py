@@ -20,4 +20,4 @@ class IceQueen(Action, preset("boss"), preset("around"), preset("freeze"), prese
     cold: Live[float] = Field(6, ge=0, le=100)
     """the freeze damage her ice blast does to each it freezes, in half-hearts (0: none)"""
     boss_gear: Literal["none", "leather", "golden", "iron", "diamond", "netherite", "ice"] = "ice"
-    """what she wears, never dropped: ice is a diamond crown and boots, pale blue robes and an iron sword; or a full set of one kind (none: nothing)"""
+    """what she wears, never dropped: ice is a diamond crown and boots, pale blue robes and an iron sword; any other a full set of that armour and its sword (leather comes with a wooden sword); none: nothing"""
