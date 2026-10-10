@@ -21,12 +21,15 @@ FIXTURE = os.path.join(HERE, "fixtures", "transcript.jsonl")
 SESSION = "3f2a9c1e-7b44-4d2a-9e10-5c6d7e8f9a0b"
 
 # What the fixture's three assistant messages add up to (see test/fixtures/transcript.jsonl):
-#   msg_A sonnet, two lines one id: 3 in, 1000 1h-write, 5000 read, 50 out
-#   msg_B sonnet: 2 in, 200 write (no split: 5-minute), 6000 read, 20 out
-#   msg_C haiku: 100 in, 10 out;  msg_S <synthetic>: skipped;  msg_D: half-written
-SONNET_IN, SONNET_OUT = 3 + 1000 + 5000 + 2 + 200 + 6000, 50 + 20
-SONNET_COST = (5 * 2.00 + 200 * 2.50 + 1000 * 4.00 + 11000 * 0.10 + 70 * 10.00) / 1e6
-HAIKU_COST = (100 * 1.00 + 10 * 5.00) / 1e6
+#   msg_A haiku 5.5, two lines one id: 3 in, 1000 1h-write, 5000 read, 50 out
+#   msg_B haiku 5.5: 2 in, 200 write (no split: 5-minute), 6000 read, 20 out
+#   msg_C sonnet 5.5 (a turn switchModelsOnFlag moved): 100 in, 10 out
+#   msg_S <synthetic>: skipped;  msg_D: half-written
+# Haiku 5.5 per million: 0.10 in, 0.125 5m-write, 0.20 1h-write, 0.01 read, 0.50 out, each x5
+# for a call whose prompt is over 100,000 tokens. Sonnet 5.5: 2.00 in, 10.00 out.
+HAIKU_IN, HAIKU_OUT = 3 + 1000 + 5000 + 2 + 200 + 6000, 50 + 20
+HAIKU_COST = (5 * 0.10 + 200 * 0.125 + 1000 * 0.20 + 11000 * 0.01 + 70 * 0.50) / 1e6
+SONNET_COST = (100 * 2.00 + 10 * 10.00) / 1e6
 
 
 class Env:
@@ -94,15 +97,15 @@ class UsageHookTest(unittest.TestCase):
         calls = self.e.calls(want=2)
         self.assertEqual(len(calls), 2, calls)
         by_model = {opts(c)["model"]: opts(c) for c in calls}
-        self.assertEqual(set(by_model), {"claude-sonnet-5-5", "claude-haiku-4-5-20251001"})
-        s, h = by_model["claude-sonnet-5-5"], by_model["claude-haiku-4-5-20251001"]
-        for row in (s, h):
+        self.assertEqual(set(by_model), {"claude-haiku-5-5", "claude-sonnet-5-5"})
+        h, s = by_model["claude-haiku-5-5"], by_model["claude-sonnet-5-5"]
+        for row in (h, s):
             self.assertEqual(row["component"], "conversation")
             self.assertEqual(row["ref"], SESSION[:8])
-        self.assertEqual((int(s["in"]), int(s["out"])), (SONNET_IN, SONNET_OUT))
+        self.assertEqual((int(h["in"]), int(h["out"])), (HAIKU_IN, HAIKU_OUT))
+        self.assertAlmostEqual(float(h["cost"]), HAIKU_COST, places=9)
+        self.assertEqual((int(s["in"]), int(s["out"])), (100, 10))
         self.assertAlmostEqual(float(s["cost"]), SONNET_COST, places=6)
-        self.assertEqual((int(h["in"]), int(h["out"])), (100, 10))
-        self.assertAlmostEqual(float(h["cost"]), HAIKU_COST, places=6)
         log = self.e.log()
         self.assertEqual(len(log), 2)
         self.assertEqual({row[1] for row in log}, set(by_model))
@@ -131,7 +134,7 @@ class UsageHookTest(unittest.TestCase):
         half = data[len(complete):].decode()
         line = json.dumps({"type": "assistant", "uuid": "d1", "sessionId": SESSION, "requestId": "req_msg_D",
                            "message": {"id": "msg_D", "type": "message", "role": "assistant",
-                                       "model": "claude-sonnet-5-5", "content": [{"type": "text", "text": "x"}],
+                                       "model": "claude-haiku-5-5", "content": [{"type": "text", "text": "x"}],
                                        "stop_reason": None, "usage": {"input_tokens": 7, "output_tokens": 9}}})
         self.assertTrue(line.startswith(half), "fixture's half line should be the start of msg_D")
         with open(self.e.transcript, "a") as f:
@@ -140,8 +143,26 @@ class UsageHookTest(unittest.TestCase):
         calls = self.e.calls(want=3)
         self.assertEqual(len(calls), 3)
         last = opts(calls[-1])
-        self.assertEqual((last["model"], last["in"], last["out"]), ("claude-sonnet-5-5", "7", "9"))
-        self.assertAlmostEqual(float(last["cost"]), (7 * 2.00 + 9 * 10.00) / 1e6, places=6)
+        self.assertEqual((last["model"], last["in"], last["out"]), ("claude-haiku-5-5", "7", "9"))
+        self.assertAlmostEqual(float(last["cost"]), (7 * 0.10 + 9 * 0.50) / 1e6, places=9)
+
+    def test_haiku_5_5_call_over_100k_prompt_tokens_pays_five_times_every_token(self):
+        def call(mid, plain, write, read, out):
+            return json.dumps({"type": "assistant", "message": {
+                "id": mid, "model": "claude-haiku-5-5", "content": [],
+                "usage": {"input_tokens": plain, "cache_creation_input_tokens": write,
+                          "cache_read_input_tokens": read, "output_tokens": out}}}) + "\n"
+        with open(self.e.transcript, "w") as f:
+            f.write(call("msg_at", 1000, 4000, 95000, 100))       # prompt 100,000: not over
+            f.write(call("msg_over", 1000, 4000, 95001, 100))     # prompt 100,001: over
+        self.e.run_hook()
+        calls = self.e.calls(want=1)
+        self.assertEqual(len(calls), 1)
+        row = opts(calls[0])
+        self.assertEqual((row["in"], row["out"]), ("200001", "200"))
+        at = (1000 * 0.10 + 4000 * 0.125 + 95000 * 0.01 + 100 * 0.50) / 1e6
+        over = (1000 * 0.50 + 4000 * 0.625 + 95001 * 0.05 + 100 * 2.50) / 1e6
+        self.assertAlmostEqual(float(row["cost"]), at + over, places=9)
 
     def test_unpriced_model_gets_no_cost(self):
         with open(self.e.transcript, "w") as f:

@@ -13,8 +13,8 @@ against a real 26.3 server on this PC with three players always online. The spec
 2. The orchestrator runner, started as `vfg orch start` starts it, against the stand-in box:
    `vfg` is integration/realmc/bin/vfg (VFG_HOME in the stand-in), the runner's inbox, state and
    log are in DIR/orch (VFG_ORCH_DIR), `VFG_SERVER=replay`, so implementers write in made/replay/,
-   which starts empty. The orchestrator on its defaults (Opus 5.5, low effort), implementers on
-   theirs (Haiku 5.5). Nothing reads or writes ~/.vfg. HOME stays yours: the CLI's own login, on
+   which starts empty. The orchestrator and implementers on the runner's defaults (Haiku 5.5, low
+   effort). Nothing reads or writes ~/.vfg. HOME stays yours: the CLI's own login, on
    your Claude subscription.
 3. Each task, as the conversation wrote it, with `vfg orch send TASK --context CONTEXT`, at a fixed
    pace. A task's id in the replay is the next free one; a reference in its words to an earlier

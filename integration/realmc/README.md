@@ -2,8 +2,8 @@
 
 A real Minecraft Java 26.3 server (the box's own `server.jar`), with a stand-in for the box's
 `/opt/vfg` and `/opt/mc` around it, so `vfg cmd`, `vfg script …`, `vfg state`, every remote
-program and every script run here, the remote side on Python 3.9 as on Amazon Linux 2023, against
-the real server's RCON. No EC2. Several servers run side by side, one per name, each with its own
+program and every script run here, the remote side on the box's Python 3.12 at the box's path
+(`<vfg>/python/bin/python3`, as `/opt/vfg/python/bin/python3` there), against the real server's RCON. No EC2. Several servers run side by side, one per name, each with its own
 world, ports and stand-in, so builders testing at the same time never share one.
 
 ## Start one, point vfg at it, stop it
@@ -12,7 +12,7 @@ world, ports and stand-in, so builders testing at the same time never share one.
 integration/realmc/up                    # the server "main"; prepares everything on first use
 eval "$(integration/realmc/env)"         # this shell's vfg (and `import mc`) now reach it
 vfg cmd 'time query day'                 # → Timeline minecraft:day is at 6000 tick(s)
-vfg script run tnt_rain                  # deployed to its stand-in, run there on Python 3.9
+vfg script run tnt_rain                  # deployed to its stand-in, run there on Python 3.12
 integration/realmc/down                  # stops its scripts (their cleanup runs), then the server
 ```
 
@@ -226,7 +226,7 @@ cleanup takes its TNT away), Steve taken off, down. PASS or FAIL per check; 35 p
 | `REALMC_ROOT` | `integration/realmc/.server` | where everything is kept |
 | `REALMC_HEAP` | `2G` | each server's `-Xmx` |
 | `VFG_JAVA` | newest `~/.local/share/jdk/*/bin/java`, else `java` | a Java 25 or newer |
-| `VFG_EC2_PYTHON` | `uv python find 3.9` | the box's Python |
+| `VFG_EC2_PYTHON` | `uv python find 3.12` | the box's Python, linked as `<NAME>/vfg/python/bin/python3`; the stand-in's own `python3` is the 3.9 `uv` finds, as Amazon Linux's, else this one |
 | `REALMC_BACKUP` | `$VFG_BACKUP_DIR/mc-backup.tgz` | where `server.jar` comes from |
 | `REALMC_SERVER_JAR` | — | a `server.jar` to use instead of the backup's |
 | `REALMC_LIB_ROOTS` | — | more `libraries/` folders to look for Fabric Loader in |
@@ -244,7 +244,8 @@ integration/realmc/
     shared/              server.jar, libraries/, versions/, mods/ (Carpet), env (the .env)
     template/world/      the world every server's starts from; template.json says where the arena is
     <NAME>/mc/           the server: server.properties (600), world/, console.log, logs/
-    <NAME>/vfg/          /opt/vfg: lib/vfg_feed.py, vfg.db, scripts/, made/, run/, .env
+    <NAME>/vfg/          /opt/vfg: lib/vfg_feed.py, vfg.db, scripts/, made/, run/, .env,
+                         python/bin/python3 (the box's Python 3.12)
     <NAME>/home/.vfg/    the VFG_HOME vfg uses for it
-    <NAME>/box/          the box's PATH (python3 is 3.9) and the fake systemctl's units
+    <NAME>/box/          the box's PATH (python3 is 3.9, Amazon Linux's own) and the fake systemctl's units
 ```

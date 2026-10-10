@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Starts the conversation on your Claude subscription: Sonnet, low effort, told to start.
+# Starts the conversation on your Claude subscription: Haiku 5.5, low effort, told to start.
 #   ./start             a new session
 #   ./start --continue  the last session again, after a crash; it runs start again
 # The owner: CLAUDE.local.md beside this file names them, and Claude Code loads it with
@@ -35,5 +35,5 @@ EOF
 fi
 
 unset ANTHROPIC_API_KEY
-exec claude --model sonnet --effort low --name vfg-conversation \
+exec claude --model claude-haiku-5-5 --effort low --name vfg-conversation \
   --setting-sources project,local --strict-mcp-config "$@" start

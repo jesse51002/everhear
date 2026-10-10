@@ -21,10 +21,14 @@ from datetime import datetime, timezone
 
 # US dollars per million tokens, keyed by model-id prefix (the longest matching
 # prefix wins). From https://platform.claude.com/docs/en/about-claude/pricing on
-# 2026-10-07; `sonnet` in Claude Code 2.1.292 is claude-sonnet-5-5. The other
-# rows cover a turn that `switchModelsOnFlag` moves to another model. It is what
-# the tokens would cost on the API; the subscription bills nothing per token.
+# 2026-10-09; ./start runs claude-haiku-5-5. Haiku 5.5 is priced by prompt length:
+# a call whose prompt (all its input tokens, cache reads and writes included) is
+# over LONG_PROMPT tokens pays its "long" prices, every token of that call. The
+# other rows cover a turn that `switchModelsOnFlag` moves to another model. It is
+# what the tokens would cost on the API; the subscription bills nothing per token.
 PRICES = {
+    "claude-haiku-5-5":  {"input": 0.10, "cache_write_5m": 0.125, "cache_write_1h": 0.20, "cache_read": 0.01, "output": 0.50,
+                          "long": {"input": 0.50, "cache_write_5m": 0.625, "cache_write_1h": 1.00, "cache_read": 0.05, "output": 2.50}},
     "claude-sonnet-5-5": {"input": 2.00, "cache_write_5m": 2.50, "cache_write_1h": 4.00, "cache_read": 0.10, "output": 10.00},
     "claude-sonnet-5":   {"input": 2.00, "cache_write_5m": 2.50, "cache_write_1h": 4.00, "cache_read": 0.20, "output": 10.00},
     "claude-sonnet-4-6": {"input": 3.00, "cache_write_5m": 3.75, "cache_write_1h": 6.00, "cache_read": 0.30, "output": 15.00},
@@ -32,6 +36,8 @@ PRICES = {
     "claude-opus-5":     {"input": 5.00, "cache_write_5m": 6.25, "cache_write_1h": 10.00, "cache_read": 0.50, "output": 25.00},
     "claude-haiku-4-5":  {"input": 1.00, "cache_write_5m": 1.25, "cache_write_1h": 2.00, "cache_read": 0.10, "output": 5.00},
 }
+LONG_PROMPT = 100000
+KINDS = ("input", "cache_write_5m", "cache_write_1h", "cache_read", "output")
 
 KEEP_IDS = 500          # message ids remembered per transcript
 KEEP_TRANSCRIPTS = 50   # transcripts remembered in the state file
@@ -47,10 +53,12 @@ def now_iso():
     return t.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (t.microsecond // 1000)
 
 
-def price_for(model):
+def price_for(model, prompt=0):
+    """The model's prices for one call whose prompt is `prompt` tokens; None when unpriced."""
     for prefix in sorted(PRICES, key=len, reverse=True):
         if model.startswith(prefix):
-            return PRICES[prefix]
+            prices = PRICES[prefix]
+            return prices["long"] if prompt > LONG_PROMPT and "long" in prices else prices
     return None
 
 
@@ -74,7 +82,7 @@ def read_new(path, offset):
 
 
 def tally(data, seen):
-    """Per model: in, out and the token kinds the cost needs. Adds new ids to seen."""
+    """Per model: in, out and cost (None when unpriced). Adds new ids to seen."""
     totals = {}
     for raw in data.splitlines():
         try:
@@ -102,23 +110,23 @@ def tally(data, seen):
         write_1h = min(write_1h, write)
         write_5m = write - write_1h          # unsplit cache writes are priced as 5-minute
 
-        t = totals.setdefault(model, {"in": 0, "out": 0, "input": 0, "cache_write_5m": 0,
-                                      "cache_write_1h": 0, "cache_read": 0, "output": 0})
-        t["in"] += plain + write + read
+        prompt = plain + write + read
+        kinds = {"input": plain, "cache_write_5m": write_5m, "cache_write_1h": write_1h,
+                 "cache_read": read, "output": out}
+        cost = cost_of(model, kinds, prompt)      # each call at its own prompt's prices
+        t = totals.setdefault(model, {"in": 0, "out": 0, "cost": 0.0})
+        t["in"] += prompt
         t["out"] += out
-        t["input"] += plain
-        t["cache_write_5m"] += write_5m
-        t["cache_write_1h"] += write_1h
-        t["cache_read"] += read
-        t["output"] += out
+        t["cost"] = None if cost is None or t["cost"] is None else t["cost"] + cost
     return totals
 
 
-def cost_of(model, t):
-    prices = price_for(model)
+def cost_of(model, kinds, prompt=0):
+    """One call's cost: its tokens of each kind at the prices for its prompt length."""
+    prices = price_for(model, prompt)
     if prices is None:
         return None
-    return sum(t[k] * prices[k] for k in ("input", "cache_write_5m", "cache_write_1h", "cache_read", "output")) / 1e6
+    return sum(kinds[k] * prices[k] for k in KINDS) / 1e6
 
 
 def load_state(path):
@@ -142,7 +150,7 @@ def save_state(path, state):
 
 
 def record(model, t, cost, ref, log_path):
-    cost_text = "%.6f" % cost if cost is not None else "-"
+    cost_text = "%.9f" % cost if cost is not None else "-"
     try:
         with open(log_path, "a") as f:
             f.write("%s %s %d %d %s %s\n" % (now_iso(), model, t["in"], t["out"], cost_text, ref))
@@ -151,7 +159,7 @@ def record(model, t, cost, ref, log_path):
     argv = ["vfg", "usage", "add", "--component", "conversation", "--model", model,
             "--in", str(t["in"]), "--out", str(t["out"])]
     if cost is not None:
-        argv += ["--cost", "%.6f" % cost]
+        argv += ["--cost", "%.9f" % cost]
     argv += ["--ref", ref]
     try:
         subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -184,7 +192,7 @@ def main():
         rows = []
         for model, t in sorted(totals.items()):
             if t["in"] or t["out"]:
-                rows.append((model, t, cost_of(model, t)))
+                rows.append((model, t, t["cost"]))
         log_path = os.path.join(folder, "usage.log")
         state["transcripts"][transcript] = {"offset": offset, "ids": seen[-KEEP_IDS:], "updated": now_iso()}
         save_state(state_path, state)

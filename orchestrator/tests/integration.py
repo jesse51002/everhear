@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Integration: the real SDK and the real runner, with the fake toolkit. It uses your Claude
-subscription; keep it cheap with VFG_ORCH_MODEL=haiku:
+subscription, on the runner's defaults (every agent on Haiku 5.5):
 
-    VFG_ORCH_MODEL=haiku uv run python tests/integration.py
+    uv run python tests/integration.py
 
 Not part of pytest (it is not a test_*.py file). A temp VFG_ORCH_DIR, and VFG_REPO a temp copy of
 the repo with scripts/. It appends to the inbox and asserts on the fake's log and the temp repo;
@@ -25,7 +25,7 @@ ORCH = os.path.dirname(HERE)
 if ORCH not in sys.path:
     sys.path.insert(0, ORCH)
 
-from orchestrator.config import iso, now_ms  # noqa: E402
+from orchestrator.config import iso, load_config, now_ms  # noqa: E402
 from orchestrator.session import MSG  # noqa: E402
 from probe import run_probe  # noqa: E402
 
@@ -49,7 +49,6 @@ env["PATH"] = "%s:%s" % (FAKEBIN, env.get("PATH", ""))
 env["VFG_REPO"] = REPO
 env["VFG_ORCH_DIR"] = ORCH_DIR
 env["VFG_FAKE_LOG"] = FAKE_LOG
-env.setdefault("VFG_ORCH_MODEL", "haiku")
 for k in ("VFG_FAKE_FAIL_REPLIES", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"):
     env.pop(k, None)
 os.environ.update(env)
@@ -294,13 +293,9 @@ def scenarios() -> None:
     # 8. usage rows
     usage = [x for x in calls() if x[0] == "usage" and x[1] == "add"]
     comps = {x[x.index("--component") + 1] for x in usage}
-    orch_is_haiku = "haiku" in env["VFG_ORCH_MODEL"]
     models = sorted({x[x.index("--model") + 1] for x in usage})
-    record("8. usage rows", "implementer" in comps and (orch_is_haiku or "orchestrator" in comps),
-           "%d rows, components %s%s; models %s" % (
-               len(usage), ",".join(sorted(comps)),
-               " (orchestrator on haiku: its rows are counted as implementer by the model split)" if orch_is_haiku else "",
-               ",".join(models)))
+    record("8. usage rows", "implementer" in comps and "orchestrator" in comps,
+           "%d rows, components %s; models %s" % (len(usage), ",".join(sorted(comps)), ",".join(models)))
 
     # every task answered exactly once
     ids = ["T%d" % (i + 1) for i in range(n)]
@@ -318,7 +313,8 @@ def scenarios() -> None:
 
 
 def main() -> int:
-    say("temp dir %s; orchestrator model %s, implementers %s" % (T, env["VFG_ORCH_MODEL"], env.get("VFG_IMPLEMENTER_MODEL", "haiku")))
+    cfg = load_config(env)
+    say("temp dir %s; orchestrator model %s, implementers %s" % (T, cfg.model, cfg.implementer_model))
     try:
         probe()
     except Exception:

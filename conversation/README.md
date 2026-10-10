@@ -16,9 +16,9 @@ environment, and refuses without it. The first time, it writes `CLAUDE.local.md`
 `CLAUDE.md`: Claude Code loads both, and that file is the only place the owner is named. It is
 gitignored, so you can add your own standing rules there.
 
-The session runs on Sonnet at low effort, on your Claude subscription (`ANTHROPIC_API_KEY` is
-unset). `--setting-sources project,local` and `--strict-mcp-config` keep your own Claude Code
-settings, plugins and MCP servers out of it. Type to it at any time: what the owner types is an
+The session runs on Haiku 5.5 (`claude-haiku-5-5`) at low effort, on your Claude subscription
+(`ANTHROPIC_API_KEY` is unset). `--setting-sources project,local` and `--strict-mcp-config` keep
+your own Claude Code settings, plugins and MCP servers out of it. Type to it at any time: what the owner types is an
 order. `stop` signs the AI off and leaves the server running.
 
 `.claude/settings.json` lets it run only `vfg` (minus `cmd`, `script`, `orch reply`, `feed` and
@@ -35,7 +35,7 @@ conversation/test/decide.sh [case …]                       # the decision case
 
 `decide.sh` runs each `test/cases/*.case` against the stand-in `test/fake-vfg/vfg` and checks the
 calls it made; a model judges each case, so a failure is rerun once. It uses your subscription:
-`VFG_TEST_MODEL` (default `sonnet`) and `VFG_TEST_EFFORT` (default `low`). Its owner is the
+`VFG_TEST_MODEL` (default `claude-haiku-5-5`) and `VFG_TEST_EFFORT` (default `low`). Its owner is the
 placeholder `Sunny`, and your own `CLAUDE.local.md` is left out. Output goes to `test/out/`.
 
 ## Settings

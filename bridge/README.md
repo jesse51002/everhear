@@ -7,7 +7,8 @@ and game events, keeps both in the transcript history, and writes the feed the c
 ## Run it
 
 On the box it is the systemd unit `vfg-bridge`:
-`PYTHONPATH=/opt/vfg/lib:/opt/vfg/bridge python3 -m vfg_bridge`. Two one-shot modes:
+`PYTHONPATH=/opt/vfg/lib:/opt/vfg/bridge /opt/vfg/python/bin/python3 -m vfg_bridge`, on the box's
+Python 3.12 (below). Two one-shot modes:
 `--init-db` applies the schema and exits; `--parse FILE` prints each console line it recognises as
 JSON. `vfg_feed.py` is the one feed writer, deployed to `/opt/vfg/lib/`; the Jev filter imports it.
 
@@ -15,7 +16,7 @@ From the repo's root on the owner's PC:
 
 ```sh
 bridge/deploy/ec2.sh launch|start|stop|status|ssh-ip|retire   # the box itself (AWS CLI v2)
-bridge/deploy/deploy.sh provision [--restore]                 # Java, Minecraft, the firewall, /opt/vfg/.env
+bridge/deploy/deploy.sh provision [--restore]                 # Java, Python 3.12, Minecraft, the firewall, /opt/vfg/.env
 bridge/deploy/deploy.sh                                       # the bridge and the units; restarts them
 bridge/deploy/set-secret.sh VFG_CLIENT_TOKEN                  # a value into /opt/vfg/.env, typed hidden
 bridge/deploy/client-token.sh                                 # prints the client token, to a terminal only
@@ -23,6 +24,13 @@ bridge/deploy/client-token.sh                                 # prints the clien
 
 `ec2.sh retire` backs up `/opt/mc` and the history into `VFG_BACKUP_DIR`, checks both copies by
 sha256, then terminates the instance. `provision --restore` puts them back on a new box.
+
+**Python on the box.** `provision` runs `deploy/python.sh`, which puts uv (a pinned release, checked
+by sha256) in `/opt/vfg/uv/` and CPython 3.12, installed by uv, behind the link `/opt/vfg/python`.
+`/opt/vfg/python/bin/python3` is what the scripts, `vfg`'s remote programs, `vfg-bridge` and
+`vfg-jev` run on, the PC's version; Amazon Linux's own `python3` (3.9) is left to the host. A box
+provisioned before this has no `/opt/vfg/python`: `deploy.sh provision` adds it, and `deploy.sh`
+refuses until it is there.
 
 ## Test it
 
