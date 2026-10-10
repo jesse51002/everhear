@@ -14,7 +14,8 @@ Writes OUT/score.md and OUT/score.json and prints the first. Standard library on
   whose T<n> was written after the line reached the brain (it could not name a task not yet
   there). The brain names the right task when an implementer part's `task` is T<n> (strict); or a
   task of T<n>'s chain, since a `Change to T7` task was a new task only in the conversation's
-  world, and in the brain's is a follow-up to T7's own implementer (chain); or when T<n> is
+  world, and in the brain's is a follow-up to T7's own implementer (chain); or a task that made
+  or edited the same script as that chain, by tasks.jsonl's results (script); or when T<n> is
   anywhere in its parts (as linescore.py read it). Bar: 85%. The tasks' times and chains are read
   from the inbox (--inbox).
 - ROUTE, on the lines the brain acted on whose own tasks (the context names the line first) are
@@ -96,11 +97,32 @@ def chains(inbox: dict[str, dict]) -> dict[str, str]:
     return {tid: find(tid) for tid in inbox}
 
 
+SCRIPT = re.compile(r"\b(?:NEW|edit|rerun)\s+([a-z][a-z0-9_]*(?:\s*\+\s*[a-z][a-z0-9_]*)*)")
+
+
+def scripts() -> dict[str, set[str]]:
+    """Each task of 2026-10-08 to the scripts it made, edited or ran again, from tasks.jsonl's
+    `run.result` ("NEW ice_beam", "edit death_gaze + gatling_gun")."""
+    out: dict[str, set[str]] = {}
+    path = Path(__file__).resolve().parent / "tasks.jsonl"
+    for x in path.read_text().splitlines() if path.exists() else []:
+        t = json.loads(x)
+        found = SCRIPT.findall(str((t.get("run") or {}).get("result") or ""))
+        out[t["id"]] = {n.strip() for f in found for n in f.split("+") if n.strip()}
+    return out
+
+
 def follow_ups(rows: list[dict], inbox: dict[str, dict]) -> list[dict]:
     """One per `Change to T<n>` or `Cancel T<n>` task whose first-named line the brain was asked:
     what the brain did there, and on any other line the task names."""
     chain = chains(inbox)
+    made = scripts()
     by_n = {r["n"]: r for r in rows}
+
+    def same_script(x: str, target: str) -> bool:
+        """x and target, or a task of target's chain, made or edited one script."""
+        theirs = set().union(*(made.get(t, set()) for t in inbox if chain.get(t, t) == chain.get(target, target)))
+        return bool(made.get(x, set()) & theirs)
 
     def named(r: dict) -> list[str]:
         return [p["task"] for p in r.get("parts", []) if p["to"] == IMPL and p["task"]]
@@ -119,6 +141,7 @@ def follow_ups(rows: list[dict], inbox: dict[str, dict]) -> list[dict]:
                         "route": r.get("route", "ERROR"), "named": named(r),
                         "later": inbox.get(target, {}).get("at", "") > r["fed"],
                         "strict": target in named(r), "chain": bool(same),
+                        "script": bool(same) or any(same_script(x, target) for x in named(r)),
                         "loose": re.search(rf"\b{target}\b", said) is not None,
                         "any_line_hit": bool(same) or any(chain.get(x, x) == chain.get(target, target)
                                                           for o in others for x in named(o))})
@@ -221,19 +244,22 @@ def main() -> None:
     hit = sum(f["strict"] for f in scored)
     chain = sum(f["chain"] for f in scored)
     loose = sum(f["loose"] for f in scored)
+    by_script = sum(f["script"] for f in scored)
     talked = sum(f["route"] == TALK for f in scored)
     w(f"\n## Follow-ups: {len(fus)} lines became `Change to T<n>` or `Cancel T<n>` (bar 85%; the old 23 of 38, 61%)\n")
     w(f"- {len(later)} are left out: their T<n> was written after the line reached the brain, so it could not "
       f"name it ({', '.join(f['task'] + ' for ' + f['target'] + ' on #' + str(f['n']) for f in later) or 'none'}).")
     w(f"- of the other {len(scored)}, the brain sent an implementer follow-up to that very task: {hit} "
       f"({pct(hit, len(scored))}); to it or another task of its chain (one `Change to` another, which in the "
-      f"brain's world is one task and one implementer): {chain} ({pct(chain, len(scored))}); named it anywhere in "
+      f"brain's world is one task and one implementer): {chain} ({pct(chain, len(scored))}); to one of those or a "
+      f"task that made or edited the same script (tasks.jsonl's results): {by_script} "
+      f"({pct(by_script, len(scored))}); named it anywhere in "
       f"its parts, as linescore.py read it: {loose} ({pct(loose, len(scored))}); answered as talk: {talked}.")
     w(f"- by chain, counting a hit on any line the task's context names, not only the first: "
       f"{sum(f['any_line_hit'] for f in scored)} ({pct(sum(f['any_line_hit'] for f in scored), len(scored))}).")
-    misses = [f for f in scored if not f["chain"]]
+    misses = [f for f in scored if not f["script"]]
     if misses:
-        w("\nMissed, by chain: " + "; ".join(f"#{f['n']} {f['task']} for {f['target']} "
+        w("\nMissed, by chain and script: " + "; ".join(f"#{f['n']} {f['task']} for {f['target']} "
                                               f"'{f['text'][:60]}': {f['route']}"
                                               + (f", named {', '.join(f['named'])}" if f["named"] else "")
                                               for f in misses))
@@ -284,7 +310,8 @@ def main() -> None:
     (out / "score.md").write_text(text, encoding="utf-8")
     summary = {"lines": len(rows), "errors": len(err), "acted_or_talk": {f"{'task' if k[0] else 'none'}/"
                f"{'acted' if k[1] else 'talk'}": v for k, v in cm.items()}, "over_acting": len(over),
-               "follow_ups": {"n": fu, "strict": hit, "chain": chain, "loose": loose, "later": len(later)},
+               "follow_ups": {"n": fu, "strict": hit, "chain": chain, "script": by_script, "loose": loose,
+                              "later": len(later)},
                "routes": {k: {x: v[x] for x in ("n", "exact", "combined", "side", "lost", "slow")} for k, v in res.items()},
                "replies": {"acted": len(acted), "replied": replied}, "cache": cached / prompt if prompt else None,
                "cost": sum(cost), "ms_median": st.median(ms) if ms else None}
