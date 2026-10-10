@@ -59,16 +59,15 @@ CREATE INDEX lines_player_at ON lines(player_name, at);
 CREATE TABLE events (id TEXT PRIMARY KEY, at TEXT NOT NULL, kind TEXT NOT NULL,
   player_name TEXT, text TEXT NOT NULL);
 CREATE INDEX events_at ON events(at);
-CREATE TABLE feed (seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, line TEXT NOT NULL,  -- line: the whole line, exactly as in feed.log
-  processed_at TEXT);  -- set by the brain once a call has taken the row in (vfg context mark)
+CREATE TABLE feed (seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, line TEXT NOT NULL);  -- line: the whole line, exactly as in feed.log
 CREATE TABLE usage (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,
-  component TEXT NOT NULL CHECK (component IN ('jev','brain','respond','implementer','conversation','orchestrator')),
+  component TEXT NOT NULL CHECK (component IN ('jev','conversation','orchestrator','implementer','brain','respond')),
   model TEXT, input_tokens INTEGER, output_tokens INTEGER, cost_usd REAL, ref TEXT);
 ```
 
 - It is queried by date with `vfg history` (§8).
 - **The AI's own messages are lines too**: every `vfg say` is stored with `source = 'ai'`, `player_name = 'AI'`, no uuid, and the text without the prefix. A whisper is stored as `(to <player>) <text>`. They give Jev the other half of the conversation, and are never judged; `vfg say` feeds each as an `AI say` line itself (§7).
-- **The shared context is the `feed` table** (§9): every kept line, every fed game event and everything the brain recorded, in `seq` order, each with its `processed_at` mark. A database built before the four classes is rebuilt on the bridge's start: `direct_ask` becomes `action_oriented`, `not_useful` becomes `not_relevant`. `conversation` and `orchestrator` stay valid components only for old rows.
+- **The shared context is the `feed` table** (§9): every kept line, every fed game event and everything the brain recorded, in `seq` order, each with its `processed_at` mark: a column added after this DDL, by `ALTER TABLE` on the bridge's start, as are `usage`'s `cache_read_tokens` and `cache_write_tokens`. A database built before the four classes is rebuilt on the bridge's start: `direct_ask` becomes `action_oriented`, `not_useful` becomes `not_relevant`. `conversation` and `orchestrator` stay valid components only for old rows.
 
 ## 5. Jev — the Jev filter
 
