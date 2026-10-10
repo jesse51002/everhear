@@ -108,6 +108,9 @@ From the environment, then `~/.vfg/config`:
 | `VFG_SERVER` | `main`: whose `made/<server>/actions/` are on the menu |
 | `VFG_RUNNING_TTL_S` | `30` s between background fetches of the running copies; `0`: never |
 | `VFG_DISPATCH_ACTION_TIMEOUT_S` | `20` s per once action, unless its class sets `timeout_s` |
+| `VFG_IMPL_MODEL`, `VFG_IMPL_EFFORT`, `VFG_IMPL_MAX_TURNS` | `claude-haiku-5-5`, `low`, `40`: the implementers, on your Claude subscription |
+| `VFG_IMPLEMENTER_MINUTES` | `10`: past it an implementer is stopped and its task failed |
+| `VFG_IMPL_CACHE_TTL` | `5m` (or `1h`): an implementer's prompt cache; `VFG_SUBAGENT_CACHE_TTL` is read when it is empty |
 
 ## Files
 
