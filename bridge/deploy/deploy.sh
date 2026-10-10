@@ -15,8 +15,8 @@
 #   deploy.sh                         the bridge: vfg_feed.py, vfg_bridge/, tests/, the two vfg units;
 #                                     applies the schema and restarts vfg-bridge (and vfg-jev if deployed).
 #
-# Only provision and env touch /opt/vfg/.env; none touches the database, the feed, watch.json,
-# lookout.md or /opt/mc (beyond what provision.sh does). The Jev filter's program has its own
+# Only provision and env touch /opt/vfg/.env; none touches the database (beyond the schema), the
+# feed, watch.json, lookout.md, menu.md or /opt/mc (beyond what provision.sh does). The Jev filter's program has its own
 # jev/deploy.sh.
 set -euo pipefail
 shopt -s inherit_errexit

@@ -1,7 +1,7 @@
 # bridge — speech in, game events in, the feed out
 
 On the EC2 box. It takes the players' speech lines over HTTP, tails the Minecraft console for chat
-and game events, keeps both in the transcript history, and writes the feed the conversation watches.
+and game events, keeps both in the transcript history, and writes the feed the brain watches.
 `deploy/` is everything that makes, provisions, updates and retires the box, run from the owner's PC.
 
 ## Run it
@@ -11,6 +11,13 @@ On the box it is the systemd unit `vfg-bridge`:
 Python 3.12 (below). Two one-shot modes:
 `--init-db` applies the schema and exits; `--parse FILE` prints each console line it recognises as
 JSON. `vfg_feed.py` is the one feed writer, deployed to `/opt/vfg/lib/`; the Jev filter imports it.
+
+**An older history is brought up to date** whenever the schema is applied: the columns added since
+§4's DDL (`db.COLUMNS`), and `lines` and `usage` rebuilt once, in one transaction, when their CHECK
+lists are older (`db.CHECKS`: Jev's four classes, `direct_ask` becoming `action_oriented` and
+`not_useful` becoming `not_relevant`; the brain's `brain` and `respond` usage). Every other column
+on those tables is kept. Deploy the bridge and `jev/` together: once the history has the four
+classes, an older Jev filter's verdicts fail the CHECK until it is replaced.
 
 From the repo's root on the owner's PC:
 
@@ -39,8 +46,9 @@ refuses until it is there.
 cd bridge && python3 -m unittest discover -s tests
 ```
 
-No network and no EC2: a temporary database, feed and console log, a stub Jev filter, and
-`tests/fixtures/console-26.3.log`, real 26.3 console shapes with placeholder names.
+No network and no EC2, under a second: a temporary database, feed and console log, an injected
+clock and poll, and `tests/fixtures/console-26.3.log`, real 26.3 console shapes with placeholder
+names. One test runs the bridge as a process and stops it with SIGTERM.
 
 ## Settings
 
