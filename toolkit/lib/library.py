@@ -781,10 +781,10 @@ def fields_body(fields):
 
 
 def action_text(name, script, presets=(), fields=(), runs="until_stopped", takes=None, defaults=None,
-                fixed=None, line=None):
+                fixed=None, line=None, descriptions=None):
     """The source of a new action: class <CamelName>(Action, preset("..."), ...) over `script`,
-    with `fields` ([(key, info)]) written out. The implementer then edits its line, takes and
-    descriptions."""
+    with `fields` ([(key, info)]) written out, and `descriptions`, its own words for fields it
+    inherits. The implementer then edits its line, takes and descriptions."""
     body, used = fields_body(fields)
     used.add("Action")
     if presets:
@@ -800,6 +800,8 @@ def action_text(name, script, presets=(), fields=(), runs="until_stopped", takes
         out.append("    defaults = %s" % literal(defaults))
     if fixed:
         out.append("    fixed = %s" % literal(fixed))
+    if descriptions:
+        out.append("    descriptions = %s" % literal(descriptions))
     if body:
         out += [""] + body
     return "\n".join(out) + "\n"

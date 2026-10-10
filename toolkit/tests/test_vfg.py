@@ -2288,6 +2288,25 @@ class TestScriptNew(LibraryCase):
                          ["  made/main/actions/galick_pit.py: its line on the menu is still a TODO: say what it "
                           "does, in players' words"])
 
+    def test_the_actions_own_words_for_what_it_inherits_are_carried_too(self):
+        self.write("actions/galick.py", GALICK_ACTION.replace(
+            '    defaults = {"crater_radius": 4}\n',
+            '    defaults = {"crater_radius": 4}\n    descriptions = {"crater_radius": "how wide the galick pit is"}\n'))
+        r = self.box.vfg("script", "new", "galick_pit", "--from", "galick", "--preset", "explosion")
+        self.assertOk(r)
+        action = self.read("made/main/actions/galick_pit.py")
+        self.assertIn('    defaults = {"crater_radius": 4}\n    descriptions = {"crater_radius": "how wide the galick pit '
+                      'is"}\n', action)
+        finish_todos(self.made("actions", "galick_pit.py"))
+        r = self.box.vfg("action", "check", "galick_pit")
+        self.assertEqual((r.returncode, r.stdout), (0, "ok: made/main/actions/galick_pit.py\n"), r.stderr)
+        got = json.loads(self.box.vfg("action", "list", "--json").stdout)["actions"]["galick_pit"]
+        self.assertEqual(got["fields"]["crater_radius"]["description"], "how wide the galick pit is")
+        # From a script whose action gives no words of its own, none.
+        r = self.box.vfg("script", "new", "beam_pit", "--from", "beam", "--preset", "crater")
+        self.assertOk(r)
+        self.assertNotIn("descriptions", self.read("made/main/actions/beam_pit.py"))
+
     def test_a_presets_own_variables_stay_in_its_block(self):
         self.write("scripts/_presets/counter.py", COUNTER)
         self.write("scripts/_presets/tally.py", TALLY)

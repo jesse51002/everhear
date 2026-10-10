@@ -23,7 +23,7 @@ TESTS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TESTS)
 
 import standins  # noqa: E402
-from test_vfg import Box, ISO_RE, alive, scripts_test, vfg_module, wait_for, HAVE_WORLD  # noqa: E402
+from test_vfg import Box, CRATER, ISO_RE, alive, scripts_test, vfg_module, wait_for, HAVE_WORLD  # noqa: E402
 
 
 class ActionCase(unittest.TestCase):
@@ -498,6 +498,22 @@ class TestScriptSave(ActionCase):
         self.fill_line("actions", "green_beam.py")
         r = self.box.vfg("action", "check", "green_beam")
         self.assertEqual((r.returncode, r.stdout), (0, "ok: made/main/actions/green_beam.py\n"), r.stderr)
+
+
+    def test_a_made_actions_own_words_for_what_it_inherits_are_kept(self):
+        standins.write(os.path.join(self.box.repo, "scripts", "_presets", "crater.py"), CRATER)
+        standins.write(self.made("actions", "glow_pit.py"),
+                       MADE_BEAM.replace("class GlowBeam(Action):", 'class GlowPit(Action, preset("crater")):')
+                       .replace("import Action, Live, Players", "import Action, Live, Players, preset")
+                       .replace('    fixed = {"colour": "blue"}\n',
+                                '    fixed = {"colour": "blue"}\n    descriptions = {"crater_radius": "how wide the pit is"}\n'))
+        self.line(self.run_action("glow_pit", "cooldown=5"))
+        r = self.box.vfg("script", "save", "glow_pit", "deep_pit")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        text = self.read("actions", "deep_pit.py")
+        self.assertIn('class DeepPit(Action, preset("crater")):\n', text)
+        self.assertIn('    descriptions = {"crater_radius": "how wide the pit is"}\n', text)
+        self.assertNotIn("crater_radius:", text)          # inherited, never written again
 
 
 class TestRunning(ActionCase):

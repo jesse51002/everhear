@@ -1947,7 +1947,8 @@ def report_check(cfg, library, lib, path, kind, name, source):
 def new_action(cfg, library, lib, cat, name, src, presets):
     """The source of the action beside a new script: the values class of every preset the
     script holds, inherited; every other field, and its takes, runs, defaults and fixed, from
-    the source script's action; with no source (or none over it), a player. (text, the
+    the source script's action, and its descriptions of the fields inherited (a field written
+    out has its words under it); with no source (or none over it), a player. (text, the
     presets inherited)."""
     held = list(src.holds if src else []) + [p.name for p in presets if p.name not in (src.holds if src else [])]
     inherit, inherited = [], set()
@@ -1971,9 +1972,10 @@ def new_action(cfg, library, lib, cat, name, src, presets):
     takes = [k for k in (base or {}).get("takes", []) if k in known] if base else \
         (["player"] if "player" in known else [])
     keep = lambda d: dict((k, v) for k, v in (d or {}).items() if k in known)  # noqa: E731
+    words = dict((k, v) for k, v in ((base or {}).get("descriptions") or {}).items() if k in inherited)
     return library.action_text(name, name, inherit, fields, runs=(base or {}).get("runs") or "until_stopped",
                                takes=takes, defaults=keep((base or {}).get("defaults")),
-                               fixed=keep((base or {}).get("fixed"))), inherit
+                               fixed=keep((base or {}).get("fixed")), descriptions=words), inherit
 
 
 def va_cache_entry(cfg, cat, name):
@@ -2147,8 +2149,10 @@ def cmd_script_save(cfg, a):
                 inherited.update(k.model_fields)
         fields = [(k, f) for k, f in info["fields"].items() if k not in inherited]
         fixed = dict((k, v) for k, v in info["fixed"].items() if k not in now)   # a value given is a default
+        words = dict((k, v) for k, v in (info.get("descriptions") or {}).items() if k in inherited)
         text = library.action_text(a.new_name, info["script"], inherit, fields, runs=info["runs"],
-                                   takes=info["takes"], defaults=dict(info["defaults"], **now), fixed=fixed)
+                                   takes=info["takes"], defaults=dict(info["defaults"], **now), fixed=fixed,
+                                   descriptions=words)
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     atomic_write(dest, text, 0o644)
     out("saved %s from %s (%s), with %s" % (os.path.relpath(dest, cfg.repo), a.copy, parent,
