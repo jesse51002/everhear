@@ -29,11 +29,12 @@ VALUES = {
     "boss_music":        {"type": "enum", "of": ["none", "pigstep", "otherside", "relic", "creator", "precipice"], "default": "none"},
     "boss_griefing":     {"type": "bool", "default": True},
     "around_radius":     {"type": "number", "min": 1, "max": 128, "default": 16, "live": True},
-    "around_what":       {"type": "enum", "of": ["mobs", "players", "everything"], "default": "players", "live": True},
+    "around_what":       {"type": "enum", "of": ["mobs", "hostile", "players", "everything", "projectiles"], "default": "players", "live": True},
     "around_most":       {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
     "freeze_seconds":    {"type": "number", "min": 1, "max": 120, "default": 4, "live": True},
     "freeze_shell":      {"type": "bool", "default": True, "live": True},
     "freeze_block":      {"type": "enum", "of": ["ice", "packed_ice", "blue_ice", "snow_block"], "default": "packed_ice", "live": True},
+    "freeze_blindness":  {"type": "bool", "default": False, "live": True},
     "summon_mob":        {"type": "mob", "default": "stray", "live": True},
     "summon_count":      {"type": "int", "min": 1, "max": 200, "default": 3, "live": True},
     "summon_spread":     {"type": "int", "min": 1, "max": 100, "default": 4, "live": True},
@@ -55,10 +56,12 @@ def boss(where, v, *, abilities=None, phases=None):
     its loot drops where it fell, and it returns True. False if there was no room for it, or
     the script stopped first.
 
-    abilities: functions f(b, v), one called in turn every boss_every s (default: minions).
-    phases: functions f(b, v), the first called when its health falls below the first share
-    in boss_phases, the next below the next (the last repeats; default: it enrages).
-    b is the kit's mobs.Boss: b.tag selects the bodies, b.phase counts the phases from 0."""
+    abilities: functions f(b, v), one called in turn every boss_every s (default: minions,
+    boss_minions of boss_minion; abilities of its own replace them, so those two values then
+    do nothing). phases: functions f(b, v), the first called when its health falls below the
+    first share in boss_phases, the next below the next (the last repeats; default: it
+    enrages). b is the kit's mobs.Boss: b.tag selects the bodies, b.dim is the dimension it
+    is in, b.phase counts the phases from 0."""
     b = mobs.Boss(v["boss_name"], v["boss_mob"], v["boss_health"], v["boss_bodies"], v["boss_scale"],
                   _boss_gear(v["boss_gear"]), v["boss_bar"])
     near = None
@@ -78,8 +81,6 @@ def boss(where, v, *, abilities=None, phases=None):
         b.remove()
         return False
     b.phase, body = 0, "@e[tag=%s,limit=1]" % b.tag
-    dim = world.dim_of(near) if near else world.dim(where)
-    b.dim = dim                                        # bent: her abilities act in her dimension
     mc.rcon("execute as @e[tag=%s] run attribute @s attack_damage base set %g" % (b.tag, v["boss_attack"]))
     fx.title("@a", v["boss_name"], sub="has risen", color="dark_red")
     fx.sound("entity.wither.spawn", body, volume=4, pitch=0.8)
@@ -98,7 +99,7 @@ def boss(where, v, *, abilities=None, phases=None):
         if not b.update():                             # the bar follows the bodies; 0 when all are dead
             break
         at = mc.pos(body)
-        last = world.Pos(at[0], at[1], at[2], dim) if at else last
+        last = world.Pos(at[0], at[1], at[2], b.dim) if at else last
         health = b.health() if shares else None
         if health and health[1] and health[0] < full * shares[0]:
             shares.pop(0)
@@ -161,9 +162,12 @@ def _boss_enrage(b, v):
 def around(at, v):
     """Every mob, player or both (around_what) within around_radius of a place or a player
     (a name: never that player), as a list of aim.Hit nearest first, the shape aim.near_line
-    gives, so damage_hits, freeze and push take either. around_most: the nearest that many
-    (0: all). Never a pet, a villager or anything else exclude spares, nor a player in
-    creative or spectator. For the blocks round a place, area.box(at, r) and area.sphere."""
+    gives, so damage_hits, freeze and push take either. "hostile": monsters only, never an
+    animal; "projectiles": arrows, tridents, fireballs and the like still flying, never the
+    player's own nor one this script turned already, each found again by its uuid. around_most:
+    the nearest that many (0: all). Never a pet, a villager or anything else exclude spares,
+    nor a player in creative or spectator. For the blocks round a place, area.box(at, r) and
+    area.sphere."""
     me = ""
     if isinstance(at, str):
         me, feet = at, mc.pos(at)
@@ -171,41 +175,38 @@ def around(at, v):
             return []
         at = world.Pos(feet[0], feet[1], feet[2], world.dim_of(me))
     r, what = v["around_radius"], v["around_what"]
-    found = {}
-    if what in ("mobs", "everything"):
-        _around_ask(at, exclude.mobs("distance=..%g" % r), r, False, found)
-    if what in ("players", "everything"):
-        _around_ask(at, exclude.players(me, "distance=..%g" % r), r, True, found)
-    dim = world.dim(at)
-    hits = []
-    for (x, y, z, player), name in found.items():
-        t = math.sqrt((x - at[0]) ** 2 + (y - at[1]) ** 2 + (z - at[2]) ** 2)
-        hits.append(aim.Hit(t, world.Pos(x, y, z, dim), mc.bare(name) if player else name, player))
-    hits.sort(key=lambda h: h.t)
+    if what == "projectiles":
+        hits = _around_projectiles(at, me, r)
+    else:
+        hits = aim.near(at, r, shooter=me, with_players=what in ("players", "everything"),
+                        hostile=what == "hostile", with_mobs=what != "players")
     return hits[:v["around_most"]] if v["around_most"] else hits
 
 
-_AROUND_POS = re.compile(r"([^\]\[]*?) has the following entity data: \[(-?[\d.eE-]+)d, (-?[\d.eE-]+)d, (-?[\d.eE-]+)d\]")
+_AROUND_UUID = re.compile(r"([^\]\[]*?) has the following entity data: \[I; (-?\d+), (-?\d+), (-?\d+), (-?\d+)\]")
+_AROUND_OWN = {}            # player -> ",nbt=!{Owner:[I;...]}": their own projectiles are not turned
 
 
-def _around_ask(at, frag, r, player, found, box=None, depth=0):
-    """Ask where everything a fragment selects is; a reply cut at 4 KB is asked again in
-    eight smaller boxes."""
-    if box is None:
-        box = (at[0] - r, at[1] - r, at[2] - r, 2 * r)
-    x, y, z, size = box
-    inside = "" if depth == 0 else "positioned %.2f %.2f %.2f if entity @s[dx=%.2f,dy=%.2f,dz=%.2f] " % (
-        x, y, z, size, size, size)
-    reply = mc.rcon(world.prefix(world.dim(at)) + "positioned %.2f %.2f %.2f %s %srun data get entity @s Pos" % (
-        at[0], at[1], at[2], frag, inside))
-    if len(reply.encode("utf-8")) >= world.MAX_REPLY - 200 and depth < 3:
-        half = size / 2.0
-        for i in range(8):
-            _around_ask(at, frag, r, player, found,
-                        (x + half * (i & 1), y + half * (i >> 1 & 1), z + half * (i >> 2 & 1), half), depth + 1)
-        return
-    for m in _AROUND_POS.finditer(reply):
-        found[(float(m.group(2)), float(m.group(3)), float(m.group(4)), player)] = m.group(1).strip()
+def _around_projectiles(at, me, r):
+    """Arrows, tridents, fireballs and the like in flight within r of a place, never me's own
+    nor one this script turned already (tagged TAG), as hits named by their uuid."""
+    if me and me not in _AROUND_OWN:
+        m = _AROUND_UUID.search(mc.rcon("data get entity %s UUID" % me))
+        if m:
+            _AROUND_OWN[me] = ",nbt=!{Owner:[I;%s]}" % ",".join(m.groups()[1:])
+    reply = mc.rcon(world.prefix(world.dim(at)) + "positioned %.2f %.2f %.2f as @e[type=#minecraft:impact_projectiles,"
+                    "distance=..%g,tag=!%s,nbt=!{inGround:1b}%s] run data get entity @s UUID"
+                    % (at[0], at[1], at[2], r, mc.TAG, _AROUND_OWN.get(me, "")))
+    hits = []
+    for m in _AROUND_UUID.finditer(reply):
+        h = "".join("%08x" % (int(n) & 0xffffffff) for n in m.groups()[1:])
+        uuid = "%s-%s-%s-%s-%s" % (h[:8], h[8:12], h[12:16], h[16:20], h[20:])
+        p = re.findall(r"(-?[\d.]+(?:E-?\d+)?)d", mc.rcon("data get entity %s Pos" % uuid))
+        if len(p) >= 3:
+            x, y, z = (float(c) for c in p[:3])
+            t = math.sqrt((x - at[0]) ** 2 + (y - at[1]) ** 2 + (z - at[2]) ** 2)
+            hits.append(aim.Hit(t, world.Pos(x, y, z, world.dim(at)), m.group(1).strip(), False, uuid))
+    return sorted(hits, key=lambda h: h.t)
 
 
 # --- preset: freeze (copied from _presets/freeze.py) ---
@@ -214,23 +215,27 @@ def freeze(hits, v):
     freeze_seconds: it cannot walk or hurt anything, and a mob shows the frost (and takes
     the cold's 1 damage every 2 s, as in powder snow). With freeze_shell, a shell of
     freeze_block round each body, one block wide and two high, that melts when the freeze
-    ends; it only fills air, so nothing is replaced (never bedrock, never a chest). Pets and
+    ends; it only fills air, so nothing is replaced (never bedrock, never a chest).
+    freeze_blindness blinds it too (blindness IV, as the run's ice beam did). Pets and
     villagers are never frozen. Returns how many were frozen."""
     secs = int(math.ceil(v["freeze_seconds"]))
     tag = "%s_frz%d" % (mc.TAG, next(_FREEZE_N))      # each call tags with its own name
-    mc.rcon("tag @e[tag=%s] remove %s" % (tag, tag))    # bent: one an earlier run left would spare them
-    frozen = [h for h in hits if _freeze_mark(h, tag)]
-    if not frozen:
+    if not aim.mark(hits, tag):                         # each once, where it was
+        aim.untag(tag)
         return 0
     # Slowness and weakness X (amplifier 9; above 127 it is saved as a negative byte) leave
     # no speed and no attack, and wear off by themselves even if the script dies.
     mc.rcon("effect give @e[tag=%s] slowness %d 9 true" % (tag, secs))
     mc.rcon("effect give @e[tag=%s] weakness %d 9 true" % (tag, secs))
+    if v["freeze_blindness"]:
+        mc.rcon("effect give @e[tag=%s] blindness %d 3 true" % (tag, secs))
     mc.rcon("execute as @e[tag=%s,type=!player] run data merge entity @s {TicksFrozen:%d}" % (tag, 140 + 40 * secs))
     mc.rcon("execute at @e[tag=%s] run particle snowflake ~ ~1 ~ 0.4 0.6 0.4 0.02 25 force" % tag)
-    mc.rcon("tag @e[tag=%s] remove %s" % (tag, tag))
+    frozen = [world.Pos(float(x), float(y), float(z), world.dim(hits[0].pos)) for x, y, z in _FREEZE_POS.findall(
+        mc.rcon("execute as @e[tag=%s] run data get entity @s Pos" % tag))]
+    aim.untag(tag)
     if v["freeze_shell"]:
-        shells = [_freeze_shell(h.pos, v["freeze_block"]) for h in frozen]
+        shells = [_freeze_shell(at, v["freeze_block"]) for at in frozen]
         with _FREEZE_LOCK:
             if not _FREEZE_SHELLS:
                 mc.on_stop(lambda: [_freeze_melt(s) for s in list(_FREEZE_SHELLS)])
@@ -240,20 +245,9 @@ def freeze(hits, v):
 
 
 _FREEZE_N = itertools.count(1)
+_FREEZE_POS = re.compile(r"\[(-?[\d.]+(?:E-?\d+)?)d, (-?[\d.]+(?:E-?\d+)?)d, (-?[\d.]+(?:E-?\d+)?)d\]")
 _FREEZE_SHELLS = []         # shells still standing; a stop melts them
 _FREEZE_LOCK = threading.Lock()
-
-
-def _freeze_mark(h, tag):
-    """Tag one hit where it was: a player by name, a mob as the nearest within 1.5 blocks that
-    a hit may touch. True if it was tagged now (a hit listed twice is tagged once)."""
-    if h.player:
-        reply = mc.rcon("tag %s add %s" % (h.name, tag))
-    else:
-        x, y, z = h.pos[:3]
-        reply = mc.rcon(world.prefix(world.dim(h.pos)) + "positioned %.3f %.3f %.3f %s run tag @s add %s" % (
-            x, y, z, exclude.mobs("distance=..1.5,sort=nearest,limit=1"), tag))
-    return reply.startswith("Added tag")
 
 
 def _freeze_shell(at, block):
@@ -289,30 +283,18 @@ def _freeze_melt(shell):
 
 
 # --- preset: summon (copied from _presets/summon.py) ---
-_summon_n = [0]
-
-
 def summon(at, v):
     """summon_count of summon_mob round `at` (a player's name, a player value such as "@a" or
-    "Steve,Alex" for round each of them, or a place), at safe spots summon_spread blocks out:
-    standing room on solid ground, never on top of anyone. summon_scale sizes them;
+    "Steve,Alex" for round each of them, or a place, in its dimension), at safe spots:
+    standing room on solid ground, round a player summon_spread blocks out and never on top
+    of them, round a place anywhere within summon_spread of it. summon_scale sizes them;
     summon_health (0: their own) sets their health; summon_gear a full suit of that armour and
     summon_weapon an item in hand, neither dropped; summon_name a name over their heads;
     summon_glow shows them through walls; summon_nbt is more NBT ("IsBaby:1b"). Never more
     than summon_cap of this script's alive at once. They are tagged TAG_summon, and a stop
     kills them. Returns how many it summoned."""
-    tag, anchor = mc.TAG + "_summon", None
-    if isinstance(at, str):
-        spots = loop.who(at)
-    else:
-        _summon_n[0] += 1
-        anchor = "%s_at%d" % (mc.TAG, _summon_n[0])
-        reply = mc.rcon(world.run(at, 'summon marker %.2f %.2f %.2f {Tags:["vfg","%s","%s"]}'
-                                  % (at[0], at[1], at[2], mc.TAG, anchor)))
-        if "summoned" not in reply.lower():
-            mc.log("summon: nowhere to stand at %.0f %.0f %.0f: %s" % (at[0], at[1], at[2], reply[:80]))
-            return 0
-        spots = ["@e[type=marker,tag=%s,limit=1]" % anchor]
+    tag = mc.TAG + "_summon"
+    spots = loop.who(at) if isinstance(at, str) else [at]
     got = 0
     for spot in spots:
         room = v["summon_cap"] - mobs.count(tag)
@@ -321,8 +303,6 @@ def summon(at, v):
             break
         got += mobs.around(spot, v["summon_mob"], min(v["summon_count"], room), _summon_nbt(v),
                            spread=v["summon_spread"], tags=(tag,))
-    if anchor:
-        mc.rcon("kill @e[type=marker,tag=%s]" % anchor)
     return got
 
 
@@ -379,6 +359,4 @@ def frost_servants(b, v):
 v = values(VALUES)
 where = world.Pos(v["at"][0], v["at"][1], v["at"][2]) if len(v["at"]) >= 3 else v["player"]
 boss(where, v, abilities=[ice_blast, frost_servants])      # every boss_every s, each in turn
-mc.rcon("kill @e[tag=%s_summon]" % mc.TAG)                # her servants fall with her,
-for shell in list(_FREEZE_SHELLS):                         # and her ice melts now: the script ends here
-    _freeze_melt(shell)
+# The script ends here: her servants (tagged with it) fall with her, and her ice melts.

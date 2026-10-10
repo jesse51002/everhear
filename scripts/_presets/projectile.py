@@ -1,4 +1,4 @@
-"""Something you can see flies from a player or a place to another place, an orb of particles or a block; the script goes on where it lands."""
+"""Throw something you can see from a player to where they look: an orb of light or a block, flying at a speed, for a spirit bomb or a thrown power; the script goes on where it lands."""
 import math
 import random
 import time
@@ -37,8 +37,8 @@ def projectile(start, end, v):
     if v["projectile_kind"] == "block":
         _projectile_n[0] += 1
         tag = "%s_projectile%d" % (mc.TAG, _projectile_n[0])
-        block = v["projectile_block"].split("[")[0]
-        mc.rcon(world.run(start, 'summon block_display %.2f %.2f %.2f {block_state:{Name:"%s"},teleport_duration:2,'
+        block = v["projectile_block"].split("[")[0]        # 26.3: the id alone, never a state
+        mc.rcon(world.run(start, 'summon block_display %.2f %.2f %.2f {block_state:"%s",teleport_duration:2,'
                           'transformation:{translation:[%gf,%gf,%gf],left_rotation:[0f,0f,0f,1f],'
                           'right_rotation:[0f,0f,0f,1f],scale:[%gf,%gf,%gf]},Tags:["vfg","%s","%s"]}'
                           % (start[0], start[1], start[2], block if ":" in block else "minecraft:" + block,

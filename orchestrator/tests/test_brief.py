@@ -7,6 +7,7 @@ from helpers import temp_dir, use_fake_vfg, write
 from orchestrator import brief
 from orchestrator.examples import examples
 from orchestrator.guard import GuardContext, make_guard
+from orchestrator.vfg import VfgResult
 
 PLACES = "castle 197 68 251 overworld (T23)\nhome -368 70 912 overworld (T41)\n"
 AGENT = {"subagent_type": "implementer", "description": "T9 hut next to the castle", "prompt": "T9: a hut next to the castle.",
@@ -52,6 +53,17 @@ async def test_saved_places_unavailable_says_why_and_the_brief_still_goes():
     use_fake_vfg(temp_dir())
     os.environ["VFG_FAKE_PLACES_FAIL"] = "EC2 unreachable (fake)"
     assert await brief.rewrite("x", AGENT) == "x\n\nSAVED PLACES: unavailable (exit 1: vfg: EC2 unreachable (fake))"
+
+
+async def test_saved_places_off_when_vfg_has_no_place_command_so_the_brief_asks_for_none():
+    use_fake_vfg(temp_dir())
+    no_place = VfgResult(2, "", "usage: vfg ...\nvfg: argument <command>: invalid choice: 'place' (choose from "
+                                "'up', 'cmd', 'script', 'state')\n", False)
+    assert brief.places_line(no_place) == brief.PLACES_OFF
+    assert "save no place" in brief.PLACES_OFF and "PLACE none" in brief.PLACES_OFF
+    # any other failure is still "unavailable", with why
+    other = VfgResult(2, "", "vfg: argument --at: expected 3 arguments\n", False)
+    assert brief.places_line(other) == "SAVED PLACES: unavailable (exit 2: vfg: argument --at: expected 3 arguments)"
 
 
 async def test_saved_places_a_slow_vfg_is_cut_off(monkeypatch):

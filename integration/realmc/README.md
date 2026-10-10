@@ -27,6 +27,19 @@ itself is not exported, so `uv`, `git` and the rest of the shell keep yours. It 
 `VFG_MC_PROPERTIES`, so `PYTHONPATH=scripts/_lib python3 …` scripts reach the same server, and
 `REALMC_NAME`, the default for every command below.
 
+`vfg orch …` keeps your `HOME`: `vfg orch start` starts the orchestrator runner, whose Claude CLI
+finds its login under `~/.claude` (in the stand-in's `HOME` it says "Not logged in") and whose `uv`
+its Python and cache under `~/.cache`. vfg's own state stays in the stand-in (the runner's inbox,
+state and log in `$VFG_HOME/orch`, or `VFG_ORCH_DIR`), `bin/` goes first on the runner's `PATH`, and
+every `vfg` the runner and its implementers run comes back through `bin/vfg`, to the stand-in.
+
+```sh
+eval "$(integration/realmc/env p1)"
+vfg orch start          # "logged in: subscription …" in $VFG_HOME/orch/runner.log
+vfg orch send 'make it day' && vfg orch status
+vfg orch stop
+```
+
 ## Several servers at once
 
 ```sh

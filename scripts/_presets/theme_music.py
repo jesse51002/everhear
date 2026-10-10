@@ -1,36 +1,36 @@
-"""Music for a power or a fight: a theme tune, riff, chime or boss music by name, heard near a player, by everyone, or by one player; a newer one cuts it off."""
-import mc
-from kit import fx
+"""Music for a power, a fight or a boss: a theme tune, riff, chime or boss music by name, once or on a loop, heard near a player, by everyone or by one player alone; a newer one, or none, cuts it off."""
+from kit import fx, loop
 
 VALUES = {
     "theme_tune": {"type": "enum", "of": ["galick_gun", "hollow_purple", "ice_beam", "spirit_bomb",
-                                          "spirit_bomb_throw", "super_saiyan", "boss"],
+                                          "spirit_bomb_throw", "super_saiyan", "boss", "none"],
                    "default": "galick_gun", "live": True},
     "theme_to": {"type": "enum", "of": ["near", "everyone", "player"], "default": "near", "live": True},
     "theme_reach": {"type": "int", "min": 8, "max": 256, "default": 48, "live": True},
+    "theme_loop": {"type": "bool", "default": False, "live": True},
 }
 
 
-def theme_music(at, v):
-    """Play the tune theme_tune names, in the background, at a player (or a place), and
-    return how many seconds it lasts. theme_to: "near" is heard within theme_reach blocks
-    of it, "everyone" by every player where they stand, "player" by that player alone. A
-    newer theme at the same player (or for everyone) cuts this one off, a record too."""
-    notes = _THEME_MUSIC_TUNES[v["theme_tune"]]
+def theme_music(at, v, *, tune=None):
+    """Play the tune theme_tune names (or `tune`, for this call: the throw after a charge's
+    choir), in the background, at a player (or a place), and return how many seconds it
+    lasts. theme_to: "near" is heard within theme_reach blocks of it, "everyone" by every
+    player where they stand, "player" by that player alone. theme_loop: again each time it
+    ends (boss music while the boss lives), until a newer theme, "none" or a stop. A newer
+    theme at the same player (or for everyone) cuts this one off, a record too; "none" plays
+    nothing and only cuts off what plays there."""
     to = v["theme_to"]
     if to == "player" and not isinstance(at, str):
         to = "near"                     # a place has nobody to play it to alone
     where = at if isinstance(at, str) else "%d_%d_%d" % tuple(at[:3])
     key = "theme" if to == "everyone" else "theme_" + where      # one theme at a time per player or place
-    _theme_music_hush(key)
     hear = {"everyone": "@a", "player": at}.get(to)
-    fx.melody(notes, at, to=hear, key=key, reach=v["theme_reach"])
-    records = [n[1] for n in notes if n[1] in _THEME_MUSIC_RECORDS]
-    if records:
-        if not _THEME_MUSIC_PLAYING:    # a stop cuts records off too (said again after all were cut: harmless)
-            mc.on_stop(lambda: [_theme_music_hush(k) for k in list(_THEME_MUSIC_PLAYING)])
-        _THEME_MUSIC_PLAYING[key] = (hear or "@a", records)
-    return max([n[0] + 0.5 for n in notes] + [_THEME_MUSIC_RECORDS[r] for r in records])
+    _THEME_MUSIC_GEN[key] = gen = _THEME_MUSIC_GEN.get(key, 0) + 1   # a loop under this key ends
+    fx.stop_melody(key)
+    seconds = _theme_music_play(at, v, tune or v["theme_tune"], hear, key)
+    if seconds and v["theme_loop"]:
+        loop.background(_theme_music_again, at, v, tune, hear, key, gen, seconds)
+    return seconds
 
 
 # Each tune is a list of notes: (seconds from the start, a note block instrument or a sound
@@ -97,15 +97,24 @@ _THEME_MUSIC_TUNES = {
     ],
 }
 
-# Records play on in the players' game once started, so a newer theme stops them by name;
-# each with how long it lasts, in seconds.
+# A record plays on in the players' game once started (fx.melody stops it when a newer
+# melody starts, and on a stop); each with how long it lasts, in seconds.
 _THEME_MUSIC_RECORDS = {"music_disc.pigstep": 148.0}
-_THEME_MUSIC_PLAYING = {}       # key -> (who hears it, [records]) while a record may still play
+_THEME_MUSIC_GEN = {}           # key -> how many themes have started under it: a loop plays on while it is the last
 
 
-def _theme_music_hush(key):
-    """Cut off what plays under a key: its notes, and any record it started."""
-    fx.stop_melody(key)
-    hear, records = _THEME_MUSIC_PLAYING.pop(key, (None, []))
-    for r in records:
-        mc.rcon("stopsound %s * minecraft:%s" % (hear, r))
+def _theme_music_play(at, v, name, hear, key):
+    """Start one tune under a key; how long it lasts (0 for "none")."""
+    notes = _THEME_MUSIC_TUNES.get(name)
+    if not notes:
+        return 0
+    fx.melody(notes, at, to=hear, key=key, reach=v["theme_reach"])
+    return max([n[0] + 0.5 for n in notes] + [_THEME_MUSIC_RECORDS.get(n[1], 0) for n in notes])
+
+
+def _theme_music_again(at, v, tune, hear, key, gen, seconds):
+    """Play it again each time it ends, while theme_loop is on and nothing newer started there."""
+    while loop.wait(seconds) and v["theme_loop"] and _THEME_MUSIC_GEN.get(key) == gen:
+        seconds = _theme_music_play(at, v, tune or v["theme_tune"], hear, key)
+        if not seconds:
+            return

@@ -624,3 +624,20 @@ def test_the_guard_and_the_rules_know_the_server_folder():
                 "vfg preset save *", "vfg state", "vfg state *"):
         assert "Bash(%s)" % cmd in r
     assert not any("route" in x or "prefix" in x for x in r)
+
+
+def test_the_guard_knows_each_implementers_task_and_asks_vfg_what_runs():
+    s = setup()
+    g = s.session.guard_context()
+    assert g.task_of("a1") is None and g.task_of(None) is None
+    s.session.handle({"type": "system", "subtype": "task_started", "task_id": "a1", "tool_use_id": "u1",
+                      "description": "T7 castle at spawn", "task_type": "local_agent"})
+    assert g.task_of("a1") == "T7"
+    assert g.running is not None  # running_from_vfg: vfg state --json when an edit needs it
+
+
+def test_the_rules_let_the_guards_pipes_and_file_looks_reach_the_cli():
+    r = rules("/repo")
+    for cmd in ("echo", "echo *", "ls", "ls *", "grep *", "head *", "tail *", "vfg script list *"):
+        assert "Bash(%s)" % cmd in r
+    assert not any(x.startswith(("Bash(cat", "Bash(sed", "Bash(mkdir", "Bash(rm")) for x in r)

@@ -1,9 +1,9 @@
-"""Push what was hit away from a place, pull it in, or lift it."""
+"""Push what was hit away (a barrier, knockback, gravity), pull it in, throw it up into the air, or send a projectile back the way it came."""
 import math
 import random
 
 import mc
-from kit import exclude, world
+from kit import aim, world
 
 VALUES = {
     "push_way": {"type": "enum", "of": ["away", "toward", "up"], "default": "away", "live": True},
@@ -11,21 +11,24 @@ VALUES = {
 }
 
 
-def push(hits, frm, v):
+def push(hits, frm, v, *, way=None):
     """Move every hit (a list of aim.Hit, from aim.near_line, around or lock_on) about
     push_strength blocks: "away" from frm, "toward" it (never past it), or "up" into the
-    air. frm: a place, or a player's name for where they stand. A mob is thrown (its
+    air; way, when given, is the way for this call (a script whose own value picks it), else
+    push_way. frm: a place, or a player's name for where they stand. A mob is thrown (its
     Motion), so it flies, lands and slides; a player is moved there at once, and only into
-    room to stand, since a player's Motion cannot be set; "up" floats a player up instead.
-    Pets and villagers are never moved. Returns how many were moved."""
-    way, s = v["push_way"], v["push_strength"]
+    room to stand, since a player's Motion cannot be set; "up" floats a player up instead. A
+    hit with a uuid (a projectile, from around's "projectiles") is sent off on its new
+    heading and becomes this script's (tagged TAG), so it is turned only once. Pets and
+    villagers are never moved. Returns how many were moved."""
+    way, s = way or v["push_way"], v["push_strength"]
     if isinstance(frm, str):
         frm = mc.pos(frm)
         if frm is None:
             return 0
     seen, n = set(), 0
     for h in hits:
-        key = h.name if h.player else (h.name, round(h.pos[0], 1), round(h.pos[1], 1), round(h.pos[2], 1))
+        key = h.uuid or (h.name if h.player else (h.name, round(h.pos[0], 1), round(h.pos[1], 1), round(h.pos[2], 1)))
         if key in seen:
             continue                    # listed twice: moved once
         seen.add(key)
@@ -47,15 +50,18 @@ def push(hits, frm, v):
 
 def _push_mob(h, ux, uz, s, way):
     """Throw a mob: about 5 blocks of flight and slide for each 1 of horizontal Motion, with a
-    hop of 0.4 so it leaves the ground; straight up, a Motion of sqrt(height / 5.4)."""
-    if way == "up":
+    hop of 0.4 so it leaves the ground; straight up, a Motion of sqrt(height / 5.4). A
+    projectile found by its uuid flies straight on its new heading, no hop."""
+    if h.uuid:
+        k = s / 5.0
+        motion = (0.0, k, 0.0) if way == "up" else (ux * k, 0.1, uz * k)
+    elif way == "up":
         motion = (0.0, math.sqrt(s / 5.4), 0.0)
     else:
         motion = (ux * s / 5.0, 0.4, uz * s / 5.0)
-    x, y, z = h.pos[:3]
-    mob = exclude.mobs("distance=..1.5,sort=nearest,limit=1")        # found again where it was
-    reply = mc.rcon(world.prefix(world.dim(h.pos)) + "positioned %.3f %.3f %.3f %s run data modify entity @s "
-                    "Motion set value [%.3fd,%.3fd,%.3fd]" % ((x, y, z, mob) + motion))
+    reply = aim.run_on(h, "data modify entity @s Motion set value [%.3fd,%.3fd,%.3fd]" % motion)
+    if h.uuid:
+        mc.rcon("tag %s add %s" % (h.uuid, mc.TAG))
     return 1 if "Modified" in reply else 0
 
 

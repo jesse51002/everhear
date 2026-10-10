@@ -1,4 +1,4 @@
-"""Yields a player and where they stand each time they walk a step on the ground: a block, or as far as asked."""
+"""Wherever a player walks (everything I walk on turns to ice): each step on the ground, the player and where they stand."""
 import math
 import re
 

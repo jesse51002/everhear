@@ -33,8 +33,10 @@ def director(player, v, *, events=None):
     """Until the script stops: for each player the player value names, every director_min_s
     to director_max_s s of them being online, one of director_events, picked by director_weights
     (the same order; a missing weight is 1), run in the background so no one waits for it.
-    events: {name: f(p, v)}, the script's own, beside the built-in sound, shadow, mob,
-    message and dark (a name of its own replaces a built-in one)."""
+    director_each off: one clock for everyone, and its event goes to one of them at random
+    (as often with three players on as with one). events: {name: f(p, v)}, the script's own,
+    beside the built-in sound, shadow, mob, message and dark (a name of its own replaces a
+    built-in one)."""
     table = {"sound": _director_sound, "shadow": _director_shadow, "mob": _director_mob,
              "message": _director_message, "dark": _director_dark}
     table.update(events or {})
@@ -42,10 +44,8 @@ def director(player, v, *, events=None):
     due = {}
     for _ in loop(every=1):
         now, names = time.time(), loop.who(player)
-        # Bent: with director_each off there is one clock, "*", and its event goes to one
-        # player at random.
         clocks = names if v["director_each"] else (["*"] if names else [])
-        due = {p: t for p, t in due.items() if p in clocks}    # the clock runs only while they are on
+        due = {k: t for k, t in due.items() if k in clocks}    # a clock runs only while they are on
         for k in clocks:
             if now < due.setdefault(k, now + _director_wait(v)):
                 continue

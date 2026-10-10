@@ -33,10 +33,12 @@ def boss(where, v, *, abilities=None, phases=None):
     its loot drops where it fell, and it returns True. False if there was no room for it, or
     the script stopped first.
 
-    abilities: functions f(b, v), one called in turn every boss_every s (default: minions).
-    phases: functions f(b, v), the first called when its health falls below the first share
-    in boss_phases, the next below the next (the last repeats; default: it enrages).
-    b is the kit's mobs.Boss: b.tag selects the bodies, b.phase counts the phases from 0."""
+    abilities: functions f(b, v), one called in turn every boss_every s (default: minions,
+    boss_minions of boss_minion; abilities of its own replace them, so those two values then
+    do nothing). phases: functions f(b, v), the first called when its health falls below the
+    first share in boss_phases, the next below the next (the last repeats; default: it
+    enrages). b is the kit's mobs.Boss: b.tag selects the bodies, b.dim is the dimension it
+    is in, b.phase counts the phases from 0."""
     b = mobs.Boss(v["boss_name"], v["boss_mob"], v["boss_health"], v["boss_bodies"], v["boss_scale"],
                   _boss_gear(v["boss_gear"]), v["boss_bar"])
     near = None
@@ -56,7 +58,6 @@ def boss(where, v, *, abilities=None, phases=None):
         b.remove()
         return False
     b.phase, body = 0, "@e[tag=%s,limit=1]" % b.tag
-    dim = world.dim_of(near) if near else world.dim(where)
     mc.rcon("execute as @e[tag=%s] run attribute @s attack_damage base set %g" % (b.tag, v["boss_attack"]))
     fx.title("@a", v["boss_name"], sub="has risen", color="dark_red")
     fx.sound("entity.wither.spawn", body, volume=4, pitch=0.8)
@@ -75,7 +76,7 @@ def boss(where, v, *, abilities=None, phases=None):
         if not b.update():                             # the bar follows the bodies; 0 when all are dead
             break
         at = mc.pos(body)
-        last = world.Pos(at[0], at[1], at[2], dim) if at else last
+        last = world.Pos(at[0], at[1], at[2], b.dim) if at else last
         health = b.health() if shares else None
         if health and health[1] and health[0] < full * shares[0]:
             shares.pop(0)

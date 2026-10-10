@@ -34,14 +34,17 @@ def online():
 
 
 def who(player="@a"):
-    """The online players a player value names: "@a" everyone, "@r" one at random, and
-    "Steve,Alex" those of them who are online."""
+    """The online players a player value names: "@a" everyone, "@r" one at random, "@p" the
+    owner (VFG_OWNER) when online, else the first player online (a command from RCON has no
+    place to be nearest to), and "Steve,Alex" those of them who are online."""
     player = now(player) or "@a"
     names = online()
     if player == "@a":
         return names
     if player == "@r":
         return [random.choice(names)] if names else []
+    if player == "@p":
+        return [mc.OWNER] if mc.OWNER in names else names[:1]
     want = [mc.bare(n) for n in str(player).split(",") if n.strip()]
     return [n for n in want if n in names]
 

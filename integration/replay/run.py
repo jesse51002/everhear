@@ -133,14 +133,21 @@ class Watcher(threading.Thread):
             f.write("%s %s\n" % (iso_now(), msg))
 
     def run(self):
+        last = dict(SPOTS)  # where each was last seen: a player put back starts where he was, not at spawn
         while not self.stopping.wait(5):
             try:
                 online = self.p.online()
-                for name, at in SPOTS.items():
-                    if name not in online and not self.stopping.is_set():
+                for name in SPOTS:
+                    if name in online:
+                        try:
+                            last[name] = self.p.pos(name)
+                        except Exception:
+                            pass
+                    elif not self.stopping.is_set():
+                        at = last[name]
                         self.p.spawn(name, at=at)
                         self.respawns += 1
-                        self.note("%s was not online: spawned again at %g %g %g" % ((name,) + at))
+                        self.note("%s was not online: spawned again at %g %g %g (where he was last seen)" % ((name,) + tuple(at)))
             except Exception as e:  # the server may be busy; try again next time
                 self.note("watch: %s" % e)
 
@@ -193,6 +200,15 @@ class Runner:
         except (OSError, ValueError):
             return {}
 
+    def check(self):
+        """Raises when the runner cannot go on: not logged in, or the usage window ran out."""
+        text = self.text()
+        if "Not logged in" in text:
+            raise RuntimeError("the CLI is not logged in: see %s" % self.log)
+        m = LIMIT.search(text)
+        if m:
+            raise RuntimeError("the subscription's usage limit: %r in %s" % (m.group(0), self.log))
+
     def alive(self):
         return vfg(self.env, "orch", "status").returncode == 0
 
@@ -211,6 +227,12 @@ class Runner:
         if sid:
             ids.append(sid)
         return list(dict.fromkeys(ids))
+
+
+# The subscription's usage window ran out: the runner's rate-limit line says rejected, or a turn
+# ends on the CLI's limit message.
+# ("overageStatus":"rejected" is on every line when overage is off: only "status" counts.)
+LIMIT = re.compile(r"rate limit: \{\"status\":\"rejected\"|usage limit reached|Claude AI usage limit", re.I)
 
 
 def project_dir():
@@ -301,6 +323,11 @@ def main(argv=None):
     for line in vfg(env, "script", "list").stdout.splitlines():
         if line.strip() and "running" in line:
             vfg(env, "script", "stop", line.split()[0])
+    # `up --fresh` keeps the stand-in's run/: an earlier replay's instances would show in `vfg script
+    # list`, with task ids that mean other tasks now.
+    for f in glob.glob(os.path.join(srv.vfg, "run", "*")):
+        if os.path.isfile(f) and not f.endswith(".pid"):
+            os.remove(f)
     db = os.path.join(srv.vfg, "vfg.db")
     usage_from = last_usage_id(db)
     p = players_mod.on(a.name)
@@ -337,8 +364,7 @@ def main(argv=None):
                 sent_file.write(json.dumps({"replay_id": rid, "run_id": tid, "at": at, "class": t["class"]}) + "\n")
                 sent_file.flush()
                 say("sent %s as %s [%s]: %s" % (tid, rid, t["class"], text[:100]))
-                if "Not logged in" in runner.text():
-                    raise RuntimeError("the CLI is not logged in: see %s" % runner.log)
+                runner.check()
         # 3. until every task is closed, or the cap
         deadline = time.time() + a.cap * 60
         last, polls = None, 0
@@ -351,6 +377,7 @@ def main(argv=None):
                 say("open: %s" % " ".join(open_))
                 last = open_
             polls += 1
+            runner.check()
             if polls % 15 == 0 and not runner.alive():
                 say("the runner is not running")
                 break
@@ -379,7 +406,16 @@ def main(argv=None):
 
 
 def finish(out, env, srv, runner, made, db, usage_from, a):
-    """Every record into OUT, every script and player off, the server down."""
+    """Every record into OUT, every script and player off, the server down; a step that fails is
+    said and the rest still run."""
+    for step in (_finish_world, _finish_records, _finish_down):
+        try:
+            step(out, env, srv, runner, made, db, usage_from, a)
+        except Exception as e:
+            say("finish: %s failed: %s" % (step.__name__, e))
+
+
+def _finish_world(out, env, srv, runner, made, db, usage_from, a):
     for name, args in (("scripts.txt", ["script", "list"]), ("state.json", ["state", "--json"])):
         try:
             r = vfg(env, *args, timeout=30)
@@ -390,10 +426,32 @@ def finish(out, env, srv, runner, made, db, usage_from, a):
     for line in (open(os.path.join(out, "scripts.txt")).read().splitlines() if os.path.exists(os.path.join(out, "scripts.txt")) else []):
         if line.strip() and "running" in line:
             vfg(env, "script", "stop", line.split()[0], timeout=60)
+    left = []
+    try:
+        time.sleep(3)
+        insts = [l.split()[0] for l in open(os.path.join(out, "scripts.txt")).read().splitlines() if l.strip()
+                 and re.match(r"[a-z0-9][a-z0-9_-]* ", l)]
+        for inst in insts:
+            r = vfg(env, "cmd", "execute if entity @e[tag=vfg_%s]" % inst, timeout=30)
+            if "Test passed" in r.stdout:
+                left.append("%s: entities tagged vfg_%s left: %s" % (inst, inst, r.stdout.strip()))
+        for c in ("bossbar list", "forceload query", "gamerule mob_griefing", "gamerule fall_damage",
+                  "gamerule keep_inventory", "time query day", "scoreboard objectives list"):
+            r = vfg(env, "cmd", c, timeout=30)
+            left.append("%s: %s" % (c, (r.stdout + r.stderr).strip()[:600]))
+        r = vfg(env, "script", "list", timeout=30)
+        left.append("script list after the stops:\n" + r.stdout.strip())
+    except Exception as e:
+        left.append("check failed: %s" % e)
+    with open(os.path.join(out, "leftovers.txt"), "w") as f:
+        f.write("\n".join(left) + "\n")
     try:
         players_mod.on(a.name).kill_all()
     except Exception as e:
         say("players: %s" % e)
+
+
+def _finish_records(out, env, srv, runner, made, db, usage_from, a):
     if os.path.isdir(made):
         shutil.copytree(made, os.path.join(out, "made"), dirs_exist_ok=True)
     box = os.path.join(out, "box")
@@ -412,6 +470,9 @@ def finish(out, env, srv, runner, made, db, usage_from, a):
         os.makedirs(dst, exist_ok=True)
         if os.path.exists(os.path.join(pd, sid + ".jsonl")):
             shutil.copy2(os.path.join(pd, sid + ".jsonl"), os.path.join(dst, "main.jsonl"))
+
+
+def _finish_down(out, env, srv, runner, made, db, usage_from, a):
     if not a.keep_server:
         subprocess.run([os.path.join(REALMC, "down"), a.name])
 

@@ -5,8 +5,9 @@
     fake = FakeRcon(password, responder=world.respond).start()
 
 It answers the commands the kit sends the way 26.3 does, closely enough to test the kit's
-plumbing: list, data get entity, scoreboards, execute chains (in, as, at, positioned, if and
-unless block, loaded, entity, items, data; run), give, clear, fill (with the 32,768 limit and
+plumbing: list, data get entity, scoreboards, execute chains (in, as, at, positioned,
+positioned over, summon, if and unless block, loaded, entity, items, data, a sneaking
+predicate; run), give, clear, fill (with the 32,768 limit and
 "That position is not loaded"), forceload, bossbars, gamerules, tick query, summon, kill and
 tag. Blocks below `ground` are solid, and `solid` adds more; chunks in `unloaded` are not
 loaded. What it was told is kept in `fills`, `gives`, `bossbars`, `forced`, `gamerules`.
@@ -150,6 +151,17 @@ class World(object):
             raise Error(NOT_LOADED)
         return self.is_solid(dim, x, y, z)
 
+    def _surface(self, dim, x, z):
+        """The y of the first open block over the highest solid one in a column."""
+        x, z = int(math.floor(x)), int(math.floor(z))
+        lo, hi = LIMITS.get(dim, LIMITS[OVERWORLD])
+        if not self.is_loaded(dim, x, z):
+            raise Error(NOT_LOADED)
+        for y in range(hi, lo - 1, -1):
+            if self.is_solid(dim, x, y, z):
+                return float(y + 1)
+        return float(lo)
+
     # ---- selectors ----
 
     def _all(self):
@@ -289,6 +301,14 @@ class World(object):
             elif word == "at":
                 sel, rest = _token(rest)
                 ctxs = [(e, x["dim"], list(x["pos"])) for c in ctxs for (e, d, p) in [c] for x in self._select(sel, c)]
+            elif word == "positioned" and rest.startswith("over "):
+                _, rest = _token(rest)
+                _, rest = _token(rest)          # the heightmap: the first open block over the ground
+                ctxs = [(e, d, [p[0], self._surface(d, p[0], p[2]), p[2]]) for e, d, p in ctxs]
+            elif word == "summon":
+                kind, rest = _token(rest)
+                ctxs = [(self.add_entity(kind.replace("minecraft:", ""), p, dim=d,
+                                         health=None if kind.endswith("marker") else 20.0), d, p) for e, d, p in ctxs]
             elif word == "positioned":
                 nxt = []
                 coords_rest = rest
@@ -341,6 +361,9 @@ class World(object):
                         hit = any(self._item_matches(i, pred) for e in es for i in self._slots(e, slots))
                         if hit == want:
                             keep.append(c)
+                elif kind == "predicate":
+                    pred, rest = _token(rest)   # only {flags:{is_sneaking:true}} is known here
+                    keep = [c for c in ctxs if bool(c[0] and c[0].get("sneaking") and "is_sneaking:true" in pred) == want]
                 elif kind == "data":
                     _, rest = _token(rest)  # entity
                     target, rest = _token(rest)
@@ -384,7 +407,7 @@ class World(object):
                     # 26.3: one condition that fails says so; a chain of several says nothing.
                     return "Test failed" if len(re.findall(r" (?:if|unless) ", " " + cmd)) == 1 else ""
                 if last == "entity":
-                    return "Test passed, count: %d" % self._found
+                    return "Test passed. Count: %d" % self._found
                 return "Test passed"
             return "".join(self._branch(rest, c) for c in ctxs)
         word = cmd.split(" ", 1)[0]

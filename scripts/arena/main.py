@@ -1,5 +1,7 @@
 """Arena: a circle round where it started, or a box, that players cannot leave: anyone who walks out is sent back in."""
-ASKS = ["give us a radius of forty blocks and anyone that leaves the radius, they teleport back to the center"]
+ASKS = ["give us a radius of forty blocks and anyone that leaves the radius, they teleport back to the center",
+        "keep everyone inside", "nobody can leave this area", "make an arena we can't get out of",
+        "teleport anyone who walks out back to the middle"]
 from kit import values, fx, loop, world
 import math
 import mc

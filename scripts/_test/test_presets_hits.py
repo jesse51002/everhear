@@ -287,6 +287,33 @@ class DamageTests(HitsCase):
         self.assertEqual(self.sent("damage"), [])
 
 
+class DamageWhatTests(HitsCase):
+    """damage_what, and a tag an earlier run left on a player."""
+
+    def test_hostile_mobs_only_then_players_only(self):
+        z, cow = self.mob("zombie", 10.5), self.mob("cow", 20.5)
+        self.world.add_player("Alex", (15.5, 64.0, 0.5))
+        hits = aim.near_line(aim.ray("Steve", 40), 1.5, shooter="Steve")
+        self.assertEqual(len(hits), 3)
+        n = P["damage_hits"].damage_hits(hits, "Steve", vals("damage_hits", damage_amount=5, damage_what="hostile"))
+        self.assertEqual((n, z["health"], cow["health"], self.world.players["Alex"]["health"]), (1, 15.0, 20.0, 20.0))
+        n = P["damage_hits"].damage_hits(hits, "Steve", vals("damage_hits", damage_amount=5, damage_what="players"))
+        self.assertEqual((n, z["health"], cow["health"], self.world.players["Alex"]["health"]), (1, 15.0, 20.0, 15.0))
+        n = P["damage_hits"].damage_hits(hits, "Steve", vals("damage_hits", damage_amount=5, damage_what="mobs"))
+        self.assertEqual((n, z["health"], cow["health"], self.world.players["Alex"]["health"]), (2, 10.0, 15.0, 15.0))
+        self.assertEqual(self.tags_left(), [])
+
+    def test_a_tag_left_from_an_earlier_run_spares_nobody(self):
+        import itertools
+        self.world.add_player("Alex", (12.5, 64.0, 0.5))
+        P["damage_hits"]._DAMAGE_N = itertools.count(1)
+        self.world.players["Alex"]["tags"].add("%s_hit1" % mc.TAG)         # he died tagged, last run
+        hits = aim.near_line(aim.ray("Steve", 40), 1.5, shooter="Steve")
+        self.assertEqual(P["damage_hits"].damage_hits(hits, "Steve", vals("damage_hits", damage_amount=4)), 1)
+        self.assertEqual(self.world.players["Alex"]["health"], 16.0)
+        self.assertEqual(self.tags_left(), [])
+
+
 # ---- freeze and push ---------------------------------------------------------------------------
 
 class FreezeTests(HitsCase):
@@ -319,6 +346,14 @@ class FreezeTests(HitsCase):
         self.assertEqual(P["freeze"]._FREEZE_SHELLS, [])
 
 
+class FreezeBlindnessTests(HitsCase):
+    def test_blinded_too_when_asked(self):
+        z = self.mob("zombie", 10.5)
+        hits = aim.near_line(aim.ray("Steve", 20), 1.5, shooter="Steve")
+        P["freeze"].freeze(hits, vals("freeze", freeze_seconds=2, freeze_blindness=True))
+        self.assertEqual(z["effects"]["blindness"], (2, 3))
+
+
 class PushTests(HitsCase):
     def test_a_mob_thrown_away_pulled_in_or_lifted_once(self):
         z = self.mob("zombie", 10.5)
@@ -344,6 +379,28 @@ class PushTests(HitsCase):
         self.assertEqual(P["push"].push(hits, "Steve", vals("push", push_strength=6)), 0)   # no room at all
         P["push"].push(hits, "Steve", vals("push", push_way="up", push_strength=6))
         self.assertEqual(self.world.players["Alex"]["effects"]["levitation"], (1, 7))
+
+
+class PushMoreTests(HitsCase):
+    def test_the_way_given_by_the_call_and_a_projectile_turned_by_its_uuid(self):
+        z = self.mob("zombie", 10.5)
+        frm = world.Pos(0.5, 64.0, 0.5)
+        hits = P["around"].around(frm, vals("around", around_radius=12))
+        P["push"].push(hits, frm, vals("push", push_way="away", push_strength=6), way="up")
+        self.assertEqual(tuple(round(c, 3) for c in z["motion"]), (0.0, 1.054, 0.0))
+        u = "00000001-0000-0002-0000-0003ffffffff"
+        arrow = aim.Hit(3.0, world.Pos(3.5, 65.0, 0.5), "Arrow", False, u)
+        P["push"].push([arrow, arrow], frm, vals("push", push_strength=5))
+        self.assertEqual(len([c for c in self.world.commands if c.startswith("execute as %s at @s run data modify "
+                                                                          "entity @s Motion set value [1.000d,0.100d,0.000d]" % u)]), 1)
+        self.assertIn("tag %s add %s" % (u, mc.TAG), self.world.commands)       # turned once: it is the script's now
+
+    def test_around_hostile_mobs_only(self):
+        self.mob("zombie", 3.5)
+        self.mob("cow", 4.5)
+        self.mob("wolf", 5.5)
+        hits = P["around"].around("Steve", vals("around", around_what="hostile"))
+        self.assertEqual([h.name for h in hits], ["Zombie"])
 
 
 # ---- lightning, explosion, crater ----------------------------------------------------------------
@@ -437,6 +494,27 @@ class CraterTests(HitsCase):
             self.assertEqual(P["crater"].crater(world.Pos(0.5, 70.0, 0.5), vals("crater")), 0)
         finally:
             P["crater"]._CRATER_QUEUE[0] = 0
+
+
+class OffAndTunnelTests(HitsCase):
+    def test_no_crater_and_no_blast_at_zero(self):
+        self.assertEqual(P["crater"].crater(world.Pos(0.5, 70.0, 0.5), vals("crater", crater_radius=0, crater_tunnel=2),
+                                            path=[world.Pos(5.5, 70.0, 0.5)]), 0)
+        self.assertEqual(P["explosion"].explosion(world.Pos(0.5, 70.0, 0.5), "Steve", vals("explosion", explosion_power=0)), 0)
+        self.assertEqual(self.world.fills, [])
+        self.assertEqual(self.sent("summon"), [])
+
+    def test_a_tunnel_along_a_beam_first(self):
+        path = [world.Pos(x + 0.5, 70.0, 0.5) for x in range(4, 20, 2)]
+        P["crater"].crater(world.Pos(20.5, 70.0, 0.5), vals("crater", crater_radius=3, crater_tunnel=1, crater_load=False),
+                           path=path)
+        first = self.world.fills[0][1]
+        self.assertEqual(first, (3, 69, -1, 5, 71, 1))                     # the cube round the first place
+        self.assertTrue(any(b[0] <= 20 <= b[3] for _, b, _, _ in self.world.fills))
+
+    def test_too_big_to_load_first(self):
+        P["crater"]._crater_carve(world.Pos(0.5, 300.0, 0.5), vals("crater", crater_radius=200), ())
+        self.assertFalse(self.sent("forceload add"))
 
 
 # ---- all eight copied into one script, run as on EC2, stopped -------------------------------

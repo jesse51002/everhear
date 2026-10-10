@@ -27,18 +27,12 @@ def on_death(player, v):
     """
     deaths = items.Stat(world.objective("deathCount", "deaths"), "deathCount")      # removed on a stop
     kills = items.Stat(world.objective("totalKillCount", "kills"), "totalKillCount")
-    seen, scored = {}, set()            # per objective and player: the count last read; who has a score
+    seen = {}                           # per objective and player: the count last read
     while not mc.stopping():
         people = loop.who(player)
         if not people:
             time.sleep(1.0)
             continue
-        if not scored.issuperset(people):
-            # Everyone gets a score (adding 0 changes none): a player with none yet makes
-            # items.Stat misread the name after theirs in the same reply.
-            for stat in (deaths, kills):
-                mc.rcon("scoreboard players add @a %s 0" % stat.objective)
-            scored.update(people)
         died, killed = _on_death_more(deaths, seen), _on_death_more(kills, seen)
         event, due = v["on_death_event"], []
         for p in people:

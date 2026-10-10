@@ -18,7 +18,7 @@ VALUES = {
     "meteor_height":    {"type": "int", "min": 10, "max": 300, "default": 60, "live": True},
     "meteor_slant":     {"type": "int", "min": 0, "max": 100, "default": 15, "live": True},
     "meteor_seconds":   {"type": "number", "min": 0.5, "max": 20, "default": 2.5, "live": True},
-    "explosion_power":  {"type": "number", "min": 1, "max": 16, "default": 4, "live": True},
+    "explosion_power":  {"type": "number", "min": 0, "max": 16, "default": 4, "live": True},
     "explosion_layout": {"type": "enum", "of": ["one", "plus", "ring", "rings"], "default": "plus", "live": True},
     "explosion_spread": {"type": "number", "min": 1, "max": 32, "default": 3, "live": True},
     "explosion_breaks": {"type": "bool", "default": True, "live": True},
@@ -47,8 +47,8 @@ def meteor_fall(at, v):
     start = land.moved(-v["meteor_slant"] * math.cos(a), v["meteor_height"], -v["meteor_slant"] * math.sin(a))
     gap = v["meteor_size"] / 3.0            # 19 displays, a 3 x 3 x 3 cluster without its corners
     s, mix = gap * 1.35, _meteor_fall_mix(v["meteor_blocks"])
-    # Bent: 26.3 takes a display's block as its id, block_state:"minecraft:magma_block"; the
-    # {Name:"..."} the preset writes makes a display of air, so the meteor was not seen.
+    # 26.3 takes a display's block as its id alone, block_state:"minecraft:magma_block": a
+    # state in it, or {Name:...}, shows air, so [...] is cut off.
     for ox, oy, oz in [(x, y, z) for x in (-1, 0, 1) for y in (-1, 0, 1) for z in (-1, 0, 1) if abs(x * y * z) == 0]:
         block = random.choices([m[0] for m in mix], [m[1] for m in mix])[0].split("[")[0]
         mc.rcon(world.run(land, 'summon block_display %.2f %.2f %.2f {block_state:"%s",teleport_duration:2,'
@@ -104,19 +104,21 @@ def _meteor_fall_mix(text):
 # --- preset: explosion (copied from _presets/explosion.py) ---
 def explosion(at, by, v):
     """Blow up a place (or a player's name: where they stand) with blasts of explosion_power
-    (TNT is 4), laid out by explosion_layout: "one" at the place, "plus" with four more
+    (TNT is 4; 0: no blast at all), laid out by explosion_layout: "one" at the place, "plus" with four more
     explosion_spread blocks out, "ring" with eight round it, "rings" with six at
     explosion_spread and ten at twice that. explosion_breaks: real TNT, which breaks blocks;
     else a blast that only hurts and throws back. by (the player who set it off, or "") and
     the players in explosion_spare are never hurt, nor are pets and villagers; no blast lands
     within explosion_keep blocks of any player, who is caught at its edge instead. Returns
     how many blasts went off."""
+    power = v["explosion_power"]
+    if power <= 0:
+        return 0
     if isinstance(at, str):
         feet = mc.pos(at)
         if feet is None:
             return 0
         at = world.Pos(feet[0], feet[1], feet[2], world.dim_of(at))
-    power = v["explosion_power"]
     spare = [mc.bare(p) for p in [by] + list(v["explosion_spare"]) if p and not p.startswith("@")]
     pre = world.prefix(world.dim(at))
     here = pre + "positioned %.2f %.2f %.2f " % tuple(at[:3])

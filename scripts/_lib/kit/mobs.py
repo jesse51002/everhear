@@ -3,7 +3,7 @@
     mobs.around(p, "zombie", 5, spread=8)                  # 5 zombies near p, tagged TAG
     mobs.around(r.end, "wither", 1, spread=2)              # or round a place, in its dimension
     boss = mobs.Boss("Horde King", "zombie", health=800, scale=3, attributes={"attack_damage": 12})
-    boss.spawn(p)                                          # near p, with a red bar for everyone
+    boss.spawn(p)                                          # near p, with a red bar for everyone; boss.dim is where
     while boss.update():                                   # the bar follows the bodies' summed health (boss.total)
         time.sleep(1)
     # it is dead (or gone); its bar is removed. boss.remove() takes it away early.
@@ -95,6 +95,7 @@ class Boss(object):
         self.bar = "vfg:%s_boss%d" % (mc.INSTANCE, k)
         self.alive = 0
         self.total = 0.0
+        self.dim = None             # set by spawn: its abilities act in this dimension
         self._misses = 0
         self._bar_made = False
 
@@ -113,7 +114,11 @@ class Boss(object):
 
     def spawn(self, near=None, at=None, spread=8):
         """Summon the bodies near a player or a place (at safe spots), or exactly at a place,
-        and show the bar to everyone. Returns how many bodies were summoned."""
+        and show the bar to everyone. Sets .dim, the dimension it is in (26.3 keeps no
+        Dimension in a mob's data, so nothing can ask it later). Returns how many bodies
+        were summoned."""
+        where = near if near is not None else at
+        self.dim = world.dim_of(where) if isinstance(where, str) else world.dim(where)
         got = 0
         for i in range(self.bodies):
             tags = (self.tag, "%s_%d" % (self.tag, i))

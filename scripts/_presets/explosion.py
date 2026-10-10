@@ -1,4 +1,4 @@
-"""An explosion at a place: one blast, a plus, a ring or rings of them, breaking blocks or not."""
+"""Blow up a place: one blast, a plus, a ring or rings of them, bigger or smaller, breaking blocks or not, or no blast at all."""
 import math
 import re
 
@@ -6,7 +6,7 @@ import mc
 from kit import exclude, world
 
 VALUES = {
-    "explosion_power": {"type": "number", "min": 1, "max": 16, "default": 4, "live": True},
+    "explosion_power": {"type": "number", "min": 0, "max": 16, "default": 4, "live": True},
     "explosion_layout": {"type": "enum", "of": ["one", "plus", "ring", "rings"], "default": "one", "live": True},
     "explosion_spread": {"type": "number", "min": 1, "max": 32, "default": 4, "live": True},
     "explosion_breaks": {"type": "bool", "default": True, "live": True},
@@ -17,19 +17,21 @@ VALUES = {
 
 def explosion(at, by, v):
     """Blow up a place (or a player's name: where they stand) with blasts of explosion_power
-    (TNT is 4), laid out by explosion_layout: "one" at the place, "plus" with four more
+    (TNT is 4; 0: no blast at all), laid out by explosion_layout: "one" at the place, "plus" with four more
     explosion_spread blocks out, "ring" with eight round it, "rings" with six at
     explosion_spread and ten at twice that. explosion_breaks: real TNT, which breaks blocks;
     else a blast that only hurts and throws back. by (the player who set it off, or "") and
     the players in explosion_spare are never hurt, nor are pets and villagers; no blast lands
     within explosion_keep blocks of any player, who is caught at its edge instead. Returns
     how many blasts went off."""
+    power = v["explosion_power"]
+    if power <= 0:
+        return 0
     if isinstance(at, str):
         feet = mc.pos(at)
         if feet is None:
             return 0
         at = world.Pos(feet[0], feet[1], feet[2], world.dim_of(at))
-    power = v["explosion_power"]
     spare = [mc.bare(p) for p in [by] + list(v["explosion_spare"]) if p and not p.startswith("@")]
     pre = world.prefix(world.dim(at))
     here = pre + "positioned %.2f %.2f %.2f " % tuple(at[:3])

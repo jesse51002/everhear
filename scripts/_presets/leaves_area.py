@@ -1,4 +1,4 @@
-"""Acts when a player leaves an area: a radius round a place, a box, or the reach of other players."""
+"""When a player leaves an area (an arena nobody can leave, a player kept near the others): a radius round a place, a box, or the reach of other players."""
 import math
 
 import mc

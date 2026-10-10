@@ -6,8 +6,11 @@
     r.path                              # a Pos every block from the eyes to r.end
     for hit in aim.near_line(r, 2.0, shooter=p):
         aim.run_on(hit, "damage @s 10 minecraft:player_attack by %s" % p)
-    hits = aim.near(r.end, 4, shooter=p)                # within 4 blocks of where it ended
-    aim.mark(hits, mc.TAG + "_hit")                     # tag each once, then act on them all at once
+    hits = aim.near(r.end, 4, shooter=p, hostile=True)  # monsters within 4 blocks of where it ended
+    aim.mark(hits, mc.TAG + "_hit1")                    # tag each once, then act on them all at once,
+    mc.rcon("execute as @e[tag=%s_hit1] run damage @s 6 minecraft:magic" % mc.TAG)
+    aim.untag(mc.TAG + "_hit1")                         # and take the tag off everyone after
+    lk = aim.look(p, eyes="auto")                       # from crouching eyes when they crouch
 
 The eyes are 1.62 above the feet (1.27 crouching). A look reads position and rotation once;
 everything after is worked out here, never with ^ ^ ^ in a command. A ray tests up to 32
@@ -56,10 +59,19 @@ class Look(object):
         return Pos(o[0] + d[0] * k + r[0] * right, o[1] + d[1] * k + up, o[2] + d[2] * k + r[2] * right, self.dim)
 
 
+_SNEAKING = '{type:"entity_properties",entity:"this",predicate:{flags:{is_sneaking:true}}}'
+
+
 def look(player, eyes=EYES):
     """How a player looks, from one read of their position and rotation (and dimension,
-    which is kept 2 s); None if they cannot be read."""
-    at = mc.pos(player)
+    which is kept 2 s); None if they cannot be read. eyes="auto": from 1.27 when they crouch
+    (a shot fired crouching, a sniper zoomed in), else 1.62; it costs a command more when
+    they stand."""
+    at = None
+    if eyes == "auto":
+        v = re.findall(_FLOAT + "d", mc.rcon("execute as %s if predicate %s run data get entity @s Pos" % (player, _SNEAKING)))
+        at, eyes = ((float(v[0]), float(v[1]), float(v[2])), SNEAK_EYES) if len(v) >= 3 else (None, EYES)
+    at = at or mc.pos(player)
     rot = re.findall(_FLOAT + "f", mc.rcon("data get entity %s Rotation" % player))
     if not at or len(rot) < 2:
         return None
@@ -162,16 +174,18 @@ def cast(start, d, max_len=100, blocks=True):
 
 def ray(player, max_len=100, blocks=True, eyes=EYES):
     """The ray from a player's eyes along where they look, up to max_len blocks: see cast.
-    None if the player cannot be read."""
+    eyes="auto" aims from crouching eyes when they crouch. None if the player cannot be read."""
     lk = player if isinstance(player, Look) else look(player, eyes)
     if lk is None:
         return None
     return cast(lk.origin, lk.dir, max_len, blocks)
 
 
-Hit = collections.namedtuple("Hit", "t pos name player")
+Hit = collections.namedtuple("Hit", "t pos name player uuid", defaults=(None,))
 Hit.__doc__ = """Something near a line: t (how far along), pos (its feet, a Pos), name (a
-player's name, or a mob's display name), player (True for a player)."""
+player's name, or a mob's display name), player (True for a player), uuid (set when it was
+found by its uuid, as a projectile is: mark and run_on then find it exactly, however far it
+flew since; None for what near_line and near find, which is found again where it was)."""
 
 _POS = re.compile(r"([^\]\[]*?) has the following entity data: \[%sd, %sd, %sd\]" % (_FLOAT, _FLOAT, _FLOAT))
 
@@ -183,23 +197,23 @@ def _dump(dim, center, frag):
                    for m in _POS.finditer(reply)]
 
 
-def near_line(r, radius=1.5, shooter="", spare=(), with_players=True, heights=(0.2, 0.9, 1.6, 2.6)):
+def near_line(r, radius=1.5, shooter="", spare=(), with_players=True, heights=(0.2, 0.9, 1.6, 2.6), hostile=False):
     """Everything a hit may touch (see exclude) whose body comes within `radius` of a ray's
-    line, from its start to its end, nearest first. Asked in 10-block slices, each slice
-    halved again if its reply was cut at 4 KB."""
+    line, from its start to its end, nearest first; hostile=True: monsters only among the
+    mobs. Asked in 10-block slices, each slice halved again if its reply was cut at 4 KB."""
     found = {}
 
     def slice_(a, b, depth=0):
         mid = (a + b) / 2.0
         reach = "distance=..%.1f" % ((b - a) / 2.0 + radius + max(heights) + 0.5)
-        for i, frag in enumerate(exclude.targets(shooter, reach, spare, with_players)):
+        for frag in exclude.targets(shooter, reach, spare, with_players, hostile):
             reply, ents = _dump(r.dim, r.point(mid), frag)
             if len(reply.encode("utf-8")) >= world.MAX_REPLY - 200 and depth < 3 and b - a > 1.5:
                 slice_(a, mid, depth + 1)
                 slice_(mid, b, depth + 1)
                 return
             for name, x, y, z in ents:
-                found[(round(x, 3), round(y, 3), round(z, 3), i == 1)] = name
+                found[(round(x, 3), round(y, 3), round(z, 3), frag.startswith("as @a"))] = name
 
     k = 0.0
     while k < r.length or k == 0.0:
@@ -225,16 +239,17 @@ def near_line(r, radius=1.5, shooter="", spare=(), with_players=True, heights=(0
     return hits
 
 
-def near(at, radius, shooter="", spare=(), with_players=True):
+def near(at, radius, shooter="", spare=(), with_players=True, hostile=False, with_mobs=True):
     """Everything a hit may touch (see exclude) within `radius` of a place, as Hits nearest
-    first (t is the distance from the place). Asked again in eight smaller boxes when a reply
-    is cut at 4 KB."""
+    first (t is the distance from the place); hostile=True: monsters only among the mobs;
+    with_mobs=False: players only. Asked again in eight smaller boxes when a reply is cut at
+    4 KB."""
     at = at if isinstance(at, Pos) else Pos(*at[:3])
     found = {}
 
     def ask(lo, hi, depth=0):
         """Entities within radius of `at` whose feet are in the box lo..hi."""
-        for i, frag in enumerate(exclude.targets(shooter, "distance=..%.2f" % radius, spare, with_players)):
+        for frag in exclude.targets(shooter, "distance=..%.2f" % radius, spare, with_players, hostile, with_mobs):
             if depth:
                 frag += " positioned %.2f %.2f %.2f if entity @s[dx=%.2f,dy=%.2f,dz=%.2f]" % (
                     lo[0], lo[1], lo[2], hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2])
@@ -247,7 +262,7 @@ def near(at, radius, shooter="", spare=(), with_players=True):
                             ask((cx[0], cy[0], cz[0]), (cx[1], cy[1], cz[1]), depth + 1)
                 return
             for name, x, y, z in ents:
-                found[(round(x, 3), round(y, 3), round(z, 3), i == 1)] = name
+                found[(round(x, 3), round(y, 3), round(z, 3), frag.startswith("as @a"))] = name
 
     ask(tuple(v - radius for v in at), tuple(v + radius for v in at))
     hits = []
@@ -259,30 +274,44 @@ def near(at, radius, shooter="", spare=(), with_players=True):
     return hits
 
 
-def mark(hits, tag, spare=()):
-    """Tag each hit once, where it was (a player by name, a mob as the nearest within 1.5
-    blocks that a hit may touch), so one command can then act on all of them at once
-    (execute as @e[tag=<tag>] run damage @s ...) and a mob listed twice is hurt once. Take
-    the tag off after: tag @e[tag=<tag>] remove <tag>. Returns how many were newly tagged."""
+def mark(hits, tag, spare=(), hostile=False):
+    """Tag each hit once, where it was (a player by name, one found by its uuid exactly, a
+    mob as the nearest within 1.5 blocks that a hit may touch; hostile=True: a monster), so one
+    command can then act on all of them at once (execute as @e[tag=<tag>] run damage @s ...)
+    and a mob listed twice is hurt once. The tag is first taken off anyone who still carries
+    it (a player killed while tagged keeps it, and would never be tagged "newly" again); take
+    it off after with untag(tag). Returns how many were newly tagged."""
+    untag(tag)
     n = 0
     for h in hits:
         if h.player:
             reply = mc.rcon("tag %s add %s" % (h.name, tag))
+        elif getattr(h, "uuid", None):
+            reply = mc.rcon("tag %s add %s" % (h.uuid, tag))
         else:
             x, y, z = h.pos[:3]
-            frag = exclude.mobs("distance=..1.5,sort=nearest,limit=1", spare)
+            frag = exclude.mobs("distance=..1.5,sort=nearest,limit=1", spare, hostile)
             reply = mc.rcon(world.prefix(h.pos.dim) + "positioned %.3f %.3f %.3f %s run tag @s add %s"
                             % (x, y, z, frag, tag))
         n += 1 if "added tag" in reply.lower() else 0
     return n
 
 
+def untag(tag):
+    """Take a tag off every entity and every player, a dead one too (@e leaves the dead out,
+    @a does not), so nobody carries it into the next shot."""
+    mc.rcon("tag @e[tag=%s] remove %s" % (tag, tag))
+    mc.rcon("tag @a[tag=%s] remove %s" % (tag, tag))
+
+
 def run_on(hit, cmd, spare=()):
     """Run a command as one hit, as @s (and at it): "damage @s 10 minecraft:player_attack by Steve".
-    A mob is found again by where it was (the nearest within 1.5 blocks that a hit may touch);
-    a player by name. Returns the reply."""
+    A player is found by name, a hit with a uuid by its uuid, a mob again by where it was (the
+    nearest within 1.5 blocks that a hit may touch). Returns the reply."""
     if hit.player:
         return mc.rcon("execute as %s at @s run %s" % (hit.name, cmd))
+    if getattr(hit, "uuid", None):
+        return mc.rcon("execute as %s at @s run %s" % (hit.uuid, cmd))
     x, y, z = hit.pos[:3]
     frag = exclude.mobs("distance=..1.5,sort=nearest,limit=1", spare)
     return mc.rcon(world.prefix(hit.pos.dim) + "positioned %.3f %.3f %.3f %s at @s run %s" % (x, y, z, frag, cmd))

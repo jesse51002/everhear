@@ -1,4 +1,4 @@
-"""Random points in the sky round players or a place, in open air: where rain, meteors and drops start."""
+"""Random spots in the open sky round players or a place: where rain, falling lava, meteors or a TNT drop start."""
 import math
 import random
 

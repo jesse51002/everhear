@@ -1,8 +1,8 @@
-"""Mobs at safe spots round a player or a place, scaled, armed, named and tagged, up to a cap."""
+"""Spawn mobs round a player or where they look: any mob, how many, bigger, armoured, armed, named, glowing, up to a cap."""
 import json
 
 import mc
-from kit import loop, mobs, world
+from kit import loop, mobs
 
 VALUES = {
     "summon_mob": {"type": "mob", "default": "zombie", "live": True},
@@ -19,30 +19,19 @@ VALUES = {
     "summon_nbt": {"type": "str", "default": "", "live": True},
 }
 
-_summon_n = [0]
-
 
 def summon(at, v):
     """summon_count of summon_mob round `at` (a player's name, a player value such as "@a" or
-    "Steve,Alex" for round each of them, or a place), at safe spots summon_spread blocks out:
-    standing room on solid ground, never on top of anyone. summon_scale sizes them;
+    "Steve,Alex" for round each of them, or a place, in its dimension), at safe spots:
+    standing room on solid ground, round a player summon_spread blocks out and never on top
+    of them, round a place anywhere within summon_spread of it. summon_scale sizes them;
     summon_health (0: their own) sets their health; summon_gear a full suit of that armour and
     summon_weapon an item in hand, neither dropped; summon_name a name over their heads;
     summon_glow shows them through walls; summon_nbt is more NBT ("IsBaby:1b"). Never more
     than summon_cap of this script's alive at once. They are tagged TAG_summon, and a stop
     kills them. Returns how many it summoned."""
-    tag, anchor = mc.TAG + "_summon", None
-    if isinstance(at, str):
-        spots = loop.who(at)
-    else:
-        _summon_n[0] += 1
-        anchor = "%s_at%d" % (mc.TAG, _summon_n[0])
-        reply = mc.rcon(world.run(at, 'summon marker %.2f %.2f %.2f {Tags:["vfg","%s","%s"]}'
-                                  % (at[0], at[1], at[2], mc.TAG, anchor)))
-        if "summoned" not in reply.lower():
-            mc.log("summon: nowhere to stand at %.0f %.0f %.0f: %s" % (at[0], at[1], at[2], reply[:80]))
-            return 0
-        spots = ["@e[type=marker,tag=%s,limit=1]" % anchor]
+    tag = mc.TAG + "_summon"
+    spots = loop.who(at) if isinstance(at, str) else [at]
     got = 0
     for spot in spots:
         room = v["summon_cap"] - mobs.count(tag)
@@ -51,8 +40,6 @@ def summon(at, v):
             break
         got += mobs.around(spot, v["summon_mob"], min(v["summon_count"], room), _summon_nbt(v),
                            spread=v["summon_spread"], tags=(tag,))
-    if anchor:
-        mc.rcon("kill @e[type=marker,tag=%s]" % anchor)
     return got
 
 

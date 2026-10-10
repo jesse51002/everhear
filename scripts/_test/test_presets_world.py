@@ -248,6 +248,14 @@ class WorldShapeFillTests(KitCase):
         whole = self.sf("Steve", vals("shape_fill", shape_kind="wall", shape_width=9, shape_height=4,
                                       shape_offset="0,0,3"))
         self.assertEqual(tuple(whole), (13, 64, -8, 13, 67, 0))       # Steve looks east (yaw -90)
+        self.assertEqual(whole.facing, "east")
+
+    def test_a_value_no_one_gives_is_the_presets_default(self):
+        v = values({"shape_blocks": P["shape_fill"].VALUES["shape_blocks"]}, argv=[], run_dir=tempfile.mkdtemp(dir=TMP),
+                   instance="t")
+        whole = self.sf(world.Pos(0.5, 70, 0.5), v, kind="box", width=3)
+        self.assertEqual(tuple(whole), (-1, 70, -4, 1, 74, 4))         # depth 9, height 5: the defaults
+        self.assertEqual(whole.facing, "south")
 
     def test_hollow_leaves_air_inside_and_the_ice_castle_wall_fits(self):
         whole = self.sf(world.Pos(0.5, 59, 0.5), vals("shape_fill", shape_width=61, shape_height=12,
@@ -309,7 +317,8 @@ class WorldSummonTests(KitCase):
     def test_round_a_place_in_another_dimension(self):
         got = P["summon"].summon(world.Pos(0.5, 64, 0.5, NETHER), vals("summon", summon_count=2, summon_mob="blaze"))
         self.assertEqual(got, 2)
-        self.assertTrue(self.sent("execute in minecraft:the_nether run summon marker 0.50 64.00 0.50"))
+        self.assertTrue(self.sent("execute in minecraft:the_nether positioned 0.50 64.00 0.50 "))
+        self.assertFalse(self.sent("summon marker"))            # the place goes to mobs.around as it is
         self.assertEqual([e["type"] for e in self.world.entities], ["blaze", "blaze"])
         self.assertTrue(all(e["dim"] == NETHER for e in self.world.entities))
 
@@ -340,7 +349,7 @@ class WorldShowTests(KitCase):
         self.assertEqual((tuple(land), land.dim), ((0.5, 64.0, 0.5), None))
         self.assertEqual(len(self.sent("summon block_display")), 19)
         self.assertEqual(len(self.sent("run tp @s ~")), 5)
-        self.assertTrue(all('Name:"minecraft:obsidian"' in c for c in self.sent("summon block_display")))
+        self.assertTrue(all('block_state:"minecraft:obsidian"' in c for c in self.sent("summon block_display")))
         self.assertEqual([e for e in self.world.entities if e["type"] == "block_display"], [])
 
     def test_a_projectile_flies_from_a_player_and_lands(self):

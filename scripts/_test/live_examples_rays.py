@@ -262,7 +262,9 @@ class LightningStaff(Example):
         time.sleep(1.0)
         self.assertGreaterEqual(bolts, 1, "no bolt struck")
         lost = 1000.0 - health(husk)
-        self.assertGreaterEqual(lost, 40, "40 lightning damage to what is within 4 blocks, and the bolts' own")
+        # 40 of lightning, less the 1.6% a husk's own 2 armour takes off it (39.36), and the
+        # bolts' own when one lands near it too
+        self.assertGreaterEqual(lost, 39.35, "40 lightning damage to what is within 4 blocks")
         self.assertEqual(health("Steve"), 20.0)
         # live: Alex stands by the target and is spared, bolts and damage alike (the first
         # strike's fire is put out, and he takes none from fire, so a hurt is the staff's)
@@ -275,7 +277,7 @@ class LightningStaff(Example):
         time.sleep(0.6)                             # the husk's own fire from the first strike
         self.use(1.5)
         self.assertEqual(health("Alex"), 20.0)
-        self.assertLessEqual(health(husk), before - 40 + 0.01)
+        self.assertLessEqual(health(husk), before - 39.35)
         self.stop_clean(inst, "lightning_staff")
 
 
@@ -314,9 +316,9 @@ class DeathGaze(Example):
         P.sneak("Steve", False)
         self.assertEqual(health(villager), 20.0)
         self.assertEqual(health(hidden), 1000.0, "it saw through the wall")
-        self.assertEqual(health("Alex"), 20.0, "hits=mobs: players are never touched")
+        self.assertEqual(health("Alex"), 20.0, "damage_what=mobs: players are never touched")
         # live: players too, hurt rather than killed
-        self.set(inst, "hits=everything", "damage_kill=false", "damage_amount=3")
+        self.set(inst, "damage_what=all", "damage_kill=false", "damage_amount=3")
         P.sneak("Steve")
         time.sleep(1.2)
         P.sneak("Steve", False)

@@ -206,7 +206,8 @@ class TestCards(RouteCase):
         self.assertEqual(list(g["criteria"]), ["runs_it", "close", "no"])
         for words in ('Example script "galick_gun" (ours)', "Galick Gun: hold to charge a beam",
                       '"galick gun", "a purple beam"', "cooldown, crater_radius, player, theme_to",
-                      "Built from the presets: crater, theme_music", "Does this script do what the job asks?"):
+                      "Built from the presets: crater, theme_music",
+                      "If this script were run, with its values set for this job, would the players get that?"):
             self.assertIn(words, g["instructions"])
         c = qs["preset_charge_up"]
         self.assertEqual(list(c["criteria"]), ["use", "no"])
@@ -269,6 +270,10 @@ class TestPicks(unittest.TestCase):
                         0.3, 3)
         self.assertEqual([s["name"] for s in r["scripts"]], ["galick_gun"])
         self.assertEqual([p["name"] for p in r["presets"]], ["freeze"])
+        self.assertEqual(r["held"], [{"name": "crater", "source": "library", "p_use": 0.9, "path": "x/crater",
+                                      "in": "galick_gun"}])
+        self.assertEqual(route.log_line(dict(r, ms=5)), "route T7 galick_gun runs_it 0.90 · freeze use 0.80 · "
+                                                        "crater use 0.90 in galick_gun · 2 loaded · 5ms 9tok")
         self.assertFalse(r["fallback"])
         self.assertEqual(r["tokens"], 9)
 
@@ -325,11 +330,12 @@ class TestRoute(RouteCase):
         self.assertEqual(scripts, ["galick_gun"])
         self.assertEqual(got["scripts"][0]["verdict"], "runs_it")
         self.assertEqual(got["scripts"][0]["path"], "scripts/galick_gun/main.py")
-        self.assertEqual(presets, [])      # crater is in galick_gun
+        self.assertEqual(presets, [])      # crater is in galick_gun: held, not loaded again
+        self.assertEqual([(p["name"], p["in"]) for p in got["held"]], [("crater", "galick_gun")])
         self.assertFalse(got["fallback"])
         self.assertEqual(got["task"], "T7")
         self.assertGreater(got["tokens"], 0)
-        self.assertEqual(sorted(got), ["fallback", "ms", "presets", "scripts", "task", "tokens"])
+        self.assertEqual(sorted(got), ["fallback", "held", "ms", "presets", "scripts", "task", "tokens"])
         calls = self.box.jev.calls
         self.assertEqual(len(calls), 1)
         body = calls[0]["body"]
@@ -339,7 +345,8 @@ class TestRoute(RouteCase):
                                          "context": "Steve asked in #12"})
         self.assertEqual(len(body["questions"]), 9)
         self.assertEqual(calls[0]["headers"]["Authorization"], "Bearer " + KEY)
-        self.assertRegex(r.stderr, r"^route T7 galick_gun runs_it 0\.90 · 1 loaded · \d+ms \d+tok\n$")
+        self.assertRegex(r.stderr, r"^route T7 galick_gun runs_it 0\.90 · crater use 0\.90 in galick_gun · "
+                                   r"1 loaded · \d+ms \d+tok\n$")
         self.assertNotIn(KEY, r.stdout + r.stderr)
         self.assertTrue(wait_for(lambda: len(self.jev_rows()) == 1))
         row = self.jev_rows()[0]
@@ -405,8 +412,8 @@ class TestRoute(RouteCase):
             self.assertLess(time.time() - t0, 3, mode)
             self.assertTrue(got["fallback"])
             self.assertRegex(got["why"], why)
-            self.assertEqual(scripts, ["ice_beam", "galick_gun"])   # galick_gun's first line has "beam"
-            self.assertEqual(presets, [])           # freeze is in ice_beam, crater in galick_gun
+            self.assertEqual(scripts, ["ice_beam"])  # named; galick_gun shares only "beam", in its first line
+            self.assertEqual(presets, [])           # freeze is in ice_beam
             self.assertNotIn(KEY, r.stdout + r.stderr)
 
     def test_no_key_on_the_box(self):

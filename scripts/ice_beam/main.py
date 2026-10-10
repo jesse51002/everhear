@@ -1,4 +1,4 @@
-"""Ice Beam: right-click a staff to fire an ice beam through walls that freezes and blinds everything it hits, turns blocks and water along it to ice round a tunnel, and lays an ice path under it."""
+"""Ice Beam: right-click a staff to fire an ice beam through walls that freezes and blinds everything it hits (and hurts it, if asked), turns blocks and water along it to ice round a tunnel, and lays an ice path under it."""
 ASKS = ["give me a staff that shoots like an ice beam and everything it touches turns to ice",
         "every mob it hits gets slowness and blindness", "make my ice beam bigger",
         "make sure my ice beam also hits players as well", "make sure the ice beam also goes through blocks",
@@ -33,9 +33,17 @@ VALUES = {
     "replace_rate":     {"type": "int", "min": 1, "max": 100, "default": 100, "live": True},
     "replace_cell":     {"type": "int", "min": 1, "max": 16, "default": 4, "live": True},
     "replace_radius":   {"type": "int", "min": 0, "max": 128, "default": 2, "live": True},
-    "theme_tune":       {"type": "enum", "of": ["galick_gun", "hollow_purple", "ice_beam", "spirit_bomb", "spirit_bomb_throw", "super_saiyan", "boss"], "default": "ice_beam", "live": True},
+    "theme_tune":       {"type": "enum", "of": ["galick_gun", "hollow_purple", "ice_beam", "spirit_bomb", "spirit_bomb_throw", "super_saiyan", "boss", "none"], "default": "ice_beam", "live": True},
     "theme_to":         {"type": "enum", "of": ["near", "everyone", "player"], "default": "near", "live": True},
     "theme_reach":      {"type": "int", "min": 8, "max": 256, "default": 48, "live": True},
+    "theme_loop":       {"type": "bool", "default": False, "live": True},
+    "damage_amount":    {"type": "number", "min": 0, "max": 100000, "default": 0, "live": True},
+    "damage_type":      {"type": "enum", "of": ["player_attack", "magic", "lightning_bolt", "explosion", "freeze", "on_fire", "sonic_boom", "arrow", "wither", "generic"], "default": "freeze", "live": True},
+    "damage_kill":      {"type": "bool", "default": False, "live": True},
+    "damage_what":      {"type": "enum", "of": ["all", "mobs", "hostile", "players"], "default": "all", "live": True},
+    "damage_most":      {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
+    "damage_head":      {"type": "number", "min": 1, "max": 10, "default": 1, "live": True},
+    "damage_spare":     {"type": "list", "of": "player", "default": [], "live": True},
 }
 
 
@@ -45,25 +53,27 @@ def freeze(hits, v):
     freeze_seconds: it cannot walk or hurt anything, and a mob shows the frost (and takes
     the cold's 1 damage every 2 s, as in powder snow). With freeze_shell, a shell of
     freeze_block round each body, one block wide and two high, that melts when the freeze
-    ends; it only fills air, so nothing is replaced (never bedrock, never a chest). Pets and
+    ends; it only fills air, so nothing is replaced (never bedrock, never a chest).
+    freeze_blindness blinds it too (blindness IV, as the run's ice beam did). Pets and
     villagers are never frozen. Returns how many were frozen."""
     secs = int(math.ceil(v["freeze_seconds"]))
     tag = "%s_frz%d" % (mc.TAG, next(_FREEZE_N))      # each call tags with its own name
-    mc.rcon("tag @e[tag=%s] remove %s" % (tag, tag))    # bent: one an earlier run left would spare them
-    frozen = [h for h in hits if _freeze_mark(h, tag)]
-    if not frozen:
+    if not aim.mark(hits, tag):                         # each once, where it was
+        aim.untag(tag)
         return 0
     # Slowness and weakness X (amplifier 9; above 127 it is saved as a negative byte) leave
     # no speed and no attack, and wear off by themselves even if the script dies.
     mc.rcon("effect give @e[tag=%s] slowness %d 9 true" % (tag, secs))
     mc.rcon("effect give @e[tag=%s] weakness %d 9 true" % (tag, secs))
-    if v["freeze_blindness"]:           # bent: blindness IV too, as the run's ice beam gave
+    if v["freeze_blindness"]:
         mc.rcon("effect give @e[tag=%s] blindness %d 3 true" % (tag, secs))
     mc.rcon("execute as @e[tag=%s,type=!player] run data merge entity @s {TicksFrozen:%d}" % (tag, 140 + 40 * secs))
     mc.rcon("execute at @e[tag=%s] run particle snowflake ~ ~1 ~ 0.4 0.6 0.4 0.02 25 force" % tag)
-    mc.rcon("tag @e[tag=%s] remove %s" % (tag, tag))
+    frozen = [world.Pos(float(x), float(y), float(z), world.dim(hits[0].pos)) for x, y, z in _FREEZE_POS.findall(
+        mc.rcon("execute as @e[tag=%s] run data get entity @s Pos" % tag))]
+    aim.untag(tag)
     if v["freeze_shell"]:
-        shells = [_freeze_shell(h.pos, v["freeze_block"]) for h in frozen]
+        shells = [_freeze_shell(at, v["freeze_block"]) for at in frozen]
         with _FREEZE_LOCK:
             if not _FREEZE_SHELLS:
                 mc.on_stop(lambda: [_freeze_melt(s) for s in list(_FREEZE_SHELLS)])
@@ -73,20 +83,9 @@ def freeze(hits, v):
 
 
 _FREEZE_N = itertools.count(1)
+_FREEZE_POS = re.compile(r"\[(-?[\d.]+(?:E-?\d+)?)d, (-?[\d.]+(?:E-?\d+)?)d, (-?[\d.]+(?:E-?\d+)?)d\]")
 _FREEZE_SHELLS = []         # shells still standing; a stop melts them
 _FREEZE_LOCK = threading.Lock()
-
-
-def _freeze_mark(h, tag):
-    """Tag one hit where it was: a player by name, a mob as the nearest within 1.5 blocks that
-    a hit may touch. True if it was tagged now (a hit listed twice is tagged once)."""
-    if h.player:
-        reply = mc.rcon("tag %s add %s" % (h.name, tag))
-    else:
-        x, y, z = h.pos[:3]
-        reply = mc.rcon(world.prefix(world.dim(h.pos)) + "positioned %.3f %.3f %.3f %s run tag @s add %s" % (
-            x, y, z, exclude.mobs("distance=..1.5,sort=nearest,limit=1"), tag))
-    return reply.startswith("Added tag")
 
 
 def _freeze_shell(at, block):
@@ -132,18 +131,19 @@ _replace_blocks_known = {}      # block id or #tag -> True when this server take
 _replace_blocks_said = set()    # rules refused and said so once
 
 
-def replace_blocks(where, v, rules=None):
-    """Apply every rule in replace_rules, in order, to `where`: a box (world.Box, as area.box,
-    under_feet and enters_chunk give), a place (the box replace_radius round it), or a list of
-    them (a ray's path: r.every(3)). A rule is "<from ...> > <to>": from is block ids, #tags or
-    solid; to is a block or a mix, "70% netherrack, 30% magma_block", where keep leaves the
-    block as it was. One block fills in big pieces; a mix, or replace_rate under 100 (the share
-    of cells that change), picks per cube of replace_cell blocks, the same pick at the same
-    place every time. Blocks change without updating their neighbours (strict), so water
-    turned to lava stays lava, sand stays put and nothing drops. Protected boxes and the
-    bedrock floor are left alone, and a player the change left inside a block is lifted out.
-    Returns how many blocks changed. Bent: rules, when given, are used in place of replace_rules.
-    """
+def replace_blocks(where, v, *, rules=None):
+    """Apply every rule in replace_rules (or `rules`, given for this call), in order, to `where`: a
+    box (world.Box, as area.box, under_feet and enters_chunk give), a place (the box
+    replace_radius round it), or a list of them (a ray's path: r.every(3)). A rule is
+    "<from ...> > <to>": from is block ids, #tags or solid; to is a block or a mix, "70% netherrack,
+    30% magma_block", where keep leaves the block as it was. One block fills in big pieces; a
+    mix, or replace_rate under 100 (the share of cells that change), picks per cube of
+    replace_cell blocks, the same pick at the same place every time. Blocks change without
+    updating their neighbours (strict), so water turned to lava stays lava, sand stays put and
+    nothing drops. Protected boxes and the bedrock floor are left alone, and a player the change
+    left inside a block is lifted out. On 26.3 #minecraft:dirt is only dirt, coarse_dirt and
+    rooted_dirt: name grass_block, podzol, mycelium, mud and the rest, or say solid. Returns how
+    many blocks changed."""
     boxes = _replace_blocks_boxes(where, v["replace_radius"])
     rules = [r for r in (_replace_blocks_rule(t) for t in _replace_blocks_texts(rules or v["replace_rules"])) if r]
     loaded, n = {}, 0               # per dimension: which chunks are loaded, asked once
@@ -255,26 +255,26 @@ def _replace_blocks_free(boxes):
 
 
 # --- preset: theme_music (copied from _presets/theme_music.py) ---
-def theme_music(at, v):
-    """Play the tune theme_tune names, in the background, at a player (or a place), and
-    return how many seconds it lasts. theme_to: "near" is heard within theme_reach blocks
-    of it, "everyone" by every player where they stand, "player" by that player alone. A
-    newer theme at the same player (or for everyone) cuts this one off, a record too."""
-    notes = _THEME_MUSIC_TUNES[v["theme_tune"]]
+def theme_music(at, v, *, tune=None):
+    """Play the tune theme_tune names (or `tune`, for this call: the throw after a charge's
+    choir), in the background, at a player (or a place), and return how many seconds it
+    lasts. theme_to: "near" is heard within theme_reach blocks of it, "everyone" by every
+    player where they stand, "player" by that player alone. theme_loop: again each time it
+    ends (boss music while the boss lives), until a newer theme, "none" or a stop. A newer
+    theme at the same player (or for everyone) cuts this one off, a record too; "none" plays
+    nothing and only cuts off what plays there."""
     to = v["theme_to"]
     if to == "player" and not isinstance(at, str):
         to = "near"                     # a place has nobody to play it to alone
     where = at if isinstance(at, str) else "%d_%d_%d" % tuple(at[:3])
     key = "theme" if to == "everyone" else "theme_" + where      # one theme at a time per player or place
-    _theme_music_hush(key)
     hear = {"everyone": "@a", "player": at}.get(to)
-    fx.melody(notes, at, to=hear, key=key, reach=v["theme_reach"])
-    records = [n[1] for n in notes if n[1] in _THEME_MUSIC_RECORDS]
-    if records:
-        if not _THEME_MUSIC_PLAYING:    # a stop cuts records off too (said again after all were cut: harmless)
-            mc.on_stop(lambda: [_theme_music_hush(k) for k in list(_THEME_MUSIC_PLAYING)])
-        _THEME_MUSIC_PLAYING[key] = (hear or "@a", records)
-    return max([n[0] + 0.5 for n in notes] + [_THEME_MUSIC_RECORDS[r] for r in records])
+    _THEME_MUSIC_GEN[key] = gen = _THEME_MUSIC_GEN.get(key, 0) + 1   # a loop under this key ends
+    fx.stop_melody(key)
+    seconds = _theme_music_play(at, v, tune or v["theme_tune"], hear, key)
+    if seconds and v["theme_loop"]:
+        loop.background(_theme_music_again, at, v, tune, hear, key, gen, seconds)
+    return seconds
 
 
 # Each tune is a list of notes: (seconds from the start, a note block instrument or a sound
@@ -341,18 +341,83 @@ _THEME_MUSIC_TUNES = {
     ],
 }
 
-# Records play on in the players' game once started, so a newer theme stops them by name;
-# each with how long it lasts, in seconds.
+# A record plays on in the players' game once started (fx.melody stops it when a newer
+# melody starts, and on a stop); each with how long it lasts, in seconds.
 _THEME_MUSIC_RECORDS = {"music_disc.pigstep": 148.0}
-_THEME_MUSIC_PLAYING = {}       # key -> (who hears it, [records]) while a record may still play
+_THEME_MUSIC_GEN = {}           # key -> how many themes have started under it: a loop plays on while it is the last
 
 
-def _theme_music_hush(key):
-    """Cut off what plays under a key: its notes, and any record it started."""
-    fx.stop_melody(key)
-    hear, records = _THEME_MUSIC_PLAYING.pop(key, (None, []))
-    for r in records:
-        mc.rcon("stopsound %s * minecraft:%s" % (hear, r))
+def _theme_music_play(at, v, name, hear, key):
+    """Start one tune under a key; how long it lasts (0 for "none")."""
+    notes = _THEME_MUSIC_TUNES.get(name)
+    if not notes:
+        return 0
+    fx.melody(notes, at, to=hear, key=key, reach=v["theme_reach"])
+    return max([n[0] + 0.5 for n in notes] + [_THEME_MUSIC_RECORDS.get(n[1], 0) for n in notes])
+
+
+def _theme_music_again(at, v, tune, hear, key, gen, seconds):
+    """Play it again each time it ends, while theme_loop is on and nothing newer started there."""
+    while loop.wait(seconds) and v["theme_loop"] and _THEME_MUSIC_GEN.get(key) == gen:
+        seconds = _theme_music_play(at, v, tune or v["theme_tune"], hear, key)
+        if not seconds:
+            return
+
+
+# --- preset: damage_hits (copied from _presets/damage_hits.py) ---
+def damage_hits(hits, shooter, v):
+    """Hurt every hit once (hits: a list of aim.Hit, from aim.near_line, around or lock_on,
+    or several of those added together), by damage_amount of damage_type, as the shooter, so
+    a kill is theirs; damage_kill kills instead. damage_what: "all", "mobs" (no players),
+    "hostile" (monsters only: never an animal, and no players) or "players". damage_most:
+    only the nearest that many (1: the first only; 0: all). shooter: a player's name, or
+    their aim.look(), with which a hit whose head the look passes takes damage_head times the
+    damage. Never the shooter, a name in damage_spare, a pet, a villager or anything else
+    exclude spares. Returns how many."""
+    by = getattr(shooter, "player", shooter) or ""
+    spare = [by] + list(v["damage_spare"])
+    names = set(mc.bare(s) for s in spare if s and not s.startswith("@"))
+    what = v["damage_what"]
+    hits = [h for h in sorted(hits, key=lambda h: h.t) if mc.bare(h.name) not in names
+            and (h.player if what == "players" else (what == "all" or not h.player))]
+    if v["damage_most"]:
+        hits = hits[:v["damage_most"]]
+    body = "%s_hit%d" % (mc.TAG, next(_DAMAGE_N))      # each call tags with its own name
+    head = [h for h in hits if v["damage_head"] > 1 and _damage_on_head(h, shooter)]
+    count = {}
+    for tag, some in ((body, [h for h in hits if h not in head]), (body + "h", head)):
+        if some:
+            count[tag] = aim.mark(some, tag, spare, hostile=what == "hostile")
+    for tag, n in count.items():
+        if n:
+            if v["damage_kill"]:
+                _damage_all(tag, 1000000, "generic_kill", by)
+            else:
+                _damage_all(tag, v["damage_amount"] * (1 if tag == body else v["damage_head"]), v["damage_type"], by)
+        aim.untag(tag)
+    return sum(count.values())
+
+
+_DAMAGE_N = itertools.count(1)
+
+
+def _damage_all(tag, amount, kind, by):
+    """Damage everything tagged, once, as `by`; as nobody if `by` cannot be found (gone offline)."""
+    cmd = "execute as @e[tag=%s] run damage @s %.1f minecraft:%s" % (tag, amount, kind)
+    if by and "Applied" in mc.rcon(cmd + " by " + by):
+        return
+    mc.rcon(cmd)
+
+
+def _damage_on_head(h, look):
+    """True if a look (aim.look) passes within half a block of the head of a body standing at
+    the hit: 1.7 above its feet, as tall as a player or a zombie."""
+    if not hasattr(look, "origin"):
+        return False
+    o, d = look.origin, look.dir
+    w = [h.pos[0] - o[0], h.pos[1] + 1.7 - o[1], h.pos[2] - o[2]]
+    t = w[0] * d[0] + w[1] * d[1] + w[2] * d[2]
+    return t > 0 and math.sqrt(sum((w[i] - t * d[i]) ** 2 for i in range(3))) <= 0.5
 
 
 v = values(VALUES)
@@ -374,13 +439,16 @@ for p in loop(items.clicks(v["player"], v["item"], cooldown=v["cooldown"])):
     fx.particle("snowflake", r.end, spread=2, count=40, speed=0.1)
     fx.sound("block.glass.break", p, volume=2, pitch=1.2)
     fx.sound("entity.player.hurt_freeze", p, volume=2)
-    n = freeze(aim.near_line(r, v["width"] / 2.0, shooter=p), v)
+    hits = aim.near_line(r, v["width"] / 2.0, shooter=p, with_players=v["damage_what"] in ("all", "players"))
+    n = freeze(hits, v)
+    if v["damage_amount"] or v["damage_kill"]:      # no damage by default: it freezes and blinds
+        damage_hits(hits, p, v)
     if time.time() >= quiet.get(p, 0):
         quiet[p] = time.time() + theme_music(p, v)
     along = r.every(2)[1:]
     if v["tunnel"]:
-        replace_blocks([area.box(at, 1) for at in along], v, ["solid water lava > air"])
+        replace_blocks([area.box(at, 1) for at in along], v, rules=["solid water lava > air"])
     m = replace_blocks(along, v)
     if v["path"]:
-        m += replace_blocks([under(at) for at in r.every(1)[1:]], v, ["air water lava > packed_ice"])
+        m += replace_blocks([under(at) for at in r.every(1)[1:]], v, rules=["air water lava > packed_ice"])
     mc.log("%s fired: %d frozen, %d blocks to ice, %.0f long (%s)" % (p, n, m, r.length, r.why))

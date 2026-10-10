@@ -1,8 +1,9 @@
-"""Demon Lord: a game master that runs round after round of mob waves and minigames, with a boss every fourth round, harder or easier as players fare."""
+"""Demon Lord: a game master that runs round after round of mob waves and minigames, with bosses, harder or easier as players fare."""
 ASKS = ["make sure to add a boss fight at the end", "don't just do zombies, do skeletons, wither skeletons, creepers, silverfish, do everything",
         "a game master that sends waves at us"]
 # Demon Lord game master: event -> wait until its mobs are dead or 30 s pass with no
-# kills -> a break -> next round, escalating. Every 4th round is a boss.
+# kills -> a break -> next round, escalating. Rounds 12 and 16 of every 16 are a boss; 4 and 8,
+# also fourth rounds, run a minigame (the closing ring, defend the hut) instead.
 import json
 import math
 import random
@@ -26,6 +27,8 @@ DEATHS = "vfg_dl_deaths"
 BOSSBAR = "vfg:demon_lord"
 PROP_TAGS = '"vfg","%s","%s"' % (TAG, PROP)
 MOB_TAGS = '"vfg","%s"' % TAG
+# An evoker's vexes are summoned untagged: this tags the ones near its evokers as its mobs.
+VEXES = "execute at @e[tag=%s,type=evoker] run tag @e[type=vex,distance=..32,tag=!%s] add %s" % (TAG, TAG, TAG)
 
 state = {"border": False, "rules": False, "blocks": [], "bossbar": False}
 
@@ -476,6 +479,7 @@ def wait_until_over(boss):
     time.sleep(15)
     last, last_change = count(MOBS), time.time()
     while True:
+        rcon(VEXES)             # so they count as its mobs, and go with them on a stop
         c = count(MOBS)
         if boss:
             sel = '@e[tag=%s,name="%s",limit=1]' % (TAG, boss)
@@ -502,6 +506,7 @@ def wait_until_over(boss):
 
 
 def cleanup():
+    rcon(VEXES)                 # an evoker's vexes go with it
     rcon("kill " + MOBS)
     if state["bossbar"]:
         rcon("bossbar remove " + BOSSBAR)

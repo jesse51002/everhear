@@ -1,9 +1,12 @@
+import json
 import os
+import re
 
 import pytest
 from helpers import temp_dir
 
-from orchestrator.guard import DENY, GuardContext, check_bash, decide, make_guard, refused_word, split_shell
+from orchestrator.guard import (DENY, VFG_FORMS, VFG_USAGE, GuardContext, Redirect, check_bash, decide, make_guard,
+                                refused_word, split_shell)
 
 REPO = "/home/k/everhear"
 HOME = os.path.expanduser("~")  # a temp dir: conftest sets HOME
@@ -40,6 +43,10 @@ def agent(**inp):
 
 def bash(command):
     return impl("Bash", {"command": command})
+
+
+def usage(key):
+    return "Refused: send it as %s." % VFG_USAGE[key]
 
 
 START = 'Start the description with the id of an open task, like "T7 castle at spawn". Open now: T7, T9.'
@@ -103,12 +110,13 @@ TABLE = [
     ("run inside JSON text", bash("""vfg cmd 'tellraw @a {"text":"run stop"}'"""), None),
     ("script run is not a server command", bash("vfg script run anti_camp 15"), None),
     ("script stop is fine", bash("vfg script stop tnt_rain"), None),
-    ("other commands get the shape reason", bash("ls ~"), DENY.shape),
+    ("other programs get the shape reason", bash("curl https://example.com"), DENY.shape),
+    ("ls outside the repository", bash("ls ~"), DENY.outside_bash),
     # shapes implementers tend to send
-    ("seen: vfg cmd then echo $?", bash("""vfg cmd 'time set day'; echo "EXIT=$?\""""), DENY.shape),
-    ("seen: give then echo", bash("""vfg cmd 'give Steve minecraft:diamond 1'; echo "EXIT_CODE=$?\""""), DENY.shape),
-    ("seen: ps | grep; ls; find", bash("""ps -eo pid,etime,args | grep -i '[t]nt_rain'; echo "ps exit: $?"; ls -la /x/scripts/tnt_rain/ 2>&1; find /tmp -maxdepth 3 \\( -iname '*tnt_rain*' \\) 2>/dev/null | head -20"""), DENY.shape),
-    ("seen: cd && ls; grep; sed", bash("""cd /x/repo/scripts && ls; ls _lib; grep -n "^def " _lib/mc.py; sed -n '/^def pos/,/^def /p' _lib/mc.py | head -30"""), DENY.shape),
+    ("seen: vfg cmd then echo $?", bash("""vfg cmd 'time set day'; echo "EXIT=$?\""""), DENY.variables),
+    ("seen: give then echo", bash("""vfg cmd 'give Steve minecraft:diamond 1'; echo "EXIT_CODE=$?\""""), DENY.variables),
+    ("seen: ps | grep; ls; find", bash("""ps -eo pid,etime,args | grep -i '[t]nt_rain'; echo "ps exit: $?"; ls -la /x/scripts/tnt_rain/ 2>&1; find /tmp -maxdepth 3 \\( -iname '*tnt_rain*' \\) 2>/dev/null | head -20"""), DENY.ps),
+    ("seen: cd && ls; grep; sed", bash("""cd /x/repo/scripts && ls; ls _lib; grep -n "^def " _lib/mc.py; sed -n '/^def pos/,/^def /p' _lib/mc.py | head -30"""), DENY.cd),
     # the shapes that run
     ("sleep then logs", bash("sleep 5 && vfg script logs tnt_rain -n 20"), None),
     ("compile then run", bash("python3 -m py_compile scripts/torch_ring/main.py && vfg script run torch_ring"), None),
@@ -118,41 +126,126 @@ TABLE = [
     ("list", bash("vfg script list"), None),
     ("history", bash("vfg history --source ai --since -10m"), None),
     ("two commands joined by ;", bash("vfg cmd 'time set day'; vfg cmd 'weather clear'"), None),
-    ("a redirection", bash("vfg cmd 'time set day' 2>&1"), DENY.shape),
-    ("to /dev/null", bash("vfg script stop tnt_rain > /dev/null"), DENY.shape),
-    ("a global vfg option", bash("vfg --timeout 30 cmd 'time set day'"), DENY.shape),
-    ("vfg say is not for implementers", bash("vfg say 'hi'"), DENY.shape),
+    ("2>&1", bash("vfg cmd 'time set day' 2>&1"), None),
+    ("to /dev/null", bash("vfg script stop tnt_rain > /dev/null"), None),
+    ("a global vfg option", bash("vfg --timeout 30 cmd 'time set day'"),
+     "Refused: vfg takes no option before its command: vfg cmd '<command>', vfg script run ..., as it is."),
+    ("vfg say is not for implementers", bash("vfg say 'hi'"), "Refused: vfg say is not an implementer's. These are: %s." % VFG_FORMS),
     ("logs --follow never ends", bash("vfg script logs tnt_rain --follow"), DENY.follow),
-    ("sleep with a variable", bash("sleep $N"), DENY.shape),
+    ("sleep with a variable", bash("sleep $N"), DENY.variables),
     ("a > inside quotes is no redirection", bash("""vfg cmd 'tellraw @a {"text":"a > b"}'"""), None),
     # saved places
     ("place save at coordinates", bash("vfg place save castle --at 197 68 251 --by T7"), None),
     ("place save where a player stands", bash("vfg place save home --player Steve --by T7"), None),
     ("place list", bash("vfg place list"), None),
     ("place list --json", bash("vfg place list --json"), None),
-    ("place save with no name", bash("vfg place save"), DENY.shape),
-    ("place forget is not for implementers", bash("vfg place forget castle"), DENY.shape),
+    ("place save with no name", bash("vfg place save"), usage("place")),
+    ("place forget is not for implementers", bash("vfg place forget castle"), usage("place")),
     # the script library's commands
     ("script new from a script with presets", bash("vfg script new galick_ice --from galick_gun --preset replace_blocks"), None),
     ("script new then check", bash("vfg script new storm --preset lightning && vfg script check storm"), None),
     ("script new into the library", bash("vfg script new storm --library --preset lightning"), DENY.library_flag),
-    ("script new with no name", bash("vfg script new"), DENY.shape),
+    ("script new with no name", bash("vfg script new"), usage("script new")),
     ("script set", bash("vfg script set galick-alex cooldown=0 crater_radius=30"), None),
-    ("script set with no value", bash("vfg script set galick-alex"), DENY.shape),
+    ("script set with no value", bash("vfg script set galick-alex"), usage("script set")),
     ("script save", bash("vfg script save galick-alex galick_no_cooldown"), None),
-    ("script save with one name", bash("vfg script save galick-alex"), DENY.shape),
+    ("script save with one name", bash("vfg script save galick-alex"), usage("script save")),
     ("script check everything", bash("vfg script check"), None),
     ("script check some", bash("vfg script check galick_ice crater"), None),
     ("script run with values and a task", bash("vfg script run --task T7 spirit_bomb player=Steve as=bomb-steve"), None),
     ("preset save", bash("vfg preset save galick_ice ice_path ice_trail"), None),
-    ("preset save short", bash("vfg preset save galick_ice ice_path"), DENY.shape),
-    ("preset list is not a command", bash("vfg preset list"), DENY.shape),
+    ("preset save short", bash("vfg preset save galick_ice ice_path"), usage("preset")),
+    ("preset list is not a command", bash("vfg preset list"), usage("preset")),
     ("state", bash("vfg state"), None),
     ("state --json", bash("vfg state --json"), None),
-    ("state with other words", bash("vfg state Steve"), DENY.shape),
-    ("route is the runner's", bash("vfg route --task T7"), DENY.shape),
-    ("prefix is the runner's", bash("vfg prefix"), DENY.shape),
+    ("state with other words", bash("vfg state Steve"), usage("state")),
+    ("route is the runner's", bash("vfg route --task T7"), "Refused: vfg route is not an implementer's. These are: %s." % VFG_FORMS),
+    ("prefix is the runner's", bash("vfg prefix"), "Refused: vfg prefix is not an implementer's. These are: %s." % VFG_FORMS),
+    ("script with no op", bash("vfg script frobnicate x"), "Refused: vfg script takes new|run|set|save|check|stop|logs|list|deploy."),
     ("a server command after script new", bash("vfg script new x --preset crater; vfg cmd 'op Steve'"), DENY.owner),
+    # the pilot's nine refusals (2026-10-09), each a turn: seven now run, two say what to send
+    ("pilot: echo separators, ls in the repo, 2>/dev/null",
+     bash("vfg script list; echo ---; vfg state; echo ---; ls %s/made/main/scripts/ 2>/dev/null; ls %s/scripts/ice_walk/ 2>/dev/null" % (REPO, REPO)), None),
+    ("pilot: echo between looks", bash("vfg state; echo ---; vfg script list; echo ---; vfg script logs galick_gun_visual -n 15"), None),
+    ("pilot: history through grep and tail",
+     bash("""vfg history --events 2>&1 | grep -i -E "horde|king|boss" | tail -20; vfg history --source ai 2>&1 | grep -i -E "horde|king" | tail -10"""), None),
+    ("pilot: script new through head", bash("vfg script new horde_king_music --from dragon_boss --preset theme_music 2>&1 | head -40"), None),
+    ("pilot: >/dev/null 2>&1", bash("sleep 2; vfg cmd 'data get entity Steve active_effects'; vfg cmd 'effect give Steve minecraft:night_vision 0 0 0'  >/dev/null 2>&1; vfg cmd 'data get entity Alex active_effects'"), None),
+    ("pilot: mkdir, then state through head", bash("mkdir -p made/main/scripts/hollow_purple_staff && vfg state 2>&1 | head -40"), DENY.mkdir("main")),
+    ("pilot: grep a made script", bash("""grep -n 'replace_rules":\\|^for p in loop\\|^v = values' made/main/scripts/ice_beam_staff/main.py"""), None),
+    ("pilot: a for loop", bash("""for y in 60 62 64; do echo -n "y$y: "; vfg cmd "execute if block 6 $y 21 air"; done; vfg cmd 'execute positioned 12 85 10 if block ~ ~-1 ~ air'"""), DENY.loop),
+    ("pilot: new, ls and grep with 2>&1",
+     bash("""vfg script new galick_gun_visual --from galick_gun 2>&1; ls %s/made/main/scripts/galick_gun_visual/ 2>&1; grep -n "crater(r.end\\|explosion(r.end" %s/made/main/scripts/galick_gun_visual/main.py""" % (REPO, REPO)), None),
+    ("a check chained after a set", bash("vfg script set x cooldown=0 && sleep 3 && vfg script logs x -n 40"), None),
+    # pipes: into head, tail and grep, with no file after them
+    ("into head -n", bash("vfg state | head -n 20"), None),
+    ("into tail -n", bash("vfg script logs x -n 80 | tail -n 20"), None),
+    ("|& into grep", bash("vfg state |& grep Steve"), None),
+    ("into head with a file", bash("vfg state | head -n 20 /etc/passwd"), DENY.pipe),
+    ("into grep with a file", bash("vfg state | grep root /etc/passwd"), DENY.pipe),
+    ("into sort", bash("vfg state | sort"), DENY.pipe),
+    ("into python", bash("vfg state --json | python3 -m json.tool"), DENY.pipe),
+    ("into sh", bash("echo 'vfg cmd op' | sh"), DENY.pipe),
+    ("an owner word piped", bash("vfg cmd 'op Steve' 2>&1 | head -n 5"), DENY.owner),
+    # redirections: 2>&1, >&2 and /dev/null only
+    ("2>/dev/null", bash("vfg state 2>/dev/null"), None),
+    ("&>/dev/null", bash("vfg script stop x &>/dev/null"), None),
+    (">&2", bash("vfg state >&2"), None),
+    ("1>&2", bash("vfg state 1>&2"), None),
+    ("into a file", bash("vfg state > out.txt"), DENY.redirect),
+    ("appended to a file", bash("vfg state >> /tmp/x"), DENY.redirect),
+    ("out of a file", bash("vfg cmd 'list' < /etc/passwd"), DENY.redirect),
+    ("a heredoc", bash("cat <<EOF\nop Steve\nEOF"), DENY.redirect),
+    ("2>&3", bash("vfg state 2>&3"), DENY.redirect),
+    (">& a file", bash("vfg state >&out.txt"), DENY.redirect),
+    ("a redirection with nothing after it", bash("vfg state >"), DENY.redirect),
+    # groups, the background, variables
+    ("a lone & (the background)", bash("vfg script run x &"), DENY.group),
+    ("a subshell", bash("(vfg state; vfg script list)"), DENY.group),
+    ("braces", bash("{ vfg state; }"), DENY.group),
+    ("echo a variable", bash('echo "$HOME"'), DENY.variables),
+    ("echo $?", bash("echo $?"), DENY.variables),
+    ("backticks", bash("echo `id`"), DENY.variables),
+    ("NAME=value first", bash("FOO=1 vfg state"), DENY.env),
+    ("NAME=value before what would be refused anyway", bash("PYTHONPATH=/opt/vfg/scripts/_lib python3 -I -c 'import mc' 2>&1"), DENY.python),
+    ("NAME=value alone", bash("FOO=1"), DENY.shape),
+    ("while", bash("while true; do vfg state; done"), DENY.loop),
+    ("if", bash("if vfg state; then echo ok; fi"), DENY.loop),
+    # echo, ls, grep, head and tail on files in the repository
+    ("echo alone", bash("echo"), None),
+    ("echo words", bash("echo --- done ---"), None),
+    ("ls here", bash("ls"), None),
+    ("ls a made folder", bash("ls -la made/main/scripts"), None),
+    ("ls /etc", bash("ls /etc"), DENY.outside_bash),
+    ("ls up and out", bash("ls ../.."), DENY.outside_bash),
+    ("ls out through made", bash("ls made/../../"), DENY.outside_bash),
+    ("ls a glob outside", bash("ls /e*"), DENY.outside_bash),
+    ("grep -rn in the library", bash("grep -rn crater scripts/_presets"), None),
+    ("grep -r with no path is the repository", bash("grep -r crater"), None),
+    ("grep -e twice", bash("grep -e root -e crater scripts/README.md"), None),
+    ("grep -A3 -n", bash("grep -A3 -n 'def ' made/main/scripts/x/main.py"), None),
+    ("grep with no file", bash("grep crater"), DENY.grep_file),
+    ("grep outside", bash("grep root /etc/passwd"), DENY.outside_bash),
+    ("grep ~", bash("grep TYPESAFE ~/.vfg/config"), DENY.outside_bash),
+    ("grep -f", bash("grep -f /etc/passwd scripts/README.md"), DENY.pattern_file),
+    ("head a made script", bash("head -n 40 made/main/scripts/x/main.py"), None),
+    ("tail -20 a file", bash("tail -20 scripts/README.md"), None),
+    ("tail outside", bash("tail -n 20 /var/log/messages"), DENY.outside_bash),
+    ("tail -f", bash("tail -f made/main/scripts/x/main.py"), DENY.tail_follow),
+    ("tail -F piped", bash("vfg script logs x -n 5 | tail -F"), DENY.tail_follow),
+    # where the rest point
+    ("py_compile outside the repository", bash("python3 -m py_compile ~/.vfg/config"), DENY.outside_bash),
+    ("py_compile a made script", bash("python3 -m py_compile made/main/scripts/x/main.py"), None),
+    ("python3 -c", bash("python3 -c 'print(1)'"), DENY.python),
+    ("python3 a script", bash("python3 made/main/scripts/x/main.py"), DENY.python),
+    ("cat", bash("cat scripts/README.md"), DENY.read),
+    ("sed", bash("sed -n 1,20p scripts/README.md"), DENY.read),
+    ("find", bash("find . -name main.py"), DENY.find),
+    ("rm", bash("rm -rf made/main"), DENY.files("main")),
+    ("cp", bash("cp scripts/zeus/main.py made/main/scripts/z/main.py"), DENY.files("main")),
+    ("mkdir", bash("mkdir made/main/presets"), DENY.mkdir("main")),
+    ("ps", bash("ps aux"), DENY.ps),
+    ("kill", bash("kill 1234"), DENY.ps),
     # implementer files: only this server's folder, never the library
     ("Write a new script in made/", impl("Write", {"file_path": REPO + "/made/main/scripts/torch_ring/main.py"}), None),
     ("Edit a made script", impl("Edit", {"file_path": REPO + "/made/main/scripts/torch_ring/main.py"}), None),
@@ -218,7 +311,8 @@ def test_an_implementers_background_bash_is_refused_too():
 
 def test_the_probe_implementer_checks_on_the_main_thread_when_its_rule_is_off():
     g = ctx(main_thread_rule=False)
-    assert decide(main("Bash", {"command": "ls ~"}), g) == DENY.shape
+    assert decide(main("Bash", {"command": "ls ~"}), g) == DENY.outside_bash
+    assert decide(main("Bash", {"command": "curl x"}), g) == DENY.shape
     assert decide(main("Bash", {"command": "vfg cmd 'op x'"}), g) == DENY.owner
     assert decide(main("Write", {"file_path": REPO + "/made/main/scripts/_probe/README.md"}), g) is None
     assert decide(main("Write", {"file_path": REPO + "/scripts/_probe/README.md"}), g) == DENY.library("main")
@@ -257,3 +351,150 @@ def test_helpers():
     assert refused_word("time set day") is None
     assert [c.words for c in split_shell('a \'b c\' "d \\"e\\"" f\\ g; h | i && j')] == [["a", "b c", 'd "e"', "f g"], ["h"], ["i"], ["j"]]
     assert check_bash("vfg cmd 'list' && vfg cmd 'data get entity Steve Pos'") is None
+
+
+def test_split_shell_keeps_redirections_and_pipes():
+    [a, b, c] = split_shell("vfg history --events 2>&1 | grep -i 'a|b' | tail -20; echo x >/dev/null")[:3]
+    assert a.words == ["vfg", "history", "--events"] and a.redirects == [Redirect("2", ">&", "1")] and not a.piped
+    assert b.words == ["grep", "-i", "a|b"] and b.piped
+    assert c.words == ["tail", "-20"] and c.piped
+    [d] = split_shell("vfg state &> /dev/null")
+    assert d.redirects == [Redirect("", "&>", "/dev/null")] and d.redirects[0].harmless()
+    [e] = split_shell("vfg cmd 'say a > b' 2>/dev/null")
+    assert e.words == ["vfg", "cmd", "say a > b"] and e.redirects == [Redirect("2", ">", "/dev/null")]
+    [f] = split_shell("echo '2'>x")  # a quoted number is a word, not an fd
+    assert f.words == ["echo", "2"] and f.redirects == [Redirect("", ">", "x")] and not f.redirects[0].harmless()
+    [g, h] = split_shell("vfg state && vfg script list || echo no")[1:]
+    assert not g.piped and not h.piped
+    assert [x.grouped for x in split_shell("vfg script run x & vfg state")] == [True, False]
+
+
+def test_every_refusal_of_an_implementers_bash_is_one_line_saying_what_to_send():
+    commands = ["curl x", "ls ~", "echo $?", "for i in 1; do vfg state; done", "vfg state > f", "vfg state | sort",
+                "FOO=1 vfg state", "cd x", "cat x", "find .", "rm x", "ps", "python3 -c 1", "grep x", "grep -f a b",
+                "tail -f x", "mkdir x", "vfg say hi", "vfg script set x", "vfg --x cmd y", "vfg script logs x --follow",
+                "vfg script new x --library", "(vfg state)", "vfg cmd 'op Steve'", "vfg cmd $(echo hi)",
+                "vfg cmd 'difficulty hard'"]
+    for command in commands:
+        reason = check_bash(command, REPO)
+        assert reason and "\n" not in reason, command
+        # the probe and live_box find a refusal by these words
+        assert re.search(r"refused|owner.s|never ends|leave it out|literally|may not", reason, re.I), (command, reason)
+
+
+# ---------------------------------------------------------------- a script a running instance uses
+
+class Running:
+    """GuardContext.running: what it answers, and how often it was asked."""
+
+    def __init__(self, instances):
+        self.instances = instances
+        self.calls = 0
+
+    async def __call__(self):
+        self.calls += 1
+        if isinstance(self.instances, Exception):
+            raise self.instances
+        return self.instances
+
+
+def made_repo() -> str:
+    repo = temp_dir("vfg-guard-")
+    for name in ("beam", "staff"):
+        os.makedirs(os.path.join(repo, "made", "main", "scripts", name))
+        with open(os.path.join(repo, "made", "main", "scripts", name, "main.py"), "w") as f:
+            f.write('"""x"""\n')
+    os.makedirs(os.path.join(repo, "made", "main", "presets"))
+    os.makedirs(os.path.join(repo, "scripts", "zeus"))
+    return repo
+
+
+BEAM_ALEX = {"instance": "beam-alex", "script": "beam", "source": "made", "task": "T3"}
+
+
+async def call_hook(g, tool_name, tool_input, agent="a1"):
+    hook = make_guard(g)
+    out = await hook({"hook_event_name": "PreToolUse", "tool_name": tool_name, "tool_input": tool_input,
+                      "agent_id": agent, "tool_use_id": "u"}, "u", {"signal": None})
+    return out.get("hookSpecificOutput", {}).get("permissionDecisionReason") if out else None
+
+
+async def test_an_edit_to_a_made_script_another_tasks_instance_runs_is_refused_with_how_to_copy_it():
+    repo = made_repo()
+    running = Running([BEAM_ALEX])
+    g = ctx(repo=repo, running=running, task_of=lambda agent: "T7")
+    beam = os.path.join(repo, "made/main/scripts/beam/main.py")
+    reason = await call_hook(g, "Edit", {"file_path": beam, "old_string": "a", "new_string": "b"})
+    assert reason == DENY.running("beam", BEAM_ALEX, "main")
+    assert reason == ("Refused: beam-alex (T3) runs made/main/scripts/beam/, and code a running instance uses is not "
+                      "changed: vfg script new <new_name> --from beam copies it for you to Edit; then vfg script stop "
+                      "beam-alex and run the copy with its values.")
+    assert await call_hook(g, "Write", {"file_path": "made/main/scripts/beam/main.py", "content": ""}) == reason
+    # another script, not running: let through, and not asked again for it
+    asked = running.calls
+    staff = os.path.join(repo, "made/main/scripts/staff/main.py")
+    assert await call_hook(g, "Edit", {"file_path": staff}) is None
+    assert await call_hook(g, "Edit", {"file_path": staff}) is None
+    assert running.calls == asked + 1
+    # a preset, a new script and the library are not this check's
+    assert await call_hook(g, "Write", {"file_path": os.path.join(repo, "made/main/presets/x.py")}) is None
+    assert await call_hook(g, "Write", {"file_path": os.path.join(repo, "made/main/scripts/fresh/main.py")}) is None
+    assert await call_hook(g, "Edit", {"file_path": os.path.join(repo, "scripts/zeus/main.py")}) == DENY.library("main")
+    assert running.calls == asked + 1
+
+
+async def test_the_task_that_started_the_instance_may_fix_its_own_script():
+    repo = made_repo()
+    g = ctx(repo=repo, running=Running([BEAM_ALEX]), task_of=lambda agent: "T3")
+    assert await call_hook(g, "Edit", {"file_path": os.path.join(repo, "made/main/scripts/beam/main.py")}) is None
+    # an implementer whose task is not known is held to the rule
+    g = ctx(repo=repo, running=Running([BEAM_ALEX]))
+    assert (await call_hook(g, "Edit", {"file_path": os.path.join(repo, "made/main/scripts/beam/main.py")})
+            == DENY.running("beam", BEAM_ALEX, "main"))
+
+
+async def test_a_script_the_implementer_made_itself_is_its_own_to_change_while_it_runs():
+    repo = made_repo()
+    running = Running([{"instance": "beam2", "script": "beam2", "task": None},
+                       {"instance": "fast", "script": "beam_fast", "task": "T1"}])
+    g = ctx(repo=repo, running=running, task_of=lambda agent: "T7")
+    assert await call_hook(g, "Bash", {"command": "vfg script new beam2 --from beam --preset crater 2>&1 | head -n 5"}) is None
+    assert await call_hook(g, "Bash", {"command": "vfg script save beam-alex beam_fast"}) is None
+    for name in ("beam2", "beam_fast"):  # what the commands made
+        os.makedirs(os.path.join(repo, "made", "main", "scripts", name))
+        open(os.path.join(repo, "made", "main", "scripts", name, "main.py"), "w").close()
+    for name in ("beam2", "beam_fast"):
+        assert await call_hook(g, "Edit", {"file_path": os.path.join(repo, "made/main/scripts/%s/main.py" % name)}) is None
+    assert running.calls == 0
+    # not another implementer's, though; nor a name that was taken when it asked
+    assert (await call_hook(g, "Edit", {"file_path": os.path.join(repo, "made/main/scripts/beam2/main.py")}, agent="a2")
+            == DENY.running("beam2", running.instances[0], "main"))
+    assert await call_hook(g, "Bash", {"command": "vfg script new beam --from staff"}, agent="a3") is None
+    running.instances = [BEAM_ALEX]
+    assert (await call_hook(g, "Edit", {"file_path": os.path.join(repo, "made/main/scripts/beam/main.py")}, agent="a3")
+            == DENY.running("beam", BEAM_ALEX, "main"))
+
+
+async def test_when_what_runs_cannot_be_told_the_edit_goes_through():
+    repo = made_repo()
+    beam = os.path.join(repo, "made/main/scripts/beam/main.py")
+    for answer in (None, RuntimeError("no network")):
+        g = ctx(repo=repo, running=Running(answer), task_of=lambda agent: "T7")
+        assert await call_hook(g, "Edit", {"file_path": beam}) is None
+    assert await call_hook(ctx(repo=repo), "Edit", {"file_path": beam}) is None  # no check at all
+
+
+async def test_running_from_vfg_reads_vfg_state_and_keeps_it_three_seconds(monkeypatch):
+    from helpers import use_fake_vfg, write
+    from orchestrator import guard
+    d = temp_dir()
+    fake = use_fake_vfg(d)
+    os.environ["VFG_FAKE_STATE"] = os.path.join(d, "state.json")
+    write(os.environ["VFG_FAKE_STATE"], json.dumps({"online": [], "instances": [BEAM_ALEX, "junk"], "rcon": None}))
+    running = guard.running_from_vfg()
+    assert await running() == [BEAM_ALEX]
+    assert await running() == [BEAM_ALEX]
+    assert fake.calls() == [["state", "--json"]]
+    monkeypatch.setattr(guard, "STATE_CACHE_S", 0)
+    os.environ["VFG_FAKE_STATE_FAIL"] = "EC2 unreachable (fake)"
+    assert await running() is None

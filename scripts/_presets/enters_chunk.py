@@ -1,4 +1,4 @@
-"""Yields a player and the chunk's box once for each chunk a player walks into, in each dimension, while the script runs."""
+"""Each chunk a player walks into, once, as they go (change blocks chunk by chunk, everywhere they walk): the player and the chunk's box, in every dimension."""
 import mc
 from kit import area, loop, world
 
@@ -17,8 +17,11 @@ def enters_chunk(player, v):
     enters_dims names. A chunk is done once for as long as the script runs.
 
         for p, box in loop(enters_chunk(v["player"], v)):
-            replace_blocks(box, v)
-    """
+            todo.put(box)           # a queue.Queue that a loop.background worker empties
+
+    Nobody is looked at while the loop's body runs, so a slow change (seconds, with a mix)
+    done in the loop itself misses the chunks walked through meanwhile: hand it to a worker,
+    as chunk_changer does."""
     done = set()
     while not mc.stopping():
         for p in loop.who(player):

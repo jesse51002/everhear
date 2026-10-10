@@ -213,7 +213,7 @@ def job_figures(path):
         "check_s": round(agg["check"], 1), "other_s": round(agg["other"], 1),
         "look_by_part_s": round(agg2["look"], 1),
         "ctx_max": ctx[-1] if ctx else 0, "ctx_median": ctx[len(ctx) // 2] if ctx else 0,
-        "calls_over_100k": sum(1 for c in ctx if c > LONG_PROMPT), "model_calls": len(ctx),
+        "calls_over_100k": sum(1 for c in ctx if c > LONG_PROMPT), "model_calls": len(ctx), "ctx_list": ctx,
         "turns": len(tool_msgs), "turn_cap": len(tool_msgs) >= MAX_TURNS,
         "tokens": tok, "weighted": sum(WEIGHTS[k] * v for k, v in tok.items()),
         "tools": [(n, _short(n, i)) for _, n, i in calls],
@@ -377,12 +377,90 @@ def replay_jobs(out_dir):
     return jobs
 
 
+def instance_script(out_dir, instance):
+    """The script an instance ran, from its record on the box (box/<instance>.json)."""
+    try:
+        with open(os.path.join(out_dir, "box", instance + ".json")) as f:
+            return json.load(f).get("script")
+    except (OSError, ValueError):
+        return None
+
+
+def free_to_done(sent_at, closed, refs_closed):
+    """From when the task it changes was free (closed in the replay; the send when that is later, or
+    when it was not sent) to done: what the pacing adds is taken out."""
+    if not closed:
+        return None
+    free = max([sent_at] + [c for c in refs_closed if c])
+    return max(0.0, iso_s(free, closed)) if free <= closed else 0.0
+
+
+def quantiles(xs):
+    xs = sorted(x for x in xs if x is not None)
+    if not xs:
+        return {}
+    q = lambda f: xs[min(len(xs) - 1, int(f * len(xs)))]  # noqa: E731
+    return {"n": len(xs), "min": xs[0], "p10": q(.1), "p25": q(.25), "median": statistics.median(xs),
+            "p75": q(.75), "p90": q(.9), "max": xs[-1]}
+
+
+INCIDENT = re.compile(r"^(\S+) (guard denied \S+ \S+ \S+|denied |session (implementer (failed|killed|stopped)|closed .* as failed|"
+                      r"API retry|rate limit|turn error|the session broke|restarting|rollover)|main (fatal|uncaught)|usage vfg usage add failed)")
+
+
+def incidents(out_dir, jobs):
+    """What went wrong, from the runner's log and the box: guard refusals (by task, with the call
+    refused), failed or stopped implementers, closes as failed, API retries and rate limits, turn
+    errors, restarts and rollovers; tracebacks in an instance's log; what harness.py found left in
+    the world after every instance was stopped (leftovers.txt)."""
+    agent_task = {os.path.basename(j["path"])[len("agent-"):len("agent-") + 8]: j["task"] for j in jobs}
+    out = {"guard": [], "runner": [], "tracebacks": [], "leftovers": ""}
+    try:
+        with open(os.path.join(out_dir, "orch", "runner.log"), encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        m = INCIDENT.match(line)
+        if not m or '"status":"allowed",' in line:  # the window's routine updates
+            continue
+        if " guard denied " in line:
+            g = re.match(r"\S+ guard denied (\S+) (\S+) (\S+): (.*)$", line)
+            who, aid, tool, rest = g.groups() if g else ("?", "?", "?", line)
+            call = re.search(r"\((\{.*)$", rest)
+            why = rest.split(" (", 1)[0] if not call else rest[:call.start()].strip()
+            cmd = ""
+            if call:
+                c = re.search(r'"(?:command|file_path)":"((?:[^"\\]|\\.)*)', call.group(1))
+                cmd = c.group(1) if c else call.group(1)[:160]
+            out["guard"].append({"at": m.group(1), "who": who, "task": agent_task.get(aid[:8]), "tool": tool,
+                                 "why": why[:220], "call": cmd[:220]})
+        else:
+            out["runner"].append(line[:400])
+    for f in sorted(glob.glob(os.path.join(out_dir, "box", "*.log"))):
+        try:
+            text = open(f, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        if "Traceback" in text:
+            last = [l for l in text.splitlines() if l.strip()][-1:]
+            out["tracebacks"].append({"instance": os.path.basename(f)[:-4], "count": text.count("Traceback"),
+                                      "last": last[0][:240] if last else ""})
+    try:
+        out["leftovers"] = open(os.path.join(out_dir, "leftovers.txt"), encoding="utf-8").read()
+    except OSError:
+        pass
+    return out
+
+
 def median(xs):
     xs = [x for x in xs if x is not None]
     return statistics.median(xs) if xs else None
 
 
-def measure(out_dir, tasks=None):
+def measure(out_dir, tasks=None, exclude=None):
+    """exclude: {run id: why} for tasks that ran but are not the system's to answer for (a broken
+    stand-in, say). They are listed, and left out of the bars with every task still open."""
     tasks = tasks or load_tasks()
     sent = read_jsonl(os.path.join(out_dir, "sent.jsonl"))
     with open(os.path.join(out_dir, "orch", "state.json"), encoding="utf-8") as f:
@@ -406,6 +484,7 @@ def measure(out_dir, tasks=None):
     for j in jobs:
         by_task[j["task"]].append(j)
 
+    closed_at = {x["run_id"]: ((state.get("tasks") or {}).get(x["replay_id"]) or {}).get("closedAt") for x in sent}
     per = []
     for s in sent:
         rid, tid = s["replay_id"], s["run_id"]
@@ -425,10 +504,14 @@ def measure(out_dir, tasks=None):
         used = set(rung["ran"]) | set(rung["from"]) | set(rung["presets"])
         used |= {os.path.basename(os.path.dirname(p)) for p in rung["read"] if "/scripts/" in p and p.endswith("main.py")}
         used |= {os.path.splitext(os.path.basename(p))[0] for p in rung["read"] if "/_presets/" in p or "/presets/" in p}
+        used |= {instance_script(out_dir, i) for i in rung["set"]} - {None}  # a value set on an instance uses its script
         used -= set(rung["made"])
         per.append({
             "id": tid, "replay_id": rid, "class": run.get("class"), "task": run.get("task"),
             "status": st.get("status") or "open", "send_to_done_s": iso_s(s.get("at"), st.get("closedAt")),
+            "free_to_done_s": free_to_done(s.get("at"), st.get("closedAt"),
+                                           [closed_at.get(r) for r in re.findall(r"T\d+", run.get("variation") or "")
+                                            if r != tid]),
             "reply": replies[-1]["text"] if replies else None,
             "rung": rung["rung"], "rung_words": rung_words(rung), "file": rung["file"],
             "hand_written": rung["hand_written"], "made": rung["made"], "saved_presets": rung["saved_presets"],
@@ -446,7 +529,20 @@ def measure(out_dir, tasks=None):
             "picked_and_used": sorted(picked & used),
             "run": run.get("run") or {},
         })
-    return {"tasks": per, "jobs": jobs, "summary": summarize(per, jobs, tasks, rows)}
+    exclude = exclude or {}
+    for p in per:
+        if p["id"] in exclude:
+            p["excluded"] = exclude[p["id"]]
+        elif p["status"] not in ("done", "failed"):
+            p["excluded"] = "still open when the replay stopped" + ("" if p["replay_id"] in (state.get("tasks") or {})
+                                                                    else ": never reached the runner")
+    kept = [p for p in per if not p.get("excluded")]
+    kept_ids = {p["replay_id"] for p in kept}
+    summary = summarize(kept, [j for j in jobs if j["task"] in kept_ids], tasks,
+                        [r for r in rows if not r.get("ref") or set(r["ref"].split(",")) & kept_ids])
+    summary["sent"] = len(per)
+    summary["excluded"] = [(p["id"], p["replay_id"], p["excluded"]) for p in per if p.get("excluded")]
+    return {"tasks": per, "jobs": jobs, "summary": summary, "incidents": incidents(out_dir, jobs)}
 
 
 # ------------------------------------------------------------------ the bars
@@ -483,6 +579,8 @@ def summarize(per, jobs, tasks, rows):
     value = cls("value")
     value_ok = [p for p in value if p["status"] == "done" and 1 <= p["rung"] <= 3 and not p["file"]
                 and p["send_to_done_s"] is not None and p["send_to_done_s"] <= 30]
+    value_ok_free = [p for p in value if p["status"] == "done" and 1 <= p["rung"] <= 3 and not p["file"]
+                     and p["free_to_done_s"] is not None and p["free_to_done_s"] <= 30]
     new = cls("new")
     new_ok = [p for p in new if p["status"] == "done" and 1 <= p["rung"] <= 4 and not p["saved_presets"]
               and not p["hand_written"] and not p["edited"]]
@@ -503,6 +601,8 @@ def summarize(per, jobs, tasks, rows):
         ("value-only tasks by a run or a value, no file, closed <= 30 s", ">= 3 in 4",
          "%d of %d" % (len(value_ok), len(value)), "%d of %d closed <= 30 s" % (len(run_value_30), len(value)),
          bool(value) and len(value_ok) * 4 >= len(value) * 3),
+        ("the same, timed from when the task it changes was free", "(the pacing taken out)",
+         "%d of %d" % (len(value_ok_free), len(value)), "-", bool(value) and len(value_ok_free) * 4 >= len(value) * 3),
         ("needed-something-new tasks by a script from presets, no new preset", ">= half",
          "%d of %d" % (len(new_ok), len(new)), "0 (no library)", bool(new) and len(new_ok) * 2 >= len(new)),
         ("implementer cost on these tasks ($)", "<= half the run's ($12.33 for all)", cost["implementer"],
@@ -511,11 +611,29 @@ def summarize(per, jobs, tasks, rows):
          "%d of %d" % (rn_same["turn_cap"], rn_same["jobs"]), rp["turn_cap"] * 20 <= max(rp["jobs"], 1)),
     ]
     rungs = defaultdict(lambda: defaultdict(int))
+    run_kinds = defaultdict(lambda: defaultdict(int))
     for p in per:
         rungs[p["class"]][p["rung"]] += 1
+        run_kinds[p["class"]][(tasks.get(p["id"], {}).get("run") or {}).get("kind") or "-"] += 1
+    comp = {}
+    for r in rows:
+        c = comp.setdefault(r.get("component"), {"rows": 0, "in": 0, "out": 0, "cache_read": 0, "cache_write": 0, "cost": 0.0})
+        c["rows"] += 1
+        c["in"] += r.get("input_tokens") or 0
+        c["out"] += r.get("output_tokens") or 0
+        c["cache_read"] += r.get("cache_read_tokens") or 0
+        c["cache_write"] += r.get("cache_write_tokens") or 0
+        c["cost"] = round(c["cost"] + (r.get("cost_usd") or 0), 6)
+    ctx_all = [c for j in jobs for c in j.get("ctx_list") or []]
     return {"replay": rp, "run_same_tasks": rn_same, "run_all": rn_all, "cost": cost, "run_cost": run_cost,
             "bars": [{"bar": b, "target": t, "replay": r, "run": n, "pass": ok} for b, t, r, n, ok in bars],
             "rungs_by_class": {c: dict(v) for c, v in rungs.items()},
+            "run_kinds_by_class": {c: dict(v) for c, v in run_kinds.items()},
+            "components": comp,
+            "prompt_tokens": dict(quantiles(ctx_all), over_100k=sum(1 for c in ctx_all if c > LONG_PROMPT)),
+            "value_ok_free": len(value_ok_free),
+            "value_median_free_to_done_s": median([p["free_to_done_s"] for p in value]),
+            "value_median_send_to_done_s": median([p["send_to_done_s"] for p in value]),
             "value_by_rung_no_file": sum(1 for p in value if 1 <= p["rung"] <= 3 and not p["file"]),
             "value_closed_30": sum(1 for p in value if (p["send_to_done_s"] or 1e9) <= 30),
             "value_median_wait_s": median([p["wait_s"] for p in value]),
@@ -541,10 +659,13 @@ def fmt(x, digits=1):
 
 def report(m):
     s = m["summary"]
-    out = ["# Replay measured", "",
-           "%d tasks sent, %d closed, %d done. Median send to done %s s (the run, same tasks: %s s)." % (
+    out = ["# Replay measured", ""]
+    if s.get("excluded"):
+        out += ["%d tasks sent; %d left out of the bars:" % (s.get("sent", 0), len(s["excluded"])), ""] + [
+            "- %s (%s): %s" % x for x in s["excluded"]] + [""]
+    out += ["On the %d tasks measured: %d closed, %d done. Median send to done %s s (the run, same tasks: %s s)." % (
                s["tasks"], s["closed"], s["done"], fmt(s["median_send_to_done_s"]), fmt(s["run_median_send_to_done_s"])),
-           "", "## The bars", "", "| Bar | Target | Replay | Run, same tasks | Pass |", "|---|---|---|---|---|"]
+            "", "## The bars", "", "| Bar | Target | Replay | Run, same tasks | Pass |", "|---|---|---|---|---|"]
     for b in s["bars"]:
         r = b["replay"]
         n = b["run"]
@@ -569,21 +690,31 @@ def report(m):
                 fmt(s["replay"]["median_ctx"], 0), s["replay"]["calls_over_100k"], s["replay"]["model_calls"],
                 LONG_PROMPT // 1000, fmt(s["run_same_tasks"]["median_ctx"], 0), s["run_same_tasks"]["calls_over_100k"],
                 s["run_same_tasks"]["model_calls"]),
+            "", "Prompt sizes, every implementer model call (tokens in, fresh + read + written): %s; %d of %d over %dK." % (
+                ", ".join("%s %s" % (k, fmt(v, 0)) for k, v in s["prompt_tokens"].items() if k not in ("n", "over_100k")),
+                s["prompt_tokens"].get("over_100k", 0), s["prompt_tokens"].get("n", 0), LONG_PROMPT // 1000),
+            "", "Value-only tasks, median: send to done %s s, from when the task it changes was free to done %s s." % (
+                fmt(s["value_median_send_to_done_s"]), fmt(s["value_median_free_to_done_s"])),
+            "", "| Component | Usage rows | Tokens in | of which cache read | cache written | Out | Cost $ |", "|---|---|---|---|---|---|---|"] + [
+            "| %s | %d | %d | %d | %d | %d | %.4f |" % (c, v["rows"], v["in"], v["cache_read"], v["cache_write"], v["out"], v["cost"])
+            for c, v in sorted(s["components"].items(), key=lambda x: str(x[0]))] + [
+            "", "Rungs by class, replay against what the run did:", ""] + [
+            "- **%s**: replay %s; run %s" % (c, ", ".join("%s x%d" % (RUNG_WORDS[r], n) for r, n in sorted(v.items())),
+                                          ", ".join("%s x%d" % (k, n) for k, n in sorted(s["run_kinds_by_class"].get(c, {}).items())))
+            for c, v in sorted(s["rungs_by_class"].items(), key=lambda x: str(x[0]))] + [
             "", "Cost, replay: implementer $%.4f, orchestrator $%.4f, router (jev) $%.4f. The run on the same tasks: "
             "implementer $%.4f, orchestrator $%.4f." % (s["cost"]["implementer"], s["cost"]["orchestrator"], s["cost"]["jev"],
                                                     s["run_cost"]["implementer"], s["run_cost"]["orchestrator"]),
-            "", "Rungs by class: " + "; ".join("%s %s" % (c, ", ".join("%s x%d" % (RUNG_WORDS[r], n) for r, n in sorted(v.items())))
-                                               for c, v in sorted(s["rungs_by_class"].items(), key=lambda x: str(x[0]))),
             "", "## Per task", "",
-            "| Task | Class | Status | Send→done s (run) | Wait s | Rung (run) | File | Jobs | Impl s (run) | Calls before change (run) | "
+            "| Task | Class | Status | Send→done s (run) | Free→done s | Wait s | Rung (run) | File | Jobs | Impl s (run) | Calls before change (run) | "
             "Look s / call s | Impl $ (run) | Orch $ (run) | Jev $ |",
-            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for p in m["tasks"]:
         r = p["run"]
         flags = ""
-        out.append("| %s (%s) %s | %s | %s | %s (%s) | %s | %s (%s) | %s | %d | %s (%s) | %s (%s) | %s / %s | %.4f (%.4f) | %.4f (%.4f) | %.4f |" % (
+        out.append("| %s (%s) %s | %s | %s | %s (%s) | %s | %s | %s (%s) | %s | %d | %s (%s) | %s (%s) | %s / %s | %.4f (%.4f) | %.4f (%.4f) | %.4f |" % (
             p["id"], p["replay_id"], (p["task"] or "")[:60].replace("|", "/"), p["class"], p["status"],
-            fmt(p["send_to_done_s"], 0), fmt(r.get("send_to_done_s"), 0), fmt(p["wait_s"], 0), p["rung_words"] + flags,
+            fmt(p["send_to_done_s"], 0), fmt(r.get("send_to_done_s"), 0), fmt(p["free_to_done_s"], 0), fmt(p["wait_s"], 0), p["rung_words"] + flags,
             r.get("kind") or "-", "yes" if p["file"] else "no", p["jobs"], fmt(p["impl_s"], 0), fmt(r.get("impl_s"), 0),
             ",".join(fmt(b) for b in p["before"]) or "-", ",".join(fmt(j.get("before")) for j in r.get("jobs") or []) or "-",
             fmt(p["look_s"], 0), fmt(p["call_s"], 0), p["cost"]["implementer"], (r.get("cost") or {}).get("implementer") or 0,
@@ -598,6 +729,17 @@ def report(m):
         used = sorted(set(p["picked_and_used"]) | set(p["used_not_picked"]))
         out.append("| %s | %s | %s | %s | %s | %s |" % (p["id"], picks, ", ".join(used) or "-", ", ".join(p["picked_and_used"]) or "-",
                                                         ", ".join(p["used_not_picked"]) or "-", ", ".join(p["picked_not_used"]) or "-"))
+    inc = m.get("incidents") or {}
+    sent = {p["replay_id"]: p["id"] for p in m["tasks"]}
+    out += ["", "## What went wrong", "", "### Guard refusals (%d)" % len(inc.get("guard") or []), "",
+            "| At | Task | Tool | Why | The call |", "|---|---|---|---|---|"]
+    for g in inc.get("guard") or []:
+        out.append("| %s | %s | %s | %s | `%s` |" % (g["at"][11:19], "%s (%s)" % (sent.get(g["task"], "?"), g["task"]) if g["task"] else g["who"],
+                                                  g["tool"], g["why"].replace("|", "/")[:140], g["call"].replace("|", "/").replace("`", "'")[:160]))
+    out += ["", "### The runner (%d)" % len(inc.get("runner") or []), ""] + ["- %s" % l.replace("|", "/") for l in inc.get("runner") or []]
+    out += ["", "### Tracebacks in instance logs (%d)" % len(inc.get("tracebacks") or []), ""] + [
+        "- %s: %d, last line: %s" % (t["instance"], t["count"], t["last"]) for t in inc.get("tracebacks") or []]
+    out += ["", "### Left in the world after every instance was stopped", "", "```", (inc.get("leftovers") or "(not checked)").strip(), "```"]
     out += ["", "## Replies", ""]
     for p in m["tasks"]:
         out.append("- **%s** %s: %s" % (p["id"], p["status"], (p["reply"] or "-").replace("\n", " ")))
@@ -608,12 +750,14 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("out", help="the output folder run.py left")
     ap.add_argument("--json", action="store_true", help="print the JSON instead of the report")
+    ap.add_argument("--exclude", metavar="T24,T25", default="", help="run ids to leave out of the bars (listed)")
+    ap.add_argument("--why", default="excluded by hand", help="why, for the report")
     a = ap.parse_args(argv)
-    m = measure(a.out)
+    m = measure(a.out, exclude={t.strip().upper(): a.why for t in a.exclude.split(",") if t.strip()})
     md = report(m)
     with open(os.path.join(a.out, "measure.md"), "w", encoding="utf-8") as f:
         f.write(md)
-    slim = dict(m, jobs=[{k: v for k, v in j.items() if k != "tools"} for j in m["jobs"]])
+    slim = dict(m, jobs=[{k: v for k, v in j.items() if k not in ("tools", "ctx_list")} for j in m["jobs"]])
     with open(os.path.join(a.out, "measure.json"), "w", encoding="utf-8") as f:
         json.dump(slim, f, indent=1, default=str)
     print(json.dumps(slim["summary"], indent=1, default=str) if a.json else md)

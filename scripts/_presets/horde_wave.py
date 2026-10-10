@@ -1,4 +1,4 @@
-"""Waves of mobs round each player on a timer, never more than a cap alive at once."""
+"""A horde: waves of zombies or any mix of mobs round each player, so many each, on a timer, a set number of waves or forever, never more than a cap alive at once."""
 import random
 import time
 
@@ -13,6 +13,7 @@ VALUES = {
     "horde_spread":     {"type": "int", "min": 4, "max": 100, "default": 12, "live": True},
     "horde_waves":      {"type": "int", "min": 0, "max": 1000, "default": 0},
     "horde_explode":    {"type": "bool", "default": False, "live": True},
+    "horde_announce":   {"type": "bool", "default": True, "live": True},
 }
 
 
@@ -21,9 +22,10 @@ def horde_wave(player, v):
     at safe spots about horde_spread blocks round each player the player value names, while
     fewer than horde_cap of them are alive. After horde_waves waves (0: until the script
     stops) it waits until every one is dead, and returns how many waves it sent. Creepers
-    do not blow up unless horde_explode."""
+    do not blow up unless horde_explode. horde_announce: "Wave N" on their screens and in the
+    log at each wave; off, the log says only when the count alive changed (a zoo, every 1 s)."""
     tag = mc.TAG + "_horde"
-    waves, due = 0, 0.0
+    waves, due, said = 0, 0.0, -1
     for _ in loop(every=1):
         alive = mobs.count(tag)
         if v["horde_waves"] and waves >= v["horde_waves"]:
@@ -43,6 +45,11 @@ def horde_wave(player, v):
                 safe = "creeper" in mob and not v["horde_explode"]
                 alive += mobs.around(p, mob, 1, "ExplosionRadius:0b" if safe else "",
                                      spread=v["horde_spread"], tags=(tag,))
-            fx.actionbar(p, "Wave %d" % waves, "red")
-        mc.log("wave", waves, "-", alive, "alive")
+            if v["horde_announce"]:
+                fx.actionbar(p, "Wave %d" % waves, "red")
+        if v["horde_announce"]:
+            mc.log("wave", waves, "-", alive, "alive")
+        elif alive != said:
+            mc.log(alive, "alive")
+            said = alive
     return waves
