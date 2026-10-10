@@ -689,13 +689,18 @@ async def test_the_selector_sees_the_menu_and_the_planner_one_action(h):
     assert "Copy player names exactly." in plan.system
 
 
-async def test_run_script_sees_each_scripts_readme_lines(h):
+async def test_run_script_sees_each_scripts_values_and_an_old_ones_usage(h):
     h.llm.add("Selection", select(("run_script", "start zeus for Alex")))
-    h.llm.add("Planned_run_script", planned({"action": "run_script", "name": "zeus", "args": ["Alex"]}, say="zeus"))
+    h.llm.add("Planned_run_script", planned({"action": "run_script", "name": "zeus", "args": ["player=Alex"]}, say="zeus"))
     h.vfg.on("script", "run", answer=ok_lines("started zeus (T1); stop: vfg script stop zeus"))
     tid = await h.run("make my tridents call lightning")
-    assert "SCRIPTS (each: what it does | usage | how it ends):\n- zeus: Makes every trident" in h.llm.prompts("Planned_run_script")[0]
-    assert h.vfg.actions() == [["script", "run", "zeus", "Alex"]]
+    prompt = h.llm.prompts("Planned_run_script")[0]
+    assert ("\nSCRIPTS (each: what it does, then every value it takes as key (type, default, limits or options), "
+            "set as key=value with the key exactly as listed; for one written the old way, its usage and how it "
+            "ends):\n- zeus: Zeus: every trident a player throws calls lightning where it lands.\n"
+            "  player (player, default @a)\n  strikes (int, default 1, 1..10)\n"
+            "- tnt_rain: Drops TNT round players.\n  Usage: tnt_rain [every_s=20]\n  Ends: when stopped\n") in prompt
+    assert h.vfg.actions() == [["script", "run", "zeus", "player=Alex"]]
     assert h.vfg.replies() == [(tid, "done", "zeus — started zeus (T1); stop: vfg script stop zeus")]
 
 
@@ -717,7 +722,10 @@ async def test_stop_script_sees_the_scripts_too(tmp_path):
     h.llm.add("Selection", select(("stop_script", "stop zeus")))
     h.llm.add("Planned_stop_script", planned({"action": "stop_script", "name": "zeus"}, say="stopping zeus"))
     await h.run("stop the lightning")
-    assert "SCRIPTS (each: what it does | usage | how it ends):\n- zeus: " in h.llm.prompts("Planned_stop_script")[0]
+    prompt = h.llm.prompts("Planned_stop_script")[0]
+    assert ("\nSCRIPTS (each: what it does):\n- zeus: Zeus: every trident a player throws calls lightning where "
+            "it lands.\n- tnt_rain: Drops TNT round players.\n") in prompt
+    assert "player (player" not in prompt and "Usage:" not in prompt  # stopping takes no values
     assert h.vfg.actions() == [] and ["script", "stop", "zeus"] in h.vfg.calls
 
 

@@ -233,10 +233,10 @@ def test_vfg_argv_for_handler_and_command_actions():
 def test_vfg_argv_for_scripts_and_places():
     name = _types.SCRIPT_NAMES[0]
     assert RunScript(action="run_script", name=name, args=["Steve", "200"]).vfg_argv("T1") == \
-        ["script", "run", name, "Steve", "200"]
-    assert RunScript(action="run_script", name=name).vfg_argv("T1") == ["script", "run", name]
+        ["script", "run", "--task", "T1", name, "Steve", "200"]
+    assert RunScript(action="run_script", name=name).vfg_argv("T1") == ["script", "run", "--task", "T1", name]
     assert RunScript(action="run_script", name=name, args=["-5", "--wait"]).vfg_argv("T1") == \
-        ["script", "run", name, "--", "-5", "--wait"]
+        ["script", "run", "--task", "T1", name, "--", "-5", "--wait"]
     assert StopScript(action="stop_script", name=name).vfg_argv("T1") == ["script", "stop", name]
     assert SavePlace(action="save_place", name="castle", player="Steve").vfg_argv("T23") == \
         ["place", "save", "castle", "--player", "Steve", "--by", "T23"]
@@ -250,6 +250,42 @@ def test_run_script_args():
         RunScript(action="run_script", name=name, args=["a\nb"])
     with pytest.raises(ValidationError):
         RunScript(action="run_script", name=name, args=["x"] * 11)
+
+
+def script_values(name: str) -> dict | None:
+    """scripts/<name>/main.py's VALUES literal, read without running it; None without one."""
+    for node in ast.parse((REPO / "scripts" / name / "main.py").read_text()).body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "VALUES" for t in node.targets):
+            return ast.literal_eval(node.value)
+    return None
+
+
+def test_run_script_key_value_args_reach_vfg_script_run_as_its_values():
+    """A new-format script's key=value args, its names read from its VALUES (never written
+    here: they change), go through vfg's own parser and its value check unchanged."""
+    from conftest import toolkit
+
+    with_values = [(n, v) for n in _types.SCRIPT_NAMES if (v := script_values(n))]
+    if not with_values:
+        pytest.skip("no script in scripts/ declares VALUES yet")
+    name, values = with_values[0]
+    picked = list(values)[:2]
+
+    def word(x) -> str:  # a default as key=value carries it
+        return json.dumps(x, separators=(",", ":")) if isinstance(x, (bool, list)) else str(x)
+
+    args = ["%s=%s" % (k, word(values[k]["default"])) for k in picked]
+    action = RunScript(action="run_script", name=name, args=args)
+    argv = action.vfg_argv("T7")
+    assert argv == ["script", "run", "--task", "T7", name, *args]
+
+    vfg = toolkit()
+    a = vfg.build_parser().parse_args(vfg.rewrite_argv(argv))
+    run = vfg.run_words(a)
+    assert (run.name, run.task, run.words, run.instance) == (name, "T7", args, None)
+    library = vfg.lib_module("library")
+    given, _ = library.parse_given(values, run.words)
+    assert list(given) == picked
 
 
 # ------------------------------------------------------------------ teleport

@@ -4,9 +4,10 @@ The repo root goes on sys.path and `actions.<name>.action` is imported for every
 that has an action.py. The class is the one whose `action` field is `Literal["<name>"]`.
 A folder that will not import is logged and left out; the dispatcher runs without it.
 
-Also here: the scripts in `scripts/`, each by the first three lines of its main.py's
-docstring (its README's, for an old script with none), which the action planner sees for
-`run_script` and `stop_script`.
+Also here: the scripts in `scripts/`, each by its main.py's docstring's first line and one
+line per entry of its `VALUES` (its README's first three lines, for an old script with no
+`VALUES`), which the action planner sees for `run_script` and `stop_script`. A script is
+read, never run: scripts run on EC2, not here.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from __future__ import annotations
 import ast
 import importlib
 import inspect
+import json
 import sys
 import typing
 from pathlib import Path
@@ -88,8 +90,13 @@ def menu_line(cls: type[BaseModel]) -> str:
 
 
 def scripts(repo: Path) -> dict[str, str]:
-    """{name: what it does} for every script folder with a main.py: the first three non-blank
-    lines of main.py's docstring, joined; only when it has none, its README's first three."""
+    """{name: what it does} for every script folder with a main.py.
+
+    The first line says what it does; each line after it is indented. A script with
+    `VALUES`: its docstring's first line (`<Title>: what it does.`), then one line per value,
+    `key (type, default …, min..max or one of …)`, the keys exactly as its VALUES has them.
+    An old script with no `VALUES`: its README's first three non-blank lines (what it does,
+    its usage, how it ends), else its docstring's."""
     out = {}
     root = repo / "scripts"
     if not root.is_dir():
@@ -97,20 +104,88 @@ def scripts(repo: Path) -> dict[str, str]:
     for folder in sorted(root.iterdir()):
         if folder.name.startswith(("_", ".")) or not (folder / "main.py").is_file():
             continue
-        lines = [x.strip() for x in docstring(folder / "main.py").splitlines() if x.strip()][:3]
-        if not lines:
-            try:
-                readme = (folder / "README.md").read_text(encoding="utf-8").splitlines()
-            except OSError:
-                readme = []
-            lines = [x.strip() for x in readme[:3] if x.strip()]
-        out[folder.name] = " | ".join(lines) or "(no description)"
+        out[folder.name] = describe_script(folder)
     return out
 
 
-def docstring(path: Path) -> str:
-    """A module's docstring, read without running it (scripts run on EC2, not here)."""
+def describe_script(folder: Path) -> str:
+    tree = parse(folder / "main.py")
+    doc_lines = [x.strip() for x in docstring_of(tree).splitlines() if x.strip()]
+    values = script_values(tree)
+    if values is not None:
+        lines = [doc_lines[0] if doc_lines else "(no description)",
+                 *([value_line(k, e) for k, e in values.items()] or ["(takes no values)"])]
+    else:
+        try:
+            readme = (folder / "README.md").read_text(encoding="utf-8").splitlines()
+        except OSError:
+            readme = []
+        lines = [x.strip() for x in readme[:3] if x.strip()] or doc_lines[:3] or ["(no description)"]
+    return "\n  ".join(lines)
+
+
+def parse(path: Path) -> ast.Module | None:
+    """A script's module, parsed without running it (scripts run on EC2, not here)."""
     try:
-        return ast.get_docstring(ast.parse(path.read_text(encoding="utf-8"))) or ""
+        return ast.parse(path.read_text(encoding="utf-8"))
     except (OSError, SyntaxError, ValueError):
-        return ""
+        return None
+
+
+def docstring_of(tree: ast.Module | None) -> str:
+    return (ast.get_docstring(tree) or "") if tree is not None else ""
+
+
+def script_values(tree: ast.Module | None) -> dict[str, dict] | None:
+    """The module's top-level `VALUES = {...}`, by ast.literal_eval; None when there is none,
+    or it is not a literal dict of entries."""
+    if tree is None:
+        return None
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            named = any(isinstance(t, ast.Name) and t.id == "VALUES" for t in node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            named = isinstance(node.target, ast.Name) and node.target.id == "VALUES"
+        else:
+            continue
+        if not named or node.value is None:
+            continue
+        try:
+            values = ast.literal_eval(node.value)
+        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+            return None
+        if not isinstance(values, dict) or not all(isinstance(k, str) for k in values):
+            return None
+        return values
+    return None
+
+
+def value_line(key: str, entry: object) -> str:
+    """One VALUES entry as `key (type, default D, lo..hi)` or `key (enum, default D, one of a, b)`;
+    a list's `of` is its items' type (`list of player`) or their options (`each one of a, b`)."""
+    if not isinstance(entry, dict):
+        return key
+    typ, of = entry.get("type", "?"), entry.get("of")
+    bits = [f"list of {of}" if typ == "list" and isinstance(of, str) else str(typ)]
+    if "default" in entry:
+        bits.append("default " + show_value(entry["default"]))
+    lo, hi = entry.get("min"), entry.get("max")
+    if lo is not None or hi is not None:
+        bits.append(("" if lo is None else show_value(lo)) + ".." + ("" if hi is None else show_value(hi)))
+    if isinstance(of, (list, tuple)):
+        bits.append(("each one of " if typ == "list" else "one of ") + ", ".join(show_value(o) for o in of))
+    return f"{key} ({', '.join(bits)})"
+
+
+def show_value(x: object) -> str:
+    """A value as `key=<this>` carries it, as vfg script run reads it back: true/false, a whole
+    number without .0, a list as compact JSON, a word as it is ("" when empty)."""
+    if isinstance(x, bool):
+        return "true" if x else "false"
+    if isinstance(x, float) and x.is_integer() and abs(x) < 1e15:
+        return "%d" % x
+    if isinstance(x, (list, tuple, dict)):
+        return json.dumps(x, ensure_ascii=False, separators=(",", ":"))
+    if x == "":
+        return '""'
+    return str(x)

@@ -291,8 +291,10 @@ class Harness:
         self.batch = Batch(self.state, self.vfg, window_s, retry_s=(0.01,))
         self.d = Dispatcher(self.cfg, catalog=CATALOG if catalog is None else catalog, refs=self.refs,
                             vfg=self.vfg, ask=self.llm, state=self.state, reply=self.reply, batch=self.batch,
-                            scripts={"zeus": "Makes every trident call lightning. | Usage: zeus <player> | Ends: when stopped",
-                                     "tnt_rain": "Drops TNT round players. | Usage: tnt_rain [every_s=20] | Ends: when stopped"},
+                            scripts={"zeus": "Zeus: every trident a player throws calls lightning where it lands.\n"
+                                             "  player (player, default @a)\n  strikes (int, default 1, 1..10)",
+                                     "tnt_rain": "Drops TNT round players.\n  Usage: tnt_rain [every_s=20]\n"
+                                                 "  Ends: when stopped"},
                             hidden=frozenset(BLOCKS | OWNER))
         self.batch.on_refused = self.d.refused
         self.n = 0

@@ -338,25 +338,87 @@ def test_the_repos_own_actions_all_load(fresh_actions_package):
     Selector(catalog, None, "m")  # the menu and the Literal of names build
 
 
-def test_a_script_is_described_by_its_docstring_and_by_its_readme_only_without_one(tmp_path):
-    def script(name: str, main: str, readme: str | None = None) -> None:
-        (tmp_path / "scripts" / name).mkdir(parents=True)
-        (tmp_path / "scripts" / name / "main.py").write_text(main)
-        if readme is not None:
-            (tmp_path / "scripts" / name / "README.md").write_text(readme)
+def script(root, name: str, main: str, readme: str | None = None) -> None:
+    (root / "scripts" / name).mkdir(parents=True)
+    (root / "scripts" / name / "main.py").write_text(main)
+    if readme is not None:
+        (root / "scripts" / name / "README.md").write_text(readme)
 
-    script("zeus", '"""\nLightning where tridents land.\n\nUsage: zeus <player>\nEnds: when stopped\nMore.\n"""\nimport mc\n',
+
+def test_a_new_format_script_is_its_docstrings_first_line_and_one_line_per_value(tmp_path):
+    values = textwrap.dedent("""\
+        VALUES = {
+            "player":  {"type": "player", "default": "@a"},
+            "strikes": {"type": "int", "min": 1, "max": 10, "default": 1, "live": True},
+            "speed":   {"type": "number", "min": 0.5, "default": 2.0},
+            "mode":    {"type": "enum", "of": ["one", "ring"], "default": "one", "live": True},
+            "spare":   {"type": "list", "of": "player", "default": []},
+            "mobs":    {"type": "list", "of": ["zombie", "husk"], "default": ["zombie"]},
+            "loud":    {"type": "bool", "default": False},
+            "label":   {"type": "str", "default": ""},
+        }
+    """)
+    script(tmp_path, "zeus", '"""Zeus: lightning where tridents land.\n\nMore words."""\nASKS = ["zeus"]\n'
+           "from kit import values\nimport mc\n\n" + values + "v = values(VALUES)\nraise SystemExit('never run')\n",
            "README words that lose.\nx\ny\n")
-    script("tnt_rain", "import mc\n", "Drops TNT.\nUsage: tnt_rain [every_s=20]\nEnds: when stopped\n\nmore")
-    script("broken", "def (:\n", "Old seed script.\n")
-    script("bare", "import mc\n")
-    script("_lib", '"""not a script"""\n')
+    script(tmp_path, "calm", '"""Calm: nothing at all."""\nVALUES = {}\n')
+    assert actions.scripts(tmp_path) == {
+        "calm": "Calm: nothing at all.\n  (takes no values)",
+        "zeus": "Zeus: lightning where tridents land.\n"
+                "  player (player, default @a)\n"
+                "  strikes (int, default 1, 1..10)\n"
+                "  speed (number, default 2, 0.5..)\n"
+                "  mode (enum, default one, one of one, ring)\n"
+                "  spare (list of player, default [])\n"
+                "  mobs (list, default [\"zombie\"], each one of zombie, husk)\n"
+                "  loud (bool, default false)\n"
+                "  label (str, default \"\")",
+    }
+
+
+def test_a_script_with_no_values_is_its_readmes_first_three_lines(tmp_path):
+    script(tmp_path, "tnt_rain", "import mc\n", "Drops TNT.\nUsage: tnt_rain [every_s=20]\nEnds: when stopped\n\nmore")
+    script(tmp_path, "zeus", '"""\nLightning where tridents land.\n\nUsage: zeus <player>\nEnds: when stopped\nMore.\n"""\n'
+           "import mc\n", "Lightning, from the README.\nUsage: zeus <player>\n\nmore")
+    script(tmp_path, "computed", '"""Computed."""\nVALUES = dict(a={"type": "int", "default": 1})\n', "Old words.\n")
+    script(tmp_path, "docs_only", '"""\nDoes a thing.\nUsage: docs_only\nEnds: at once\nMore.\n"""\n')
+    script(tmp_path, "broken", "def (:\n", "Old seed script.\n")
+    script(tmp_path, "bare", "import mc\n")
+    script(tmp_path, "_lib", '"""not a script"""\nVALUES = {}\n')
     assert actions.scripts(tmp_path) == {
         "bare": "(no description)",
         "broken": "Old seed script.",
-        "tnt_rain": "Drops TNT. | Usage: tnt_rain [every_s=20] | Ends: when stopped",
-        "zeus": "Lightning where tridents land. | Usage: zeus <player> | Ends: when stopped",
+        "computed": "Old words.",  # VALUES that is not a literal: as if it had none
+        "docs_only": "Does a thing.\n  Usage: docs_only\n  Ends: at once",
+        "tnt_rain": "Drops TNT.\n  Usage: tnt_rain [every_s=20]\n  Ends: when stopped",
+        "zeus": "Lightning, from the README.\n  Usage: zeus <player>",
     }
+
+
+def test_the_repos_scripts_reach_the_selectors_menu_and_the_planner_with_every_value(fresh_actions_package):
+    """ScriptName, the selector's menu and the planner's view all list the same scripts, and
+    each new-format one shows its docstring's first line and one line per VALUES entry; the
+    names come from the scripts themselves, never from here."""
+    from dispatcher.action_planner import Planner
+
+    if not (config.REPO / "actions" / "run_script" / "action.py").is_file():
+        pytest.skip("actions/ has no run_script yet")
+    catalog = actions.load(config.REPO)
+    found = actions.scripts(config.REPO)
+    from actions import _types
+    assert list(found) == list(_types.SCRIPT_NAMES) and found
+    run_line = next(x for x in Selector(catalog, None, "m", scripts=found).rules.splitlines()
+                    if x.startswith("- run_script:"))
+    assert run_line.endswith(" The only scripts: %s." % ", ".join(sorted(found)))
+    text = Planner(None, "m", None, found).describe(catalog["run_script"])
+    for name in found:
+        tree = actions.parse(config.REPO / "scripts" / name / "main.py")
+        values = actions.script_values(tree)
+        if values is None:
+            continue
+        first = actions.docstring_of(tree).strip().splitlines()[0]
+        block = "\n".join(["- %s: %s" % (name, first), *("  " + actions.value_line(k, e) for k, e in values.items())])
+        assert block + "\n" in text, name
 
 
 # ---------------------------------------------------------------- replay

@@ -2,7 +2,8 @@
 
 It sees ONE action: its full docstring, each option's description and limits, the pick's
 instruction, the task's context, the saved places, the reports of the task's earlier
-actions and the last failure; for `run_script` and `stop_script`, what each script does.
+actions and the last failure; for `run_script`, what each script does and every value it
+takes; for `stop_script`, what each script does.
 It never sees the other actions, the task's other parts or the server.
 
 `command` is written in steps, with Minecraft's own reference in between:
@@ -165,9 +166,15 @@ class Planner:
     def describe(self, cls: type[BaseModel]) -> str:
         name = action_name(cls) or cls.__name__
         text = f"ACTION: {name}\n{doc(cls)}\n\nOPTIONS:\n{options(cls)}\n"
-        if name in SHOWS_SCRIPTS and self.scripts:
-            rows = "\n".join(f"- {n}: {line}" for n, line in self.scripts.items())
-            text += f"\nSCRIPTS (each: what it does | usage | how it ends):\n{rows}\n"
+        if name == "run_script" and self.scripts:
+            rows = "\n".join(f"- {n}: {about}" for n, about in self.scripts.items())
+            text += ("\nSCRIPTS (each: what it does, then every value it takes as key (type, default, "
+                     "limits or options), set as key=value with the key exactly as listed; "
+                     "for one written the old way, its usage and how it ends):\n"
+                     f"{rows}\n")
+        elif name in SHOWS_SCRIPTS and self.scripts:
+            rows = "\n".join(f"- {n}: {(about.splitlines() or [''])[0]}" for n, about in self.scripts.items())
+            text += f"\nSCRIPTS (each: what it does):\n{rows}\n"
         return text
 
     def base(self, cls: type[BaseModel], p: Pick) -> str:
