@@ -81,6 +81,10 @@ STDLIB = getattr(sys, "stdlib_module_names", None)   # 3.10+; on 3.9 imports go 
 # A preset's values class (class <CamelName>(Values), beside its function) and its imports
 # are read on the PC only, by lib/py/vfg_actions.py: never copied into a script.
 PC_ONLY = ("actions", "pydantic")
+# What scripts/_lib deploys on the box beside the standard library: the kit, mc, and the
+# saved places, the refused commands and the copies (the core scripts' places, commands and
+# instances).
+ON_THE_BOX = ("kit", "mc", "places", "commands", "instances")
 
 
 class ValueProblem(Exception):
@@ -760,11 +764,11 @@ def _check_imports(tree, bad, pc_only=False):
             parts = mod.split(".")
             if "_presets" in parts:
                 bad(node.lineno, "imports from _presets: copy the preset in (vfg script new --preset)")
-            elif parts[0] in ("kit", "mc") or (pc_only and parts[0] in PC_ONLY):
+            elif parts[0] in ON_THE_BOX or (pc_only and parts[0] in PC_ONLY):
                 continue
             elif STDLIB is not None and parts[0] not in STDLIB:
-                bad(node.lineno, "imports %s, which is not on the box: kit, mc and the standard "
-                                 "library only" % parts[0])
+                bad(node.lineno, "imports %s, which is not on the box: kit, mc, the rest of scripts/_lib "
+                                 "and the standard library only" % parts[0])
 
 
 def _check_preset_shape(item, bad):

@@ -1,4 +1,4 @@
-"""toolkit/remote/places.py: pure, so it runs here against FakeWorld.respond and the
+"""scripts/_lib/places.py: pure, so it runs here against FakeWorld.respond and the
 storage replies recorded from a real 26.3 server."""
 from __future__ import annotations
 

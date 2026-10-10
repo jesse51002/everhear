@@ -12,7 +12,9 @@ run` would write for its first action with nothing given (lib/py/vfg_actions.py)
 against fake_world with Steve and Alex online; Steve tries every item it gives him (a
 click, a 1.5 s hold) and crouches; then SIGTERM. It must send commands, raise nothing,
 exit 0 within 2 s of the stop, and leave nothing tagged vfg_<name>: no entity, bossbar,
-forceload or objective. The kit's tests (test_kit.py) and every test_presets_*.py and
+forceload or objective. The scripts under the six core actions (CORE) need values their
+defaults leave empty, so test_core.py runs them instead. The kit's tests (test_kit.py),
+instances.py's (test_instances.py), test_core.py and every test_presets_*.py and
 test_examples_*.py beside this file run with them.
 """
 import json
@@ -260,9 +262,14 @@ class McTests(unittest.TestCase):
 
 # ---- every script, against its own fake, all at once -------------------------------------
 
+# The scripts under the dispatcher's core actions: each needs values its defaults leave empty (a
+# command, a place, a running copy), so test_core.py runs them, with those values, on a fake world.
+CORE = ("command", "edit", "save_place", "stop", "summon_around", "teleport")
+
+
 def script_names():
-    return sorted(d for d in os.listdir(SCRIPTS)
-                  if not d.startswith("_") and not d.startswith(".") and os.path.isdir(os.path.join(SCRIPTS, d)))
+    return sorted(d for d in os.listdir(SCRIPTS) if not d.startswith("_") and not d.startswith(".")
+                  and d not in CORE and os.path.isdir(os.path.join(SCRIPTS, d)))
 
 
 def usage_args(line):
@@ -592,14 +599,16 @@ _add_script_tests()
 def _add_kit_and_preset_tests():
     import glob
     import importlib
-    for path in [os.path.join(HERE, "test_kit.py"), os.path.join(HERE, "test_instances.py")] \
+    for path in [os.path.join(HERE, "test_kit.py"), os.path.join(HERE, "test_instances.py"),
+                 os.path.join(HERE, "test_core.py")] \
             + sorted(glob.glob(os.path.join(HERE, "test_presets_*.py"))) \
             + sorted(glob.glob(os.path.join(HERE, "test_examples_*.py"))):
         mod = importlib.import_module(os.path.basename(path)[:-3])
         for name in dir(mod):
             obj = getattr(mod, name)
             if isinstance(obj, type) and issubclass(obj, unittest.TestCase) and obj.__module__ == mod.__name__:
-                globals()[name if mod.__name__ in ("test_kit", "test_instances") else "%s__%s" % (mod.__name__, name)] = obj
+                globals()[name if mod.__name__ in ("test_kit", "test_instances", "test_core")
+                          else "%s__%s" % (mod.__name__, name)] = obj
 
 
 _add_kit_and_preset_tests()

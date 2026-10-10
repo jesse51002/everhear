@@ -4,9 +4,9 @@
     FakeRcon(password, responder=world.respond)   # over RCON, for a subprocess
     places.get(world.respond, "castle")           # or called directly, for pure code
 
-It knows what the actions' handlers and the places module ask: `list`, a player's Pos,
-Dimension, respawn and LastDeathLocation, `locate` (answers set in `world.located`),
-`spreadplayers` (landings scripted in `world.landings`, else the centre at y 64),
+It knows what the core scripts (command, teleport, summon_around, save_place, stop) and the
+places module ask: `list`, a player's Pos, Dimension, respawn and LastDeathLocation, `locate`
+(answers set in `world.located`), `spreadplayers` (landings scripted in `world.landings`, else the centre at y 64),
 `execute in <dim> positioned <x y z> (if|unless) block ~ ~[-1|1] ~ ...` (blocks set in
 `world.blocks`, else grass under and air above; the tags #campfires and #replaceable), `effect`, `tp`, `spawnpoint`, `summon`, tags and counts,
 the command storage, and a few plain commands (time, weather, give, kill, difficulty).
