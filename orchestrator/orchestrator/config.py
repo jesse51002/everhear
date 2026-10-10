@@ -43,6 +43,9 @@ class Config:
     server: str = "main"
     route_timeout_s: float = 3.0
     subagent_cache_ttl: str = "5m"
+    # vfg's own folder, VFG_HOME (~/.vfg): the actions cache and running.json that vfg keeps,
+    # which every implementer's brief is read from.
+    home: str = ""
 
 
 def expand_home(p: str) -> str:
@@ -144,6 +147,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         server=server if _SERVER_RE.match(server) else "main",
         route_timeout_s=_seconds_setting(vfg_setting(env, file, "VFG_ROUTE_TIMEOUT_S"), 3.0, 0.1, 60),
         subagent_cache_ttl=ttl if ttl in CACHE_TTLS else "5m",
+        home=os.path.abspath(expand_home(env.get("VFG_HOME") or "~/.vfg")),
     )
 
 
