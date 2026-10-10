@@ -89,6 +89,20 @@ async def test_a_report_closes_its_task_with_one_record_and_one_chat_line(kit):
     assert k.vfg.said() == [["Steve, your ice trail is on: just walk", "--task", "T1"]]
 
 
+async def test_a_report_while_a_follow_up_to_its_task_runs_keeps_the_task_open(kit):
+    k = kit(Decision=decision(reply="the trail's on; making it wider now", record="T1 ice trail on, wider next",
+                              status="done"))
+    tid = k.tasks.open("Steve", "make me an ice trail", "an ice trail behind Steve")
+    k.impl.busy = [tid]  # the follow-up queued behind this run has started
+    await k.brain.on_report(tid, "done", "Done: an ice trail follows Steve, running as ice_trail.")
+    await k.settle()
+    assert "A FOLLOW-UP to T1 is already under way" in k.ask.calls[0]["prompt"]
+    t = k.tasks.get("T1")
+    assert (t["status"], t["result"], t["closed_at"]) == ("open", "T1 ice trail on, wider next", None)
+    assert k.vfg.rows("result") == [("result T1", "T1 ice trail on, wider next")]
+    assert "an implementer is on it" in k.brain.open_tasks()
+
+
 class Finished:
     """A batch call that is over at once."""
 

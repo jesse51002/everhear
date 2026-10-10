@@ -42,9 +42,11 @@ class Run:
         self.vfg = vfg or (FakeVfg().on("prefix", answer=ok("THE KIT\n"))
                            .on("place", "list", answer=ok("castle 1 2 3\n")))
         self.reports: list[tuple[str, str, str]] = []
+        self.running: list[list[str]] = []  # running() as each report arrives
 
         async def on_report(task, status, text):
             self.reports.append((task, status, text))
+            self.running.append(self.imps.running())
 
         self.imps = Implementers(cfg, on_report, client_factory=self.clients, vfg=self.vfg)
 
@@ -154,6 +156,7 @@ async def test_a_follow_up_waits_behind_the_running_implementer(cfg):
     await r.settle()
     assert [c.options.resume for c in r.clients.made] == [None, "s1"]
     assert r.reports == [("T7", "done", "Done: first."), ("T7", "done", "Done: second.")]
+    assert r.running == [["T7"], []]  # as the first reports, its follow-up waits: the brain keeps T7 open
 
 
 async def test_a_follow_up_with_no_session_here_resumes_the_one_given_else_starts_anew(cfg):

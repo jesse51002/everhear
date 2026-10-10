@@ -191,6 +191,8 @@ class _Task:
     # ("start", brief) and ("follow_up", text), run one after another by the task's worker.
     jobs: deque = field(default_factory=deque)
     worker: asyncio.Task | None = None
+    # A run is under way: set as a job starts, cleared as it reports.
+    busy: bool = False
     client: Any = None
     # Each model's totals at the session's last result (usage.rows).
     usage: dict = field(default_factory=dict)
@@ -243,8 +245,9 @@ class Implementers:
         self._kick(t)
 
     def running(self) -> list[str]:
-        """The tasks whose implementer runs, or has a follow-up waiting."""
-        return [t.id for t in self._tasks.values() if t.worker is not None]
+        """The tasks whose implementer runs, or has a follow-up waiting. While a run reports, its
+        task is here only when a follow-up to it waits, which runs next."""
+        return [t.id for t in self._tasks.values() if t.worker is not None and (t.busy or t.jobs)]
 
     def session(self, task_id: str) -> str | None:
         """The task's implementer session, for the brain's tasks.json; None until the CLI gave one."""
@@ -290,13 +293,17 @@ class Implementers:
         try:
             while t.jobs and not self._closing:
                 kind, text = t.jobs.popleft()
+                t.busy = True
                 try:
                     await self._run(t, kind, text)
                 except Exception as e:
+                    t.busy = False
                     log("implementer", "%s broke: %s" % (t.id, traceback.format_exc()))
                     if not self._closing:
                         await self._report(t.id, "failed", "Failed: the implementer could not run: %s: %s."
                                            % (type(e).__name__, e))
+                finally:
+                    t.busy = False
         finally:
             t.worker = None
 
@@ -325,6 +332,7 @@ class Implementers:
         rows = []
         if result is not None:
             rows, t.usage = usage.rows(t.usage, result.model_usage, t.id)
+        t.busy = False  # this run is over: the brain sees whether a follow-up waits behind it
         await self._report(t.id, status, report)
         for row in rows:  # after the report: the player's answer waits on nothing
             self._spawn(self._usage_row(row))

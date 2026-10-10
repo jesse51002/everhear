@@ -71,6 +71,13 @@ class Tasks:
             t["session"] = session
             self.save()
 
+    def note(self, tid: str, result: str) -> None:
+        """A result so far, the task kept open: a follow-up to it runs."""
+        t = self.tasks.get(tid)
+        if t is not None:
+            t["result"] = result
+            self.save()
+
     def close(self, tid: str, status: str, result: str) -> None:
         t = self.tasks.get(tid)
         if t is None:

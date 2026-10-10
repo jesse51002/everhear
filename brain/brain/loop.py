@@ -200,44 +200,56 @@ class Brain:
         if said.reply.strip():
             await self.acts.say(said.reply)
 
-    async def report(self, tid: str, status: str, text: str) -> None:
-        """An implementer ended: one brain call writes the player's line and the record."""
+    async def report(self, tid: str, status: str, text: str, following: bool = False) -> None:
+        """An implementer ended: one brain call writes the player's line and the record. When a
+        follow-up to the task already runs (`following`), the task stays open with the result so
+        far, and the call is told, so its reply never says it is all done."""
         task = self.tasks.get(tid) or {"id": tid, "player": "", "line": "", "task": ""}
         session = getattr(self.implementers, "session", None)
         if callable(session):
             self.tasks.set_session(tid, session(tid))
         self.reload()
         seen = await self.world.seen()
-        event = Event("REPORT", task=task, status=status, report=text)
+        event = Event("REPORT", task=task, status=status, report=text, following=following)
         try:
             answer = await self.call.decide(event, self.ctx, seen, self.open_tasks(), [], self.refs)
         except LlmError as e:
             log("brain", f"{tid} report FAILED: {e}")
-            record = f"{tid} {status}: {short(text, 160)}"
-            self.tasks.close(tid, status, record)
-            self.acts.post("result", tid, record)
+            self.result(tid, status, f"{tid} {status}: {short(text, 160)}", following)
             brief = short(task.get("task") or "", 80)
-            await self.acts.say(f"done: {brief}" if status == "done" else f"sorry, that one failed: {brief}", tid)
+            await self.acts.say(f"still on it: {brief}" if following else f"done: {brief}" if status == "done"
+                                else f"sorry, that one failed: {brief}", tid)
             return
         self.usage("brain", self.model, answer, tid)
         d = answer.value
         log("brain", f"{tid} report ({status}) -> {describe(d)}")
         final = d.status or status
         record = d.record.strip() or f"{tid} {final}: {short(text, 160)}"
-        self.tasks.close(tid, final, record)
-        self.acts.post("result", tid, record)
+        self.result(tid, final, record, following)
         if d.parts:
             await self.acts.run(d, player=task.get("player") or "", line=task.get("line") or "", seen=seen)
         elif d.reply.strip():
             await self.acts.say(d.reply, tid)
 
+    def result(self, tid: str, status: str, record: str, following: bool) -> None:
+        """A report's record, an `AI result` row: the task closed with it, or kept open with it as
+        the result so far while a follow-up to it runs (one sent while the call ran included)."""
+        if following or tid in self.implementers.running():
+            self.tasks.note(tid, record)
+            log("task", f"{tid} stays open: a follow-up to it runs")
+        else:
+            self.tasks.close(tid, status, record)
+        self.acts.post("result", tid, record)
+
     async def on_report(self, tid: str, status: str, text: str) -> None:
         """What the implementers call when one ends (their `on_report`): the report is a brain
-        call of its own, and the implementer waits for none of it."""
+        call of its own, and the implementer waits for none of it. A task whose implementers still
+        name it as running has a follow-up queued or started behind this run."""
+        following = tid in self.implementers.running()
         if self.stopping:
             log("task", f"{tid} reported {status} while the brain stops: {short(text, 200)}")
             return
-        self.spawn(self.report(tid, status, text), f"report {tid}")
+        self.spawn(self.report(tid, status, text, following), f"report {tid}")
 
     def batch_now(self) -> asyncio.Task:
         return self.spawn(self.batch(), "batch")
