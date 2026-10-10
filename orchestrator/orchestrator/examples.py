@@ -236,8 +236,11 @@ def _coord(c) -> str:
     return str(int(c)) if isinstance(c, (int, float)) and float(c).is_integer() else str(c)
 
 
-# After the state: the implementer acts on it rather than asking again.
+# After the state, when it was read: the implementer acts on it rather than asking again.
 NOW = "That is the server now, read for you by vfg state: act on it, with no vfg state or vfg script list first."
+# When it was not (vfg state failed, or Minecraft did not answer): one look is worth it.
+UNKNOWN = ("The server's state is unknown here: one vfg state is worth running before you act, for who is online, "
+           "where, and what runs.")
 
 
 @dataclass
@@ -315,10 +318,11 @@ def header(g: Gathered) -> list[str]:
         for name, copy, item in g.changing:
             lines.append(changing_line(g, name, copy, item))
     if g.state is None:
-        lines.append("Server state: unavailable (%s); vfg state shows who is online, where, and what runs." % g.state_failed)
+        lines.append("Server state: unavailable (%s)." % g.state_failed)
+        lines.append(UNKNOWN)
         return lines
     lines.append(world_line(g.state))
-    lines.append(NOW)
+    lines.append(UNKNOWN if g.state.get("rcon") else NOW)
     return lines
 
 

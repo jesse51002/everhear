@@ -37,8 +37,9 @@ writes its action, or to a variant in `made/<VFG_SERVER>/actions/`. Implementers
 `vfg action run`. Commands are joined with `&&`
 or `;`, with `2>&1`, `>&2` or `>/dev/null`, and piped into `head -n N`, `tail -n N` or `grep`; and
 `echo`, `sleep N`, `python3 -m py_compile`, and `ls`, `grep`, `head` and `tail` on files in the
-repo. Never `$( )`, backticks or variables, loops, `( )`, a lone `&`, a redirection into or out of
-a file, or another program: each refusal is one line saying what to send instead (`mkdir` points
+repo, with no unquoted `~name`, `{a,b}` or `* ? [` in their words (bash would expand them past the
+guard's check of the literal path; `~` and `~/` are followed). Never `$( )`, backticks or
+variables, loops, `( )`, a lone `&`, a redirection into or out of a file, or another program: each refusal is one line saying what to send instead (`mkdir` points
 at `vfg script new`, `cat` and `sed` at Read, `find` at Glob, `ps` at `vfg script list`), so the
 next call runs. And an implementer may not Edit or Write a script in `made/<VFG_SERVER>/scripts/`
 that a copy another task started is running (`$VFG_HOME/running.json`, which vfg writes through
@@ -65,7 +66,9 @@ that fails is skipped, and the call is never held up.
    copy, and those Jev picked that a loaded script already holds, with the script they are in;
    every running copy from `$VFG_HOME/running.json` (else the state's list) with its action, the
    values that differ from the action's and its task; who is online, where and in which dimension,
-   the time and the weather, and a line saying to act on that rather than ask again; the first line
+   the time and the weather, and a line saying to act on that rather than ask again (or, when the
+   state could not be read or Minecraft did not answer, that it is unknown and one `vfg state` is
+   worth running); the first line
    of every script and preset in `made/<VFG_SERVER>/`; then **ACTIONS**
    ([`orchestrator/actions.py`](orchestrator/actions.py)): every action, the library's by name then
    this server's, whole and uncapped, as the actions cache (`$VFG_HOME/actions.json`, kept by

@@ -1400,7 +1400,7 @@ def start_copy(cfg, a, name, cls, source, values, live, task, as_=None):
 
 
 # What mc.py logs as a copy cleans up, after its last words.
-CLEANUP_RE = re.compile(r" (ended by itself, cleaning up|stopped|stopping \(signal \d+\))$")
+CLEANUP_RE = re.compile(r" (ended by itself, cleaning up|failed, cleaning up as a stop does|cleaned up|stopped|stopping \(signal \d+\))$")
 
 
 def answer_of(name, got, notes):

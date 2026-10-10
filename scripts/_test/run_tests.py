@@ -490,11 +490,15 @@ class ScriptTests(unittest.TestCase):
         self.assertNotIn("Traceback", out, out[-2000:])
         self.assertGreaterEqual(len(res["cmds"]), 1, "sent no command; output:\n" + out[-1000:])
         self.assertEqual(res["code"], 0, out[-1000:])
+        left = dict(res["left"])
         if not res["ended_itself"]:
             self.assertIsNotNone(res["stop_took"], "did not exit within 2 s of SIGTERM")
             self.assertIn("kill @e[tag=vfg_%s]" % name, res["after"], "no cleanup sent after SIGTERM")
-        self.assertEqual(res["left"], {"entities": [], "bossbars": [], "forceloads": [], "objectives": []},
-                         "left behind after it stopped")
+        else:
+            # Ended by itself: the mobs it made stay; a helper (a marker) never does.
+            left["entities"] = [t for t in left["entities"] if t == "marker"]
+        self.assertEqual(left, {"entities": [], "bossbars": [], "forceloads": [], "objectives": []},
+                         "left behind after it %s" % ("ended" if res["ended_itself"] else "stopped"))
 
     def check(self, name):
         res = RESULTS[name]

@@ -210,6 +210,7 @@ class LiveKitPolish(unittest.TestCase):
         self.assertEqual(sorted(h.name for h in hits), ["Enderman", "Skeleton", "Zombie"])
         self.assertEqual(len(aim.near(here, 5)), 5)
         mc.rcon("tag @e[tag=vfg_kit_live,type=zombie] add vfg_kit_hit")       # left from before
+        aim._cleared.discard("vfg_kit_hit")                                     # by an earlier process
         self.assertEqual(aim.mark(hits, "vfg_kit_hit", hostile=True), 3)        # the zombie counted again
         aim.untag("vfg_kit_hit")
         self.assertIn("Test failed", mc.rcon("execute if entity @e[tag=vfg_kit_hit]"))
@@ -364,7 +365,7 @@ for p in loop(items.clicks(v["player"], "Probe Wand", every=0.05)):
         self.assertIn("vfg_click", mc.rcon("scoreboard objectives list"))
 
 
-    def test_a_script_that_ends_by_itself_puts_everything_back(self):
+    def test_a_script_that_ends_by_itself_keeps_its_mobs_and_puts_the_rest_back(self):
         old = world.gamerule("mob_griefing")
         folder = os.path.join(tempfile.mkdtemp(), "kitender")
         os.makedirs(folder)
@@ -389,7 +390,9 @@ mc.log("made, ending")
         self.assertEqual(world.gamerule("mob_griefing"), old)
         self.assertNotIn("vfg_kitender_kills", mc.rcon("scoreboard objectives list"))
         self.assertIn("not marked", mc.rcon("forceload query %d %d" % (X + 320, Z + 320)))
-        self.assertIn("Test failed", mc.rcon("execute if entity @e[tag=vfg_kitender]"))
+        # What it made stays: the boss's body, its bar gone.
+        self.assertIn("Count: 1", mc.rcon("execute if entity @e[tag=vfg_kitender]"))
+        mc.rcon("kill @e[tag=vfg_kitender]")
 
 REALMC = os.path.join(os.path.dirname(os.path.dirname(HERE)), "integration", "realmc")
 sys.path.insert(0, REALMC)

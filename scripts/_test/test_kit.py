@@ -777,11 +777,24 @@ class KitPolishTests(KitCase):
     def test_a_tag_left_on_a_player_is_taken_off_before_marking(self):
         self.world.add_player("Alex", (12.5, 64.0, -3.5))
         self.world.players["Alex"]["tags"].add("vfg_t_hit1")           # killed while tagged, by an earlier run
+        aim._cleared.discard("vfg_t_hit1")                              # which this process has not used
         hit = aim.Hit(2.0, world.Pos(12.5, 64.0, -3.5), "Alex", True)
         self.assertEqual(aim.mark([hit], "vfg_t_hit1"), 1)               # newly tagged, so he is hurt
         self.assertTrue(self.sent("tag @a[tag=vfg_t_hit1] remove vfg_t_hit1"))
         aim.untag("vfg_t_hit1")
         self.assertNotIn("vfg_t_hit1", self.world.players["Alex"]["tags"])
+
+    def test_a_tag_marked_again_in_the_same_process_is_not_taken_off_first(self):
+        self.world.add_player("Alex", (12.5, 64.0, -3.5))
+        aim._cleared.discard("vfg_t_hit2")
+        hit = aim.Hit(2.0, world.Pos(12.5, 64.0, -3.5), "Alex", True)
+        self.assertEqual(aim.mark([hit], "vfg_t_hit2"), 1)
+        aim.untag("vfg_t_hit2")
+        before = len(self.world.commands)
+        self.assertEqual(aim.mark([hit], "vfg_t_hit2"), 1)               # tagged newly again: still hurt
+        self.assertEqual(self.world.commands[before:], ["tag Alex add vfg_t_hit2"])  # one command, no untag first
+        aim.untag("vfg_t_hit2")
+        self.assertNotIn("vfg_t_hit2", self.world.players["Alex"]["tags"])
 
     def test_a_hit_with_a_uuid_is_found_by_it(self):
         u = "00000001-0000-0002-0000-0003ffffffff"
@@ -807,13 +820,34 @@ class KitPolishTests(KitCase):
         self.assertLess(len(longest), mc.MAX_COMMAND - 200)
         self.assertEqual(aim.near(world.Pos(21.5, 64.0, 0.5), 4, with_mobs=False), [])
 
-    def test_the_ground_height_in_two_commands(self):
+    def test_the_ground_height_from_a_marker_with_a_tag_of_its_own(self):
         self.assertEqual(world.ground(10, -3), 64)
+        summoned = [c for c in self.sent("summon marker")]
+        self.assertEqual(len(summoned), 1)
+        tag = summoned[0].split('"')[-2]
+        self.assertTrue(tag.startswith(mc.TAG + "_ground"), summoned[0])
+        self.assertEqual(self.world.commands[-1], "kill @e[tag=%s]" % tag)
         self.world.solid.add((world.OVERWORLD, 10, 70, -3))
         self.assertEqual(world.ground(10.7, -2.2), 71)
         self.assertEqual([e for e in self.world.entities if e["type"] == "marker"], [])     # killed after
         self.world.unloaded.add((world.OVERWORLD, 6, 6))
         self.assertIsNone(world.ground(100, 100))
+
+    def test_the_ground_marker_goes_whatever_the_reply_and_no_other_marker_does(self):
+        other = self.world.add_entity("marker", [10.0, 64.0, -3.0], tags=["vfg_other_anchor"], health=None)
+        real = self.world.respond
+
+        def lost(c):
+            """The command runs, and its reply is lost on the way (a dropped connection)."""
+            reply = real(c)
+            return "" if "data get" in c or "summon marker" in c else reply
+
+        self.world.respond = lost
+        self.assertIsNone(world.ground(10, -3))
+        self.assertEqual([e for e in self.world.entities if e["type"] == "marker"], [other])
+        self.world.respond = real
+        self.assertEqual(world.ground(10, -3), 64)
+        self.assertEqual([e for e in self.world.entities if e["type"] == "marker"], [other])
 
     def test_at_p_is_the_owner_when_online_else_the_first(self):
         self.assertEqual(values.check("player", {"type": "player", "default": "@a"}, "@p"), ("@p", ""))
@@ -926,6 +960,7 @@ area.forceload((0, 0, 0, 40, 0, 40), wait=0)
 boss = mobs.Boss("Horde King", "zombie", health=800)
 boss.spawn(near="Steve")
 mobs.around("Steve", "zombie", 2)
+mc.on_stop(lambda: mc.log("stop-only cleanup ran"), at_exit=False)
 mc.log("ready")
 for p in loop(items.clicks(v["player"], "Probe Wand", every=0.05)):
     pass
@@ -955,8 +990,9 @@ for p in loop(items.clicks(v["player"], "Probe Wand", every=0.05)):
         self.assertEqual([e for e in self.world.entities if "vfg_probe" in e["tags"]], [])
         self.assertEqual(self.world.clears, [("Steve", '*[custom_data~{vfg_item:"probe_wand"}]')])
         self.assertEqual(self.world.commands[-1], "kill @e[tag=vfg_probe]")
+        self.assertIn("stop-only cleanup ran", out)
 
-    def test_a_script_that_ends_by_itself_cleans_up_as_a_stopped_one(self):
+    def test_a_script_that_ends_by_itself_keeps_what_it_made_and_undoes_the_rest(self):
         self.world.gamerules["mob_griefing"] = "false"
         src = '''"""Probe: makes what the kit cleans up, then ends."""
 ASKS = []
@@ -970,6 +1006,7 @@ area.forceload((0, 0, 0, 40, 0, 40), wait=0)
 mobs.Boss("Horde King", "zombie", health=800).spawn(near="Steve")
 mobs.around("Steve", "zombie", 2)
 mc.on_stop(lambda: mc.log("own cleanup ran"))
+mc.on_stop(lambda: mc.log("stop-only cleanup ran"), at_exit=False)
 mc.log("done")
 '''
         proc = start_script("ender", src, self.fake, self.password)
@@ -979,11 +1016,85 @@ mc.log("done")
         self.assertNotIn("Traceback", out)
         self.assertIn("ended by itself", out)
         self.assertIn("own cleanup ran", out)
+        self.assertNotIn("stop-only cleanup ran", out)
+        # what was for the while is undone: the bar, the forceload, the gamerule, the objective
         self.assertEqual(self.world.bossbars, {})
         self.assertEqual(self.world.forced, set())
         self.assertEqual(self.world.gamerules["mob_griefing"], "false")
         self.assertNotIn("vfg_ender_kills", self.world.objectives)
-        self.assertEqual([e for e in self.world.entities if "vfg_ender" in e["tags"]], [])
+        # what it made stays: the boss's body and the two zombies, and no kill was sent
+        self.assertEqual(sorted(e["type"] for e in self.world.entities if "vfg_ender" in e["tags"]),
+                         ["zombie", "zombie", "zombie"])
+        self.assertEqual([c for c in self.world.commands if c.startswith("kill")], [])
+
+    def test_a_one_shot_spawner_leaves_its_mobs_when_it_ends(self):
+        src = '''"""Spiders: 39 giant spiders round a player, then it is done."""
+ASKS = ["spawn 39 giant spiders"]
+from kit import values, mobs
+import mc
+VALUES = {"player": {"type": "player", "default": "Steve"}}
+v = values(VALUES)
+n = mobs.around(v["player"], "spider", 38, 'attributes:[{id:"scale",base:3}]', spread=12, tags=("spiders",))
+n += 1 if mc.spawn(v["player"], "spider", 'attributes:[{id:"scale",base:3}]') else 0
+mc.log("summoned", n)
+'''
+        proc = start_script("spiders", src, self.fake, self.password)
+        self.procs.append(proc)
+        out = proc.communicate(timeout=10)[0].decode()
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertNotIn("Traceback", out)
+        self.assertIn("summoned 39", out)
+        self.assertIn("ended by itself", out)
+        time.sleep(0.2)
+        spiders = [e for e in self.world.entities if e["type"] == "spider" and "vfg_spiders" in e["tags"]]
+        self.assertEqual(len(spiders), 39)
+        self.assertEqual([c for c in self.world.commands if c.startswith("kill")], [])
+
+    def test_a_script_that_fails_cleans_up_as_a_stopped_one(self):
+        src = '''"""Spiders: 3 spiders round a player, then a bug."""
+ASKS = []
+from kit import values, mobs
+import mc
+v = values({"player": {"type": "player", "default": "Steve"}})
+mobs.around(v["player"], "spider", 3)
+mc.on_stop(lambda: mc.log("stop-only cleanup ran"), at_exit=False)
+oops()
+'''
+        proc = start_script("broken", src, self.fake, self.password)
+        self.procs.append(proc)
+        out = proc.communicate(timeout=10)[0].decode()
+        self.assertIn("NameError", out)
+        self.assertIn("failed, cleaning up as a stop does", out)
+        self.assertIn("stop-only cleanup ran", out)
+        self.assertEqual([e for e in self.world.entities if "vfg_broken" in e["tags"]], [])
+        self.assertEqual(self.world.commands[-1], "kill @e[tag=vfg_broken]")
+
+    def test_ice_shells_still_melt_when_a_script_ends_by_itself(self):
+        preset = copied(os.path.join(os.path.dirname(HERE), "_presets", "freeze.py"))
+        src = ('''"""Ice Probe: freezes a zombie in a shell of ice for a minute, then it is done."""
+ASKS = []
+from kit import aim
+import mc
+''' + preset.split("\n", 1)[1] + '''
+hits = aim.near((14.5, 64.0, -3.5), 2)
+n = freeze(hits, {"freeze_seconds": 60, "freeze_shell": True, "freeze_block": "packed_ice", "freeze_blindness": False})
+mc.log("frozen", n)
+''')
+        zombie = self.world.add_entity("zombie", (14.5, 64.0, -3.5))
+        proc = start_script("iceprobe", src, self.fake, self.password)
+        self.procs.append(proc)
+        t = time.time()
+        out = proc.communicate(timeout=10)[0].decode()
+        self.assertLess(time.time() - t, 5.0)           # it did not wait out the minute
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertNotIn("Traceback", out)
+        self.assertIn("frozen 1", out)
+        self.assertIn("ended by itself", out)
+        put = [c for c in self.world.commands if c.startswith("fill") and c.endswith("packed_ice keep")]
+        melted = [c for c in self.world.commands if c.startswith("fill") and c.endswith("air replace packed_ice")]
+        self.assertEqual(len(put), 6, self.world.commands)
+        self.assertEqual(len(melted), 6, self.world.commands)
+        self.assertIn(zombie, self.world.entities)     # not the script's: it stays as it was
 
 
 if __name__ == "__main__":

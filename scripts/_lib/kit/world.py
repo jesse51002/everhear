@@ -272,23 +272,25 @@ def loaded(x, z, d=None):
 
 
 _GROUND = re.compile(r"\[(-?[\d.]+)d, (-?[\d.]+)d, (-?[\d.]+)d\]")
+_ground_n = [0]
 
 
 def ground(x, z, d=None, surface="motion_blocking_no_leaves"):
     """The height a player would stand at on top of block column x, z: the y of the first
-    open block over the ground, in two commands (a marker summoned at the surface, read and
-    killed). surface: "motion_blocking_no_leaves" (ground, water, trunks; leaves are passed
-    through), "motion_blocking" (leaves too), "world_surface" (any block: grass, flowers),
-    "ocean_floor" (the bottom under water). None in a chunk that is not loaded."""
+    open block over the ground, in three commands (a marker summoned at the surface with a tag
+    of its own, read, and killed by that tag whatever the read said, so none is left and no
+    other marker is touched). surface: "motion_blocking_no_leaves" (ground, water, trunks;
+    leaves are passed through), "motion_blocking" (leaves too), "world_surface" (any block:
+    grass, flowers), "ocean_floor" (the bottom under water). None in a chunk that is not loaded."""
     x, z = int(x // 1), int(z // 1)
-    reply = mc.rcon(prefix(d) + "positioned %d 0 %d positioned over %s summon marker run data get entity @s Pos"
-                    % (x, z, surface))
-    m = _GROUND.search(reply)
-    if not m:
-        return None
-    y = float(m.group(2))
-    mc.rcon(prefix(d) + "positioned %s %s %s run kill @e[type=marker,distance=..0.01]" % m.groups())
-    return int(y // 1)
+    with _lock:
+        _ground_n[0] += 1
+        tag = "%s_ground%d" % (mc.TAG, _ground_n[0])
+    mc.rcon(prefix(d) + 'positioned %d 0 %d positioned over %s run summon marker ~ ~ ~ {Tags:["vfg","%s","%s"]}'
+            % (x, z, surface, mc.TAG, tag))
+    m = _GROUND.search(mc.rcon("data get entity @e[tag=%s,limit=1] Pos" % tag))
+    mc.rcon("kill @e[tag=%s]" % tag)
+    return int(float(m.group(2)) // 1) if m else None
 
 
 # ---- the server's load -----------------------------------------------------------------

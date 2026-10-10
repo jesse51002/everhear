@@ -8,7 +8,8 @@
         time.sleep(1)
     # it is dead (or gone); its bar is removed. boss.remove() takes it away early.
 
-Everything summoned is tagged "vfg" and TAG and persistent, so a stop kills it.
+Everything summoned is tagged "vfg" and TAG and persistent, so a stop kills it; a script that
+ends by itself leaves it where it is (a boss's bar goes, its bodies stay).
 """
 import json
 import math
@@ -74,6 +75,11 @@ def _remove_all():
         b.remove()
 
 
+def _remove_bars():
+    for b in list(_bars):
+        b._remove_bar()
+
+
 class Boss(object):
     """A boss of one body or several, with a bossbar showing their summed health.
     name: what the bar and the bodies are called; mob: its type; health: each body's;
@@ -86,7 +92,8 @@ class Boss(object):
             _n[0] += 1
             k = _n[0]
             if not _bars:
-                mc.on_stop(_remove_all)
+                mc.on_stop(_remove_bars)                    # the bar is only for the while
+                mc.on_stop(_remove_all, at_exit=False)      # the bodies go only with a stop
             _bars.append(self)
         self.name, self.mob, self.health_each, self.bodies = name, mob, float(health), max(1, int(bodies))
         self.scale, self.nbt, self.color = float(scale), nbt, color

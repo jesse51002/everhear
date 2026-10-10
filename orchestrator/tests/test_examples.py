@@ -394,13 +394,26 @@ async def test_presets_a_loaded_script_already_holds_are_named_with_the_script_t
     assert "held" not in b.store.get("T7").implementers[0]["route"]
 
 
-async def test_the_server_state_line_says_to_act_on_it_and_is_left_out_when_the_state_is_unknown():
+async def test_the_server_state_line_says_to_act_on_it_only_when_the_state_was_read():
     b = Box()
     lines = (await b.block()).split("\n")
     assert lines[lines.index("Online: Steve 120 64 -40 overworld, Alex 98 70 -12 overworld. Night, clear.") + 1] == examples.NOW
     assert "no vfg state" in examples.NOW
+    assert examples.UNKNOWN not in lines
+    # vfg state failed: the state is unknown, and one vfg state is worth running
     os.environ["VFG_FAKE_STATE_FAIL"] = "EC2 unreachable (fake)"
-    assert examples.NOW not in (await Box().block())
+    lines = (await Box().block()).split("\n")
+    assert examples.NOW not in lines
+    assert lines[lines.index("Server state: unavailable (exit 1: vfg: EC2 unreachable (fake)).") + 1] == examples.UNKNOWN
+    assert "one vfg state is worth running" in examples.UNKNOWN
+    del os.environ["VFG_FAKE_STATE_FAIL"]
+    # Minecraft not answering (exit 5): what runs is listed, who is online is not, so the same
+    os.environ["VFG_FAKE_STATE_CODE"] = "5"
+    b = Box(state={**STATE, "online": [], "rcon": "Minecraft is not answering on RCON"})
+    lines = (await b.block()).split("\n")
+    assert examples.NOW not in lines
+    assert lines[lines.index("Minecraft is not answering (Minecraft is not answering on RCON): who is online, the time "
+                             "and the weather are unknown.") + 1] == examples.UNKNOWN
 
 
 async def test_which_actions_run_the_picked_scripts_and_a_script_with_none():
@@ -483,7 +496,7 @@ async def test_a_hung_vfg_is_cut_off_by_the_steps_own_limit(monkeypatch):
     block = await b.block()
     assert time.monotonic() - t < 0.2 + 1 + 0.25
     assert "the router failed (no answer within 1.2 s)" in block
-    assert "Server state: unavailable (no answer within 1.2 s); vfg state shows who is online, where, and what runs." in block
+    assert "Server state: unavailable (no answer within 1.2 s).\n" + examples.UNKNOWN in block
 
 
 async def test_the_server_down_the_block_still_goes_and_says_what_is_missing():
@@ -496,8 +509,7 @@ async def test_the_server_down_the_block_still_goes_and_says_what_is_missing():
                          "needs. galick_gun is close.",
                          "Presets to copy: crater and replace_blocks.",
                          "Named in your brief, in full below: tnt_rain."]
-    assert lines[4] == ("Server state: unavailable (exit 1: vfg: EC2 unreachable (fake)); vfg state shows who is online, "
-                        "where, and what runs.")
+    assert lines[4:6] == ["Server state: unavailable (exit 1: vfg: EC2 unreachable (fake)).", examples.UNKNOWN]
     # what runs still comes from running.json when there is one
     lines = (await Box().block()).split("\n")
     assert lines[4].startswith("Running: galick-alex (galick_gun, player=Alex, cooldown=0, T5)")

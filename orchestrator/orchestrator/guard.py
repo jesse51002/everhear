@@ -97,6 +97,9 @@ class DENY:
     python = ("Refused: only python3 -m py_compile <file in the repository> runs; a script runs on the server through "
               "its action: vfg action run <action> key=value ... --task <task id>.")
     outside_bash = "Refused: ls, grep, head, tail and py_compile read only inside the repository: give a path in it."
+    wild = ("Refused: no unquoted * ? [ ], {a,b} or ~name after ls, grep, head, tail, echo, sleep or py_compile, since "
+            "bash would expand them where the guard cannot see: put a pattern in single quotes ('def .*') and name "
+            "each file by its path in the repository.")
     grep_file = "Refused: grep reads a file in the repository, or what a vfg command pipes into it: name one."
     pattern_file = "Refused: no pattern files: give grep its pattern on the command line, or with -e."
     tail_follow = "Refused: tail -f never ends: use tail -n N, or vfg script logs <copy> -n 40."
@@ -235,10 +238,27 @@ class ShellCommand:
     piped: bool = False
     # A ( or ), or a lone & after it (the background).
     grouped: bool = False
+    # By word: something bash expands in it that the guard does not follow (bash_expands).
+    wild: list[bool] = field(default_factory=list)
 
 
 # Redirection operators, the longest first.
 REDIRECT_OPS = ("<<<", "<<", "<&", "<>", "<", ">>", ">&", ">|", ">")
+
+
+def bash_expands(shape: str) -> bool:
+    """Does bash expand something in a word that the guard does not follow? `shape` is the word
+    with each quoted or escaped character as \\0: a glob (* ? [), a brace ({a,b}, {1..3}), or a ~
+    other than a leading ~ or ~/ (~user, ~+, a=~). The guard judges a path by its literal word,
+    and only ~ and ~/ it expands as bash does."""
+    if any(c in shape for c in "*?["):
+        return True
+    inside = shape[shape.find("{") + 1:shape.rfind("}")] if -1 < shape.find("{") < shape.rfind("}") else ""
+    if "," in inside or ".." in inside:
+        return True
+    if "~" in shape[1:]:
+        return True
+    return shape.startswith("~") and shape[1:2] not in ("", "/")
 
 
 def split_shell(line: str) -> list[ShellCommand]:
@@ -247,12 +267,13 @@ def split_shell(line: str) -> list[ShellCommand]:
     out: list[ShellCommand] = []
     cmd = ShellCommand([])
     word = ""
+    shape = ""  # the word with each quoted or escaped character as \0 (bash_expands)
     in_word = False
     bare = True  # no quoted or escaped part: only a bare number is a redirection's fd
     pending: Redirect | None = None  # an operator waiting for its target word
 
     def end_word():
-        nonlocal word, in_word, bare, pending
+        nonlocal word, shape, in_word, bare, pending
         if in_word:
             if pending is not None:
                 pending.target = word
@@ -260,7 +281,8 @@ def split_shell(line: str) -> list[ShellCommand]:
                 pending = None
             else:
                 cmd.words.append(word)
-        word, in_word, bare = "", False, True
+                cmd.wild.append(bash_expands(shape))
+        word, shape, in_word, bare = "", "", False, True
 
     def end_cmd(piped_next: bool = False, grouped: bool = False):
         nonlocal cmd, pending
@@ -282,6 +304,7 @@ def split_shell(line: str) -> list[ShellCommand]:
             j = line.find("'", i + 1)
             end = n if j < 0 else j
             word += line[i + 1:end]
+            shape += "\0" * (end - i - 1)
             i = end
         elif c == '"':
             in_word, bare = True, False
@@ -295,6 +318,7 @@ def split_shell(line: str) -> list[ShellCommand]:
                     if d in "$`":
                         cmd.expands = True
                     word += d
+                shape += "\0"
                 j += 1
             i = j
         elif c == "\\":
@@ -302,6 +326,7 @@ def split_shell(line: str) -> list[ShellCommand]:
             if i + 1 < n:
                 i += 1
                 word += line[i]
+                shape += "\0"
         elif c in " \t":
             end_word()
         elif c in "\n;":
@@ -329,7 +354,7 @@ def split_shell(line: str) -> list[ShellCommand]:
         elif c in "<>":
             fd = ""
             if in_word and bare and word.isdigit() and pending is None:
-                fd, word, in_word = word, "", False
+                fd, word, shape, in_word = word, "", "", False
             else:
                 end_word()
             op = next(o for o in REDIRECT_OPS if line.startswith(o, i))
@@ -345,6 +370,7 @@ def split_shell(line: str) -> list[ShellCommand]:
                 cmd.expands = True
             in_word = True
             word += c
+            shape += c
         i += 1
     end_cmd()
     return out
@@ -510,6 +536,9 @@ def command_reason(cmd: ShellCommand, repo: str | None, server: str) -> str | No
     """Why one simple command is refused, in one line saying what to send instead; or None."""
     w = cmd.words
     first = w[0] if w else ""
+    # A ~name, a brace or a glob in what follows a program that reads files, or prints its
+    # words, could name a file outside the repository however its word reads.
+    wild = any(cmd.wild[1:])
     if first in LOOP_WORDS:
         return DENY.loop
     if cmd.expands:
@@ -525,9 +554,12 @@ def command_reason(cmd: ShellCommand, repo: str | None, server: str) -> str | No
         rest = list(w)
         while rest and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", rest[0]):
             rest.pop(0)
-        return command_reason(ShellCommand(rest, piped=cmd.piped), repo, server) or DENY.env
+        bare = ShellCommand(rest, piped=cmd.piped, wild=cmd.wild[len(w) - len(rest):])
+        return command_reason(bare, repo, server) or DENY.env
     if cmd.piped:
-        return file_reason(first, w[1:], True, repo) if first in FILTERS else DENY.pipe
+        if first not in FILTERS:
+            return DENY.pipe
+        return DENY.wild if wild else file_reason(first, w[1:], True, repo)
     if first == "vfg":
         if w[1:3] == ["script", "run"]:
             return DENY.script_run
@@ -541,15 +573,17 @@ def command_reason(cmd: ShellCommand, repo: str | None, server: str) -> str | No
             return DENY.library_flag
         return None
     if first == "echo":
-        return None
+        return DENY.wild if wild else None
     if first == "sleep":
-        return None if allowed_form(w) else DENY.shape
+        return DENY.shape if not allowed_form(w) else DENY.wild if wild else None
     if first in PYTHONS:
         if not allowed_form(w):
             return DENY.python
+        if wild:
+            return DENY.wild
         return DENY.outside_bash if any(repo is None or not within(repo, f) for f in w[3:]) else None
     if first == "ls" or first in FILTERS:
-        return file_reason(first, w[1:], False, repo)
+        return DENY.wild if wild else file_reason(first, w[1:], False, repo)
     if first == "cd":
         return DENY.cd
     if first == "mkdir":
@@ -570,7 +604,8 @@ def check_bash(command: str, repo: str | None = None, server: str = "main") -> s
     own refusal of a disallowed command reads as if Bash itself were off, and a small model stops
     trying; each of these says what to send instead. vfg's own commands run, joined with && or ;,
     with 2>&1 or >/dev/null, piped into head, tail or grep; so do echo, sleep, py_compile, and ls,
-    grep, head and tail on files in the repository (`repo`; None: on none)."""
+    grep, head and tail on files in the repository (`repo`; None: on none), with no ~name, brace or
+    glob outside quotes in their words, which bash would expand past the check of the literal path."""
     cmds = split_shell(command)
     # Server commands that are the owner's, however they are dressed up, and the server-wide settings:
     # in a vfg cmd, and in the commands an action run or an edit gives.

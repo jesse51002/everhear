@@ -244,7 +244,7 @@ def freeze(hits, v):
     return len(frozen)
 
 
-_FREEZE_N = itertools.count(1)
+_FREEZE_N = itertools.cycle(range(1, 17))    # 16 names in turn, so aim.mark clears each only once
 _FREEZE_POS = re.compile(r"\[(-?[\d.]+(?:E-?\d+)?)d, (-?[\d.]+(?:E-?\d+)?)d, (-?[\d.]+(?:E-?\d+)?)d\]")
 _FREEZE_SHELLS = []         # shells still standing; a stop melts them
 _FREEZE_LOCK = threading.Lock()
@@ -359,4 +359,5 @@ def frost_servants(b, v):
 v = values(VALUES)
 where = world.Pos(v["at"][0], v["at"][1], v["at"][2]) if len(v["at"]) >= 3 else v["player"]
 boss(where, v, abilities=[ice_blast, frost_servants])      # every boss_every s, each in turn
-# The script ends here: her servants (tagged with it) fall with her, and her ice melts.
+mc.rcon("kill @e[tag=%s_summon]" % mc.TAG)                  # her servants fall with her
+# The script ends here, and the ice of her last freeze melts (a cleanup that runs at the end too).

@@ -58,7 +58,7 @@ def damage_hits(hits, shooter, v):
     return sum(count.values())
 
 
-_DAMAGE_N = itertools.count(1)
+_DAMAGE_N = itertools.cycle(range(1, 17))    # 16 names in turn, so aim.mark clears each only once
 
 
 def _damage_all(tag, amount, kind, by):

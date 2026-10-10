@@ -93,7 +93,7 @@ class TestRun(ActionCase):
         self.assertRegex(meta["started"], ISO_RE)
         self.assertEqual(self.box_json("ping.result.json")["summary"], "hi: 1 online")
         self.assertFalse(os.path.exists(self.run_dir("ping.pid")))
-        self.assertIn("kill @e[tag=vfg_ping]", self.box.rcon_commands())   # it cleaned up as it ended
+        self.assertNotIn("kill @e[tag=vfg_ping]", self.box.rcon_commands())  # it ended by itself: what it made stays
         self.assertEqual(self.running()["copies"], {})                      # it ended: not running
         # The deployed kit and the script, in one SSH call with the run.
         self.assertTrue(os.path.isfile(os.path.join(self.box.rvfg, "scripts", "_lib", "instances.py")))
