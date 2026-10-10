@@ -1,111 +1,91 @@
-# dispatcher — every task's first stop
+# brain — every line, one call
 
-A small always-running Python process on the owner's PC. Every task the conversation sends
-(`vfg orch send`) lands in its inbox. The complexity selector picks the [actions](../actions/README.md)
-that do it and what only the orchestrator can do; the action planner fills each pick in, checking
-any command it writes against the server's own command reference first; the executor runs it with
-`vfg action run`. Each action's report goes to the conversation as it finishes (`progress`, the
-last one `done`); what no action does goes to the orchestrator with `vfg orch hand`, collected for
-10 s; a pick nothing can fix is dropped and the conversation told why. Every model call is
-`structured()` from [`lib/py/`](../lib/py/vfg_llm.py), reasoning off.
+A small always-running Python process on the owner's PC, in place of the conversation agent, the
+orchestrator and the dispatcher's selector (the spec: Prototype_Brain). It follows the feed with
+`vfg watch`, keeps every row in one shared context, and answers each event with ONE
+`structured()` call ([`lib/py/vfg_llm.py`](../lib/py/vfg_llm.py)) on GPT-6.1 Sol with low
+reasoning, which routes every part of a line and does the work in the same answer:
 
-## What it chooses from
+- **an action**, from the menu, written in full: it runs at once through `vfg action run`;
+- **implementer**: a brief, from which code starts a coding implementer (`brain/implementers/`),
+  or a follow-up to a task's own implementer;
+- **talk**: answered by the reply, the one chat line every line it acts on gets.
 
-- **Every action**, the library's (`actions/`) and this server's (`made/<VFG_SERVER>/actions/`),
-  loaded by [`vfg_actions`](../lib/py/vfg_actions.py) and kept in memory. Before each ask the files
-  are looked at again and any that changed reloaded, so an action an implementer saved a moment ago
-  is on the menu at the next ask, with no restart. The selector sees each action's name and its
-  docstring's first line; the planner sees the one picked in full and answers with the values it
-  `takes` (`planner_model`), every other keeping its default. Any action with a `Command` field
-  (`command`'s `commands`) is drafted, checked against the references and approved first.
-- **Every running copy**, one line each: its name, its action, the values that differ from the
-  action's defaults and the task that started it, read from `~/.vfg/running.json`. A change to one
-  is `edit`: the planner sees the copy it names in full, every value with its setting now, and
-  answers with the values to change (`edit_model`). Ending one is `stop`. A background fetch,
-  `vfg script list --json --fresh` every `VFG_RUNNING_TTL_S`, drops the copies that ended by
-  themselves; no ask waits on it.
-- **The saved places**, from `vfg place list` as each task starts.
+Every event is its own asyncio task, and nothing waits on another: two players who speak 0.1 s
+apart each get a call at once.
 
-The executor runs `vfg action run <action> key=value … --task T<n>` (a list as JSON) and reads its
-one JSON line: `ok`, `summary`, the copy's name, `running`, the facts and vfg's notes. A once action
-past its timeout answers that it is still running, and is never run again. A task opening with
-`Fix` goes to the orchestrator whole, with no model call; anything else is the selector's.
+## The events
 
-## Set it up
+| Event | Comes from | The call |
+|---|---|---|
+| `LINE` | a `LINE` Jev classed `action_oriented`; or a `conversational` one Respond handed up | routes and does every part, and replies |
+| `REPORT` | an implementer ending (`Implementers`' `on_report`) | the player's chat line, one record for the context (`T183 done: …`), the task's status |
+| `BATCH` | the timer: `VFG_BRAIN_BATCH_S` (60 s) with no read of any kind and something unread | usually nothing; acts where something clearly needs it |
 
-Once: put your OpenRouter API key alone in `~/.vfg/openrouter.key`, with mode 600.
-`VFG_OPENROUTER_KEY` in `~/.vfg/config` can point at another file. `OPEN_ROUTER_API` in the
-environment wins over both.
+**Respond** ([`respond.py`](brain/respond.py)) takes a `conversational` line: a cheap model (Gemini
+3.8 Flash, low) on the same context that keeps up the banter and replies, or hands the line up to
+the brain when it asks for something to happen or Respond is unsure. A hand-up replaces its reply,
+so a player never gets two. Respond never acts on the game. A `context` line, a game event, a
+system notice and the brain's own rows are context only. A line said more than two minutes before
+it arrives is history: never acted on.
 
-```sh
-(umask 077 && read -rsp 'OpenRouter key: ' key && echo && printf '%s\n' "$key" > ~/.vfg/openrouter.key)
-```
+## The shared context and the cache
 
-The actions' scripts run on the box, which `vfg script deploy` puts there with the kit. Without
-them `vfg action run` cannot run an action, and the task goes to the orchestrator.
+[`context.py`](brain/context.py) keeps every feed row in seq order with its processed mark: the
+lines Jev kept, with their class; the game's events; the system's notices; and the brain's own
+`AI` rows, the only rows the AI side writes (`vfg say` and `vfg feed post AI`): what it said, each
+action and how it went, each task opened or followed up, each task's result. Nothing an implementer
+writes is in it. A live read (a brain call for a line, a Respond call) takes in everything unread
+and marks it (`vfg context mark`); the batch catches up what no live read took.
+
+The prompt is laid out for the cache ([`call.py`](brain/call.py)):
+
+1. **the opening**, marked: the rules ([`prompts/brain.md`](prompts/brain.md), the owner named),
+   the menu, every library action in full, Minecraft's command list;
+2. **the conversation**, a minute-block at a time (a run of rows sharing a minute, which never
+   changes once the next minute starts), every `VFG_BRAIN_CHECKPOINT` (5) closed blocks marked,
+   the last three of them: four marks in all, the opening's included;
+3. **the tail**, never cached: this server's own actions (`made/<server>/actions/`, which an
+   implementer may add at any moment), the world (every online player's place and items by slot
+   from `vfg state --json --items`, the running copies, the saved places, the incantations, the
+   time and the weather), the open tasks, what is new since the last read, and the event.
+
+One `Decision` answers every event, and its schema never changes with the actions, so nothing
+before the conversation changes between calls. The old selector's code rules that still hold are
+its validators: an action not on the menu, values its action refuses (a command that places blocks
+among them), an instruction that does nothing, a teleport that moves nobody, a part with no reply.
+`structured()` sends a broken answer back once with why.
+
+## Running a decision
+
+[`act.py`](brain/act.py): the action parts run in order under the line's task id
+(`vfg action run … --task T<n>`), each recorded as an `AI action` row. A command Minecraft refuses
+gets ONE retry from the action planner ([`action_planner.py`](brain/action_planner.py)) on
+`VFG_PLAN_MODEL`, written with the reference of every command it used; its self-check is off
+unless `VFG_PLAN_CHECK=on`. Implementer parts start at once: a new one gets its own `T<n>`, a
+`tasks.json` entry and an `AI task` row; one naming a task goes to that task's implementer. The
+reply is said at once when there are only implementer and talk parts, and after the actions
+otherwise; when an action failed or was dropped in code, a short line written in code goes out
+instead, so a reply never claims what did not happen.
 
 ## Run it
 
 ```sh
-vfg orch start      # runs dispatcher/run beside the orchestrator runner; its log is dispatch/dispatcher.log
-vfg orch status     # both, and the open tasks
-vfg orch stop       # the dispatcher first: it hands on everything unfinished, then exits
+vfg brain start     # brain/run, detached: pid ~/.vfg/brain/brain.pid, log ~/.vfg/brain/brain.log
+vfg brain status    # running or not, and the open tasks
+vfg brain stop      # SIGTERM: in-flight calls finish for up to 10 s, implementers stopped, their tasks failed
 ```
 
-`run` is `uv run --project dispatcher python -m dispatcher`.
+`run` syncs the dependencies from `uv.lock` and execs `python -m brain`. A start takes the lock,
+runs `vfg up`, sets the watchers (`join,leave,death,advancement,server`), Jev's lookout
+([`prompts/lookout.md`](prompts/lookout.md)) and Jev's menu (every action's line, set again when
+an action changes), loads the context from `vfg context --json`, fails the tasks a crash left open,
+follows `vfg watch --after <last seq>`, and greets, unless nobody is online. **The first start on
+a new server version fetches the command references** (about 95 s, in the background, into
+`~/.vfg/brain/refs/<version>/`); until they are in, a refused command is not retried.
 
-**The first start on a new server version takes about 95 s** to fetch the command references
-(`vfg action refs`, then the wiki's command pages, one a second) into `refs/<version>/`. Later
-starts read them from there. Tasks are read from the start all the same: during the first fetch
-the actions with no `Command` field work and the rest go to the orchestrator; tasks that start
-once the references are in use them as usual. If the fetch fails, it carries on the same way and
-tries again every 5 minutes.
-
-## Test it
-
-```sh
-cd dispatcher && uv run pytest                          # no model, no network: a fake structured() and a fake vfg
-uv run --project dispatcher python integration/dispatcher_e2e.py   # the real dispatcher, toolkit and model, a fake box
-```
-
-The tests load the repo's own actions, from a copy of `actions/` beside a stub of each script, and
-fake `vfg action run`'s JSON line.
-
-The end-to-end run is the spec's smoke test with no EC2: the real `vfg` through
-`toolkit/tests/fake_ssh`, a fake Minecraft world over RCON, `OPEN_ROUTER_API` from the
-environment or the repo's `.env`. Each full run costs well under a cent.
-
-## Replay
-
-```sh
-cd dispatcher && uv run python -m dispatcher.replay [--model <id>] [--limit N] [--only T3,T9] [--jobs 8] \
-                                                    [--eval labels.jsonl] [--out results.jsonl]
-```
-
-Sends the playtest's tasks from `~/.vfg/orch/inbox.jsonl` (read only) through the complexity
-selector alone, with every action on the menu and nothing running, and prints each selection, its
-cost and time, then the totals. It acts on nothing. It is how a cheaper model or a prompt change is
-judged before a live run.
-
-With `--eval` it replays only the tasks the file labels and scores each against its label: the
-route (exact, or any route the label accepts), each part (did it reach its action, or the
-orchestrator), and the work lost (a part that went nowhere, or the orchestrator's part given only
-to an action). The labels are kept outside the repo, in `~/.vfg/dispatch/eval/`.
-`python -m dispatcher.label --from <old labels> --to <new labels>` labels the same tasks again for
-the menu as it is now, with a stronger model through `structured()`: it prints its cost estimate
-and the OpenRouter credit left first, and runs only under `--max-cost` (default $10).
-
-| Date | Labels | Selector | Agreement | Lost | Time p50 / p90 | Cost |
-|---|---|---|---|---|---|---|
-| 2026-10-09 | `selector.jsonl`: by hand, for the six actions | DeepSeek V4 Flash, reasoning off | 91% of routes | 0 | 0.8 s | $0.02 |
-| 2026-10-10 | `selector-actions-2026-10-10.jsonl`: Claude Opus 5.5 at high reasoning, for the 67 actions, all 172 read by hand and 20 changed | GPT-6.1 Sol, reasoning low, OpenRouter's providers | 168/172 routes (97.7%); 146/172 the label's own route (84.9%); 183/192 parts (95.3%) | 0 tasks, 0 parts | 2.0 s / 3.2 s | $1.78 |
-
-Both over the 172 tasks of the 2026-10-08 playtest, with nothing running and no saved place, so
-`edit` and `stop` are never the answer. On 2026-10-10 every disagreement was the selector handing
-the whole task to the orchestrator when an action could do it, or part of it: never a wrong
-action, never the orchestrator's work given to an action. Before this prompt's paragraph on the
-context, the same run agreed on 151/172 routes: the playtest's contexts tell the orchestrator how
-to build each ask, and the selector took that as more than any action does.
+The OpenRouter key: `OPEN_ROUTER_API` in the environment, else alone in `~/.vfg/openrouter.key`
+(mode 600), as `structured()` reads it.
 
 ## Settings
 
@@ -113,19 +93,40 @@ From the environment, then `~/.vfg/config`:
 
 | Key | Default |
 |---|---|
-| `OPEN_ROUTER_API`, else the file `VFG_OPENROUTER_KEY` names | `~/.vfg/openrouter.key` (mode 600; only `structured()` reads it) |
-| `VFG_DISPATCH_DIR` | `~/.vfg/dispatch`: `inbox.jsonl`, `state.json`, `dispatcher.log`, `refs/` |
-| `VFG_SERVER` | `main`: whose `made/<server>/actions/` are on the menu beside the library's |
-| `VFG_RUNNING_TTL_S` | `30` s between background fetches of the running copies (`vfg script list --json --fresh`); `0`: never |
-| `VFG_DISPATCH_MODEL` | `~deepseek/deepseek-v4-flash-latest` |
-| `VFG_DISPATCH_PROVIDERS` | `parasail,wafer,phala,together,venice`: OpenRouter providers tried first, in order, for every model call (the replay's: no lost work); `none` lets OpenRouter choose |
-| `VFG_DISPATCH_RETRIES` | `1` retry per failed action |
-| `VFG_DISPATCH_WINDOW_S` | `10` s before handed tasks go to the orchestrator together |
-| `VFG_DISPATCH_ACTION_TIMEOUT_S` | `20` s per once action, which `vfg action run` keeps; a class may set its own `timeout_s` (`teleport`: 60); the dispatcher waits 10 s past it, for vfg's own start and the SSH call (EC2 counts the deploy inside the timeout) |
-| `VFG_DISPATCH_MODEL_TIMEOUT_S` | `10` s per model call (selector, planner, replay), its retries included; past it the task, or that pick, is handed on |
-| `VFG_DISPATCH_REASONING` | `off`; or an effort, `low`, `medium` or `high`, for a model that cannot think without it (Sonnet 5.5 on OpenRouter) |
-| `VFG_ORCH_STALE_MINUTES` | `10`: a task that waited longer is failed as expired, never run |
+| `VFG_OWNER` | none: the owner's Minecraft name, named in the opening; the owner's word wins |
+| `VFG_BRAIN_MODEL`, `VFG_BRAIN_REASONING` | `openai/gpt-6.1-sol`, `low` |
+| `VFG_BRAIN_PROVIDERS` | OpenRouter's choice; comma-separated providers to try first, for the brain's call |
+| `VFG_RESPOND_MODEL`, `VFG_RESPOND_REASONING` | `google/gemini-3.8-flash`, `low` |
+| `VFG_PLAN_MODEL`, `VFG_PLAN_REASONING`, `VFG_PLAN_CHECK` | `google/gemini-3.8-flash`, `low`, `off` |
+| `VFG_BRAIN_BATCH_S` | `60` s with no read of any kind, and something unread, before a batch call |
+| `VFG_BRAIN_CHECKPOINT` | `5` minute-blocks between cache marks |
+| `VFG_BRAIN_HISTORY_HOURS` | `6`: how much of the feed the context starts with |
+| `VFG_BRAIN_TIMEOUT_S` | `20` s per model call, its retries included |
+| `VFG_BRAIN_DIR` | `~/.vfg/brain` |
+| `VFG_SERVER` | `main`: whose `made/<server>/actions/` are on the menu |
+| `VFG_RUNNING_TTL_S` | `30` s between background fetches of the running copies; `0`: never |
+| `VFG_DISPATCH_ACTION_TIMEOUT_S` | `20` s per once action, unless its class sets `timeout_s` |
+
+## Files
+
+In `~/.vfg/brain/`: `tasks.json` (`{"next", "tasks": {"T183": {"id", "at", "player", "line",
+"task", "status", "result", "session", "closed_at"}}}`, written whole, by the brain only; `vfg
+route --task` and `vfg brain status` read it), `brain.log` (one `<ISO time> <area> <message>` per
+line), `brain.pid`, `lock`, and `refs/`.
+
+## Test it
+
+```sh
+cd brain && uv run --group dev python -m pytest --ignore=tests/implementers -q   # the brain: about 0.3 s
+cd brain && uv run --group dev python -m pytest tests/implementers -q              # the implementers
+```
+
+No model, no network, no process, no sleeping: one fake `structured()` with one canned answer per
+test, contexts built by hand, a fake `vfg` that records argv, fake implementers and a clock moved
+by hand. `tests/test_refs.py` checks the command references against the real 26.3 command tree and
+a few wiki pages.
 
 ## Contracts
 
-[docs/CONTRACTS.md](../docs/CONTRACTS.md) §14, and §8 for the `vfg` commands it runs.
+[docs/CONTRACTS.md](../docs/CONTRACTS.md): §7 the feed and its `AI` rows, §8 the `vfg` commands
+it runs.
