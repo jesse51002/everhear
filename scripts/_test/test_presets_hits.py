@@ -1,7 +1,8 @@
 """Tests for the hits presets (damage_hits, freeze, push, around, lock_on, lightning,
-explosion, crater) against the fake RCON server and fake_world, under the Python EC2 has:
+explosion, crater) against the fake RCON server and fake_world, with pydantic for a preset's
+values class:
 
-    uv run --python 3.9 python scripts/_test/test_presets_hits.py
+    uv run --no-project --python 3.12 --with pydantic python scripts/_test/test_presets_hits.py
 
 Each preset is loaded from scripts/_presets/ as it is and run in this process against a
 fresh fake world (test_kit's KitCase, with a few more commands the hits presets send:
@@ -25,6 +26,7 @@ sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = os.path.dirname(HERE)
 PRESETS = os.path.join(SCRIPTS, "_presets")
+sys.path.append(os.path.dirname(os.path.dirname(HERE)))  # the repo: a preset's values class imports actions._types
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(os.path.dirname(SCRIPTS), "toolkit", "lib"))
 

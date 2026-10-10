@@ -61,17 +61,26 @@ for p in loop(items.charged(v["player"], "Spirit Bomb", v["charge"], v["cooldown
 ```python
 """Carve a sphere out of the world at a place, leaving air, lava or fire."""
 from kit import area
+from actions._types import Field, Literal, Live, Values  # the values class: read on the PC only
 
 VALUES = {
     "crater_radius": {"type": "int", "min": 2, "max": 64, "default": 8, "live": True},
     "crater_leave":  {"type": "enum", "of": ["air", "lava", "fire"], "default": "air", "live": True},
 }
 
+
+class Crater(Values):
+    crater_radius: Live[int] = Field(8, ge=2, le=64)
+    """how wide the crater is, in blocks"""
+    crater_leave: Live[Literal["air", "lava", "fire"]] = "air"
+    """what is left in it"""
+
+
 def crater(at, v):
     area.sphere(at, v["crater_radius"], block=v["crater_leave"], spare_protected=True)
 ```
 
-One-line docstring, saying what players ask for in their words (the router reads it); imports; `VALUES`; **one public function named like the file**, taking the values `v` last, with anything one call may change after it as keyword-only arguments (`def crater(at, v, *, path=())`, `push(hits, frm, v, way="up")`); private helpers `_<name>_...` below it. Every value name starts with the preset's name or a short form of it and `_`, so two presets in one script never ask for the same value.
+One-line docstring, saying what players ask for in their words (the router reads it); imports; `VALUES`; **its values class**, `class <CamelName>(Values)`, the same values with a description under each, which the action over every script that copies the preset inherits (`actions/README.md`), and which `vfg script new` never copies into a script; **one public function named like the file**, taking the values `v` last, with anything one call may change after it as keyword-only arguments (`def crater(at, v, *, path=())`, `push(hits, frm, v, way="up")`); private helpers `_<name>_...` below it. Every value name starts with the preset's name or a short form of it and `_`, so two presets in one script never ask for the same value.
 
 ## Values
 
@@ -137,7 +146,7 @@ The box starts `python3 -u <folder>/main.py key=value ...` with `VFG_INSTANCE` (
 ## Tests
 
 ```bash
-uv run --python 3.9 python scripts/_test/run_tests.py     # mc, the kit, every preset test file (test_presets_*.py), every script
+uv run --no-project --python 3.12 --with pydantic python scripts/_test/run_tests.py   # mc, the kit, every preset test file (test_presets_*.py), every script
 uv run --python 3.9 python scripts/_test/test_kit.py      # the kit alone
 eval "$(integration/realmc/env kit)" && uv run --python 3.9 python scripts/_test/live_kit.py   # the kit on a real 26.3 server
 ```
