@@ -1143,6 +1143,16 @@ class TestWatch(BoxCase):
         self.assertRegex(w.read()[0], r"^SYS#0 \d\d:\d\d:\d\d \| vfg watch: EC2 unreachable since \d\d:\d\d:\d\d — "
                                       r"retrying$")
 
+    def test_a_closed_stdout_ends_it(self):
+        r, w = os.pipe()
+        with self.box.environ() as mod:
+            watcher = mod.Watcher(mod.Config(), after=0, fd=w)
+            watcher.tick(True)                   # someone reads: it goes on
+            os.close(r)
+            with self.assertRaises(mod._Stop):   # nobody does: it ends, and run() returns 0
+                watcher.tick(True)
+        os.close(w)
+
     def test_the_newest_persons_watch_takes_the_lock(self):
         lock, pidfile = (os.path.join(self.box.vhome, n) for n in ("watch.lock", "watch.pid"))
         holder = subprocess.Popen([PY, "-c", "import fcntl, os, sys, time\n"
