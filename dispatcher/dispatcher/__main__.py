@@ -48,17 +48,20 @@ class _LogLines(logging.Handler):
         log("llm", record.getMessage())
 
 
-async def ask(prompt, output, *, system=None, model, providers=None, timeout: float = 10):
-    """structured(), reasoning off: speed first; `providers` is the OpenRouter order. A call
+async def ask(prompt, output, *, system=None, model, providers=None, timeout: float = 10,
+              reasoning: bool | str = False):
+    """structured(), reasoning off unless VFG_DISPATCH_REASONING names an effort: speed first;
+    `providers` is the OpenRouter order. A call
     past `timeout` is an LlmError, which the selector and the planner treat as a hand-on."""
-    return await vfg_llm.structured(prompt, output, system=system, model=model, reasoning=False,
+    return await vfg_llm.structured(prompt, output, system=system, model=model, reasoning=reasoning,
                                     providers=providers, timeout=timeout)
 
 
 def asker(cfg: Config):
     """`ask` with VFG_DISPATCH_PROVIDERS and VFG_DISPATCH_MODEL_TIMEOUT_S: what the selector
     and the planner call."""
-    return functools.partial(ask, providers=list(cfg.providers) or None, timeout=cfg.model_timeout_s)
+    return functools.partial(ask, providers=list(cfg.providers) or None, timeout=cfg.model_timeout_s,
+                             reasoning=cfg.effort)
 
 
 async def load_refs(cfg: Config, vfg, http):

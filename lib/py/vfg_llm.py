@@ -52,12 +52,13 @@ async def structured(
     *,
     system: str | None = None,
     model: str = "~deepseek/deepseek-v4-flash-latest",
-    reasoning: bool = False,
+    reasoning: bool | str = False,
     timeout: float = 30,
     providers: list[str] | None = None,
 ) -> Answer[T]:
     """Ask `model` for an `output`. `timeout` bounds the whole call, retries included.
-    `reasoning=True` leaves the model's own default, which may be to think first.
+    `reasoning=True` leaves the model's own default, which may be to think first; a string
+    ("low", "medium", "high") asks for that effort, for a model that cannot turn it off.
     `providers`: OpenRouter provider slugs to try first, in order ("parasail", "wafer"),
     falling back to the others; None leaves the choice to OpenRouter."""
     key = _key()
@@ -74,7 +75,9 @@ async def structured(
     }
     if providers:
         body["provider"] = {"order": list(providers), "allow_fallbacks": True, "require_parameters": True}
-    if not reasoning:
+    if isinstance(reasoning, str):
+        body["reasoning"] = {"effort": reasoning}
+    elif not reasoning:
         body["reasoning"] = {"enabled": False}
     t0, cost = time.perf_counter(), 0.0
     try:
