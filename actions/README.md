@@ -60,6 +60,7 @@ class GatlingGun(Railgun):
 | `MobId`, `BlockId`, `ItemId`, `ParticleId`, `SoundId` | an id; `minecraft:` is dropped, `[states]` and `{nbt}` kept where the kit takes them | the kit's patterns, and the ids 26.3 refuses (kit/world.py's `GONE`: `potion`, `boat`, `#minecraft:tall_flowers`) |
 | `Place` | a saved place's name, `x y z` (then `the_nether` or `the_end`), or a player's name; empty for none | a saved name against the places cache when one is given; coordinates inside the world. EC2 finds where it is as the script runs |
 | `Command` | one server command, no slash | the owner's commands and the block commands refused (`scripts/_lib/commands.py`) |
+| `CopyName` | a running copy's name, such as `galick_gun_2`; empty for none | `^[a-z0-9][a-z0-9_]{0,47}$` |
 | `int`, `float` with `Field(ge=, le=)` | a number | out of range is clamped to the limit and a note says so, as the kit does |
 | `bool`, `Literal[...]`, `str`, `list[...]` | true or false, one of a few words, text, several of a type | a word from the command line is read as the type: `yes`/`off`/`1`, an option in any case, a list as `a,b,c` or JSON |
 | `Live[T]` | any of these | as `T` |
@@ -92,6 +93,6 @@ cd lib/py && uv run pytest
 
 [`tests/test_values_parity.py`](tests/test_values_parity.py) holds every action over a library script to the values the script took before it was ported (`tests/fixtures/values_before.json`, from each script's `VALUES`): the same names, defaults (after `defaults`, before `fixed`), limits, kinds and live-ness. A script with no action yet is skipped and named in one log line; so is a preset with no values class (`preset_values_before.json`). A field the spec adds to a script (horde_boss's `at`) goes in its `ADDED`.
 
-## The six old folder actions
+## The core actions
 
-`command/`, `teleport/`, `summon_around/`, `save_place/`, `run_script/` and `stop_script/` are the dispatcher's actions as they were: a folder each with `action.py` (a class with `action: Literal["<name>"]`) and, for teleport and summon_around, a `handler.py` that `vfg action run --args` sends to EC2 ([docs/CONTRACTS.md](../docs/CONTRACTS.md) §14). They and the names in `_types.py` only they use go when each is a script with an action over it; `run_script` goes. Their tests: `tests/test_classes.py`, `tests/test_handlers.py`, `tests/test_remote_action.py`.
+`command`, `teleport`, `summon_around` and `save_place` are the dispatcher's first actions, each now a class over a script of its own name; `stop` and `edit` end and change a running copy, by its name (`CopyName`): `edit`'s `values` are the values to change, checked against the copy's own action. `run_script` and `stop_script` are gone: a script runs only through an action. Their tests: [`tests/test_core_actions.py`](tests/test_core_actions.py).
