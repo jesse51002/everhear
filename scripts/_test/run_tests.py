@@ -294,11 +294,17 @@ def run_script(name):
     password = secrets.token_hex(8)
     fake = FakeRcon(password).start()
     out_path = os.path.join(TMP, name + ".out")
+    env = script_env(properties(password, fake.port))
+    meta = action_meta(name, source)      # a seed ported to its action runs as a copy of it, as an example does
+    if meta is not None:
+        env.update(VFG_INSTANCE=name, VFG_SCRIPT=name, VFG_RUN_DIR=tempfile.mkdtemp(dir=TMP))
+        with open(os.path.join(env["VFG_RUN_DIR"], name + ".json"), "w") as f:
+            json.dump(meta, f)
     try:
         with open(out_path, "wb") as out:
             start = time.time()
             proc = subprocess.Popen([sys.executable, "-u", "main.py"] + args, cwd=folder,
-                                    env=script_env(properties(password, fake.port)), stdout=out, stderr=out)
+                                    env=env, stdout=out, stderr=out)
             if ends_itself:
                 try:
                     proc.wait(timeout=20)
@@ -364,19 +370,24 @@ _CATALOG = []
 _CATALOG_LOCK = threading.Lock()
 
 
+def _catalog():
+    """(vfg_actions, the library's Catalog), loaded once: the scripts run in threads."""
+    with _CATALOG_LOCK:
+        if not _CATALOG:
+            sys.path.insert(0, os.path.join(os.path.dirname(SCRIPTS), "lib", "py"))
+            import vfg_actions
+            _CATALOG.append((vfg_actions, vfg_actions.Catalog(os.path.dirname(SCRIPTS), None)))
+        return _CATALOG[0]
+
+
 def action_meta(name, source):
     """For a script ported to its action (no VALUES): the meta file of a copy of its first
     action (the one named as the script, else the first by name) run with nothing given, as
     vfg action run writes it; None for a script that still has VALUES."""
     if re.search(r"^VALUES\s*=", source, re.M):
         return None
-    with _CATALOG_LOCK:   # the scripts run in threads: the actions load once
-        if not _CATALOG:
-            sys.path.insert(0, os.path.join(os.path.dirname(SCRIPTS), "lib", "py"))
-            import vfg_actions
-            _CATALOG.append((vfg_actions, vfg_actions.Catalog(os.path.dirname(SCRIPTS), None)))
-        va, cat = _CATALOG[0]
-        meta_of = va.check_values
+    va, cat = _catalog()
+    meta_of = va.check_values
     over = sorted(n for n in cat.names() if cat.get(n).script == name)
     if not over:
         raise AssertionError("%s has no VALUES and no action runs it" % name)
@@ -602,6 +613,11 @@ def _add_kit_and_preset_tests():
                 globals()[name if mod.__name__ in ("test_kit", "test_instances") else "%s__%s" % (mod.__name__, name)] = obj
 
 
+# The actions load before the preset tests import a preset by its own name (theme_music):
+# on Python 3.12 pydantic finds a class's source through inspect's module-by-file cache, and
+# a preset's values class built from a file already cached under that name loses its
+# descriptions, so its action would be left out of the catalog.
+_catalog()
 _add_kit_and_preset_tests()
 
 if __name__ == "__main__":

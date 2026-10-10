@@ -3,16 +3,7 @@ ASKS = ["walking dead zombies", "zombies that hear you when you sprint", "slow z
 import random
 
 import mc
-from kit import values, loop
-
-VALUES = {
-    "player":       {"type": "player", "default": "@a"},
-    "walk_speed":   {"type": "number", "min": 0.05, "max": 0.5, "default": 0.17, "live": True},
-    "sneak_range":  {"type": "int", "min": 1, "max": 64, "default": 5, "live": True},
-    "walk_range":   {"type": "int", "min": 1, "max": 64, "default": 16, "live": True},
-    "sprint_range": {"type": "int", "min": 1, "max": 64, "default": 40, "live": True},
-    "friends":      {"type": "number", "min": 0, "max": 1, "default": 0.3, "live": True},
-}
+from kit import values, result, loop
 
 WALKER = mc.TAG + "_w"  # on the world's own zombies, so never TAG itself
 ZT = "type=#minecraft:zombies,tag=!custom"
@@ -27,11 +18,13 @@ def cleanup():
     mc.rcon("scoreboard objectives remove " + SPRINT)
 
 
-v = values(VALUES)
+v = values()
 mc.on_stop(cleanup)
 mc.rcon("scoreboard objectives add %s minecraft.custom:minecraft.sneak_time" % SNEAK)
 mc.rcon("scoreboard objectives add %s minecraft.custom:minecraft.sprint_one_cm" % SPRINT)
-mc.log("zombies become walkers")
+result("zombies are walkers now: they hear %s sprint from %d blocks, walk from %d, sneak from %d"
+       % (v["player"], v["sprint_range"], v["walk_range"], v["sneak_range"]), player=v["player"],
+       walk_speed=v["walk_speed"], sprint_range=v["sprint_range"], sneak_range=v["sneak_range"])
 last = {}
 for _ in loop(every=1):
     ps = loop.who(v["player"])

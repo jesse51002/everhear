@@ -2,7 +2,7 @@
 started the way run_tests.py starts an example (as on EC2, its defaults, VFG_INSTANCE set,
 against fake_world with Steve and Alex online, Steve trying every item it gives him, then
 SIGTERM), whether or not a README.md sits beside it; and each seed's README Usage line
-naming only values its VALUES declares, in key=value form.
+naming only values its VALUES (or, ported, its action) declares, in key=value form.
 
     uv run --python 3.9 python scripts/_test/test_examples_seeds.py
 
@@ -29,12 +29,14 @@ RESULTS = {}
 
 
 def values_of(name):
+    """The values a seed takes: its VALUES, or once it is ported, its first action's fields."""
     with open(os.path.join(run_tests.SCRIPTS, name, "main.py"), encoding="utf-8") as f:
-        tree = ast.parse(f.read())
-    for node in tree.body:
+        source = f.read()
+    for node in ast.parse(source).body:
         if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "VALUES" for t in node.targets):
             return ast.literal_eval(node.value)
-    return None
+    meta = run_tests.action_meta(name, source)
+    return meta and meta["values"]
 
 
 class SeedExampleTests(unittest.TestCase):
@@ -60,7 +62,7 @@ class SeedExampleTests(unittest.TestCase):
         self.assertNotIn("error", res, res.get("error"))
         self.assertIsNone(res.get("compiles"), "main.py does not compile")
         self.check_example(name, res)
-        self.assertIsNotNone(values_of(name), "no VALUES")
+        self.assertIsNotNone(values_of(name), "no VALUES and no action")
 
     def check_readme(self, name):
         values = values_of(name)
@@ -71,7 +73,7 @@ class SeedExampleTests(unittest.TestCase):
         keys = re.findall(r"\[([a-z][a-z0-9_]*)=", usage)
         self.assertTrue(keys or not values, "Usage names none of its values: " + usage)
         for k in keys:
-            self.assertIn(k, values, "Usage names %s, which VALUES does not declare" % k)
+            self.assertIn(k, values, "Usage names %s, which neither VALUES nor its action declares" % k)
 
 
 def _add():
