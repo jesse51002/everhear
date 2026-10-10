@@ -11,7 +11,8 @@ A LINE said more than HISTORY_S ago is history: it is context, marked processed,
 
 Every live read takes in what no call has read yet, marks it processed (`vfg context mark`,
 nobody waiting) and pushes the batch timer back (timer.py). An implementer's report is a brain
-call of its own; it reads nothing new. Every model call writes a `usage` row, nobody waiting.
+call of its own; it reads nothing new. Every model call writes a `usage` row, its cached tokens
+included, nobody waiting.
 """
 
 from __future__ import annotations
@@ -127,7 +128,8 @@ class Brain:
         log(component, f"{ref} {answer.ms} ms ${answer.cost:.6f}, {answer.prompt_tokens} in{rate}, "
                        f"{answer.completion_tokens} out")
         self.later("usage", "add", "--component", component, "--model", model, "--in", str(answer.prompt_tokens),
-                   "--out", str(answer.completion_tokens), "--cost", f"{answer.cost:.6f}", "--ref", ref[:64])
+                   "--out", str(answer.completion_tokens), "--cost", f"{answer.cost:.6f}",
+                   "--cache-read", str(answer.cached_tokens), "--ref", ref[:64])
 
     def reload(self) -> None:
         """Before each brain call: every action file that changed is loaded again, so an action an
