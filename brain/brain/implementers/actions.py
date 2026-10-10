@@ -1,19 +1,19 @@
 """The actions and the running copies, as an implementer's brief gives them (examples.py adds both).
 
 THE ACTIONS come from vfg's actions cache, $VFG_HOME/actions.json, through lib/py/vfg_actions.py,
-the one loader vfg and the dispatcher use too. It is read for every brief, and built again first
+the one loader vfg and the brain use too. It is read for every brief, and built again first
 when an action file is newer than it, so an action an implementer saved a minute ago is in the
 next brief. Every action goes in whole, nothing capped: its line, its script, how it runs, and
 every value with its type, limits, default (or fixed) and description, those it takes marked *
 (the cache's `describe`); the library's by name, then this server's.
 
 WHAT RUNS comes from $VFG_HOME/running.json, which vfg writes through on every run, edit and stop
-and the dispatcher fetches from EC2 every 30 s: each copy's name, its action, the values that
-differ from the action's own and the task that started it.
+and the brain fetches from EC2: each copy's name, its action, the values that differ from the
+action's own and the task that started it.
 
 Neither goes in the implementer's system prompt (prefix.py): that is the same bytes for every
-implementer of a session, so the provider's cache serves it to the second one on, and an action
-made mid-game changes only the briefs after it."""
+implementer, so the provider's cache serves it to the second one on, and an action made mid-game
+changes only the briefs after it."""
 import importlib.util
 import json
 import os
@@ -22,8 +22,10 @@ import threading
 from pathlib import Path
 from typing import Any
 
-# lib/py/ of the repo this orchestrator is in: vfg_actions, loaded as vfg loads it.
-LIB_PY = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))), "lib", "py")
+from .config import ROOT
+
+# lib/py/ of the repo this brain/ is in: vfg_actions, loaded as vfg loads it.
+LIB_PY = os.path.join(ROOT, "lib", "py")
 
 _loader: Any = None
 _catalogs: dict[tuple[str, str], Any] = {}

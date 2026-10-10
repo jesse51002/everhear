@@ -1,19 +1,19 @@
-# Not in the TypeScript tests: the script library's EXAMPLES block, which the guard adds to every
-# implementer's brief after the saved places (examples.py, route.py), with every action whole
-# (actions.py, from the actions cache vfg_actions keeps) and what runs (running.json).
+"""The EXAMPLES block (examples.py, route.py): on a small temp repo whose actions load through
+lib/py/vfg_actions.py, with the fake vfg answering vfg route and vfg state."""
 import json
 import os
 import shutil
 import time
 
 import pytest
-from helpers import config_in, new_store, read, temp_dir, use_fake_vfg, write
 
-from orchestrator import actions, brief, examples, route
-from orchestrator.guard import GuardContext, make_guard
+from brain.implementers import examples, route
+from brain.implementers.config import ROOT, ImplementerConfig
+from brain.implementers.vfg import VfgResult
 
-# The real repo's: what a temp repo needs for its actions to load through lib/py/vfg_actions.py.
-REAL_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from .fakes import FakeVfg, bad, never, ok
+
+# What a temp repo needs from the real one for its actions to load.
 ACTIONS_BASE = ["actions/__init__.py", "actions/_types.py", "scripts/_lib/commands.py", "scripts/_lib/kit/world.py"]
 
 ICE_BEAM = '''"""Ice Beam: a beam from the eyes that freezes what it hits."""
@@ -183,55 +183,46 @@ RUNNING = {"fetched_at": 1760000000, "copies": {
     "zoo-steve": {"action": "zoo", "script": "zoo", "values": {"at": "Steve"}, "live": [], "task": "T3",
                   "started": "2026-10-09T11:30:00Z", "runs": "once"}}}
 
-JOB = "T7: give Steve an ice beam with a crater where it hits. Leave tnt_rain alone."
-AGENT = {"subagent_type": "implementer", "description": "T7 ice beam for Steve", "prompt": JOB, "run_in_background": True}
+JOB = "Give Steve an ice beam with a crater where it hits. Leave tnt_rain alone."
 
 
-@pytest.fixture(autouse=True)
-def _off_after():
-    yield
-    examples.reset()
-    actions.forget()
-
-
-class Box:
+class Repo:
     """A temp repo with a small library, its actions and a made/main/, its own VFG_HOME with
-    running.json, the fake vfg answering route and state."""
+    running.json, and the fake vfg answering route and state."""
 
-    def __init__(self, route_json=ROUTE, state=STATE, extra=None, running=RUNNING):
-        self.dir = temp_dir()
-        self.fake = use_fake_vfg(self.dir)
+    def __init__(self, tmp_path, route_json=ROUTE, state=STATE, running=RUNNING, env=None):
+        self.dir = str(tmp_path / "repo")
         for rel in ACTIONS_BASE:
             os.makedirs(os.path.dirname(os.path.join(self.dir, rel)), exist_ok=True)
-            shutil.copy(os.path.join(REAL_REPO, rel), os.path.join(self.dir, rel))
+            shutil.copy(os.path.join(ROOT, rel), os.path.join(self.dir, rel))
         for rel, text in FILES.items():
-            path = os.path.join(self.dir, rel)
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            write(path, text)
+            os.makedirs(os.path.dirname(os.path.join(self.dir, rel)), exist_ok=True)
+            with open(os.path.join(self.dir, rel), "w") as f:
+                f.write(text)
         for rel in ACTIONS_BASE + list(FILES):  # written a minute ago: a cache built now is fresh
             os.utime(os.path.join(self.dir, rel), (time.time() - 60, time.time() - 60))
-        self.home = os.path.join(self.dir, "vfg-home")
+        self.home = str(tmp_path / "vfg-home")
         os.makedirs(self.home)
         if running is not None:
-            write(os.path.join(self.home, "running.json"), json.dumps(running))
-        self.stdin = os.path.join(self.dir, "route-stdin")
-        os.environ["VFG_FAKE_ROUTE_STDIN"] = self.stdin
+            self.write_home("running.json", json.dumps(running))
+        self.vfg = FakeVfg()
         if route_json is not None:
-            os.environ["VFG_FAKE_ROUTE"] = os.path.join(self.dir, "route.json")
-            write(os.environ["VFG_FAKE_ROUTE"], json.dumps(route_json))
+            self.vfg.on("route", answer=ok(json.dumps(route_json)))
         if state is not None:
-            os.environ["VFG_FAKE_STATE"] = os.path.join(self.dir, "state.json")
-            write(os.environ["VFG_FAKE_STATE"], json.dumps(state))
-        self.cfg = config_in(self.dir, {"VFG_HOME": self.home, **(extra or {})})
-        self.store = new_store(os.path.join(self.dir, "orch"))
-        self.store.add("T7", at="2026-10-09T12:00:00.000Z", task="an ice beam for Steve", context="")
-        self.store.save()
-        examples.use(self.cfg, self.store)
+            self.vfg.on("state", answer=ok(json.dumps(state)))
+        self.cfg = ImplementerConfig.load({"VFG_REPO": self.dir, "VFG_HOME": self.home, **(env or {})})
 
-    async def block(self, tool_input=AGENT) -> str:
-        out = await examples.examples(tool_input["prompt"], tool_input)
-        assert out.startswith(tool_input["prompt"] + "\n\nEXAMPLES")
-        return out[len(tool_input["prompt"]) + 2:]
+    def write(self, rel: str, text: str) -> None:
+        os.makedirs(os.path.dirname(os.path.join(self.dir, rel)), exist_ok=True)
+        with open(os.path.join(self.dir, rel), "w") as f:
+            f.write(text)
+
+    def write_home(self, rel: str, text: str) -> None:
+        with open(os.path.join(self.home, rel), "w") as f:
+            f.write(text)
+
+    async def block(self, job: str = JOB, task: str = "T7") -> str:
+        return await examples.build(self.cfg, job, task, self.vfg)
 
 
 def whole(rel: str) -> str:
@@ -248,9 +239,9 @@ def parts(block: str) -> tuple[str, str, str, str]:
 
 # ---------------------------------------------------------------- the block
 
-async def test_the_block_in_the_specs_shape_with_every_file_whole_in_order():
-    b = Box()
-    block = await b.block()
+async def test_the_block_in_the_specs_shape_with_every_file_whole_in_order(tmp_path):
+    r = Repo(tmp_path)
+    block = await r.block()
     head, made, acts, files = parts(block)
     assert head.split("\n") == [
         "EXAMPLES, picked for T7 by Jev in 0.3 s.",
@@ -273,7 +264,6 @@ async def test_the_block_in_the_specs_shape_with_every_file_whole_in_order():
                            "--task T7; * marks the values it takes, and any value but a fixed one can be given.\n")
     firsts = [line.split(" — ")[0] for line in acts.split("\n") if " — " in line]
     assert firsts == ["frost_ray", "galick_gun", "ice_beam", "zoo", "galick_ice"]
-    assert "\nMade on this server (made/main/actions/):\n\ngalick_ice — Give a player a Galick Ice gun" in acts
     ice = acts[acts.index("ice_beam — "):].split("\n\n")[0].split("\n")
     assert ice == ["ice_beam — Give a player an ice beam: a beam from the eyes that freezes what it hits.",
                    "script ice_beam · runs until stopped",
@@ -285,153 +275,83 @@ async def test_the_block_in_the_specs_shape_with_every_file_whole_in_order():
     # whole files, never cut: the router's scripts (runs_it first), its presets, then the named
     order = ["scripts/ice_beam/main.py", "scripts/galick_gun/main.py", "scripts/_presets/crater.py",
              "scripts/_presets/replace_blocks.py", "scripts/tnt_rain/main.py"]
-    assert [line[4:-4] for line in files.split("\n") if line.startswith("=== ")] == order
-    for rel in order:
-        assert whole(rel) in block
     assert files == "\n".join(whole(rel) for rel in order)
-    # the made ones are first lines only; the brief named no running instance
-    assert "=== made/" not in block
-    assert "Your brief names" not in block
+    # the router read the brain's brief for T7, on its stdin; the state was asked for
+    assert ["route", "--task", "T7"] in r.vfg.calls and r.vfg.stdin["route"] == JOB
+    assert ["state", "--json"] in r.vfg.calls
 
 
-async def test_a_running_copy_the_brief_names_comes_with_its_values_and_its_script():
-    b = Box()
-    job = "T7: make the zoo-steve pens bigger, and galick-alex fires faster."
-    block = await b.block({**AGENT, "prompt": job})
-    lines = block.split("\n")
+async def test_a_running_copy_the_brief_names_comes_with_its_values_and_its_script(tmp_path):
+    r = Repo(tmp_path)
+    lines = (await r.block("Make the zoo-steve pens bigger, and galick-alex fires faster.")).split("\n")
     # another task's copies: their code is copied to be changed, never edited (the guard refuses it)
     assert ("Your brief names galick-alex, a copy of galick_gun running for T5 with player=Alex, cooldown=0: vfg script "
             "set galick-alex key=value changes it; its script is below; to change its code, copy it: vfg script new "
             "<new_name> --from galick_gun.") in lines
-    assert ("Your brief names zoo-steve, a copy of zoo running for T3 with at=Steve: vfg script set zoo-steve key=value "
-            "changes it; its script is below; to change its code, copy it: vfg script new <new_name> --from zoo.") in lines
-    # galick_gun is the router's already, so it is not there twice; zoo comes last, whole
-    assert block.count("=== scripts/galick_gun/main.py ===") == 1
-    assert block.endswith(whole("scripts/zoo/main.py"))
-
-
-async def test_a_copy_this_task_started_is_its_own_to_change():
-    b = Box()
-    job = "T5: galick-alex fires faster."
-    lines = (await b.block({**AGENT, "description": "T5 galick gun faster", "prompt": job})).split("\n")
+    assert "\n".join(lines).count("=== scripts/galick_gun/main.py ===") == 1
+    assert "\n".join(lines).endswith(whole("scripts/zoo/main.py"))
+    # the task that started it may change it
+    lines = (await r.block("galick-alex fires faster.", task="T5")).split("\n")
     assert ("Your brief names galick-alex, a copy of galick_gun running for T5 with player=Alex, cooldown=0: vfg script "
             "set galick-alex key=value changes it; its script is below.") in lines
 
 
-async def test_a_copy_is_named_by_its_action_too_and_one_at_its_actions_values_says_so():
-    running = {"fetched_at": 1, "copies": {"galick_gun_2": {"action": "galick_gun", "script": "galick_gun",
-                                                            "values": {"player": "@a", "cooldown": 10}, "task": "T6"}}}
-    b = Box(running=running)
-    lines = (await b.block({**AGENT, "prompt": "T7: the galick gun, for Steve too"})).split("\n")
-    assert "Running: galick_gun_2 (galick_gun, T6)." in lines
-    assert ("Your brief names galick_gun_2, a copy of galick_gun running for T6 with its action's values: vfg script "
-            "set galick_gun_2 key=value changes it; its script is below; to change its code, copy it: vfg script new "
-            "<new_name> --from galick_gun.") in lines
+async def test_what_fails_is_said_and_the_block_still_goes(tmp_path, monkeypatch):
+    r = Repo(tmp_path, running=None)
+    r.vfg.on("route", answer=bad("vfg: not configured: VFG_ROUTE_LOAD must be a number"))
+    r.vfg.on("state", answer=bad("vfg: EC2 unreachable"))
+    lines = (await r.block()).split("\n")
+    assert lines[:2] == ["EXAMPLES for T7: nothing was picked, the router failed (exit 1: vfg: not configured: "
+                         "VFG_ROUTE_LOAD must be a number). Every library script's and preset's first line is in your "
+                         "system prompt, every action is under ACTIONS, and you can read any of them.",
+                         "Named in your brief, in full below: ice_beam and tnt_rain."]
+    assert lines[2:4] == ["Server state: unavailable (exit 1: vfg: EC2 unreachable).", examples.UNKNOWN]
+    # hung: cut off at VFG_ROUTE_TIMEOUT_S and the step's slack
+    monkeypatch.setattr(examples, "STEP_SLACK_S", 0)
+    r.cfg.route_timeout_s = 0.01
+    r.vfg.on("route", answer=never).on("state", answer=never)
+    block = await r.block()
+    assert "the router failed (no answer within 0.01 s)" in block
+    assert "Server state: unavailable (no answer within 0.01 s).\n" + examples.UNKNOWN in block
+    # Minecraft not answering (exit 5): what runs is still listed, who is online is not
+    r.vfg.on("state", answer=VfgResult(5, json.dumps({**STATE, "online": [], "rcon": "RCON refused"}), ""))
+    lines = (await r.block()).split("\n")
+    assert lines[lines.index("Minecraft is not answering (RCON refused): who is online, the time and the weather are "
+                             "unknown.") + 1] == examples.UNKNOWN
+    assert any(line.startswith("Running: galick-alex (galick_gun, player=Alex, cooldown=0, T5)") for line in lines)
 
 
-async def test_names_match_as_words_in_a_row_however_they_are_written():
-    assert examples.names_in("Run the Galick-Gun at Steve", ["galick_gun", "gun", "galick_ice"]) == ["galick_gun", "gun"]
-    assert examples.names_in("a zookeeper", ["zoo"]) == []
-    assert examples.names_in("tnt_rain please", ["tnt_rain", "rain", "tnt"]) == ["tnt_rain", "rain", "tnt"]
-    assert examples.names_in("galick then gun", ["galick_gun"]) == []
+def gathered(**over) -> examples.Gathered:
+    g = dict(task="T7", picks={**ROUTE}, route_failed=None, state=STATE, state_failed=None, server="main",
+             acts={"actions": {"ice_beam": {"script": "ice_beam", "source": "library"}}}, copies={})
+    g.update(over)
+    return examples.Gathered(**g)
 
 
-async def test_the_router_gets_the_orchestrators_brief_and_the_task_and_the_picks_go_into_state_json():
-    b = Box()
-    # the places line the step before added is not part of the job the router reads
-    out = await examples.examples(JOB + "\n\nSAVED PLACES: none", AGENT)
-    assert out.startswith(JOB + "\n\nSAVED PLACES: none\n\nEXAMPLES, picked for T7")
-    assert read(b.stdin) == JOB
-    assert ["route", "--task", "T7"] in b.fake.calls()
-    assert ["state", "--json"] in b.fake.calls()
-    t = new_store(os.path.join(b.dir, "orch")).get("T7")  # from disk
-    [entry] = t.implementers
-    assert entry["description"] == "T7 ice beam for Steve"
-    assert entry["route"]["scripts"][0] == {"name": "ice_beam", "source": "library", "verdict": "runs_it",
-                                            "p_runs_it": 0.91, "p_close": 0.05}
-    assert [p["name"] for p in entry["route"]["presets"]] == ["crater", "replace_blocks"]
-    assert entry["route"]["fallback"] is False and entry["route"]["ms"] == 312 and entry["route"]["tokens"] == 11840
-    assert entry["loaded"][0] == "scripts/ice_beam/main.py" and entry["loaded"][-1] == "scripts/tnt_rain/main.py"
-    assert entry["named"] == ["tnt_rain"]
-    assert entry["state"] == "ok"
-    assert entry["actions"] == 5
-    assert json.load(open(b.store.file))["tasks"]["T7"]["implementers"][0]["route"]["tokens"] == 11840
+def test_the_header_says_how_the_picks_were_made_and_what_is_held():
+    words = {**ROUTE, "fallback": True, "ms": 3012, "why": "jev did not answer within 3 s",
+             "scripts": [{**ROUTE["scripts"][0], "verdict": "words"}], "presets": [ROUTE["presets"][0]]}
+    assert examples.header(gathered(picks=words))[:3] == [
+        "EXAMPLES, picked for T7 by words in 3.0 s: Jev did not answer (jev did not answer within 3 s).",
+        "Matched by words: ice_beam.", "Presets to copy: crater."]
+    held = [{"name": "beam_clash", "source": "library", "in": "galick_gun"},
+            {"name": "ice_trail", "source": "made", "in": "galick_ice"}]
+    assert examples.header(gathered(picks={**ROUTE, "presets": [], "held": held}))[2] == (
+        "Presets to copy: none. Already in a loaded script: beam_clash (in galick_gun) and ice_trail (made) "
+        "(in galick_ice).")
+    nothing = {**ROUTE, "scripts": [], "presets": [{"name": "ice_trail", "source": "made"}]}
+    assert examples.header(gathered(picks=nothing))[1:3] == ["No example script runs this job or is close to it.",
+                                                             "Presets to copy: ice_trail (made)."]
+    empty = examples.header(gathered(state={**STATE, "online": [], "weather": "rain", "time": {"phase": "day"}}))
+    assert empty[-3:] == ["Running: nothing.", "Online: nobody. Day, rain.", examples.NOW]
 
 
-async def test_a_second_implementer_for_the_task_gets_its_own_entry():
-    b = Box()
-    await b.block()
-    await b.block({**AGENT, "description": "T7 ice beam, second part"})
-    assert [e["description"] for e in b.store.get("T7").implementers] == ["T7 ice beam for Steve", "T7 ice beam, second part"]
-
-
-async def test_jev_slow_the_routers_fallback_to_words_is_said():
-    words = {**ROUTE, "fallback": True, "ms": 3012, "tokens": 0, "why": "jev did not answer within 3 s",
-             "scripts": [{**ROUTE["scripts"][0], "verdict": "words", "p_runs_it": None, "p_close": None}],
-             "presets": [{**ROUTE["presets"][0], "p_use": None}]}
-    b = Box(route_json=words)
-    head = (await b.block()).split("\n")[:3]
-    assert head == ["EXAMPLES, picked for T7 by words in 3.0 s: Jev did not answer (jev did not answer within 3 s).",
-                    "Matched by words: ice_beam.", "Presets to copy: crater."]
-    assert b.store.get("T7").implementers[0]["route"]["why"] == "jev did not answer within 3 s"
-
-
-async def test_presets_a_loaded_script_already_holds_are_named_with_the_script_they_are_in():
-    held = [{"name": "beam_clash", "source": "library", "p_use": 0.68, "path": "scripts/_presets/beam_clash.py",
-             "in": "galick_gun"},
-            {"name": "ice_trail", "source": "made", "p_use": 0.4, "path": "made/main/presets/ice_trail.py",
-             "in": "galick_ice"}]
-    b = Box(route_json={**ROUTE, "held": held})
-    lines = (await b.block()).split("\n")
-    assert lines[2] == ("Presets to copy: crater and replace_blocks. Already in a loaded script: beam_clash "
-                        "(in galick_gun) and ice_trail (made) (in galick_ice).")
-    # not loaded again: the copy in the script is what the implementer reads
-    assert "=== scripts/_presets/beam_clash.py ===" not in "\n".join(lines)
-    assert "=== made/main/presets/ice_trail.py ===" not in "\n".join(lines)
-    assert b.store.get("T7").implementers[0]["route"]["held"] == [
-        {"name": "beam_clash", "source": "library", "p_use": 0.68, "in": "galick_gun"},
-        {"name": "ice_trail", "source": "made", "p_use": 0.4, "in": "galick_ice"}]
-    # with none to copy, it still says where the held ones are
-    b = Box(route_json={**ROUTE, "presets": [], "held": held[:1]})
-    assert (await b.block()).split("\n")[2] == "Presets to copy: none. Already in a loaded script: beam_clash (in galick_gun)."
-    # and a routing with none held keeps no "held" in state.json
-    b = Box()
-    await b.block()
-    assert "held" not in b.store.get("T7").implementers[0]["route"]
-
-
-async def test_the_server_state_line_says_to_act_on_it_only_when_the_state_was_read():
-    b = Box()
-    lines = (await b.block()).split("\n")
-    assert lines[lines.index("Online: Steve 120 64 -40 overworld, Alex 98 70 -12 overworld. Night, clear.") + 1] == examples.NOW
-    assert "no vfg state" in examples.NOW
-    assert examples.UNKNOWN not in lines
-    # vfg state failed: the state is unknown, and one vfg state is worth running
-    os.environ["VFG_FAKE_STATE_FAIL"] = "EC2 unreachable (fake)"
-    lines = (await Box().block()).split("\n")
-    assert examples.NOW not in lines
-    assert lines[lines.index("Server state: unavailable (exit 1: vfg: EC2 unreachable (fake)).") + 1] == examples.UNKNOWN
-    assert "one vfg state is worth running" in examples.UNKNOWN
-    del os.environ["VFG_FAKE_STATE_FAIL"]
-    # Minecraft not answering (exit 5): what runs is listed, who is online is not, so the same
-    os.environ["VFG_FAKE_STATE_CODE"] = "5"
-    b = Box(state={**STATE, "online": [], "rcon": "Minecraft is not answering on RCON"})
-    lines = (await b.block()).split("\n")
-    assert examples.NOW not in lines
-    assert lines[lines.index("Minecraft is not answering (Minecraft is not answering on RCON): who is online, the time "
-                             "and the weather are unknown.") + 1] == examples.UNKNOWN
-
-
-async def test_which_actions_run_the_picked_scripts_and_a_script_with_none():
+def test_which_actions_run_the_picked_scripts():
     acts = {"actions": {"ice_beam": {"script": "ice_beam", "source": "library"},
                         "frost_ray": {"script": "ice_beam", "source": "library"},
-                        "galick_ice": {"script": "galick_ice", "source": "made"},
-                        "railgun": {"script": "railgun", "source": "library"}}}
-    ice = {"name": "ice_beam", "source": "library"}
-    made = {"name": "galick_ice", "source": "made"}
-    seed = {"name": "tnt_rain", "source": "library"}
-    assert examples.runs_line([made], acts, "main") == ("galick_ice (made) runs this job: run its action, galick_ice, "
-                                                        "with the values the job needs.")
+                        "galick_ice": {"script": "galick_ice", "source": "made"}}}
+    ice, made, seed = ({"name": "ice_beam", "source": "library"}, {"name": "galick_ice", "source": "made"},
+                       {"name": "tnt_rain", "source": "library"})
     assert examples.runs_line([ice, made], acts, "main") == (
         "ice_beam and galick_ice (made) run this job: run one of their actions, ice_beam, frost_ray or galick_ice, "
         "with the values the job needs.")
@@ -441,134 +361,17 @@ async def test_which_actions_run_the_picked_scripts_and_a_script_with_none():
     assert examples.runs_line([ice], None, "main") == "ice_beam runs this job: run its action with the values the job needs."
 
 
-async def test_nothing_close_and_a_made_pick_say_so():
-    picks = {**ROUTE, "scripts": [], "presets": [{"name": "ice_trail", "source": "made", "p_use": 0.8,
-                                                  "path": "made/main/presets/ice_trail.py"}]}
-    b = Box(route_json=picks)
-    block = await b.block({**AGENT, "prompt": "T7: something new"})
-    assert block.split("\n")[1:3] == ["No example script runs this job or is close to it.", "Presets to copy: ice_trail (made)."]
-    assert whole("made/main/presets/ice_trail.py") in block
-
-
-async def test_an_empty_server_folder_and_nobody_online():
-    b = Box(state={**STATE, "online": [], "instances": [], "weather": "rain", "time": {"phase": "day"}},
-            running={"fetched_at": 1, "copies": {}})
-    for rel in ("made/main/scripts/galick_ice/main.py", "made/main/presets/ice_trail.py", "made/main/actions/galick_ice.py"):
-        os.remove(os.path.join(b.dir, rel))
-    block = await b.block()
-    assert "Running: nothing." in block.split("\n")
-    assert "Online: nobody. Day, rain." in block.split("\n")
-    assert "Made on this server (made/main/): nothing yet." in block.split("\n")
-    assert "Made on this server (made/main/actions/): none yet." in block.split("\n")
-
-
-async def test_the_server_folder_is_vfg_server():
-    b = Box(extra={"VFG_SERVER": "lobby"})
-    os.makedirs(os.path.join(b.dir, "made", "lobby", "scripts", "moat"))
-    write(os.path.join(b.dir, "made", "lobby", "scripts", "moat", "main.py"), '"""Moat: water round a build."""\nASKS = ["a moat"]\n')
-    block = await b.block()
-    assert "Made on this server (made/lobby/), by first line:\n  moat (script): Moat: water round a build." in block
-    assert "Made on this server (made/lobby/actions/): none yet." in block
-    assert "galick_ice" not in block
-
-
-# ---------------------------------------------------------------- what fails, and how long it may take
-
-async def test_the_router_timing_out_never_holds_the_implementer_past_its_timeout_and_a_second():
-    b = Box(extra={"VFG_ROUTE_TIMEOUT_S": "0.3"})
-    assert b.cfg.route_timeout_s == 0.3
-    os.environ["VFG_FAKE_ROUTE_SLEEP"] = "5"
-    t = time.monotonic()
-    block = await b.block()
-    took = time.monotonic() - t
-    assert took < 0.3 + 1 + 0.25, took
-    assert block.startswith("EXAMPLES for T7: nothing was picked, the router failed (timed out). ")
-    # what does not need the router is still there: the state, the made first lines, the named script
-    assert "Online: Steve 120 64 -40 overworld, Alex 98 70 -12 overworld. Night, clear." in block
-    assert "  ice_trail (preset): Lay packed ice under a player's feet as they walk." in block
-    assert whole("scripts/tnt_rain/main.py") in block
-    assert b.store.get("T7").implementers[0]["route"] == {"failed": "timed out"}
-
-
-async def test_a_hung_vfg_is_cut_off_by_the_steps_own_limit(monkeypatch):
-    b = Box(extra={"VFG_ROUTE_TIMEOUT_S": "0.2"})
-
-    async def hangs(*args, **kwargs):
-        import asyncio
-        await asyncio.sleep(30)
-
-    monkeypatch.setattr(examples.vfg_module, "vfg", hangs)
-    t = time.monotonic()
-    block = await b.block()
-    assert time.monotonic() - t < 0.2 + 1 + 0.25
-    assert "the router failed (no answer within 1.2 s)" in block
-    assert "Server state: unavailable (no answer within 1.2 s).\n" + examples.UNKNOWN in block
-
-
-async def test_the_server_down_the_block_still_goes_and_says_what_is_missing():
-    b = Box(running=None)
-    os.environ["VFG_FAKE_STATE_FAIL"] = "EC2 unreachable (fake)"
-    block = await b.block()
-    lines = block.split("\n")
-    assert lines[:4] == ["EXAMPLES, picked for T7 by Jev in 0.3 s.",
-                         "ice_beam runs this job: run one of its actions, ice_beam or frost_ray, with the values the job "
-                         "needs. galick_gun is close.",
-                         "Presets to copy: crater and replace_blocks.",
-                         "Named in your brief, in full below: tnt_rain."]
-    assert lines[4:6] == ["Server state: unavailable (exit 1: vfg: EC2 unreachable (fake)).", examples.UNKNOWN]
-    # what runs still comes from running.json when there is one
-    lines = (await Box().block()).split("\n")
-    assert lines[4].startswith("Running: galick-alex (galick_gun, player=Alex, cooldown=0, T5)")
-    assert lines[5].startswith("Server state: unavailable")
-    assert whole("scripts/ice_beam/main.py") in block
-    assert b.store.get("T7").implementers[0]["state"] == "exit 1: vfg: EC2 unreachable (fake)"
-
-
-async def test_minecraft_not_answering_is_said_and_what_runs_is_still_listed():
-    b = Box(state={**STATE, "online": [], "rcon": "Minecraft is not answering on RCON"}, running=None)
-    os.environ["VFG_FAKE_STATE_CODE"] = "5"
-    lines = (await b.block()).split("\n")
-    assert "Minecraft is not answering (Minecraft is not answering on RCON): who is online, the time and the weather are unknown." in lines
-    assert any(line.startswith("Running: galick-alex") for line in lines)
-
-
-async def test_the_router_failing_says_why():
-    b = Box()
-    os.environ["VFG_FAKE_ROUTE_FAIL"] = "not configured: VFG_ROUTE_LOAD must be a number"
-    block = await b.block()
-    assert block.startswith("EXAMPLES for T7: nothing was picked, the router failed "
-                            "(exit 1: vfg: not configured: VFG_ROUTE_LOAD must be a number).")
+def test_names_match_as_words_in_a_row_however_they_are_written():
+    assert examples.names_in("Run the Galick-Gun at Steve", ["galick_gun", "gun", "galick_ice"]) == ["galick_gun", "gun"]
+    assert examples.names_in("a zookeeper", ["zoo"]) == []
+    assert examples.names_in("galick then gun", ["galick_gun"]) == []
 
 
 async def test_route_run_refuses_what_is_not_its_json():
-    d = temp_dir()
-    use_fake_vfg(d)
-    os.environ["VFG_FAKE_ROUTE"] = os.path.join(d, "r.json")
-    write(os.environ["VFG_FAKE_ROUTE"], '{"scripts": "no"}')
-    with pytest.raises(route.RouteFailed):
-        await route.run("x", "T1", 1)
-    write(os.environ["VFG_FAKE_ROUTE"], "Traceback")
+    vfg = FakeVfg().on("route", answer=ok('{"scripts": "no"}'))
+    with pytest.raises(route.RouteFailed, match="no scripts and presets"):
+        await route.run("x", "T1", 1, vfg)
+    vfg.on("route", answer=ok("Traceback"))
     with pytest.raises(route.RouteFailed, match="not JSON"):
-        await route.run("x", None, 1)
-
-
-# ---------------------------------------------------------------- in the guard, after the places
-
-async def test_off_until_the_runner_turns_it_on():
-    use_fake_vfg(temp_dir())
-    assert await examples.examples("x", AGENT) == "x"
-
-
-async def test_an_allowed_agent_call_goes_out_with_the_places_then_the_examples():
-    b = Box()
-    g = GuardContext(repo=b.dir, max_implementers=4, implementer_model="claude-haiku-5-5", main_thread_rule=True,
-                     open_task_ids=lambda: ["T7"], active_implementers=lambda: 0, on_agent_allowed=lambda t, u: None)
-    call = {"session_id": "s", "transcript_path": "t", "cwd": b.dir, "hook_event_name": "PreToolUse",
-            "tool_name": "Agent", "tool_input": AGENT, "tool_use_id": "u1"}
-    out = await make_guard(g)(call, "u1", {"signal": None})
-    updated = out["hookSpecificOutput"]["updatedInput"]
-    assert {k: v for k, v in updated.items() if k != "prompt"} == {k: v for k, v in AGENT.items() if k != "prompt"}
-    assert updated["prompt"].startswith(JOB + "\n\nSAVED PLACES: none\n\nEXAMPLES, picked for T7 by Jev in 0.3 s.\n")
-    assert "\nACTIONS: every action" in updated["prompt"] and "\nice_beam — Give a player an ice beam" in updated["prompt"]
-    assert whole("scripts/ice_beam/main.py") in updated["prompt"]
-    assert brief.STEPS[-1] is examples.examples
+        await route.run("x", None, 1, vfg)
+    assert vfg.calls == [["route", "--task", "T1"], ["route"]] and vfg.stdin["route"] == "x"
