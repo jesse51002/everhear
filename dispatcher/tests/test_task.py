@@ -864,3 +864,25 @@ def test_only_an_action_instruction_is_capped_at_160_characters():
     assert len(ok.parts[0].instruction) > 500 and len(ok.parts[0].part) > 200
     with pytest.raises(ValidationError, match="at most 160"):
         Selection.model_validate({"parts": [{"part": "speed", "to": "command", "instruction": "give Steve speed " * 12}]})
+
+
+async def test_a_duration_no_script_value_covers_is_handed_on_not_bent_into_another_value(h):
+    h.llm.add("Selection", select(("run_script", "start tnt_rain on Steve for 30 seconds")))
+    h.llm.add("Planned_run_script", planned(hand_on="run tnt_rain on Steve and stop it after 30 seconds",
+                                            say="tnt_rain has no duration: the orchestrator times it"))
+    tid = await h.run("start tnt_rain on Steve for 30 seconds")
+    call = next(c for c in h.llm.calls if c.output == "Planned_run_script")
+    assert ("Use a script's value only for what its name and type mean. When the instruction asks for something "
+            "no value covers, such as a duration the script has no value for, hand it on rather than bend another "
+            "value to fit.") in call.system
+    assert "INSTRUCTION: start tnt_rain on Steve for 30 seconds\n" in call.prompt  # the unit kept
+    assert h.vfg.actions() == []  # never `every_s=30`, a 30 s interval that never ends
+    [[line]] = h.vfg.hands()
+    assert line["task"] == "start tnt_rain on Steve for 30 seconds"
+    assert "run tnt_rain on Steve and stop it after 30 seconds" in line["context"]
+    assert h.vfg.replies(tid)[-1][2].startswith("handed on to the orchestrator")
+
+
+def test_the_selector_keeps_units_with_numbers():
+    from dispatcher.selector import PROMPT
+    assert 'Keep each number\'s unit with it: "for 30 seconds", never a bare "30".' in PROMPT.read_text()
