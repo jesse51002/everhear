@@ -78,6 +78,9 @@ RESERVED_KEYS = ("as",)   # `as=<instance>` on vfg script run
 BOOL_WORDS = {"true": True, "yes": True, "on": True, "1": True, "y": True,
               "false": False, "no": False, "off": False, "0": False, "n": False}
 STDLIB = getattr(sys, "stdlib_module_names", None)   # 3.10+; on 3.9 imports go unchecked
+# A preset's values class (class <CamelName>(Values), beside its function) and its imports
+# are read on the PC only, by lib/py/vfg_actions.py: never copied into a script.
+PC_ONLY = ("actions", "pydantic")
 
 
 class ValueProblem(Exception):
@@ -631,7 +634,7 @@ def check(item, lib=None):
             bad(asks_node.lineno, "ASKS is a list of strings: what players said")
         elif not item.asks:
             bad(asks_node.lineno, "ASKS is empty: put what players said in it, in their own words")
-    _check_imports(tree, bad)
+    _check_imports(tree, bad, pc_only=item.kind == "preset")
     vnodes = [n for n in body if _assigned(n) == "VALUES"]
     if not vnodes:
         bad(1, "no VALUES (VALUES = {} when it has none)")
@@ -721,7 +724,7 @@ def _defines(node):
     return []
 
 
-def _check_imports(tree, bad):
+def _check_imports(tree, bad, pc_only=False):
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             mods = [a.name for a in node.names]
@@ -736,7 +739,7 @@ def _check_imports(tree, bad):
             parts = mod.split(".")
             if "_presets" in parts:
                 bad(node.lineno, "imports from _presets: copy the preset in (vfg script new --preset)")
-            elif parts[0] in ("kit", "mc"):
+            elif parts[0] in ("kit", "mc") or (pc_only and parts[0] in PC_ONLY):
                 continue
             elif STDLIB is not None and parts[0] not in STDLIB:
                 bad(node.lineno, "imports %s, which is not on the box: kit, mc and the standard "
@@ -754,7 +757,8 @@ def _check_preset_shape(item, bad):
         if not args or args[-1].arg != "v":
             bad(fn.lineno, "%s takes the values v as its last argument: def %s(..., v)" % (name, name))
     for node in body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name != name:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name != name \
+                and not _values_class(node, name):
             if not (node.name.startswith("_") and prefixed(name, node.name[1:])):
                 bad(node.lineno, "%s: a preset's helpers are private and carry its name: _%s_..."
                     % (node.name, name))
@@ -872,15 +876,30 @@ def _col(line, byte_col):
     return len(line.encode("utf-8")[:byte_col].decode("utf-8", errors="ignore"))
 
 
+def _values_class(node, preset):
+    """Is a top-level statement the preset's values class, class <CamelName>(Values)?"""
+    return isinstance(node, ast.ClassDef) \
+        and node.name == "".join(p[:1].upper() + p[1:] for p in preset.split("_")) \
+        and any(getattr(b, "id", getattr(b, "attr", None)) == "Values" for b in node.bases)
+
+
+def _pc_only(imp):
+    """Is an import (imports_of form) one only the PC has (PC_ONLY)?"""
+    kind, mod, names, _node = imp
+    roots = [mod.split(".")[0]] if kind == "from" else [n.split(".")[0] for n, _a in names]
+    return all(r in PC_ONLY for r in roots)
+
+
 def preset_body(preset):
-    """The code a preset gives a script: everything but its docstring, its imports and
-    its VALUES (and the comments right above them), and any `if __name__` block."""
+    """The code a preset gives a script: everything but its docstring, its imports, its
+    VALUES and its values class (and the comments right above them), and any `if __name__`
+    block."""
     tree = preset.tree
     lines = preset.text.splitlines()
     drop = set()
     for i, node in enumerate(tree.body):
         if (i == 0 and _is_doc(node)) or isinstance(node, (ast.Import, ast.ImportFrom)) \
-                or _main_guard(node) or _assigned(node) == "VALUES":
+                or _main_guard(node) or _assigned(node) == "VALUES" or _values_class(node, preset.name):
             first = node.lineno
             while first > 1 and lines[first - 2].strip().startswith("#"):
                 first -= 1
@@ -1066,7 +1085,7 @@ def add_preset(text, preset, server):
         new[0].before = list(closing) + new[0].before
         closing = []
     text = replace_values(text, entries + new, closing)
-    text, imports = merge_imports(text, imports_of(preset.tree))
+    text, imports = merge_imports(text, [i for i in imports_of(preset.tree) if not _pc_only(i)])
     block = marker(preset, server) + "\n" + preset_body(preset) + "\n"
     at = wiring_line(text)
     lines = text.splitlines(True)

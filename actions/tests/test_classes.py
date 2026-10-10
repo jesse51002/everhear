@@ -101,7 +101,7 @@ def test_shared_types():
     assert TypeAdapter(Id).validate_python("minecraft:Snowy_Taiga") == "snowy_taiga"
     assert TypeAdapter(Id).validate_python("#minecraft:village") == "#village"
     assert TypeAdapter(MobId).validate_python("minecraft:zombie") == "zombie"
-    for bad in ("#minecraft:skeletons", "mod:thing", "two words", ""):
+    for bad in ("#minecraft:skeletons", "potion", "two words", ""):  # MobId is the kit's: a gone id, no tag
         with pytest.raises(ValidationError):
             TypeAdapter(MobId).validate_python(bad)
     assert TypeAdapter(PlayerOrAll).validate_python("@a") == "@a"
@@ -144,11 +144,11 @@ def refused_in(path: str) -> set[str]:
 
 
 def test_the_command_rules_are_one_module_and_every_refused_list_matches_it():
-    commands = _types._commands  # toolkit/remote/commands.py, loaded by path
-    assert Path(commands.__file__) == REPO / "toolkit" / "remote" / "commands.py"
+    commands = _types._commands  # scripts/_lib/commands.py, loaded by path
+    assert Path(commands.__file__) == REPO / "scripts" / "_lib" / "commands.py"
     assert (_types.REFUSED, _types.BLOCK_COMMANDS, _types.RCON_MAX, _types.command_problem) == \
         (commands.REFUSED, commands.BLOCK_COMMANDS, commands.RCON_MAX, commands.command_problem)
-    assert set(commands.REFUSED) == refused_in("toolkit/remote/commands.py") == refused_in("scripts/_lib/mc.py")
+    assert set(commands.REFUSED) == refused_in("scripts/_lib/commands.py") == refused_in("scripts/_lib/mc.py")
     if (REPO / "orchestrator/orchestrator/guard.py").exists():
         assert set(commands.REFUSED) == refused_in("orchestrator/orchestrator/guard.py")
     assert set(commands.BLOCK_COMMANDS) == {"setblock", "fill", "clone", "place", "fillbiome"}
@@ -364,7 +364,7 @@ def test_actions_round_trip_through_json():
 def test_every_pattern_reaches_the_json_schema():
     """The model's structured output is held to the schema: each pattern must be in it,
     through Optional too, and so must each Literal's choices."""
-    from actions._types import ID_PATTERN, PLACE_PATTERN, PLAYER_OR_ALL_PATTERN, PLAYER_PATTERN
+    from actions._types import ID_PATTERN, ID_PATTERNS, PLACE_PATTERN, PLAYER_OR_ALL_PATTERN, PLAYER_PATTERN
 
     def pattern(schema: dict, field: str) -> str | None:
         prop = schema["properties"][field]
@@ -376,7 +376,7 @@ def test_every_pattern_reaches_the_json_schema():
     want = {
         (Teleport, "player"): PLAYER_OR_ALL_PATTERN,
         (SummonAround, "players"): PLAYER_OR_ALL_PATTERN,
-        (SummonAround, "mob"): ID_PATTERN,
+        (SummonAround, "mob"): ID_PATTERNS["mob"],
         (SavePlace, "name"): PLACE_PATTERN,
         (SavePlace, "player"): PLAYER_PATTERN,
     }

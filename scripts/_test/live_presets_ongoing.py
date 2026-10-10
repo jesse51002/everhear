@@ -24,6 +24,7 @@ sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIB = os.path.join(os.path.dirname(HERE), "_lib")
 PRESETS = os.path.join(os.path.dirname(HERE), "_presets")
+sys.path.append(os.path.dirname(os.path.dirname(HERE)))  # the repo: a preset's values class imports actions._types
 REALMC = os.path.join(os.path.dirname(os.path.dirname(HERE)), "integration", "realmc")
 sys.path.insert(0, LIB)
 sys.path.insert(0, REALMC)
