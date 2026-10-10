@@ -36,6 +36,7 @@ from .vfg import Later, Vfg
 from .world import Seen
 
 SAY_TIMEOUT_S = 30
+BROKE = "sorry, something broke on my side and that one didn't finish"
 LINE_MAX = 200    # a chat line written here
 ROW_MAX = 400     # an AI row's text
 BRIEF_SHORT = 160  # a brief in an `AI task` row
@@ -134,21 +135,35 @@ class Acts:
         actions = distinct([p for p in decision.parts if p.to not in (IMPLEMENTER, TALK)])
         tid = self.tasks.open(player, line, "; ".join(p.instruction for p in actions)) if actions else ""
         handed = [p for p in decision.parts if p.to == IMPLEMENTER]
-        started = [self.implementer(p, player, line) for p in handed]
-        ids = [await s for s in started]
-        task = tid or next((i for i in ids if i), "")
-        if not actions:
-            if decision.reply.strip():
-                await self.say(decision.reply, task)
-            return
-        outcomes = await self.actions(actions, tid, player, line, seen)
-        ok = all(o.ok or o.chosen for o in outcomes)  # the brain's reply already says what it dropped
-        self.tasks.close(tid, "done" if any(o.ok for o in outcomes) else "failed",
-                         short("; ".join(f"{'ok' if o.ok else 'failed'}: {o.summary}" for o in outcomes), ROW_MAX))
-        reply = decision.reply if ok else fallback(outcomes, [p.part for p in handed])
-        if not ok:
-            log("reply", f"{tid} an action failed or was dropped: said {reply!r} instead of {decision.reply!r}")
-        await self.say(reply, task)
+        task = tid
+        try:
+            ids = [await self.implementer(p, player, line) for p in handed]
+            task = tid or next((i for i in ids if i), "")
+            if not actions:
+                if decision.reply.strip():
+                    await self.say(decision.reply, task)
+                return
+            outcomes = await self.actions(actions, tid, player, line, seen)
+            ok = all(o.ok or o.chosen for o in outcomes)  # the brain's reply already says what it dropped
+            self.tasks.close(tid, "done" if any(o.ok for o in outcomes) else "failed",
+                             short("; ".join(f"{'ok' if o.ok else 'failed'}: {o.summary}" for o in outcomes),
+                                   ROW_MAX))
+            reply = decision.reply if ok else fallback(outcomes, [p.part for p in handed])
+            if not ok:
+                log("reply", f"{tid} an action failed or was dropped: said {reply!r} instead of {decision.reply!r}")
+            await self.say(reply, task)
+        except Exception as e:  # raised on, for the event's own log: the task closes, the player hears so
+            self.cut(tid, f"{tid} failed: it broke ({type(e).__name__}: {short(str(e), 120)})")
+            await self.say(BROKE, task)
+            raise
+        finally:  # cancelled: the brain stopped while it ran
+            self.cut(tid, f"{tid} failed: cut off, the brain stopped while it ran")
+
+    def cut(self, tid: str, result: str) -> None:
+        """A line's task that did not get to its end, failed, unless it was closed already."""
+        if tid and (self.tasks.get(tid) or {}).get("status") == "open":
+            self.tasks.close(tid, "failed", result)
+            log("task", result)
 
     async def implementer(self, p, player: str, line: str) -> str:
         """Start a new implementer task, or follow one up; its id."""

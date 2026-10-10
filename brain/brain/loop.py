@@ -21,7 +21,6 @@ included, nobody waiting.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import traceback
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
@@ -209,25 +208,38 @@ class Brain:
         far, and the call is told, so its reply never says it is all done."""
         task = self.tasks.get(tid) or {"id": tid, "player": "", "line": "", "task": ""}
         self.keep_session(tid)
-        self.reload()
-        seen = await self.world.seen()
-        event = Event("REPORT", task=task, status=status, report=text, following=following)
+        recorded = False
         try:
-            answer = await self.call.decide(event, self.ctx, seen, self.open_tasks(), [], self.refs)
-        except LlmError as e:
-            log("brain", f"{tid} report FAILED: {e}")
-            self.result(tid, status, self.written(tid, status), following)
-            await self.acts.say(self.line_for(tid, status, following), tid)
-            return
-        self.usage("brain", self.model, answer, tid)
-        d = answer.value
-        log("brain", f"{tid} report ({status}) -> {describe(d)}")
-        final = d.status or status
-        self.result(tid, final, d.record.strip() or self.written(tid, final), following)
-        if d.parts:
-            await self.acts.run(d, player=task.get("player") or "", line=task.get("line") or "", seen=seen)
-        else:  # every report gets its chat line: the call's, else one written here
-            await self.acts.say(d.reply.strip() or self.line_for(tid, final, following), tid)
+            self.reload()
+            seen = await self.world.seen()
+            event = Event("REPORT", task=task, status=status, report=text, following=following)
+            try:
+                answer = await self.call.decide(event, self.ctx, seen, self.open_tasks(), [], self.refs)
+            except LlmError as e:
+                log("brain", f"{tid} report FAILED: {e}")
+                self.result(tid, status, self.written(tid, status), following)
+                recorded = True
+                await self.acts.say(self.line_for(tid, status, following), tid)
+                return
+            self.usage("brain", self.model, answer, tid)
+            d = answer.value
+            log("brain", f"{tid} report ({status}) -> {describe(d)}")
+            final = d.status or status
+            self.result(tid, final, d.record.strip() or self.written(tid, final), following)
+            recorded = True
+            if d.parts:
+                await self.acts.run(d, player=task.get("player") or "", line=task.get("line") or "", seen=seen)
+            else:  # every report gets its chat line: the call's, else one written here
+                await self.acts.say(d.reply.strip() or self.line_for(tid, final, following), tid)
+        except Exception:  # raised on, for the event's own log; the task never stays open for it
+            if not recorded:
+                self.result(tid, status, self.written(tid, status), following)
+                recorded = True
+                await self.acts.say(self.line_for(tid, status, following), tid)
+            raise
+        finally:
+            if not recorded:  # cancelled: the brain stopped while the call ran
+                self.result(tid, status, self.written(tid, status), following)
 
     def keep_session(self, tid: str) -> None:
         """The task's implementer session into tasks.json, in case on_session missed it."""
@@ -323,14 +335,21 @@ class Brain:
             for t in left:
                 t.cancel()
             await asyncio.gather(*left, return_exceptions=True)
-        with contextlib.suppress(Exception):
+        try:
             stopped = await self.implementers.close(implementers_grace_s)
-            for tid in stopped:
+        except Exception as e:  # noqa: BLE001 — the stop goes on; the next start fails what stayed open
+            log("error", f"stopping the implementers failed: {type(e).__name__}: {e} | "
+                         f"{traceback.format_exc(limit=-4)}")
+            stopped = []
+        for tid in stopped:
+            try:
                 self.keep_session(tid)  # a follow-up after the restart resumes it
                 self.tasks.close(tid, "failed", f"{tid} failed: stopped, the brain stopped while it ran")
                 self.acts.post("result", tid, f"{tid} failed: stopped, the brain stopped while it ran")
-            if stopped:
-                log("stop", f"stopped the implementers of {', '.join(stopped)}")
+            except Exception as e:  # noqa: BLE001 — one task's trouble never keeps the rest open
+                log("error", f"closing {tid} at the stop failed: {type(e).__name__}: {e}")
+        if stopped:
+            log("stop", f"stopped the implementers of {', '.join(stopped)}")
 
 
 def jev_menu(catalog) -> str:

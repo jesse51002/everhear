@@ -71,7 +71,9 @@ resumes its session (kept in `tasks.json` as soon as the implementer's CLI names
 session saved starts anew on the task's brief and the follow-up. The
 reply is said at once when there are only implementer and talk parts, and after the actions
 otherwise; when an action failed or was dropped in code, a short line written in code goes out
-instead, so a reply never claims what did not happen.
+instead, so a reply never claims what did not happen. An error nobody expected never leaves a task
+open: the line's task, or the reported one, is closed (failed, or on the implementer's status)
+and the player gets a line written in code; the error is logged.
 
 ## Run it
 

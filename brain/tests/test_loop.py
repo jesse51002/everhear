@@ -5,6 +5,7 @@ import asyncio
 
 from vfg_llm import LlmError
 
+from brain.act import BROKE
 from brain.timer import Timer
 
 from conftest import cmd, decision, part, rows
@@ -144,6 +145,26 @@ async def test_a_report_gets_a_record_and_a_chat_line_written_in_code_when_the_c
                                                              "T2 done: an ice beam for Alex"]
     assert k.vfg.said() == [["sorry, that one failed: an ice trail behind Steve", "--task", "T1"],
                             ["done: an ice beam for Alex", "--task", "T2"]]
+
+
+async def test_an_unexpected_error_never_leaves_a_task_open_and_the_player_hears_so(kit):
+    async def broken(argv):
+        raise RuntimeError("the runner broke")
+
+    async def blind():
+        raise RuntimeError("no state")
+
+    k = kit(Decision=GIVE)
+    k.vfg.on("action", "run", answer=broken)
+    k.brain.feed(ASK.format(seq=5))                       # T1: its action's run raises
+    await k.settle()
+    trail = k.tasks.open("Steve", "make me an ice trail", "an ice trail behind Steve")
+    k.world.seen = blind                                  # T2's report: the world cannot be read
+    await k.brain.on_report(trail, "done", "Done: an ice trail follows Steve.")
+    await k.settle()
+    assert [(t["status"], t["result"]) for t in k.tasks.tasks.values()] == [
+        ("failed", "T1 failed: it broke (RuntimeError: the runner broke)"), ("done", "T2 done: an ice trail behind Steve")]
+    assert k.vfg.said() == [[BROKE, "--task", "T1"], ["done: an ice trail behind Steve", "--task", "T2"]]
 
 
 class Finished:
