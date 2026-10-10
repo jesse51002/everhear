@@ -185,7 +185,8 @@ class TestOneRefusedList(unittest.TestCase):
 
     def test_the_implementers_guard_loads_it(self):
         import ast
-        path = os.path.join(REPO, "brain", "brain", "implementers", "guard.py")
+        folder = os.path.join(REPO, "brain", "brain", "implementers")
+        path = os.path.join(folder, "guard.py")
         if not os.path.isfile(path):
             self.skipTest("no brain/brain/implementers/guard.py")
         with open(path, encoding="utf-8") as f:
@@ -193,14 +194,11 @@ class TestOneRefusedList(unittest.TestCase):
         keep = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name == "refused")
                 or (isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "_COMMANDS")]
         self.assertEqual(len(keep), 2)
-        ns = {"os": os, "__file__": path}
+        root = load_module("implementers_config", os.path.join(folder, "config.py")).ROOT
+        self.assertEqual(os.path.realpath(root), os.path.realpath(REPO))
+        ns = {"os": os, "__file__": path, "ROOT": root}
         exec(compile(ast.Module(body=keep, type_ignores=[]), path, "exec"), ns)
-        try:
-            got = ns["refused"]()
-        except FileNotFoundError as e:
-            self.skipTest("guard.py looks for commands.py at %s, one folder short since it moved into "
-                          "brain/brain/implementers/: the implementers' to fix" % e.filename)
-        self.assertEqual(got, load_module("one_list_commands", self.COMMANDS).REFUSED)
+        self.assertEqual(ns["refused"](), load_module("one_list_commands", self.COMMANDS).REFUSED)
 
     def test_no_other_file_writes_the_words_out(self):
         words = re.compile(r"frozenset\(\[[^\]]*\"deop\"")
@@ -1307,7 +1305,7 @@ class TestRealFeedWriter(BoxCase):
             self.assertRegex(line, pattern)
         self.assertEqual(feed_lines(self.box)[2:], got)
         self.assertEqual(self.vfg("context").stdout.splitlines()[2:], got)
-        self.assertOneLine(self.vfg("feed", "post", "GAME", "dance Steve", "x"), 1)
+        self.assertOneLine(self.vfg("feed", "post", "GAME", "Dance Steve", "x"), 1)   # the writer refuses it
 
 
 if __name__ == "__main__":
