@@ -62,8 +62,11 @@ lines alone, by their LINE numbers, the context still built in full; `--dry` wri
 and calls nothing; `--budget` (4 dollars) stops a run that spends more. `classes.py respond
 --budget` is 1 dollar.
 
-On 2026-10-10 a full `lines.py` run took about 25 minutes and about $2.5, the Jev step about
-4 minutes and $0.27, and the Respond step about 12 minutes and under $0.5.
+On 2026-10-10 a full `lines.py` run took about 24 minutes and $3.02 (a call: median $0.0084 and
+3.7 s; the prompt grew from 25K to 68K tokens, 98% of it cached), the Jev step 3.5 minutes and
+$0.27, and the Respond step 9 minutes and $1.01 for the first 322 of the 382 lines Jev classed
+`conversational`, where its $1 budget stopped it: all of them would be about $1.2. A window of
+lines, `--only`, costs a cold first call (about $0.10) and then what the full run's calls do.
 
 ### What it leaves in OUT
 

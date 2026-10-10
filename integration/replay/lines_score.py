@@ -38,6 +38,7 @@ import re
 import statistics as st
 import sys
 from collections import Counter
+from datetime import datetime, timedelta
 from itertools import product
 from pathlib import Path
 
@@ -124,6 +125,11 @@ def follow_ups(rows: list[dict], inbox: dict[str, dict]) -> list[dict]:
     return out
 
 
+def plus_s(at: str, seconds: float) -> str:
+    t = datetime.fromisoformat(at.replace("Z", "+00:00")) + timedelta(seconds=seconds)
+    return t.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 def pct(a: int, b: int) -> str:
     return f"{100 * a / b:.1f}%" if b else "-"
 
@@ -200,6 +206,10 @@ def main() -> None:
                     "actions and an implementer" if needs_impl(r["route"]) else "actions only" for r in over)
     w(f"\n## Over-acting: {len(over)} lines the conversation made no task of, the brain acted on (the old 62)\n")
     w(", ".join(f"{k} {v}" for k, v in kinds.most_common()) + ".")
+    fups = sum(1 for r in over if any(p["to"] == IMPL and p["task"] for p in r["parts"]))
+    near = sum(1 for r in over if any(r["fed"] <= t["at"] <= plus_s(r["fed"], 120) for t in inbox.values()))
+    w(f"Of them, {fups} follow up a task the brain named; and the conversation wrote some task in the "
+      f"2 minutes after {near} of them, often the same ask, named by a neighbouring line (a hint, not a check).")
     w("\n| # | Who | Said | The brain's route | Its reply |\n|---|---|---|---|---|")
     for r in over[:args.sample or None]:
         said = " ".join(r["words"].split())[:140].replace("|", "/")
