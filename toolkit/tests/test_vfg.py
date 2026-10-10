@@ -6,9 +6,13 @@ Each test gets a temp VFG_HOME, a temp VFG_REPO and a temp "box" that
 VFG_REMOTE_VFG and VFG_REMOTE_MC point into. VFG_SSH is fake_ssh, which runs
 the remote command here with bash; a python3 shim for the interpreter running
 the tests goes first on PATH, so the remote programs run on it too (3.9 under
-`uv run --python 3.9`).
+`uv run --python 3.9`). The place and handler tests answer RCON with
+../scripts/_test/fake_places_world.py, Minecraft 26.3's recorded replies.
 """
 import base64
+import contextlib
+import importlib.machinery
+import importlib.util
 import io
 import json
 import os
@@ -26,11 +30,14 @@ import tempfile
 import threading
 import time
 import unittest
+import zipfile
 from datetime import datetime, timedelta, timezone
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
 TOOLKIT = os.path.dirname(TESTS)
 VFG = os.path.join(TOOLKIT, "vfg")
+REPO = os.path.dirname(TOOLKIT)
+SCRIPTS_TEST = os.path.join(REPO, "scripts", "_test")
 PY = sys.executable
 FEED_RE = re.compile(r"^(LINE|GAME|ORCH|SYS)#\d+ \d\d:\d\d:\d\d ")
 ISO_RE = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")
@@ -54,10 +61,18 @@ CREATE TABLE usage (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,
 """
 
 RUNNER = """#!/usr/bin/env bash
-# A stand-in for orchestrator/run: a sleep child, then a loop.
+# A stand-in for orchestrator/run: a sleep child, then a loop; SIGTERM is noted in order.
+trap 'echo "orchestrator stopping $(date +%s.%N)" >> "$VFG_ORCH_DIR/order"; exit 0' TERM
 sleep 1000 &
 echo $! > "$VFG_ORCH_DIR/child.pid"
 echo "fake runner $$ up"
+while true; do sleep 0.2; done
+"""
+
+DISPATCHER = """#!/usr/bin/env bash
+# A stand-in for dispatcher/run: on SIGTERM it takes a second to hand on what it holds.
+trap 'sleep 1; echo "dispatcher handed $(date +%s.%N)" >> "$VFG_ORCH_DIR/order"; exit 0' TERM
+echo "fake dispatcher $$ up"
 while true; do sleep 0.2; done
 """
 
@@ -101,6 +116,15 @@ def alive(pid):
         return False
 
 
+def vfg_module(name="vfgmod"):
+    """toolkit/vfg loaded as a module, to call its functions in-process."""
+    sys.dont_write_bytecode = True
+    loader = importlib.machinery.SourceFileLoader(name, VFG)
+    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, loader))
+    loader.exec_module(mod)
+    return mod
+
+
 def wait_for(pred, timeout=10, step=0.05):
     end = time.time() + timeout
     while time.time() < end:
@@ -130,6 +154,7 @@ class Box(object):
         self.ssh_log = j("ssh.jsonl")
         self.rcon_log = j("rcon.jsonl")
         open(self.rcon_log, "w").close()
+        self.world = j("world.json")  # what the fake RCON says about players, time, weather
         self.port = free_port()
         self.password = secrets.token_hex(8)
         self.write_props(self.password)
@@ -199,6 +224,11 @@ class Box(object):
         with open(self.run_path, "w") as f:
             f.write(RUNNER)
         os.chmod(self.run_path, 0o755)
+        os.makedirs(os.path.join(self.repo, "dispatcher"))
+        self.dispatcher_path = os.path.join(self.repo, "dispatcher", "run")
+        with open(self.dispatcher_path, "w") as f:
+            f.write(DISPATCHER)
+        os.chmod(self.dispatcher_path, 0o755)
         s = os.path.join(self.repo, "scripts")
         files = {
             "_lib/mc.py": "NAME = 'fake mc'\n",
@@ -218,12 +248,19 @@ class Box(object):
             with open(path, "w") as f:
                 f.write(text)
 
-    def start_rcon(self):
+    def start_rcon(self, shared=False):
+        """shared=True: one reply buffer for every connection, as vanilla's."""
+        env = dict(os.environ, FAKE_RCON_SHARED="1" if shared else "0")
         self.rcon = subprocess.Popen([PY, os.path.join(TESTS, "fake_rcon.py"),
-                                      os.path.join(self.rmc, "server.properties"), self.rcon_log],
-                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                                      os.path.join(self.rmc, "server.properties"), self.rcon_log,
+                                      self.world],
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
         line = self.rcon.stdout.readline()
         assert line.strip() == b"ready", line
+
+    def write_world(self, world):
+        with open(self.world, "w") as f:
+            json.dump(world, f)
 
     def stop_rcon(self):
         if self.rcon:
@@ -306,7 +343,8 @@ class Box(object):
                 if s:
                     s.close()
         self.stop_rcon()
-        pidfiles = [os.path.join(self.vhome, "orch", "runner.pid")]
+        pidfiles = [os.path.join(self.vhome, "orch", "runner.pid"),
+                    os.path.join(self.vhome, "dispatch", "dispatcher.pid")]
         run = os.path.join(self.rvfg, "run")
         if os.path.isdir(run):
             pidfiles += [os.path.join(run, n) for n in os.listdir(run) if n.endswith(".pid")]
@@ -316,6 +354,10 @@ class Box(object):
                     os.killpg(int(f.read().strip()), signal.SIGKILL)
             except (OSError, ValueError):
                 pass
+        try:
+            os.remove("/tmp/vfg-rcon-%d.lock" % self.port)  # the remote side's RCON lock
+        except OSError:
+            pass
         shutil.rmtree(self.root, ignore_errors=True)
 
 
@@ -351,9 +393,15 @@ class TestBasics(Case):
         r = self.box.vfg("--help")
         self.assertOk(r)
         for c in ("up", "watch", "say", "cmd", "history", "watchers", "lookout", "orch",
-                  "feed", "script", "usage"):
+                  "feed", "script", "action", "place", "usage"):
             self.assertRegex(r.stdout, r"\n\s+%s\s" % c)
-        for args, words in ((["orch", "--help"], ["start", "stop", "status", "send", "reply"]),
+        for args, words in ((["orch", "--help"], ["start", "stop", "status", "send", "hand", "reply"]),
+                            (["action", "--help"], ["run", "refs"]),
+                            (["action", "run", "--help"], ["--args", "--task", "--timeout", "124"]),
+                            (["action", "refs", "--help"], ["--version"]),
+                            (["place", "--help"], ["save", "list", "forget"]),
+                            (["place", "save", "--help"], ["--player", "--at", "--dim", "--by"]),
+                            (["place", "list", "--help"], ["--json"]),
                             (["script", "--help"], ["deploy", "run", "stop", "logs", "list"]),
                             (["history", "--help"], ["--since", "--until", "--player", "--class",
                                                      "--source", "--events", "--feed", "--limit"]),
@@ -437,6 +485,30 @@ class TestBasics(Case):
                      ["watchers"], ["orch", "send"]):
             r = self.box.vfg(*args)
             self.assertOneLine(r, 2)
+
+    def test_program_ships_libraries_as_modules(self):
+        mod = vfg_module("vfgmod_program")
+
+        def read(name):
+            with open(os.path.join(TOOLKIT, "remote", name), encoding="utf-8") as f:
+                return f.read()
+        self.assertEqual(mod.program("rcon.py", {"a": 1}).decode(),
+                         read("common.py") + "\nARGS = json.loads('{\"a\": 1}')\n\n" + read("rcon.py"))
+        text = mod.program("place.py", {"op": "list"}, ["places.py"]).decode()
+        self.assertTrue(text.endswith("\n" + read("place.py")))
+        head = text[:-len(read("place.py"))]
+        ns = {"__name__": "__main__"}
+        saved = sys.modules.pop("places", None)
+        try:
+            exec(compile(head, "<program>", "exec"), ns)
+            self.assertIs(sys.modules["places"], ns["places"])
+            self.assertEqual(ns["places"].STORAGE, "everhear:places")
+            self.assertNotIn("all", ns)  # places.all stays inside its module
+            self.assertNotIn("snbt", ns)
+        finally:
+            sys.modules.pop("places", None)
+            if saved is not None:
+                sys.modules["places"] = saved
 
     def test_every_invocation_is_logged(self):
         self.box.vfg("--version")
@@ -836,6 +908,9 @@ class TestOrch(Case):
     def orch(self, name):
         return os.path.join(self.box.vhome, "orch", name)
 
+    def dispatch(self, name):
+        return os.path.join(self.box.vhome, "dispatch", name)
+
     def test_twenty_sends_at_once(self):
         procs = [subprocess.Popen([PY, VFG, "orch", "send", "task %d" % i, "--context", "c%d" % i],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.box.env())
@@ -845,9 +920,9 @@ class TestOrch(Case):
             o, e = p.communicate(timeout=60)
             self.assertEqual(p.returncode, 0, e)
             ids.append(o.decode().strip())
-            self.assertEqual(e.decode(), "vfg: orchestrator runner is not running — vfg orch start\n")
+            self.assertEqual(e.decode(), "vfg: dispatcher and orchestrator runner are not running — vfg orch start\n")
         self.assertEqual(sorted(ids, key=lambda t: int(t[1:])), ["T%d" % i for i in range(1, 21)])
-        with open(self.orch("inbox.jsonl")) as f:
+        with open(self.dispatch("inbox.jsonl")) as f:
             rows = [json.loads(l) for l in f]
         self.assertEqual(len(rows), 20)
         for row in rows:
@@ -855,56 +930,95 @@ class TestOrch(Case):
             self.assertRegex(row["at"], ISO_RE)
             self.assertEqual(row["context"], "c" + row["task"].split()[1])
         self.assertEqual(sorted(r["id"] for r in rows), sorted(ids))
+        self.assertFalse(os.path.exists(self.orch("inbox.jsonl")))  # the orchestrator's: only hand writes it
 
     def test_send_defaults_and_refusals(self):
         r = self.box.vfg("orch", "send", "build ~ a 'castle'")
         self.assertEqual(r.stdout, "T1\n")
-        with open(self.orch("inbox.jsonl")) as f:
+        with open(self.dispatch("inbox.jsonl")) as f:
             self.assertEqual(json.loads(f.readline())["context"], "")
         self.assertOneLine(self.box.vfg("orch", "send", " "), 2)
-        with open(self.orch("inbox.jsonl"), "a") as f:
+        with open(self.dispatch("inbox.jsonl"), "a") as f:
             f.write("not json\n{\"id\": \"T41\"}\n")
         self.assertEqual(self.box.vfg("orch", "send", "next").stdout, "T42\n")
 
+    def test_send_ids_never_repeat_across_both_inboxes(self):
+        os.makedirs(self.orch(""))
+        with open(self.orch("inbox.jsonl"), "w") as f:  # sent before the dispatcher, or handed
+            f.write('{"id": "T41", "at": "2026-10-08T20:00:00.000Z", "task": "old", "context": ""}\n')
+        self.assertEqual(self.box.vfg("orch", "send", "one").stdout, "T42\n")
+        self.assertEqual(self.box.vfg("orch", "send", "two").stdout, "T43\n")
+        with open(self.orch("inbox.jsonl")) as f:
+            self.assertEqual(len(f.read().splitlines()), 1)  # untouched
+        with open(self.dispatch("inbox.jsonl"), "a") as f:
+            f.write('{"id": "T50", "at": "2026-10-09T10:00:00.000Z", "task": "x", "context": ""}\n')
+        self.assertEqual(self.box.vfg("orch", "send", "three").stdout, "T51\n")
+        # VFG_DISPATCH_DIR from the environment, then from the config file.
+        other = os.path.join(self.box.root, "elsewhere")
+        r = self.box.vfg("orch", "send", "four", VFG_DISPATCH_DIR=other)
+        self.assertEqual(r.stdout, "T42\n")  # its inbox is empty; the orchestrator's has T41
+        self.assertTrue(os.path.isfile(os.path.join(other, "inbox.jsonl")))
+        self.box.write_config("VFG_SSH_HOST=fakebox\nVFG_SSH_KEY=%s\nVFG_DISPATCH_DIR=%s\n" % (self.box.key, other))
+        self.assertEqual(self.box.vfg("orch", "send", "five").stdout, "T43\n")
+
     def test_start_stop_status(self):
         r = self.box.vfg("orch", "status")
-        self.assertOneLine(r, 1, "^vfg: orchestrator runner is not running$")
-        self.assertEqual(r.stdout, "stopped\nopen: none\n")
-        self.assertEqual(self.box.vfg("orch", "stop").stdout, "not running\n")
+        self.assertOneLine(r, 1, "^vfg: dispatcher and orchestrator runner are not running$")
+        self.assertEqual(r.stdout, "dispatcher    stopped\norchestrator  stopped\nopen: none\n"
+                                   "with the orchestrator: none\n")
+        self.assertEqual(self.box.vfg("orch", "stop").stdout, "dispatcher    not running\n"
+                                                              "orchestrator  not running\n")
 
-        r = self.box.vfg("orch", "start", CLAUDECODE="1", CLAUDE_CODE_ENTRYPOINT="cli")
+        r = self.box.vfg("orch", "start", CLAUDECODE="1", CLAUDE_CODE_ENTRYPOINT="cli", VFG_ORCH_RUNNER="1")
         self.assertOk(r)
-        m = re.match(r"^started pid (\d+)\n$", r.stdout)
+        m = re.match(r"^dispatcher    started pid (\d+)\norchestrator  started pid (\d+)\n$", r.stdout)
         self.assertTrue(m, r.stdout)
-        pid = int(m.group(1))
-        self.assertTrue(alive(pid))  # outlived the vfg that started it
-        with open("/proc/%d/environ" % pid, "rb") as f:
-            env = f.read().split(b"\0")
-        self.assertIn(b"VFG_ORCH_RUNNER=1", env)
-        self.assertFalse(any(e.startswith((b"CLAUDECODE=", b"CLAUDE_CODE_ENTRYPOINT=")) for e in env))
-        self.assertEqual(os.getpgid(pid), pid)
+        dpid, pid = int(m.group(1)), int(m.group(2))
+        for p, mine, other in ((dpid, b"VFG_DISPATCHER=1", b"VFG_ORCH_RUNNER="),
+                               (pid, b"VFG_ORCH_RUNNER=1", b"VFG_DISPATCHER=")):
+            self.assertTrue(alive(p))  # outlived the vfg that started it
+            with open("/proc/%d/environ" % p, "rb") as f:
+                env = f.read().split(b"\0")
+            self.assertIn(mine, env)
+            self.assertFalse(any(e.startswith(other) for e in env))
+            self.assertFalse(any(e.startswith((b"CLAUDECODE=", b"CLAUDE_CODE_ENTRYPOINT=")) for e in env))
+            self.assertIn(b"VFG_DISPATCH_DIR=" + self.dispatch("").rstrip("/").encode(), env)
+            self.assertIn(b"VFG_ORCH_DIR=" + self.orch("").rstrip("/").encode(), env)
+            self.assertIn(b"VFG_REPO=" + self.box.repo.encode(), env)
+            self.assertEqual(os.getpgid(p), p)
+        with open(self.dispatch("dispatcher.pid")) as f:
+            self.assertEqual(int(f.read()), dpid)
         r = self.box.vfg("orch", "start")
-        self.assertEqual(r.stdout, "running pid %d\n" % pid)
+        self.assertEqual(r.stdout, "dispatcher    running pid %d\norchestrator  running pid %d\n" % (dpid, pid))
         with open(self.orch("runner.log")) as f:
             log = f.read()
         self.assertRegex(log, r"--- vfg orch start \d{4}-\d\d-\d\dT[\d:.]+Z ---\nfake runner %d up" % pid)
         self.assertEqual(log.count("--- vfg orch start"), 1)
+        with open(self.dispatch("dispatcher.log")) as f:
+            log = f.read()
+        self.assertRegex(log, r"^--- vfg orch start \d{4}-\d\d-\d\dT[\d:.]+Z ---\nfake dispatcher %d up\n$" % dpid)
 
-        self.box.vfg("orch", "send", "one")
+        self.assertEqual(self.box.vfg("orch", "send", "one").stderr, "")  # both running: no warning
         self.box.vfg("orch", "send", "two")
         r = self.box.vfg("orch", "status")
         self.assertOk(r)
-        self.assertRegex(r.stdout, r"^running pid %d since \d\d:\d\d:\d\d\nopen: T1 T2\n$" % pid)
+        self.assertRegex(r.stdout, r"^dispatcher    running pid %d since \d\d:\d\d:\d\d\n"
+                                   r"orchestrator  running pid %d since \d\d:\d\d:\d\d\n"
+                                   r"open: T1 T2\nwith the orchestrator: none\n$" % (dpid, pid))
+        r = self.box.vfg("orch", "hand", json.dumps([{"id": "T2", "at": "2026-10-09T10:00:00.000Z",
+                                                      "task": "two", "context": ""}]))
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "handed T2\n", ""))
+        self.assertIn("open: T1 T2\nwith the orchestrator: T2\n", self.box.vfg("orch", "status").stdout)
 
         r = self.box.vfg("orch", "reply", "T1", "progress", "halfway")
         self.assertOk(r)
-        self.assertIn("open: T1 T2", self.box.vfg("orch", "status").stdout)
+        self.assertIn("open: T1 T2\n", self.box.vfg("orch", "status").stdout)
         r = self.box.vfg("orch", "reply", "T1", "done", "castle", "built")
         self.assertOk(r)
         seq = int(r.stdout)
         with open(self.box.feed) as f:
             self.assertRegex(f.read().splitlines()[-1], r"^ORCH#%d \d\d:\d\d:\d\d T1 done \| castle built$" % seq)
-        self.assertIn("open: T2\n", self.box.vfg("orch", "status").stdout)
+        self.assertIn("open: T2\nwith the orchestrator: T2\n", self.box.vfg("orch", "status").stdout)
         with open(self.orch("replies.jsonl")) as f:
             replies = [json.loads(l) for l in f]
         self.assertEqual([(x["id"], x["status"]) for x in replies], [("T1", "progress"), ("T1", "done")])
@@ -912,38 +1026,175 @@ class TestOrch(Case):
         self.assertEqual(replies[-1]["seq"], seq)
         r = self.box.vfg("orch", "reply", "T1", "failed", "again")
         self.assertOneLine(r, 0, "already closed")
+        self.box.vfg("orch", "reply", "T2", "done", "ok")
+        self.assertIn("open: none\nwith the orchestrator: none\n", self.box.vfg("orch", "status").stdout)
 
         with open(self.orch("child.pid")) as f:
             child = int(f.read())
         self.assertTrue(alive(child))
         r = self.box.vfg("orch", "stop")
-        self.assertEqual(r.stdout, "stopped pid %d\n" % pid)
-        self.assertTrue(wait_for(lambda: not alive(pid) and not alive(child), 5))
+        self.assertEqual(r.stdout, "dispatcher    stopped pid %d\norchestrator  stopped pid %d\n" % (dpid, pid))
+        self.assertTrue(wait_for(lambda: not alive(pid) and not alive(child) and not alive(dpid), 5))
+        # The dispatcher was waited for (it took a second to hand on) before the runner was stopped.
+        with open(self.orch("order")) as f:
+            order = [l.split() for l in f.read().splitlines()]
+        self.assertEqual([o[:2] for o in order], [["dispatcher", "handed"], ["orchestrator", "stopping"]])
+        self.assertLessEqual(float(order[0][2]), float(order[1][2]))
         self.assertFalse(os.path.exists(self.orch("runner.pid")))
+        self.assertFalse(os.path.exists(self.dispatch("dispatcher.pid")))
         self.assertOneLine(self.box.vfg("orch", "status"), 1)
+
+    def test_one_down_is_named(self):
+        os.chmod(self.box.run_path, 0o644)
+        r = self.box.vfg("orch", "start")
+        self.assertOneLine(r, 1, r"^vfg: .*/orchestrator/run is missing or not executable$")
+        m = re.match(r"^dispatcher    started pid (\d+)\norchestrator  not started\n$", r.stdout)
+        self.assertTrue(m, r.stdout)
+        r = self.box.vfg("orch", "send", "x")
+        self.assertEqual(r.stderr, "vfg: orchestrator runner is not running — vfg orch start\n")
+        r = self.box.vfg("orch", "status")
+        self.assertOneLine(r, 1, "^vfg: orchestrator runner is not running$")
+        self.assertTrue(r.stdout.startswith("dispatcher    running pid %s since" % m.group(1)))
+        r = self.box.vfg("orch", "stop")
+        self.assertEqual(r.stdout, "dispatcher    stopped pid %s\norchestrator  not running\n" % m.group(1))
 
     def test_start_refusals(self):
         os.chmod(self.box.run_path, 0o644)
-        self.assertOneLine(self.box.vfg("orch", "start"), 1, "is missing or not executable$")
+        os.chmod(self.box.dispatcher_path, 0o644)
+        r = self.box.vfg("orch", "start")
+        self.assertOneLine(r, 1, r"^vfg: .*/orchestrator/run is missing or not executable; "
+                                 r".*/dispatcher/run is missing or not executable$")
+        self.assertEqual(r.stdout, "dispatcher    not started\norchestrator  not started\n")
+        os.chmod(self.box.run_path, 0o755)
+        with open(self.box.dispatcher_path, "w") as f:
+            f.write("#!/usr/bin/env bash\necho broken\nexit 7\n")
+        os.chmod(self.box.dispatcher_path, 0o755)
+        r = self.box.vfg("orch", "start")
+        self.assertOneLine(r, 1, r"^vfg: dispatcher exited at once \(code 7\) — see .*dispatch/dispatcher\.log$")
+        self.assertRegex(r.stdout, r"^dispatcher    exited at once \(code 7\)\norchestrator  started pid \d+\n$")
+        self.assertFalse(os.path.exists(self.dispatch("dispatcher.pid")))
+        with open(self.dispatch("dispatcher.log")) as f:
+            self.assertIn("broken\n", f.read())
+        self.assertOk(self.box.vfg("orch", "stop"))
         with open(self.box.run_path, "w") as f:
             f.write("#!/usr/bin/env bash\necho broken\nexit 7\n")
-        os.chmod(self.box.run_path, 0o755)
         r = self.box.vfg("orch", "start")
-        self.assertOneLine(r, 1, r"^vfg: runner exited at once \(code 7\) — see .*runner\.log$")
+        self.assertOneLine(r, 1, r"^vfg: orchestrator exited at once \(code 7\) — see .*runner\.log; "
+                                 r"dispatcher exited at once \(code 7\) — see .*dispatcher\.log$")
         self.assertFalse(os.path.exists(self.orch("runner.pid")))
 
     def test_stale_pid_is_not_running(self):
-        os.makedirs(self.orch(""), exist_ok=True)
-        with open(self.orch("runner.pid"), "w") as f:
-            f.write("%d\n" % os.getpid())  # alive, but no VFG_ORCH_RUNNER=1
-        self.assertOneLine(self.box.vfg("orch", "status"), 1)
+        for folder, name in ((self.orch(""), "runner.pid"), (self.dispatch(""), "dispatcher.pid")):
+            os.makedirs(folder, exist_ok=True)
+            with open(os.path.join(folder, name), "w") as f:
+                f.write("%d\n" % os.getpid())  # alive, but no VFG_ORCH_RUNNER=1 or VFG_DISPATCHER=1
+        self.assertOneLine(self.box.vfg("orch", "status"), 1, "are not running$")
         self.assertFalse(os.path.exists(self.orch("runner.pid")))
+        self.assertFalse(os.path.exists(self.dispatch("dispatcher.pid")))
 
     def test_reply_refusals_and_down(self):
         for args in (["7", "done", "x"], ["T7", "finished", "x"], ["T0", "done", "x"]):
             self.assertOneLine(self.box.vfg("orch", "reply", *args), 2)
         self.assertOneLine(self.box.vfg("orch", "reply", "T7", "done", "x", FAKE_SSH_DOWN="1"), 4)
         self.assertFalse(os.path.exists(self.orch("replies.jsonl")))
+
+
+class TestHand(Case):
+    def inbox(self):
+        try:
+            with open(os.path.join(self.box.vhome, "orch", "inbox.jsonl")) as f:
+                return [json.loads(l) for l in f]
+        except FileNotFoundError:
+            return []
+
+    def hand(self, lines, **env):
+        return self.box.vfg("orch", "hand", lines if isinstance(lines, str) else json.dumps(lines), **env)
+
+    def test_lines_land_in_the_inbox_shape(self):
+        before = iso(datetime.now(timezone.utc))
+        r = self.hand([{"id": "T3", "at": "2026-10-09T10:00:00.000Z", "task": "build a castle ~ $HOME",
+                        "context": "Steve asked (#812)"},
+                       {"task": "a tower", "id": "T4"},
+                       {"id": "T5", "task": "a wall", "context": None, "picks": ["extra keys are dropped"]}])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "handed T3\nhanded T4\nhanded T5\n")
+        self.assertEqual(r.stderr, "vfg: orchestrator runner is not running — vfg orch start\n")
+        rows = self.inbox()
+        self.assertEqual([list(x.keys()) for x in rows], [["id", "at", "task", "context"]] * 3)
+        self.assertEqual(rows[0], {"id": "T3", "at": "2026-10-09T10:00:00.000Z", "task": "build a castle ~ $HOME",
+                                   "context": "Steve asked (#812)"})
+        self.assertRegex(rows[1]["at"], ISO_RE)
+        self.assertGreaterEqual(rows[1]["at"], before[:19])
+        self.assertEqual((rows[1]["task"], rows[1]["context"]), ("a tower", ""))
+        self.assertEqual(rows[2]["context"], "")
+
+    def test_idempotent(self):
+        line = {"id": "T7", "at": "2026-10-09T10:00:00.000Z", "task": "x", "context": ""}
+        self.assertEqual(self.hand([line]).stdout, "handed T7\n")
+        r = self.hand([line, dict(line, id="T8"), dict(line, id="T8", task="twice in one call")])
+        self.assertEqual((r.returncode, r.stdout), (0, "skipped T7 (already handed)\nhanded T8\n"
+                                                       "skipped T8 (already handed)\n"))
+        r = self.hand([line])
+        self.assertEqual((r.returncode, r.stdout), (0, "skipped T7 (already handed)\n"))
+        self.assertEqual(r.stderr, "")  # nothing handed: nothing to warn about
+        self.assertEqual([x["id"] for x in self.inbox()], ["T7", "T8"])
+        self.assertEqual(self.inbox()[1]["task"], "x")
+
+    def test_one_write_under_the_lock(self):
+        mod = vfg_module("vfgmod_hand")
+        writes = []
+        real = mod.append_line
+
+        def spy(path, line, mode=0o600):
+            writes.append((path, line))
+            return real(path, line, mode)
+        mod.append_line = spy
+        lines = [{"id": "T%d" % i, "at": "2026-10-09T10:00:00.000Z", "task": "t%d" % i, "context": ""}
+                 for i in range(1, 6)]
+        saved = dict(os.environ)
+        os.environ.clear()
+        os.environ.update(self.box.env())
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as o, contextlib.redirect_stderr(io.StringIO()):
+                code = mod.main(["orch", "hand", json.dumps(lines)])
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+        self.assertEqual(code, 0)
+        self.assertEqual(o.getvalue().splitlines(), ["handed T%d" % i for i in range(1, 6)])
+        inbox = [w for w in writes if w[0] == os.path.join(self.box.vhome, "orch", "inbox.jsonl")]
+        self.assertEqual(len(inbox), 1)
+        self.assertEqual([json.loads(l) for l in inbox[0][1].splitlines()], lines)
+
+    def test_concurrent_hands_write_each_id_once(self):
+        line = lambda i: {"id": "T%d" % i, "at": "2026-10-09T10:00:00.000Z", "task": "t%d" % i, "context": ""}
+        procs = [subprocess.Popen([PY, VFG, "orch", "hand", json.dumps([line(j) for j in range(i % 3 + 1, i % 3 + 4)])],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.box.env())
+                 for i in range(10)]
+        handed = []
+        for p in procs:
+            o, e = p.communicate(timeout=60)
+            self.assertEqual(p.returncode, 0, e)
+            handed += [l.split()[1] for l in o.decode().splitlines() if l.startswith("handed ")]
+        self.assertEqual(sorted(handed), ["T1", "T2", "T3", "T4", "T5"])
+        self.assertEqual(sorted(x["id"] for x in self.inbox()), ["T1", "T2", "T3", "T4", "T5"])
+
+    def test_bad_input_exits_2_and_writes_nothing(self):
+        good = {"id": "T1", "task": "x"}
+        for text, why in (("not json", "not JSON"), ("{}", "a JSON list"), ("[]", "a JSON list"),
+                          ("[1]", "line 1 is not a JSON object"),
+                          ([good, {"id": "7", "task": "x"}], "line 2: the id is T<n>"),
+                          ([{"id": "T0", "task": "x"}], "the id is T<n>"),
+                          ([{"id": "T1", "task": "  "}], "T1: empty task"),
+                          ([{"id": "T1"}], "T1: empty task"),
+                          ([{"id": "T1", "task": 5}], "T1: empty task"),
+                          ([good, {"id": "T2", "task": "x", "context": 5}], "T2: context is text"),
+                          ([{"id": "T1", "task": "x", "at": 5}], "T1: at is an ISO-8601 time")):
+            r = self.hand(text)
+            self.assertOneLine(r, 2, re.escape(why))
+            self.assertEqual(r.stdout, "")
+        self.assertOneLine(self.box.vfg("orch", "hand"), 2)
+        self.assertEqual(self.inbox(), [])
 
 
 # =================================================================== scripts
@@ -1132,6 +1383,437 @@ class TestScripts(Case):
             self.assertIn(b"deploy refused", r.stderr)
         self.assertFalse(os.path.exists(os.path.join(self.box.root, "box", "escape.txt")))
         self.assertFalse(os.path.exists(self.deployed("hello")))
+
+
+# ============================================================ actions & places
+
+def scripts_test(name):
+    """A module from ../scripts/_test, by path: tests/ has a fake_rcon.py of its own."""
+    if SCRIPTS_TEST not in sys.path:
+        sys.path.append(SCRIPTS_TEST)  # fake_places_world imports mc_26_3
+    spec = importlib.util.spec_from_file_location("scripts_test_" + name, os.path.join(SCRIPTS_TEST, name + ".py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+HAVE_WORLD = all(os.path.isfile(os.path.join(SCRIPTS_TEST, n)) for n in ("fake_places_world.py", "fake_rcon.py", "mc_26_3.py"))
+REAL_MC = os.path.join(REPO, "scripts", "_lib", "mc.py")
+
+PROBE = """import sys
+from mc import rcon, log
+import places
+
+
+def run(args):
+    print("chatter on stdout")  # never reaches the JSON line
+    log("a log line")
+    if args.get("boom"):
+        raise ValueError("boom")
+    return {"ok": True, "summary": rcon("list"), "args": args, "storage": places.STORAGE,
+            "line": places.line("castle", {"pos": [1, 2, 3], "dim": "minecraft:the_nether", "by": "T1"}),
+            "mc": sys.modules["mc"].__file__}
+"""
+
+
+class World(Case):
+    """RCON answered by fake_places_world.FakeWorld, Minecraft 26.3's recorded replies."""
+    box_kwargs = {"rcon": False}
+
+    def setUp(self):
+        if not HAVE_WORLD:
+            self.skipTest("no scripts/_test/fake_places_world.py beside the toolkit")
+        Case.setUp(self)
+        self.world = scripts_test("fake_places_world").FakeWorld(players={"Steve": (197.5, 68.0, 251.5)})
+        self.world.add("Alex", (10.2, -5.0, 3.9), dim="minecraft:the_nether")
+        self.server = scripts_test("fake_rcon").FakeRcon(self.box.password, port=self.box.port,
+                                                         responder=self.world.respond).start()
+
+    def tearDown(self):
+        if HAVE_WORLD:
+            self.server.stop()
+        Case.tearDown(self)
+
+
+class TestAction(Case):
+    def setUp(self):
+        Case.setUp(self)
+        for rel, text in (("actions/__init__.py", ""), ("actions/command/__init__.py", ""),
+                          ("actions/command/action.py", "# the class, imported on the PC only\n"),
+                          ("actions/probe/handler.py", PROBE), ("actions/save_place/action.py", "\n")):
+            path = os.path.join(self.box.repo, rel)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                f.write(text)
+        os.makedirs(os.path.join(self.box.rvfg, "scripts", "_lib"))
+        shutil.copy(REAL_MC, os.path.join(self.box.rvfg, "scripts", "_lib", "mc.py"))  # vfg script deploy
+
+    def run_action(self, name, fields, *extra, **env):
+        return self.box.vfg("action", "run", name, "--args", json.dumps(fields), "--task", "T7", *extra, **env)
+
+    def result(self, r):
+        self.assertEqual(r.returncode, 0, "stdout=%r stderr=%r" % (r.stdout, r.stderr))
+        self.assertTrue(r.stdout.endswith("\n"))
+        self.assertEqual(len(r.stdout.splitlines()), 1, r.stdout)
+        return json.loads(r.stdout)
+
+    def test_command_runs_in_order(self):
+        r = self.run_action("command", {"commands": ["/time set day", "list"]})
+        self.assertEqual(self.result(r), {"ok": True, "replies": ["Set the time to 1000",
+                                                                  "There are 1 of a max of 20 players online: Steve"],
+                                          "summary": "Set the time to 1000; There are 1 of a max of 20 players "
+                                                     "online: Steve", "failed": None,
+                                          "ran": ["time set day", "list"]})  # what took effect, for a retry
+        self.assertEqual(self.box.rcon_commands(), ["time set day", "list"])
+
+    def test_command_stops_at_minecraft_error_and_still_exits_0(self):
+        r = self.run_action("command", {"commands": ["time set day", "bogus", "list"], "action": "command"})
+        res = self.result(r)
+        self.assertEqual((res["ok"], res["failed"]), (False, "bogus"))
+        self.assertIn("Unknown or incomplete command", res["summary"])
+        self.assertEqual(self.box.rcon_commands(), ["time set day", "bogus"])
+        open(self.box.rcon_log, "w").close()
+        res = self.result(self.run_action("command", {"commands": ["give @a minecraft:diamond", "stop"]}))
+        self.assertFalse(res["ok"])  # the owner's command: refused on EC2 before anything is sent
+        self.assertEqual(self.box.rcon_commands(), [])
+
+    def test_command_refusals(self):
+        for fields, code, why in (({"commands": ["tp @a %s/x" % self.box.home]}, 2, "your shell expanded a ~"),
+                                  ({"commands": ["say " + "x" * 1496]}, 1, "command is 1500 bytes"),
+                                  ({"commands": []}, 2, "at least one command"),
+                                  ({"commands": "time set day"}, 2, "at least one command"),
+                                  ({"commands": ["time set day", " / "]}, 2, "empty command"),
+                                  ({"commands": ["x"], "player": "Steve"}, 2, "command takes only commands, not player"),
+                                  ({"action": "teleport", "commands": ["x"]}, 2, "--args is not for command")):
+            self.assertOneLine(self.run_action("command", fields), code, why)
+        for args, why in ((["action", "run", "command", "--args", "{bad", "--task", "T7"], "--args is not JSON"),
+                          (["action", "run", "command", "--args", "[1]", "--task", "T7"], "a JSON object"),
+                          (["action", "run", "command", "--args", "{}", "--task", "7"], "--task is T<n>"),
+                          (["action", "run", "command", "--args", "{}"], "--task"),
+                          (["action", "run", "../x", "--args", "{}", "--task", "T7"], "not an action name"),
+                          (["action", "run", "command", "--args", "{}", "--task", "T7", "--timeout", "0"],
+                           "--timeout is seconds")):
+            self.assertOneLine(self.box.vfg(*args), 2, re.escape(why))
+        self.assertOneLine(self.run_action("nosuch", {}), 1, r"^vfg: no actions/nosuch/ in ")
+        self.assertOneLine(self.run_action("save_place", {"name": "x"}), 1,
+                           r"^vfg: actions/save_place/ has no handler\.py, and only command runs without one$")
+        self.assertEqual(self.box.rcon_commands(), [])
+        self.assertEqual(self.box.ssh_calls(), [])
+
+    def test_handler_runs_as_a_module_with_places(self):
+        r = self.run_action("probe", {"player": "Steve", "n": 3})
+        res = self.result(r)
+        self.assertEqual(res, {"ok": True, "summary": "There are 1 of a max of 20 players online: Steve",
+                               "args": {"player": "Steve", "n": 3, "task": "T7"}, "storage": "everhear:places",
+                               "line": "castle 1 2 3 the_nether (T1)",
+                               "mc": os.path.join(self.box.rvfg, "scripts", "_lib", "mc.py")})
+        self.assertIn("chatter on stdout", r.stderr)  # the handler's prints went to stderr
+        self.assertEqual(self.box.rcon_commands(), ["list"])
+
+    def test_handler_exception_is_a_result(self):
+        res = self.result(self.run_action("probe", {"boom": True}))
+        self.assertEqual(res, {"ok": False, "summary": "handler error: ValueError: boom"})
+
+    def test_could_not_run(self):
+        self.assertOneLine(self.run_action("probe", {}, FAKE_SSH_DOWN="1"), 4, "cannot reach EC2")
+        os.remove(os.path.join(self.box.rvfg, "scripts", "_lib", "mc.py"))
+        self.assertOneLine(self.run_action("probe", {}), 3, r"_lib/mc\.py is missing: vfg script deploy$")
+        self.box.stop_rcon()
+        self.assertOneLine(self.run_action("command", {"commands": ["list"]}), 5, "minecraft is not running")
+
+    def test_timeout_is_124_and_keeps_the_shared_master(self):
+        r = self.run_action("command", {"commands": ["list"]}, "--timeout", "1", FAKE_SSH_DELAY="4")
+        self.assertOneLine(r, 124, r"^vfg: timed out: command did not finish within 1 s$")
+        self.assertEqual(r.stdout, "")
+        self.assertFalse(any("exit" in c and "-O" in c for c in self.box.ssh_calls()))
+        r = self.box.vfg("--timeout", "1", "action", "run", "command", "--args", '{"commands": ["list"]}',
+                         "--task", "T7", FAKE_SSH_DELAY="4")
+        self.assertOneLine(r, 124, "within 1 s$")
+
+    @unittest.skipUnless(HAVE_WORLD and os.path.isfile(os.path.join(REPO, "actions", "teleport", "handler.py")),
+                         "no actions/teleport/handler.py or scripts/_test/fake_places_world.py beside the toolkit")
+    def test_the_real_teleport_handler_reaches_a_saved_place(self):
+        self.box.stop_rcon()
+        world = scripts_test("fake_places_world").FakeWorld(players={"Steve": (0.5, 64.0, 0.5)})
+        world.save_place("castle", [197, 68, 251], by="T23")
+        server = scripts_test("fake_rcon").FakeRcon(self.box.password, port=self.box.port,
+                                                    responder=world.respond).start()
+        try:
+            shutil.rmtree(os.path.join(self.box.repo, "actions"))
+            os.symlink(os.path.join(REPO, "actions"), os.path.join(self.box.repo, "actions"))
+            res = self.result(self.run_action("teleport", {"player": "Steve", "to": "place", "target": "castle",
+                                                           "dimension": "overworld"}))
+        finally:
+            server.stop()
+        self.assertTrue(res["ok"], res)
+        # a saved place is reached exactly when its spot is safe, not 8 blocks round it
+        self.assertEqual(world.players["Steve"].pos, [197.5, 68.0, 251.5])
+        self.assertIn("data get storage everhear:places castle", world.sent)
+
+
+FAKE_JAVA = """#!%(py)s
+# A stand-in for the data generator: java -DbundlerMainClass=... -jar <jar> --reports --output <dir>.
+import json, os, sys, time
+argv = sys.argv[1:]
+out = argv[argv.index("--output") + 1]
+with open(%(record)r, "w") as f:
+    json.dump({"argv": argv, "cwd": os.getcwd(), "pid": os.getpid()}, f)
+print("[ServerMain/INFO]: Starting provider: vanilla/Command Syntax", flush=True)
+sys.stderr.write("a warning on stderr\\n")
+os.makedirs("logs", exist_ok=True)  # as log4j does, in the working directory
+with open(os.path.join("logs", "latest.log"), "w") as f:
+    f.write("log\\n")
+mode = %(mode)r
+if mode == "fail":
+    print("Exception in thread main: boom")
+    sys.exit(1)
+if mode == "slow":
+    time.sleep(60)
+if mode != "nothing":
+    with open(%(tree)r) as f:
+        tree = json.load(f)
+    os.makedirs(os.path.join(out, "reports"), exist_ok=True)
+    with open(os.path.join(out, "reports", "commands.json"), "w") as f:
+        json.dump(tree, f, indent=2)
+"""
+
+TREE = {"type": "root", "children": {
+    "give": {"type": "literal", "children": {"targets": {"type": "argument", "parser": "minecraft:entity",
+                                                          "properties": {"amount": "multiple", "type": "players"},
+                                                          "executable": True}}},
+    "time": {"type": "literal", "children": {"set": {"type": "literal", "executable": True}}}}}
+
+
+class TestRefs(Case):
+    def make_jar(self, version=None, raw=None):
+        jar = os.path.join(self.box.rmc, "server.jar")
+        if raw is not None:
+            with open(jar, "wb") as f:
+                f.write(raw)
+            return
+        with zipfile.ZipFile(jar, "w") as z:
+            if version is not None:
+                z.writestr("version.json", json.dumps(version, indent=4))
+            z.writestr("META-INF/versions.list", "x\\t26.3\\tversions/26.3/server-26.3.jar\n")
+
+    def java(self, mode="ok", tree=TREE):
+        self.record = os.path.join(self.box.root, "java.json")
+        path = os.path.join(self.box.root, "tree.json")
+        with open(path, "w") as f:
+            json.dump(tree, f)
+        java = os.path.join(self.box.bin, "java")
+        with open(java, "w") as f:
+            f.write(FAKE_JAVA % {"py": PY, "record": self.record, "mode": mode, "tree": path})
+        os.chmod(java, 0o755)
+
+    def ran(self):
+        with open(self.record) as f:
+            return json.load(f)
+
+    def test_version_from_the_jar(self):
+        self.make_jar({"id": "26.3", "name": "26.3", "world_version": 5023, "java_version": 25})
+        r = self.box.vfg("action", "refs", "--version")
+        self.assertOk(r)
+        self.assertEqual(r.stdout, "26.3\n")
+        self.make_jar({"id": "26.4-pre1"})
+        self.assertEqual(self.box.vfg("action", "refs", "--version").stdout, "26.4-pre1\n")
+        self.make_jar(None)
+        self.assertOneLine(self.box.vfg("action", "refs", "--version"), 1, "server.jar has no version.json$")
+        self.make_jar(raw=b"not a zip")
+        self.assertOneLine(self.box.vfg("action", "refs", "--version"), 1, "^vfg: cannot read .*server.jar")
+        os.remove(os.path.join(self.box.rmc, "server.jar"))
+        self.assertOneLine(self.box.vfg("action", "refs", "--version"), 1, "^vfg: no server.jar in ")
+
+    def test_the_command_tree_from_the_generator(self):
+        self.make_jar({"id": "26.3", "name": "26.3"})
+        self.java()
+        r = self.box.vfg("action", "refs")
+        self.assertOk(r)
+        self.assertEqual(len(r.stdout.splitlines()), 1)  # the generator's chatter stayed on EC2
+        self.assertEqual(json.loads(r.stdout), {"version": "26.3", "commands": TREE})
+        ran = self.ran()
+        tmp = ran["argv"][-1]
+        self.assertEqual(ran["argv"], ["-DbundlerMainClass=net.minecraft.data.Main", "-jar",
+                                       os.path.join(self.box.rmc, "server.jar"), "--reports", "--output", tmp])
+        self.assertTrue(tmp.startswith("/tmp/vfg-refs-"), tmp)
+        self.assertEqual(os.path.realpath(ran["cwd"]), os.path.realpath(tmp))  # its logs/ went there
+        self.assertFalse(os.path.exists(tmp))
+        self.assertFalse(os.path.exists(os.path.join(self.box.rmc, "logs")))
+
+    def test_a_big_tree_gets_through(self):
+        self.make_jar({"name": "26.3"})
+        tree = {"type": "root", "children": {
+            "c%05d" % i: {"type": "literal", "children": {"arg": {"type": "argument", "parser": "brigadier:string",
+                                                                   "properties": {"type": "greedy"},
+                                                                   "executable": True}}}
+            for i in range(20000)}}
+        self.java(tree=tree)
+        r = self.box.vfg("action", "refs")
+        self.assertOk(r)
+        self.assertGreater(len(r.stdout), 2 * 1024 * 1024)
+        self.assertEqual(json.loads(r.stdout)["commands"], tree)
+
+    def test_generator_failures_clean_up(self):
+        self.make_jar({"name": "26.3"})
+        for mode, why in (("fail", r"^vfg: the data generator exited 1: Exception in thread main: boom$"),
+                          ("nothing", r"^vfg: the data generator wrote no reports/commands\.json$")):
+            self.java(mode)
+            r = self.box.vfg("action", "refs")
+            self.assertOneLine(r, 1, why)
+            self.assertEqual(r.stdout, "")
+            self.assertFalse(os.path.exists(self.ran()["argv"][-1]))
+        self.java(tree={"type": "root", "children": {}})
+        self.assertOneLine(self.box.vfg("action", "refs"), 1, "holds no commands$")
+
+    def test_a_slow_generator_is_stopped_before_the_call_gives_up(self):
+        self.make_jar({"name": "26.3"})
+        self.java("slow")
+        r = self.box.vfg("--timeout", "6", "action", "refs")
+        self.assertOneLine(r, 1, r"^vfg: the data generator did not finish within 3 s$")
+        ran = self.ran()
+        self.assertFalse(alive(ran["pid"]))
+        self.assertFalse(os.path.exists(ran["argv"][-1]))
+
+
+class TestPlace(World):
+    def place(self, *args, **env):
+        return self.box.vfg("place", *args, **env)
+
+    def test_save_where_a_player_stands_list_and_forget(self):
+        r = self.place("save", "castle", "--player", "Steve", "--by", "T23")
+        self.assertOk(r)
+        self.assertEqual(r.stdout, "saved castle at 197 68 251 in overworld\n")
+        self.assertEqual(self.world.sent, ["data get entity Steve Pos", "data get entity Steve Dimension",
+                                           'data modify storage everhear:places castle set value '
+                                           '{pos:[197,68,251],dim:"minecraft:overworld",by:"T23"}'])
+        self.assertEqual(self.place("save", "base", "--player", "Alex").stdout, "saved base at 10 -5 3 in the_nether\n")
+        r = self.place("list")
+        self.assertOk(r)
+        self.assertEqual(r.stdout, "base 10 -5 3 the_nether\ncastle 197 68 251 overworld (T23)\n")
+        r = self.place("list", "--json")
+        self.assertEqual(json.loads(r.stdout), {
+            "base": {"pos": [10, -5, 3], "dim": "minecraft:the_nether", "by": ""},
+            "castle": {"pos": [197, 68, 251], "dim": "minecraft:overworld", "by": "T23"}})
+        self.assertEqual(len(r.stdout.splitlines()), 1)
+        r = self.place("forget", "castle")
+        self.assertEqual((r.returncode, r.stdout), (0, "forgot castle\n"))
+        self.assertOneLine(self.place("forget", "castle"), 1, "^vfg: no place named castle$")
+        self.assertEqual(self.place("list").stdout, "base 10 -5 3 the_nether\n")
+
+    def test_save_coordinates_whole_blocks_and_overwrite(self):
+        self.assertEqual(self.place("save", "home", "--at", "-368.7", "70", "912.2").stdout,
+                         "saved home at -369 70 912 in overworld\n")
+        self.assertEqual(self.place("save", "nest", "--at", "1", "2", "3", "--dim", "the_end", "--by", "T5").stdout,
+                         "saved nest at 1 2 3 in the_end\n")
+        self.assertEqual(self.place("save", "pit", "--at", "1", "2", "3", "--dim", "NETHER").stdout,
+                         "saved pit at 1 2 3 in the_nether\n")
+        self.assertEqual(self.place("save", "home", "--at", "5", "6", "7").stdout, "saved home at 5 6 7 in overworld\n")
+        self.assertEqual(self.world.storage["home"], {"pos": [5, 6, 7], "by": "", "dim": "minecraft:overworld"})
+        self.assertEqual(self.world.storage["nest"], {"pos": [1, 2, 3], "by": "T5", "dim": "minecraft:the_end"})
+        self.assertEqual(self.place("list").stdout, "home 5 6 7 overworld\nnest 1 2 3 the_end (T5)\n"
+                                                    "pit 1 2 3 the_nether\n")
+
+    def test_none_saved(self):
+        self.assertEqual(self.place("list").stdout, "none\n")
+        self.assertEqual(self.place("list", "--json").stdout, "{}\n")
+
+    def test_offline_player(self):
+        self.assertOneLine(self.place("save", "x", "--player", "Nobody"), 1, "^vfg: Nobody is not online$")
+        self.assertEqual(self.world.storage, {})
+
+    def test_bad_arguments_never_reach_minecraft(self):
+        for args in (["save", "Castle", "--player", "Steve"], ["save", "a-b", "--at", "1", "2", "3"],
+                     ["save", "x" * 33, "--at", "1", "2", "3"], ["save", "x", "--player", "bad name"],
+                     ["save", "x", "--at", "1", "2"], ["save", "x", "--at", "a", "2", "3"],
+                     ["save", "x", "--at", "nan", "2", "3"], ["save", "x", "--player", "Steve", "--dim", "the_end"],
+                     ["save", "x", "--at", "1", "2", "3", "--dim", "bad dim!"],
+                     ["save", "x", "--player", "Alex", "--by", "7"],
+                     ["save", "x"], ["save", "x", "--player", "Alex", "--at", "1", "2", "3"],
+                     ["forget", "Castle"], ["list", "x"]):
+            self.assertOneLine(self.place(*args), 2)
+        self.assertEqual(self.world.sent, [])
+        self.assertEqual(self.box.ssh_calls(), [])
+
+    # ---- the places cache: $VFG_HOME/places.json
+
+    def cache(self):
+        with open(os.path.join(self.box.vhome, "places.json")) as f:
+            return json.load(f)
+
+    def age_cache(self, seconds):
+        data = self.cache()
+        data["fetched_at"] -= seconds
+        with open(os.path.join(self.box.vhome, "places.json"), "w") as f:
+            json.dump(data, f)
+
+    def lists(self):
+        return [c for c in self.world.sent if c == "data get storage everhear:places"]
+
+    def test_two_lists_inside_the_ttl_make_one_ssh_call(self):
+        self.world.save_place("castle", [197, 68, 251], by="T23")
+        first = self.place("list")
+        calls = len(self.box.ssh_calls())
+        second = self.place("list")
+        self.assertEqual((first.stdout, second.stdout), ("castle 197 68 251 overworld (T23)\n",) * 2)
+        self.assertEqual(len(self.box.ssh_calls()), calls)  # the second answered from the cache
+        self.assertEqual(len(self.lists()), 1)
+        self.assertEqual(json.loads(self.place("list", "--json").stdout),
+                         {"castle": {"pos": [197, 68, 251], "dim": "minecraft:overworld", "by": "T23"}})
+        self.assertEqual(os.stat(os.path.join(self.box.vhome, "places.json")).st_mode & 0o777, 0o600)
+
+    def test_a_list_past_the_ttl_fetches(self):
+        self.place("list")
+        self.world.save_place("zoo", [1, 2, 3])  # saved by someone else, straight on the server
+        self.age_cache(31)
+        self.assertEqual(self.place("list").stdout, "zoo 1 2 3 overworld\n")
+        self.assertEqual(len(self.lists()), 2)
+        self.assertEqual(self.place("list", VFG_PLACES_TTL_S="0").stdout, "zoo 1 2 3 overworld\n")
+        self.assertEqual(len(self.lists()), 3)
+
+    def test_fresh_fetches_whatever_the_age(self):
+        self.place("list")
+        self.world.save_place("zoo", [1, 2, 3])
+        self.assertEqual(self.place("list").stdout, "none\n")  # cached
+        self.assertEqual(self.place("list", "--fresh").stdout, "zoo 1 2 3 overworld\n")
+        self.assertEqual(self.place("list").stdout, "zoo 1 2 3 overworld\n")  # and the cache is rewritten
+
+    def test_save_and_forget_write_through_to_the_cache_keeping_its_age(self):
+        self.world.save_place("old", [5, 6, 7])
+        self.place("list")
+        self.age_cache(10)
+        at = self.cache()["fetched_at"]
+        self.assertOk(self.place("save", "castle", "--player", "Steve", "--by", "T23"))
+        self.assertOk(self.place("save", "nest", "--at", "1", "2", "3", "--dim", "the_end"))
+        self.assertEqual(self.cache()["places"], {
+            "old": {"pos": [5, 6, 7], "dim": "minecraft:overworld", "by": ""},
+            "castle": {"pos": [197, 68, 251], "dim": "minecraft:overworld", "by": "T23"},
+            "nest": {"pos": [1, 2, 3], "dim": "minecraft:the_end", "by": ""}})
+        self.assertAlmostEqual(self.cache()["fetched_at"], at, delta=1)
+        self.assertOk(self.place("forget", "old"))
+        self.assertEqual(sorted(self.cache()["places"]), ["castle", "nest"])
+        self.assertEqual(self.place("list").stdout, "castle 197 68 251 overworld (T23)\nnest 1 2 3 the_end\n")
+        self.assertEqual(len(self.lists()), 1)  # all of it from the cache
+
+    def test_a_failed_fetch_serves_the_stale_cache_and_exits_0(self):
+        self.world.save_place("castle", [197, 68, 251], by="T23")
+        self.place("list")
+        self.age_cache(600)
+        self.box.write_props(self.box.password, enable=False)
+        r = self.place("list")
+        self.assertOk(r)
+        self.assertEqual(r.stdout, "castle 197 68 251 overworld (T23)\n")
+        self.assertRegex(r.stderr, r"^vfg: saved places from 60\d s ago: .*minecraft is not running")
+        self.assertEqual(json.loads(self.place("list", "--json", "--fresh").stdout)["castle"]["by"], "T23")
+
+    def test_no_cache_and_a_failed_fetch_exits_non_zero(self):
+        self.box.write_props(self.box.password, enable=False)
+        self.assertOneLine(self.place("list"), 5, "minecraft is not running")
+        self.assertFalse(os.path.exists(os.path.join(self.box.vhome, "places.json")))
+
+    def test_rcon_down_exits_5(self):
+        self.box.write_props(self.box.password, enable=False)
+        self.assertOneLine(self.place("list"), 5, "minecraft is not running")
+        self.assertOneLine(self.place("save", "x", "--at", "1", "2", "3"), 5, "minecraft is not running")
 
 
 # ======================================================================== up
@@ -1415,6 +2097,1075 @@ class TestWatch(Case):
         p.stdout = None
         self.assertEqual(p.wait(10), 0)
         self.assertEqual(p.stderr.read(), b"")
+
+
+# ============================================================ the library
+
+REPO = os.path.dirname(TOOLKIT)
+
+# A stand-in for scripts/_lib/kit in these tests: values() only, reading what
+# kit.values reads — defaults, then argv key=value, then for live keys
+# <VFG_RUN_DIR>/<VFG_INSTANCE>.values.json, again on every read.
+FAKE_KIT = '''"""A stand-in for the kit: values() only."""
+import json
+import os
+import sys
+
+
+def _cast(entry, raw):
+    t = entry["type"]
+    if t == "int":
+        return int(float(raw))
+    if t == "number":
+        x = float(raw)
+        return int(x) if x.is_integer() else x
+    if t == "bool":
+        return str(raw).lower() in ("true", "1", "yes", "on", "y")
+    if t == "list":
+        return json.loads(raw) if str(raw).startswith("[") else [p for p in str(raw).split(",") if p]
+    return raw
+
+
+class _Values(object):
+    def __init__(self, VALUES):
+        self.spec = VALUES
+        self.argv = {}
+        for a in sys.argv[1:]:
+            k, _, raw = a.partition("=")
+            if k in VALUES:
+                self.argv[k] = _cast(VALUES[k], raw)
+        self.path = os.path.join(os.environ.get("VFG_RUN_DIR", "/opt/vfg/run"),
+                                 os.environ.get("VFG_INSTANCE", "") + ".values.json")
+
+    def __getitem__(self, key):
+        entry = self.spec[key]
+        value = self.argv.get(key, entry["default"])
+        if entry.get("live"):
+            try:
+                with open(self.path) as f:
+                    live = json.load(f)
+                if key in live:
+                    value = live[key]
+            except (OSError, ValueError):
+                pass
+        return value
+
+
+def values(VALUES):
+    return _Values(VALUES)
+'''
+
+BEAM = '''"""Beam: prints its values every 0.1 s, so a test can see them change."""
+ASKS = ["a beam", "a laser that goes further"]
+import json
+import time
+from kit import values
+
+VALUES = {
+    "player":   {"type": "player", "default": "@a"},
+    "length":   {"type": "int", "min": 5, "max": 200, "default": 60},
+    "cooldown": {"type": "number", "min": 0, "max": 60, "default": 10, "live": True},
+    "colour":   {"type": "enum", "of": ["red", "blue"], "default": "red", "live": True},
+}
+
+v = values(VALUES)
+while True:
+    print(json.dumps(dict((k, v[k]) for k in VALUES), sort_keys=True), flush=True)
+    time.sleep(0.1)
+'''
+
+GALICK = '''"""Galick Gun: a beam that hurts what it hits and leaves a crater."""
+ASKS = ["galick gun", "a big purple beam"]
+from kit import values, aim, area
+
+VALUES = {
+    "player":        {"type": "player", "default": "@a"},
+    "damage":        {"type": "number", "min": 0, "max": 100, "default": 20},
+    "crater_radius": {"type": "int", "min": 2, "max": 64, "default": 4, "live": True},
+    "crater_leave":  {"type": "enum", "of": ["air", "lava", "fire"], "default": "air", "live": True},
+}
+
+
+# --- preset: crater (copied from _presets/crater.py) ---
+def crater(at, v):
+    _crater_carve(at, v["crater_radius"], v["crater_leave"])
+
+
+def _crater_carve(at, r, block):
+    area.sphere(at, r, block=block, spare_protected=True)
+
+
+v = values(VALUES)
+crater(aim.ray(v["player"], 60).end, v)
+'''
+
+CRATER = '''"""Carve a sphere out of the world at a place, leaving air, lava or fire."""
+from kit import area
+
+VALUES = {
+    "crater_radius": {"type": "int", "min": 2, "max": 64, "default": 8, "live": True},
+    "crater_leave":  {"type": "enum", "of": ["air", "lava", "fire"], "default": "air", "live": True},
+}
+
+
+def crater(at, v):
+    _crater_carve(at, v["crater_radius"], v["crater_leave"])
+
+
+def _crater_carve(at, r, block):
+    area.sphere(at, r, block=block, spare_protected=True)
+'''
+
+EXPLOSION = '''"""An explosion at a place: one blast, a ring or a plus."""
+import math
+from mc import rcon
+
+VALUES = {
+    "explosion_power":  {"type": "number", "min": 0, "max": 20, "default": 4, "live": True},
+    "explosion_layout": {"type": "enum", "of": ["one", "ring", "plus"], "default": "one"},
+}
+
+
+def explosion(at, v):
+    for dx, dz in _explosion_spots(v["explosion_layout"]):
+        rcon("summon tnt %s %s %s" % (at[0] + dx, at[1], at[2] + dz))
+
+
+def _explosion_spots(layout):
+    n = {"one": 1, "ring": 8, "plus": 4}[layout]
+    return [(round(4 * math.cos(i * 6.28 / n)), round(4 * math.sin(i * 6.28 / n))) for i in range(n)]
+'''
+
+COUNTER = '''"""Count what happens at a place, once each."""
+from mc import log
+
+VALUES = {
+    "counter_every": {"type": "int", "min": 1, "max": 10, "default": 1},
+}
+
+_counter_n = [0]
+
+
+def counter(at, v):
+    _counter_n[0] += 1
+    _counter_seen.add(at)
+    if _counter_n[0] % v["counter_every"] == 0:
+        log("count", _counter_n[0])
+
+
+_counter_seen = set()
+'''
+
+TALLY = '''"""Tally the players a script touched."""
+VALUES = {
+    "tally_max": {"type": "int", "min": 1, "max": 99, "default": 9},
+}
+
+_tally_known = {}
+
+
+def tally(p, v):
+    _tally_known[p] = min(v["tally_max"], _tally_known.get(p, 0) + 1)
+'''
+
+
+def preset_blocks(text):
+    """{preset: the code under its marker, up to the next marker or the wiring}."""
+    lines = text.split("\n")
+    marks = [i for i, l in enumerate(lines) if l.startswith("# --- preset: ")]
+    wiring = lines.index("v = values(VALUES)")
+    out = {}
+    for k, i in enumerate(marks):
+        end = marks[k + 1] if k + 1 < len(marks) else wiring
+        out[re.match(r"# --- preset: (\w+)", lines[i]).group(1)] = "\n".join(lines[i + 1:end]).strip()
+    return out
+
+
+ICE_STAFF = '''"""Ice Staff: lays ice where the player looks."""
+ASKS = ["an ice staff"]
+import random
+from kit import values, aim
+from mc import rcon
+
+VALUES = {
+    "player":   {"type": "player", "default": "@a"},
+    "length":   {"type": "int", "min": 5, "max": 200, "default": 60, "live": True},
+    "ice_rate": {"type": "number", "min": 0, "max": 1, "default": 0.5},
+}
+
+ICE_BLOCKS = ["ice", "packed_ice"]
+
+
+def ice_path(p, v):
+    """Lay ice along where a player looks, some of it packed."""
+    for at in aim.ray(p, v["length"]).points:
+        _lay(at, v)
+
+
+def _lay(at, v):
+    if random.random() < v["ice_rate"]:
+        rcon("setblock %d %d %d %s" % (at[0], at[1], at[2], random.choice(ICE_BLOCKS)))
+
+
+def shout(p):
+    rcon("say %s" % p)
+
+
+def loud_path(p, v):
+    shout(p)
+    ice_path(p, v)
+
+
+v = values(VALUES)
+'''
+
+
+def load_library_module():
+    import importlib.util
+    sys.dont_write_bytecode = True
+    spec = importlib.util.spec_from_file_location("vfg_library", os.path.join(TOOLKIT, "lib", "library.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def values_of(path):
+    """VALUES of a file, keys in order, read with ast as library.py does."""
+    import ast
+    with open(path) as f:
+        tree = ast.parse(f.read())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", None) == "VALUES":
+            return ast.literal_eval(node.value)
+    return None
+
+
+class LibraryCase(Case):
+    """A box whose repo has two example scripts, two presets and a fake kit."""
+
+    def setUp(self):
+        Case.setUp(self)
+        self.write("scripts/beam/main.py", BEAM)
+        self.write("scripts/galick/main.py", GALICK)
+        self.write("scripts/_presets/crater.py", CRATER)
+        self.write("scripts/_presets/explosion.py", EXPLOSION)
+        self.write("scripts/_lib/kit/__init__.py", FAKE_KIT)
+
+    def write(self, rel, text):
+        path = os.path.join(self.box.repo, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+        return path
+
+    def read(self, rel):
+        with open(os.path.join(self.box.repo, rel)) as f:
+            return f.read()
+
+    def made(self, *p):
+        return os.path.join(self.box.repo, "made", "main", *p)
+
+
+class TestScriptNew(LibraryCase):
+    def test_new_from_an_example_with_presets_then_check_passes(self):
+        r = self.box.vfg("script", "new", "beam_boom", "--from", "beam", "--preset", "crater",
+                         "--preset", "explosion")
+        self.assertOk(r)
+        self.assertEqual(r.stdout.splitlines()[:3], [
+            "made made/main/scripts/beam_boom/ from scripts/beam/ (library)",
+            "  + crater (library): crater_radius, crater_leave",
+            "  + explosion (library): explosion_power, explosion_layout"])
+        self.assertIn("check: ok", r.stdout)
+        path = self.made("scripts", "beam_boom", "main.py")
+        values = values_of(path)
+        self.assertEqual(list(values), ["player", "length", "cooldown", "colour", "crater_radius",
+                                        "crater_leave", "explosion_power", "explosion_layout"])
+        self.assertEqual(values["crater_radius"], {"type": "int", "min": 2, "max": 64, "default": 8, "live": True})
+        text = self.read("made/main/scripts/beam_boom/main.py")
+        self.assertIn('    "crater_radius":    {"type": "int", "min": 2, "max": 64, "default": 8, "live": True},\n',
+                      text)
+        self.assertIn("from kit import values, area\n", text)
+        self.assertIn("import math\n", text)
+        self.assertIn("from mc import rcon\n", text)
+        crater = text.index("# --- preset: crater (copied from _presets/crater.py) ---\ndef crater(at, v):")
+        boom = text.index("# --- preset: explosion (copied from _presets/explosion.py) ---\ndef explosion(at, v):")
+        wiring = text.index("v = values(VALUES)")
+        self.assertLess(crater, boom)
+        self.assertLess(boom, wiring)
+        self.assertTrue(text.startswith(BEAM.split("\n")[0]))
+        compile(text, path, "exec")
+        r = self.box.vfg("script", "check", "beam_boom")
+        self.assertOk(r)
+        self.assertEqual(r.stdout, "ok: made/main/scripts/beam_boom/main.py\n")
+        # A made preset and a made script are found the same way.
+        r = self.box.vfg("script", "new", "boom2", "--from", "beam_boom")
+        self.assertOk(r)
+        self.assertIn("from made/main/scripts/beam_boom/ (made)", r.stdout)
+
+    def test_a_presets_own_variables_stay_in_its_block(self):
+        self.write("scripts/_presets/counter.py", COUNTER)
+        self.write("scripts/_presets/tally.py", TALLY)
+        r = self.box.vfg("script", "new", "counted", "--from", "beam", "--preset", "counter",
+                         "--preset", "tally", "--preset", "crater")
+        self.assertOk(r)
+        self.assertIn("check: ok", r.stdout)
+        text = self.read("made/main/scripts/counted/main.py")
+        L = load_library_module()
+        lib = L.Library(self.box.repo, "main")
+        blocks = preset_blocks(text)
+        self.assertEqual(list(blocks), ["counter", "tally", "crater"])
+        for name in blocks:
+            self.assertEqual(blocks[name], L.preset_body(lib.preset(name)).strip(), name)
+        self.assertLess(text.index("_counter_seen = set()"), text.index("# --- preset: tally"))
+
+    def test_a_preset_the_script_already_holds_and_one_it_does_not(self):
+        r = self.box.vfg("script", "new", "galick2", "--from", "galick", "--preset", "crater")
+        self.assertOneLine(r, 1, "^vfg: cannot copy crater in: it already holds crater$")
+        self.assertFalse(os.path.exists(self.made("scripts", "galick2")))
+        r = self.box.vfg("script", "new", "galick2", "--from", "galick", "--preset", "explosion")
+        self.assertOk(r)
+        self.assertIn("check: ok", r.stdout)
+        text = self.read("made/main/scripts/galick2/main.py")
+        self.assertEqual(text.count("# --- preset: "), 2)
+        self.assertLess(text.index("# --- preset: crater"), text.index("# --- preset: explosion"))
+        self.assertLess(text.index("# --- preset: explosion"), text.index("v = values(VALUES)"))
+
+    def test_names_are_never_taken_twice(self):
+        self.assertOneLine(self.box.vfg("script", "new", "beam"), 1, r"^vfg: beam is taken: scripts/beam — ")
+        self.assertOneLine(self.box.vfg("script", "new", "hello"), 1, "hello is taken")
+        self.assertOk(self.box.vfg("script", "new", "mine", "--from", "beam"))
+        self.assertOneLine(self.box.vfg("script", "new", "mine"), 1, r"mine is taken: made/main/scripts/mine")
+        self.assertOneLine(self.box.vfg("script", "new", "mine", "--library"), 1, "mine is taken")
+        self.assertOneLine(self.box.vfg("script", "new", "Bad.Name"), 2)
+        self.assertOneLine(self.box.vfg("script", "new", "x", "--preset", "nosuch"), 1, "no preset nosuch")
+        self.assertOneLine(self.box.vfg("script", "new", "x", "--from", "nosuch"), 1, "no script nosuch")
+        self.assertOneLine(self.box.vfg("script", "new", "x", "--preset", "crater", "--preset", "crater"), 2)
+        r = self.box.vfg("script", "new", "x", "--from", "hello", "--preset", "crater")
+        self.assertOneLine(r, 1, r"hello has no VALUES \(written the old way\)")
+        self.assertFalse(os.path.exists(self.made("scripts", "x")))
+
+    def test_new_from_nothing_must_be_filled_in(self):
+        r = self.box.vfg("script", "new", "fresh", "--preset", "crater")
+        self.assertOk(r)
+        self.assertIn("made made/main/scripts/fresh/ from nothing", r.stdout)
+        self.assertIn("first line is still a TODO", r.stdout)
+        self.assertIn("ASKS is empty", r.stdout)
+        values = values_of(self.made("scripts", "fresh", "main.py"))
+        self.assertEqual(list(values), ["player", "crater_radius", "crater_leave"])
+        r = self.box.vfg("script", "check", "fresh")
+        self.assertOneLine(r, 1, r"^vfg: 2 problems in 1 of 1 file$")
+        self.assertEqual(len(r.stdout.splitlines()), 2)
+
+    def test_library_flag_writes_into_scripts(self):
+        r = self.box.vfg("script", "new", "beam_too", "--from", "beam", "--library")
+        self.assertOk(r)
+        self.assertTrue(os.path.isfile(os.path.join(self.box.repo, "scripts", "beam_too", "main.py")))
+        self.assertFalse(os.path.exists(self.made("scripts", "beam_too")))
+
+
+BAD = {
+    # (kind, text, what the problem line says)
+    "not_literal": ("script", '"""Bad: x."""\nASKS = ["x"]\nR = 5\nVALUES = {"r": {"type": "int", "default": R}}\n',
+                    r":4: VALUES is not a literal"),
+    "outside": ("script", '"""Bad: x."""\nASKS = ["x"]\nVALUES = {"r": {"type": "int", "min": 1, "max": 5, '
+                          '"default": 9}}\n', r":3: r: default 9 is outside its limits \(1\.\.5\)"),
+    "unknown_type": ("script", '"""Bad: x."""\nASKS = ["x"]\nVALUES = {"c": {"type": "colour", "default": 1}}\n',
+                     r":3: c: type 'colour' is not one of int, number"),
+    "twice": ("script", '"""Bad: x."""\nASKS = ["x"]\nVALUES = {\n    "crater_radius": {"type": "int", '
+                        '"default": 3},\n    "crater_radius": {"type": "int", "default": 4},\n}\n',
+              r":5: crater_radius is in VALUES twice \(lines 4 and 5\)"),
+    "undeclared": ("script", '"""Bad: x."""\nASKS = ["x"]\nVALUES = {"a": {"type": "int", "default": 3}}\n'
+                             'v = {}\nprint(v["b"])\n', r':5: v\["b"\] is read but VALUES does not declare it'),
+    "no_doc": ("script", 'ASKS = ["x"]\nVALUES = {}\n', r":1: line 1 must be a docstring"),
+    "no_asks": ("script", '"""Bad: x."""\nVALUES = {}\n', r":1: no ASKS"),
+    "imports_presets": ("script", '"""Bad: x."""\nASKS = ["x"]\nfrom _presets import crater\nVALUES = {}\n',
+                        r":3: imports from _presets"),
+    "py310": ("script", '"""Bad: x."""\nASKS = ["x"]\nVALUES = {}\nmatch 1:\n    case 1:\n        pass\n',
+              r":\d+: not valid Python 3\.9"),
+    "blast": ("preset", '"""A preset whose value lacks its name."""\nVALUES = {"power": {"type": "number", '
+                        '"default": 1}}\n\n\ndef blast(at, v):\n    return v["power"]\n',
+              r":2: power does not start with the preset's name: blast_"),
+}
+
+
+class TestScriptCheck(LibraryCase):
+    def test_check_refuses_each_bad_case(self):
+        for name, (kind, text, want) in sorted(BAD.items()):
+            rel = ("made/main/scripts/%s/main.py" % name) if kind == "script" else "made/main/presets/%s.py" % name
+            self.write(rel, text)
+            r = self.box.vfg("script", "check", name)
+            self.assertOneLine(r, 1, r"^vfg: \d+ problems? in 1 of 1 file$")
+            self.assertRegex(r.stdout, "^" + re.escape(rel) + want, name)
+            # Also by path.
+            r = self.box.vfg("script", "check", os.path.join(self.box.repo, rel))
+            self.assertEqual(r.returncode, 1, name)
+
+    def test_check_everything_passes_and_counts(self):
+        r = self.box.vfg("script", "check")
+        self.assertOk(r)
+        self.assertEqual(r.stdout, "ok: 4 scripts (2 old-style) and 2 presets\n")
+        self.write("made/main/presets/blast.py", BAD["blast"][1])
+        r = self.box.vfg("script", "check")
+        self.assertOneLine(r, 1, r"^vfg: 1 problem in 1 of 7 files$")
+        self.assertOneLine(self.box.vfg("script", "check", "nosuch"), 1, "no script or preset nosuch")
+
+    def test_a_preset_value_never_starts_with_another_presets_name(self):
+        self.write("made/main/presets/crater_rim.py", CRATER.replace("def crater(", "def crater_rim(")
+                   .replace("def _crater_carve(", "def _crater_rim_carve(").replace("_crater_carve(at,", "_crater_rim_carve(at,"))
+        r = self.box.vfg("script", "check", "crater_rim")
+        self.assertOneLine(r, 1, r"^vfg: 2 problems in 1 of 1 file$")
+        self.assertIn("crater_radius starts with crater_, another preset's name", r.stdout)
+
+    def test_a_preset_helper_carries_its_name_and_a_script_defines_nothing_twice(self):
+        self.write("made/main/presets/twin.py", CRATER.replace("def crater(", "def twin(")
+                   .replace('"crater_', '"twin_').replace('v["crater_', 'v["twin_'))
+        r = self.box.vfg("script", "check", "twin")
+        self.assertOneLine(r, 1)
+        self.assertIn("_crater_carve: a preset's helpers are private and carry its name: _twin_", r.stdout)
+        self.write("made/main/scripts/double/main.py", GALICK.replace(
+            "\n\nv = values(VALUES)", "\n\ndef _crater_carve(at, r, block):\n    pass\n\n\nv = values(VALUES)"))
+        r = self.box.vfg("script", "check", "double")
+        self.assertOneLine(r, 1)
+        self.assertRegex(r.stdout, r"main\.py:\d+: _crater_carve is defined twice")
+
+
+class TestPresetSave(LibraryCase):
+    def setUp(self):
+        LibraryCase.setUp(self)
+        self.write("made/main/scripts/ice_staff/main.py", ICE_STAFF)
+
+    def test_lift_a_function_then_copy_it_into_a_script(self):
+        r = self.box.vfg("preset", "save", "ice_staff", "ice_path", "ice_trail")
+        self.assertOk(r)
+        self.assertEqual(r.stdout.splitlines()[0],
+                         "saved made/main/presets/ice_trail.py from ice_staff.ice_path: values "
+                         "ice_trail_length (was length), ice_rate; helpers _ice_trail_lay")
+        self.assertIn("check: ok", r.stdout)
+        path = self.made("presets", "ice_trail.py")
+        text = self.read("made/main/presets/ice_trail.py")
+        self.assertTrue(text.startswith('"""Lay ice along where a player looks, some of it packed."""\n'))
+        self.assertEqual(list(values_of(path)), ["ice_trail_length", "ice_rate"])
+        self.assertIn("def ice_trail(p, v):", text)
+        self.assertIn('aim.ray(p, v["ice_trail_length"])', text)
+        self.assertIn("def _ice_trail_lay(at, v):", text)
+        self.assertIn("ICE_BLOCKS = ", text)
+        for imp in ("import random\n", "from kit import aim\n", "from mc import rcon\n"):
+            self.assertIn(imp, text)
+        self.assertNotIn("values", text.split("VALUES")[0])
+        self.assertNotIn("def shout", text)
+        # The script it came from is not touched.
+        self.assertEqual(self.read("made/main/scripts/ice_staff/main.py"), ICE_STAFF)
+        r = self.box.vfg("script", "new", "beam_ice", "--from", "beam", "--preset", "ice_trail")
+        self.assertOk(r)
+        self.assertIn("  + ice_trail (made): ice_trail_length, ice_rate", r.stdout)
+        self.assertIn("check: ok", r.stdout)
+        self.assertIn("# --- preset: ice_trail (copied from made/main/presets/ice_trail.py) ---",
+                      self.read("made/main/scripts/beam_ice/main.py"))
+
+    def test_refusals(self):
+        self.assertOk(self.box.vfg("preset", "save", "ice_staff", "ice_path", "ice_trail"))
+        self.assertOneLine(self.box.vfg("preset", "save", "ice_staff", "ice_path", "ice_trail"), 1,
+                           "ice_trail is taken: made/main/presets/ice_trail.py")
+        self.assertOneLine(self.box.vfg("preset", "save", "ice_staff", "ice_path", "crater"), 1,
+                           "crater is taken: scripts/_presets/crater.py")
+        self.assertOneLine(self.box.vfg("preset", "save", "ice_staff", "nosuch", "x"), 1,
+                           "ice_staff has no top-level function nosuch")
+        self.assertOneLine(self.box.vfg("preset", "save", "ice_staff", "loud_path", "loud"), 1,
+                           r"loud_path calls ice_path, shout, which is public in ice_staff")
+        self.assertOneLine(self.box.vfg("preset", "save", "nosuch", "f", "x"), 1, "no script nosuch")
+        self.assertOneLine(self.box.vfg("preset", "save", "ice_staff", "ice_path", "Bad"), 2)
+        r = self.box.vfg("preset", "save", "ice_staff", "shout", "shout_out")
+        self.assertOk(r)  # saved, but its first line is a TODO to fill in
+        self.assertIn("first line is still a TODO", r.stdout)
+        self.assertIn("def shout_out(p, v):", self.read("made/main/presets/shout_out.py"))
+
+
+class TestInstances(LibraryCase):
+    def box_file(self, name):
+        with open(os.path.join(self.box.rvfg, "run", name)) as f:
+            return json.load(f)
+
+    def log_values(self, instance, after=0):
+        """The values the fake beam printed last, read from its log."""
+        with open(os.path.join(self.box.rvfg, "run", instance + ".log")) as f:
+            rows = [json.loads(l) for l in f.read().splitlines()[1:] if l.startswith("{")]
+        return rows[-1] if len(rows) > after else None
+
+    def started(self, r, name):
+        self.assertOk(r)
+        m = re.search(r"^running %s pid (\d+) — vfg script logs %s$" % (name, name), r.stdout, re.M)
+        self.assertTrue(m, r.stdout)
+        return int(m.group(1))
+
+    def test_two_instances_live_set_restart_stop_one_save(self):
+        a = self.started(self.box.vfg("script", "run", "beam", "as=beam-a", "player=Steve", "cooldown=5",
+                                      "--task", "T5"), "beam-a")
+        b = self.started(self.box.vfg("script", "run", "beam", "player=Alex", "as=beam-b"), "beam-b")
+        self.assertNotEqual(a, b)
+        r = self.box.vfg("script", "run", "beam", "as=beam-a")
+        self.assertOneLine(r, 1, r"^vfg: beam-a is running \(pid %d\) — vfg script stop beam-a$" % a)
+        with open("/proc/%d/environ" % a, "rb") as f:
+            env = f.read().split(b"\0")
+        for want in (b"VFG_INSTANCE=beam-a", b"VFG_SCRIPT=beam-a", b"VFG_LIVE_POLL_S=0.5",
+                     b"VFG_RUN_DIR=" + os.path.join(self.box.rvfg, "run").encode(),
+                     b"VFG_PROTECTED=" + os.path.join(self.box.rvfg, "protected.json").encode()):
+            self.assertIn(want, env)
+        with open("/proc/%d/cmdline" % a, "rb") as f:
+            argv = f.read().split(b"\0")
+        self.assertEqual(argv[-3:], [b"player=Steve", b"cooldown=5", b""])
+        meta = self.box_file("beam-a.json")
+        self.assertEqual({k: meta[k] for k in ("instance", "script", "source", "values", "task")},
+                         {"instance": "beam-a", "script": "beam", "source": "library",
+                          "values": {"player": "Steve", "cooldown": 5}, "task": "T5"})
+        self.assertRegex(meta["started"], ISO_RE)
+        self.assertTrue(wait_for(lambda: self.log_values("beam-a") is not None, 5))
+        self.assertEqual(self.log_values("beam-a"), {"player": "Steve", "length": 60, "cooldown": 5,
+                                                     "colour": "red"})
+        # A live value: the file changes, the pid does not, the script reads it.
+        r = self.box.vfg("script", "set", "beam-a", "cooldown=0", "colour=BLUE")
+        self.assertOk(r)
+        self.assertEqual(r.stdout, "beam-a: cooldown=0 colour=blue — live, read again within 0.5 s\n")
+        self.assertEqual(self.box_file("beam-a.values.json"), {"cooldown": 0, "colour": "blue"})
+        self.assertTrue(alive(a))
+        self.assertTrue(wait_for(lambda: (self.log_values("beam-a") or {}).get("cooldown") == 0, 5))
+        # Not live: a restart, with the rest kept.
+        r = self.box.vfg("script", "set", "beam-a", "length=1000")
+        self.assertOk(r)
+        lines = r.stdout.splitlines()
+        self.assertEqual(lines[0], "length=1000 is above its max: clamped to 200")
+        m = re.match(r"^beam-a restarted: length is not live, pid (\d+); kept player=Steve cooldown=0 "
+                     r"colour=blue$", lines[1])
+        self.assertTrue(m, lines)
+        a2 = int(m.group(1))
+        self.assertNotEqual(a2, a)
+        self.assertTrue(wait_for(lambda: not alive(a), 5))
+        self.assertTrue(alive(a2))
+        self.assertEqual(self.box_file("beam-a.json")["values"], {"player": "Steve", "cooldown": 5, "length": 200})
+        self.assertEqual(self.box_file("beam-a.values.json"), {"cooldown": 0, "colour": "blue"})
+        self.assertTrue(wait_for(lambda: self.log_values("beam-a") == {"player": "Steve", "length": 200,
+                                                                         "cooldown": 0, "colour": "blue"}, 5))
+        # list: each instance, its script, task and what differs from the defaults.
+        r = self.box.vfg("script", "list")
+        self.assertOk(r)
+        self.assertRegex(r.stdout, r"^beam-a running pid %d since \d\d:\d\d:\d\d — beam, T5, player=Steve "
+                                   r"length=200 cooldown=0 colour=blue\nbeam-b running pid %d since "
+                                   r"\d\d:\d\d:\d\d — beam, player=Alex\n$" % (a2, b))
+        # Stopping one leaves the other running.
+        self.assertEqual(self.box.vfg("script", "stop", "beam-a").stdout, "stopped beam-a\n")
+        self.assertTrue(wait_for(lambda: not alive(a2), 5))
+        self.assertTrue(alive(b))
+        r = self.box.vfg("script", "list")
+        self.assertRegex(r.stdout, r"^beam-a stopped — beam, T5, player=Steve length=200 cooldown=0 colour=blue\n"
+                                   r"beam-b running pid %d " % b)
+        # save: the instance's values become a made script's defaults.
+        self.assertOk(self.box.vfg("script", "set", "beam-b", "cooldown=2.5"))
+        r = self.box.vfg("script", "save", "beam-b", "beam_alex")
+        self.assertOk(r)
+        self.assertEqual(r.stdout.splitlines()[0], "saved made/main/scripts/beam_alex/ from beam-b (beam), "
+                                                   "with player=Alex cooldown=2.5 as its defaults")
+        self.assertIn("check: ok", r.stdout)
+        values = values_of(self.made("scripts", "beam_alex", "main.py"))
+        self.assertEqual([values[k]["default"] for k in values], ["Alex", 60, 2.5, "red"])
+        self.assertOneLine(self.box.vfg("script", "save", "beam-b", "beam_alex"), 1, "beam_alex is taken")
+        # A made script runs from the server's folder on the box.
+        c = self.started(self.box.vfg("script", "run", "beam_alex"), "beam_alex")
+        self.assertTrue(os.path.isfile(os.path.join(self.box.rvfg, "made", "main", "scripts", "beam_alex",
+                                                    "main.py")))
+        self.assertEqual(self.box_file("beam_alex.json")["source"], "made")
+        self.assertTrue(wait_for(lambda: (self.log_values("beam_alex") or {}).get("player") == "Alex", 5))
+        r = self.box.vfg("script", "list")
+        self.assertIn("beam_alex running pid %d since" % c, r.stdout)
+        self.assertRegex(r.stdout, r"beam_alex running pid \d+ since \d\d:\d\d:\d\d — beam_alex \(made\)\n")
+        for name in ("beam-b", "beam_alex"):
+            self.assertOk(self.box.vfg("script", "stop", name))
+
+    def test_values_are_checked_before_anything_is_sent(self):
+        before = len(self.box.ssh_calls())
+        for args, code, pattern in (
+                (["nope=1"], 2, r"^vfg: beam: nope is not one of its values: player, length, cooldown, colour$"),
+                (["Steve"], 2, r"^vfg: beam: 'Steve' is not key=value"),
+                (["colour=green"], 2, r"colour is one of red, blue, not 'green'"),
+                (["length=3.5"], 2, r"length takes a whole number"),
+                (["player=@e[type=zombie]"], 2, r"player is @a, @r, @p or player names"),
+                (["as=Bad!"], 2, r"as=Bad! is not an instance name"),
+                (["--task", "7"], 2, r"--task is T<n>")):
+            self.assertOneLine(self.box.vfg("script", "run", "beam", *args), code, pattern)
+        self.assertEqual(len(self.box.ssh_calls()), before)
+        r = self.box.vfg("script", "run", "beam", "cooldown=-4", "player=Steve,Alex")
+        self.started(r, "beam")
+        self.assertTrue(r.stdout.startswith("cooldown=-4 is below its min: clamped to 0\n"))
+        self.assertEqual(self.box_file("beam.json")["values"], {"cooldown": 0, "player": "Steve,Alex"})
+        self.assertOk(self.box.vfg("script", "stop", "beam"))
+
+    def test_set_refusals(self):
+        self.assertOneLine(self.box.vfg("script", "set", "beam", "cooldown=1"), 1, "no instance beam")
+        self.started(self.box.vfg("script", "run", "beam"), "beam")
+        self.assertOneLine(self.box.vfg("script", "set", "beam", "nope=1"), 2, "nope is not one of its values")
+        self.assertOneLine(self.box.vfg("script", "set", "beam", "cooldown"), 2, "is not key=value")
+        self.assertOk(self.box.vfg("script", "stop", "beam"))
+        self.assertOneLine(self.box.vfg("script", "set", "beam", "cooldown=1"), 1, "^vfg: beam is not running")
+        self.started(self.box.vfg("script", "run", "loop", "as=loop2"), "loop2")
+        self.assertOneLine(self.box.vfg("script", "set", "loop2", "x=1"), 1, "loop2 \\(loop\\) has no VALUES")
+        self.assertOk(self.box.vfg("script", "stop", "loop2"))
+
+    def test_set_is_one_call_for_an_instance_this_pc_started(self):
+        def remote_calls(before):
+            return len([c for c in self.box.ssh_calls()[before:] if c[-1] == "python3 -u -"])
+        self.started(self.box.vfg("script", "run", "beam"), "beam")
+        before = len(self.box.ssh_calls())
+        self.assertOk(self.box.vfg("script", "set", "beam", "cooldown=1"))
+        self.assertEqual(remote_calls(before), 1)
+        # A record that names another script: what the box says decides, then it is set.
+        path = os.path.join(self.box.vhome, "instances.json")
+        with open(path) as f:
+            known = json.load(f)
+        self.assertEqual(known["beam"], {"script": "beam", "source": "library", "server": "main"})
+        known["beam"]["script"] = "galick"
+        with open(path, "w") as f:
+            json.dump(known, f)
+        before = len(self.box.ssh_calls())
+        r = self.box.vfg("script", "set", "beam", "cooldown=2")   # galick has no cooldown
+        self.assertEqual(r.stdout, "beam: cooldown=2 — live, read again within 0.5 s\n")
+        self.assertEqual(remote_calls(before), 2)
+        before = len(self.box.ssh_calls())
+        r = self.box.vfg("script", "set", "beam", "player=Alex")  # galick has one: the box refuses it
+        self.assertOk(r)
+        self.assertRegex(r.stdout, r"^beam restarted: player is not live, pid \d+; kept cooldown=2\n$")
+        self.assertEqual(remote_calls(before), 3)
+        self.assertEqual(self.box_file("beam.json")["values"], {"player": "Alex"})
+        self.assertOk(self.box.vfg("script", "stop", "beam"))
+
+    def test_an_old_style_script_keeps_its_words_and_runs_as_an_instance(self):
+        r = self.box.vfg("script", "run", "hello", "as=hello-two", "a=b", "world", "--wait", "5")
+        self.assertOk(r)
+        self.assertEqual(r.stdout, "hello a=b world\nlib fake mc script hello-two\n")
+        meta = self.box_file("hello-two.json")
+        self.assertEqual((meta["script"], meta["values"], meta["args"]), ("hello", None, ["a=b", "world"]))
+        self.assertIn("hello-two stopped — hello, a=b world", self.box.vfg("script", "list").stdout)
+
+    def test_deploy_takes_made_scripts_too(self):
+        self.assertOk(self.box.vfg("script", "new", "mine", "--from", "beam"))
+        r = self.box.vfg("script", "deploy")
+        self.assertOk(r)
+        self.assertEqual(r.stdout, "deployed: _lib beam galick hello loop\ndeployed made/main: mine\n")
+        r = self.box.vfg("script", "deploy", "mine")
+        self.assertEqual(r.stdout, "deployed: _lib\ndeployed made/main: mine\n")
+
+
+class TestState(LibraryCase):
+    WORLD = {"players": {"Steve": {"pos": [120.7, 64.0, -40.2], "dim": "minecraft:overworld",
+                                   "shown": "[Owner] Steve"},
+                         "Alex": {"pos": [98.0, 70.0, -12.5], "dim": "minecraft:the_nether"}},
+             "daytime": 18000, "day": 3, "raining": False, "thundering": False}
+
+    def test_state_in_one_call(self):
+        self.box.write_world(self.WORLD)
+        r = self.box.vfg("script", "run", "beam", "as=beam-a", "player=Steve", "--task", "T5")
+        self.assertOk(r)
+        self.assertOk(self.box.vfg("script", "run", "loop", "Alex", "as=hi"))
+        before = len(self.box.ssh_calls())
+        r = self.box.vfg("state")
+        self.assertOk(r)
+        calls = [c for c in self.box.ssh_calls()[before:] if c[-1] == "python3 -u -"]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(r.stdout.splitlines(), [
+            "online    Steve 120 64 -41 overworld, Alex 98 70 -13 the_nether",
+            "time      night (18000), day 3",
+            "weather   clear",
+            "running   beam-a — beam, T5, player=Steve; touches Steve",
+            "running   hi — loop, Alex; touches Alex",
+        ])
+        r = self.box.vfg("state", "--json")
+        self.assertOk(r)
+        got = json.loads(r.stdout)
+        self.assertEqual(got["online"][0], {"name": "Steve", "pos": [120, 64, -41], "dimension": "overworld"})
+        self.assertEqual(got["time"], {"daytime": 18000, "day": 3, "phase": "night"})
+        self.assertEqual(got["weather"], "clear")
+        beam = [i for i in got["instances"] if i["instance"] == "beam-a"][0]
+        self.assertEqual((beam["script"], beam["source"], beam["task"], beam["touches"], beam["changed"]),
+                         ("beam", "library", "T5", ["Steve"], {"player": "Steve"}))
+        self.assertEqual(beam["values"], {"player": "Steve", "length": 60, "cooldown": 10, "colour": "red"})
+        self.assertLess(got["ms"], 1000)
+        self.box.write_world(dict(self.WORLD, raining=True, thundering=True, daytime=6000))
+        got = json.loads(self.box.vfg("state", "--json").stdout)
+        self.assertEqual((got["weather"], got["time"]["phase"]), ("thunder", "day"))
+        self.box.write_world(dict(self.WORLD, raining=True))
+        self.assertIn("weather   rain\n", self.box.vfg("state").stdout)
+        for name in ("beam-a", "hi"):
+            self.assertOk(self.box.vfg("script", "stop", name))
+
+    def test_nobody_online_and_minecraft_down(self):
+        self.box.write_world({"players": {}, "daytime": 23500, "day": 0})
+        r = self.box.vfg("state")
+        self.assertOk(r)
+        self.assertEqual(r.stdout.splitlines(), ["online    nobody", "time      dawn (23500), day 0",
+                                                 "weather   clear", "running   nothing"])
+        self.assertOk(self.box.vfg("script", "run", "beam"))
+        self.box.stop_rcon()
+        r = self.box.vfg("state")
+        self.assertOneLine(r, 5, r"^vfg: minecraft is not running")
+        self.assertRegex(r.stdout, r"^minecraft minecraft is not running .*\nrunning   beam; touches @a\n$")
+        self.assertOk(self.box.vfg("script", "stop", "beam"))
+
+
+class TestHelpLists(Case):
+    def test_new_commands_are_listed(self):
+        r = self.box.vfg("--help")
+        for c in ("preset", "state"):
+            self.assertRegex(r.stdout, r"\n\s+%s\s" % c)
+        r = self.box.vfg("script", "--help")
+        for w in ("new", "check", "set", "save"):
+            self.assertIn(w, r.stdout)
+        self.assertIn("--task", self.box.vfg("script", "run", "--help").stdout)
+
+
+# ========================================================== the real kit
+
+REAL_LIB = os.path.join(REPO, "scripts", "_lib")
+
+TICKER = '''"""Ticker: logs its values every 0.1 s."""
+ASKS = ["tick"]
+import time
+from kit import values
+from mc import log
+
+VALUES = {
+    "cooldown": {"type": "number", "min": 0, "max": 60, "default": 10, "live": True},
+    "length":   {"type": "int", "min": 1, "max": 9, "default": 3},
+}
+
+v = values(VALUES)
+while True:
+    log("cooldown", v["cooldown"], "length", v["length"])
+    time.sleep(0.1)
+'''
+
+
+@unittest.skipUnless(os.path.isfile(os.path.join(REAL_LIB, "kit", "values.py")), "no scripts/_lib/kit yet")
+class TestRealKit(Case):
+    """The repo's own scripts/_lib (mc.py and the kit) on the fake box: what vfg script run
+    and set write is what kit.values reads, and the tag follows the instance."""
+
+    def setUp(self):
+        Case.setUp(self)
+        lib = os.path.join(self.box.repo, "scripts", "_lib")
+        shutil.rmtree(lib)
+        shutil.copytree(REAL_LIB, lib, ignore=shutil.ignore_patterns("__pycache__"))
+        os.makedirs(os.path.join(self.box.repo, "scripts", "ticker"))
+        with open(os.path.join(self.box.repo, "scripts", "ticker", "main.py"), "w") as f:
+            f.write(TICKER)
+
+    def log(self, name):
+        with open(os.path.join(self.box.rvfg, "run", name + ".log")) as f:
+            return f.read()
+
+    def test_live_value_reaches_the_kit_and_stop_kills_the_instance_tag(self):
+        r = self.box.vfg("script", "run", "ticker", "as=tick-a", "length=5", "cooldown=4")
+        self.assertOk(r)
+        pid = int(re.search(r"pid (\d+)", r.stdout).group(1))
+        self.assertTrue(wait_for(lambda: re.search(r"tick-a cooldown 4(\.0)? length 5", self.log("tick-a")), 10),
+                        self.log("tick-a")[-500:])
+        r = self.box.vfg("script", "set", "tick-a", "cooldown=0")
+        self.assertOk(r)
+        self.assertTrue(wait_for(lambda: re.search(r"tick-a cooldown 0(\.0)? length 5", self.log("tick-a")), 3),
+                        self.log("tick-a")[-500:])
+        self.assertTrue(alive(pid))
+        r = self.box.vfg("script", "stop", "tick-a")
+        self.assertEqual(r.stdout, "stopped tick-a\n")
+        self.assertTrue(wait_for(lambda: not alive(pid), 3))
+        self.assertIn("kill @e[tag=vfg_tick-a]", self.box.rcon_commands())
+
+
+class TestRealPresetsTogether(Case):
+    """The repo's own presets with module-level variables of their own (_projectile_n,
+    _meteor_fall_n, _replace_blocks_known), and two more, copied into one script: each
+    preset's code stays whole under its marker, check passes, and it runs on the real kit."""
+    PRESETS = ["projectile", "meteor_fall", "replace_blocks", "crater", "explosion"]
+
+    def setUp(self):
+        Case.setUp(self)
+        have = [os.path.isfile(os.path.join(REPO, "scripts", "_presets", p + ".py")) for p in self.PRESETS]
+        if not all(have) or not os.path.isfile(os.path.join(REAL_LIB, "kit", "values.py")):
+            self.skipTest("needs scripts/_presets/{%s}.py and scripts/_lib/kit" % ",".join(self.PRESETS))
+        lib = os.path.join(self.box.repo, "scripts", "_lib")
+        shutil.rmtree(lib)
+        shutil.copytree(REAL_LIB, lib, ignore=shutil.ignore_patterns("__pycache__"))
+        os.makedirs(os.path.join(self.box.repo, "scripts", "_presets"))
+        for p in self.PRESETS:
+            shutil.copy(os.path.join(REPO, "scripts", "_presets", p + ".py"),
+                        os.path.join(self.box.repo, "scripts", "_presets", p + ".py"))
+
+    def test_five_presets_in_one_script_each_whole_under_its_marker(self):
+        args = ["script", "new", "together"]
+        for p in self.PRESETS:
+            args += ["--preset", p]
+        self.assertOk(self.box.vfg(*args))
+        path = os.path.join(self.box.repo, "made", "main", "scripts", "together", "main.py")
+        with open(path) as f:
+            text = f.read()
+        L = load_library_module()
+        lib = L.Library(self.box.repo, "main")
+        blocks = preset_blocks(text)
+        self.assertEqual(list(blocks), self.PRESETS)
+        for name in self.PRESETS:
+            self.assertEqual(blocks[name], L.preset_body(lib.preset(name)).strip(), name)
+        text = text.replace("TODO <Title>: say what it does in one line.", "Together: five presets in one.") \
+            .replace("ASKS = []", 'ASKS = ["all of them at once"]')
+        with open(path, "w") as f:
+            f.write(text)
+        r = self.box.vfg("script", "check", "together")
+        self.assertOk(r)
+        r = self.box.vfg("script", "run", "together", "--wait", "10")
+        self.assertOk(r)
+
+
+# ======================================================= the real library
+
+LIVE_LIBRARY = os.path.isdir(os.path.join(REPO, "scripts", "_presets"))
+
+
+@unittest.skipUnless(LIVE_LIBRARY, "no scripts/_presets/ in this repo yet")
+class TestRealLibrary(unittest.TestCase):
+    """The repo's own examples and presets, read in place, never written."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.L = load_library_module()
+        cls.lib = cls.L.Library(REPO, "test-never-made")
+
+    def test_every_library_script_and_preset_passes_check(self):
+        problems = []
+        for it in self.lib.scripts() + self.lib.presets():
+            problems.extend(self.L.check(it, self.lib))
+        self.assertEqual(problems, [])
+
+    def test_new_from_any_example_with_any_preset_passes_check(self):
+        L, lib = self.L, self.lib
+        examples = [s for s in lib.scripts() if not s.legacy and not L.check(s, lib)]
+        presets = [p for p in lib.presets() if not L.check(p, lib)]
+        failed = []
+        for s in examples:
+            for p in presets:
+                if p.name in s.holds:
+                    continue
+                try:
+                    text, _keys, _imps = L.add_preset(s.text, p, "main")
+                except ValueError as e:
+                    if "is in both" in str(e):
+                        continue  # the example already has those values under another marker
+                    failed.append("%s + %s: %s" % (s.name, p.name, e))
+                    continue
+                path = os.path.join(tempfile.mkdtemp(prefix="vfg-new-"), s.name + "_plus", "main.py")
+                os.makedirs(os.path.dirname(path))
+                with open(path, "w") as f:
+                    f.write(text)
+                got = L.check(L.parse(path, "script", s.name + "_plus", "made", path), lib)
+                shutil.rmtree(os.path.dirname(os.path.dirname(path)), ignore_errors=True)
+                if got:
+                    failed.append("%s + %s: %s" % (s.name, p.name, got[0]))
+        self.assertEqual(failed, [])
+
+    def test_every_preset_into_one_script(self):
+        L, lib = self.L, self.lib
+        text = L.SKELETON.replace("TODO <Title>: say what it does in one line.", "All: every preset.") \
+            .replace("ASKS = []", 'ASKS = ["everything"]')
+        for p in lib.presets():
+            if not L.check(p, lib):
+                text, _k, _i = L.add_preset(text, p, "main")
+        path = os.path.join(tempfile.mkdtemp(prefix="vfg-all-"), "all", "main.py")
+        os.makedirs(os.path.dirname(path))
+        with open(path, "w") as f:
+            f.write(text)
+        try:
+            self.assertEqual(L.check(L.parse(path, "script", "all", "made", path), lib), [])
+        finally:
+            shutil.rmtree(os.path.dirname(os.path.dirname(path)), ignore_errors=True)
+
+
+# ================================================================ RCON lock
+
+def raw_rcon(port, password):
+    """A bare RCON client with no lock: a function that sends one command and returns the reply."""
+    import struct
+    s = socket.create_connection(("127.0.0.1", port), timeout=10)
+
+    def exact(n):
+        data = b""
+        while len(data) < n:
+            chunk = s.recv(n - len(data))
+            if not chunk:
+                raise OSError("closed")
+            data += chunk
+        return data
+
+    def ask(rid, typ, body):
+        b = body.encode()
+        s.sendall(struct.pack("<iii", len(b) + 10, rid, typ) + b + b"\0\0")
+        (n,) = struct.unpack("<i", exact(4))
+        return exact(n)[8:-2].decode()
+    ask(1, 3, password)
+    command = lambda cmd: ask(2, 2, cmd)
+    command.close = s.close
+    return command
+
+
+MC_CLIENT = """
+import sys
+import mc
+wrong = 0
+for i in range(int(sys.argv[1])):
+    want = "script-%d" % i
+    if mc.rcon("echo " + want) != want:
+        wrong += 1
+print(wrong)
+"""
+
+
+class TestRconLock(Case):
+    """Vanilla answers every RCON connection from one buffer (RconConsoleSource): two clients
+    with a command out at once get each other's output. Every client holds one lock file from
+    send to reply; the fake answers from one shared buffer, as vanilla does."""
+    box_kwargs = {"rcon": False}
+
+    def setUp(self):
+        Case.setUp(self)
+        self.box.start_rcon(shared=True)
+        self.saved = os.environ.get("VFG_RCON_LOCK")
+        os.environ["VFG_RCON_LOCK"] = os.path.join(self.box.root, "rcon.lock")
+        self.opened = []
+
+    def tearDown(self):
+        for c in self.opened:
+            c.close()
+        if self.saved is None:
+            os.environ.pop("VFG_RCON_LOCK", None)
+        else:
+            os.environ["VFG_RCON_LOCK"] = self.saved
+        Case.tearDown(self)
+
+    def common(self):
+        """toolkit/remote/common.py, which vfg puts in front of every remote program."""
+        ns = {"__name__": "vfg_remote_common"}
+        with open(os.path.join(TOOLKIT, "remote", "common.py")) as f:
+            exec(compile(f.read(), "common.py", "exec"), ns)
+        return ns
+
+    def hammer(self, makers, n=150):
+        """One thread per client, n echoes each, all at once: the replies that were wrong."""
+        wrong = []
+
+        def run(tag, make):
+            ask = make()
+            for i in range(n):
+                want = "%s-%d" % (tag, i)
+                got = ask(want)
+                if got != want:
+                    wrong.append((want, got))
+        threads = [threading.Thread(target=run, args=(tag, make)) for tag, make in makers]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(60)
+        return wrong
+
+    def test_without_the_lock_replies_mix(self):
+        def bare():
+            ask = raw_rcon(self.box.port, self.box.password)
+            self.opened.append(ask)
+            return lambda w: ask("echo " + w)
+        wrong = self.hammer([("a", bare), ("b", bare)])
+        self.assertGreater(len(wrong), 10)
+        self.assertTrue(any(len(got) > len(want) for want, got in wrong), wrong[:3])  # glued
+
+    def test_with_the_lock_vfg_scripts_and_realmc_never_mix(self):
+        C = self.common()
+        r = C["Rcon"](self.box.rmc)
+        self.opened.append(r)
+        self.assertEqual(r.lock_path, os.environ["VFG_RCON_LOCK"])
+
+        def vfg():
+            r = C["Rcon"](self.box.rmc)
+            self.opened.append(r)
+            return lambda w: r.command("echo " + w)
+        makers = [("vfg1", vfg), ("vfg2", vfg)]
+        realmc_py = os.path.join(REPO, "integration", "realmc", "realmc.py")
+        if os.path.isfile(realmc_py):
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("realmc_for_test", realmc_py)
+            realmc = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(realmc)
+
+            def real():
+                r = realmc.Rcon(os.path.join(self.box.rmc, "server.properties"))
+                self.opened.append(r)
+                return lambda w: r.command("echo " + w)
+            makers.append(("realmc", real))
+        # A script's own mc.rcon in another process, with the same lock, at the same time.
+        lib = REAL_LIB if os.path.isfile(os.path.join(REAL_LIB, "mc.py")) else None
+        script = None
+        with open(os.path.join(lib or REAL_LIB, "mc.py")) if lib else io.StringIO("") as f:
+            has_lock = "lock_path" in f.read()
+        if has_lock:
+            script = subprocess.Popen([PY, "-c", MC_CLIENT, "150"], stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE, universal_newlines=True,
+                                      env=dict(os.environ, PYTHONPATH=lib, VFG_INSTANCE="locktest",
+                                               VFG_MC_PROPERTIES=os.path.join(self.box.rmc,
+                                                                              "server.properties")))
+        wrong = self.hammer(makers)
+        self.assertEqual(wrong, [])
+        if script is not None:
+            o, e = script.communicate(timeout=60)
+            self.assertEqual(o.strip(), "0", e)
+
+    def test_a_thread_holding_the_lock_takes_it_again_others_wait(self):
+        """live_kit.py once held mc's lock around players.cmd; realmc's client takes the lock
+        itself now, and a second flock in one process on another fd would wait forever. A
+        thread that holds it re-enters through any client; another thread still waits."""
+        lib = REAL_LIB
+        realmc_py = os.path.join(REPO, "integration", "realmc", "realmc.py")
+        if not os.path.isfile(os.path.join(lib, "mc.py")) or not os.path.isfile(realmc_py):
+            self.skipTest("needs scripts/_lib/mc.py and integration/realmc/realmc.py")
+        code = """
+import importlib.util, os, signal, sys, threading, time
+import mc
+signal.signal(signal.SIGALRM, lambda *a: (print("deadlock"), os._exit(3)))
+signal.alarm(10)
+common = {"__name__": "common"}
+exec(compile(open(sys.argv[1]).read(), "common.py", "exec"), common)
+spec = importlib.util.spec_from_file_location("realmc", sys.argv[2])
+realmc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(realmc)
+props = os.environ["VFG_MC_PROPERTIES"]
+vfg, real = common["Rcon"](os.path.dirname(props)), realmc.Rcon(props)
+outer = mc._Flock()
+outer.acquire()
+got = []
+other = threading.Thread(target=lambda: got.append(common["Rcon"](os.path.dirname(props)).command("echo other")))
+other.start()
+inner = [vfg.command("echo vfg"), real.command("echo realmc"), mc.rcon("echo mc")]
+time.sleep(0.3)
+waited = list(got)
+outer.release()
+other.join(5)
+print(inner, waited, got)
+"""
+        env = dict(os.environ, PYTHONPATH=lib, VFG_INSTANCE="reentry",
+                   VFG_MC_PROPERTIES=os.path.join(self.box.rmc, "server.properties"))
+        r = subprocess.run([PY, "-c", code, os.path.join(TOOLKIT, "remote", "common.py"), realmc_py],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+                           env=env, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout.strip(), "['vfg', 'realmc', 'mc'] [] ['other']")
+
+    def test_the_default_lock_path(self):
+        os.environ.pop("VFG_RCON_LOCK")
+        C = self.common()
+        self.assertEqual(C["rcon_lock_path"](25575), "/tmp/vfg-rcon-25575.lock")
+        r = C["Rcon"](self.box.rmc)
+        self.assertEqual(r.lock_path, "/tmp/vfg-rcon-%d.lock" % self.box.port)
+        self.assertEqual(r.command("echo hi"), "hi")
+        r.close()
+        os.environ["VFG_RCON_LOCK"] = os.path.join(self.box.root, "rcon.lock")
 
 
 # ======================================================== the real feed writer

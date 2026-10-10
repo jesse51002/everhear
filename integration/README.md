@@ -11,6 +11,9 @@ Jev's API (`jev/tests/fake_jev.py`) and the orchestrator (`ORCH` lines posted by
 `VFG_HOME` point into the temp folder and every port is on 127.0.0.1, so nothing touches `~/.vfg`,
 `~/.ssh` or any remote host.
 
+For a real Minecraft 26.3 server instead of the fake one, with the same kind of stand-in box
+around it, several side by side and Carpet's fake players: [realmc/](realmc/README.md).
+
 ## Run it
 
 ```sh

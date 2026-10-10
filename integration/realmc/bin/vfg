@@ -1,0 +1,15 @@
+#!/bin/sh
+# vfg against realmc's stand-in box: this repo's toolkit/vfg, with HOME and VFG_HOME in the
+# stand-in and the keys that choose the box pinned, so nothing reads ~/.vfg or ~/.ssh.
+bin=$(dirname "$(readlink -f "$0")")
+realmc=$(dirname "$bin")
+repo=$(dirname "$(dirname "$realmc")")
+state=${REALMC_DIR:-$realmc/.server}
+if [ ! -f "$state/home/.vfg/config" ]; then
+  echo "vfg: realmc is not set up: $realmc/up" >&2
+  exit 3
+fi
+export REALMC_DIR="$state" HOME="$state/home" VFG_HOME="$state/home/.vfg"
+export VFG_SSH="$bin/ssh" VFG_SSH_HOST=realmc VFG_SSH_USER=ec2-user VFG_SSH_KEY="$state/home/.vfg/fake_key"
+export VFG_REMOTE_VFG="$state/vfg" VFG_REMOTE_MC="$state/mc" VFG_REPO="$repo"
+exec python3 "$repo/toolkit/vfg" "$@"

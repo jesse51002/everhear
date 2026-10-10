@@ -1,6 +1,6 @@
 # ~/.vfg/config: every Everhear setting on your PC, KEY=value, mode 600.
 # toolkit/install.sh copies this file there. The vfg toolkit, bridge/deploy/*.sh,
-# jev/deploy.sh, installer/publish.sh and conversation/start all read it.
+# jev/deploy.sh, installer/publish.sh, conversation/start and lib/py all read it.
 # An environment variable of the same name wins. An empty value means the default.
 # No secret goes here: the key's path only, never the key.
 
@@ -53,3 +53,46 @@ VFG_WATCH_CATCHUP=
 VFG_WATCH_MAX_PER_MIN=
 # The ssh binary. Default: ssh
 VFG_SSH=
+# Seconds vfg place list answers from its cache, $VFG_HOME/places.json, before it asks the
+# server again; vfg place save and forget update the cache as they go. Default: 30
+VFG_PLACES_TTL_S=
+
+# --- The dispatcher ---
+# The file holding your OpenRouter API key alone, mode 600; lib/py's structured()
+# reads it. OPEN_ROUTER_API in the environment wins over the file.
+# Default: ~/.vfg/openrouter.key
+VFG_OPENROUTER_KEY=
+# Its folder: the inbox vfg orch send appends to, state.json, dispatcher.log, the pid
+# and refs/, the command references per server version. Default: ~/.vfg/dispatch
+VFG_DISPATCH_DIR=
+# The OpenRouter model of every dispatcher call. Default: ~deepseek/deepseek-v4-flash-latest
+VFG_DISPATCH_MODEL=
+# Seconds one model call may take, its retries included; past it the task, or that
+# part of it, goes to the orchestrator. Default: 10
+VFG_DISPATCH_MODEL_TIMEOUT_S=
+# How often a failed action is changed and run again before it is handed on or
+# dropped. Default: 1
+VFG_DISPATCH_RETRIES=
+# Seconds from the first task handed on until every task handed since goes to the
+# orchestrator, in one vfg orch hand. Default: 10
+VFG_DISPATCH_WINDOW_S=
+# Seconds an action may run on EC2; teleport allows itself 60. Default: 20
+VFG_DISPATCH_ACTION_TIMEOUT_S=
+
+# --- Scripts (vfg script, vfg preset, vfg state) ---
+# The server this PC drives, and the name of its folder under made/, where what its
+# implementers make is kept apart from the library in scripts/. Default: main
+VFG_SERVER=
+# How often a running script looks again for the values vfg script set wrote, in seconds.
+# Default: 0.5
+VFG_LIVE_POLL_S=
+
+# --- The router (vfg route) and the implementers' cache ---
+# Seconds vfg route waits for Jev before it picks by words instead. Default: 3
+VFG_ROUTE_TIMEOUT_S=
+# What loads an example script for an implementer (runs_it and close together)
+# or a preset (use), from 0 to 1. Default: 0.3
+VFG_ROUTE_LOAD=
+# How long an implementer's prompt cache lives, 5m or 1h; the orchestrator passes
+# it as subagentPromptCacheTtl. An hour doubles the price of every cache write. Default: 5m
+VFG_SUBAGENT_CACHE_TTL=

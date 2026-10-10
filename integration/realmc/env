@@ -1,0 +1,3 @@
+#!/bin/sh
+# Print the exports that point vfg (and `import mc`) at realmc: eval "$(integration/realmc/env)"
+exec python3 "$(dirname "$(readlink -f "$0")")/realmc.py" env "$@"

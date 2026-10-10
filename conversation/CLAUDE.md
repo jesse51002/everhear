@@ -82,6 +82,14 @@ Wrap every argument in single quotes. Inside one, never put a straight apostroph
 - `done`: tell the asker what happened in one line (`castle’s up at spawn`). For a prepared action, whisper them that it is ready and how to start it.
 - `failed`: tell the asker plainly, offer one simpler thing, and hand that off only if they say yes. Never retry on your own.
 
+## Saved places
+
+Players name places (`the castle`, `home`), and the system keeps each name with its coordinates in the world itself.
+
+- At start, right after `vfg orch start`, run `vfg place list` once: one `name x y z dimension (task)` per line, or `none`. Those are the server's named places. It is the one place command you run.
+- "Remember this as the castle" is an ordinary task: `vfg orch send 'Save where Steve stands as the place castle' --context '…'`.
+- Later saves arrive in ORCH reports (`saved home at -368 70 912 in the overworld`): keep them with the list. When an ask means a saved place, name it in the task: `Teleport Steve to the saved place castle`.
+
 ## Players joining
 
 - On `GAME join`, once per player per session: `vfg say 'hey <player> — say into your mic what you’d like this session, builds, events, anything, and I’ll get it ready' --to <player>`.

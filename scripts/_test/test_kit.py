@@ -1,0 +1,763 @@
+"""Tests for the kit (scripts/_lib/kit) against the fake RCON server and fake_world, under
+the Python EC2 has:
+
+    uv run --python 3.9 python scripts/_test/test_kit.py
+
+run_tests.py runs these too. In this process mc is pointed at a fake whose world each test
+makes afresh; the tests that need a script of their own (two scripts on one player, a stop)
+start one the way EC2 does, with PYTHONPATH=scripts/_lib and VFG_INSTANCE set.
+"""
+import json
+import os
+import secrets
+import signal
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import unittest
+
+sys.dont_write_bytecode = True
+HERE = os.path.dirname(os.path.abspath(__file__))
+LIB = os.path.join(os.path.dirname(HERE), "_lib")
+sys.path.insert(0, HERE)
+sys.path.insert(0, LIB)
+
+from fake_rcon import FakeRcon  # noqa: E402
+from fake_world import World  # noqa: E402
+
+TMP = tempfile.mkdtemp(prefix="vfg-kit-test-")
+
+
+def _properties(password, port):
+    path = os.path.join(TMP, "server-%d.properties" % port)
+    with open(path, "w") as f:
+        f.write("enable-rcon=true\nrcon.port=%d\nrcon.password=%s\n" % (port, password))
+    return path
+
+
+# mc reads its settings from the environment on first use; point it at a throwaway
+# properties file now, and at each test's fake in KitCase.setUp.
+if "VFG_MC_PROPERTIES" not in os.environ:
+    os.environ["VFG_MC_PROPERTIES"] = _properties("unused", 1)
+import mc  # noqa: E402
+from kit import values, items, aim, area, mobs, fx, world, exclude, loop  # noqa: E402
+
+signal.signal(signal.SIGINT, signal.default_int_handler)
+signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+
+class KitCase(unittest.TestCase):
+    """mc talks to a fake whose world is self.world, made new for each test."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.password = secrets.token_hex(8)
+        cls.fake = FakeRcon(cls.password, responder=lambda c: cls.current.respond(c)).start()
+        cls.saved = mc._settings
+
+    @classmethod
+    def tearDownClass(cls):
+        mc._drop()
+        mc._settings = cls.saved
+        cls.fake.stop()
+
+    def setUp(self):
+        type(self).current = self.world = World()
+        self.world.add_player("Steve", (10.5, 64.0, -3.5), rot=(-90.0, 0.0), prefix="[Owner] ")
+        mc._drop()
+        mc._settings = (self.password, self.fake.port)
+        items._made.clear()
+        loop._online["at"] = 0.0
+        world._dims.clear()
+        world._ms["at"] = 0.0
+        world._rules.clear()
+        area._forced.clear()
+        self.stoppers = list(mc._stoppers)
+
+    def tearDown(self):
+        # Let the generators collect() started see a stop and end, then carry on.
+        mc._stop["thread"] = threading.get_ident()
+        mc._stopping.set()
+        try:
+            for th in RUNNING:
+                th.join(3)
+        finally:
+            del RUNNING[:]
+            mc._stopping.clear()
+        mc._stoppers[:] = self.stoppers
+
+    def sent(self, word):
+        return [c for c in self.world.commands if word in c]
+
+
+RUNNING = []
+
+
+def collect(gen, seconds):
+    """Run a kit generator in a thread for a while (or until the test ends): a list of
+    (what it yielded, time.time())."""
+    got = []
+    end = time.time() + seconds
+
+    def go():
+        for p in gen:
+            got.append((p, time.time()))
+            if time.time() > end:
+                return
+    th = threading.Thread(target=go, daemon=True)
+    th.start()
+    RUNNING.append(th)
+    return got, th
+
+
+# ---- values ------------------------------------------------------------------------------
+
+VALUES = {
+    "player": {"type": "player", "default": "@a"},
+    "cooldown": {"type": "number", "min": 0, "max": 60, "default": 10, "live": True},
+    "radius": {"type": "int", "min": 2, "max": 64, "default": 8},
+    "leave": {"type": "enum", "of": ["air", "lava", "fire"], "default": "air", "live": True},
+    "loud": {"type": "bool", "default": False},
+    "mob": {"type": "mob", "default": "zombie"},
+    "spare": {"type": "list", "of": "player", "default": []},
+}
+
+
+class ValuesTests(KitCase):
+    def run_dir(self):
+        d = tempfile.mkdtemp(dir=TMP)
+        return d
+
+    def test_defaults_then_command_then_live_file_in_order_and_clamped(self):
+        d = self.run_dir()
+        with open(os.path.join(d, "bomb.values.json"), "w") as f:
+            json.dump({"cooldown": 3, "radius": 30, "leave": "LAVA"}, f)
+        v = values(VALUES, argv=["cooldown=99", "radius=1", "player=Steve,Alex", "loud=yes", "spare=Alex",
+                                 "mob=potion", "nope=1", "positional"],
+                   run_dir=d, instance="bomb", poll=0.05)
+        self.assertEqual(v["cooldown"], 3)          # the live file wins over the command
+        self.assertEqual(v["radius"], 2)            # clamped to its min; not live, so the file's 30 is ignored
+        self.assertEqual(v["leave"], "lava")        # enum matched without case, canonical spelling
+        self.assertEqual(v["player"], "Steve,Alex")
+        self.assertIs(v["loud"], True)
+        self.assertEqual(v["spare"], ["Alex"])
+        self.assertEqual(v["mob"], "zombie")        # potion is not an entity type on 26.3: refused
+        with self.assertRaises(KeyError):
+            v["crater_radius"]
+        self.assertEqual(sorted(v), sorted(VALUES))
+
+    def test_bad_values_are_refused_and_the_old_one_kept(self):
+        v = values(VALUES, argv=["cooldown=lots", "leave=water", "player=@e[type=zombie]"], run_dir=self.run_dir())
+        self.assertEqual((v["cooldown"], v["leave"], v["player"]), (10, "air", "@a"))
+        with self.assertRaises(ValueError):
+            values({"x": {"type": "int", "min": 0, "max": 5, "default": 9}}, argv=[])
+        with self.assertRaises(ValueError):
+            values({"x": {"type": "int", "default": 1, "step": 2}}, argv=[])
+        for kind, bad in (("block", "#minecraft:tall_flowers"), ("mob", "chest_boat"), ("mob", "Zombie Pig")):
+            with self.assertRaises(ValueError):
+                values.check("x", {"type": kind, "default": ""}, bad)
+
+    def test_a_live_value_is_picked_up_within_a_second(self):
+        d = self.run_dir()
+        v = values(VALUES, argv=[], run_dir=d, instance="gun", poll=0.5)
+        cooldown = v["cooldown"]          # handed to the kit as it is, it stays live
+        self.assertEqual(cooldown, 10)
+        t0 = time.time()
+        with open(os.path.join(d, "gun.values.json.tmp"), "w") as f:
+            json.dump({"cooldown": 0, "radius": 40}, f)
+        os.replace(os.path.join(d, "gun.values.json.tmp"), os.path.join(d, "gun.values.json"))
+        while values.now(cooldown) != 0 and time.time() - t0 < 2:
+            time.sleep(0.05)
+        self.assertEqual(values.now(cooldown), 0)
+        self.assertLess(time.time() - t0, 1.0)
+        self.assertEqual(v["radius"], 8)  # not live: a restart changes it, not the file
+
+    def test_a_live_value_reaches_a_running_generator(self):
+        d = self.run_dir()
+        v = values(VALUES, argv=["cooldown=30"], run_dir=d, instance="rail", poll=0.05)
+        self.world.hold("Steve", main="railgun")
+        got, th = collect(items.clicks(v["player"], "Railgun", cooldown=v["cooldown"], every=0.05), 3)
+        time.sleep(0.3)
+        self.world.click("Steve")
+        time.sleep(0.3)
+        self.world.click("Steve")          # inside the 30 s cooldown: not fired
+        time.sleep(0.3)
+        with open(os.path.join(d, "rail.values.json"), "w") as f:
+            json.dump({"cooldown": 0}, f)
+        time.sleep(0.3)
+        self.world.click("Steve")          # the cooldown is 0 now
+        time.sleep(0.4)
+        self.assertEqual([p for p, _ in got], ["Steve", "Steve"])
+
+
+# ---- mc ---------------------------------------------------------------------------------
+
+class McKitTests(KitCase):
+    def test_players_strips_a_rank_prefix(self):
+        self.world.add_player("Alex", (0.5, 64, 0.5), prefix="[VIP] ")
+        self.world.add_player("Sam_9", (0.5, 64, 0.5))
+        self.assertEqual(mc.players(), ["Steve", "Alex", "Sam_9"])
+        self.assertEqual(loop.who("Alex,Nobody"), ["Alex"])
+        for raw, want in (("[Kami-chan] Steve", "Steve"), ("§c[Admin]§r Alex", "Alex"),
+                          ("<Mod> Eve_2", "Eve_2"), ("Steve [AFK]", "Steve"), ("Steve", "Steve")):
+            self.assertEqual(mc.bare(raw), want)
+
+    def test_tag_comes_from_the_instance(self):
+        folder = os.path.join(TMP, "galick_gun")
+        os.makedirs(folder, exist_ok=True)
+        code = "import mc; print(mc.NAME, mc.INSTANCE, mc.TAG)"
+        for inst, want in (("galick-alex", "galick_gun galick-alex vfg_galick-alex"),
+                           ("Bad Name!", "galick_gun galick_gun vfg_galick_gun"), ("", "galick_gun galick_gun vfg_galick_gun")):
+            env = dict(os.environ, PYTHONPATH=LIB, VFG_INSTANCE=inst)
+            out = subprocess.run([sys.executable, "-c", code], env=env, cwd=folder, stdout=subprocess.PIPE,
+                                 universal_newlines=True).stdout.strip()
+            self.assertEqual(out, want, inst)
+
+    def test_every_command_holds_the_rcon_lock(self):
+        """26.3 answers every RCON client from one buffer: two clients at once get each
+        other's output. mc holds a lock file from send to reply, so a command waits for it."""
+        import fcntl
+        fd = os.open(mc.lock_path(), os.O_RDWR | os.O_CREAT, 0o666)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            got = []
+            th = threading.Thread(target=lambda: got.append(mc.rcon("list")))
+            th.start()
+            time.sleep(0.4)
+            self.assertEqual(got, [])                 # waiting for the lock
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            th.join(2)
+            self.assertEqual(len(got), 1)
+            self.assertIn("players online", got[0])
+        finally:
+            os.close(fd)
+
+    def test_a_command_too_long_for_rcon_is_refused(self):
+        self.assertEqual(mc.rcon("say " + "x" * 1500), "")
+        self.assertEqual(self.world.commands, [])
+
+
+# ---- items: one shared objective ---------------------------------------------------------
+
+class ItemsTests(KitCase):
+    def test_each_click_reaches_only_the_script_whose_item_took_it(self):
+        self.world.hold("Steve", main="alpha_wand")
+        a, _ = collect(items.clicks("@a", "Alpha Wand", every=0.05), 4)
+        b, _ = collect(items.clicks("Steve", "Beta Wand", every=0.05), 4)
+        time.sleep(0.4)
+        self.world.click("Steve")                                  # alpha in hand
+        time.sleep(0.4)
+        self.world.hold("Steve", main="beta_wand")
+        time.sleep(0.3)
+        self.world.click("Steve")                                  # beta in hand
+        time.sleep(0.4)
+        self.world.hold("Steve", main="beta_wand", off="alpha_wand")
+        time.sleep(0.3)
+        self.world.click("Steve")                                  # beta in hand takes it, not alpha in the off hand
+        time.sleep(0.4)
+        self.world.hold("Steve", main=None, off="alpha_wand")
+        time.sleep(0.3)
+        self.world.click("Steve")                                  # alpha in the off hand, nothing in the main
+        time.sleep(0.4)
+        self.world.hold("Steve", main="plain")
+        time.sleep(0.3)
+        self.world.click("Steve", 3)                               # a plain carrot on a stick: nobody's
+        time.sleep(0.4)
+        self.assertEqual(len(a), 2, a)
+        self.assertEqual(len(b), 2, b)
+        self.assertLess(a[0][1], b[0][1])
+        self.assertLess(b[1][1], a[1][1])
+        # One objective, made once, never reset or removed.
+        self.assertEqual([o for o, c in self.world.objectives.items() if "carrot_on_a_stick" in c], ["vfg_click"])
+        for c in self.world.commands:
+            self.assertNotRegex(c, r"scoreboard players (set|reset|operation)|objectives remove vfg_click")
+        # Beta was given once; Alpha was in his hand already, so not given again.
+        self.assertEqual([i.split('"')[1] for _, i in self.world.gives], ["beta_wand"])
+
+    def test_a_server_that_refuses_the_hand_check_falls_back_to_either_hand(self):
+        self.world.no_negation = True
+        self.world.hold("Steve", main="alpha_wand")
+        got, _ = collect(items.clicks("Steve", "Alpha Wand", every=0.05), 3)
+        time.sleep(0.4)
+        self.world.click("Steve")
+        time.sleep(0.4)
+        self.assertEqual([p for p, _ in got], ["Steve"])
+
+    def test_a_hold_yields_while_the_button_is_down(self):
+        self.world.hold("Steve", main="gatling_gun")
+        got, _ = collect(items.holds("Steve", "Gatling Gun", every=0.05), 3)
+        time.sleep(0.3)
+        first = time.time()
+        for _ in range(6):                       # held down: a use every 0.2 s for 1.2 s
+            self.world.click("Steve")
+            last = time.time()
+            time.sleep(0.2)
+        time.sleep(1.0)
+        times = [t for _, t in got]
+        self.assertGreater(len(times), 10)
+        self.assertGreaterEqual(min(times), first)
+        self.assertLess(max(times), last + 0.9, "kept yielding after it was let go")
+
+    def test_a_charge_fires_once_when_full_and_not_when_let_go_early(self):
+        self.world.hold("Steve", main="spirit_bomb")
+        got, _ = collect(items.charged("Steve", "Spirit Bomb", 0.6, every=0.05), 5)
+        time.sleep(0.3)
+        for _ in range(2):                       # 0.4 s: let go before the charge is full
+            self.world.click("Steve")
+            time.sleep(0.2)
+        time.sleep(0.8)
+        self.assertEqual(got, [])
+        start = time.time()
+        for _ in range(8):                       # 1.6 s held: full at 0.6 s, fires once
+            self.world.click("Steve")
+            time.sleep(0.2)
+        time.sleep(0.6)
+        self.assertEqual(len(got), 1, got)
+        self.assertGreaterEqual(got[0][1] - start, 0.55)
+        self.assertLess(got[0][1] - start, 1.3)
+        self.assertTrue(self.sent("actionbar"), "no charge shown")
+
+    def test_a_player_with_no_score_hides_nobody_and_a_first_click_counts(self):
+        self.world.add_player("Alex", (0.5, 64.0, 0.5))
+        self.world.hold("Alex", main="alpha_wand")
+        self.world.hold("Steve", main="alpha_wand")
+        got, _ = collect(items.clicks("@a", "Alpha Wand", every=0.05), 3)
+        time.sleep(0.4)
+        self.world.click("Alex")                   # Alex's first click ever, Steve never clicked
+        time.sleep(0.4)
+        self.assertEqual([p for p, _ in got], ["Alex"])
+        self.assertTrue(self.sent("scoreboard players add @a vfg_click 0"))
+        s = items.Stat("vfg_x", "dummy")
+        self.world.objectives["vfg_x"] = "dummy"
+        self.world.scores[("vfg_x", "Alex")] = 4
+        self.assertEqual(items._SCORE.findall("Can't get value of x for Steve; none is setAlex has 4 [x]"), [])
+        self.assertEqual(s.scores(), {"Steve": 0, "Alex": 4})
+
+    def test_sneaking_from_the_shared_objective(self):
+        self.assertEqual(items.sneaking(), set())
+        self.world.sneak("Steve", 4)
+        self.assertEqual(items.sneaking(), {"Steve"})
+        self.assertEqual(items.sneaking(), set())
+
+    def test_give_keep_and_take_back(self):
+        self.assertTrue(items.give("Steve", "Ice Staff"))
+        self.assertFalse(items.give("Steve", "Ice Staff"))      # has it: not given twice
+        self.assertTrue(items.has("Steve", "Ice Staff"))
+        items.take("Steve", "Ice Staff")
+        self.assertFalse(items.has("Steve", "Ice Staff"))
+        self.assertIn('custom_data={vfg_item:"ice_staff"}', items.item("Ice Staff"))
+
+
+# ---- aim ---------------------------------------------------------------------------------
+
+class AimTests(KitCase):
+    def test_a_ray_stops_before_a_block(self):
+        self.world.solid.add(("minecraft:overworld", 30, 65, -4))
+        r = aim.ray("Steve", 100)
+        self.assertEqual(r.why, "block")
+        self.assertEqual(tuple(r.hit_block), (30.0, 65.0, -4.0))
+        self.assertAlmostEqual(r.end[0], 29.95, places=2)
+        self.assertAlmostEqual(r.start[1], 64.0 + aim.EYES)
+        self.assertEqual(len(r.path), int(r.length) + 2)
+
+    def test_a_ray_stops_at_an_unloaded_chunk(self):
+        self.world.unloaded.add(("minecraft:overworld", 3, -1))   # x 48..63, z -16..-1
+        before = len(self.world.commands)
+        r = aim.ray("Steve", 120)
+        self.assertEqual(r.why, "unloaded")
+        self.assertIsNone(r.hit_block)
+        self.assertAlmostEqual(r.end[0], 47.95, places=2)
+        self.assertLess(len(self.world.commands) - before, 15, "a ray should cost few commands")
+        r2 = aim.ray("Steve", 120, blocks=False)               # through blocks, still not past the edge
+        self.assertEqual(r2.why, "unloaded")
+        self.assertAlmostEqual(r2.end[0], 47.95, places=1)
+
+    def test_a_ray_in_the_nether_asks_the_nether(self):
+        self.world.players["Steve"]["dim"] = "minecraft:the_nether"
+        r = aim.ray("Steve", 20)
+        self.assertEqual(r.dim, "minecraft:the_nether")
+        self.assertTrue(all(c.startswith("execute in minecraft:the_nether if block") for c in self.sent("if block")))
+
+    def test_who_is_near_a_line(self):
+        on = self.world.add_entity("zombie", (30.5, 64.0, -3.5))
+        self.world.add_entity("zombie", (30.5, 64.0, 6.5))                               # off the line
+        self.world.add_entity("villager", (20.5, 64.0, -3.5))
+        self.world.add_entity("wolf", (25.5, 64.0, -3.5), owner="Steve")                 # a pet
+        self.world.add_entity("armor_stand", (26.5, 64.0, -3.5))
+        self.world.add_entity("marker", (27.5, 65.0, -3.5), health=None)                 # not alive
+        self.world.add_entity("item", (28.5, 64.0, -3.5), health=5.0, name="Rotten Flesh")  # an item has a Health
+        self.world.add_player("Alex", (40.5, 64.0, -3.0))
+        self.world.add_player("Sam", (45.5, 64.0, -3.0), gamemode="creative")
+        r = aim.ray("Steve", 60)
+        hits = aim.near_line(r, 1.5, shooter="Steve")
+        self.assertEqual([(h.name, h.player) for h in hits], [("Zombie", False), ("Alex", True)])
+        self.assertAlmostEqual(hits[0].t, 20.0, delta=1.0)
+        for h in hits:
+            aim.run_on(h, "damage @s 5 minecraft:player_attack by Steve")
+        self.assertEqual(on["health"], 15.0)
+        self.assertEqual(self.world.players["Alex"]["health"], 15.0)
+        self.assertEqual(self.world.players["Steve"]["health"], 20.0)
+        for c in self.world.commands:
+            self.assertNotIn("type=!potion", c)
+            self.assertNotRegex(c, r"@a\[[^\]]*type=")
+
+
+class AimNearTests(KitCase):
+    def test_who_is_near_a_place_and_marking_each_once(self):
+        z1 = self.world.add_entity("zombie", (20.5, 64.0, 0.5))
+        z2 = self.world.add_entity("zombie", (22.5, 64.0, 0.5))
+        self.world.add_entity("zombie", (40.5, 64.0, 0.5))                       # too far
+        self.world.add_entity("villager", (21.5, 64.0, 0.5))
+        self.world.add_player("Alex", (19.5, 64.0, 0.5))
+        hits = aim.near(world.Pos(20.5, 64.0, 0.5), 4, shooter="Steve")
+        self.assertEqual([(h.name, round(h.t, 1)) for h in hits], [("Zombie", 0.0), ("Alex", 1.0), ("Zombie", 2.0)])
+        self.assertEqual(aim.mark(hits + hits[:1], "vfg_hit"), 3)                   # listed twice, tagged once
+        self.assertIn("vfg_hit", z1["tags"])
+        self.assertIn("vfg_hit", z2["tags"])
+        self.assertIn("vfg_hit", self.world.players["Alex"]["tags"])
+
+    def test_a_crowded_place_is_asked_in_smaller_boxes(self):
+        for i in range(80):
+            self.world.add_entity("zombie", (20.5 + (i % 9) * 0.5, 64.0, 0.5 + (i // 9) * 0.5), name="Zombie Number %d" % i)
+        hits = aim.near(world.Pos(22.5, 64.0, 2.5), 5)
+        self.assertEqual(len(hits), 80)
+        self.assertTrue(self.sent("if entity @s[dx="))
+
+
+# ---- area --------------------------------------------------------------------------------
+
+class AreaTests(KitCase):
+    def covered(self, fills):
+        cells = set()
+        for _, b, _, _ in fills:
+            for x in range(b[0], b[3] + 1):
+                for y in range(b[1], b[4] + 1):
+                    for z in range(b[2], b[5] + 1):
+                        self.assertNotIn((x, y, z), cells, "two fills overlap")
+                        cells.add((x, y, z))
+        return cells
+
+    def test_a_fill_is_split_under_32768_on_chunk_edges_where_loaded(self):
+        n = area.fill((0, 0, 0, 99, 99, 99), "stone")
+        self.assertEqual(n, 100 ** 3)
+        self.assertTrue(all(area.volume(b) <= 32768 for _, b, _, _ in self.world.fills))
+        self.assertEqual(len(self.covered(self.world.fills)), 100 ** 3)
+        self.assertFalse(self.sent("Too many"))
+
+    def test_a_fill_skips_chunks_that_are_not_loaded(self):
+        self.world.unloaded.update({("minecraft:overworld", 1, 1), ("minecraft:overworld", 2, 0)})
+        n = area.fill((0, 60, 0, 47, 70, 47), "packed_ice", "replace #minecraft:snow")
+        self.assertEqual(n, 48 * 11 * 48 - 2 * 16 * 11 * 16)
+        for _, b, block, mode in self.world.fills:
+            self.assertEqual((block, mode), ("packed_ice", "replace #minecraft:snow"))
+            for cx, cz in area.chunks(b):
+                self.assertNotIn((cx, cz), {(1, 1), (2, 0)})
+
+    def test_the_ice_castle_wall_and_a_hollow_box(self):
+        n = area.fill((-30, 59, -30, 30, 70, 30), "packed_ice", "hollow")   # 61 x 12 x 61 = 44,652
+        self.assertTrue(all(area.volume(b) <= 32768 for _, b, _, _ in self.world.fills))
+        shell = 61 * 12 * 61 - 59 * 10 * 59
+        self.assertEqual(n, 61 * 12 * 61)
+        self.assertEqual(sum(area.volume(b) for _, b, blk, _ in self.world.fills if blk == "packed_ice"), shell)
+
+    def test_a_box_keeps_its_dimension(self):
+        b = area.box(world.Pos(0.5, 64, 0.5, "minecraft:the_nether"), 2)
+        self.assertEqual((tuple(b), b.dim), ((-2, 62, -2, 2, 66, 2), "minecraft:the_nether"))
+        self.assertEqual(area.norm(b).dim, "minecraft:the_nether")
+        self.assertEqual(area.chunk_box(1, 2, 0, 10, "minecraft:the_end").dim, "minecraft:the_end")
+        self.assertEqual(area.fill(b, "glowstone"), 125)
+        self.assertEqual(self.world.fills[0][0], "minecraft:the_nether")
+        self.assertTrue(self.sent("execute in minecraft:the_nether run fill"))
+        self.assertIsNone(area.box((0, 64, 0), 1).dim)
+
+    def test_never_bedrock(self):
+        self.assertEqual(area.fill((0, -64, 0, 5, -60, 5), "packed_ice", "replace minecraft:bedrock"), 0)
+        area.fill((0, -64, 0, 5, -50, 5), "air", keep_bedrock=True)
+        self.assertEqual(min(b[1] for _, b, _, _ in self.world.fills), -59)
+
+    def test_protected_boxes_are_left_out(self):
+        path = os.path.join(TMP, "protected-%d.json" % id(self))
+        with open(path, "w") as f:
+            json.dump([{"name": "castle", "dim": "minecraft:overworld", "box": [4, 0, 4, 6, 100, 6]}], f)
+        old = world.PROTECTED_FILE
+        world.PROTECTED_FILE = path
+        try:
+            n = area.sphere((5, 64, 5), 6, "air")
+            cells = self.covered(self.world.fills)
+            self.assertTrue(cells)
+            self.assertFalse({c for c in cells if 4 <= c[0] <= 6 and 4 <= c[2] <= 6})
+            self.assertEqual(n, len(cells))
+            self.assertTrue(world.is_protected((5.5, 70.0, 5.5)))
+        finally:
+            world.PROTECTED_FILE = old
+
+    def test_a_sphere_is_round(self):
+        area.sphere((0, 64, 0), 8, "air", spare_protected=False)
+        cells = self.covered(self.world.fills)
+        ball = {(x, y, z) for x in range(-9, 10) for y in range(55, 74) for z in range(-9, 10)
+                if x * x + (y - 64) ** 2 + z * z <= 8.5 ** 2}
+        self.assertGreater(len(cells & ball) / float(len(ball)), 0.97)
+        self.assertLess(len(cells - ball) / float(len(ball)), 0.08)
+        self.assertLess(len(self.world.fills), 120)
+
+    def test_release_only_the_chunks_under_a_box(self):
+        area.forceload((0, 0, 0, 40, 0, 40), wait=0)
+        area.forceload((200, 0, 200, 210, 0, 210), wait=0)
+        self.assertEqual(len(self.world.forced), 13)                # 3 x 3 and 2 x 2 chunks
+        area.release((0, 0, 0, 15, 0, 15))
+        self.assertEqual(len(self.world.forced), 12)
+        area.release(world.Box(195, 0, 195, 215, 0, 215))
+        self.assertEqual(len(self.world.forced), 8)
+        area.release("minecraft:the_nether")          # nothing there
+        self.assertEqual(len(self.world.forced), 8)
+        area.release()
+        self.assertEqual(self.world.forced, set())
+
+    def test_forceload_owns_what_it_adds_and_releases_it(self):
+        self.world.forced.add(("minecraft:overworld", 0, 0))         # someone else's
+        self.world.unloaded.update({("minecraft:overworld", cx, cz) for cx in range(0, 3) for cz in range(0, 3)})
+        added = area.forceload((0, 0, 0, 40, 0, 40), wait=1.0)
+        self.assertEqual(added, 8)
+        self.assertEqual(len(self.world.forced), 9)
+        area.release()
+        self.assertEqual(self.world.forced, {("minecraft:overworld", 0, 0)})
+
+
+# ---- world, mobs, fx, exclude ------------------------------------------------------------------
+
+class WorldTests(KitCase):
+    def test_a_gamerule_is_put_back_as_it_was(self):
+        self.world.gamerules["mob_griefing"] = "false"
+        world.gamerule("mobGriefing", True)
+        self.assertEqual(self.world.gamerules["mob_griefing"], "true")
+        world.gamerule("fall_damage", False)
+        world.restore()
+        self.assertEqual(self.world.gamerules["mob_griefing"], "false")   # what it was, not "true"
+        self.assertEqual(self.world.gamerules["fall_damage"], "true")
+        self.assertIsNone(world.gamerule("not_a_rule", 1))
+
+    def test_mspt_and_throttle(self):
+        self.world.mspt = 61.0
+        t = time.time()
+        self.assertEqual(world.throttle(45, longest=0.6), 61.0)
+        self.assertGreaterEqual(time.time() - t, 0.5)
+        self.world.mspt = 20.0
+        world._ms["at"] = 0.0
+        self.assertEqual(world.throttle(45), 20.0)
+
+    def test_many_conditions_in_few_commands(self):
+        conds = ["if loaded %d 64 0" % (i * 16) for i in range(100)]
+        self.world.unloaded.update({("minecraft:overworld", 40, 0), ("minecraft:overworld", 41, 0)})
+        before = len(self.world.commands)
+        ok = world.passes(conds)
+        self.assertEqual([i for i, good in enumerate(ok) if not good], [40, 41])
+        self.assertLess(len(self.world.commands) - before, 20)
+        self.assertEqual(world.first_fail(conds)[0], 40)
+
+
+class MobsTests(KitCase):
+    def test_a_boss_of_three_bodies_with_one_bar(self):
+        boss = mobs.Boss("Three-Headed Dragon", "ender_dragon", health=600, bodies=3)
+        self.assertEqual(boss.spawn(at=(0, 100, 0)), 3)
+        bar = self.world.bossbars[boss.bar]
+        self.assertEqual(bar["max"], 1800)
+        bodies = [e for e in self.world.entities if boss.tag in e["tags"]]
+        self.assertEqual(len(bodies), 3)
+        bodies[0]["health"] = 100.0
+        self.assertEqual(boss.update(), 3)
+        self.assertEqual(bar["value"], 1300)
+        self.world.entities = [e for e in self.world.entities if e is not bodies[1]]
+        self.assertEqual(boss.update(), 2)
+        self.world.entities = [e for e in self.world.entities if boss.tag not in e["tags"]]
+        self.assertTrue(boss.update() > 0)          # one empty look is not a death
+        self.assertEqual(boss.update(), 0)
+        self.assertNotIn(boss.bar, self.world.bossbars)
+
+    def test_mobs_round_a_place_and_a_boss_with_attributes(self):
+        self.assertEqual(mobs.around(world.Pos(30.5, 64.0, 30.5), "wither", 2, spread=2), 2)
+        ws = [e for e in self.world.entities if e["type"] == "wither"]
+        self.assertTrue(all(abs(e["pos"][0] - 30.5) <= 2.1 and abs(e["pos"][2] - 30.5) <= 2.1 for e in ws))
+        boss = mobs.Boss("King", "zombie", health=100, attributes={"attack_damage": 12, "generic.movement_speed": 0.3})
+        boss.spawn(at=(0, 64, 0))
+        summon = self.sent("summon zombie")[-1]
+        self.assertIn('{id:"attack_damage",base:12}', summon)
+        self.assertIn('{id:"movement_speed",base:0.3}', summon)
+        self.assertEqual(boss.total, 100.0)
+        [e for e in self.world.entities if boss.tag in e["tags"]][0]["health"] = 40.0
+        boss.update()
+        self.assertEqual((boss.alive, boss.total), (1, 40.0))
+
+    def test_mobs_around_a_player(self):
+        self.assertEqual(mobs.around("Steve", "zombie", 4, spread=6, tags=("horde",)), 4)
+        zs = [e for e in self.world.entities if e["type"] == "zombie"]
+        self.assertEqual(len(zs), 4)
+        self.assertTrue(all({"vfg", mc.TAG, "horde"} <= e["tags"] for e in zs))
+        self.assertEqual(mobs.count("horde"), 4)
+
+
+class FxTests(KitCase):
+    def test_for_one_player_or_everyone_in_the_right_dimension(self):
+        fx.particle("flame", "Steve", 0.5, 10, to="Steve")
+        fx.sound("entity.generic.explode", world.Pos(1, 2, 3, "minecraft:the_end"), volume=2)
+        fx.actionbar("Steve", "hi")
+        fx.line((0, 64, 0), (10, 64, 0), "end_rod", every=2)
+        cs = self.world.commands
+        self.assertIn("execute at Steve run particle flame ~ ~ ~ 0.5 0.5 0.5 0 10 force Steve", cs)
+        self.assertIn("execute in minecraft:the_end positioned 1.00 2.00 3.00 run playsound "
+                      "minecraft:entity.generic.explode master @a ~ ~ ~ 2 1", cs)
+        self.assertEqual(len(self.sent("particle end_rod")), 6)
+
+    def test_a_sound_from_a_place_to_one_player(self):
+        fx.sound("entity.zombie.step", (5, 64, 5), to="Steve")
+        fx.sound("entity.zombie.step", "Steve", to="Steve")
+        self.assertEqual(self.sent("playsound")[0],
+                         "execute positioned 5.00 64.00 5.00 run playsound minecraft:entity.zombie.step master Steve ~ ~ ~ 1 1")
+        self.assertEqual(self.sent("playsound")[1],
+                         "execute as Steve at @s run playsound minecraft:entity.zombie.step master @s ~ ~ ~ 1 1")
+
+    def test_a_music_disc_is_stopped_with_its_melody(self):
+        fx.melody([(0, "music_disc.pigstep", 12, 2)], "Steve", key="boss").join(2)
+        fx.stop_melody("boss")
+        self.assertIn("stopsound @a * minecraft:music_disc.pigstep", self.world.commands)
+
+    def test_a_newer_melody_cuts_the_older_off(self):
+        fx.melody([(0, "pling", 12, 1), (0.6, "bell", 12, 1)], "Steve", key="t")
+        time.sleep(0.2)
+        fx.melody([(0, "bass", 0, 1)], "Steve", key="t").join(2)
+        time.sleep(0.7)
+        notes = self.sent("playsound")
+        self.assertEqual(len(notes), 2, notes)
+        self.assertIn("minecraft:block.note_block.bass", notes[1])
+        self.assertIn(" 0.500", notes[1])
+
+
+class ExcludeTests(KitCase):
+    def test_one_type_alone(self):
+        frag = exclude.mobs("type=zombie,distance=..4")
+        self.assertNotIn("type=!", frag)
+        self.assertEqual(mc.rcon("execute positioned 0 64 0 %s run say x" % frag), "")
+        self.assertIn("isn't applicable", mc.rcon("execute if entity @e[type=zombie,type=!villager]"))
+
+    def test_ids_26_3_accepts(self):
+        frag = exclude.mobs("distance=..4", spare="Alex")
+        for gone in ("type=!potion", "type=!boat", "type=!chest_boat"):
+            self.assertNotIn(gone, frag)
+        self.assertIn("unless data entity @s Owner", frag)
+        self.assertNotIn("type=", exclude.players("Steve", "distance=..4"))
+        self.assertIn("name=!Steve", exclude.players("[Owner] Steve"))
+
+
+# ---- scripts: two at once, and a stop ------------------------------------------------------
+
+def start_script(name, source, fake, password, instance=None, run_dir=None):
+    folder = os.path.join(TMP, name)
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, "main.py"), "w") as f:
+        f.write(source)
+    env = dict(os.environ, PYTHONPATH=LIB, VFG_MC_PROPERTIES=_properties(password, fake.port),
+               VFG_RCON_HOST="127.0.0.1", PYTHONDONTWRITEBYTECODE="1", VFG_INSTANCE=instance or name,
+               VFG_RUN_DIR=run_dir or TMP, VFG_PROTECTED=os.path.join(TMP, "none.json"))
+    return subprocess.Popen([sys.executable, "-u", "main.py"], cwd=folder, env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+
+WAND = '''"""%s: logs each click."""
+ASKS = []
+from kit import values, items, loop
+import mc
+VALUES = {"player": {"type": "player", "default": "@a"}}
+v = values(VALUES)
+for p in loop(items.clicks(v["player"], "%s", every=0.05)):
+    mc.log("fired", p)
+'''
+
+
+class KitScriptTests(unittest.TestCase):
+    def setUp(self):
+        self.world = World()
+        self.world.add_player("Steve", (10.5, 64.0, -3.5), prefix="[Owner] ")
+        self.password = secrets.token_hex(8)
+        self.fake = FakeRcon(self.password, responder=self.world.respond).start()
+        self.procs = []
+
+    def tearDown(self):
+        for p in self.procs:
+            if p.poll() is None:
+                p.kill()
+                p.wait()
+        self.fake.stop()
+
+    def test_two_scripts_on_one_player_each_react_to_their_own_item(self):
+        a = start_script("alpha", WAND % ("Alpha", "Alpha Wand"), self.fake, self.password)
+        b = start_script("beta", WAND % ("Beta", "Beta Wand"), self.fake, self.password)
+        self.procs += [a, b]
+        deadline = time.time() + 5
+        while len(self.world.gives) < 2 and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(len(self.world.gives), 2)
+        time.sleep(0.3)
+        for held, n in (("alpha_wand", 1), ("beta_wand", 2), ("alpha_wand", 1), ("plain", 3)):
+            self.world.hold("Steve", main=held)
+            time.sleep(0.25)
+            self.world.click("Steve", n)
+            time.sleep(0.35)
+        for p in (a, b):
+            p.send_signal(signal.SIGTERM)
+        out_a = a.communicate(timeout=4)[0].decode()
+        out_b = b.communicate(timeout=4)[0].decode()
+        self.assertEqual(out_a.count("fired Steve"), 2, out_a)
+        self.assertEqual(out_b.count("fired Steve"), 1, out_b)
+        self.assertNotIn("Traceback", out_a + out_b)
+        # Each took its own item back, and neither touched the shared objective.
+        self.assertEqual(sorted(p for p, _ in self.world.clears), ["Steve", "Steve"])
+        self.assertIn("vfg_click", self.world.objectives)
+
+    def test_a_stop_puts_everything_back_within_two_seconds(self):
+        self.world.gamerules["mob_griefing"] = "false"
+        src = '''"""Probe: makes one of everything the kit cleans up."""
+ASKS = []
+from kit import values, items, area, mobs, world, loop
+import mc
+VALUES = {"player": {"type": "player", "default": "Steve"}}
+v = values(VALUES)
+world.gamerule("mob_griefing", True)
+world.objective("dummy", "kills")
+area.forceload((0, 0, 0, 40, 0, 40), wait=0)
+boss = mobs.Boss("Horde King", "zombie", health=800)
+boss.spawn(near="Steve")
+mobs.around("Steve", "zombie", 2)
+mc.log("ready")
+for p in loop(items.clicks(v["player"], "Probe Wand", every=0.05)):
+    pass
+'''
+        proc = start_script("probe", src, self.fake, self.password)
+        self.procs.append(proc)
+        deadline = time.time() + 6
+        while not self.world.gives and time.time() < deadline:
+            time.sleep(0.05)
+        time.sleep(0.3)
+        self.assertTrue(self.world.bossbars)
+        self.assertTrue(self.world.forced)
+        self.assertEqual(self.world.gamerules["mob_griefing"], "true")
+        self.assertIn("vfg_probe_kills", self.world.objectives)
+        self.assertEqual(len([e for e in self.world.entities if "vfg_probe" in e["tags"]]), 3)
+        t = time.time()
+        proc.send_signal(signal.SIGTERM)
+        out = proc.communicate(timeout=4)[0].decode()
+        self.assertLess(time.time() - t, 2.0)
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertNotIn("Traceback", out)
+        self.assertEqual(self.world.bossbars, {})
+        self.assertEqual(self.world.forced, set())
+        self.assertEqual(self.world.gamerules["mob_griefing"], "false")   # as it was, not "true"
+        self.assertNotIn("vfg_probe_kills", self.world.objectives)
+        self.assertIn("vfg_click", self.world.objectives)                # shared: stays
+        self.assertEqual([e for e in self.world.entities if "vfg_probe" in e["tags"]], [])
+        self.assertEqual(self.world.clears, [("Steve", '*[custom_data~{vfg_item:"probe_wand"}]')])
+        self.assertEqual(self.world.commands[-1], "kill @e[tag=vfg_probe]")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

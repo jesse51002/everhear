@@ -1,19 +1,18 @@
-#!/usr/bin/env python3
-# Lucky blocks: sponges named "Lucky Block". Breaking one gives that player a random
-# reward or trap. Every online player gets some when it starts.
+"""Lucky Blocks: sponges named Lucky Block that give the player who breaks one a random reward or trap."""
+ASKS = ["lucky blocks", "blocks that give a random reward or a trap when you break them", "give us some lucky blocks"]
 import json
 import random
-import sys
-import time
 
-from mc import rcon, players, score, on_stop, log, TAG
+import mc
+from kit import values, loop
 
-try:
-    GIVE = max(0, min(int(sys.argv[1]), 64)) if len(sys.argv) > 1 else 3
-except ValueError:
-    GIVE = 3
+VALUES = {
+    "player": {"type": "player", "default": "@a"},
+    "give":   {"type": "int", "min": 0, "max": 64, "default": 3},
+}
+
 MINED = "vfg_lucky"
-TRAP = '{Tags:["vfg","%s"]}' % TAG  # traps are removed on stop; gifts stay with the player
+TRAP = '{Tags:["vfg","%s"]}' % mc.TAG  # traps are removed on stop; gifts stay with the player
 OUTCOMES = [
     ("8 diamonds", ["give {p} diamond 8"]),
     ("4 golden apples", ["give {p} golden_apple 4"]),
@@ -31,7 +30,7 @@ OUTCOMES = [
                   "execute at {p} run summon zombie ~-3 ~ ~ " + TRAP.replace("{", "{{").replace("}", "}}"),
                   "execute at {p} run summon zombie ~ ~ ~3 " + TRAP.replace("{", "{{").replace("}", "}}")]),
     ("a lightning strike", ["execute at {p} run summon lightning_bolt ~2 ~ ~2"]),
-    ("a TNT surprise", ['execute at {p} run summon tnt ~ ~3 ~ {{fuse:60,Tags:["vfg","' + TAG + '"]}}']),
+    ("a TNT surprise", ['execute at {p} run summon tnt ~ ~3 ~ {{fuse:60,Tags:["vfg","' + mc.TAG + '"]}}']),
     ("a ride into the sky", ["effect give {p} levitation 4 1"]),
     ("a cobweb trap", ["execute at {p} run fill ~-1 ~ ~-1 ~1 ~1 ~1 cobweb replace air"]),
     ("a rain of chickens", ["execute at {p} run summon chicken ~ ~6 ~"] * 8),
@@ -40,32 +39,28 @@ OUTCOMES = [
 
 
 def cleanup():
-    rcon("scoreboard objectives remove " + MINED)
+    mc.rcon("scoreboard objectives remove " + MINED)
 
 
-on_stop(cleanup)
-rcon("scoreboard objectives add %s minecraft.mined:minecraft.sponge" % MINED)
-for p in players():
-    if GIVE:
-        rcon('give %s sponge[item_name="Lucky Block"] %d' % (p, GIVE))
-log("lucky blocks on; gave", GIVE, "each")
+v = values(VALUES)
+mc.on_stop(cleanup)
+mc.rcon("scoreboard objectives add %s minecraft.mined:minecraft.sponge" % MINED)
+if v["give"]:
+    for p in loop.who(v["player"]):
+        mc.rcon('give %s sponge[item_name="Lucky Block"] %d' % (p, v["give"]))
+mc.log("lucky blocks on; gave", v["give"], "each")
 counts = {}
-while True:
-    ps = players()
-    if not ps:
-        time.sleep(2)
-        continue
-    for p in ps:
-        n = score(p, MINED)
+for _ in loop(every=0.5):
+    for p in loop.who(v["player"]):
+        n = mc.score(p, MINED)
         if p in counts and n > counts[p]:
             for _ in range(n - counts[p]):
                 name, cmds = random.choice(OUTCOMES)
                 for c in cmds:
-                    rcon(c.format(p=p))
-                rcon("tellraw %s %s" % (p, json.dumps([
+                    mc.rcon(c.format(p=p))
+                mc.rcon("tellraw %s %s" % (p, json.dumps([
                     {"text": "[Lucky Block] ", "color": "yellow", "bold": True},
                     {"text": "You got %s!" % name, "color": "gold", "bold": False}])))
-                rcon("execute at %s run particle totem_of_undying ~ ~1 ~ 0.5 0.8 0.5 0.3 40" % p)
-                log(p, "got", name)
+                mc.rcon("execute at %s run particle totem_of_undying ~ ~1 ~ 0.5 0.8 0.5 0.3 40" % p)
+                mc.log(p, "got", name)
         counts[p] = n
-    time.sleep(0.5)

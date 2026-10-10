@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# The EverHear dispatcher. vfg orch start runs it and sends its log to dispatcher.log.
+set -euo pipefail
+here="$(dirname "$(readlink -f "$0")")"
+cd "$here"
+exec uv run --project "$here" python -m dispatcher

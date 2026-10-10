@@ -15,6 +15,8 @@ flowchart TB
   TypeSafe["TypeSafe API"]
   Feed["🗄️ feed"]
   Conv["conversation<br/>Claude Code"]
+  Disp["dispatcher<br/>actions"]
+  OpenRouter["OpenRouter"]
   Orch["orchestrator<br/>Agent SDK"]
   Impl["implementers"]
   Scripts["scripts/"]
@@ -27,14 +29,17 @@ flowchart TB
   Jev -->|"LINE"| Feed
   Bridge -->|"GAME"| Feed
   Feed -->|"vfg watch"| Conv
-  Conv -->|"vfg orch send"| Orch
+  Conv -->|"vfg orch send"| Disp
+  Disp -->|"structured()"| OpenRouter
+  Disp -->|"vfg orch hand"| Orch
+  Disp -->|"vfg action run"| RCON
   Orch -->|"Agent"| Impl
   Impl -.->|"write"| Scripts
-  Orch -->|"vfg cmd"| RCON
   Impl -->|"vfg cmd · vfg script run"| RCON
   Conv -->|"vfg say"| RCON
   RCON --> MC
   MC -->|"console.log"| Bridge
+  Disp -->|"ORCH · vfg orch reply"| Feed
   Orch -->|"ORCH · vfg orch reply"| Feed
 
   classDef client fill:#e3f0ff,stroke:#2f6fb0,color:#0b2942;
@@ -42,8 +47,8 @@ flowchart TB
   classDef ext    fill:#ffd9a8,stroke:#d2691e,color:#4a2c08;
   classDef tool   fill:#fdf6d8,stroke:#caab2f,color:#4a3d08;
   class Mod client;
-  class Bridge,Jev,Conv,Orch,Impl svc;
-  class Feed,TypeSafe,RCON,MC ext;
+  class Bridge,Jev,Conv,Disp,Orch,Impl svc;
+  class Feed,TypeSafe,OpenRouter,RCON,MC ext;
   class Scripts tool;
 ```
 
@@ -59,10 +64,13 @@ top-level boxes.*
   noise, and writes what it keeps to the **feed**, one line per entry, beside the bridge's game
   events.
 - The **conversation** is a Claude Code session on the owner's PC that follows the feed over SSH
-  (`vfg watch`). It answers in chat at once, stays quiet, or hands the work to the **orchestrator**.
-- The **orchestrator** does small tasks itself and briefs **implementers** (subagents) for the rest.
-  They act through RCON and write reusable Python scripts into `scripts/`, which run on the box.
-  Its results come back as `ORCH` lines in the feed, and the conversation tells the player.
+  (`vfg watch`). It answers in chat at once, stays quiet, or sends the work on with `vfg orch send`.
+- The **dispatcher** gets every task first. It does simple asks at once as **actions** (items,
+  effects, teleports, saved places), choosing them with a fast OpenRouter model, and hands the rest
+  to the **orchestrator** with `vfg orch hand`.
+- The **orchestrator** briefs **implementers** (subagents) for every task it is handed. They act
+  through RCON and write reusable Python scripts into `scripts/`, which run on the box.
+- Both report as `ORCH` lines in the feed, and the conversation tells the player.
 - Everything on the owner's PC reaches the box through one command, [`vfg`](toolkit/README.md).
 
 What each part takes in and puts out is in [docs/CONTRACTS.md](docs/CONTRACTS.md); code comments cite it as "Contracts §N".
@@ -77,16 +85,20 @@ What each part takes in and puts out is in [docs/CONTRACTS.md](docs/CONTRACTS.md
 | [`jev/`](jev/README.md) | on the box: the Jev filter |
 | [`toolkit/`](toolkit/README.md) | `vfg`, and [`config.example`](toolkit/config.example), every setting with its default |
 | [`conversation/`](conversation/README.md) | the Claude Code session: [`CLAUDE.md`](conversation/CLAUDE.md) is its whole brief, `start` runs it |
+| [`dispatcher/`](dispatcher/README.md) | every task's first stop: does simple asks at once as actions, in seconds, and hands the rest to the orchestrator |
+| [`actions/`](actions/README.md) | what the dispatcher can run on the server: one pydantic class per folder, a handler where commands cannot do the job |
 | [`orchestrator/`](orchestrator/README.md) | the Agent SDK runner, its [prompts](orchestrator/prompts/) and its guard |
 | [`scripts/`](scripts/README.md) | the action store: scripts implementers find, copy and run; it ships with 16 seed games |
+| [`lib/py/`](lib/py/vfg_llm.py) | `structured()`: the one OpenRouter call every part makes for a validated pydantic answer |
 | [`integration/`](integration/README.md) | the bridge, Jev filter and toolkit run together on one PC, no EC2 |
 
 ## Requirements
 
 - An AWS account, and the AWS CLI v2 logged in to it.
-- Claude Code, logged in with a Claude subscription, and [Bun](https://bun.sh). Neither the
-  conversation nor the orchestrator runs on an API key.
+- Claude Code, logged in with a Claude subscription, and [uv](https://docs.astral.sh/uv/) for the
+  dispatcher's and the orchestrator's Python. Neither the conversation nor the orchestrator runs on an API key.
 - A TypeSafe API key, for Jev.
+- An [OpenRouter](https://openrouter.ai) API key, for the dispatcher.
 - Minecraft Java 26.3 with Fabric, for every player (the installer sets Fabric up).
 - Python 3.9 or newer, bash, ssh, rsync and curl on the owner's PC.
 - JDK 25 to build the mod (Gradle downloads one if there is none).
@@ -101,6 +113,9 @@ From the repo's root. Every setting lives in `~/.vfg/config`; its defaults are i
 toolkit/install.sh
 # Fill VFG_OWNER (your Minecraft name) and VFG_SSH_KEY. Read Minecraft's EULA
 # (https://aka.ms/MinecraftEULA) and, if you accept it, set VFG_ACCEPT_EULA=true.
+# The dispatcher's OpenRouter key, alone in ~/.vfg/openrouter.key with mode 600, typed at a
+# hidden prompt (VFG_OPENROUTER_KEY in ~/.vfg/config can point at another file):
+(umask 077 && read -rsp 'OpenRouter key: ' key && echo && printf '%s\n' "$key" > ~/.vfg/openrouter.key)
 
 # 1. Once: the EC2 key pair (VFG_KEY_PAIR, default everhear) in VFG_AWS_REGION (default us-east-2).
 aws ec2 create-key-pair --region us-east-2 --key-name everhear \
@@ -159,9 +174,9 @@ Rough guidance from list prices; check the current ones for your region and plan
   the world. A line claiming to speak for the owner counts as the player who said it.
 - **The conversation only talks.** Its settings deny it `vfg cmd`, `vfg script`, `vfg orch reply`,
   file edits, web access and subagents; everything that changes the game is handed off.
-- **The orchestrator's guard** ([`orchestrator/src/guard.ts`](orchestrator/src/guard.ts)), a hook on
-  every tool call, and its allow rules (`rules` in
-  [`orchestrator/src/session.ts`](orchestrator/src/session.ts)) refuse:
+- **The orchestrator's guard** ([`orchestrator/orchestrator/guard.py`](orchestrator/orchestrator/guard.py)),
+  a hook on every tool call, and its allow rules (`rules` in
+  [`orchestrator/orchestrator/session.py`](orchestrator/orchestrator/session.py)) refuse:
   - `stop`, `op`, `deop`, `ban`, `ban-ip`, `pardon`, `pardon-ip`, `whitelist`, `kick` and `save-off`
     in any `vfg cmd`, as the first word or after any `run`, however the command is chained.
     Those are the owner's to type, and `scripts/_lib/mc.py` refuses the same words in every script.
