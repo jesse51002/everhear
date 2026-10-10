@@ -6,6 +6,7 @@ import sqlite3
 import unittest
 from unittest import mock
 
+from fake_jev import verdict
 from support import T0, FakeClock, Lines, load_fake_feed, make_db, tempdir
 
 from filter import SYS_BACK, SYS_OPEN, Config, Filter
@@ -14,15 +15,6 @@ from prompt import estimate, state_json
 from store import Store
 
 QUOTED = re.compile(r"“(.*)”", re.S)
-
-
-def keyword(text):
-    t = text.lower()
-    if any(w in t for w in ("build", "make", "there")):
-        return "direct_ask", 0.9
-    if any(w in t for w in ("cave", "base")):
-        return "context", 0.7
-    return "not_useful", 0.8
 
 
 class FakeJev:
@@ -46,7 +38,7 @@ class FakeJev:
         answers = {}
         for name, q in questions.items():
             text = QUOTED.search(q["instructions"]).group(1)
-            answers[name] = self.verdicts.get(text) or keyword(text)
+            answers[name] = self.verdicts.get(text) or verdict(text)
         return Result(answers, len(state_json(state)) // 4, 12)
 
     def probe(self):
@@ -160,7 +152,19 @@ class TestBatching(Base):
         self.assertIsNotNone(self.row(a)["fed_at"])
         self.assertIsNotNone(self.row(b)["fed_at"])
 
-    def test_direct_ask_flushes_the_waiting_context_at_once_in_at_order(self):
+    def test_a_line_for_the_ai_flushes_the_waiting_context_at_once_in_at_order(self):
+        self.lines.add(T0, "Alex", "chat", "that cave by spawn")
+        self.step()
+        self.lines.add(T0 + 1, "Steve", "chat", "thanks AI")
+        self.step(1)
+        self.lines.add(T0 + 2, "Alex", "chat", "our base is north")
+        self.step(1)
+        self.lines.add(T0 + 3, "Steve", "voice", "build me a castle", peak=-8.2)
+        self.step(1)
+        self.assertEqual([[e[1].split()[2] for e in batch] for batch in self.batches()],
+                         [["context", "conversational"], ["context", "action_oriented"]])
+
+    def test_action_oriented_flushes_the_waiting_context_at_once_in_at_order(self):
         self.lines.add(T0, "Alex", "chat", "that cave by spawn")
         self.step()
         self.lines.add(T0 + 1, "Steve", "voice", "build me a castle", peak=-8.2)
@@ -169,14 +173,14 @@ class TestBatching(Base):
         self.assertEqual([e[2] for e in self.batches()[0]], ["that cave by spawn", "build me a castle"])
         self.assertEqual(self.feed.lines(), [
             "LINE#1 18:22:31 Alex chat context 0.70 - | that cave by spawn",
-            "LINE#2 18:22:32 Steve voice direct_ask 0.90 -8dB | build me a castle",
+            "LINE#2 18:22:32 Steve voice action_oriented 0.90 -8dB | build me a castle",
         ])
 
-    def test_not_useful_is_never_fed(self):
+    def test_not_relevant_is_never_fed(self):
         a = self.lines.add(T0, "Alex", "chat", "lol")
         self.step()
         self.step(30)
-        self.assertEqual(self.row(a)["jev_class"], "not_useful")
+        self.assertEqual(self.row(a)["jev_class"], "not_relevant")
         self.assertEqual(self.batches(), [])
 
     def test_a_kept_line_11_minutes_old_is_never_fed(self):
@@ -184,7 +188,7 @@ class TestBatching(Base):
         with self.assertLogs("vfg-jev", "INFO") as logs:
             self.step()
             self.step(10)
-        self.assertEqual(self.row(a)["jev_class"], "direct_ask")
+        self.assertEqual(self.row(a)["jev_class"], "action_oriented")
         self.assertIsNone(self.row(a)["fed_at"])
         self.assertEqual(self.batches(), [])
         self.assertEqual(sum("not feeding %s" % a in l for l in logs.output), 1)
@@ -193,12 +197,12 @@ class TestBatching(Base):
         a = self.lines.add(T0, "Steve", "chat", "build me a castle")
         self.feed.broken = True
         self.step()
-        self.assertEqual(self.row(a)["jev_class"], "direct_ask")
+        self.assertEqual(self.row(a)["jev_class"], "action_oriented")
         self.assertIsNone(self.row(a)["fed_at"])
         self.feed.broken = False
         self.step(0.2)
         self.assertIsNotNone(self.row(a)["fed_at"])
-        self.assertEqual(self.feed.lines(), ["LINE#1 18:22:31 Steve chat direct_ask 0.90 - | build me a castle"])
+        self.assertEqual(self.feed.lines(), ["LINE#1 18:22:31 Steve chat action_oriented 0.90 - | build me a castle"])
 
     def test_restart_loses_no_kept_line(self):
         a = self.lines.add(T0, "Alex", "chat", "that cave by spawn")
@@ -226,7 +230,7 @@ class TestBatching(Base):
 
 class TestFields(Base):
     def test_the_three_examples(self):
-        self.jev.verdicts = {"build me a castle": ("direct_ask", 0.93), "that cave by spawn": ("not_useful", 0.8)}
+        self.jev.verdicts = {"build me a castle": ("action_oriented", 0.93), "that cave by spawn": ("not_relevant", 0.8)}
         s = self.lines.add(T0, "Steve", "voice", "build me a castle", peak=-8.2)
         a = self.lines.add(T0 + 1, "Alex", "chat", "that cave by spawn")
         self.step()
@@ -240,8 +244,8 @@ class TestFields(Base):
         self.step(10)
         self.step(5)
         fields = [e[1] for e in self.fed()]
-        self.assertIn("Steve voice direct_ask 0.93 -8dB", fields)
-        self.assertIn("Alex chat context 0.71 - was=not_useful", fields)
+        self.assertIn("Steve voice action_oriented 0.93 -8dB", fields)
+        self.assertIn("Alex chat context 0.71 - was=not_relevant", fields)
         self.assertIn("Alex voice context - -21dB", fields)
         self.assertEqual(self.row(s)["jev_confidence"], 0.93)
         self.assertEqual(self.row(a)["jev_class"], "context")
@@ -249,15 +253,15 @@ class TestFields(Base):
         # every LINE carries the time the line was said
         for line in self.feed.lines():
             if line.startswith("LINE#"):
-                self.assertRegex(line, r"^LINE#\d+ \d\d:\d\d:\d\d \S+ (voice|chat) (direct_ask|context) "
-                                       r"(\d\.\d\d|-) (-?\d+dB|-)( was=not_useful)? \| ")
-        self.assertIn("LINE#1 18:22:31 Steve voice direct_ask 0.93 -8dB | build me a castle", self.feed.lines())
-        self.assertIn("18:22:32 Alex chat context 0.71 - was=not_useful | that cave by spawn",
+                self.assertRegex(line, r"^LINE#\d+ \d\d:\d\d:\d\d \S+ (voice|chat) (action_oriented|context) "
+                                       r"(\d\.\d\d|-) (-?\d+dB|-)( was=not_relevant)? \| ")
+        self.assertIn("LINE#1 18:22:31 Steve voice action_oriented 0.93 -8dB | build me a castle", self.feed.lines())
+        self.assertIn("18:22:32 Alex chat context 0.71 - was=not_relevant | that cave by spawn",
                       "\n".join(self.feed.lines()))
         self.assertIn("18:22:40 Alex voice context - -21dB | anyone got iron", "\n".join(self.feed.lines()))
 
     def test_db_rounding_and_voice_without_peak(self):
-        self.jev.verdicts = {"x build": ("direct_ask", 0.5)}
+        self.jev.verdicts = {"x build": ("action_oriented", 0.5)}
         for peak, want in ((-8.5, "-8dB"), (-0.4, "0dB"), (None, "-"), (-21.6, "-22dB")):
             row = {"player_name": "Steve", "source": "voice", "jev_class": "context", "jev_confidence": None,
                    "peak_dbfs": peak, "id": "x"}
@@ -285,25 +289,25 @@ class TestJudging(Base):
             self.assertLessEqual(estimate(state), self.cfg.state_tokens)
         r = self.row(ids[0])
         self.assertEqual((r["jev_class"], r["jev_confidence"], r["jev_judged_at"]),
-                         ("direct_ask", 0.9, "2026-10-07T18:22:31.000Z"))
+                         ("action_oriented", 0.9, "2026-10-07T18:22:31.000Z"))
 
-    def test_blank_line_is_not_useful_without_a_call(self):
+    def test_blank_line_is_not_relevant_without_a_call(self):
         a = self.lines.add(T0, "Steve", "voice", "   \n ")
         self.step()
         self.assertEqual(self.jev.calls, [])
         r = self.row(a)
-        self.assertEqual((r["jev_class"], r["jev_confidence"]), ("not_useful", None))
+        self.assertEqual((r["jev_class"], r["jev_confidence"]), ("not_relevant", None))
         self.assertEqual(self.lines.usage(), [])
 
     def test_asking_again_the_newest_five(self):
         recent = []
-        for n in range(7):   # seven Jev verdicts of not_useful in the last 2 minutes
+        for n in range(7):   # seven Jev verdicts of not_relevant in the last 2 minutes
             judged = T0 - 100 + n * 10
-            recent.append(self.lines.add(judged - 1, "Alex", "chat", "meh %d" % n, jev_class="not_useful",
+            recent.append(self.lines.add(judged - 1, "Alex", "chat", "meh %d" % n, jev_class="not_relevant",
                                          jev_confidence=0.8, jev_judged_at=_iso(judged)))
-        old = self.lines.add(T0 - 181, "Alex", "chat", "old meh", jev_class="not_useful", jev_confidence=0.8,
+        old = self.lines.add(T0 - 181, "Alex", "chat", "old meh", jev_class="not_relevant", jev_confidence=0.8,
                              jev_judged_at=_iso(T0 - 180))
-        blank = self.lines.add(T0 - 5, "Alex", "chat", " ", jev_class="not_useful", jev_judged_at=_iso(T0 - 5))
+        blank = self.lines.add(T0 - 5, "Alex", "chat", " ", jev_class="not_relevant", jev_judged_at=_iso(T0 - 5))
         before = {i: self.row(i) for i in recent + [old, blank]}
         new = self.lines.add(T0, "Steve", "voice", "hello there")
         self.step()
@@ -315,15 +319,15 @@ class TestJudging(Base):
         self.assertEqual(quoted, ["hello there", "meh 6", "meh 5", "meh 4", "meh 3", "meh 2"])
         hist = state["history"].split("\n")[1:]
         self.assertEqual([h.split(" ")[0] for h in hist if h.startswith("[")], ["[6]", "[5]", "[4]", "[3]", "[2]", "[1]"])
-        for i in recent + [old, blank]:   # all stayed not_useful: nothing written
+        for i in recent + [old, blank]:   # all stayed not_relevant: nothing written
             self.assertEqual(self.row(i), before[i])
-        self.assertEqual(self.row(new)["jev_class"], "direct_ask")
+        self.assertEqual(self.row(new)["jev_class"], "action_oriented")
 
-    def test_a_flip_is_fed_with_was_not_useful(self):
-        self.jev.verdicts = {"that cave by spawn": ("not_useful", 0.6)}
+    def test_a_flip_is_fed_with_was_not_relevant(self):
+        self.jev.verdicts = {"that cave by spawn": ("not_relevant", 0.6)}
         a = self.lines.add(T0, "Alex", "chat", "that cave by spawn")
         self.step()
-        self.assertEqual(self.row(a)["jev_class"], "not_useful")
+        self.assertEqual(self.row(a)["jev_class"], "not_relevant")
         del self.jev.verdicts["that cave by spawn"]
         self.lines.add(T0 + 30, "Steve", "voice", "put it there, by the cave")
         self.step(30)
@@ -333,12 +337,12 @@ class TestJudging(Base):
         self.assertEqual(len(self.jev.calls), 2)
         self.assertEqual(len(self.lines.usage()), 2)
         self.assertEqual([e[1] for e in self.fed()],
-                         ["Alex chat context 0.70 - was=not_useful", "Steve voice direct_ask 0.90 -"])
+                         ["Alex chat context 0.70 - was=not_relevant", "Steve voice action_oriented 0.90 -"])
         # once fed, the mark is gone
         self.assertEqual(self.f.flipped, set())
 
     def test_a_line_judged_3_minutes_ago_is_not_asked_again(self):
-        self.jev.verdicts = {"that cave by spawn": ("not_useful", 0.6)}
+        self.jev.verdicts = {"that cave by spawn": ("not_relevant", 0.6)}
         self.lines.add(T0, "Alex", "chat", "that cave by spawn")
         self.step()
         self.lines.add(T0 + 121, "Steve", "voice", "hello")
@@ -349,7 +353,7 @@ class TestJudging(Base):
         for n in range(300):
             self.lines.add(T0 - 3000 + n, "Alex", "chat", "filler line %d" % n + " x" * 30,
                            jev_class="context", fed_at=_iso(T0 - 3000 + n), jev_judged_at=_iso(T0 - 3000 + n))
-        self.lines.add(T0 - 10, "Alex", "chat", "meh", jev_class="not_useful", jev_confidence=0.8,
+        self.lines.add(T0 - 10, "Alex", "chat", "meh", jev_class="not_relevant", jev_confidence=0.8,
                        jev_judged_at=_iso(T0 - 10))
         a = self.lines.add(T0, "Steve", "voice", "build me a castle")
         self.cfg.state_tokens = 3000
@@ -360,7 +364,7 @@ class TestJudging(Base):
         self.assertEqual(len(q1), 2)
         self.assertEqual(list(q2), ["line_1"])
         self.assertLess(len(second["history"]), len(first["history"]))
-        self.assertEqual(self.row(a)["jev_class"], "direct_ask")
+        self.assertEqual(self.row(a)["jev_class"], "action_oriented")
         self.assertEqual(len(self.lines.usage()), 1)
         self.assertIsNone(self.f.failing_since)
 
@@ -389,7 +393,7 @@ class TestAiLines(Base):
         self.assertEqual(list(qs), ["line_1"])
         self.assertNotIn("colour", qs["line_1"]["instructions"])
         self.assertIsNone(self.row(ai)["jev_class"])
-        self.assertEqual(self.row(b)["jev_class"], "not_useful")
+        self.assertEqual(self.row(b)["jev_class"], "not_relevant")
         # failing open does not pass it either
         self.jev.down = "500"
         self.lines.add(T0 + 3, "Steve", "chat", "blue")
@@ -435,7 +439,7 @@ class TestFailingOpen(Base):
         self.assertEqual(self.lines.usage()[-1]["ref"], "probe")
         c = self.lines.add(T0 + 31, "Steve", "voice", "make it taller")
         self.step(1)
-        self.assertEqual(self.row(c)["jev_class"], "direct_ask")
+        self.assertEqual(self.row(c)["jev_class"], "action_oriented")
         self.assertEqual(self.row(c)["jev_confidence"], 0.9)
         self.step(30)
         self.assertEqual(len(self.sys_lines()), 2)       # two SYS lines in all
@@ -484,7 +488,7 @@ class TestWritesOnly(Base):
             return sqlite3.SQLITE_OK
 
         self.f.store.conn.set_authorizer(watch)
-        self.jev.verdicts = {"that cave by spawn": ("not_useful", 0.6)}
+        self.jev.verdicts = {"that cave by spawn": ("not_relevant", 0.6)}
         self.lines.add(T0, "Alex", "chat", "that cave by spawn")
         self.lines.add(T0 + 1, "AI", "ai", "Where should it go?")
         self.lines.add(T0 + 1, "Steve", "chat", " ")
@@ -524,7 +528,7 @@ class TestMalformedTimes(Base):
             good = self.lines.add(T0 + 1, "Alex", "chat", "build me a castle")
             self.step(1)
             self.step(5)
-        self.assertEqual(self.row(bad)["jev_class"], "direct_ask")
+        self.assertEqual(self.row(bad)["jev_class"], "action_oriented")
         self.assertIsNone(self.row(bad)["fed_at"])
         self.assertIsNotNone(self.row(good)["fed_at"])
         self.assertEqual(sum("not feeding %s" % bad in l for l in logs.output), 1)
@@ -547,14 +551,14 @@ class TestStandInFeed(unittest.TestCase):
     def test_grammar_seq_and_cleaning(self):
         self.assertEqual(self.mod.append("SYS", "", "jev back — filtering again", "2026-10-07T18:27:12.000Z"), 1)
         self.assertEqual(self.mod.append_batch([
-            ("LINE", "Steve voice direct_ask 0.93 -8dB", "build\nme a\ncastle", "2026-10-07T18:22:31.412Z"),
-            ("LINE", "Alex chat context 0.71 - was=not_useful", "x" * 600, "2026-10-07T18:22:10.000Z"),
+            ("LINE", "Steve voice action_oriented 0.93 -8dB", "build\nme a\ncastle", "2026-10-07T18:22:31.412Z"),
+            ("LINE", "Alex chat context 0.71 - was=not_relevant", "x" * 600, "2026-10-07T18:22:10.000Z"),
         ]), [2, 3])
         with open(self.log, encoding="utf-8") as f:
             lines = f.read().splitlines()
         self.assertEqual(lines[0], "SYS#1 18:27:12 | jev back — filtering again")
-        self.assertEqual(lines[1], "LINE#2 18:22:31 Steve voice direct_ask 0.93 -8dB | build me a castle")
-        self.assertEqual(lines[2], "LINE#3 18:22:10 Alex chat context 0.71 - was=not_useful | " + "x" * 499 + "…")
+        self.assertEqual(lines[1], "LINE#2 18:22:31 Steve voice action_oriented 0.93 -8dB | build me a castle")
+        self.assertEqual(lines[2], "LINE#3 18:22:10 Alex chat context 0.71 - was=not_relevant | " + "x" * 499 + "…")
 
     def test_refuses_what_the_contract_does_not_allow(self):
         for entry in (("LINE", "Steve voice maybe 0.9 -", "t", None), ("SYS", "x", "t", None),

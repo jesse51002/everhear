@@ -105,7 +105,7 @@ class E2E(unittest.TestCase):
         text = "\n".join(self.feed_lines())
         self.assertNotIn("lol", text)
         self.assertNotIn("Where should it go?", text)
-        self.assertRegex(text, r"LINE#\d+ \d\d:\d\d:\d\d Steve voice direct_ask 0\.90 -8dB \| build me a castle")
+        self.assertRegex(text, r"LINE#\d+ \d\d:\d\d:\d\d Steve voice action_oriented 0\.90 -8dB \| build me a castle")
         self.assertRegex(text, r"LINE#\d+ \d\d:\d\d:\d\d Alex chat context 0\.70 - \| that cave by spawn")
         self.assertLess(took, 3.0)
 
@@ -129,7 +129,7 @@ class E2E(unittest.TestCase):
         self.assertTrue(self.wait_for(lambda ls: any(l.endswith("| jev back — filtering again") for l in ls), 7.0),
                         self.feed_lines())
         self.lines.add(time.time(), "Steve", "chat", "make it taller")
-        self.assertTrue(self.wait_for(lambda ls: any("Steve chat direct_ask 0.90 - | make it taller" in l
+        self.assertTrue(self.wait_for(lambda ls: any("Steve chat action_oriented 0.90 - | make it taller" in l
                                                      for l in ls), 3.0), self.feed_lines())
         self.assertEqual(sum(l.startswith("SYS#") for l in self.feed_lines()), 2)
 
@@ -142,8 +142,8 @@ class E2E(unittest.TestCase):
         # the database: verdicts written, the AI's line untouched, one usage row per judged line
         rows = {r[0]: r[1:] for r in self.conn.execute(
             "SELECT text, jev_class, jev_confidence, fed_at IS NOT NULL FROM lines")}
-        self.assertEqual(rows["build me a castle"], ("direct_ask", 0.9, 1))
-        self.assertEqual(rows["lol"], ("not_useful", 0.8, 0))
+        self.assertEqual(rows["build me a castle"], ("action_oriented", 0.9, 1))
+        self.assertEqual(rows["lol"], ("not_relevant", 0.8, 0))
         self.assertEqual(rows["Where should it go?"], (None, None, 0))
         self.assertEqual(rows["hello everyone"], ("context", None, 1))
         usage = self.conn.execute("SELECT ref, input_tokens, cost_usd, component, output_tokens FROM usage "
@@ -195,13 +195,13 @@ class E2E(unittest.TestCase):
                            env=self.env(TYPESAFE_API_KEY="", VFG_ENV_FILE=os.path.join(self.dir, "vfg.env")),
                            capture_output=True, text=True, timeout=10)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertTrue(r.stdout.startswith("not_useful 0.80"), r.stdout)
+        self.assertTrue(r.stdout.startswith("not_relevant 0.80"), r.stdout)
         calls = urllib.request.build_opener(urllib.request.ProxyHandler({})).open(self.jev + "/calls").read()
         self.assertIn(("Bearer " + KEY).encode(), calls)
 
     def test_judge_by_hand_writes_nothing(self):
         os.remove(self.db)
-        for text, want in (("AI, build me a small tower here", "direct_ask 0.90"), ("lol nice", "not_useful 0.80")):
+        for text, want in (("AI, build me a small tower here", "action_oriented 0.90"), ("lol nice", "not_relevant 0.80")):
             r = subprocess.run([sys.executable, os.path.join(ROOT, "jev_filter.py"), "--judge", text],
                                env=self.env(), capture_output=True, text=True, timeout=10)
             self.assertEqual(r.returncode, 0, r.stderr)
@@ -213,7 +213,7 @@ class E2E(unittest.TestCase):
                            env=self.env(), capture_output=True, text=True, timeout=10)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('"answers"', r.stdout)
-        self.assertIn('"choice": "not_useful"', r.stdout)
+        self.assertIn('"choice": "not_relevant"', r.stdout)
         post(self.jev + "/mode", "fail")
         r = subprocess.run([sys.executable, os.path.join(ROOT, "jev_filter.py"), "--judge", "x"],
                            env=self.env(), capture_output=True, text=True, timeout=10)

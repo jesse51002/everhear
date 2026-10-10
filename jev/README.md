@@ -1,13 +1,21 @@
 # jev — the Jev filter
 
-On the EC2 box. It asks Jev (TypeSafe) whether each new line a player says or types is said to the
-AI (`direct_ask`), useful `context` or `not_useful`, writes the verdict into the transcript history,
-and feeds the lines it keeps to the conversation in batches.
+On the EC2 box. It asks Jev (TypeSafe) which of four classes each new line a player says or types
+is, writes the verdict into the transcript history, and feeds the lines it keeps to the brain in
+batches:
 
-A `direct_ask` flushes the batch at once; otherwise a batch goes `VFG_BATCH_SECONDS` after its first
-line. Lines dropped in the last two minutes are asked about again inside the next call, and one that
-flips is fed with `was=not_useful`. If Jev fails for 10 s the filter fails open: every line passes
-as `context`, with one `SYS` line in the feed when that starts and another when Jev is back.
+| Class | A line that |
+|---|---|
+| `action_oriented` | asks the AI for something to happen, or follows up an earlier ask |
+| `conversational` | talks to the AI without asking for an action |
+| `context` | is not said to the AI, but the AI needs it to understand or carry out an ask |
+| `not_relevant` | is neither; never fed |
+
+An `action_oriented` or `conversational` line flushes the batch at once, since both get a live
+answer; otherwise a batch goes `VFG_BATCH_SECONDS` after its first line. Lines dropped in the last
+two minutes are asked about again inside the next call, and one that flips is fed with
+`was=not_relevant`. If Jev fails for 10 s the filter fails open: every line passes as `context`,
+with one `SYS` line in the feed when that starts and another when Jev is back.
 
 ## Run it
 

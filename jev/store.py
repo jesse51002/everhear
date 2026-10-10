@@ -88,10 +88,10 @@ class Store:
             "ORDER BY at, id LIMIT ?" % COLUMNS, (limit,)).fetchall()
 
     def ask_again(self, judged_since, limit=5):
-        """Jev's own `not_useful` verdicts (a confidence, so not a blank line)
+        """Jev's own `not_relevant` verdicts (a confidence, so not a blank line)
         judged since `judged_since`, newest `at` first."""
         return self.conn.execute(
-            "SELECT %s FROM lines WHERE jev_class = 'not_useful' AND jev_confidence IS NOT NULL "
+            "SELECT %s FROM lines WHERE jev_class = 'not_relevant' AND jev_confidence IS NOT NULL "
             "AND jev_judged_at >= ? ORDER BY at DESC, id DESC LIMIT ?" % COLUMNS,
             (judged_since, limit)).fetchall()
 
@@ -108,8 +108,8 @@ class Store:
     def kept_unfed(self, since):
         """Kept lines not yet fed, said since `since`, oldest first."""
         return self.conn.execute(
-            "SELECT %s FROM lines WHERE jev_class IN ('direct_ask', 'context') AND fed_at IS NULL "
-            "AND at >= ? ORDER BY at, id" % COLUMNS, (since,)).fetchall()
+            "SELECT %s FROM lines WHERE jev_class IN ('action_oriented', 'conversational', 'context') "
+            "AND fed_at IS NULL AND at >= ? ORDER BY at, id" % COLUMNS, (since,)).fetchall()
 
     def feed_lines_at(self, ats):
         """`(seq, at, line)` of every LINE already in the `feed` table whose `at`
@@ -132,7 +132,7 @@ class Store:
         for fid, fcls, fconf in flips:
             statements.append((
                 "UPDATE lines SET jev_class = ?, jev_confidence = ?, jev_judged_at = ? "
-                "WHERE id = ? AND jev_class = 'not_useful'", (fcls, fconf, judged_at, fid)))
+                "WHERE id = ? AND jev_class = 'not_relevant'", (fcls, fconf, judged_at, fid)))
         if usage is not None:
             statements.append(self._usage_sql(**usage))
         counts = self._tx(statements)

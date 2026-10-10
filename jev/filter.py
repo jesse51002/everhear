@@ -24,8 +24,9 @@ log = logging.getLogger("vfg-jev")
 
 # Fixed in code, because the contract fixes them.
 FAIL_OPEN_AFTER = 10.0     # seconds of Jev failing before every line passes as context
-ASK_AGAIN_WINDOW = 120.0   # a not_useful verdict this recent is asked about again
+ASK_AGAIN_WINDOW = 120.0   # a not_relevant verdict this recent is asked about again
 ASK_AGAIN_MAX = 5
+AT_ONCE = ("action_oriented", "conversational")   # both get a live answer: the batch goes at once
 PROBE_EVERY = 5.0          # while open
 FEED_MAX_AGE = 600.0       # a kept line older than this is never fed
 STALE_LOOKBACK = 3600.0    # how far back the feed looks for kept lines to report as too old
@@ -164,12 +165,12 @@ class Filter:
             if self.stopping:
                 break
             if not row["text"].strip():
-                self.store.set_class(row["id"], "not_useful", None, iso(self.clock.time()))
-                log.info("judge %s %s %s not_useful - · blank, no call", row["id"], row["player_name"], row["source"])
+                self.store.set_class(row["id"], "not_relevant", None, iso(self.clock.time()))
+                log.info("judge %s %s %s not_relevant - · blank, no call", row["id"], row["player_name"], row["source"])
                 continue
             if not self._judge_one(row):
                 return FAILURE_PAUSE
-            self.feed()   # so a direct ask goes before the next call
+            self.feed()   # so a line for the AI goes before the next call
         return None
 
     def _ask(self, asked, began, share=1.0):
@@ -179,7 +180,7 @@ class Filter:
         return self.jev.ask(state, questions(asked))
 
     def _judge_one(self, row):
-        """One call for `row`, with the recent not_useful lines asked again.
+        """One call for `row`, with the recent not_relevant lines asked again.
         Answers False when Jev failed (the line stays unjudged)."""
         began = self.clock.time()
         asked = [row] + list(self.store.ask_again(iso(began - ASK_AGAIN_WINDOW), ASK_AGAIN_MAX))
@@ -260,7 +261,7 @@ class Filter:
     # -- feeding -------------------------------------------------------------------
 
     def fields(self, row):
-        """`<player> <voice|chat> <direct_ask|context> <confidence|-> <NdB|-> [was=not_useful]`"""
+        """`<player> <voice|chat> <action_oriented|conversational|context> <confidence|-> <NdB|-> [was=not_relevant]`"""
         conf = row["jev_confidence"]
         peak = row["peak_dbfs"]
         parts = [
@@ -271,7 +272,7 @@ class Filter:
             "%ddB" % round_half_up(peak) if row["source"] == "voice" and peak is not None else "-",
         ]
         if row["id"] in self.flipped:
-            parts.append("was=not_useful")
+            parts.append("was=not_relevant")
         return " ".join(parts)
 
     def _too_old(self, row, said):
@@ -320,9 +321,9 @@ class Filter:
         return [(r, t) for r, t in waiting if r["id"] not in found]
 
     def feed(self, force=False):
-        """Feed what is waiting: owed SYS lines first, then the batch, if a
-        direct ask is in it or `VFG_BATCH_SECONDS` have passed since the
-        earliest verdict in it (or `force`)."""
+        """Feed what is waiting: owed SYS lines first, then the batch, if an
+        action_oriented or conversational line is in it or `VFG_BATCH_SECONDS`
+        have passed since the earliest verdict in it (or `force`)."""
         now = self.clock.time()
         if self.unmarked:
             self.store.mark_fed(self.unmarked, iso(now))
@@ -344,7 +345,7 @@ class Filter:
         waiting = self._already_fed(waiting, now)
         if not waiting:
             return
-        if not force and not any(r["jev_class"] == "direct_ask" for r, _ in waiting):
+        if not force and not any(r["jev_class"] in AT_ONCE for r, _ in waiting):
             first = min(parse_iso(r["jev_judged_at"]) if r["jev_judged_at"] else now for r, _ in waiting)
             if now - first < self.cfg.batch_seconds - 1e-6:
                 return

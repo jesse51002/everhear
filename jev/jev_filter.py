@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""vfg-jev: asks Jev whether each line a player says or types is a direct ask
-to the AI, context, or not useful; writes the verdict back to the transcript
-history; feeds the lines it keeps to the conversation in batches.
+"""vfg-jev: asks Jev whether each line a player says or types asks the AI for
+something to happen (action_oriented), talks to it (conversational), is context,
+or is not relevant; writes the verdict back to the transcript history; feeds the
+lines it keeps to the brain in batches.
 
     python3 -u /opt/vfg/jev/jev_filter.py              the service (systemd unit vfg-jev)
     python3 /opt/vfg/jev/jev_filter.py --judge "<text>"  judge one text, write nothing
