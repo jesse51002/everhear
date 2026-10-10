@@ -29,7 +29,7 @@ FORMAT = 2  # bump when usage lines or wiki text change shape: the cache is rebu
 API = "https://minecraft.wiki/api.php"
 WIKI = "https://minecraft.wiki/w/"
 LICENSE = "CC BY-NC-SA 3.0, minecraft.wiki"
-USER_AGENT = "EverHear-dispatcher/0.1 (+https://everhearlabs.com)"
+USER_AGENT = "EverHear-brain/0.1 (+https://everhearlabs.com)"
 REQUEST_GAP_S = 1.0
 REFS_TIMEOUT_S = 300
 GIVE_UP_AFTER = 5  # consecutive failed pages: the wiki is unreachable, stop asking it
@@ -726,7 +726,7 @@ def _read_complete(d: Path, log) -> Refs:
         raise RefsError(f"the cached references in {d} are unreadable")
     stale = (_read_json(d / "complete.json") or {}).get("format") != FORMAT
     if stale:
-        log(f"refs: rebuilding the cached {d.name} for this dispatcher")
+        log(f"refs: rebuilding the cached {d.name} for this brain")
     index = _read_json(d / "index.json") or {}
     refs = _derive(d, d.name, tree, index, log, write=stale)
     if stale:

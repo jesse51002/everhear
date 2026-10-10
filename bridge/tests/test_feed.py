@@ -46,6 +46,12 @@ class TestAppend(FeedCase):
             (2, "2026-10-07T18:24:02.000Z", "AI#2 18:24:02 result T183 | T183 done: ice trail running as ice_trail"),
         ])
 
+    def test_only_the_brains_rows_are_written_processed(self):
+        vfg_feed.append("GAME", "death Steve", "Steve was slain by Zombie")
+        vfg_feed.append("AI", "say -", "rip Steve")
+        marks = self.query("SELECT seq, processed_at IS NOT NULL FROM feed ORDER BY seq")
+        self.assertEqual(marks, [(1, 0), (2, 1)])
+
     def test_contract_examples(self):
         vfg_feed.append("LINE", "Steve voice action_oriented 0.93 -8dB", "build me a castle",
                         "2026-10-07T18:22:31.412Z")

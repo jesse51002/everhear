@@ -271,6 +271,13 @@ def _write(prepared):
                     rows.append((seq, format_time(at), line))
                     lines.append(line)
                 conn.executemany("INSERT INTO feed (seq, at, line) VALUES (?, ?, ?)", rows)
+                # The brain's own records are processed as they are written: only it writes them.
+                ai = [(format_time(utcnow()), row[0]) for row, entry in zip(rows, prepared) if entry[0] == "AI"]
+                if ai:
+                    try:
+                        conn.executemany("UPDATE feed SET processed_at = ? WHERE seq = ?", ai)
+                    except sqlite3.OperationalError:
+                        pass  # a history from before processed_at, which the bridge adds on start
                 conn.execute("COMMIT")
             except BaseException:
                 try:
