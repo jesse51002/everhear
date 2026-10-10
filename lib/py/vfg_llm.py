@@ -2,7 +2,8 @@
 
 Every EverHear part that wants a structured answer from a model calls this. The
 output class's JSON schema goes as a json_schema response format, routed only to
-providers that support it; an answer that still fails validation is sent back once
+providers that support it (an openai/ model gets it strict, as OpenAI demands: every
+object closed, every property required); an answer that still fails validation is sent back once
 with pydantic's errors. A 429, a 5xx or a dropped connection is retried once.
 Anything else is an LlmError, whose message never carries the key. Reasoning is
 off unless asked for: speed comes first. `providers` names OpenRouter providers to try
@@ -46,6 +47,24 @@ class LlmError(Exception):
     """The call failed for good. Safe to log: the message never holds the key."""
 
 
+def strict_schema(schema: dict) -> dict:
+    """The schema as OpenAI's structured outputs take it: every object with properties
+    closed (additionalProperties false) and every property required. Other providers get
+    the schema as pydantic writes it."""
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            if node.get("type") == "object" and isinstance(node.get("properties"), dict):
+                node["required"] = list(node["properties"])
+                node["additionalProperties"] = False
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+    walk(schema)
+    return schema
+
+
 async def structured(
     prompt: str,
     output: type[T],
@@ -64,12 +83,15 @@ async def structured(
     key = _key()
     messages = [{"role": "system", "content": system}] if system else []
     messages.append({"role": "user", "content": prompt})
+    schema = output.model_json_schema()
+    if model.startswith("openai/"):
+        schema = strict_schema(schema)
     body = {
         "model": model,
         "messages": messages,
         "response_format": {
             "type": "json_schema",
-            "json_schema": {"name": output.__name__, "schema": output.model_json_schema()},
+            "json_schema": {"name": output.__name__, "schema": schema},
         },
         "provider": {"require_parameters": True},
     }
