@@ -7,7 +7,7 @@ ASKS = ["give me a staff that shoots like an ice beam and everything it touches 
         "make my ice beam do no damage and just give slowness four and blindness four for ten seconds",
         "can you reduce the cooldown on my beam",
         "whenever you shoot it, it creates a path of ice below where it breaks"]
-from kit import values, area, exclude, loop, world, fx, aim, items
+from kit import values, result, area, exclude, loop, world, fx, aim, items
 import itertools
 import math
 import threading
@@ -15,37 +15,6 @@ import mc
 import random
 import re
 import time
-
-VALUES = {
-    "player":           {"type": "player", "default": "@a"},
-    "item":             {"type": "str", "default": "Ice Beam Staff"},
-    "cooldown":         {"type": "number", "min": 0, "max": 60, "default": 0.5, "live": True},
-    "length":           {"type": "int", "min": 4, "max": 300, "default": 80, "live": True},
-    "width":            {"type": "number", "min": 1, "max": 16, "default": 5, "live": True},
-    "through_walls":    {"type": "bool", "default": True, "live": True},
-    "tunnel":           {"type": "bool", "default": True, "live": True},
-    "path":             {"type": "bool", "default": True, "live": True},
-    "freeze_seconds":   {"type": "number", "min": 1, "max": 120, "default": 10, "live": True},
-    "freeze_blindness": {"type": "bool", "default": True, "live": True},
-    "freeze_shell":     {"type": "bool", "default": False, "live": True},
-    "freeze_block":     {"type": "enum", "of": ["ice", "packed_ice", "blue_ice", "snow_block"], "default": "ice", "live": True},
-    "replace_rules":    {"type": "list", "of": "str", "live": True, "default": ["solid water lava > packed_ice"]},
-    "replace_rate":     {"type": "int", "min": 1, "max": 100, "default": 100, "live": True},
-    "replace_cell":     {"type": "int", "min": 1, "max": 16, "default": 4, "live": True},
-    "replace_radius":   {"type": "int", "min": 0, "max": 128, "default": 2, "live": True},
-    "theme_tune":       {"type": "enum", "of": ["galick_gun", "hollow_purple", "ice_beam", "spirit_bomb", "spirit_bomb_throw", "super_saiyan", "boss", "none"], "default": "ice_beam", "live": True},
-    "theme_to":         {"type": "enum", "of": ["near", "everyone", "player"], "default": "near", "live": True},
-    "theme_reach":      {"type": "int", "min": 8, "max": 256, "default": 48, "live": True},
-    "theme_loop":       {"type": "bool", "default": False, "live": True},
-    "damage_amount":    {"type": "number", "min": 0, "max": 100000, "default": 0, "live": True},
-    "damage_type":      {"type": "enum", "of": ["player_attack", "magic", "lightning_bolt", "explosion", "freeze", "on_fire", "sonic_boom", "arrow", "wither", "generic"], "default": "freeze", "live": True},
-    "damage_kill":      {"type": "bool", "default": False, "live": True},
-    "damage_what":      {"type": "enum", "of": ["all", "mobs", "hostile", "players"], "default": "all", "live": True},
-    "damage_most":      {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
-    "damage_head":      {"type": "number", "min": 1, "max": 10, "default": 1, "live": True},
-    "damage_spare":     {"type": "list", "of": "player", "default": [], "live": True},
-}
-
 
 # --- preset: freeze (copied from _presets/freeze.py) ---
 def freeze(hits, v):
@@ -420,7 +389,7 @@ def _damage_on_head(h, look):
     return t > 0 and math.sqrt(sum((w[i] - t * d[i]) ** 2 for i in range(3))) <= 0.5
 
 
-v = values(VALUES)
+v = values()
 quiet = {}                      # when each player's tune is over
 
 
@@ -430,6 +399,8 @@ def under(at):
     return world.Box(x - 1, y - 2, z - 1, x + 1, y - 2, z + 1, dim=at.dim)
 
 
+result("%s has the %s: right-click to fire an ice beam" % (v["player"], v["item"]), player=v["player"],
+       item=v["item"])
 for p in loop(items.clicks(v["player"], v["item"], cooldown=v["cooldown"])):
     r = aim.ray(p, v["length"], blocks=not v["through_walls"])
     if r is None:

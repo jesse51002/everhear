@@ -2,27 +2,11 @@
 ASKS = ["give me the power to kill everything I stare at", "also make my death gaze work on players",
         "my death stare should one shot everything at infinite range",
         "make the death beam faster, this is way too slow"]
-from kit import values, items, aim, fx, loop, exclude, world
+from kit import values, result, items, aim, fx, loop, exclude, world
 import itertools
 import math
 import mc
 import time
-
-VALUES = {
-    "player":        {"type": "player", "default": "@a"},
-    "range":         {"type": "int", "min": 4, "max": 300, "default": 60, "live": True},
-    "damage_amount": {"type": "number", "min": 0, "max": 100000, "default": 20, "live": True},
-    "damage_type":   {"type": "enum", "of": ["player_attack", "magic", "lightning_bolt", "explosion", "freeze", "on_fire", "sonic_boom", "arrow", "wither", "generic"], "default": "magic", "live": True},
-    "damage_kill":   {"type": "bool", "default": True, "live": True},
-    "damage_what":   {"type": "enum", "of": ["all", "mobs", "hostile", "players"], "default": "mobs", "live": True},
-    "damage_most":   {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
-    "damage_head":   {"type": "number", "min": 1, "max": 10, "default": 1, "live": True},
-    "damage_spare":  {"type": "list", "of": "player", "default": [], "live": True},
-    "sneak_mode":    {"type": "enum", "of": ["while", "tap", "three_taps"], "default": "while", "live": True},
-    "sneak_seconds": {"type": "number", "min": 0.3, "max": 5, "default": 1.5, "live": True},
-    "sneak_item":    {"type": "str", "default": "", "live": True},
-}
-
 
 # --- preset: damage_hits (copied from _presets/damage_hits.py) ---
 def damage_hits(hits, shooter, v):
@@ -125,7 +109,10 @@ def sneak(player, v):
         time.sleep(0.1)
 
 
-v = values(VALUES)
+v = values()
+how = {"while": "sneak", "tap": "crouch", "three_taps": "crouch three times"}[v["sneak_mode"]]
+result("%s has the death gaze: %s to %s what they look at, up to %d blocks" % (
+    v["player"], how, "kill" if v["damage_kill"] else "hurt", v["range"]), player=v["player"], range=v["range"])
 for p in loop(sneak(v["player"], v)):
     lk = aim.look(p, aim.SNEAK_EYES)
     if lk is None:

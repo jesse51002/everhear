@@ -6,47 +6,13 @@ ASKS = ["spirit bomb like in the show, like the giant explosion", "I said spirit
         "can I have a cool charge animation like in the show, with music",
         "lower it to one hundred by one hundred blocks", "make sure there's no cooldowns",
         "also give me the spirit bomb"]
-from kit import values, aim, fx, loop, world, exclude, area, items
+from kit import values, result, aim, fx, loop, world, exclude, area, items
 import math
 import random
 import time
 import mc
 import re
 import threading
-
-VALUES = {
-    "player":                 {"type": "player", "default": "@a"},
-    "item":                   {"type": "str", "default": "Spirit Bomb"},
-    "charge":                 {"type": "number", "min": 0, "max": 10, "default": 1, "live": True},
-    "cooldown":               {"type": "number", "min": 0, "max": 120, "default": 0, "live": True},
-    "reach":                  {"type": "int", "min": 4, "max": 300, "default": 100, "live": True},
-    "charge_style":           {"type": "enum", "of": ["sphere", "orbs", "aura"], "default": "sphere", "live": True},
-    "charge_seconds":         {"type": "number", "min": 0.2, "max": 15, "default": 5, "live": True},
-    "charge_particle":        {"type": "particle", "default": "dust{color:[0.3,0.7,1.0],scale:2.5}", "live": True},
-    "charge_size":            {"type": "number", "min": 1, "max": 30, "default": 10, "live": True},
-    "charge_orbs":            {"type": "list", "of": "particle", "default": [], "live": True},
-    "theme_tune":             {"type": "enum", "of": ["galick_gun", "hollow_purple", "ice_beam", "spirit_bomb", "spirit_bomb_throw", "super_saiyan", "boss", "none"], "default": "spirit_bomb", "live": True},
-    "theme_to":               {"type": "enum", "of": ["near", "everyone", "player"], "default": "near", "live": True},
-    "theme_reach":            {"type": "int", "min": 8, "max": 256, "default": 48, "live": True},
-    "theme_loop":             {"type": "bool", "default": False, "live": True},
-    "projectile_kind":        {"type": "enum", "of": ["orb", "block"], "default": "orb", "live": True},
-    "projectile_size":        {"type": "number", "min": 0.2, "max": 16, "default": 8, "live": True},
-    "projectile_speed":       {"type": "number", "min": 2, "max": 200, "default": 40, "live": True},
-    "projectile_particle":    {"type": "particle", "default": "dust{color:[0.9,0.97,1.0],scale:2.0}", "live": True},
-    "projectile_block":       {"type": "block", "default": "magma_block", "live": True},
-    "explosion_power":        {"type": "number", "min": 0, "max": 16, "default": 16, "live": True},
-    "explosion_layout":       {"type": "enum", "of": ["one", "plus", "ring", "rings"], "default": "rings", "live": True},
-    "explosion_spread":       {"type": "number", "min": 1, "max": 32, "default": 32, "live": True},
-    "explosion_breaks":       {"type": "bool", "default": False, "live": True},
-    "explosion_keep":         {"type": "number", "min": 0, "max": 32, "default": 0, "live": True},
-    "explosion_spare":        {"type": "list", "of": "player", "default": [], "live": True},
-    "crater_radius":          {"type": "int", "min": 0, "max": 300, "default": 100, "live": True},
-    "crater_tunnel":          {"type": "int", "min": 0, "max": 8, "default": 0, "live": True},
-    "crater_leave":           {"type": "enum", "of": ["air", "lava", "fire"], "default": "air", "live": True},
-    "crater_spare_protected": {"type": "bool", "default": True, "live": True},
-    "crater_load":            {"type": "bool", "default": True, "live": True},
-}
-
 
 # --- preset: charge_up (copied from _presets/charge_up.py) ---
 def charge_up(player, v):
@@ -444,7 +410,7 @@ def _crater_carve(at, v, path):
             area.release(box)
 
 
-v = values(VALUES)
+v = values()
 busy = set()                    # players whose bomb is under way
 
 
@@ -472,6 +438,8 @@ def throw(p):
         busy.discard(p)
 
 
+result("%s has the %s: hold right-click to gather it, and it flies where they look" % (v["player"], v["item"]),
+       player=v["player"], item=v["item"])
 for p in loop(items.charged(v["player"], v["item"], v["charge"], v["cooldown"])):
     if p not in busy:
         busy.add(p)
