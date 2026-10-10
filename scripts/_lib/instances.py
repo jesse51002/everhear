@@ -352,7 +352,12 @@ class Box(object):
         try:
             os.killpg(pid, signal.SIGTERM)
         except ProcessLookupError:
-            pass
+            # A stop within milliseconds of the start: setsid has not made the group yet, so
+            # the process alone gets it, before it has run anything of the copy's.
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
         except PermissionError as e:
             raise CopyError("cannot stop %s: %s" % (name, e))
         deadline = time.time() + STOP_WAIT
