@@ -556,32 +556,52 @@ class TestShortcuts(ActionCase):
 
 
 class TestMade(ActionCase):
-    def test_save_then_restore_a_day(self):
+    def test_every_save_is_a_new_folder_and_a_restore_takes_a_name_or_a_days_latest(self):
         archive = tempfile.mkdtemp(dir=self.box.root)
         env = {"VFG_MADE_ARCHIVE": archive}
         r = self.box.vfg("made", "save", **env)
         self.assertEqual(r.returncode, 1)
         self.assertIn("nothing to save", r.stderr)
         made = os.path.join(self.box.repo, "made", "main")
+        main_py = os.path.join(made, "scripts", "zap", "main.py")
         standins.write(os.path.join(made, "actions", "zap.py"), "# zap\n")
-        standins.write(os.path.join(made, "scripts", "zap", "main.py"), "# zap v1\n")
+        standins.write(main_py, "# zap v1\n")
         standins.write(os.path.join(made, "scripts", "zap", "__pycache__", "x.pyc"), "junk")
-        r = self.box.vfg("made", "save", **env)
-        self.assertEqual(r.returncode, 0, r.stderr)
+        os.makedirs(os.path.join(archive, "2026-10-09"))                # a day's save, as an older vfg made it
+        standins.write(os.path.join(archive, "2026-10-09", "scripts", "zap", "main.py"), "# zap v0\n")
+        names = []
+        for v in ("v1", "v2"):
+            standins.write(main_py, "# zap %s\n" % v)
+            r = self.box.vfg("made", "save", **env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            m = re.match(r"^saved made/main/ to .*/(\d{4}-\d\d-\d\d-\d{6}): 2 files\n$", r.stdout)
+            self.assertTrue(m, r.stdout)
+            names.append(m.group(1))
         day = time.strftime("%Y-%m-%d")
-        self.assertRegex(r.stdout, r"^saved made/main/ to .*/%s: 2 files\n$" % day)
-        self.assertFalse(os.path.exists(os.path.join(archive, day, "scripts", "zap", "__pycache__")))
-        standins.write(os.path.join(made, "scripts", "zap", "main.py"), "# zap v2\n")
-        self.assertIn("replacing today's earlier save", self.box.vfg("made", "save", **env).stdout)
-        standins.write(os.path.join(made, "scripts", "zap", "main.py"), "# zap v3\n")
-        r = self.box.vfg("made", "restore", day, **env)
+        self.assertEqual(len(set(names)), 2)                             # never the same folder twice
+        self.assertTrue(all(n.startswith(day + "-") for n in names))
+        self.assertEqual(sorted(os.listdir(archive)), ["2026-10-09"] + sorted(names))   # nothing deleted
+        self.assertFalse(os.path.exists(os.path.join(archive, names[0], "scripts", "zap", "__pycache__")))
+
+        def restored():
+            with open(main_py) as f:
+                return f.read()
+
+        standins.write(main_py, "# zap v3\n")
+        r = self.box.vfg("made", "restore", day, **env)                  # a date: its latest
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertRegex(r.stdout, r"; the one it replaced is in made/\.replaced/main-\d{8}-\d{6}\n$")
-        with open(os.path.join(made, "scripts", "zap", "main.py")) as f:
-            self.assertEqual(f.read(), "# zap v2\n")
+        self.assertRegex(r.stdout, r"^restored made/main/ from .*/%s: 2 files; the one it replaced is in "
+                                   r"made/\.replaced/main-\d{8}-\d{6}\n$" % names[1])
+        self.assertEqual(restored(), "# zap v2\n")
+        r = self.box.vfg("made", "restore", names[0], **env)               # a full name
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(restored(), "# zap v1\n")
+        self.assertEqual(self.box.vfg("made", "restore", "2026-10-09", **env).returncode, 0)
+        self.assertEqual(restored(), "# zap v0\n")
         r = self.box.vfg("made", "restore", "1999-01-01", **env)
         self.assertEqual(r.returncode, 1)
-        self.assertIn("saved: %s" % day, r.stderr)
+        self.assertIn("no save 1999-01-01 in ", r.stderr)
+        self.assertIn("saved: 2026-10-09, %s, %s" % tuple(names), r.stderr)
 
 
 if __name__ == "__main__":

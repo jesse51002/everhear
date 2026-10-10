@@ -57,8 +57,8 @@ vfg script list                                # the running copies, from ~/.vfg
 vfg script logs railgun_2 -n 40                # --follow only under Monitor or by a person
 vfg script save railgun_2 rail_no_cooldown     # the copy's values kept as an action: made/<VFG_SERVER>/actions/
 vfg preset save galick_ice ice_path ice_trail  # a function lifted out into made/<VFG_SERVER>/presets/
-vfg made save                                  # made/<VFG_SERVER>/ into $VFG_MADE_ARCHIVE/<today>/
-vfg made restore 2026-10-09                    # and back
+vfg made save                                  # made/<VFG_SERVER>/ into a new $VFG_MADE_ARCHIVE/2026-10-10-142301/
+vfg made restore 2026-10-10                    # and back: that day's latest, or one save by its full name
 vfg state                                      # who is online and where, time, weather, what runs; --json
 vfg route --task T7 < brief.txt                # the examples and presets for that brief, picked by Jev; JSON
 vfg prefix                                     # the implementer's static system prompt, the same bytes each time

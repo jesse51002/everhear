@@ -2482,10 +2482,12 @@ def cmd_place(cfg, a):
 # ------------------------------------------------------------------- made
 
 # What this server's implementers made, made/<server>/ (scripts, presets, actions), is kept out
-# of git; `vfg made save` copies it after a run into $VFG_MADE_ARCHIVE/<date>/, and `vfg made
-# restore <date>` puts one back. A second save on one day replaces that day's.
+# of git; `vfg made save` copies it after a run into a new folder $VFG_MADE_ARCHIVE/<save>/, named
+# to the second (2026-10-10-142301), and never deletes one; `vfg made restore <save>` puts one
+# back, and `vfg made restore <date>` that day's latest.
 MADE_ARCHIVE = "/var/home/jm/Documents/EverHear/Internal/made"
-DATE_RE = re.compile(r"^[0-9][0-9A-Za-z_.-]{0,63}$")
+SAVE_RE = re.compile(r"^[0-9][0-9A-Za-z_.-]{0,63}$")
+DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def copy_tree(src, dest):
@@ -2503,34 +2505,59 @@ def copy_tree(src, dest):
     return n, old
 
 
+def saves(archive):
+    """The saves in the archive, oldest first: their names sort as their times."""
+    try:
+        names = os.listdir(archive)
+    except OSError:
+        return []
+    return sorted(d for d in names if SAVE_RE.match(d) and os.path.isdir(os.path.join(archive, d)))
+
+
+def save_named(archive, name):
+    """A save by its full name, or a date's latest (a folder named by the day alone, as an
+    older vfg saved, counts as that day's earliest); None when there is none."""
+    have = saves(archive)
+    if name in have:
+        return name
+    if DAY_RE.match(name):
+        day = [d for d in have if d == name or d.startswith(name + "-")]
+        if day:
+            return day[-1]
+    return None
+
+
 def cmd_made(cfg, a):
-    import shutil
     server = server_name(cfg)
     here = os.path.join(cfg.repo, "made", server)
     archive = os.path.expanduser(cfg.get("VFG_MADE_ARCHIVE") or MADE_ARCHIVE)
     if a.op == "save":
         if not os.path.isdir(here) or not os.listdir(here):
             raise Fail(1, "nothing to save: made/%s/ is empty" % server)
-        dest = os.path.join(archive, datetime.now().strftime("%Y-%m-%d"))
         os.makedirs(archive, exist_ok=True)
-        n, old = copy_tree(here, dest)
-        if old:
-            shutil.rmtree(old, ignore_errors=True)
-        out("saved made/%s/ to %s: %d file%s%s" % (server, tilde(dest), n, "" if n == 1 else "s",
-                                                  ", replacing today's earlier save" if old else ""))
+        # A new folder each time, named to the second: one saved this second already waits for the next.
+        while True:
+            dest = os.path.join(archive, datetime.now().strftime("%Y-%m-%d-%H%M%S"))
+            if not os.path.lexists(dest):
+                break
+            time.sleep(0.2)
+        n, _ = copy_tree(here, dest)
+        out("saved made/%s/ to %s: %d file%s" % (server, tilde(dest), n, "" if n == 1 else "s"))
         return 0
-    if not DATE_RE.match(a.date) or not os.path.isdir(os.path.join(archive, a.date)):
-        have = sorted(d for d in (os.listdir(archive) if os.path.isdir(archive) else [])
-                      if not d.startswith(".") and os.path.isdir(os.path.join(archive, d)))
-        raise Fail(1, "no %s in %s; saved: %s" % (a.date, tilde(archive), ", ".join(have) or "none"))
+    name = save_named(archive, a.save) if SAVE_RE.match(a.save) else None
+    if name is None:
+        raise Fail(1, "no save %s in %s; saved: %s" % (a.save, tilde(archive), ", ".join(saves(archive)) or "none"))
     os.makedirs(os.path.dirname(here), exist_ok=True)
-    n, old = copy_tree(os.path.join(archive, a.date), here)
-    line = "restored made/%s/ from %s: %d file%s" % (server, tilde(os.path.join(archive, a.date)), n,
+    n, old = copy_tree(os.path.join(archive, name), here)
+    line = "restored made/%s/ from %s: %d file%s" % (server, tilde(os.path.join(archive, name)), n,
                                                      "" if n == 1 else "s")
     if old:
         # What it replaced is kept beside it, hidden, until someone deletes it.
-        kept = os.path.join(cfg.repo, "made", ".replaced", "%s-%s" % (server, time.strftime("%Y%m%d-%H%M%S")))
-        os.makedirs(os.path.dirname(kept), exist_ok=True)
+        base = os.path.join(cfg.repo, "made", ".replaced", "%s-%s" % (server, time.strftime("%Y%m%d-%H%M%S")))
+        os.makedirs(os.path.dirname(base), exist_ok=True)
+        kept, k = base, 2
+        while os.path.lexists(kept):     # another restore this second
+            kept, k = "%s-%d" % (base, k), k + 1
         os.rename(old, kept)
         line += "; the one it replaced is in %s" % os.path.relpath(kept, cfg.repo)
     out(line)
@@ -3172,12 +3199,15 @@ def build_parser():
                    help="only the server's version, from server.jar's version.json")
 
     s = sub.add_parser("made", help="keep what this server's implementers made: made/<VFG_SERVER>/ "
-                       "to and from $VFG_MADE_ARCHIVE/<date>/")
+                       "to and from $VFG_MADE_ARCHIVE/<save>/")
     ms = s.add_subparsers(dest="op", metavar="save|restore")
     ms.required = True
-    ms.add_parser("save", help="copy made/<VFG_SERVER>/ into $VFG_MADE_ARCHIVE/<today>/")
-    w = ms.add_parser("restore", help="put $VFG_MADE_ARCHIVE/<date>/ back as made/<VFG_SERVER>/")
-    w.add_argument("date", metavar="<date>", help="a folder in the archive, like 2026-10-09")
+    ms.add_parser("save", help="copy made/<VFG_SERVER>/ into a new $VFG_MADE_ARCHIVE/<YYYY-MM-DD-HHMMSS>/; "
+                  "no save is ever deleted")
+    w = ms.add_parser("restore", help="put a save back as made/<VFG_SERVER>/ (what it replaces is kept "
+                      "in made/.replaced/)")
+    w.add_argument("save", metavar="<save|date>", help="a save's full name, like 2026-10-10-142301, or a "
+                   "date, like 2026-10-10, for that day's latest")
 
     s = sub.add_parser("place", help="save (the save_place action), list and forget named places, kept in Minecraft's "
                        "storage everhear:places")
