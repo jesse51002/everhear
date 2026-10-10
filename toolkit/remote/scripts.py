@@ -229,7 +229,7 @@ def op_run():
     except instances.CopyError as e:
         die(1, str(e))
     # The caller's clock started before the deploy: a once copy past its timeout is answered
-    # as still running, not cut off by vfg's or the dispatcher's own timeout.
+    # as still running, not cut off by vfg's or the brain's own timeout.
     wait = float(ARGS.get("wait") or instances.CHECK_S)
     left = max(min(RUN_MIN_WAIT, wait), wait - (time.time() - began))
     got = b.wait(name, proc, left, on_result=bool(ARGS.get("on_result")))
