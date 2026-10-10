@@ -36,8 +36,14 @@ class Config:
     window_s: float = 10.0          # VFG_DISPATCH_WINDOW_S
     action_timeout_s: float = 20.0  # VFG_DISPATCH_ACTION_TIMEOUT_S
     model_timeout_s: float = 10.0   # VFG_DISPATCH_MODEL_TIMEOUT_S: one structured() call, retries included
+    reasoning: str = "off"          # VFG_DISPATCH_REASONING: off, or an effort (low, medium, high)
     stop_grace_s: float = 10.0      # how long a running action may finish on SIGTERM
     stale_minutes: int = 10         # VFG_ORCH_STALE_MINUTES: a task that waited longer is failed, never run
+
+    @property
+    def effort(self) -> bool | str:
+        """What structured() takes: False for off, else the effort."""
+        return False if self.reasoning in ("", "off") else self.reasoning
 
     @property
     def inbox(self) -> Path:
@@ -96,6 +102,7 @@ def load(env: dict[str, str] | None = None) -> Config:
         window_s=number("VFG_DISPATCH_WINDOW_S", 10.0, float, 0),
         action_timeout_s=number("VFG_DISPATCH_ACTION_TIMEOUT_S", 20.0, float, 1),
         model_timeout_s=number("VFG_DISPATCH_MODEL_TIMEOUT_S", 10.0, float, 1),
+        reasoning=get("VFG_DISPATCH_REASONING", "off"),
         stale_minutes=number("VFG_ORCH_STALE_MINUTES", 10, int, 1),
     )
 

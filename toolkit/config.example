@@ -70,6 +70,9 @@ VFG_DISPATCH_MODEL=
 # Seconds one model call may take, its retries included; past it the task, or that
 # part of it, goes to the orchestrator. Default: 10
 VFG_DISPATCH_MODEL_TIMEOUT_S=
+# The dispatcher's reasoning: off, or an effort (low, medium, high) for a model that
+# cannot turn it off, such as Sonnet 5.5 on OpenRouter. Default: off
+VFG_DISPATCH_REASONING=
 # How often a failed action is changed and run again before it is handed on or
 # dropped. Default: 1
 VFG_DISPATCH_RETRIES=

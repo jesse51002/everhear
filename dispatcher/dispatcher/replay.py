@@ -198,7 +198,7 @@ async def _main(args) -> int:
     scripts = actions.scripts(cfg.repo)
 
     async def ask(prompt, output, *, system=None, model):
-        return await vfg_llm.structured(prompt, output, system=system, model=model, reasoning=False,
+        return await vfg_llm.structured(prompt, output, system=system, model=model, reasoning=cfg.effort,
                                         providers=list(cfg.providers) or None, timeout=cfg.model_timeout_s)
 
     selector = Selector(catalog, ask, args.model or cfg.model, scripts=list(scripts))
