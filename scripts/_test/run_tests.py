@@ -10,8 +10,8 @@ A seed (README.md beside main.py) runs with its Usage line's arguments. An examp
 against fake_world with Steve and Alex online; Steve tries every item it gives him (a
 click, a 1.5 s hold) and crouches; then SIGTERM. It must send commands, raise nothing,
 exit 0 within 2 s of the stop, and leave nothing tagged vfg_<name>: no entity, bossbar,
-forceload or objective. The kit's tests (test_kit.py) and every preset test file
-(test_presets_*.py) run with them.
+forceload or objective. The kit's tests (test_kit.py) and every test_presets_*.py and
+test_examples_*.py beside this file run with them.
 """
 import json
 import os
@@ -377,6 +377,9 @@ def run_example(name, seconds=4.0, folder=None):
     try:
         with open(out_path, "wb") as out:
             proc = subprocess.Popen([sys.executable, "-u", "main.py"], cwd=folder, env=env, stdout=out, stderr=out)
+            started = time.time() + 15        # a busy machine can take a while to start Python
+            while not world.commands and proc.poll() is None and time.time() < started:
+                time.sleep(0.05)
             until = time.time() + seconds
             player = threading.Thread(target=play, args=(world, until), daemon=True)
             player.start()
@@ -538,23 +541,21 @@ _add_script_tests()
 
 # ---- the kit (scripts/_lib/kit): its tests are in test_kit.py -------------------------------
 
-from test_kit import (ValuesTests, McKitTests, ItemsTests, AimTests, AreaTests, WorldTests,  # noqa: E402,F401
-                      MobsTests, FxTests, ExcludeTests, KitScriptTests)
+# ---- the kit, the presets and the examples: test_kit.py, every test_presets_*.py and test_examples_*.py
 
-# ---- the presets: every test_presets_*.py beside this file -------------------------------------
-
-def _add_preset_tests():
+def _add_kit_and_preset_tests():
     import glob
     import importlib
-    for path in sorted(glob.glob(os.path.join(HERE, "test_presets_*.py"))):
+    for path in [os.path.join(HERE, "test_kit.py")] + sorted(glob.glob(os.path.join(HERE, "test_presets_*.py"))) \
+            + sorted(glob.glob(os.path.join(HERE, "test_examples_*.py"))):
         mod = importlib.import_module(os.path.basename(path)[:-3])
         for name in dir(mod):
             obj = getattr(mod, name)
             if isinstance(obj, type) and issubclass(obj, unittest.TestCase) and obj.__module__ == mod.__name__:
-                globals()["%s__%s" % (mod.__name__, name)] = obj
+                globals()[name if mod.__name__ == "test_kit" else "%s__%s" % (mod.__name__, name)] = obj
 
 
-_add_preset_tests()
+_add_kit_and_preset_tests()
 
 if __name__ == "__main__":
     try:

@@ -1,4 +1,4 @@
-"""Random events for each player on a timer, picked by weight: a sound behind them, a shadow watching them, a fake mob, a whisper, the dark."""
+"""Random scares or visits on a timer, for each player or one at random, picked by weight: a sound behind them, a shadow watching, a fake creeper, a whisper, the dark, or the script's own events (horror mode, a god)."""
 import itertools
 import json
 import random
@@ -16,6 +16,7 @@ VALUES = {
     "director_messages": {"type": "list", "of": "str", "live": True,
                           "default": ["i see you", "turn around", "you are not alone", "why are you still here",
                                       "behind you"]},
+    "director_each":     {"type": "bool", "default": True, "live": True},
 }
 
 
@@ -23,8 +24,10 @@ def director(player, v, *, events=None):
     """Until the script stops: for each player the player value names, every director_min_s
     to director_max_s s of them being online, one of director_events, picked by director_weights
     (the same order; a missing weight is 1), run in the background so no one waits for it.
-    events: {name: f(p, v)}, the script's own, beside the built-in sound, shadow, mob,
-    message and dark (a name of its own replaces a built-in one)."""
+    director_each off: one clock for everyone, and its event goes to one of them at random
+    (as often with three players on as with one). events: {name: f(p, v)}, the script's own,
+    beside the built-in sound, shadow, mob, message and dark (a name of its own replaces a
+    built-in one)."""
     table = {"sound": _director_sound, "shadow": _director_shadow, "mob": _director_mob,
              "message": _director_message, "dark": _director_dark}
     table.update(events or {})
@@ -32,11 +35,13 @@ def director(player, v, *, events=None):
     due = {}
     for _ in loop(every=1):
         now, names = time.time(), loop.who(player)
-        due = {p: t for p, t in due.items() if p in names}     # the clock runs only while they are on
-        for p in names:
-            if now < due.setdefault(p, now + _director_wait(v)):
+        clocks = names if v["director_each"] else (["*"] if names else [])
+        due = {k: t for k, t in due.items() if k in clocks}    # a clock runs only while they are on
+        for k in clocks:
+            if now < due.setdefault(k, now + _director_wait(v)):
                 continue
-            due[p] = now + _director_wait(v)
+            due[k] = now + _director_wait(v)
+            p = random.choice(names) if k == "*" else k
             name = _director_pick(v)
             if name in table:
                 mc.log("event", name, "for", p)

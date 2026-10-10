@@ -339,7 +339,7 @@ class HollowPurple(Powers):
         for n in (1, 2, 3):                 # as an earlier run leaves on a player it killed mid-shot
             cmd("tag Alex add vfg_hp-steve_hit%d" % n)
         self.run_("hollow_purple", "hp-steve", "player=Steve", "length=30", "width=2", "around_radius=4",
-                  "around_what=mobs", "crater_radius=3", "crater_tunnel=1")
+                  "damage_what=mobs", "crater_radius=3", "crater_tunnel=1")
         self.given(steve, "hollow_purple")                  # the run's never gave it
         PLAYERS.use(steve)
         self.assertTrue(until(lambda: health("a") is None and health("b") is None, 10), "the beam killed nothing")
@@ -352,7 +352,7 @@ class HollowPurple(Powers):
         self.assertTrue(until(lambda: air(X + 30, Y - 1, Z), 15), "no sphere erased at its end")  # carved after the tunnel
         self.assertEqual([x for x in range(X + 4, X + 28) if not air(x, Y + 2, Z)], [], "the tunnel along the path has gaps")
         self.assertEqual([x for x in range(X + 4, X + 26) if air(x, Y + 3, Z)], [], "the tunnel along the path is too tall")
-        vfg("script", "set", "hp-steve", "around_what=everything")
+        vfg("script", "set", "hp-steve", "damage_what=all")
         time.sleep(1.0)
         PLAYERS.use(steve)
         self.assertTrue(until(lambda: alex not in PLAYERS.online(), 8), "everything, and Alex was not hit")

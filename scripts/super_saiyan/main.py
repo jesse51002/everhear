@@ -23,9 +23,11 @@ VALUES = {
     "charge_seconds":  {"type": "number", "min": 0.2, "max": 15, "default": 1.5, "live": True},
     "charge_particle": {"type": "particle", "default": "dust{color:[0.2,0.9,1.0],scale:1.4}", "live": True},
     "charge_size":     {"type": "number", "min": 1, "max": 30, "default": 5, "live": True},
-    "theme_tune":      {"type": "enum", "of": ["galick_gun", "hollow_purple", "ice_beam", "spirit_bomb", "spirit_bomb_throw", "super_saiyan", "boss"], "default": "super_saiyan", "live": True},
+    "charge_orbs":     {"type": "list", "of": "particle", "default": [], "live": True},
+    "theme_tune":      {"type": "enum", "of": ["galick_gun", "hollow_purple", "ice_beam", "spirit_bomb", "spirit_bomb_throw", "super_saiyan", "boss", "none"], "default": "super_saiyan", "live": True},
     "theme_to":        {"type": "enum", "of": ["near", "everyone", "player"], "default": "near", "live": True},
     "theme_reach":     {"type": "int", "min": 8, "max": 256, "default": 48, "live": True},
+    "theme_loop":      {"type": "bool", "default": False, "live": True},
 }
 
 # What each level gives, as effect amplifiers (0 is level I): speed, strength, jump boost.
@@ -45,7 +47,7 @@ def sneak(player, v):
             ...
     """
     stat = items.Stat(*items.SNEAK)     # this generator's own look at the shared sneak_time objective
-    down, taps, scored = {}, {}, set()  # per player: crouched at the last look; when their taps came
+    down, taps = {}, {}                 # per player: crouched at the last look; when their taps came
     while not mc.stopping():
         people = loop.who(player)
         if not people:
@@ -57,11 +59,6 @@ def sneak(player, v):
         name = v["sneak_item"]
         hold = "if items entity @s weapon.* %s" % items.match(name) if name else ""
         got, now, mode, due = stat.changes(hold), time.time(), v["sneak_mode"], []
-        if not scored.issuperset(people):
-            # Everyone gets a score (adding 0 changes none): a player with none yet makes
-            # items.Stat misread the name after theirs in the same reply.
-            mc.rcon("scoreboard players add @a %s 0" % stat.objective)
-            scored.update(people)
         for p in people:
             crouched, was = got.get(p, 0) > 0, down.get(p, False)
             down[p] = crouched
@@ -88,8 +85,10 @@ def charge_up(player, v):
     """Show a charge on a player for charge_seconds, the sound rising with it, then return
     where it ended: a Pos at the sphere's middle, where the orbs met, or the player's chest;
     None if the player could not be read (gone offline). charge_size is how big it gets:
-    the sphere's radius, how far apart the orbs start, how far the aura reaches. It follows
-    the player as they move, and ends early if the script stops."""
+    the sphere's radius, how far apart the orbs start, how far the aura reaches. charge_orbs:
+    two particles, the right orb's and the left's (Hollow Purple's blue and red), which meet
+    in charge_particle; [] for charge_particle both. It follows the player as they move, and
+    ends early if the script stops."""
     style, size, dust = v["charge_style"], v["charge_size"], v["charge_particle"]
     seconds = v["charge_seconds"]
     lk = aim.look(player)
@@ -105,7 +104,7 @@ def charge_up(player, v):
         if style == "sphere":
             at = _charge_up_sphere(lk, size, k, dust, i)
         elif style == "orbs":
-            at = _charge_up_orbs(lk, size, k, dust, i)
+            at = _charge_up_orbs(lk, size, k, dust, i, list(v["charge_orbs"]))
         else:
             at = _charge_up_aura(player, lk, size, dust, i)
         _charge_up_sound(at, style, k, i)
@@ -137,14 +136,16 @@ def _charge_up_sphere(lk, size, k, dust, i):
     return mid
 
 
-def _charge_up_orbs(lk, size, k, dust, i):
+def _charge_up_orbs(lk, size, k, dust, i, colors=()):
     """One frame of two orbs at the player's hands closing in to meet three blocks ahead
-    (Hollow Purple's; with a small charge_size, the Galick Gun's one orb)."""
+    (Hollow Purple's; with a small charge_size, the Galick Gun's one orb), each in its own
+    colour when two are given."""
     mid = lk.ahead(3, up=-0.3)
     off = size / 2.0 * (1 - k)
-    for side, flame in ((1, "soul_fire_flame"), (-1, "flame")):
+    colors = colors[:2] if len(colors) >= 2 else [dust, dust]
+    for side, flame, color in ((1, "soul_fire_flame", colors[0]), (-1, "flame", colors[1])):
         orb = mid.moved(lk.right[0] * off * side, 0, lk.right[2] * off * side)
-        fx.particle(dust, orb, 0.25, 12)
+        fx.particle(color, orb, 0.25, 12)
         fx.particle(flame, orb, 0.2, 3)
     if k > 0.6:                                                 # met: one orb, flaring
         fx.particle(dust, mid, 0.3, 20)
@@ -178,26 +179,26 @@ def _charge_up_sound(at, style, k, i):
 
 
 # --- preset: theme_music (copied from _presets/theme_music.py) ---
-def theme_music(at, v):
-    """Play the tune theme_tune names, in the background, at a player (or a place), and
-    return how many seconds it lasts. theme_to: "near" is heard within theme_reach blocks
-    of it, "everyone" by every player where they stand, "player" by that player alone. A
-    newer theme at the same player (or for everyone) cuts this one off, a record too."""
-    notes = _THEME_MUSIC_TUNES[v["theme_tune"]]
+def theme_music(at, v, *, tune=None):
+    """Play the tune theme_tune names (or `tune`, for this call: the throw after a charge's
+    choir), in the background, at a player (or a place), and return how many seconds it
+    lasts. theme_to: "near" is heard within theme_reach blocks of it, "everyone" by every
+    player where they stand, "player" by that player alone. theme_loop: again each time it
+    ends (boss music while the boss lives), until a newer theme, "none" or a stop. A newer
+    theme at the same player (or for everyone) cuts this one off, a record too; "none" plays
+    nothing and only cuts off what plays there."""
     to = v["theme_to"]
     if to == "player" and not isinstance(at, str):
         to = "near"                     # a place has nobody to play it to alone
     where = at if isinstance(at, str) else "%d_%d_%d" % tuple(at[:3])
     key = "theme" if to == "everyone" else "theme_" + where      # one theme at a time per player or place
-    _theme_music_hush(key)
     hear = {"everyone": "@a", "player": at}.get(to)
-    fx.melody(notes, at, to=hear, key=key, reach=v["theme_reach"])
-    records = [n[1] for n in notes if n[1] in _THEME_MUSIC_RECORDS]
-    if records:
-        if not _THEME_MUSIC_PLAYING:    # a stop cuts records off too (said again after all were cut: harmless)
-            mc.on_stop(lambda: [_theme_music_hush(k) for k in list(_THEME_MUSIC_PLAYING)])
-        _THEME_MUSIC_PLAYING[key] = (hear or "@a", records)
-    return max([n[0] + 0.5 for n in notes] + [_THEME_MUSIC_RECORDS[r] for r in records])
+    _THEME_MUSIC_GEN[key] = gen = _THEME_MUSIC_GEN.get(key, 0) + 1   # a loop under this key ends
+    fx.stop_melody(key)
+    seconds = _theme_music_play(at, v, tune or v["theme_tune"], hear, key)
+    if seconds and v["theme_loop"]:
+        loop.background(_theme_music_again, at, v, tune, hear, key, gen, seconds)
+    return seconds
 
 
 # Each tune is a list of notes: (seconds from the start, a note block instrument or a sound
@@ -264,18 +265,27 @@ _THEME_MUSIC_TUNES = {
     ],
 }
 
-# Records play on in the players' game once started, so a newer theme stops them by name;
-# each with how long it lasts, in seconds.
+# A record plays on in the players' game once started (fx.melody stops it when a newer
+# melody starts, and on a stop); each with how long it lasts, in seconds.
 _THEME_MUSIC_RECORDS = {"music_disc.pigstep": 148.0}
-_THEME_MUSIC_PLAYING = {}       # key -> (who hears it, [records]) while a record may still play
+_THEME_MUSIC_GEN = {}           # key -> how many themes have started under it: a loop plays on while it is the last
 
 
-def _theme_music_hush(key):
-    """Cut off what plays under a key: its notes, and any record it started."""
-    fx.stop_melody(key)
-    hear, records = _THEME_MUSIC_PLAYING.pop(key, (None, []))
-    for r in records:
-        mc.rcon("stopsound %s * minecraft:%s" % (hear, r))
+def _theme_music_play(at, v, name, hear, key):
+    """Start one tune under a key; how long it lasts (0 for "none")."""
+    notes = _THEME_MUSIC_TUNES.get(name)
+    if not notes:
+        return 0
+    fx.melody(notes, at, to=hear, key=key, reach=v["theme_reach"])
+    return max([n[0] + 0.5 for n in notes] + [_THEME_MUSIC_RECORDS.get(n[1], 0) for n in notes])
+
+
+def _theme_music_again(at, v, tune, hear, key, gen, seconds):
+    """Play it again each time it ends, while theme_loop is on and nothing newer started there."""
+    while loop.wait(seconds) and v["theme_loop"] and _THEME_MUSIC_GEN.get(key) == gen:
+        seconds = _theme_music_play(at, v, tune or v["theme_tune"], hear, key)
+        if not seconds:
+            return
 
 
 v = values(VALUES)

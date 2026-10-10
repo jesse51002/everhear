@@ -1,4 +1,4 @@
-"""Lightning at a place: one bolt, or several scattered or in a ring round it, at once or one by one."""
+"""Strike lightning at a place or a player: one bolt or many, scattered or in a ring, at once or one by one, never on the one who called it."""
 import math
 import random
 

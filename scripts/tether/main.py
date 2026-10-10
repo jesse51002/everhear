@@ -1,5 +1,6 @@
 """Tether: keeps a player near others: whoever gets further than a radius from all of them is brought back to the nearest."""
-ASKS = ["he has to stay next to us no matter what", "teleport him to us every time"]
+ASKS = ["he has to stay next to us no matter what", "teleport him to us every time", "keep him near me",
+        "teleport him back if he leaves", "he can't run away from us", "bring him back whenever he wanders off"]
 from kit import values, fx, loop, world
 import math
 import mc

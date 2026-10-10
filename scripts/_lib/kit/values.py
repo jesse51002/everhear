@@ -79,12 +79,12 @@ def _one(kind, raw, spec, key):
     if kind == "str":
         return raw
     if kind == "player":
-        if raw in ("@a", "@r"):
+        if raw in ("@a", "@r", "@p"):
             return raw
         names = [n.strip() for n in raw.split(",") if n.strip()]
         if names and all(_NAME.match(n) for n in names):
             return ",".join(names)
-        raise ValueError("%s must be @a, @r or player names separated by commas, not %r" % (key, raw))
+        raise ValueError("%s must be @a, @r, @p or player names separated by commas, not %r" % (key, raw))
     if kind in _PATTERNS:
         low = raw if kind in ("block", "item", "particle") else raw.lower()
         if not _PATTERNS[kind].match(low):

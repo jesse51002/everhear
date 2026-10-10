@@ -1,4 +1,4 @@
-"""The box of blocks under a player or a place, a radius wide and a depth deep, and above it if asked."""
+"""The blocks under a player's feet (ice under my feet, a path where I walk): a radius wide and a depth deep, and above them if asked."""
 import math
 
 import mc

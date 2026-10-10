@@ -1,6 +1,8 @@
-"""Weapon Chest: a chest of named weapons beside a player: bows and a trident that blast, freeze or call lightning where they land, and a sword, an axe and a mace whose right-click does it where you look."""
+"""Weapon Chest: a chest of named weapons with powers beside a player: an explosive bow, a freeze bow and a lightning trident that act where they land, and a lightning sword, a blast axe and a mace that lifts everything near, on a right-click where you look."""
 ASKS = ["make cool weapons, like the netherite stuff, randomized with effects and powers",
-        "put them in a chest for all of us to access", "where's the chest of mysterious weapons"]
+        "put them in a chest for all of us to access", "where's the chest of mysterious weapons",
+        "weapon powers", "a bow whose arrows explode", "a trident that calls lightning where it lands",
+        "a bow that freezes what it hits", "weapons with powers for all of us"]
 from kit import values, items, aim, loop, exclude, world, area
 import itertools
 import json
@@ -12,40 +14,42 @@ import time
 import threading
 
 VALUES = {
-    "player":              {"type": "player", "default": "@a"},
-    "per_player":          {"type": "bool", "default": False},
-    "at":                  {"type": "list", "of": "number", "default": []},
-    "cooldown":            {"type": "number", "min": 0, "max": 60, "default": 1, "live": True},
-    "range":               {"type": "int", "min": 4, "max": 300, "default": 120, "live": True},
-    "damage_amount":       {"type": "number", "min": 0, "max": 100000, "default": 10, "live": True},
-    "damage_type":         {"type": "enum", "of": ["player_attack", "magic", "lightning_bolt", "explosion", "freeze", "on_fire", "sonic_boom", "arrow", "wither", "generic"], "default": "lightning_bolt", "live": True},
-    "damage_kill":         {"type": "bool", "default": False, "live": True},
-    "damage_most":         {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
-    "damage_head":         {"type": "number", "min": 1, "max": 10, "default": 1, "live": True},
-    "damage_spare":        {"type": "list", "of": "player", "default": [], "live": True},
-    "lightning_count":     {"type": "int", "min": 1, "max": 50, "default": 1, "live": True},
-    "lightning_spread":    {"type": "number", "min": 0, "max": 32, "default": 3, "live": True},
-    "lightning_layout":    {"type": "enum", "of": ["scatter", "ring"], "default": "scatter", "live": True},
-    "lightning_every":     {"type": "number", "min": 0, "max": 5, "default": 0, "live": True},
-    "lightning_spare":     {"type": "list", "of": "player", "default": [], "live": True},
-    "around_radius":       {"type": "number", "min": 1, "max": 128, "default": 4, "live": True},
-    "around_what":         {"type": "enum", "of": ["mobs", "players", "everything"], "default": "mobs", "live": True},
-    "around_most":         {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
-    "projectile_kind":     {"type": "enum", "of": ["both", "arrow", "trident"], "default": "both", "live": True},
-    "projectile_named":    {"type": "str", "default": "", "live": True},
-    "projectile_cooldown": {"type": "number", "min": 0, "max": 60, "default": 0, "live": True},
-    "projectile_remove":   {"type": "bool", "default": False, "live": True},
-    "explosion_power":     {"type": "number", "min": 1, "max": 16, "default": 3, "live": True},
-    "explosion_layout":    {"type": "enum", "of": ["one", "plus", "ring", "rings"], "default": "one", "live": True},
-    "explosion_spread":    {"type": "number", "min": 1, "max": 32, "default": 4, "live": True},
-    "explosion_breaks":    {"type": "bool", "default": False, "live": True},
-    "explosion_keep":      {"type": "number", "min": 0, "max": 32, "default": 0, "live": True},
-    "explosion_spare":     {"type": "list", "of": "player", "default": [], "live": True},
-    "freeze_seconds":      {"type": "number", "min": 1, "max": 120, "default": 6, "live": True},
-    "freeze_shell":        {"type": "bool", "default": False, "live": True},
-    "freeze_block":        {"type": "enum", "of": ["ice", "packed_ice", "blue_ice", "snow_block"], "default": "ice", "live": True},
-    "push_way":            {"type": "enum", "of": ["away", "toward", "up"], "default": "up", "live": True},
-    "push_strength":       {"type": "number", "min": 0.5, "max": 40, "default": 8, "live": True},
+    "player":                    {"type": "player", "default": "@a"},
+    "per_player":                {"type": "bool", "default": False},
+    "at":                        {"type": "list", "of": "number", "default": []},
+    "cooldown":                  {"type": "number", "min": 0, "max": 60, "default": 1, "live": True},
+    "range":                     {"type": "int", "min": 4, "max": 300, "default": 120, "live": True},
+    "damage_amount":             {"type": "number", "min": 0, "max": 100000, "default": 10, "live": True},
+    "damage_type":               {"type": "enum", "of": ["player_attack", "magic", "lightning_bolt", "explosion", "freeze", "on_fire", "sonic_boom", "arrow", "wither", "generic"], "default": "lightning_bolt", "live": True},
+    "damage_kill":               {"type": "bool", "default": False, "live": True},
+    "damage_what":               {"type": "enum", "of": ["all", "mobs", "hostile", "players"], "default": "all", "live": True},
+    "damage_most":               {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
+    "damage_head":               {"type": "number", "min": 1, "max": 10, "default": 1, "live": True},
+    "damage_spare":              {"type": "list", "of": "player", "default": [], "live": True},
+    "lightning_count":           {"type": "int", "min": 1, "max": 50, "default": 1, "live": True},
+    "lightning_spread":          {"type": "number", "min": 0, "max": 32, "default": 3, "live": True},
+    "lightning_layout":          {"type": "enum", "of": ["scatter", "ring"], "default": "scatter", "live": True},
+    "lightning_every":           {"type": "number", "min": 0, "max": 5, "default": 0, "live": True},
+    "lightning_spare":           {"type": "list", "of": "player", "default": [], "live": True},
+    "around_radius":             {"type": "number", "min": 1, "max": 128, "default": 4, "live": True},
+    "around_what":               {"type": "enum", "of": ["mobs", "hostile", "players", "everything", "projectiles"], "default": "mobs", "live": True},
+    "around_most":               {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
+    "projectile_lands_kind":     {"type": "enum", "of": ["both", "arrow", "trident"], "default": "both", "live": True},
+    "projectile_lands_named":    {"type": "list", "of": "str", "default": ["Hellfire Longbow", "Glacier Bow", "Stormcaller"], "live": True},
+    "projectile_lands_cooldown": {"type": "number", "min": 0, "max": 60, "default": 0, "live": True},
+    "projectile_lands_remove":   {"type": "bool", "default": False, "live": True},
+    "explosion_power":           {"type": "number", "min": 0, "max": 16, "default": 3, "live": True},
+    "explosion_layout":          {"type": "enum", "of": ["one", "plus", "ring", "rings"], "default": "one", "live": True},
+    "explosion_spread":          {"type": "number", "min": 1, "max": 32, "default": 4, "live": True},
+    "explosion_breaks":          {"type": "bool", "default": False, "live": True},
+    "explosion_keep":            {"type": "number", "min": 0, "max": 32, "default": 0, "live": True},
+    "explosion_spare":           {"type": "list", "of": "player", "default": [], "live": True},
+    "freeze_seconds":            {"type": "number", "min": 1, "max": 120, "default": 6, "live": True},
+    "freeze_shell":              {"type": "bool", "default": False, "live": True},
+    "freeze_block":              {"type": "enum", "of": ["ice", "packed_ice", "blue_ice", "snow_block"], "default": "ice", "live": True},
+    "freeze_blindness":          {"type": "bool", "default": False, "live": True},
+    "push_way":                  {"type": "enum", "of": ["away", "toward", "up"], "default": "up", "live": True},
+    "push_strength":             {"type": "number", "min": 0.5, "max": 40, "default": 8, "live": True},
 }
 
 
@@ -53,47 +57,37 @@ VALUES = {
 def damage_hits(hits, shooter, v):
     """Hurt every hit once (hits: a list of aim.Hit, from aim.near_line, around or lock_on,
     or several of those added together), by damage_amount of damage_type, as the shooter, so
-    a kill is theirs; damage_kill kills instead. damage_most: only the nearest that many (1:
-    the first only; 0: all). shooter: a player's name, or their aim.look(), with which a hit
-    whose head the look passes takes damage_head times the damage. Never the shooter, a
-    name in damage_spare, a pet, a villager or anything else exclude spares. Returns how many."""
+    a kill is theirs; damage_kill kills instead. damage_what: "all", "mobs" (no players),
+    "hostile" (monsters only: never an animal, and no players) or "players". damage_most:
+    only the nearest that many (1: the first only; 0: all). shooter: a player's name, or
+    their aim.look(), with which a hit whose head the look passes takes damage_head times the
+    damage. Never the shooter, a name in damage_spare, a pet, a villager or anything else
+    exclude spares. Returns how many."""
     by = getattr(shooter, "player", shooter) or ""
     spare = [by] + list(v["damage_spare"])
     names = set(mc.bare(s) for s in spare if s and not s.startswith("@"))
-    hits = [h for h in sorted(hits, key=lambda h: h.t) if mc.bare(h.name) not in names]
+    what = v["damage_what"]
+    hits = [h for h in sorted(hits, key=lambda h: h.t) if mc.bare(h.name) not in names
+            and (h.player if what == "players" else (what == "all" or not h.player))]
     if v["damage_most"]:
         hits = hits[:v["damage_most"]]
     body = "%s_hit%d" % (mc.TAG, next(_DAMAGE_N))      # each call tags with its own name
-    for t in (body, body + "h"):    # bent: one an earlier run left on a player it killed would spare them
-        mc.rcon("tag @e[tag=%s] remove %s" % (t, t))
+    head = [h for h in hits if v["damage_head"] > 1 and _damage_on_head(h, shooter)]
     count = {}
-    for h in hits:
-        tag = body + "h" if v["damage_head"] > 1 and _damage_on_head(h, shooter) else body
-        count[tag] = count.get(tag, 0) + _damage_mark(h, tag, spare)
+    for tag, some in ((body, [h for h in hits if h not in head]), (body + "h", head)):
+        if some:
+            count[tag] = aim.mark(some, tag, spare, hostile=what == "hostile")
     for tag, n in count.items():
-        if not n:
-            continue
-        if v["damage_kill"]:
-            _damage_all(tag, 1000000, "generic_kill", by)
-        else:
-            _damage_all(tag, v["damage_amount"] * (1 if tag == body else v["damage_head"]), v["damage_type"], by)
-        mc.rcon("tag @e[tag=%s] remove %s" % (tag, tag))
+        if n:
+            if v["damage_kill"]:
+                _damage_all(tag, 1000000, "generic_kill", by)
+            else:
+                _damage_all(tag, v["damage_amount"] * (1 if tag == body else v["damage_head"]), v["damage_type"], by)
+        aim.untag(tag)
     return sum(count.values())
 
 
 _DAMAGE_N = itertools.count(1)
-
-
-def _damage_mark(h, tag, spare):
-    """Tag one hit where it was: a player by name, a mob as the nearest within 1.5 blocks that
-    a hit may touch, so a hit listed twice is tagged once. 1 if it was tagged now, else 0."""
-    if h.player:
-        reply = mc.rcon("tag %s add %s" % (h.name, tag))
-    else:
-        x, y, z = h.pos[:3]
-        reply = mc.rcon(world.prefix(world.dim(h.pos)) + "positioned %.3f %.3f %.3f %s run tag @s add %s" % (
-            x, y, z, exclude.mobs("distance=..1.5,sort=nearest,limit=1", spare), tag))
-    return 1 if reply.startswith("Added tag") else 0
 
 
 def _damage_all(tag, amount, kind, by):
@@ -152,9 +146,12 @@ def lightning(at, by, v):
 def around(at, v):
     """Every mob, player or both (around_what) within around_radius of a place or a player
     (a name: never that player), as a list of aim.Hit nearest first, the shape aim.near_line
-    gives, so damage_hits, freeze and push take either. around_most: the nearest that many
-    (0: all). Never a pet, a villager or anything else exclude spares, nor a player in
-    creative or spectator. For the blocks round a place, area.box(at, r) and area.sphere."""
+    gives, so damage_hits, freeze and push take either. "hostile": monsters only, never an
+    animal; "projectiles": arrows, tridents, fireballs and the like still flying, never the
+    player's own nor one this script turned already, each found again by its uuid. around_most:
+    the nearest that many (0: all). Never a pet, a villager or anything else exclude spares,
+    nor a player in creative or spectator. For the blocks round a place, area.box(at, r) and
+    area.sphere."""
     me = ""
     if isinstance(at, str):
         me, feet = at, mc.pos(at)
@@ -162,58 +159,58 @@ def around(at, v):
             return []
         at = world.Pos(feet[0], feet[1], feet[2], world.dim_of(me))
     r, what = v["around_radius"], v["around_what"]
-    found = {}
-    if what in ("mobs", "everything"):
-        _around_ask(at, exclude.mobs("distance=..%g" % r), r, False, found)
-    if what in ("players", "everything"):
-        _around_ask(at, exclude.players(me, "distance=..%g" % r), r, True, found)
-    dim = world.dim(at)
-    hits = []
-    for (x, y, z, player), name in found.items():
-        t = math.sqrt((x - at[0]) ** 2 + (y - at[1]) ** 2 + (z - at[2]) ** 2)
-        hits.append(aim.Hit(t, world.Pos(x, y, z, dim), mc.bare(name) if player else name, player))
-    hits.sort(key=lambda h: h.t)
+    if what == "projectiles":
+        hits = _around_projectiles(at, me, r)
+    else:
+        hits = aim.near(at, r, shooter=me, with_players=what in ("players", "everything"),
+                        hostile=what == "hostile", with_mobs=what != "players")
     return hits[:v["around_most"]] if v["around_most"] else hits
 
 
-_AROUND_POS = re.compile(r"([^\]\[]*?) has the following entity data: \[(-?[\d.eE-]+)d, (-?[\d.eE-]+)d, (-?[\d.eE-]+)d\]")
+_AROUND_UUID = re.compile(r"([^\]\[]*?) has the following entity data: \[I; (-?\d+), (-?\d+), (-?\d+), (-?\d+)\]")
+_AROUND_OWN = {}            # player -> ",nbt=!{Owner:[I;...]}": their own projectiles are not turned
 
 
-def _around_ask(at, frag, r, player, found, box=None, depth=0):
-    """Ask where everything a fragment selects is; a reply cut at 4 KB is asked again in
-    eight smaller boxes."""
-    if box is None:
-        box = (at[0] - r, at[1] - r, at[2] - r, 2 * r)
-    x, y, z, size = box
-    inside = "" if depth == 0 else "positioned %.2f %.2f %.2f if entity @s[dx=%.2f,dy=%.2f,dz=%.2f] " % (
-        x, y, z, size, size, size)
-    reply = mc.rcon(world.prefix(world.dim(at)) + "positioned %.2f %.2f %.2f %s %srun data get entity @s Pos" % (
-        at[0], at[1], at[2], frag, inside))
-    if len(reply.encode("utf-8")) >= world.MAX_REPLY - 200 and depth < 3:
-        half = size / 2.0
-        for i in range(8):
-            _around_ask(at, frag, r, player, found,
-                        (x + half * (i & 1), y + half * (i >> 1 & 1), z + half * (i >> 2 & 1), half), depth + 1)
-        return
-    for m in _AROUND_POS.finditer(reply):
-        found[(float(m.group(2)), float(m.group(3)), float(m.group(4)), player)] = m.group(1).strip()
+def _around_projectiles(at, me, r):
+    """Arrows, tridents, fireballs and the like in flight within r of a place, never me's own
+    nor one this script turned already (tagged TAG), as hits named by their uuid."""
+    if me and me not in _AROUND_OWN:
+        m = _AROUND_UUID.search(mc.rcon("data get entity %s UUID" % me))
+        if m:
+            _AROUND_OWN[me] = ",nbt=!{Owner:[I;%s]}" % ",".join(m.groups()[1:])
+    reply = mc.rcon(world.prefix(world.dim(at)) + "positioned %.2f %.2f %.2f as @e[type=#minecraft:impact_projectiles,"
+                    "distance=..%g,tag=!%s,nbt=!{inGround:1b}%s] run data get entity @s UUID"
+                    % (at[0], at[1], at[2], r, mc.TAG, _AROUND_OWN.get(me, "")))
+    hits = []
+    for m in _AROUND_UUID.finditer(reply):
+        h = "".join("%08x" % (int(n) & 0xffffffff) for n in m.groups()[1:])
+        uuid = "%s-%s-%s-%s-%s" % (h[:8], h[8:12], h[12:16], h[16:20], h[20:])
+        p = re.findall(r"(-?[\d.]+(?:E-?\d+)?)d", mc.rcon("data get entity %s Pos" % uuid))
+        if len(p) >= 3:
+            x, y, z = (float(c) for c in p[:3])
+            t = math.sqrt((x - at[0]) ** 2 + (y - at[1]) ** 2 + (z - at[2]) ** 2)
+            hits.append(aim.Hit(t, world.Pos(x, y, z, world.dim(at)), m.group(1).strip(), False, uuid))
+    return sorted(hits, key=lambda h: h.t)
 
 
 # --- preset: projectile_lands (copied from _presets/projectile_lands.py) ---
-def projectile_lands(player, v, named=None, kind=None):
-    """Yield (at, p) each time an arrow or trident that a player (of those `player` names)
-    shot or threw lands in a block or hits something: at is where (a Pos), p who threw it.
+def projectile_lands(player, v):
+    """Yield (at, p, weapon) each time an arrow or trident that a player (of those `player`
+    names) shot or threw lands in a block or hits something: at is where (a Pos), p who threw
+    it, weapon the id of the named weapon it came from ("spear_bomb"), or "".
 
-        for at, p in loop(projectile_lands(v["player"], v)):
-            explosion(at, v)
+        for at, p, weapon in loop(projectile_lands(v["player"], v)):
+            explosion(at, p, v)
 
-    projectile_named: only those from the weapon of that name, given with its custom_data
-    ("Spear Bomb" is trident[custom_data={vfg_item:"spear_bomb"}], items.item_id's id).
-    projectile_cooldown: a player's next ones within that many seconds land as they are.
-    projectile_remove: take it away where it lands, so it is not picked up and used again.
-    An arrow that hits a mob is gone at once, so for it at is a little ahead of where it
-    was last seen. Each player is followed on their own. Bent: named and kind, when given,
-    stand in for projectile_named and projectile_kind, so each weapon has its own."""
+    projectile_lands_named: only those from the weapons of those names, each given with its
+    custom_data ("Spear Bomb" is trident[custom_data={vfg_item:"spear_bomb"}], items.item_id's
+    id); [] for any. projectile_lands_cooldown: a player's next ones within that many seconds
+    land as they are. projectile_lands_remove: take it away where it lands, so it is not
+    picked up and used again. An arrow that hits a mob is gone at once, so for it at is a
+    little ahead of where it was last seen. One already lying in the ground when first seen
+    (from before the script started) is left alone, and one that hangs still in the air for
+    10 s (out past the simulation distance, it stops) is given up on. Each player is
+    followed on their own."""
     seen = mc.TAG + "_seen"             # on every projectile this has looked at; taken off on a stop
     mc.on_stop(lambda: mc.rcon("tag @e[tag=%s] remove %s" % (seen, seen)))
     flying, last = {}, {}               # uuid -> what is known of it in flight; thrower -> when it last acted
@@ -223,13 +220,20 @@ def projectile_lands(player, v, named=None, kind=None):
             flying.clear()
             time.sleep(1.0)
             continue
-        kinds = (kind,) if kind else ("arrow", "trident") if v["projectile_kind"] == "both" else (v["projectile_kind"],)
-        name = named or v["projectile_named"]
-        for k in kinds:
-            for uuid in _projectile_lands_new(k, items.item_id(name) if name else "", seen):
+        kind = v["projectile_lands_kind"]
+        named = [items.item_id(n) for n in v["projectile_lands_named"] if str(n).strip()]
+        for k in (("arrow", "trident") if kind == "both" else (kind,)):
+            for uuid in _projectile_lands_new(k, seen):
                 p = _projectile_lands_thrower(uuid)
-                if p in people:
-                    flying[uuid] = {"p": p, "kind": k, "dim": world.dim_of(p), "at": None, "step": (0, 0, 0)}
+                if p not in people:
+                    continue
+                weapon = _projectile_lands_weapon(uuid, k)
+                if named and weapon not in named:
+                    continue
+                if _projectile_lands_down(uuid, k) and _projectile_lands_life(uuid) > 40:
+                    continue                                    # lying there already (2 s or more)
+                flying[uuid] = {"p": p, "kind": k, "weapon": weapon, "dim": world.dim_of(p), "at": None,
+                                "step": (0, 0, 0), "moved": time.time()}
         for uuid, f in list(flying.items()):
             at = _projectile_lands_pos(uuid, f["dim"])
             if at is False:                                     # no answer this time: ask again next pass
@@ -245,15 +249,20 @@ def projectile_lands(player, v, named=None, kind=None):
             elif not _projectile_lands_down(uuid, f["kind"]):   # still flying
                 if f["at"] is not None:
                     f["step"] = tuple(min(8.0, max(-8.0, at[j] - f["at"][j])) for j in range(3))
+                    if max(abs(s) for s in f["step"]) > 0.01:
+                        f["moved"] = time.time()
+                    elif time.time() - f["moved"] > 10:
+                        del flying[uuid]                        # hung still in the air: it will not land
+                        continue
                 f["at"] = at
                 continue
             else:                                               # down
                 del flying[uuid]
-            if time.time() - last.get(f["p"], -1e9) < v["projectile_cooldown"]:
+            if time.time() - last.get(f["p"], -1e9) < v["projectile_lands_cooldown"]:
                 continue                                        # too soon after their last: it lands as it is
-            if v["projectile_remove"]:
+            if v["projectile_lands_remove"]:
                 mc.rcon("kill %s" % uuid)
-            yield at, f["p"]
+            yield at, f["p"], f["weapon"]
             last[f["p"]] = time.time()
         time.sleep(0.05 if flying else 0.1)
 
@@ -265,13 +274,11 @@ _PROJECTILE_LANDS_UUID = re.compile(r"\[I; (-?\d+), (-?\d+), (-?\d+), (-?\d+)\]"
 _PROJECTILE_LANDS_POS = re.compile(r"\[(-?[\d.]+(?:E-?\d+)?)d, (-?[\d.]+(?:E-?\d+)?)d, (-?[\d.]+(?:E-?\d+)?)d\]")
 
 
-def _projectile_lands_new(kind, named, seen):
+def _projectile_lands_new(kind, seen):
     """The uuids of projectiles of a kind near anyone online that were not looked at yet,
     each marked as looked at."""
-    match = ',nbt={%s:{components:{"minecraft:custom_data":{vfg_item:"%s"}}}}' % (
-        _PROJECTILE_LANDS_FROM[kind], named) if named else ""
-    reply = mc.rcon("execute as @a at @s as @e[type=%s,distance=..32,tag=!%s%s] run data get entity @s UUID"
-                    % (_PROJECTILE_LANDS_TYPES[kind], seen, match))
+    reply = mc.rcon("execute as @a at @s as @e[type=%s,distance=..32,tag=!%s] run data get entity @s UUID"
+                    % (_PROJECTILE_LANDS_TYPES[kind], seen))
     out = []
     for m in _PROJECTILE_LANDS_UUID.finditer(reply):
         h = "".join("%08x" % (int(n) & 0xffffffff) for n in m.groups())
@@ -286,6 +293,20 @@ def _projectile_lands_thrower(uuid):
     """Who shot or threw it, as a bare name ("" for nobody, or a mob's name)."""
     reply = mc.rcon("execute as %s on origin run data get entity @s UUID" % uuid)
     return mc.bare(reply.split(" has the following entity data", 1)[0]) if " has the following" in reply else ""
+
+
+def _projectile_lands_weapon(uuid, kind):
+    """The vfg_item id of the weapon it came from (its custom_data), or ""."""
+    reply = mc.rcon('data get entity %s %s.components."minecraft:custom_data".vfg_item'
+                    % (uuid, _PROJECTILE_LANDS_FROM[kind]))
+    m = re.search(r'entity data: "([^"]*)"', reply)
+    return m.group(1) if m else ""
+
+
+def _projectile_lands_life(uuid):
+    """How many ticks it has lain in the ground, 0 when the server does not say."""
+    m = re.search(r"entity data: (\d+)s", mc.rcon("data get entity %s life" % uuid))
+    return int(m.group(1)) if m else 0
 
 
 def _projectile_lands_pos(uuid, dim):
@@ -307,19 +328,21 @@ def _projectile_lands_down(uuid, kind):
 # --- preset: explosion (copied from _presets/explosion.py) ---
 def explosion(at, by, v):
     """Blow up a place (or a player's name: where they stand) with blasts of explosion_power
-    (TNT is 4), laid out by explosion_layout: "one" at the place, "plus" with four more
+    (TNT is 4; 0: no blast at all), laid out by explosion_layout: "one" at the place, "plus" with four more
     explosion_spread blocks out, "ring" with eight round it, "rings" with six at
     explosion_spread and ten at twice that. explosion_breaks: real TNT, which breaks blocks;
     else a blast that only hurts and throws back. by (the player who set it off, or "") and
     the players in explosion_spare are never hurt, nor are pets and villagers; no blast lands
     within explosion_keep blocks of any player, who is caught at its edge instead. Returns
     how many blasts went off."""
+    power = v["explosion_power"]
+    if power <= 0:
+        return 0
     if isinstance(at, str):
         feet = mc.pos(at)
         if feet is None:
             return 0
         at = world.Pos(feet[0], feet[1], feet[2], world.dim_of(at))
-    power = v["explosion_power"]
     spare = [mc.bare(p) for p in [by] + list(v["explosion_spare"]) if p and not p.startswith("@")]
     pre = world.prefix(world.dim(at))
     here = pre + "positioned %.2f %.2f %.2f " % tuple(at[:3])
@@ -384,23 +407,27 @@ def freeze(hits, v):
     freeze_seconds: it cannot walk or hurt anything, and a mob shows the frost (and takes
     the cold's 1 damage every 2 s, as in powder snow). With freeze_shell, a shell of
     freeze_block round each body, one block wide and two high, that melts when the freeze
-    ends; it only fills air, so nothing is replaced (never bedrock, never a chest). Pets and
+    ends; it only fills air, so nothing is replaced (never bedrock, never a chest).
+    freeze_blindness blinds it too (blindness IV, as the run's ice beam did). Pets and
     villagers are never frozen. Returns how many were frozen."""
     secs = int(math.ceil(v["freeze_seconds"]))
     tag = "%s_frz%d" % (mc.TAG, next(_FREEZE_N))      # each call tags with its own name
-    mc.rcon("tag @e[tag=%s] remove %s" % (tag, tag))    # bent: one an earlier run left would spare them
-    frozen = [h for h in hits if _freeze_mark(h, tag)]
-    if not frozen:
+    if not aim.mark(hits, tag):                         # each once, where it was
+        aim.untag(tag)
         return 0
     # Slowness and weakness X (amplifier 9; above 127 it is saved as a negative byte) leave
     # no speed and no attack, and wear off by themselves even if the script dies.
     mc.rcon("effect give @e[tag=%s] slowness %d 9 true" % (tag, secs))
     mc.rcon("effect give @e[tag=%s] weakness %d 9 true" % (tag, secs))
+    if v["freeze_blindness"]:
+        mc.rcon("effect give @e[tag=%s] blindness %d 3 true" % (tag, secs))
     mc.rcon("execute as @e[tag=%s,type=!player] run data merge entity @s {TicksFrozen:%d}" % (tag, 140 + 40 * secs))
     mc.rcon("execute at @e[tag=%s] run particle snowflake ~ ~1 ~ 0.4 0.6 0.4 0.02 25 force" % tag)
-    mc.rcon("tag @e[tag=%s] remove %s" % (tag, tag))
+    frozen = [world.Pos(float(x), float(y), float(z), world.dim(hits[0].pos)) for x, y, z in _FREEZE_POS.findall(
+        mc.rcon("execute as @e[tag=%s] run data get entity @s Pos" % tag))]
+    aim.untag(tag)
     if v["freeze_shell"]:
-        shells = [_freeze_shell(h.pos, v["freeze_block"]) for h in frozen]
+        shells = [_freeze_shell(at, v["freeze_block"]) for at in frozen]
         with _FREEZE_LOCK:
             if not _FREEZE_SHELLS:
                 mc.on_stop(lambda: [_freeze_melt(s) for s in list(_FREEZE_SHELLS)])
@@ -410,20 +437,9 @@ def freeze(hits, v):
 
 
 _FREEZE_N = itertools.count(1)
+_FREEZE_POS = re.compile(r"\[(-?[\d.]+(?:E-?\d+)?)d, (-?[\d.]+(?:E-?\d+)?)d, (-?[\d.]+(?:E-?\d+)?)d\]")
 _FREEZE_SHELLS = []         # shells still standing; a stop melts them
 _FREEZE_LOCK = threading.Lock()
-
-
-def _freeze_mark(h, tag):
-    """Tag one hit where it was: a player by name, a mob as the nearest within 1.5 blocks that
-    a hit may touch. True if it was tagged now (a hit listed twice is tagged once)."""
-    if h.player:
-        reply = mc.rcon("tag %s add %s" % (h.name, tag))
-    else:
-        x, y, z = h.pos[:3]
-        reply = mc.rcon(world.prefix(world.dim(h.pos)) + "positioned %.3f %.3f %.3f %s run tag @s add %s" % (
-            x, y, z, exclude.mobs("distance=..1.5,sort=nearest,limit=1"), tag))
-    return reply.startswith("Added tag")
 
 
 def _freeze_shell(at, block):
@@ -459,21 +475,24 @@ def _freeze_melt(shell):
 
 
 # --- preset: push (copied from _presets/push.py) ---
-def push(hits, frm, v):
+def push(hits, frm, v, *, way=None):
     """Move every hit (a list of aim.Hit, from aim.near_line, around or lock_on) about
     push_strength blocks: "away" from frm, "toward" it (never past it), or "up" into the
-    air. frm: a place, or a player's name for where they stand. A mob is thrown (its
+    air; way, when given, is the way for this call (a script whose own value picks it), else
+    push_way. frm: a place, or a player's name for where they stand. A mob is thrown (its
     Motion), so it flies, lands and slides; a player is moved there at once, and only into
-    room to stand, since a player's Motion cannot be set; "up" floats a player up instead.
-    Pets and villagers are never moved. Returns how many were moved."""
-    way, s = v["push_way"], v["push_strength"]
+    room to stand, since a player's Motion cannot be set; "up" floats a player up instead. A
+    hit with a uuid (a projectile, from around's "projectiles") is sent off on its new
+    heading and becomes this script's (tagged TAG), so it is turned only once. Pets and
+    villagers are never moved. Returns how many were moved."""
+    way, s = way or v["push_way"], v["push_strength"]
     if isinstance(frm, str):
         frm = mc.pos(frm)
         if frm is None:
             return 0
     seen, n = set(), 0
     for h in hits:
-        key = h.name if h.player else (h.name, round(h.pos[0], 1), round(h.pos[1], 1), round(h.pos[2], 1))
+        key = h.uuid or (h.name if h.player else (h.name, round(h.pos[0], 1), round(h.pos[1], 1), round(h.pos[2], 1)))
         if key in seen:
             continue                    # listed twice: moved once
         seen.add(key)
@@ -495,15 +514,18 @@ def push(hits, frm, v):
 
 def _push_mob(h, ux, uz, s, way):
     """Throw a mob: about 5 blocks of flight and slide for each 1 of horizontal Motion, with a
-    hop of 0.4 so it leaves the ground; straight up, a Motion of sqrt(height / 5.4)."""
-    if way == "up":
+    hop of 0.4 so it leaves the ground; straight up, a Motion of sqrt(height / 5.4). A
+    projectile found by its uuid flies straight on its new heading, no hop."""
+    if h.uuid:
+        k = s / 5.0
+        motion = (0.0, k, 0.0) if way == "up" else (ux * k, 0.1, uz * k)
+    elif way == "up":
         motion = (0.0, math.sqrt(s / 5.4), 0.0)
     else:
         motion = (ux * s / 5.0, 0.4, uz * s / 5.0)
-    x, y, z = h.pos[:3]
-    mob = exclude.mobs("distance=..1.5,sort=nearest,limit=1")        # found again where it was
-    reply = mc.rcon(world.prefix(world.dim(h.pos)) + "positioned %.3f %.3f %.3f %s run data modify entity @s "
-                    "Motion set value [%.3fd,%.3fd,%.3fd]" % ((x, y, z, mob) + motion))
+    reply = aim.run_on(h, "data modify entity @s Motion set value [%.3fd,%.3fd,%.3fd]" % motion)
+    if h.uuid:
+        mc.rcon("tag %s add %s" % (h.uuid, mc.TAG))
     return 1 if "Modified" in reply else 0
 
 
@@ -594,22 +616,29 @@ def chest(p, v):
     return False
 
 
-def fires(w, v):
-    """Wait for one weapon to fire, and do what it does there, until the script stops."""
+def clicks(w, v):
+    """Wait for one click weapon's right-clicks, and do what it does where they look."""
     name, color, base, how, what = w[:5]
-    if how == "click":
-        for p in loop(items.clicks(v["player"], name, cooldown=v["cooldown"], give="never", color=color, model=base)):
-            r = aim.ray(p, v["range"])
-            if r:
-                WHAT[what](r.end, p, v)
-    else:
-        for at, p in loop(projectile_lands(v["player"], v, named=name, kind="arrow" if base == "bow" else "trident")):
-            WHAT[what](at, p, v)
+    for p in loop(items.clicks(v["player"], name, cooldown=v["cooldown"], give="never", color=color, model=base)):
+        r = aim.ray(p, v["range"])
+        if r:
+            WHAT[what](r.end, p, v)
+
+
+def lands(v):
+    """Every arrow and trident from the chest's weapons (projectile_lands_named), each doing
+    what its weapon does where it lands."""
+    what = dict((items.item_id(w[0]), w[4]) for w in WEAPONS if w[3] == "lands")
+    for at, p, weapon in loop(projectile_lands(v["player"], v)):
+        if weapon in what:
+            WHAT[what[weapon]](at, p, v)
 
 
 v = values(VALUES)
 for w in WEAPONS:
-    loop.background(fires, w, v)
+    if w[3] == "click":
+        loop.background(clicks, w, v)
+loop.background(lands, v)
 done = set()                    # who has a chest beside them: "all" for one chest for everyone
 for _ in loop(every=2):
     for p in loop.who(v["player"]):

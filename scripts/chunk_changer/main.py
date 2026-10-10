@@ -35,25 +35,25 @@ _REPLACE_BLOCKS_SOLID = ["#minecraft:mineable/pickaxe", "#minecraft:mineable/axe
                          "#minecraft:mineable/hoe", "#minecraft:wool"]
 # A weight ("70%") or a block (with its [states] and {nbt}), between spaces and commas.
 _REPLACE_BLOCKS_WORD = re.compile(r"(\d+(?:\.\d+)?)%|([^\s,%\[{]+(?:\[[^\]]*\])?(?:\{[^}]*\})?)")
-
-
 _replace_blocks_known = {}      # block id or #tag -> True when this server takes it
 _replace_blocks_said = set()    # rules refused and said so once
 
 
-def replace_blocks(where, v):
-    """Apply every rule in replace_rules, in order, to `where`: a box (world.Box, as area.box,
-    under_feet and enters_chunk give), a place (the box replace_radius round it), or a list of
-    them (a ray's path: r.every(3)). A rule is "<from ...> > <to>": from is block ids, #tags or
-    solid; to is a block or a mix, "70% netherrack, 30% magma_block", where keep leaves the
-    block as it was. One block fills in big pieces; a mix, or replace_rate under 100 (the share
-    of cells that change), picks per cube of replace_cell blocks, the same pick at the same
-    place every time. Blocks change without updating their neighbours (strict), so water
-    turned to lava stays lava, sand stays put and nothing drops. Protected boxes and the
-    bedrock floor are left alone, and a player the change left inside a block is lifted out.
-    Returns how many blocks changed."""
+def replace_blocks(where, v, *, rules=None):
+    """Apply every rule in replace_rules (or `rules`, given for this call), in order, to `where`: a
+    box (world.Box, as area.box, under_feet and enters_chunk give), a place (the box
+    replace_radius round it), or a list of them (a ray's path: r.every(3)). A rule is
+    "<from ...> > <to>": from is block ids, #tags or solid; to is a block or a mix, "70% netherrack,
+    30% magma_block", where keep leaves the block as it was. One block fills in big pieces; a
+    mix, or replace_rate under 100 (the share of cells that change), picks per cube of
+    replace_cell blocks, the same pick at the same place every time. Blocks change without
+    updating their neighbours (strict), so water turned to lava stays lava, sand stays put and
+    nothing drops. Protected boxes and the bedrock floor are left alone, and a player the change
+    left inside a block is lifted out. On 26.3 #minecraft:dirt is only dirt, coarse_dirt and
+    rooted_dirt: name grass_block, podzol, mycelium, mud and the rest, or say solid. Returns how
+    many blocks changed."""
     boxes = _replace_blocks_boxes(where, v["replace_radius"])
-    rules = [r for r in (_replace_blocks_rule(t) for t in _replace_blocks_texts(v["replace_rules"])) if r]
+    rules = [r for r in (_replace_blocks_rule(t) for t in _replace_blocks_texts(rules or v["replace_rules"])) if r]
     loaded, n = {}, 0               # per dimension: which chunks are loaded, asked once
     for b in boxes:
         seen = loaded.setdefault(world.dim(b), {})
@@ -170,8 +170,11 @@ def enters_chunk(player, v):
     enters_dims names. A chunk is done once for as long as the script runs.
 
         for p, box in loop(enters_chunk(v["player"], v)):
-            replace_blocks(box, v)
-    """
+            todo.put(box)           # a queue.Queue that a loop.background worker empties
+
+    Nobody is looked at while the loop's body runs, so a slow change (seconds, with a mix)
+    done in the loop itself misses the chunks walked through meanwhile: hand it to a worker,
+    as chunk_changer does."""
     done = set()
     while not mc.stopping():
         for p in loop.who(player):

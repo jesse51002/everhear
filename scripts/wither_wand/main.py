@@ -1,5 +1,6 @@
 """Wither Wand: right-click to summon withers where you look, with mob griefing off while any of them lives."""
-ASKS = ["can you give me a wand that wherever I right click spawns five withers"]
+ASKS = ["can you give me a wand that wherever I right click spawns five withers", "spawn withers where I look",
+        "a wand that summons mobs wherever I right click", "summon zombies where I point", "a summoning staff"]
 from kit import values, items, aim, fx, loop, mobs, world
 import json
 import mc
@@ -26,15 +27,14 @@ VALUES = {
 # --- preset: summon (copied from _presets/summon.py) ---
 def summon(at, v):
     """summon_count of summon_mob round `at` (a player's name, a player value such as "@a" or
-    "Steve,Alex" for round each of them, or a place), at safe spots summon_spread blocks out:
-    standing room on solid ground, never on top of anyone. summon_scale sizes them;
+    "Steve,Alex" for round each of them, or a place, in its dimension), at safe spots:
+    standing room on solid ground, round a player summon_spread blocks out and never on top
+    of them, round a place anywhere within summon_spread of it. summon_scale sizes them;
     summon_health (0: their own) sets their health; summon_gear a full suit of that armour and
     summon_weapon an item in hand, neither dropped; summon_name a name over their heads;
     summon_glow shows them through walls; summon_nbt is more NBT ("IsBaby:1b"). Never more
     than summon_cap of this script's alive at once. They are tagged TAG_summon, and a stop
-    kills them. Returns how many it summoned. (Bent here: a place goes to mobs.around as it
-    is, which puts them within summon_spread of it, where the marker the preset uses kept
-    them 7 or more blocks off.)"""
+    kills them. Returns how many it summoned."""
     tag = mc.TAG + "_summon"
     spots = loop.who(at) if isinstance(at, str) else [at]
     got = 0

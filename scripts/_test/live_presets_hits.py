@@ -123,6 +123,29 @@ class Live(unittest.TestCase):
         self.assertEqual(mc.rcon("forceload query"), self.forced, "a forceload was left behind")
 
 
+class LiveHostile(Live):
+    def test_hostile_mobs_only_and_a_tag_left_from_before_spares_nobody(self):
+        z = -20.5
+        platform(-30, -24, 10, -17)
+        shooter = eye(-27.5, SKY, z)
+        husk = summon("husk", -21.5, SKY, z)
+        cow = summon("cow", -18.5, SKY, z)
+        creeper = summon("creeper", -15.5, SKY, z, ",ExplosionRadius:0b")
+        import itertools
+        damage_preset._DAMAGE_N = itertools.count(1)
+        mc.rcon("tag %s add vfg_livehits_hit1" % creeper)   # as an earlier process leaves on one it killed mid-shot
+        r = aim.ray(aim.look(shooter), 30)
+        hits = aim.near_line(r, 1.5, with_players=False)
+        self.assertEqual(len(hits), 3, hits)
+        n = damage_preset.damage_hits(hits, "", vals(damage_preset, damage_amount=10, damage_what="hostile",
+                                                     damage_type="magic"))
+        self.assertEqual(n, 2)
+        self.assertEqual((health(husk), health(cow), health(creeper)), (90.0, 100.0, 90.0))
+        got = around_preset.around((-18.5, SKY, z), vals(around_preset, around_radius=6, around_what="hostile"))
+        self.assertEqual(len(got), 2, got)
+        self.assertEqual(leftover_tags(), [])
+
+
 class LiveDamage(Live):
     def test_once_each_sparing_pets_villagers_and_the_spared(self):
         z = -20.5

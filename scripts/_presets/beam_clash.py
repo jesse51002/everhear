@@ -1,4 +1,4 @@
-"""A clash between two beams fired at each other: they meet, the point where they meet moves toward the weaker one, and it explodes there."""
+"""Two beams fired at each other clash, as in the anime: they meet, the shooters mash right-click to push, the point moves toward the weaker one and explodes there."""
 import fcntl
 import json
 import math

@@ -129,6 +129,12 @@ class ShowWorld(World):
                 return "%s has the following entity data: [%rd, %rd, %rd]" % ((e["name"],) + tuple(e["pos"]))
             if rest in ("inGround", "DealtDamage"):
                 return "%s has the following entity data: %db" % (e["name"], e["in_ground" if rest == "inGround" else "dealt"])
+            if rest.endswith('.components."minecraft:custom_data".vfg_item'):
+                if not e.get("weapon"):
+                    return "Found no elements matching %s" % rest
+                return '%s has the following entity data: "%s"' % (e["name"], e["weapon"])
+            if rest == "life":
+                return "%s has the following entity data: %ds" % (e["name"], e.get("life", 0) if e["in_ground"] else 0)
             return ""
         m = re.match(r"tag @e\[tag=(\w+)\] remove (\w+)$", cmd)
         if m:
@@ -263,6 +269,20 @@ class ThemeMusicTests(ShowCase):
         theme_mod.theme_music("Steve", vals(theme_mod, "theme_tune=galick_gun", "theme_to=everyone"))
         self.assertIn("stopsound @a * minecraft:music_disc.pigstep", self.world.commands)
 
+    def test_another_tune_for_one_call_none_and_a_loop(self):
+        took = theme_mod.theme_music("Steve", vals(theme_mod, "theme_tune=spirit_bomb"), tune="spirit_bomb_throw")
+        self.assertEqual(took, 1.4)
+        self.assertTrue(wait_for(lambda: len(self.sounds()) == 11, 3))
+        self.assertEqual(theme_mod.theme_music("Steve", vals(theme_mod, "theme_tune=none")), 0)
+        del self.world.commands[:]
+        theme_mod.theme_music("Steve", vals(theme_mod, "theme_tune=spirit_bomb_throw", "theme_loop=true"))
+        self.assertTrue(wait_for(lambda: len(self.sounds()) >= 22, 4), len(self.sounds()))      # it came round again
+        theme_mod.theme_music("Steve", vals(theme_mod), tune="none")                              # and is cut off
+        time.sleep(0.2)
+        n = len(self.sounds())
+        time.sleep(1.8)
+        self.assertEqual(len(self.sounds()), n)
+
     def test_at_a_place_for_the_player_alone_falls_back_to_near(self):
         theme_mod.theme_music(world.Pos(1, 70, 2, "minecraft:the_nether"),
                               vals(theme_mod, "theme_tune=spirit_bomb_throw", "theme_to=player"))
@@ -299,6 +319,13 @@ class ChargeUpTests(ShowCase):
         pitches = [float(c.split()[-1]) for c in self.world.commands if "block.amethyst_block.chime" in c]
         self.assertEqual(pitches, sorted(pitches))                                  # it rises
         self.assertGreater(pitches[-1], pitches[0])
+
+    def test_two_orbs_in_two_colours(self):
+        blue, red = "dust{color:[0.2,0.4,1.0],scale:1.6}", "dust{color:[1.0,0.1,0.1],scale:1.6}"
+        charge_mod.charge_up("Steve", vals(charge_mod, "charge_style=orbs", "charge_seconds=0.3",
+                                           'charge_orbs=["%s", "%s"]' % (blue, red)))
+        p = self.particles()
+        self.assertTrue([c for c in p if blue in c] and [c for c in p if red in c])
 
     def test_an_aura_drawn_where_the_player_stands(self):
         at = charge_mod.charge_up("Steve", vals(charge_mod, "charge_style=aura", "charge_seconds=0.4"))
@@ -408,8 +435,8 @@ class ProjectileLandsTests(ShowCase):
         self.assertEqual(got, [])
         arrow["in_ground"] = True
         self.assertTrue(wait_for(lambda: got, 2))
-        (at, p), _ = got[0]
-        self.assertEqual((p, tuple(at), at.dim), ("Steve", (30.0, 64.2, -3.5), None))
+        (at, p, weapon), _ = got[0]
+        self.assertEqual((p, tuple(at), at.dim, weapon), ("Steve", (30.0, 64.2, -3.5), None, ""))
         time.sleep(0.4)
         self.assertEqual(len(got), 1)                                   # once
         self.assertIn("vfg_%s_seen" % mc.INSTANCE, arrow["tags"])
@@ -425,14 +452,14 @@ class ProjectileLandsTests(ShowCase):
         tri["dealt"] = True
         self.world.entities.remove(arrow)                               # it hit a mob: gone
         self.assertTrue(wait_for(lambda: len(got) == 2, 2))
-        spots = sorted(tuple(round(c, 1) for c in at) for (at, p), _ in got)
+        spots = sorted(tuple(round(c, 1) for c in at) for (at, p, weapon), _ in got)
         self.assertEqual(spots[0], (12.0, 66.0, -3.5))
         x, y, z = spots[1]                                              # a little past where it was last seen
         self.assertTrue(24.0 < x <= 30.0 and (y, z) == (66.0, -3.5), spots)
 
     def test_only_the_named_weapon_and_a_cooldown_and_removed_where_it_lands(self):
-        got = self.start("projectile_named=Spear Bomb", "projectile_cooldown=5", "projectile_remove=true",
-                         "projectile_kind=trident")
+        got = self.start("projectile_lands_named=Spear Bomb", "projectile_lands_cooldown=5",
+                         "projectile_lands_remove=true", "projectile_lands_kind=trident")
         plain = self.world.projectile("trident", [12.0, 66.0, -3.5], "Steve")
         bomb = self.world.projectile("trident", [12.0, 66.0, -2.5], "Steve", weapon="spear_bomb")
         dud = self.world.projectile("trident", [12.0, 66.0, -1.5], "Steve", weapon="spear_bomb")
@@ -443,13 +470,34 @@ class ProjectileLandsTests(ShowCase):
         self.assertTrue(wait_for(lambda: got, 2))
         dud["in_ground"] = True
         time.sleep(0.5)
-        self.assertEqual([tuple(at) for (at, p), _ in got], [(12.0, 66.0, -2.5)])
+        self.assertEqual([(tuple(at), weapon) for (at, p, weapon), _ in got], [((12.0, 66.0, -2.5), "spear_bomb")])
         self.assertNotIn(bomb, self.world.entities)                     # removed
         self.assertIn(dud, self.world.entities)                         # too soon: it lands as it is
         self.assertIn(plain, self.world.entities)
-        self.assertTrue([c for c in self.world.commands if 'nbt={item:{components:{"minecraft:custom_data":'
-                                                                  '{vfg_item:"spear_bomb"}}}}' in c])
+        self.assertTrue([c for c in self.world.commands if c.endswith('item.components."minecraft:custom_data".vfg_item')])
         self.assertFalse([c for c in self.world.commands if "#minecraft:arrows" in c])
+
+    def test_several_named_weapons_in_one_and_which_it_was(self):
+        got = self.start("projectile_lands_named=[\"Boom Bow\", \"Spear Bomb\"]")
+        bow = self.world.projectile("arrow", [12.0, 66.0, -3.5], "Steve", weapon="boom_bow")
+        spear = self.world.projectile("trident", [12.0, 66.0, -2.5], "Steve", weapon="spear_bomb")
+        plain = self.world.projectile("arrow", [12.0, 66.0, -1.5], "Steve")
+        time.sleep(0.4)
+        for e in (bow, spear, plain):
+            e["in_ground"] = True
+        self.assertTrue(wait_for(lambda: len(got) == 2, 2))
+        time.sleep(0.3)
+        self.assertEqual(sorted(weapon for (at, p, weapon), _ in got), ["boom_bow", "spear_bomb"])
+
+    def test_one_lying_in_the_ground_from_before_is_left_alone(self):
+        old = self.world.projectile("arrow", [12.0, 66.0, -3.5], "Steve")
+        old.update(in_ground=True, life=600)                            # shot half a minute before it started
+        got = self.start()
+        new = self.world.projectile("arrow", [12.0, 66.0, -2.5], "Steve")
+        new.update(in_ground=True, life=2)                              # a point-blank shot, down at once
+        self.assertTrue(wait_for(lambda: got, 2))
+        time.sleep(0.4)
+        self.assertEqual([tuple(at) for (at, p, weapon), _ in got], [(12.0, 66.0, -2.5)])
 
     def test_nobody_online_asks_nothing(self):
         del self.world.players["Steve"]

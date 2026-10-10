@@ -11,6 +11,7 @@ Python 3.9, standard library only. Seeded from the old rcon.py and demon.py.
 The RCON password is read from server.properties on first use and kept only in
 memory: it is never printed, logged or written.
 """
+import atexit
 import fcntl
 import json
 import math
@@ -40,6 +41,9 @@ TIMEOUT = 10.0
 MAX_COMMAND = 1446
 # On SIGTERM every cleanup has this long, so a script is gone within 2 s.
 STOP_BUDGET = 1.5
+# A script that ends by itself waits this long before its cleanup, so a blast it just set off
+# (fuse 0: the next tick) goes off before everything tagged with it is killed.
+EXIT_GRACE = 0.4
 # The server answers every RCON connection from one shared buffer, so two clients sending at
 # once get each other's output glued into their replies. Every command therefore holds this
 # lock file (flock) from send to reply, across every process on the machine; anything else
@@ -464,14 +468,8 @@ def spawn(player, mob, nbt="", spread=6, y=1, tags=()) -> bool:
     return False
 
 
-def _on_signal(signum, frame) -> None:
-    if _stopping.is_set():
-        return
-    _stop["thread"] = threading.get_ident()
-    _stop["deadline"] = time.time() + STOP_BUDGET
-    _stopping.set()
-    _flock.release()   # this thread may have been stopped holding it
-    log("stopping (signal %d)" % signum)
+def _clean_up() -> None:
+    """Every on_stop cleanup, newest first, then everything tagged TAG, within the budget."""
     for fn in reversed(list(_stoppers)):
         try:
             fn()
@@ -481,6 +479,17 @@ def _on_signal(signum, frame) -> None:
     _stop["deadline"] = max(_stop["deadline"], time.time() + 0.3)
     rcon("kill @e[tag=%s]" % TAG)
     log("stopped")
+
+
+def _on_signal(signum, frame) -> None:
+    if _stopping.is_set():
+        return
+    _stop["thread"] = threading.get_ident()
+    _stop["deadline"] = time.time() + STOP_BUDGET
+    _stopping.set()
+    _flock.release()   # this thread may have been stopped holding it
+    log("stopping (signal %d)" % signum)
+    _clean_up()
     try:
         sys.stdout.flush()
         sys.stderr.flush()
@@ -489,13 +498,32 @@ def _on_signal(signum, frame) -> None:
     os._exit(0)
 
 
+def _on_exit() -> None:
+    """A script that ends by itself (its main.py returns, exits or fails) cleans up as a
+    stopped one does: the shells a freeze put up melt, items given come back, a gamerule goes
+    back, and everything tagged TAG goes. Only for a script (main.py), never for a test that
+    imports mc."""
+    if _stopping.is_set() or os.path.basename(sys.argv[0] or "") != "main.py":
+        return
+    _stop["thread"] = threading.get_ident()
+    _stopping.set()
+    log("ended by itself, cleaning up")
+    # What it set off last goes off first: TNT or a creeper with no fuse explodes on the next
+    # tick, a bolt strikes, and the kill of everything tagged TAG would take them first.
+    time.sleep(EXIT_GRACE)
+    _stop["deadline"] = time.time() + STOP_BUDGET
+    _clean_up()
+
+
 def on_stop(fn) -> None:
-    """Run fn when the script is stopped (SIGTERM or SIGINT). Every fn runs, newest
-    first; then everything tagged TAG is killed and the script exits 0. Other threads'
-    commands are dropped from then on, and the whole stop takes at most STOP_BUDGET s."""
+    """Run fn when the script is stopped (SIGTERM or SIGINT), or ends by itself. Every fn
+    runs, newest first; then everything tagged TAG is killed (and a stopped script exits 0).
+    Other threads' commands are dropped from then on, and the whole stop takes at most
+    STOP_BUDGET s."""
     _stoppers.append(fn)
 
 
+atexit.register(_on_exit)
 if threading.current_thread() is threading.main_thread():
     signal.signal(signal.SIGTERM, _on_signal)
     signal.signal(signal.SIGINT, _on_signal)

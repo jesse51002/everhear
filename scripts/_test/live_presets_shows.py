@@ -313,8 +313,9 @@ class LiveWithPlayers(Live):
         mc.rcon('summon arrow %.2f %.2f %.2f {Owner:[I;%s],Motion:[0.0,0.4,0.7],Tags:["%s"]}'
                 % ((x, y + 1.6, z + 1.0) + (",".join(uuid), TAG)))
         self.assertTrue(wait_for(lambda: got, 6), "never landed")
-        at, p = got[0]
+        at, p, weapon = got[0]
         print("\n  Steve's arrow landed at %s" % (at,))
+        self.assertEqual(weapon, "")
         self.assertEqual(p, "Steve")
         self.assertGreater(at[2], z + 1.0)
         self.assertUnderstood()
@@ -323,8 +324,8 @@ class LiveWithPlayers(Live):
         mc.rcon('give Steve bow[custom_data={vfg_item:"boom_bow"}]')         # hotbar 1
         mc.rcon("give Steve arrow 16")                                        # hotbar 2
         mc.rcon("give Steve bow")                                             # hotbar 3
-        got = collect(proj_mod.projectile_lands("@a", vals(proj_mod, "projectile_named=Boom Bow",
-                                                           "projectile_kind=arrow")))
+        got = collect(proj_mod.projectile_lands("@a", vals(proj_mod, "projectile_lands_named=Boom Bow",
+                                                           "projectile_lands_kind=arrow")))
         x, y, z = PLAYERS.pos("Steve")
         for slot in (1, 3):
             PLAYERS.hotbar("Steve", slot)
@@ -335,11 +336,34 @@ class LiveWithPlayers(Live):
             PLAYERS.stop("Steve")
             time.sleep(2.5)
         self.assertEqual(len(got), 1, got)
-        at, p = got[0]
+        at, p, weapon = got[0]
         print("\n  the Boom Bow's arrow landed at %s; the plain bow's did not count" % (at,))
-        self.assertEqual(p, "Steve")
+        self.assertEqual((p, weapon), ("Steve", "boom_bow"))
         self.assertGreater(at[2], z + 5)                                      # yaw 0 is +z: in the hill past the arena
         mc.rcon("kill @e[type=arrow,distance=..80,x=%d,y=%d,z=%d]" % (x, y, z))
+        self.assertUnderstood()
+
+    def test_an_arrow_lying_in_the_ground_from_before_is_left_alone(self):
+        mc.rcon("clear Steve")
+        mc.rcon("give Steve bow")
+        mc.rcon("give Steve arrow 16")
+        PLAYERS.hotbar("Steve", 1)
+        PLAYERS.look("Steve", 0, 20)                                          # into the floor, 4 blocks off
+        time.sleep(0.3)
+        PLAYERS.use_continuous("Steve")
+        time.sleep(1.2)
+        PLAYERS.stop("Steve")
+        time.sleep(3.0)                                                       # it lies there 3 s before anyone watches
+        self.assertIn("passed", mc.rcon("execute if entity @e[type=arrow,nbt={inGround:1b}]").lower())
+        got = collect(proj_mod.projectile_lands("@a", vals(proj_mod, "projectile_lands_kind=arrow")))
+        time.sleep(1.5)
+        self.assertEqual(got, [], "it acted on an arrow that was there before it started")
+        PLAYERS.use_continuous("Steve")                                       # a new one, down at once
+        time.sleep(1.2)
+        PLAYERS.stop("Steve")
+        self.assertTrue(wait_for(lambda: got, 4), "the new arrow was not seen")
+        x, y, z = PLAYERS.pos("Steve")
+        mc.rcon("kill @e[type=arrow,distance=..40,x=%d,y=%d,z=%d]" % (x, y, z))
         self.assertUnderstood()
 
     def test_steve_throws_a_trident_into_a_mob(self):
@@ -347,15 +371,15 @@ class LiveWithPlayers(Live):
         mc.rcon('summon zombie %.1f %.1f %.1f {Tags:["%s"],NoAI:1b,PersistenceRequired:1b,'
                 'attributes:[{id:"max_health",base:200}],Health:200f}' % (x, y, z + 8, TAG))
         mc.rcon("give Steve trident")
-        got = collect(proj_mod.projectile_lands("Steve", vals(proj_mod, "projectile_kind=trident",
-                                                              "projectile_remove=true")))
+        got = collect(proj_mod.projectile_lands("Steve", vals(proj_mod, "projectile_lands_kind=trident",
+                                                              "projectile_lands_remove=true")))
         PLAYERS.look_at("Steve", x, y + 1.2, z + 8)
         time.sleep(0.3)
         PLAYERS.use_continuous("Steve")
         time.sleep(1.0)
         PLAYERS.stop("Steve")
         self.assertTrue(wait_for(lambda: got, 4), "the trident never came down")
-        at, p = got[0]
+        at, p, weapon = got[0]
         print("\n  Steve's trident hit the zombie at %s" % (at,))
         self.assertEqual(p, "Steve")
         self.assertLess(abs(at[2] - (z + 8)), 2.5)
@@ -501,7 +525,7 @@ class LiveStops(unittest.TestCase):
                           lambda: True, "theme_tune=boss", "theme_to=everyone")
 
     def test_projectiles_watched_then_stopped(self):
-        self.run_and_stop("psproj", "projectile_lands", 'for at, p in loop(projectile_lands(v["player"], v)):\n    pass',
+        self.run_and_stop("psproj", "projectile_lands", 'for at, p, weapon in loop(projectile_lands(v["player"], v)):\n    pass',
                           lambda: True)
         self.assertNotIn("passed", mc.rcon("execute if entity @e[tag=vfg_psproj_seen]").lower())
 

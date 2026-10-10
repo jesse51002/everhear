@@ -1,4 +1,4 @@
-"""Acts when a player stays within a few blocks of one spot for too long."""
+"""When a player camps: stays within a few blocks of one spot for too long (anti-camping), with a warning first."""
 import math
 import time
 

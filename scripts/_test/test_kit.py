@@ -649,6 +649,76 @@ class ExcludeTests(KitCase):
         self.assertIn("name=!Steve", exclude.players("[Owner] Steve"))
 
 
+class KitPolishTests(KitCase):
+    """What the polish pass added: crouching eyes, hits found by uuid, tags taken off first,
+    hostile mobs only, the ground's height, @p, and a boss that knows its dimension."""
+
+    def test_a_look_from_crouching_eyes_when_they_crouch(self):
+        self.assertAlmostEqual(aim.look("Steve", eyes="auto").origin[1], 64.0 + aim.EYES)
+        self.world.players["Steve"]["sneaking"] = True
+        self.assertAlmostEqual(aim.look("Steve", eyes="auto").origin[1], 64.0 + aim.SNEAK_EYES)
+        self.assertAlmostEqual(aim.look("Steve").origin[1], 64.0 + aim.EYES)      # the default asks nothing more
+
+    def test_a_tag_left_on_a_player_is_taken_off_before_marking(self):
+        self.world.add_player("Alex", (12.5, 64.0, -3.5))
+        self.world.players["Alex"]["tags"].add("vfg_t_hit1")           # killed while tagged, by an earlier run
+        hit = aim.Hit(2.0, world.Pos(12.5, 64.0, -3.5), "Alex", True)
+        self.assertEqual(aim.mark([hit], "vfg_t_hit1"), 1)               # newly tagged, so he is hurt
+        self.assertTrue(self.sent("tag @a[tag=vfg_t_hit1] remove vfg_t_hit1"))
+        aim.untag("vfg_t_hit1")
+        self.assertNotIn("vfg_t_hit1", self.world.players["Alex"]["tags"])
+
+    def test_a_hit_with_a_uuid_is_found_by_it(self):
+        u = "00000001-0000-0002-0000-0003ffffffff"
+        hit = aim.Hit(1.0, world.Pos(1, 64, 1), "Arrow", False, u)
+        aim.mark([hit], "vfg_t_x")
+        aim.run_on(hit, "say hi")
+        self.assertIn("tag %s add vfg_t_x" % u, self.world.commands)
+        self.assertIn("execute as %s at @s run say hi" % u, self.world.commands)
+        self.assertIsNone(aim.Hit(1.0, world.Pos(1, 64, 1), "Zombie", False).uuid)
+
+    def test_hostile_mobs_only_never_an_animal(self):
+        self.world.add_entity("zombie", (20.5, 64.0, 0.5))
+        self.world.add_entity("cow", (21.5, 64.0, 0.5))
+        self.world.add_entity("creeper", (22.5, 64.0, 0.5))
+        hits = aim.near(world.Pos(21.5, 64.0, 0.5), 4, hostile=True)
+        self.assertEqual(sorted(h.name for h in hits), ["Creeper", "Zombie"])
+        frag = exclude.mobs("distance=..4", hostile=True)
+        self.assertIn("type=!cow", frag)
+        self.assertNotIn("type=!zombie", frag)
+        self.assertFalse(set(exclude.PEACEFUL_TYPES) & set(exclude.HOSTILE_TYPES))
+        longest = "execute positioned 1000.00 64.00 -1000.00 %s run data get entity @s Pos" % exclude.mobs(
+            "distance=..30.0", spare=["Steve", "Alex", "Sam"], hostile=True)
+        self.assertLess(len(longest), mc.MAX_COMMAND - 200)
+        self.assertEqual(aim.near(world.Pos(21.5, 64.0, 0.5), 4, with_mobs=False), [])
+
+    def test_the_ground_height_in_two_commands(self):
+        self.assertEqual(world.ground(10, -3), 64)
+        self.world.solid.add((world.OVERWORLD, 10, 70, -3))
+        self.assertEqual(world.ground(10.7, -2.2), 71)
+        self.assertEqual([e for e in self.world.entities if e["type"] == "marker"], [])     # killed after
+        self.world.unloaded.add((world.OVERWORLD, 6, 6))
+        self.assertIsNone(world.ground(100, 100))
+
+    def test_at_p_is_the_owner_when_online_else_the_first(self):
+        self.assertEqual(values.check("player", {"type": "player", "default": "@a"}, "@p"), ("@p", ""))
+        self.world.add_player("Alex", (1, 64, 1))
+        self.assertEqual(loop.who("@p"), [loop.online()[0]])
+        old, mc.OWNER = mc.OWNER, "Alex"
+        try:
+            self.assertEqual(loop.who("@p"), ["Alex"])
+        finally:
+            mc.OWNER = old
+
+    def test_a_boss_knows_its_dimension(self):
+        b = mobs.Boss("Ice Queen", "stray", health=50)
+        b.spawn(near=world.Pos(0.5, 64, 0.5, "minecraft:the_nether"), spread=3)
+        self.assertEqual(b.dim, "minecraft:the_nether")
+        c = mobs.Boss("Horde King", "zombie", health=50)
+        c.spawn(near="Steve")
+        self.assertIsNone(c.dim)
+
+
 # ---- scripts: two at once, and a stop ------------------------------------------------------
 
 def start_script(name, source, fake, password, instance=None, run_dir=None):
@@ -757,6 +827,35 @@ for p in loop(items.clicks(v["player"], "Probe Wand", every=0.05)):
         self.assertEqual([e for e in self.world.entities if "vfg_probe" in e["tags"]], [])
         self.assertEqual(self.world.clears, [("Steve", '*[custom_data~{vfg_item:"probe_wand"}]')])
         self.assertEqual(self.world.commands[-1], "kill @e[tag=vfg_probe]")
+
+    def test_a_script_that_ends_by_itself_cleans_up_as_a_stopped_one(self):
+        self.world.gamerules["mob_griefing"] = "false"
+        src = '''"""Probe: makes what the kit cleans up, then ends."""
+ASKS = []
+from kit import values, area, mobs, world
+import mc
+VALUES = {"player": {"type": "player", "default": "Steve"}}
+v = values(VALUES)
+world.gamerule("mob_griefing", True)
+world.objective("dummy", "kills")
+area.forceload((0, 0, 0, 40, 0, 40), wait=0)
+mobs.Boss("Horde King", "zombie", health=800).spawn(near="Steve")
+mobs.around("Steve", "zombie", 2)
+mc.on_stop(lambda: mc.log("own cleanup ran"))
+mc.log("done")
+'''
+        proc = start_script("ender", src, self.fake, self.password)
+        self.procs.append(proc)
+        out = proc.communicate(timeout=8)[0].decode()
+        self.assertEqual(proc.returncode, 0, out)
+        self.assertNotIn("Traceback", out)
+        self.assertIn("ended by itself", out)
+        self.assertIn("own cleanup ran", out)
+        self.assertEqual(self.world.bossbars, {})
+        self.assertEqual(self.world.forced, set())
+        self.assertEqual(self.world.gamerules["mob_griefing"], "false")
+        self.assertNotIn("vfg_ender_kills", self.world.objectives)
+        self.assertEqual([e for e in self.world.entities if "vfg_ender" in e["tags"]], [])
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""When a player sneaks: on every pass while they crouch, on each tap of the key, or on three quick taps."""
+"""When a player crouches (sneaks): while they hold it, on each tap, or on three quick taps (crouch three times), with an item in hand or not."""
 import time
 
 import mc
@@ -22,7 +22,7 @@ def sneak(player, v):
             ...
     """
     stat = items.Stat(*items.SNEAK)     # this generator's own look at the shared sneak_time objective
-    down, taps, scored = {}, {}, set()  # per player: crouched at the last look; when their taps came
+    down, taps = {}, {}                 # per player: crouched at the last look; when their taps came
     while not mc.stopping():
         people = loop.who(player)
         if not people:
@@ -34,11 +34,6 @@ def sneak(player, v):
         name = v["sneak_item"]
         hold = "if items entity @s weapon.* %s" % items.match(name) if name else ""
         got, now, mode, due = stat.changes(hold), time.time(), v["sneak_mode"], []
-        if not scored.issuperset(people):
-            # Everyone gets a score (adding 0 changes none): a player with none yet makes
-            # items.Stat misread the name after theirs in the same reply.
-            mc.rcon("scoreboard players add @a %s 0" % stat.objective)
-            scored.update(people)
         for p in people:
             crouched, was = got.get(p, 0) > 0, down.get(p, False)
             down[p] = crouched

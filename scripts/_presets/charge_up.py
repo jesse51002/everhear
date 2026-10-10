@@ -1,4 +1,4 @@
-"""Charge up before what comes next: a sphere growing overhead, two orbs meeting at the hands, or an aura, for a few seconds."""
+"""A charge-up animation before a power fires: a sphere of light growing overhead, two orbs meeting at the hands, or an aura round the body, for a few seconds, any colour and size."""
 import math
 import random
 import time
@@ -10,6 +10,7 @@ VALUES = {
     "charge_seconds": {"type": "number", "min": 0.2, "max": 15, "default": 3, "live": True},
     "charge_particle": {"type": "particle", "default": "dust{color:[0.3,0.7,1.0],scale:2.5}", "live": True},
     "charge_size": {"type": "number", "min": 1, "max": 30, "default": 6, "live": True},
+    "charge_orbs": {"type": "list", "of": "particle", "default": [], "live": True},
 }
 
 
@@ -17,8 +18,10 @@ def charge_up(player, v):
     """Show a charge on a player for charge_seconds, the sound rising with it, then return
     where it ended: a Pos at the sphere's middle, where the orbs met, or the player's chest;
     None if the player could not be read (gone offline). charge_size is how big it gets:
-    the sphere's radius, how far apart the orbs start, how far the aura reaches. It follows
-    the player as they move, and ends early if the script stops."""
+    the sphere's radius, how far apart the orbs start, how far the aura reaches. charge_orbs:
+    two particles, the right orb's and the left's (Hollow Purple's blue and red), which meet
+    in charge_particle; [] for charge_particle both. It follows the player as they move, and
+    ends early if the script stops."""
     style, size, dust = v["charge_style"], v["charge_size"], v["charge_particle"]
     seconds = v["charge_seconds"]
     lk = aim.look(player)
@@ -34,7 +37,7 @@ def charge_up(player, v):
         if style == "sphere":
             at = _charge_up_sphere(lk, size, k, dust, i)
         elif style == "orbs":
-            at = _charge_up_orbs(lk, size, k, dust, i)
+            at = _charge_up_orbs(lk, size, k, dust, i, list(v["charge_orbs"]))
         else:
             at = _charge_up_aura(player, lk, size, dust, i)
         _charge_up_sound(at, style, k, i)
@@ -66,14 +69,16 @@ def _charge_up_sphere(lk, size, k, dust, i):
     return mid
 
 
-def _charge_up_orbs(lk, size, k, dust, i):
+def _charge_up_orbs(lk, size, k, dust, i, colors=()):
     """One frame of two orbs at the player's hands closing in to meet three blocks ahead
-    (Hollow Purple's; with a small charge_size, the Galick Gun's one orb)."""
+    (Hollow Purple's; with a small charge_size, the Galick Gun's one orb), each in its own
+    colour when two are given."""
     mid = lk.ahead(3, up=-0.3)
     off = size / 2.0 * (1 - k)
-    for side, flame in ((1, "soul_fire_flame"), (-1, "flame")):
+    colors = colors[:2] if len(colors) >= 2 else [dust, dust]
+    for side, flame, color in ((1, "soul_fire_flame", colors[0]), (-1, "flame", colors[1])):
         orb = mid.moved(lk.right[0] * off * side, 0, lk.right[2] * off * side)
-        fx.particle(dust, orb, 0.25, 12)
+        fx.particle(color, orb, 0.25, 12)
         fx.particle(flame, orb, 0.2, 3)
     if k > 0.6:                                                 # met: one orb, flaring
         fx.particle(dust, mid, 0.3, 20)

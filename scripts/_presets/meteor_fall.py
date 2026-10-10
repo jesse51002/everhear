@@ -1,4 +1,4 @@
-"""A cluster of blocks falls from the sky onto a place, slantwise, burning and smoking; the script goes on where it lands."""
+"""A meteor or asteroid falls out of the sky onto a place or a player, slantwise, burning and smoking, any size and blocks; the script goes on where it lands."""
 import math
 import random
 import re
@@ -34,9 +34,11 @@ def meteor_fall(at, v):
     start = land.moved(-v["meteor_slant"] * math.cos(a), v["meteor_height"], -v["meteor_slant"] * math.sin(a))
     gap = v["meteor_size"] / 3.0            # 19 displays, a 3 x 3 x 3 cluster without its corners
     s, mix = gap * 1.35, _meteor_fall_mix(v["meteor_blocks"])
+    # 26.3 takes a display's block as its id alone, block_state:"minecraft:magma_block": a
+    # state in it, or {Name:...}, shows air, so [...] is cut off.
     for ox, oy, oz in [(x, y, z) for x in (-1, 0, 1) for y in (-1, 0, 1) for z in (-1, 0, 1) if abs(x * y * z) == 0]:
         block = random.choices([m[0] for m in mix], [m[1] for m in mix])[0].split("[")[0]
-        mc.rcon(world.run(land, 'summon block_display %.2f %.2f %.2f {block_state:{Name:"%s"},teleport_duration:2,'
+        mc.rcon(world.run(land, 'summon block_display %.2f %.2f %.2f {block_state:"%s",teleport_duration:2,'
                           'transformation:{translation:[%gf,%gf,%gf],left_rotation:[0f,0f,0f,1f],'
                           'right_rotation:[0f,0f,0f,1f],scale:[%gf,%gf,%gf]},Tags:["vfg","%s","%s"]}'
                           % (start[0] + ox * gap, start[1] + oy * gap, start[2] + oz * gap,

@@ -184,6 +184,47 @@ class LiveKitMore(unittest.TestCase):
         self.assertIn("is marked", mc.rcon("forceload query %d %d" % (X + 505, Z + 505)))
 
 
+class LiveKitPolish(unittest.TestCase):
+    """What the polish pass added, asked of the real server."""
+
+    def tearDown(self):
+        mc.rcon("kill @e[tag=vfg_kit_live]")
+        mc.rcon("fill %d %d %d %d %d %d air" % (X - 12, SKY - 2, Z - 12, X + 12, SKY + 6, Z + 12))
+
+    def test_the_ground_height(self):
+        self.assertEqual(world.ground(X, Z), FLOOR + 1)
+        mc.rcon("fill %d %d %d %d %d %d glass" % (X - 1, SKY, Z - 1, X + 1, SKY, Z + 1))
+        self.assertEqual(world.ground(X, Z), SKY + 1)
+        self.assertEqual(world.ground(X + 5, Z + 5, surface="ocean_floor"), FLOOR + 1)    # in the forceloaded arena
+        self.assertIsNone(world.ground(X + 30000, Z + 30000))                    # not loaded
+        self.assertIn("Test failed", mc.rcon("execute if entity @e[type=marker,x=%d,y=%d,z=%d,distance=..2]"
+                                             % (X, SKY + 1, Z)))
+
+    def test_hostile_only_and_marking_takes_a_left_tag_off_first(self):
+        mc.rcon("fill %d %d %d %d %d %d glass" % (X - 8, SKY, Z - 8, X + 8, SKY, Z + 8))
+        nbt = 'NoAI:1b,Tags:["vfg_kit_live"]'
+        for kind, dx in (("zombie", 0), ("cow", 1), ("skeleton", 2), ("sheep", 3), ("enderman", -1)):
+            mc.rcon("summon %s %d.5 %d %d.5 {%s}" % (kind, X + dx, SKY + 1, Z, nbt))
+        here = world.Pos(X + 0.5, SKY + 1, Z + 0.5)
+        hits = aim.near(here, 5, hostile=True)
+        self.assertEqual(sorted(h.name for h in hits), ["Enderman", "Skeleton", "Zombie"])
+        self.assertEqual(len(aim.near(here, 5)), 5)
+        mc.rcon("tag @e[tag=vfg_kit_live,type=zombie] add vfg_kit_hit")       # left from before
+        self.assertEqual(aim.mark(hits, "vfg_kit_hit", hostile=True), 3)        # the zombie counted again
+        aim.untag("vfg_kit_hit")
+        self.assertIn("Test failed", mc.rcon("execute if entity @e[tag=vfg_kit_hit]"))
+
+    def test_a_hit_found_by_its_uuid(self):
+        mc.rcon('summon armor_stand %d.5 %d %d.5 {Tags:["vfg_kit_live","vfg_kit_uuid"],NoGravity:1b}' % (X, SKY + 3, Z))
+        m = re.search(r"\[I; (-?\d+), (-?\d+), (-?\d+), (-?\d+)\]", mc.rcon("data get entity @e[tag=vfg_kit_uuid,limit=1] UUID"))
+        h = "".join("%08x" % (int(n) & 0xffffffff) for n in m.groups())
+        uuid = "%s-%s-%s-%s-%s" % (h[:8], h[8:12], h[12:16], h[16:20], h[20:])
+        hit = aim.Hit(0.0, world.Pos(X + 50, SKY, Z), "Armor Stand", False, uuid)     # far from where it is
+        self.assertEqual(aim.mark([hit], "vfg_kit_hit"), 1)
+        self.assertIn("Modified", aim.run_on(hit, "data merge entity @s {CustomName:\"found\"}"))
+        aim.untag("vfg_kit_hit")
+
+
 class LiveKit(unittest.TestCase):
     def tearDown(self):
         mc.rcon("kill @e[tag=vfg_kit_live]")
@@ -323,6 +364,33 @@ for p in loop(items.clicks(v["player"], "Probe Wand", every=0.05)):
         self.assertIn("vfg_click", mc.rcon("scoreboard objectives list"))
 
 
+    def test_a_script_that_ends_by_itself_puts_everything_back(self):
+        old = world.gamerule("mob_griefing")
+        folder = os.path.join(tempfile.mkdtemp(), "kitender")
+        os.makedirs(folder)
+        with open(os.path.join(folder, "main.py"), "w") as f:
+            f.write('''"""Probe: makes what the kit cleans up, then ends by itself."""
+ASKS = []
+from kit import values, area, mobs, world
+import mc
+v = values({"player": {"type": "player", "default": "@a"}})
+world.gamerule("mob_griefing", %s)
+world.objective("dummy", "kills")
+area.forceload((%d, 0, %d, %d, 0, %d), wait=5)
+mobs.Boss("Ender Boss", "zombie", health=40, nbt="NoAI:1b").spawn(at=(%d.5, %d, %d.5))
+mc.log("made, ending")
+''' % ("False" if old == "true" else "True", X + 300, Z + 300, X + 340, Z + 340, X, SKY + 1, Z))
+        env = dict(os.environ, PYTHONPATH=LIB, VFG_INSTANCE="kitender", VFG_RUN_DIR=tempfile.mkdtemp())
+        out = subprocess.run([sys.executable, "-u", "main.py"], cwd=folder, env=env, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, timeout=30).stdout.decode()
+        self.assertIn("ended by itself", out)
+        self.assertNotIn("Traceback", out)
+        self.assertIn("No bossbar exists", mc.rcon("bossbar get vfg:kitender_boss1 max"))
+        self.assertEqual(world.gamerule("mob_griefing"), old)
+        self.assertNotIn("vfg_kitender_kills", mc.rcon("scoreboard objectives list"))
+        self.assertIn("not marked", mc.rcon("forceload query %d %d" % (X + 320, Z + 320)))
+        self.assertIn("Test failed", mc.rcon("execute if entity @e[tag=vfg_kitender]"))
+
 REALMC = os.path.join(os.path.dirname(os.path.dirname(HERE)), "integration", "realmc")
 sys.path.insert(0, REALMC)
 try:
@@ -457,6 +525,15 @@ class LiveClicks(unittest.TestCase):
         time.sleep(0.8)
         out = self.stop(a)
         self.assertEqual(out.count("fired Alex"), 1, out)
+
+    def test_a_look_from_crouching_eyes(self):
+        standing = aim.look("Steve", eyes="auto")
+        PLAYERS.sneak("Steve")
+        time.sleep(0.4)
+        crouching = aim.look("Steve", eyes="auto")
+        PLAYERS.sneak("Steve", False)
+        self.assertAlmostEqual(standing.origin[1] - standing.feet[1], aim.EYES)
+        self.assertAlmostEqual(crouching.origin[1] - crouching.feet[1], aim.SNEAK_EYES)
 
     def test_sneaking(self):
         items.sneaking()

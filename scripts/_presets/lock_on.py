@@ -1,4 +1,4 @@
-"""The nearest mob in a narrow cone where a player looks, up to the first wall."""
+"""Lock onto the mob a player points at: the nearest in a narrow cone where they look, up to the first wall, so a staff hits what they aim at."""
 import math
 
 from kit import aim

@@ -302,6 +302,9 @@ class LiveShows(Live):
         time.sleep(0.4)
         tag = "%s_meteor%d" % (mc.TAG, P["meteor_fall"]._meteor_fall_n[0])
         self.assertEqual(count("@e[type=block_display,tag=%s]" % tag), 19)
+        shows = mc.rcon("execute as @e[type=block_display,tag=%s] run data get entity @s block_state" % tag)
+        self.assertNotIn("minecraft:air", shows)          # 26.3 shows air for block_state:{Name:...}
+        self.assertTrue(re.search(r'"minecraft:(magma_block|blackstone|obsidian)"', shows), shows[:200])
         y1 = float(re.findall(r"(-?[\d.]+)d", mc.rcon("data get entity @e[tag=%s,limit=1] Pos" % tag))[1])
         time.sleep(0.8)
         y2 = float(re.findall(r"(-?[\d.]+)d", mc.rcon("data get entity @e[tag=%s,limit=1] Pos" % tag))[1])
@@ -320,6 +323,7 @@ class LiveShows(Live):
         tag = "%s_projectile%d" % (mc.TAG, P["projectile"]._projectile_n[0])
         x = float(re.findall(r"(-?[\d.]+)d", mc.rcon("data get entity @e[tag=%s,limit=1] Pos" % tag))[0])
         self.assertTrue(X - 10 < x < X + 2, x)
+        self.assertIn('"minecraft:magma_block"', mc.rcon("data get entity @e[tag=%s,limit=1] block_state" % tag))
         th.join(10)
         self.assertEqual(got["end"], end)
         self.assertEqual(count("@e[type=block_display,tag=%s]" % tag), 0)

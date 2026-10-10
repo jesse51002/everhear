@@ -1,4 +1,4 @@
-"""Count down in chat and titles, then go on: True at zero, False if the script was stopped first."""
+"""A countdown in chat and big titles (detonation in ten minutes), then the script goes on: True at zero, False if it was stopped first."""
 import json
 import math
 import time

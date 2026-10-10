@@ -23,6 +23,9 @@ VALUES = {
 
 # --- preset: shape_fill (copied from _presets/shape_fill.py) ---
 _SHAPE_FILL_WAYS = {"south": (0, 1), "west": (-1, 0), "north": (0, -1), "east": (1, 0)}    # forward, as x and z
+# What a part reads when neither the call nor VALUES gives it: the defaults above.
+_SHAPE_FILL_DEFAULTS = {"kind": "box", "width": 9, "height": 5, "depth": 9, "offset": [0, 0, 0], "facing": "look",
+                        "blocks": "stone_bricks", "hollow": False}
 _SHAPE_FILL_CELL = 2        # a mix picks one block per cube this wide
 
 
@@ -36,10 +39,17 @@ def shape_fill(at, v, **change):
     shape_blocks is a block or a mix, "70% stone_bricks 30% cobblestone"; air carves. Chunks
     that are not loaded are forceloaded for the build and let go after. Protected boxes and
     the bedrock floor are never built in. change: values for this call only, without shape_:
-    shape_fill(p, v, kind="wall", width=21, offset=[0, 0, 12]). Returns the world.Box it
-    covered, or None when `at` cannot be read."""
+    shape_fill(p, v, kind="wall", width=21, offset=[0, 0, 12]); a value neither the call nor
+    VALUES gives is the preset's default. Returns the world.Box it covered, with .facing the
+    way it faced ("south"...: a sign on it faces the other way), or None when `at` cannot be
+    read."""
     def val(key):
-        return change[key] if key in change else v["shape_" + key]
+        if key in change:
+            return change[key]
+        try:
+            return v["shape_" + key]
+        except KeyError:
+            return _SHAPE_FILL_DEFAULTS[key]
     look = aim.look(at) if isinstance(at, str) else at
     if look is None:
         return None
@@ -70,7 +80,8 @@ def shape_fill(at, v, **change):
             block = "air" if not solid else random.choices([m[0] for m in mix], [m[1] for m in mix])[0]
             area.fill(c, block, spare_protected=True, keep_bedrock=True, loaded=loaded)
     if added:
-        area.release(dim)
+        area.release(whole)
+    whole.facing = way
     return whole
 
 

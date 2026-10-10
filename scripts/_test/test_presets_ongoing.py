@@ -194,6 +194,15 @@ class OngoingHordeTests(OngoingCase):
         self.assertEqual(out, [2])
 
 
+    def test_no_wave_announced_and_a_log_line_only_when_the_count_changed(self):
+        v = vals(HORDE, "horde_per_player=1", "horde_every=1", "horde_cap=2", "horde_announce=false")
+        background(HORDE.horde_wave, "@a", v)
+        horde = lambda: [e for e in self.world.entities if mc.TAG + "_horde" in e["tags"]]
+        self.assertTrue(until(lambda: len(horde()) == 2))
+        time.sleep(1.2)
+        self.assertFalse(self.sent("Wave"))
+
+
 # ---- director -----------------------------------------------------------------------------------
 
 class OngoingDirectorTests(OngoingCase):
@@ -203,6 +212,15 @@ class OngoingDirectorTests(OngoingCase):
         background(DIRECTOR.director, "@a", v, events={"ping": lambda p, v: got.append(p)})
         self.assertTrue(until(lambda: "Steve" in got and "Alex" in got, 5))
         self.assertTrue(until(lambda: got.count("Steve") >= 2 and got.count("Alex") >= 2, 4))
+
+    def test_one_clock_for_everyone_and_one_of_them_at_random(self):
+        v = vals(DIRECTOR, "director_events=ping", "director_min_s=1", "director_max_s=1", "director_each=false")
+        got = []
+        background(DIRECTOR.director, "@a", v, events={"ping": lambda p, v: got.append((p, time.time()))})
+        self.assertTrue(until(lambda: len(got) >= 3, 6))
+        times = [t for _, t in got[:3]]
+        self.assertTrue(all(b - a > 0.6 for a, b in zip(times, times[1:])), got)    # one event a second, not two
+        self.assertTrue(set(p for p, _ in got) <= {"Steve", "Alex"})
 
     def test_the_built_in_events(self):
         v = vals(DIRECTOR)

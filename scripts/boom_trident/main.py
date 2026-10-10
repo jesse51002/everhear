@@ -10,23 +10,24 @@ import math
 import threading
 
 VALUES = {
-    "player":                 {"type": "player", "default": "@a"},
-    "give":                   {"type": "bool", "default": True},
-    "crater":                 {"type": "bool", "default": False, "live": True},
-    "projectile_kind":        {"type": "enum", "of": ["both", "arrow", "trident"], "default": "trident", "live": True},
-    "projectile_named":       {"type": "str", "default": "", "live": True},
-    "projectile_cooldown":    {"type": "number", "min": 0, "max": 60, "default": 0, "live": True},
-    "projectile_remove":      {"type": "bool", "default": False, "live": True},
-    "explosion_power":        {"type": "number", "min": 1, "max": 16, "default": 6, "live": True},
-    "explosion_layout":       {"type": "enum", "of": ["one", "plus", "ring", "rings"], "default": "one", "live": True},
-    "explosion_spread":       {"type": "number", "min": 1, "max": 32, "default": 4, "live": True},
-    "explosion_breaks":       {"type": "bool", "default": True, "live": True},
-    "explosion_keep":         {"type": "number", "min": 0, "max": 32, "default": 0, "live": True},
-    "explosion_spare":        {"type": "list", "of": "player", "default": [], "live": True},
-    "crater_radius":          {"type": "int", "min": 2, "max": 300, "default": 4, "live": True},
-    "crater_leave":           {"type": "enum", "of": ["air", "lava", "fire"], "default": "air", "live": True},
-    "crater_spare_protected": {"type": "bool", "default": True, "live": True},
-    "crater_load":            {"type": "bool", "default": True, "live": True},
+    "player":                    {"type": "player", "default": "@a"},
+    "give":                      {"type": "bool", "default": True},
+    "crater":                    {"type": "bool", "default": False, "live": True},
+    "projectile_lands_kind":     {"type": "enum", "of": ["both", "arrow", "trident"], "default": "trident", "live": True},
+    "projectile_lands_named":    {"type": "list", "of": "str", "default": [], "live": True},
+    "projectile_lands_cooldown": {"type": "number", "min": 0, "max": 60, "default": 0, "live": True},
+    "projectile_lands_remove":   {"type": "bool", "default": False, "live": True},
+    "explosion_power":           {"type": "number", "min": 0, "max": 16, "default": 6, "live": True},
+    "explosion_layout":          {"type": "enum", "of": ["one", "plus", "ring", "rings"], "default": "one", "live": True},
+    "explosion_spread":          {"type": "number", "min": 1, "max": 32, "default": 4, "live": True},
+    "explosion_breaks":          {"type": "bool", "default": True, "live": True},
+    "explosion_keep":            {"type": "number", "min": 0, "max": 32, "default": 0, "live": True},
+    "explosion_spare":           {"type": "list", "of": "player", "default": [], "live": True},
+    "crater_radius":             {"type": "int", "min": 0, "max": 300, "default": 4, "live": True},
+    "crater_tunnel":             {"type": "int", "min": 0, "max": 8, "default": 0, "live": True},
+    "crater_leave":              {"type": "enum", "of": ["air", "lava", "fire"], "default": "air", "live": True},
+    "crater_spare_protected":    {"type": "bool", "default": True, "live": True},
+    "crater_load":               {"type": "bool", "default": True, "live": True},
 }
 
 # The trident it gives: it comes back when thrown (loyalty), never breaks, and is known by its id.
@@ -36,18 +37,22 @@ TRIDENT = ('trident[custom_data={vfg_item:"boom_trident"},item_name={"text":"Boo
 
 # --- preset: projectile_lands (copied from _presets/projectile_lands.py) ---
 def projectile_lands(player, v):
-    """Yield (at, p) each time an arrow or trident that a player (of those `player` names)
-    shot or threw lands in a block or hits something: at is where (a Pos), p who threw it.
+    """Yield (at, p, weapon) each time an arrow or trident that a player (of those `player`
+    names) shot or threw lands in a block or hits something: at is where (a Pos), p who threw
+    it, weapon the id of the named weapon it came from ("spear_bomb"), or "".
 
-        for at, p in loop(projectile_lands(v["player"], v)):
-            explosion(at, v)
+        for at, p, weapon in loop(projectile_lands(v["player"], v)):
+            explosion(at, p, v)
 
-    projectile_named: only those from the weapon of that name, given with its custom_data
-    ("Spear Bomb" is trident[custom_data={vfg_item:"spear_bomb"}], items.item_id's id).
-    projectile_cooldown: a player's next ones within that many seconds land as they are.
-    projectile_remove: take it away where it lands, so it is not picked up and used again.
-    An arrow that hits a mob is gone at once, so for it at is a little ahead of where it
-    was last seen. Each player is followed on their own."""
+    projectile_lands_named: only those from the weapons of those names, each given with its
+    custom_data ("Spear Bomb" is trident[custom_data={vfg_item:"spear_bomb"}], items.item_id's
+    id); [] for any. projectile_lands_cooldown: a player's next ones within that many seconds
+    land as they are. projectile_lands_remove: take it away where it lands, so it is not
+    picked up and used again. An arrow that hits a mob is gone at once, so for it at is a
+    little ahead of where it was last seen. One already lying in the ground when first seen
+    (from before the script started) is left alone, and one that hangs still in the air for
+    10 s (out past the simulation distance, it stops) is given up on. Each player is
+    followed on their own."""
     seen = mc.TAG + "_seen"             # on every projectile this has looked at; taken off on a stop
     mc.on_stop(lambda: mc.rcon("tag @e[tag=%s] remove %s" % (seen, seen)))
     flying, last = {}, {}               # uuid -> what is known of it in flight; thrower -> when it last acted
@@ -57,13 +62,20 @@ def projectile_lands(player, v):
             flying.clear()
             time.sleep(1.0)
             continue
-        kinds = ("arrow", "trident") if v["projectile_kind"] == "both" else (v["projectile_kind"],)
-        named = items.item_id(v["projectile_named"]) if v["projectile_named"] else ""
-        for kind in kinds:
-            for uuid in _projectile_lands_new(kind, named, seen):
+        kind = v["projectile_lands_kind"]
+        named = [items.item_id(n) for n in v["projectile_lands_named"] if str(n).strip()]
+        for k in (("arrow", "trident") if kind == "both" else (kind,)):
+            for uuid in _projectile_lands_new(k, seen):
                 p = _projectile_lands_thrower(uuid)
-                if p in people:
-                    flying[uuid] = {"p": p, "kind": kind, "dim": world.dim_of(p), "at": None, "step": (0, 0, 0)}
+                if p not in people:
+                    continue
+                weapon = _projectile_lands_weapon(uuid, k)
+                if named and weapon not in named:
+                    continue
+                if _projectile_lands_down(uuid, k) and _projectile_lands_life(uuid) > 40:
+                    continue                                    # lying there already (2 s or more)
+                flying[uuid] = {"p": p, "kind": k, "weapon": weapon, "dim": world.dim_of(p), "at": None,
+                                "step": (0, 0, 0), "moved": time.time()}
         for uuid, f in list(flying.items()):
             at = _projectile_lands_pos(uuid, f["dim"])
             if at is False:                                     # no answer this time: ask again next pass
@@ -79,15 +91,20 @@ def projectile_lands(player, v):
             elif not _projectile_lands_down(uuid, f["kind"]):   # still flying
                 if f["at"] is not None:
                     f["step"] = tuple(min(8.0, max(-8.0, at[j] - f["at"][j])) for j in range(3))
+                    if max(abs(s) for s in f["step"]) > 0.01:
+                        f["moved"] = time.time()
+                    elif time.time() - f["moved"] > 10:
+                        del flying[uuid]                        # hung still in the air: it will not land
+                        continue
                 f["at"] = at
                 continue
             else:                                               # down
                 del flying[uuid]
-            if time.time() - last.get(f["p"], -1e9) < v["projectile_cooldown"]:
+            if time.time() - last.get(f["p"], -1e9) < v["projectile_lands_cooldown"]:
                 continue                                        # too soon after their last: it lands as it is
-            if v["projectile_remove"]:
+            if v["projectile_lands_remove"]:
                 mc.rcon("kill %s" % uuid)
-            yield at, f["p"]
+            yield at, f["p"], f["weapon"]
             last[f["p"]] = time.time()
         time.sleep(0.05 if flying else 0.1)
 
@@ -99,13 +116,11 @@ _PROJECTILE_LANDS_UUID = re.compile(r"\[I; (-?\d+), (-?\d+), (-?\d+), (-?\d+)\]"
 _PROJECTILE_LANDS_POS = re.compile(r"\[(-?[\d.]+(?:E-?\d+)?)d, (-?[\d.]+(?:E-?\d+)?)d, (-?[\d.]+(?:E-?\d+)?)d\]")
 
 
-def _projectile_lands_new(kind, named, seen):
+def _projectile_lands_new(kind, seen):
     """The uuids of projectiles of a kind near anyone online that were not looked at yet,
     each marked as looked at."""
-    match = ',nbt={%s:{components:{"minecraft:custom_data":{vfg_item:"%s"}}}}' % (
-        _PROJECTILE_LANDS_FROM[kind], named) if named else ""
-    reply = mc.rcon("execute as @a at @s as @e[type=%s,distance=..32,tag=!%s%s] run data get entity @s UUID"
-                    % (_PROJECTILE_LANDS_TYPES[kind], seen, match))
+    reply = mc.rcon("execute as @a at @s as @e[type=%s,distance=..32,tag=!%s] run data get entity @s UUID"
+                    % (_PROJECTILE_LANDS_TYPES[kind], seen))
     out = []
     for m in _PROJECTILE_LANDS_UUID.finditer(reply):
         h = "".join("%08x" % (int(n) & 0xffffffff) for n in m.groups())
@@ -120,6 +135,20 @@ def _projectile_lands_thrower(uuid):
     """Who shot or threw it, as a bare name ("" for nobody, or a mob's name)."""
     reply = mc.rcon("execute as %s on origin run data get entity @s UUID" % uuid)
     return mc.bare(reply.split(" has the following entity data", 1)[0]) if " has the following" in reply else ""
+
+
+def _projectile_lands_weapon(uuid, kind):
+    """The vfg_item id of the weapon it came from (its custom_data), or ""."""
+    reply = mc.rcon('data get entity %s %s.components."minecraft:custom_data".vfg_item'
+                    % (uuid, _PROJECTILE_LANDS_FROM[kind]))
+    m = re.search(r'entity data: "([^"]*)"', reply)
+    return m.group(1) if m else ""
+
+
+def _projectile_lands_life(uuid):
+    """How many ticks it has lain in the ground, 0 when the server does not say."""
+    m = re.search(r"entity data: (\d+)s", mc.rcon("data get entity %s life" % uuid))
+    return int(m.group(1)) if m else 0
 
 
 def _projectile_lands_pos(uuid, dim):
@@ -141,19 +170,21 @@ def _projectile_lands_down(uuid, kind):
 # --- preset: explosion (copied from _presets/explosion.py) ---
 def explosion(at, by, v):
     """Blow up a place (or a player's name: where they stand) with blasts of explosion_power
-    (TNT is 4), laid out by explosion_layout: "one" at the place, "plus" with four more
+    (TNT is 4; 0: no blast at all), laid out by explosion_layout: "one" at the place, "plus" with four more
     explosion_spread blocks out, "ring" with eight round it, "rings" with six at
     explosion_spread and ten at twice that. explosion_breaks: real TNT, which breaks blocks;
     else a blast that only hurts and throws back. by (the player who set it off, or "") and
     the players in explosion_spare are never hurt, nor are pets and villagers; no blast lands
     within explosion_keep blocks of any player, who is caught at its edge instead. Returns
     how many blasts went off."""
+    power = v["explosion_power"]
+    if power <= 0:
+        return 0
     if isinstance(at, str):
         feet = mc.pos(at)
         if feet is None:
             return 0
         at = world.Pos(feet[0], feet[1], feet[2], world.dim_of(at))
-    power = v["explosion_power"]
     spare = [mc.bare(p) for p in [by] + list(v["explosion_spare"]) if p and not p.startswith("@")]
     pre = world.prefix(world.dim(at))
     here = pre + "positioned %.2f %.2f %.2f " % tuple(at[:3])
@@ -213,14 +244,18 @@ def _explosion_blast(pre, p, power, spare):
 
 
 # --- preset: crater (copied from _presets/crater.py) ---
-def crater(at, v):
+def crater(at, v, *, path=()):
     """Carve a ball of crater_radius round a place, the middle first, never the bedrock floor
     nor (with crater_spare_protected) a protected box; then crater_leave: "air", "lava" (a
-    pool in its lowest third) or "fire" (on its floor, where fire can stand). crater_load
-    loads the chunks it reaches first, so a big crater is whole, and lets them go after;
-    without it only the loaded part is carved. It takes a while when big: call it in
-    loop.background. One carves at a time and one more waits; any more are skipped. Returns
-    blocks changed."""
+    pool in its lowest third) or "fire" (on its floor, where fire can stand). path: places
+    along a beam (r.every(2)), each with a cube crater_tunnel blocks round it carved first:
+    the beam's tunnel (0: none). crater_radius 0 carves nothing at all, the tunnel neither.
+    crater_load loads the chunks it reaches first, when they are few (up to 256 chunks, a
+    radius of about 120), so a big crater is whole, and lets them go after; else only the
+    loaded part is carved. It takes a while when big: call it in loop.background. One carves
+    at a time and one more waits; any more are skipped. Returns blocks changed."""
+    if v["crater_radius"] <= 0:
+        return 0
     with _CRATER_LOCK:
         if _CRATER_QUEUE[0] >= 2:
             mc.log("crater skipped: one is carving and one waits already")
@@ -228,7 +263,7 @@ def crater(at, v):
         _CRATER_QUEUE[0] += 1
     try:
         with _CRATER_CARVING:
-            return _crater_carve(at, v)
+            return _crater_carve(at, v, path)
     finally:
         with _CRATER_LOCK:
             _CRATER_QUEUE[0] -= 1
@@ -239,18 +274,25 @@ _CRATER_CARVING = threading.Lock()
 _CRATER_QUEUE = [0]         # craters carving or waiting
 
 
-def _crater_carve(at, v):
+def _crater_carve(at, v, path):
     r, leave, spare = v["crater_radius"], v["crater_leave"], v["crater_spare_protected"]
     dim = world.dim(at)
-    if v["crater_load"]:
-        area.forceload(area.box(at, r, 0), dim=dim, wait=10.0)
+    box = area.box(at, r, 0)
+    load = v["crater_load"] and len(area.chunks(box)) <= world.MAX_FORCELOAD
+    if v["crater_load"] and not load:
+        mc.log("crater r=%d: too big to load first, only the loaded part is carved" % r)
+    if load:
+        area.forceload(box, dim=dim, wait=10.0)
     try:
-        n = area.sphere(at, r, "air", spare_protected=spare, keep_bedrock=True, dim=dim)
+        n, loaded = 0, {}
+        for p in path if v["crater_tunnel"] else ():    # the tunnel: a cube round each place
+            n += area.fill(area.box(p, v["crater_tunnel"]), "air", dim=dim, spare_protected=spare,
+                           keep_bedrock=True, loaded=loaded)
+        n += area.sphere(at, r, "air", spare_protected=spare, keep_bedrock=True, dim=dim)
         if leave != "air":
             # Lava fills the lowest third; fire is put everywhere below the middle and stays
             # only where it can stand: on the floor, and against what burns.
             top = int(math.floor(at[1])) - (r - max(1, r // 3) if leave == "lava" else 0)
-            loaded = {}
             for b in area.sphere_boxes(at, r):
                 if b[1] <= top:
                     n += area.fill((b[0], b[1], b[2], b[3], min(b[4], top), b[5]), leave, "replace air", dim=dim,
@@ -258,8 +300,8 @@ def _crater_carve(at, v):
         mc.log("crater r=%d at %d %d %d: %d blocks" % ((r,) + tuple(int(math.floor(c)) for c in at[:3]) + (n,)))
         return n
     finally:
-        if v["crater_load"]:
-            area.release(dim)
+        if load:
+            area.release(box)
 
 
 v = values(VALUES)
@@ -279,7 +321,7 @@ def arm():
 if v["give"]:
     mc.on_stop(lambda: [items.take(p, "Boom Trident") for p in sorted(given)])
     loop.background(arm)
-for at, p in loop(projectile_lands(v["player"], v)):
+for at, p, weapon in loop(projectile_lands(v["player"], v)):
     n = explosion(at, p, v)
     if v["crater"]:
         loop.background(crater, at, v)

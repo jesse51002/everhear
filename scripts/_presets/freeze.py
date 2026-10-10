@@ -1,16 +1,18 @@
-"""Stop what was hit from moving for a few seconds, and wrap it in ice if asked."""
+"""Freeze what was hit for a few seconds: it cannot move or attack, blinded if asked, wrapped in a block of ice if asked."""
 import itertools
 import math
+import re
 import threading
 
 import mc
-from kit import area, exclude, loop, world
+from kit import aim, area, loop, world
 
 VALUES = {
     "freeze_seconds": {"type": "number", "min": 1, "max": 120, "default": 5, "live": True},
     "freeze_shell": {"type": "bool", "default": False, "live": True},
     "freeze_block": {"type": "enum", "of": ["ice", "packed_ice", "blue_ice", "snow_block"],
                      "default": "ice", "live": True},
+    "freeze_blindness": {"type": "bool", "default": False, "live": True},
 }
 
 
@@ -19,22 +21,27 @@ def freeze(hits, v):
     freeze_seconds: it cannot walk or hurt anything, and a mob shows the frost (and takes
     the cold's 1 damage every 2 s, as in powder snow). With freeze_shell, a shell of
     freeze_block round each body, one block wide and two high, that melts when the freeze
-    ends; it only fills air, so nothing is replaced (never bedrock, never a chest). Pets and
+    ends; it only fills air, so nothing is replaced (never bedrock, never a chest).
+    freeze_blindness blinds it too (blindness IV, as the run's ice beam did). Pets and
     villagers are never frozen. Returns how many were frozen."""
     secs = int(math.ceil(v["freeze_seconds"]))
     tag = "%s_frz%d" % (mc.TAG, next(_FREEZE_N))      # each call tags with its own name
-    frozen = [h for h in hits if _freeze_mark(h, tag)]
-    if not frozen:
+    if not aim.mark(hits, tag):                         # each once, where it was
+        aim.untag(tag)
         return 0
     # Slowness and weakness X (amplifier 9; above 127 it is saved as a negative byte) leave
     # no speed and no attack, and wear off by themselves even if the script dies.
     mc.rcon("effect give @e[tag=%s] slowness %d 9 true" % (tag, secs))
     mc.rcon("effect give @e[tag=%s] weakness %d 9 true" % (tag, secs))
+    if v["freeze_blindness"]:
+        mc.rcon("effect give @e[tag=%s] blindness %d 3 true" % (tag, secs))
     mc.rcon("execute as @e[tag=%s,type=!player] run data merge entity @s {TicksFrozen:%d}" % (tag, 140 + 40 * secs))
     mc.rcon("execute at @e[tag=%s] run particle snowflake ~ ~1 ~ 0.4 0.6 0.4 0.02 25 force" % tag)
-    mc.rcon("tag @e[tag=%s] remove %s" % (tag, tag))
+    frozen = [world.Pos(float(x), float(y), float(z), world.dim(hits[0].pos)) for x, y, z in _FREEZE_POS.findall(
+        mc.rcon("execute as @e[tag=%s] run data get entity @s Pos" % tag))]
+    aim.untag(tag)
     if v["freeze_shell"]:
-        shells = [_freeze_shell(h.pos, v["freeze_block"]) for h in frozen]
+        shells = [_freeze_shell(at, v["freeze_block"]) for at in frozen]
         with _FREEZE_LOCK:
             if not _FREEZE_SHELLS:
                 mc.on_stop(lambda: [_freeze_melt(s) for s in list(_FREEZE_SHELLS)])
@@ -44,20 +51,9 @@ def freeze(hits, v):
 
 
 _FREEZE_N = itertools.count(1)
+_FREEZE_POS = re.compile(r"\[(-?[\d.]+(?:E-?\d+)?)d, (-?[\d.]+(?:E-?\d+)?)d, (-?[\d.]+(?:E-?\d+)?)d\]")
 _FREEZE_SHELLS = []         # shells still standing; a stop melts them
 _FREEZE_LOCK = threading.Lock()
-
-
-def _freeze_mark(h, tag):
-    """Tag one hit where it was: a player by name, a mob as the nearest within 1.5 blocks that
-    a hit may touch. True if it was tagged now (a hit listed twice is tagged once)."""
-    if h.player:
-        reply = mc.rcon("tag %s add %s" % (h.name, tag))
-    else:
-        x, y, z = h.pos[:3]
-        reply = mc.rcon(world.prefix(world.dim(h.pos)) + "positioned %.3f %.3f %.3f %s run tag @s add %s" % (
-            x, y, z, exclude.mobs("distance=..1.5,sort=nearest,limit=1"), tag))
-    return reply.startswith("Added tag")
 
 
 def _freeze_shell(at, block):
