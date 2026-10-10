@@ -4,6 +4,7 @@ import re
 
 import mc
 from kit import aim, world
+from actions._types import Field, Literal, Live, Values  # the values class: read on the PC only
 
 VALUES = {
     "around_radius": {"type": "number", "min": 1, "max": 128, "default": 8, "live": True},
@@ -11,6 +12,15 @@ VALUES = {
                     "default": "mobs", "live": True},
     "around_most": {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
 }
+
+
+class Around(Values):
+    around_radius: Live[float] = Field(8, ge=1, le=128)
+    """how far it reaches round the player or the place, in blocks"""
+    around_what: Live[Literal["mobs", "hostile", "players", "everything", "projectiles"]] = "mobs"
+    """what it finds: mobs; hostile (monsters only); players; everything (mobs and players); projectiles (flying, not the player's own)"""
+    around_most: Live[int] = Field(0, ge=0, le=1000)
+    """only the nearest this many (0: all)"""
 
 
 def around(at, v):

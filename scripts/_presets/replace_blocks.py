@@ -4,6 +4,7 @@ import re
 
 import mc
 from kit import area, world
+from actions._types import Field, Live, Values  # the values class: read on the PC only
 
 VALUES = {
     "replace_rules": {"type": "list", "of": "str", "live": True,
@@ -12,6 +13,18 @@ VALUES = {
     "replace_cell": {"type": "int", "min": 1, "max": 16, "default": 4, "live": True},
     "replace_radius": {"type": "int", "min": 0, "max": 128, "default": 4, "live": True},
 }
+
+
+class ReplaceBlocks(Values):
+    replace_rules: Live[list[str]] = ["#minecraft:snow > white_wool light_gray_wool white_concrete quartz_block"]
+    """rules in order, each "from > to": from, block ids, #tags or solid; to, a block or a mix "70% lava 30% keep" (keep: as it was)"""
+    replace_rate: Live[int] = Field(100, ge=1, le=100)
+    """how much of the area changes, in percent, picked cube by cube (100: all of it)"""
+    replace_cell: Live[int] = Field(4, ge=1, le=16)
+    """the size of the cubes a mix or a rate under 100 picks for, in blocks; each cube gets the same pick every time"""
+    replace_radius: Live[int] = Field(4, ge=0, le=128)
+    """how far round a place blocks change, in blocks each way; not used for an area the script gives (under the feet, a chunk)"""
+
 
 # "solid" in a rule: every block a player cannot walk through, as five 26.3 tags that hold no
 # bedrock, barrier or command block. Glass, glowstone and sea lanterns are not in them.

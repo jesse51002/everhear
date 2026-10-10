@@ -392,8 +392,7 @@ WIRING = {
 
 
 def script(name):
-    with open(os.path.join(PRESETS, name + ".py"), encoding="utf-8") as f:
-        text = f.read()
+    text = test_kit.copied(os.path.join(PRESETS, name + ".py"))
     return text.replace("import mc\n", "import mc\nfrom kit import values\n", 1) + "\n\n" + WIRING[name]
 
 

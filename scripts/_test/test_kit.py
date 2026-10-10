@@ -7,6 +7,7 @@ run_tests.py runs these too. In this process mc is pointed at a fake whose world
 makes afresh; the tests that need a script of their own (two scripts on one player, a stop)
 start one the way EC2 does, with PYTHONPATH=scripts/_lib and VFG_INSTANCE set.
 """
+import ast
 import json
 import os
 import secrets
@@ -731,6 +732,19 @@ def start_script(name, source, fake, password, instance=None, run_dir=None):
                VFG_RUN_DIR=run_dir or TMP, VFG_PROTECTED=os.path.join(TMP, "none.json"))
     return subprocess.Popen([sys.executable, "-u", "main.py"], cwd=folder, env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+
+def copied(path):
+    """A preset's file as a script on the box holds it: without its values class and its
+    import from actions, which only the PC reads (vfg script new --preset leaves them out)."""
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    drop = set()
+    for node in ast.parse(text).body:
+        if (isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "actions") or \
+                (isinstance(node, ast.ClassDef) and any(getattr(b, "id", None) == "Values" for b in node.bases)):
+            drop.update(range(node.lineno, node.end_lineno + 1))
+    return "".join(line for n, line in enumerate(text.splitlines(True), 1) if n not in drop)
 
 
 WAND = '''"""%s: logs each click."""

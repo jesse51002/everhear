@@ -4,6 +4,7 @@ import re
 
 import mc
 from kit import exclude, world
+from actions._types import Field, Literal, Live, Player, Values  # the values class: read on the PC only
 
 VALUES = {
     "explosion_power": {"type": "number", "min": 0, "max": 16, "default": 4, "live": True},
@@ -13,6 +14,21 @@ VALUES = {
     "explosion_keep": {"type": "number", "min": 0, "max": 32, "default": 0, "live": True},
     "explosion_spare": {"type": "list", "of": "player", "default": [], "live": True},
 }
+
+
+class Explosion(Values):
+    explosion_power: Live[float] = Field(4, ge=0, le=16)
+    """how big each blast is: TNT is 4; 0: no blast at all"""
+    explosion_layout: Live[Literal["one", "plus", "ring", "rings"]] = "one"
+    """one at the place; plus, four more round it; ring, eight round it; rings, six round it and ten further out"""
+    explosion_spread: Live[float] = Field(4, ge=1, le=32)
+    """how far from the place the blasts round it go off, in blocks (the outer ring twice as far)"""
+    explosion_breaks: Live[bool] = True
+    """real TNT, which breaks blocks; off: a blast that only hurts and throws back"""
+    explosion_keep: Live[float] = Field(0, ge=0, le=32)
+    """no blast goes off within this many blocks of a player, who is caught only at its edge (0: anywhere)"""
+    explosion_spare: Live[list[Player]] = []
+    """players it never hurts; the one who set it off, pets and villagers are always spared"""
 
 
 def explosion(at, by, v):

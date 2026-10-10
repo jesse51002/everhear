@@ -8,6 +8,7 @@ import time
 
 import mc
 from kit import fx, items, loop, world
+from actions._types import Field, Live, ParticleId, Values  # the values class: read on the PC only
 
 VALUES = {
     "beam_clash_power":    {"type": "number", "min": 1, "max": 1000, "default": 10, "live": True},
@@ -18,6 +19,23 @@ VALUES = {
     "beam_clash_blast":    {"type": "int", "min": 0, "max": 8, "default": 4, "live": True},
     "beam_clash_particle": {"type": "particle", "default": "dust{color:[0.6,0.1,0.9],scale:2.0}", "live": True},
 }
+
+
+class BeamClash(Values):
+    beam_clash_power: Live[float] = Field(10, ge=1, le=1000)
+    """how hard this beam pushes in a clash, the point moving toward the weaker; holding or mashing right-click adds to it"""
+    beam_clash_gap: Live[float] = Field(4, ge=0.5, le=16)
+    """how close two beams must pass to clash, in blocks; a beam passing this near a player is aimed at them"""
+    beam_clash_window: Live[float] = Field(1.5, ge=0, le=10)
+    """seconds a beam waits for another to meet it before it fires (0: none, though one already waiting still meets it)"""
+    beam_clash_aimed: Live[bool] = True
+    """only a beam aimed at another player waits beam_clash_window; off: every beam waits"""
+    beam_clash_seconds: Live[float] = Field(6, ge=1, le=30)
+    """how long the struggle lasts at most, in seconds, before it explodes where the point is"""
+    beam_clash_blast: Live[int] = Field(4, ge=0, le=8)
+    """the explosion where it ends, as a creeper's blast (a creeper is 3); 0: a show only, nothing hurt or broken"""
+    beam_clash_particle: Live[ParticleId] = "dust{color:[0.6,0.1,0.9],scale:2.0}"
+    """the particle this shooter's beam is drawn with while the beams clash"""
 
 
 def beam_clash(shooter, ray, v):

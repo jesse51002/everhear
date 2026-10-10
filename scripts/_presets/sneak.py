@@ -3,12 +3,22 @@ import time
 
 import mc
 from kit import items, loop
+from actions._types import Field, Literal, Live, Values  # the values class: read on the PC only
 
 VALUES = {
     "sneak_mode": {"type": "enum", "of": ["while", "tap", "three_taps"], "default": "while", "live": True},
     "sneak_seconds": {"type": "number", "min": 0.3, "max": 5, "default": 1.5, "live": True},
     "sneak_item": {"type": "str", "default": "", "live": True},
 }
+
+
+class Sneak(Values):
+    sneak_mode: Live[Literal["while", "tap", "three_taps"]] = "while"
+    """while: about ten times a second as long as they crouch; tap: each crouch; three_taps: three within sneak_seconds"""
+    sneak_seconds: Live[float] = Field(1.5, ge=0.3, le=5)
+    """for three_taps: the seconds the three crouches must come within"""
+    sneak_item: Live[str] = ""
+    """only while they hold the item of this name a script gave ("Spirit Bomb"); empty: whatever is in hand"""
 
 
 def sneak(player, v):
