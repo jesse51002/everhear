@@ -17,6 +17,7 @@ From the repo's root on the owner's PC:
 ```sh
 bridge/deploy/ec2.sh launch|start|stop|status|ssh-ip|retire   # the box itself (AWS CLI v2)
 bridge/deploy/deploy.sh provision [--restore]                 # Java, Python 3.12, Minecraft, the firewall, /opt/vfg/.env
+bridge/deploy/deploy.sh env                                   # the secrets in VFG_BOX_ENV into /opt/vfg/.env
 bridge/deploy/deploy.sh                                       # the bridge and the units; restarts them
 bridge/deploy/set-secret.sh VFG_CLIENT_TOKEN                  # a value into /opt/vfg/.env, typed hidden
 bridge/deploy/client-token.sh                                 # prints the client token, to a terminal only

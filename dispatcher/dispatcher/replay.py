@@ -192,7 +192,7 @@ async def _main(args) -> int:
     labels = read_labels(Path(args.eval).expanduser()) if args.eval else None
 
     async def ask(prompt, output, *, system=None, model):
-        return await vfg_llm.structured(prompt, output, system=system, model=model, reasoning=False,
+        return await vfg_llm.structured(prompt, output, system=system, model=model, reasoning=cfg.effort,
                                         providers=list(cfg.providers) or None, timeout=cfg.model_timeout_s)
 
     selector = Selector(catalog, ask, args.model or cfg.model)
