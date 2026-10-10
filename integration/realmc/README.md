@@ -27,18 +27,24 @@ itself is not exported, so `uv`, `git` and the rest of the shell keep yours. It 
 `VFG_MC_PROPERTIES`, so `PYTHONPATH=scripts/_lib python3 …` scripts reach the same server, and
 `REALMC_NAME`, the default for every command below.
 
-`vfg orch …` keeps your `HOME`: `vfg orch start` starts the orchestrator runner, whose Claude CLI
-finds its login under `~/.claude` (in the stand-in's `HOME` it says "Not logged in") and whose `uv`
-its Python and cache under `~/.cache`. vfg's own state stays in the stand-in (the runner's inbox,
-state and log in `$VFG_HOME/orch`, or `VFG_ORCH_DIR`), `bin/` goes first on the runner's `PATH`, and
-every `vfg` the runner and its implementers run comes back through `bin/vfg`, to the stand-in.
+`vfg brain …` keeps your `HOME`: `vfg brain start` starts the brain, whose implementers' Claude
+CLI finds its login under `~/.claude` (in the stand-in's `HOME` it says "Not logged in") and whose
+`uv` its Python and cache under `~/.cache`. vfg's own state stays in the stand-in (the brain's
+`tasks.json`, log and command references in `$VFG_HOME/brain`, or `VFG_BRAIN_DIR`), `bin/` goes
+first on the brain's `PATH`, and every `vfg` the brain and its implementers run comes back through
+`bin/vfg`, to the stand-in. The brain's OpenRouter key goes in its environment
+(`OPEN_ROUTER_API`), never in the stand-in.
 
 ```sh
 eval "$(integration/realmc/env p1)"
-vfg orch start          # "logged in: subscription …" in $VFG_HOME/orch/runner.log
-vfg orch send 'make it day' && vfg orch status
-vfg orch stop
+OPEN_ROUTER_API=… VFG_SERVER=p1 vfg brain start   # "start pid …" in $VFG_HOME/brain/brain.log
+vfg brain status
+vfg brain stop
 ```
+
+`VFG_SERVER` keeps what its implementers make in `made/p1/`. The brain's first start on a server
+fetches the command references (about 95 s); a complete `refs/26.3/` from another server's
+stand-in can be copied into `$VFG_HOME/brain/refs/` first, as `integration/brain_live.py` does.
 
 ## Several servers at once
 

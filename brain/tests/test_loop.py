@@ -29,7 +29,7 @@ async def test_each_row_goes_where_its_class_says_and_a_read_marks_what_it_took(
     assert k.vfg.of("context", "mark") == [["context", "mark", "1", "3", "4", "5"], ["context", "mark", "6"]]
     usage = k.vfg.of("usage", "add")
     assert ["usage", "add", "--component", "brain", "--model", "brain-model", "--in", "1000", "--out", "40",
-            "--cost", "0.002000", "--ref", "#5"] in usage and any("respond" in u for u in usage)
+            "--cost", "0.002000", "--cache-read", "900", "--ref", "#5"] in usage and any("respond" in u for u in usage)
     assert k.ctx.unprocessed() == [] and k.ctx.last_seq == 6
 
 

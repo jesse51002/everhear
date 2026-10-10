@@ -27,6 +27,13 @@ def _examples(monkeypatch):
     monkeypatch.setattr(examples, "build", build)
 
 
+def system(options) -> str:
+    """The system prompt the CLI reads, from the file it is given (--system-prompt-file)."""
+    assert options.system_prompt["type"] == "file"
+    with open(options.system_prompt["path"], encoding="utf-8") as f:
+        return f.read()
+
+
 class Run:
     """An Implementers with fakes, and every report it made."""
 
@@ -77,8 +84,10 @@ async def test_a_start_returns_at_once_and_the_implementer_reports_when_it_ends(
     assert o.hooks["PreToolUse"][0].hooks
     assert "ANTHROPIC_API_KEY" not in o.env and o.env["PYTHONPYCACHEPREFIX"] == cfg.brain_dir + "/pycache"
     # its rules with this server filled in, then vfg prefix: read once, the same bytes for every implementer
-    assert o.system_prompt.startswith("You are an implementer") and "made/main/actions/" in o.system_prompt
-    assert "%SERVER%" not in o.system_prompt and o.system_prompt.endswith("\n\nTHE KIT\n")
+    # (in a file of the brain's folder: with the kit, far longer than one argument may be)
+    assert system(o).startswith("You are an implementer") and "made/main/actions/" in system(o)
+    assert "%SERVER%" not in system(o) and system(o).endswith("\n\nTHE KIT\n")
+    assert o.system_prompt["path"].startswith(cfg.brain_dir + "/")
     assert r.clients.made[1].options.system_prompt == o.system_prompt
     assert len(r.vfg.made("prefix")) == 1
     # one usage row a run, after its report: "in" counts the cache's tokens too
@@ -182,8 +191,8 @@ async def test_without_vfg_prefix_the_rules_alone_and_it_is_asked_again(cfg):
     await r.settle()
     await r.imps.start("T2", BRIEF)
     await r.settle()
-    assert r.clients.made[0].options.system_prompt.endswith("check passed), running as frost_staff until stopped; "
-                                                            "he right-clicks with a stick to fire it.\n")
+    assert system(r.clients.made[0].options).endswith("check passed), running as frost_staff until stopped; "
+                                                      "he right-clicks with a stick to fire it.\n")
     assert len(r.vfg.made("prefix")) == 2
     assert r.clients.made[0].prompt.split("\n")[3] == "SAVED PLACES: none"
 
