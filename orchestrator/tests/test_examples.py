@@ -148,6 +148,7 @@ async def test_the_block_in_the_specs_shape_with_every_file_whole_in_order():
         "Named in your brief, in full below: tnt_rain.",
         "Running: galick-alex (galick_gun, player=Alex, cooldown=0, T5), horror_mode (T2), zoo-steve (zoo, player=Steve, T3).",
         "Online: Steve 120 64 -40 overworld, Alex 98 70 -12 overworld. Night, clear.",
+        examples.NOW,
     ]
     made, files = rest.split("\n\n", 1)
     assert made.split("\n") == [
@@ -172,11 +173,21 @@ async def test_a_running_instance_the_brief_names_comes_with_its_values_and_its_
     job = "T7: make the zoo-steve pens bigger, and galick-alex fires faster."
     block = await b.block({**AGENT, "prompt": job})
     lines = block.split("\n")
-    assert "Your brief names galick-alex, running galick_gun for T5 now with player=Alex, cooldown=0; its script is below." in lines
-    assert "Your brief names zoo-steve, running zoo for T3 now with player=Steve; its script is below." in lines
+    # another task's instances: their code is copied to be changed, never edited (the guard refuses it)
+    assert ("Your brief names galick-alex, running galick_gun for T5 now with player=Alex, cooldown=0; its script is "
+            "below; to change its code, copy it: vfg script new <new_name> --from galick_gun.") in lines
+    assert ("Your brief names zoo-steve, running zoo for T3 now with player=Steve; its script is below; to change its "
+            "code, copy it: vfg script new <new_name> --from zoo.") in lines
     # galick_gun is the router's already, so it is not there twice; zoo comes last, whole
     assert block.count("=== scripts/galick_gun/main.py ===") == 1
     assert block.endswith(whole("scripts/zoo/main.py"))
+
+
+async def test_an_instance_this_task_started_is_its_own_to_change():
+    b = Box()
+    job = "T5: galick-alex fires faster."
+    lines = (await b.block({**AGENT, "description": "T5 galick gun faster", "prompt": job})).split("\n")
+    assert "Your brief names galick-alex, running galick_gun for T5 now with player=Alex, cooldown=0; its script is below." in lines
 
 
 async def test_names_match_as_words_in_a_row_however_they_are_written():
@@ -223,6 +234,39 @@ async def test_jev_slow_the_routers_fallback_to_words_is_said():
     assert head == ["EXAMPLES, picked for T7 by words in 3.0 s: Jev did not answer (jev did not answer within 3 s).",
                     "Matched by words: ice_beam.", "Presets to copy: crater."]
     assert b.store.get("T7").implementers[0]["route"]["why"] == "jev did not answer within 3 s"
+
+
+async def test_presets_a_loaded_script_already_holds_are_named_with_the_script_they_are_in():
+    held = [{"name": "beam_clash", "source": "library", "p_use": 0.68, "path": "scripts/_presets/beam_clash.py",
+             "in": "galick_gun"},
+            {"name": "ice_trail", "source": "made", "p_use": 0.4, "path": "made/main/presets/ice_trail.py",
+             "in": "galick_ice"}]
+    b = Box(route_json={**ROUTE, "held": held})
+    lines = (await b.block()).split("\n")
+    assert lines[2] == ("Presets to copy: crater and replace_blocks. Already in a loaded script: beam_clash "
+                        "(in galick_gun) and ice_trail (made) (in galick_ice).")
+    # not loaded again: the copy in the script is what the implementer reads
+    assert "=== scripts/_presets/beam_clash.py ===" not in "\n".join(lines)
+    assert "=== made/main/presets/ice_trail.py ===" not in "\n".join(lines)
+    assert b.store.get("T7").implementers[0]["route"]["held"] == [
+        {"name": "beam_clash", "source": "library", "p_use": 0.68, "in": "galick_gun"},
+        {"name": "ice_trail", "source": "made", "p_use": 0.4, "in": "galick_ice"}]
+    # with none to copy, it still says where the held ones are
+    b = Box(route_json={**ROUTE, "presets": [], "held": held[:1]})
+    assert (await b.block()).split("\n")[2] == "Presets to copy: none. Already in a loaded script: beam_clash (in galick_gun)."
+    # and a routing with none held keeps no "held" in state.json
+    b = Box()
+    await b.block()
+    assert "held" not in b.store.get("T7").implementers[0]["route"]
+
+
+async def test_the_server_state_line_says_to_act_on_it_and_is_left_out_when_the_state_is_unknown():
+    b = Box()
+    lines = (await b.block()).split("\n")
+    assert lines[lines.index("Online: Steve 120 64 -40 overworld, Alex 98 70 -12 overworld. Night, clear.") + 1] == examples.NOW
+    assert "no vfg state" in examples.NOW
+    os.environ["VFG_FAKE_STATE_FAIL"] = "EC2 unreachable (fake)"
+    assert examples.NOW not in (await Box().block())
 
 
 async def test_nothing_close_and_a_made_pick_say_so():

@@ -31,7 +31,7 @@ def _runner() -> Runner:
 
 async def run(brief: str, task: str | None, timeout_s: float, runner: Runner | None = None) -> dict:
     """The JSON `vfg route` printed for this brief: {"task", "scripts", "presets", "fallback", "ms",
-    "tokens", "why"?, "unanswered"?}. Its stderr (the log line, any warning) goes to the runner's log.
+    "tokens", "held"?, "why"?, "unanswered"?}. Its stderr (the log line, any warning) goes to the runner's log.
     Raises RouteFailed with why."""
     args = ["route"] + (["--task", task] if task else [])
     r = await (runner or _runner())(args, (timeout_s + SLACK_S) * 1000, brief)
@@ -57,6 +57,8 @@ def summary(result: dict | None, failed: str | None = None) -> dict:
                         for s in result.get("scripts") or []],
             "presets": [{k: p.get(k) for k in ("name", "source", "p_use")} for p in result.get("presets") or []],
             "fallback": bool(result.get("fallback")), "ms": result.get("ms"), "tokens": result.get("tokens")}
+    if result.get("held"):  # picked, and already in a loaded script ("in"): not loaded again
+        keep["held"] = [{k: p.get(k) for k in ("name", "source", "p_use", "in")} for p in result["held"]]
     for k in ("why", "unanswered"):
         if result.get(k):
             keep[k] = result[k]

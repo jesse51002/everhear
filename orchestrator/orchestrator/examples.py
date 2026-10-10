@@ -5,9 +5,10 @@ this is the part that changes:
 
     EXAMPLES, picked for T7 by Jev in 0.3 s.
     ice_beam runs this job: run it, or change its values. galick_gun is close.
-    Presets to copy: crater, replace_blocks.
+    Presets to copy: crater and replace_blocks. Already in a loaded script: beam_clash (in galick_gun).
     Running: galick-alex (galick_gun, cooldown=0, T5), horror_mode (T2).
     Online: Steve 120 64 -40 overworld, Alex 98 70 -12 overworld. Night, clear.
+    That is the server now, read for you by vfg state: act on it, with no vfg state or vfg script list first.
 
     Made on this server (made/main/), by first line:
       ice_trail (preset): Lay packed ice under a player's feet as they walk.
@@ -204,6 +205,10 @@ def world_line(state: dict) -> str:
     return "Online: %s. %s, %s." % (", ".join(people) if people else "nobody", phase, weather)
 
 
+# After the state: the implementer acts on it rather than asking again.
+NOW = "That is the server now, read for you by vfg state: act on it, with no vfg state or vfg script list first."
+
+
 @dataclass
 class Gathered:
     """What one block is made of; build() gathers it, compose() writes it."""
@@ -247,7 +252,12 @@ def header(g: Gathered, libmod) -> list[str]:
         if words:
             says.append("Matched by words: %s." % and_list(words))
         lines.append(" ".join(says) if says else "No example script runs this job or is close to it.")
-        lines.append("Presets to copy: %s." % (and_list([_named(x) for x in p["presets"]]) or "none"))
+        presets = "Presets to copy: %s." % (and_list([_named(x) for x in p["presets"]]) or "none")
+        held = [x for x in p.get("held") or [] if isinstance(x, dict) and x.get("name")]
+        if held:
+            presets += " Already in a loaded script: %s." % and_list(
+                ["%s (in %s)" % (_named(x), x.get("in") or "a loaded script") for x in held])
+        lines.append(presets)
     if g.named:
         lines.append("Named in your brief, in full below: %s." % and_list([_named({"name": i.name, "source": i.source})
                                                                           for i in g.named]))
@@ -258,10 +268,14 @@ def header(g: Gathered, libmod) -> list[str]:
     lines.append("Running: %s." % (", ".join(instance_line(libmod, i) for i in running) if running else "nothing"))
     for inst, item in g.changing:
         where = "its script is below" if item is not None else "its script is not on this PC"
-        lines.append("Your brief names %s, running %s%s now with %s; %s." % (
+        # Another task's: its code stays as it is while it runs (the guard refuses an edit).
+        copy = ("" if g.task and inst.get("task") == g.task else
+                "; to change its code, copy it: vfg script new <new_name> --from %s" % inst.get("script"))
+        lines.append("Your brief names %s, running %s%s now with %s; %s%s." % (
             inst.get("instance"), inst.get("script"), " for " + inst["task"] if inst.get("task") else "",
-            _values(libmod, inst.get("values") or {}) or "no values", where))
+            _values(libmod, inst.get("values") or {}) or "no values", where, copy))
     lines.append(world_line(g.state))
+    lines.append(NOW)
     return lines
 
 

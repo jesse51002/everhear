@@ -48,7 +48,7 @@ REAL_HOME = os.path.expanduser("~")
 UV = os.path.expanduser("~/.local/bin/uv")
 INTERRUPTED = "The orchestrator restarted while this was running; anything it started may be half done."
 ORCH_RE = re.compile(r"ORCH#(\d+) (\d\d:\d\d:\d\d) (T\d+) (progress|done|failed) \| (.*)$")
-REFUSAL = re.compile(r"permission|denied|not allowed|Refused, but Bash works|Only files in the repository|"
+REFUSAL = re.compile(r"permission|denied|not allowed|Refused|Only files in the repository|"
                      r"Only the repository|owner's|Never edit|Leave model|Write the server command", re.I)
 
 T0 = time.time()

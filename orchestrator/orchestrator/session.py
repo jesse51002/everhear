@@ -13,7 +13,7 @@ from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, ClaudeSDKClien
 
 from . import prefix as implementer_prefix
 from .config import Config, hms, js_round, log, now_ms, parse_time
-from .guard import GuardContext, brief, make_guard, task_id_of
+from .guard import GuardContext, brief, make_guard, running_from_vfg, task_id_of
 from .reply import REPLY_TOOL, Outbox, create_reply_server
 from .tasks import Store
 from .usage import UsageMeter
@@ -51,7 +51,9 @@ def rules(repo: str, server: str = "main") -> list[str]:
     """The allow rules; with permission mode "dontAsk" everything else is denied without a prompt.
     Implementers run under them too: the session never writes, and runs only `vfg place list` and
     `vfg script list` (the guard refuses the rest on the main thread). Implementers write only in
-    this server's folder, made/<server>/; the library in scripts/ is read-only during play."""
+    this server's folder, made/<server>/; the library in scripts/ is read-only during play. echo,
+    ls, grep, head and tail are here for the forms the guard lets through: vfg piped into head,
+    tail or grep, and those on files in the repository."""
     return [
         REPLY_TOOL, "Agent", "TaskStop",
         "Read(/%s/**)" % repo, "Glob", "Grep",
@@ -59,7 +61,7 @@ def rules(repo: str, server: str = "main") -> list[str]:
         "Bash(vfg cmd *)",
         "Bash(vfg script deploy)", "Bash(vfg script deploy *)",
         "Bash(vfg script run *)", "Bash(vfg script stop *)", "Bash(vfg script logs *)",
-        "Bash(vfg script list)",
+        "Bash(vfg script list)", "Bash(vfg script list *)",
         "Bash(vfg script new *)", "Bash(vfg script set *)", "Bash(vfg script save *)",
         "Bash(vfg script check)", "Bash(vfg script check *)", "Bash(vfg preset save *)",
         "Bash(vfg state)", "Bash(vfg state *)",
@@ -67,6 +69,8 @@ def rules(repo: str, server: str = "main") -> list[str]:
         "Bash(vfg history)", "Bash(vfg history *)",
         "Bash(python3 -m py_compile *)",
         "Bash(sleep *)",
+        "Bash(echo)", "Bash(echo *)", "Bash(ls)", "Bash(ls *)",
+        "Bash(grep *)", "Bash(head *)", "Bash(tail *)",
     ]
 
 
@@ -378,6 +382,11 @@ class Session:
         def on_agent_allowed(task: str, tool_use_id: str) -> None:
             self.pending[tool_use_id or "anon-%s" % self.now()] = {"task": task, "at": self.now()}
 
+        def task_of(agent_id: str | None) -> str | None:
+            """An implementer's agent id is its SDK task id: the task it works on."""
+            imp = self.running.get(agent_id) if agent_id else None
+            return imp.task if imp is not None else None
+
         return GuardContext(
             repo=cfg.repo,
             max_implementers=cfg.max_implementers,
@@ -387,6 +396,8 @@ class Session:
             active_implementers=lambda: len(self.running) + len(self.pending),
             on_agent_allowed=on_agent_allowed,
             server=cfg.server,
+            task_of=task_of,
+            running=running_from_vfg(),
         )
 
     def options(self, resume: str | None = None) -> ClaudeAgentOptions:

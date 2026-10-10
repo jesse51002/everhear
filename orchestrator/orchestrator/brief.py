@@ -2,6 +2,7 @@
 every Agent call it allows, and hands the result to the CLI as the call's new prompt. Each step
 takes the brief and the Agent tool's input and returns the brief to use; adding a step is one line
 in STEPS."""
+import re
 from typing import Awaitable, Callable
 
 from . import vfg as vfg_module
@@ -16,10 +17,21 @@ BriefStep = Callable[[str, dict], Awaitable[str]]
 PLACES_TIMEOUT_MS = 10_000
 
 
+# When this vfg has no `place` command (it comes with the dispatcher's work), the brief says so, so
+# an implementer told to save a place does not try.
+PLACES_OFF = "SAVED PLACES: off (this vfg has no place command): save no place, whatever the brief says; PLACE none."
+
+
+def no_place_command(r: VfgResult) -> bool:
+    """vfg's argparse refused `place` as a command it does not have."""
+    return r.code == 2 and re.search(r"invalid choice: '?place'?", r.stderr) is not None
+
+
 def places_line(r: VfgResult) -> str:
-    """The SAVED PLACES line from `vfg place list`: its lines joined with '; ', none, or why not."""
+    """The SAVED PLACES line from `vfg place list`: its lines joined with '; ', none, off when vfg has no
+    place command, or why not."""
     if r.code != 0:
-        return "SAVED PLACES: unavailable (%s)" % why(r)
+        return PLACES_OFF if no_place_command(r) else "SAVED PLACES: unavailable (%s)" % why(r)
     lines = [line.strip() for line in r.stdout.splitlines() if line.strip()]
     if not lines or lines == ["none"]:
         return "SAVED PLACES: none"

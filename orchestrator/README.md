@@ -24,12 +24,22 @@ for the subagents. `%REPO%`, `%MAX_IMPLEMENTERS%` and `%SERVER%` (`VFG_SERVER`) 
 [`orchestrator/guard.py`](orchestrator/guard.py) is a hook on every tool call: it keeps the main
 thread to orchestrating (its commands are `vfg script list`, to keep work from colliding, and
 `vfg place list`), and refuses the server commands that are the owner's (`stop`, `op`, `ban`,
-`whitelist`, `kick` …), any shell command outside the allowed `vfg` forms, reads outside the repo,
+`whitelist`, `kick` …), any shell command outside the allowed forms, reads outside the repo,
 and any write but in this server's folder, `made/<VFG_SERVER>/`: the library in `scripts/` (its
 `_presets/` and `_lib/` too) is read-only during play, and a write there is refused with a pointer
 to `vfg script new`, which copies into the server's folder. Implementers run `vfg cmd`,
 `vfg script new|run|set|save|check|stop|logs|list|deploy`, `vfg preset save`, `vfg state`,
-`vfg place save|list` and `vfg history`, but never `vfg script new --library`.
+`vfg place save|list` and `vfg history`, but never `vfg script new --library`; joined with `&&`
+or `;`, with `2>&1`, `>&2` or `>/dev/null`, and piped into `head -n N`, `tail -n N` or `grep`; and
+`echo`, `sleep N`, `python3 -m py_compile`, and `ls`, `grep`, `head` and `tail` on files in the
+repo. Never `$( )`, backticks or variables, loops, `( )`, a lone `&`, a redirection into or out of
+a file, or another program: each refusal is one line saying what to send instead (`mkdir` points
+at `vfg script new`, `cat` and `sed` at Read, `find` at Glob, `ps` at `vfg script list`), so the
+next call runs. And an implementer may not Edit or Write a script in `made/<VFG_SERVER>/scripts/`
+that an instance another task started is running (`vfg state --json`, asked only for a script the
+implementer did not make itself, and kept 3 s): new code is a new script, `vfg script new
+<new_name> --from <it>`. A script it made with `vfg script new` or `vfg script save`, or whose
+instance its own task started, it fixes freely; when what runs cannot be told, the edit goes.
 
 When the guard allows an `Agent` call it also rewrites the brief:
 [`orchestrator/brief.py`](orchestrator/brief.py) runs its `STEPS` in order, and the new brief goes
@@ -39,17 +49,21 @@ that fails is skipped, and the call is never held up.
 1. **Saved places** (`saved_places`): implementers may run `vfg place save` and `vfg place list`,
    and save the place of every build players may want to go back to. The step runs
    `vfg place list` fresh (10 s at most) and appends `SAVED PLACES: <name x y z dim (task); …>`,
-   `none`, or `unavailable (<why>)`.
+   `none`, `unavailable (<why>)`, or, when this `vfg` has no `place` command (it comes with the
+   dispatcher's work), `off`, telling the implementer to save no place whatever the brief says.
 2. **The EXAMPLES block** ([`orchestrator/examples.py`](orchestrator/examples.py)): `vfg route
    --task T7` on the orchestrator's brief ([`orchestrator/route.py`](orchestrator/route.py); Jev
    picks the example scripts and presets for the job, or words do when Jev is slow) and
    `vfg state --json`, at once. It appends who picked them and how fast; the script that runs the
-   job and those that are close; the presets to copy; every running instance with its script,
-   changed values and task; who is online, where and in which dimension, the time and the
-   weather; the first line of every script and preset in `made/<VFG_SERVER>/`; and then, each
+   job and those that are close; the presets to copy, and those Jev picked that a loaded script
+   already holds, with the script they are in; every running instance with its script, changed
+   values and task; who is online, where and in which dimension, the time and the weather, and a
+   line saying to act on that rather than ask again; the first line of every script and preset in
+   `made/<VFG_SERVER>/`; and then, each
    under `=== <path> ===`, whole and with no cap: every script the router loaded (those that run
    the job first), every preset it loaded, every script the brief names, and the script of every
-   running instance the brief names, with that instance's values now. Whatever fails, the block
+   running instance the brief names, with that instance's values now (and, when another task
+   started it, the `vfg script new <new_name> --from <script>` that copies it to be changed). Whatever fails, the block
    says what is missing, and the step never takes longer than `VFG_ROUTE_TIMEOUT_S` and a second.
    The picks go into the task's record in `state.json` (`tasks.T7.implementers[]`: the
    description, the time, the picks, the files loaded), and the router's log line into the log.
