@@ -9,14 +9,13 @@ absolute path, nothing from made/ (what implementers make goes in each brief):
   2. the kit, in full: scripts/_lib/mc.py, then every file in scripts/_lib/kit/
      by name;
   3. every library preset and example script, sorted by name: a preset's first
-     line and values (its values class, as written; else its VALUES), a script's
-     first line only, since the brief carries every action in full.
+     line and its values class, as written; a script's first line only, since the
+     brief carries every action in full.
 
 `vfg prefix` prints it. The orchestrator puts it after the implementer's rules.
 
 Python 3.9+, standard library only, like toolkit/vfg.
 """
-import json
 import os
 
 import route
@@ -55,27 +54,6 @@ def kit_files(repo):
     return rels
 
 
-def value_line(name, spec):
-    """`crater_radius  int 2..64 = 8, live` — one VALUES entry, compact."""
-    if not isinstance(spec, dict):
-        return "  %s  %s" % (name, json.dumps(spec, ensure_ascii=False, sort_keys=True))
-    kind = str(spec.get("type", "?"))
-    if kind == "enum" and isinstance(spec.get("of"), (list, tuple)):
-        kind += " " + "|".join(str(o) for o in spec["of"])
-    elif kind == "list" and spec.get("of") is not None:
-        of = spec["of"]
-        kind += " of " + ("|".join(str(o) for o in of) if isinstance(of, (list, tuple)) else str(of))
-    lo, hi = spec.get("min"), spec.get("max")
-    if lo is not None and hi is not None:
-        kind += " %s..%s" % (lo, hi)
-    elif lo is not None:
-        kind += " >=%s" % lo
-    elif hi is not None:
-        kind += " <=%s" % hi
-    line = "  %s  %s = %s" % (name, kind, json.dumps(spec.get("default"), ensure_ascii=False, sort_keys=True))
-    return line + (", live" if spec.get("live") else "")
-
-
 def class_lines(preset):
     """`  crater_radius: Live[int] = Field(8, ge=2, le=64) — how wide the crater is, in blocks`:
     each field of a preset's values class as written, with the description under it."""
@@ -107,11 +85,8 @@ def library_lines(repo):
         if c["kind"] != "preset":
             continue
         it = lib.preset(c["name"])
-        if it is not None and route.library.values_class_fields(it) is not None:
+        if it is not None:
             out += class_lines(it)
-        else:
-            for name, spec in c["values"].items():
-                out.append(value_line(name, spec))
     return out
 
 

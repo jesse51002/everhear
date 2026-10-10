@@ -673,7 +673,7 @@ async def test_the_selector_sees_every_action_every_running_copy_and_the_saved_p
     assert plan.prompt.startswith("ACTION: teleport\nMove a player")
     assert "To another player it is one `tp`, which the command action does" in plan.prompt
     assert "\nIt runs once and reports what it did.\n" in plan.prompt
-    assert ("\nVALUES (fill each one; one the instruction does not give keeps its default):\n- player (player names "
+    assert ("\nFIELDS (fill each one; one the instruction does not give keeps its default):\n- player (player names "
             "separated by commas, or @a, @r, @p; default \"@a\"): who moves") in plan.prompt
     assert "- dimension (one of overworld, the_nether, the_end; default \"overworld\")" in plan.prompt
     assert "INSTRUCTION: teleport Alex to a village\nCONTEXT: Alex asked\n" in plan.prompt
@@ -696,7 +696,7 @@ async def test_the_planner_sees_and_fills_only_the_values_the_action_takes(h):
                                                        action="gatling_gun", running=True))
     tid = await h.run("give Steve a gatling gun for mobs")
     prompt = h.llm.prompts("Planned_gatling_gun")[0]
-    values = prompt.split("VALUES (fill each one", 1)[1].split("\n\nINSTRUCTION:", 1)[0]
+    values = prompt.split("FIELDS (fill each one", 1)[1].split("\n\nINSTRUCTION:", 1)[0]
     assert [x.split(" (", 1)[0] for x in values.splitlines()[1:]] == ["- player", "- damage_amount", "- damage_what"]
     assert "cooldown" not in values and "particle" not in values  # fixed, or not taken: an edit reaches them
     assert "It runs until stopped: it keeps going after it reports" in prompt

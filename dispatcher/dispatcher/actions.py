@@ -87,7 +87,7 @@ def view(name: str, cls) -> str:
             takes[-1] += " " + line.strip()  # a description on more than one line
     values = "\n".join(takes) or "(none)"
     return (f"ACTION: {name}\n{doc(cls)}\n\n{runs_words(cls)}\n\n"
-            f"VALUES (fill each one; one the instruction does not give keeps its default):\n{values}\n")
+            f"FIELDS (fill each one; one the instruction does not give keeps its default):\n{values}\n")
 
 
 def command_fields(model) -> list[str]:

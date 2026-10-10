@@ -10,7 +10,7 @@ briefs.jsonl holds each brief as the orchestrator wrote it on 2026-10-08, its
 task and context from the inbox, and its labels: every example script and
 preset that is part of the job, from what the implementer actually did, with
 players' names replaced (Steve, Alex, Sam); `values_only` marks the 19 jobs the
-examples now do by their VALUES alone, where the labelled script should come
+examples now do by their values alone, where the labelled script should come
 back runs_it rather than close. It runs against whatever is in the
 library now (VFG_REPO, default this repo), never this server's made/ folder.
 
