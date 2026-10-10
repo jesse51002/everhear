@@ -43,9 +43,15 @@ from fake_rcon import FakeRcon  # noqa: E402
 
 TMP = tempfile.mkdtemp(prefix="vfg-core-test-")
 OW, NETHER = "minecraft:overworld", "minecraft:the_nether"
+# A script that naps until stopped, its result written once it is up, as a script's result() is.
 NAP = '''import json, os, time
-meta = json.load(open(os.path.join(os.environ["VFG_RUN_DIR"], os.environ["VFG_SCRIPT"] + ".json")))
+run, name = os.environ["VFG_RUN_DIR"], os.environ["VFG_SCRIPT"]
+meta = json.load(open(os.path.join(run, name + ".json")))
 print("values", json.dumps(meta["values"], sort_keys=True), flush=True)
+# ready
+with open(os.path.join(run, name + ".result.json.tmp"), "w") as f:
+    json.dump({"summary": "napping", "facts": {}, "at": time.time()}, f)
+os.replace(os.path.join(run, name + ".result.json.tmp"), os.path.join(run, name + ".result.json"))
 time.sleep(60)
 '''
 
@@ -114,7 +120,7 @@ class Box(object):
                 "live": list(live), "runs": "until_stopped", "task": "T4"}
         name, pid, proc = self.box.start(meta, as_)
         self.procs.append(proc)
-        self.box.wait(name, proc, 0.3)
+        self.box.wait(name, proc, 5, on_result=True)
         return name
 
     def run(self, action, given=None, raw=None, task="T7", extra=None, timeout=60):
@@ -881,7 +887,7 @@ class EditTests(BoxTest):
         name = b.nap({"cooldown": 2, "player": "@a"})
         pid = b.box.pid(name)
         r = self.edit(b, name, {"cooldown": 2, "player": "Alex"}, ["player"], False)
-        self.assertEqual((r.code, r.summary), (0, "restarted nap with player=Alex"))
+        self.assertEqual((r.code, r.summary), (0, "restarted nap with player=Alex: napping"))   # and what it said
         self.assertEqual((r.facts["live"], r.facts["restarted"], r.facts["running"]), (False, True, True))
         new = b.box.pid(name)
         self.assertTrue(new and new != pid)
@@ -897,12 +903,13 @@ class EditTests(BoxTest):
         folder = os.path.join(b.base, "scripts", "picky")
         os.makedirs(folder)
         with open(os.path.join(folder, "main.py"), "w") as f:
-            f.write(NAP.replace("time.sleep(60)", 'import mc\nif meta["values"]["player"] == "Bob":\n'
-                                                   '    raise ValueError("Bob is not welcome")\ntime.sleep(60)'))
+            f.write(NAP.replace("# ready\n", 'import mc\nif meta["values"]["player"] == "Bob":\n'
+                                              '    raise ValueError("Bob is not welcome")\n'))
         meta = {"action": "picky", "script": "picky", "source": "library", "values": {"player": "Alex"},
                 "live": [], "runs": "until_stopped", "task": "T4"}
         name, pid, proc = b.box.start(meta)
         b.procs.append(proc)
+        b.box.wait(name, proc, 5, on_result=True)
         r = self.edit(b, name, {"player": "Bob"}, ["player"], False)
         self.assertEqual((r.code, r.summary), (1, "restarted picky with player=Bob, but it exited with code 1: "
                                                   "ValueError: Bob is not welcome"))
