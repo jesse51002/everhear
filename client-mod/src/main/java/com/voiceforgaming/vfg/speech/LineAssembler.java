@@ -151,8 +151,9 @@ public final class LineAssembler {
 	}
 
 	/**
-	 * The turn model's verdict on the open line, at the pause after the segment that just
-	 * joined or opened it. {@code verdict} is its words, such as {@code turn 0.93 in 31 ms}.
+	 * The turn model's verdict on the open line, at a pause: after the segment that just
+	 * joined or opened it, or after one that was dropped. {@code verdict} is its words, such
+	 * as {@code turn 0.93 in 31 ms}.
 	 * A finished line is marked, and closes at the next {@link #tick} that finds no speech in
 	 * progress and nothing waiting; one that is not finished waits for more speech, or for
 	 * the silence to run out.

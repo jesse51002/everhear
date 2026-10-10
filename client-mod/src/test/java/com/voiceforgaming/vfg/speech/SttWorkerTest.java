@@ -17,7 +17,7 @@ import org.junit.jupiter.api.Test;
 
 /**
  * The {@code vfg-stt} worker with a stand-in turn model and transcriber, and a clock the
- * test moves: which segments are scored, on what audio, and what each score does to the
+ * test moves: which pauses are scored, on what audio, and what each score does to the
  * line. Capture starts at {@link #T0}, sample 0.
  */
 class SttWorkerTest {
@@ -102,29 +102,41 @@ class SttWorkerTest {
 		return out;
 	}
 
-	/**
-	 * Speech from {@code startMs} to {@code endMs} after {@link #T0}, as the capture thread hands
-	 * it over when the VAD pops it 0.6 s later: with the last 9 s up to 0.2 s past its end.
-	 */
-	private static Segment speech(long startMs, long endMs, boolean cut, boolean forLine) {
+	/** Speech from {@code startMs} to {@code endMs} after {@link #T0}, for a line or for the mic test. */
+	private static Segment speech(long startMs, long endMs, boolean forLine) {
 		long first = startMs * 16;
-		long end = endMs * 16;
-		long popped = end + 9600;
-		long audioStart = Math.max(0, popped - SampleRing.CAPACITY);
-		float[] audio = cut || !forLine ? null : samples(audioStart, end + CaptureProcessor.TAIL_SAMPLES);
-		return Segment.of(samples(first, end), T0 + startMs, T0 + endMs, forLine, first, cut, audioStart, audio);
+		return Segment.of(samples(first, endMs * 16), T0 + startMs, T0 + endMs, forLine, first);
 	}
 
 	private static Segment speech(long startMs, long endMs) {
-		return speech(startMs, endMs, false, true);
+		return speech(startMs, endMs, true);
 	}
 
-	/** {@code text} said from {@code startMs} to {@code endMs}: queued at its pop, transcribed 100 ms later. */
+	/**
+	 * The pause after {@code segment}, as the capture thread hands it over 0.6 s after its
+	 * speech: the last 9 s up to 0.2 s past it.
+	 */
+	private static Pause pauseAfter(Segment segment) {
+		long end = (segment.endMillis() - T0) * 16;
+		long audioStart = Math.max(0, end + 9600 - SampleRing.CAPACITY);
+		return new Pause(audioStart, samples(audioStart, end + CaptureProcessor.TAIL_SAMPLES));
+	}
+
+	/** {@code text} said in {@code segment}, and the pause after it: both queued at its pop, handled 100 ms later. */
 	private void say(String text, Segment segment) throws InterruptedException {
 		said.add(text);
 		stt.submit(new SttWorker.SegmentItem(segment));
+		stt.submit(pauseAfter(segment));
 		now.set(segment.endMillis() + 700);
-		stt.step(0);
+		stt.drainNow();
+	}
+
+	/** {@code text} said in {@code segment} with no pause after it yet: the VAD cut it at its 7 s cap. */
+	private void sayCapped(String text, Segment segment) throws InterruptedException {
+		said.add(text);
+		stt.submit(new SttWorker.SegmentItem(segment));
+		now.set(segment.endMillis() + 200);
+		stt.drainNow();
 	}
 
 	/** Ticks every 250 ms, as {@code vfg-stt} does, until {@code ms} after {@link #T0}. */
@@ -196,8 +208,8 @@ class SttWorkerTest {
 		say("two", speech(5000, 8000));
 		say("three", speech(9000, 11_000));
 		float[] last = turn.heard.get(2);
-		assertEquals(Segment.TURN_SAMPLES, last.length);
-		assertArrayEquals(samples(11_000 * 16 + 3200 - Segment.TURN_SAMPLES, 11_000 * 16 + 3200), last);
+		assertEquals(Pause.TURN_SAMPLES, last.length);
+		assertArrayEquals(samples(11_000 * 16 + 3200 - Pause.TURN_SAMPLES, 11_000 * 16 + 3200), last);
 	}
 
 	@Test
@@ -225,29 +237,72 @@ class SttWorkerTest {
 	}
 
 	@Test
-	void droppedCutAndMicTestSegmentsAreNotScored() throws Exception {
+	void aDroppedSegmentsPauseStillScoresTheOpenLineAndCanCloseIt() throws Exception {
 		worker();
-		say("...", speech(1000, 2000)); // dropped: no letter or digit
-		say("build me a castle and then", speech(3000, 10_000, true, true)); // cut at the 7 s cap
+		speaking.set(true); // they cough as the first pause comes: no verdict there
+		say("build me a castle", speech(1000, 2300));
+		speaking.set(false);
 		assertTrue(turn.heard.isEmpty());
-		assertTrue(stt.lineOpen());
-		stt.submit(SttWorker.Control.DISCARD);
-		stt.step(0);
-		say("testing", speech(12_000, 13_000, false, false)); // the settings screen's mic test
-		assertTrue(turn.heard.isEmpty());
-		assertTrue(lines.isEmpty());
+		turn.answering(0.94f);
+		say("...", speech(2900, 3200)); // the cough: dropped, but its pause is a pause
+		assertEquals(1, lines.size());
+		assertEquals("build me a castle", lines.get(0).text());
+		assertEquals(T0 + 3900, lines.get(0).closedAtMillis(), "at the cough's pause, not 3.5 s after the speech");
+		assertArrayEquals(samples(1000 * 16 - 8000, 3200 * 16 + 3200), turn.heard.get(0), "up to past the cough");
+		assertDecisions("turn 0\\.94 in \\d+ ms: closed");
 	}
 
 	@Test
-	void aCutSegmentJoinsTheLineAndTheNextOneIsScored() throws Exception {
+	void aFinishedMarkClearedByACoughIsScoredAgainAtTheCoughsPause() throws Exception {
+		worker();
+		turn.answering(0.93f, 0.95f).during = () -> speaking.set(true); // the cough starts during the score
+		say("build me a castle", speech(1000, 2300));
+		assertTrue(stt.lineOpen(), "the tick saw the cough");
+		speaking.set(false);
+		turn.during = () -> {};
+		say(".", speech(2400, 2800)); // the cough, heard as no words: dropped
+		assertEquals(1, lines.size());
+		assertDecisions("turn 0\\.93 in \\d+ ms: waiting, speech again", "turn 0\\.95 in \\d+ ms: closed");
+	}
+
+	@Test
+	void aSegmentCutAtTheCapIsScoredAtThePauseThatComesAfterIt() throws Exception {
 		worker();
 		turn.answering(0.9f);
-		say("build me a castle and then", speech(1000, 8100, true, true));
+		sayCapped("build me a castle out of stone with a tower on every corner", speech(1000, 8250));
+		assertTrue(turn.heard.isEmpty(), "no pause yet");
+		assertTrue(stt.lineOpen());
+		stt.submit(pauseAfter(speech(1000, 8250)));
+		now.set(T0 + 8250 + 600);
+		stt.drainNow();
+		assertEquals(1, lines.size());
+		assertEquals(T0 + 8850, lines.get(0).closedAtMillis());
+		assertArrayEquals(samples(1000 * 16 - 8000, 8250 * 16 + 3200), turn.heard.get(0),
+			"from 0.5 s before the line to 0.2 s past its speech");
+	}
+
+	@Test
+	void aSegmentCutAtTheCapWhileTheTalkGoesOnIsScoredAtTheNextSegmentsPause() throws Exception {
+		worker();
+		turn.answering(0.9f);
+		sayCapped("build me a castle and then", speech(1000, 8100));
 		say("put a moat around it", speech(8150, 9500));
 		assertEquals(1, turn.heard.size());
 		assertEquals(1, lines.size());
 		assertEquals("build me a castle and then put a moat around it", lines.get(0).text());
-		assertArrayEquals(samples(9500 * 16 + 3200 - Segment.TURN_SAMPLES, 9500 * 16 + 3200), turn.heard.get(0));
+		assertArrayEquals(samples(9500 * 16 + 3200 - Pause.TURN_SAMPLES, 9500 * 16 + 3200), turn.heard.get(0));
+	}
+
+	@Test
+	void aPauseWithNoLineOpenScoresNothing() throws Exception {
+		worker();
+		say("...", speech(1000, 2000)); // dropped, and no line open
+		said.add("testing");
+		stt.submit(new SttWorker.SegmentItem(speech(3000, 4000, false))); // the mic test: no pause comes
+		stt.drainNow();
+		assertTrue(turn.heard.isEmpty());
+		assertFalse(stt.lineOpen());
+		assertTrue(lines.isEmpty());
 	}
 
 	@Test

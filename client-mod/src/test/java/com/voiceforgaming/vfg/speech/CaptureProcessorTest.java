@@ -4,19 +4,20 @@ import static com.voiceforgaming.vfg.speech.SttWorkerTest.samples;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.voiceforgaming.vfg.audio.WindowListener.StopReason;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 
 /**
- * What the capture thread keeps for the turn model and hands over with each segment: the
- * last 9 s of samples, copied up to 0.2 s past a segment's last sample, and whether the VAD
- * cut the segment mid-speech. Every sample fed in is told apart from every other one
+ * What the capture thread hands over for the turn model: a pause after each segment, at
+ * once after one the VAD ended on its 0.6 s of silence and 0.6 s later after one it cut at
+ * its 7 s cap, with the last 9 s of samples copied up to 0.2 s past the segment's last
+ * sample. Every sample fed in is told apart from every other one
  * ({@link SttWorkerTest#sample}), so a copy shows exactly which samples it holds.
  */
 class CaptureProcessorTest {
@@ -53,9 +54,10 @@ class CaptureProcessorTest {
 			return out;
 		}
 
+		/** Speech is in progress from a planned segment's start until it pops. */
 		@Override
 		public boolean speaking() {
-			return false;
+			return plans.stream().anyMatch(p -> p.start() <= count && count < p.popAt());
 		}
 
 		@Override
@@ -74,7 +76,8 @@ class CaptureProcessorTest {
 	private final AtomicLong now = new AtomicLong(T0);
 	private final PlannedVad vad = new PlannedVad();
 	private final List<SttWorker.Item> out = new ArrayList<>();
-	private final CaptureProcessor capture = new CaptureProcessor(() -> vad, out::add);
+	private final AtomicBoolean turnLoaded = new AtomicBoolean(true);
+	private final CaptureProcessor capture = new CaptureProcessor(() -> vad, turnLoaded::get, out::add);
 	private long fed; // every sample fed so far, across restarts
 
 	/** Feeds {@code count} samples (a multiple of 512), a window at a time, as the mic would. */
@@ -87,25 +90,44 @@ class CaptureProcessorTest {
 		}
 	}
 
+	/** Feeds windows until {@code total} samples have been fed since the test began. */
+	private void feedTo(long total) {
+		feed(total - fed);
+	}
+
+	/** The window the capture thread is in when the sample count first reaches {@code samples}. */
+	private static long window(long samples) {
+		return (samples + 511) / 512 * 512;
+	}
+
 	private List<Segment> segments() {
 		return out.stream().filter(i -> i instanceof SttWorker.SegmentItem)
 			.map(i -> ((SttWorker.SegmentItem) i).segment()).toList();
 	}
 
+	private List<Pause> pauses() {
+		return out.stream().filter(i -> i instanceof Pause).map(i -> (Pause) i).toList();
+	}
+
+	/** What was queued, in order: "segment", "pause", or the control item. */
+	private List<String> queued() {
+		return out.stream().map(i -> i instanceof SttWorker.SegmentItem ? "segment" : i instanceof Pause ? "pause"
+			: i.toString()).toList();
+	}
+
 	@Test
-	void aSegmentGetsTheRingUpToAFifthOfASecondPastItsLastSample() {
+	void aSegmentEndedByItsSilenceIsFollowedByItsPauseAtOnce() {
 		capture.onStarted(true);
 		vad.plan(16_384, 48_128, 48_128 + 9600); // speech from 1.0 s to 3.0 s, popped 0.6 s later
 		feed(4 * 16_384);
-		List<Segment> got = segments();
-		assertEquals(1, got.size());
-		Segment s = got.getFirst();
+		assertEquals(List.of("segment", "pause"), queued());
+		Segment s = segments().getFirst();
 		assertEquals(16_384, s.first());
-		assertFalse(s.cut());
-		assertEquals(0, s.audioStart());
-		assertArrayEquals(samples(0, 48_128 + CaptureProcessor.TAIL_SAMPLES), s.audio());
 		assertArrayEquals(samples(16_384, 48_128), s.samples());
 		assertTrue(s.forLine());
+		Pause p = pauses().getFirst();
+		assertEquals(0, p.audioStart());
+		assertArrayEquals(samples(0, 48_128 + CaptureProcessor.TAIL_SAMPLES), p.audio(), "up to 0.2 s past the speech");
 	}
 
 	@Test
@@ -115,77 +137,97 @@ class CaptureProcessorTest {
 		long end = start + 16_384;
 		vad.plan(start, end, end + 9600);
 		feed(12 * 16_384);
-		Segment s = segments().getFirst();
-		long poppedAt = (end + 9600 + 511) / 512 * 512; // the window the VAD popped it in
-		assertEquals(poppedAt - SampleRing.CAPACITY, s.audioStart());
-		assertArrayEquals(samples(s.audioStart(), end + CaptureProcessor.TAIL_SAMPLES), s.audio());
+		Pause p = pauses().getFirst();
+		assertEquals(window(end + 9600) - SampleRing.CAPACITY, p.audioStart());
+		assertArrayEquals(samples(p.audioStart(), end + CaptureProcessor.TAIL_SAMPLES), p.audio());
 	}
 
 	@Test
-	void aSegmentPoppedWithoutItsFullSilenceWasCutAndGetsNoAudio() {
+	void aSegmentCutAtTheCapThatEndedTheSpeechHasItsPause06SecondsAfterIt() {
+		capture.onStarted(true);
+		long end = 7 * 16_000;
+		vad.plan(0, end, end + 1600); // the 7 s cap ends it at a 0.1 s dip, and the player has stopped
+		long due = window(end + 9600);
+		feedTo(due - 512);
+		assertEquals(List.of("segment"), queued(), "no pause yet: 0.6 s have not passed");
+		feed(512);
+		assertEquals(List.of("segment", "pause"), queued());
+		assertArrayEquals(samples(0, end + CaptureProcessor.TAIL_SAMPLES), pauses().getFirst().audio());
+		feed(4 * 16_384);
+		assertEquals(1, pauses().size(), "one pause");
+	}
+
+	@Test
+	void aSegmentCutAtTheCapWhileTheTalkGoesOnHasNoPauseOfItsOwn() {
 		capture.onStarted(true);
 		vad.plan(0, 7 * 16_000, 7 * 16_000 + 1600); // the 7 s cap ends it at a 0.1 s dip
-		vad.plan(7 * 16_000 + 1600, 8 * 16_000, 8 * 16_000 + 9600); // then a pause
+		vad.plan(7 * 16_000 + 1600, 8 * 16_000, 8 * 16_000 + 9600); // the talk goes on, then a pause
 		feed(10 * 16_384);
-		List<Segment> got = segments();
-		assertTrue(got.get(0).cut());
-		assertNull(got.get(0).audio());
-		assertFalse(got.get(1).cut());
-		assertArrayEquals(samples(0, 8 * 16_000 + CaptureProcessor.TAIL_SAMPLES), got.get(1).audio());
+		assertEquals(List.of("segment", "segment", "pause"), queued());
+		assertArrayEquals(samples(0, 8 * 16_000 + CaptureProcessor.TAIL_SAMPLES), pauses().getFirst().audio());
 	}
 
 	@Test
-	void leavingMidSpeechFlushesACutSegment() {
+	void leavingMidSpeechFlushesASegmentWithNoPause() {
 		capture.onStarted(true);
 		vad.plan(16_384, Long.MAX_VALUE, Long.MAX_VALUE); // still talking when the player leaves
 		feed(2 * 16_384);
 		capture.onStopped(StopReason.LEAVE);
-		Segment s = segments().getFirst();
-		assertTrue(s.cut());
-		assertNull(s.audio());
-		assertEquals(16_384, s.samples().length);
-		assertEquals(SttWorker.Control.CLOSE_NOW, out.getLast());
+		assertEquals(List.of("segment", "CLOSE_NOW"), queued());
+		assertEquals(16_384, segments().getFirst().samples().length);
 	}
 
 	@Test
-	void theMicTestGetsNoAudio() {
+	void theMicTestHasNoPauses() {
 		capture.onStarted(false);
 		vad.plan(16_384, 32_768, 32_768 + 9600);
-		feed(4 * 16_384);
-		Segment s = segments().getFirst();
-		assertFalse(s.forLine());
-		assertFalse(s.cut());
-		assertNull(s.audio());
+		vad.plan(40_000, 40_000 + 7 * 16_000, 40_000 + 7 * 16_000 + 1600);
+		feed(14 * 16_384);
+		assertEquals(List.of("segment", "segment"), queued());
+		assertFalse(segments().getFirst().forLine());
 	}
 
 	@Test
-	void restartingCountsFromZeroAndForgetsTheRing() {
+	void withNoTurnModelNothingIsCopiedAndThereAreNoPauses() {
+		turnLoaded.set(false); // turn_model: off, or still downloading
 		capture.onStarted(true);
-		feed(3 * 16_384);
+		vad.plan(16_384, 48_128, 48_128 + 9600);
+		vad.plan(60_000, 60_000 + 7 * 16_000, 60_000 + 7 * 16_000 + 1600);
+		feed(14 * 16_384);
+		assertEquals(List.of("segment", "segment"), queued());
+	}
+
+	@Test
+	void restartingCountsFromZeroAndForgetsTheRingAndAPauseDue() {
+		capture.onStarted(true);
+		vad.plan(0, 7 * 16_000, 7 * 16_000 + 1600); // cut at the cap: its pause is due 0.6 s later
+		feed(window(7 * 16_000 + 1600));
 		capture.onStopped(StopReason.DISCARD);
+		assertEquals(List.of("segment", "DISCARD"), queued(), "stopped before the pause was due");
 		long restartedAt = fed;
 		capture.onStarted(true);
 		vad.plan(8192, 24_576, 24_576 + 9600);
 		feed(3 * 16_384);
-		Segment s = segments().getFirst();
-		assertEquals(8192, s.first(), "numbered from the restart");
-		assertEquals(0, s.audioStart());
-		assertArrayEquals(samples(restartedAt, restartedAt + 24_576 + CaptureProcessor.TAIL_SAMPLES), s.audio(),
+		assertEquals(List.of("segment", "DISCARD", "segment", "pause"), queued());
+		assertEquals(8192, segments().getLast().first(), "numbered from the restart");
+		Pause p = pauses().getFirst();
+		assertEquals(0, p.audioStart());
+		assertArrayEquals(samples(restartedAt, restartedAt + 24_576 + CaptureProcessor.TAIL_SAMPLES), p.audio(),
 			"nothing from before the restart");
 	}
 
 	@Test
 	void theTurnModelHearsHalfASecondBeforeTheLineAndAtMost8Seconds() {
 		float[] audio = samples(1000, 1000 + SampleRing.CAPACITY - 6400); // 8.6 s, as a pop leaves it
-		Segment s = Segment.of(new float[16_000], 0, 1000, true, 100_000, false, 1000, audio);
+		Pause p = new Pause(1000, audio);
 		long end = 1000 + audio.length;
-		assertArrayEquals(samples(100_000 - 8000, end), s.turnAudio(100_000), "0.5 s before the line's first sample");
-		assertArrayEquals(samples(end - Segment.TURN_SAMPLES, end), s.turnAudio(1000), "the last 8 s of a longer line");
-		assertEquals(Segment.TURN_SAMPLES, s.turnAudio(0).length);
+		assertArrayEquals(samples(100_000 - 8000, end), p.turnAudio(100_000), "0.5 s before the line's first sample");
+		assertArrayEquals(samples(end - Pause.TURN_SAMPLES, end), p.turnAudio(1000), "the last 8 s of a longer line");
+		assertEquals(Pause.TURN_SAMPLES, p.turnAudio(0).length);
 
 		float[] short4s = samples(1000, 1000 + 64_000);
-		Segment early = Segment.of(new float[16_000], 0, 1000, true, 3000, false, 1000, short4s);
-		assertArrayEquals(short4s, early.turnAudio(3000), "no earlier than the copy goes, just after capture started");
+		assertArrayEquals(short4s, new Pause(1000, short4s).turnAudio(3000),
+			"no earlier than the copy goes, just after capture started");
 	}
 
 	@Test
@@ -197,7 +239,7 @@ class CaptureProcessorTest {
 		CaptureProcessor[] cp = new CaptureProcessor[1];
 		SttWorker stt = new SttWorker(() -> words, () -> turn, null, assembler, () -> cp[0].speaking(), t -> {},
 			() -> false);
-		CaptureProcessor wired = new CaptureProcessor(() -> vad, stt::submit);
+		CaptureProcessor wired = new CaptureProcessor(() -> vad, () -> true, stt::submit);
 		cp[0] = wired;
 		wired.onStarted(true);
 		long first = 16_384;
@@ -213,8 +255,38 @@ class CaptureProcessorTest {
 			stt.drainNow();
 		}
 		assertEquals(1, lines.size());
-		assertEquals(T0 + (end + 9600 + 511) / 512 * 512 / 16, lastWindow, "closed in the window the VAD popped it");
+		assertEquals(T0 + window(end + 9600) / 16, lastWindow, "closed in the window the VAD popped it");
 		assertEquals(lastWindow, lines.getFirst().closedAtMillis());
 		assertArrayEquals(samples(first - 8000, end + CaptureProcessor.TAIL_SAMPLES), turn.heard.getFirst());
+	}
+
+	@Test
+	void aLineCutAtTheCapClosesAtThePauseAfterIt() throws Exception {
+		List<LineAssembler.Line> lines = new ArrayList<>();
+		SttWorkerTest.FakeTurn turn = new SttWorkerTest.FakeTurn().answering(0.9f);
+		LineAssembler assembler = new LineAssembler(3, now::get, lines::add);
+		Transcriber words = s -> "build me a castle out of stone with a tall tower on every corner";
+		CaptureProcessor[] cp = new CaptureProcessor[1];
+		SttWorker stt = new SttWorker(() -> words, () -> turn, null, assembler, () -> cp[0].speaking(), t -> {},
+			() -> false);
+		CaptureProcessor wired = new CaptureProcessor(() -> vad, () -> true, stt::submit);
+		cp[0] = wired;
+		wired.onStarted(true);
+		long first = 16_384;
+		long end = first + 7 * 16_000 + 4000; // 7.25 s of talk, cut at the cap on its last word
+		vad.plan(first, end, end + 1600);
+		long lastWindow = 0;
+		for (long k = 0; k < 10 * 16_384 && lines.isEmpty(); k += 512) {
+			float[] w = samples(fed, fed + 512);
+			fed += 512;
+			now.set(T0 + fed / 16);
+			lastWindow = now.get();
+			wired.onWindow(w, now.get());
+			stt.drainNow();
+		}
+		assertEquals(1, lines.size());
+		assertEquals(T0 + window(end + 9600) / 16, lastWindow, "closed 0.6 s after the speech, not 3.5 s");
+		assertArrayEquals(samples(first - 8000, end + CaptureProcessor.TAIL_SAMPLES), turn.heard.getFirst(),
+			"from 0.5 s before the line to 0.2 s past its speech");
 	}
 }

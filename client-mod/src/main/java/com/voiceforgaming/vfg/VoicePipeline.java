@@ -64,7 +64,7 @@ public final class VoicePipeline {
 		CaptureProcessor[] cp = new CaptureProcessor[1];
 		this.stt = new SttWorker(transcriber, turn, turnThreshold, assembler, () -> cp[0].speaking(), events::heard,
 			logText);
-		this.capture = new CaptureProcessor(vad, stt::submit);
+		this.capture = new CaptureProcessor(vad, () -> turn.get() != null, stt::submit);
 		cp[0] = capture;
 		WindowListener publishing = new WindowListener() {
 			@Override

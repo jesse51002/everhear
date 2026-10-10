@@ -243,7 +243,8 @@ library sherpa-onnx has already loaded: `turn/OnnxRuntime.java` calls its C API 
 `java.lang.foreign`. (ONNX Runtime's own Java API would load a second copy of the runtime.)
 It installs and loads after the speech engine is ready, so it never holds up voice; until
 it is in, or if it cannot download or load, lines end on silence alone, with one warning in
-the log. A segment the VAD cut at its 7 s limit while you were still talking is not scored.
+the log. The model is asked at every pause, even after a cough or laugh that makes no line
+of its own; after speech the VAD cut at its 7 s limit, it is asked once 0.6 s of silence follow.
 `turn_model: turn-1-mini` swaps in [turn-1-mini](https://huggingface.co/p99lab/turn-1-mini)
 (p99lab, Apache-2.0); `./gradlew turnCompare` is how the two were measured.
 

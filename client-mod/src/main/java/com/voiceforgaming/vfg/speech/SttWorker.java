@@ -14,15 +14,18 @@ import org.slf4j.LoggerFactory;
 /**
  * The {@code vfg-stt} thread: transcribes segments in order, asks the turn model at each
  * pause whether the line is finished, owns the {@link LineAssembler}, and ticks it every
- * 250 ms and after every item. Control items travel in the same queue as segments, so
- * "the player left" is handled only after every segment captured before it.
+ * 250 ms and after every item. Pauses and control items travel in the same queue as
+ * segments, so a pause is heard after the segment before it, and "the player left" only
+ * after every segment captured before it.
  *
- * <p>The turn model scores a segment once it is transcribed and used, if no speech is in
- * progress and the VAD did not cut it mid-speech, on the line's audio from 0.5 s before
- * its first speech ({@link Segment#turnAudio}). The tick right after closes the line if the
- * score is at or above the threshold. A score that throws, or takes longer than 500 ms,
- * counts as not finished, so the silence closes the line; either is logged as a warning in
- * place of the decision's line: {@code turn 0.97 in 612 ms, over 500 ms: waiting}.
+ * <p>At a {@link Pause} the turn model scores the open line, whether or not the segment
+ * before it joined the line (a cough that is dropped still ends in a pause), if a model is
+ * loaded and no speech is in progress: speech in progress ends in a segment of its own,
+ * with its own pause. It hears the line from 0.5 s before its first speech
+ * ({@link Pause#turnAudio}). The tick right after closes the line if the score is at or
+ * above the threshold. A score that throws, or takes longer than 500 ms, counts as not
+ * finished, so the silence closes the line; either is logged as a warning in place of the
+ * decision's line: {@code turn 0.97 in 612 ms, over 500 ms: waiting}.
  */
 public final class SttWorker implements Runnable {
 	private static final Logger LOG = LoggerFactory.getLogger("vfg");
@@ -31,7 +34,7 @@ public final class SttWorker implements Runnable {
 	public static final long TURN_LIMIT_MILLIS = 500;
 
 	/** What the capture thread sends. */
-	public sealed interface Item permits SegmentItem, Control {}
+	public sealed interface Item permits SegmentItem, Pause, Control {}
 
 	public record SegmentItem(Segment segment) implements Item {}
 
@@ -136,6 +139,7 @@ public final class SttWorker implements Runnable {
 					pendingSegments.decrementAndGet();
 				}
 			}
+			case Pause pause -> scoreTurn(pause);
 			case Control c -> {
 				if (c == Control.DISCARD) {
 					assembler.discard();
@@ -178,22 +182,18 @@ public final class SttWorker implements Runnable {
 			segment.endMillis(), segment.peak(), segment.sumOfSquares(), segment.samples().length));
 		if (why != LineAssembler.Rejection.NONE) {
 			LOG.debug("dropped a {} s segment: {}", String.format("%.1f", segment.seconds()), why);
-			return;
-		}
-		if (assembler.segments() == 1) {
+		} else if (assembler.segments() == 1) {
 			lineFirst = segment.first();
 		}
-		scoreTurn(segment);
 	}
 
-	/** Asks the turn model whether the open line is finished, at the pause after {@code segment}. */
-	private void scoreTurn(Segment segment) {
+	/** Asks the turn model whether the open line is finished, at {@code pause}. */
+	private void scoreTurn(Pause pause) {
 		TurnDetector model = turn.get();
-		if (model == null || segment.cut() || segment.audio() == null || !assembler.isOpen()
-				|| speechInProgress.getAsBoolean()) {
+		if (model == null || !assembler.isOpen() || speechInProgress.getAsBoolean()) {
 			return;
 		}
-		float[] audio = segment.turnAudio(lineFirst);
+		float[] audio = pause.turnAudio(lineFirst);
 		long t0 = System.nanoTime();
 		float score;
 		try {

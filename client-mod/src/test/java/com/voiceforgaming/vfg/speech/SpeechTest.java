@@ -109,6 +109,21 @@ class SpeechTest {
 		{"Make the sun come up and stop the rain over the farm.", "sun rain farm"},
 	};
 
+	/**
+	 * Long requests said in one breath, for the VAD's 7 s cap. Said at the right speed, the cap
+	 * cuts the last segment at the very end of the speech, so the pause after it, 0.6 s later,
+	 * is the only one the turn model gets.
+	 */
+	private static final String[] RUN_ONS = {
+		"Build me a really big castle out of stone with a tall tower on every corner and a moat all the way around it.",
+		"Can you go down into the cave and bring me back all the diamonds and gold and iron that you can find down there.",
+		"I want you to plant a whole field of wheat and carrots next to the barn and put a fence all the way around it.",
+		"Go and find the village up to the north and trade all of our emeralds for books and then come straight back.",
+	};
+	private static final float[] RUN_ON_SPEEDS = {1.0f, 1.1f, 0.9f, 1.2f, 0.8f};
+	/** A segment this long was ended at the VAD's 7 s cap: one ended by 0.6 s of silence is at most about 6.5 s. */
+	private static final double CAPPED_SECONDS = 6.8;
+
 	private static SpeechEngine engine;
 	private static Tts tts;
 	private static Tts kokoroTts;
@@ -411,6 +426,68 @@ class SpeechTest {
 		}
 	}
 
+	/**
+	 * A request said in one breath for longer than the VAD's 7 s cap, ending on a finished
+	 * sentence, played with the mod's defaults: the cap ends its last segment at the end of
+	 * the speech, 0.1 s after it rather than 0.6 s, and the turn model is asked at the pause
+	 * the capture thread hears 0.6 s after that segment. The line must get a turn decision and
+	 * be ready well under the silence rule's 3.5 s: under 2 s after the last word.
+	 *
+	 * <p>Which takes do that is found offline ({@link #offline}): every run-on, at a few
+	 * speeds, until the mod's own pipeline ends one in a segment cut at the cap and Smart Turn
+	 * hears it finished. Each is then played on its own, as it was heard offline.
+	 */
+	@Test
+	void aLongRequestEndingAtTheCapIsScoredAtItsEnd() throws Exception {
+		try (TurnDetector smart = TestAssets.turnDetector(TurnDetectors.SMART_TURN)) {
+			StringBuilder screened = new StringBuilder(String.format(Locale.ROOT,
+				"%n== long requests in one breath (Kokoro), screened offline for a last segment cut at the cap ==%n"));
+			List<String> labels = new ArrayList<>();
+			List<Wav.Audio> takes = new ArrayList<>();
+			for (int r = 0; r < RUN_ONS.length && takes.size() < 2; r++) {
+				int voice = (3 * r + 2) % KOKORO_VOICES;
+				for (float speed : RUN_ON_SPEEDS) {
+					Wav.Audio take = kokoro(RUN_ONS[r], voice, speed);
+					Offline o = offline(take, smart);
+					boolean capped = !o.segmentSeconds().isEmpty() && o.segmentSeconds().getLast() >= CAPPED_SECONDS;
+					boolean keep = capped && o.finished();
+					screened.append(String.format(Locale.ROOT, "  %-8s voice %2d x%.1f  %5.2f s  segments %s  %s%n",
+						keep ? "played" : "left out", voice, speed, take.samples().length / (double) take.rate(),
+						o.segmentSeconds().stream().map(x -> String.format(Locale.ROOT, "%.2f", x)).toList(),
+						String.join("; ", o.decisions())));
+					if (keep) {
+						labels.add(String.format(Locale.ROOT, "run-on %d (Kokoro voice %d, x%.1f)", r + 1, voice, speed));
+						takes.add(take);
+						break;
+					}
+				}
+			}
+			write(screened);
+			assertFalse(takes.isEmpty(), "no take ended in a segment cut at the cap that Smart Turn heard finished");
+
+			StringBuilder summary = new StringBuilder("  long requests, from the last word to the line:\n");
+			for (int i = 0; i < takes.size(); i++) {
+				SpeechTimeline t = new SpeechTimeline().silence(1.0).speech(labels.get(i), List.of(), takes.get(i))
+					.silence(BETWEEN_REQUESTS);
+				Run run = play("capped-" + (i + 1) + "-16k", t, 16000, 1, smart, VfgConfig.DEFAULT_SILENCE_SECONDS);
+				report("a long request ending at the cap: Smart Turn, its own threshold, 3 s of silence", t, run,
+					List.of(List.of(0)));
+				checkLines(t, run, List.of(List.of(0)));
+				Got g = run.lines().getFirst();
+				long latency = g.readyAtMillis() - run.wall(t.clips().getFirst().end());
+				double lastSegment = run.segments().getLast().seconds();
+				summary.append(String.format(Locale.ROOT, "    %5.2f s  %s, last segment %.2f s  %s%n", latency / 1000.0,
+					labels.get(i), lastSegment, String.join("; ", g.decisions())));
+				assertTrue(lastSegment >= CAPPED_SECONDS, "the line's last segment, " + lastSegment
+					+ " s, was not cut at the cap as offline");
+				assertTrue(g.decisions().stream().anyMatch(d -> d.matches("turn .*: closed")),
+					"the turn model closed it: " + g.decisions());
+				assertTrue(latency > 0 && latency < 2000, "ready " + latency + " ms after the last word");
+			}
+			write(summary);
+		}
+	}
+
 	/** One request spoken whole and split at a gap between words, with a pause put in; what Parakeet heard whole. */
 	record Paused(String text, int voice, int before, double gap, String heardWhole) {}
 
@@ -541,7 +618,7 @@ class SpeechTest {
 	}
 
 	/** What the mod's pipeline made of one take offline: what it heard, and its decisions on the line's end. */
-	record Offline(String text, List<String> decisions) {
+	record Offline(String text, List<String> decisions, List<Double> segmentSeconds) {
 		/** Smart Turn heard it finished at its one pause. */
 		boolean finished() {
 			return decisions.size() == 1 && decisions.getFirst().matches("turn .*: closed");
@@ -555,15 +632,23 @@ class SpeechTest {
 	 */
 	private static Offline offline(Wav.Audio take, TurnDetector turn) throws InterruptedException {
 		float[] audio = new SpeechTimeline().silence(1.0).speech("", List.of(), take).silence(2.0).at16k();
+		for (int i = 0; i < audio.length; i++) {
+			audio[i] = Wav.toShort(audio[i]) / 32768f; // 16-bit, as the playback device delivers it
+		}
 		AtomicLong now = new AtomicLong(T0);
 		List<String> heard = new ArrayList<>();
 		List<String> decisions = new ArrayList<>();
+		List<Double> segmentSeconds = new ArrayList<>();
 		LineAssembler assembler = new LineAssembler(VfgConfig.DEFAULT_SILENCE_SECONDS, now::get, line -> {},
 			decisions::add);
+		Transcriber measured = samples -> {
+			segmentSeconds.add(samples.length / 16000.0);
+			return engine.transcribe(samples);
+		};
 		CaptureProcessor[] cp = new CaptureProcessor[1];
-		SttWorker stt = new SttWorker(() -> engine, () -> turn, null, assembler, () -> cp[0].speaking(), heard::add,
+		SttWorker stt = new SttWorker(() -> measured, () -> turn, null, assembler, () -> cp[0].speaking(), heard::add,
 			() -> false);
-		cp[0] = new CaptureProcessor(() -> engine, stt::submit);
+		cp[0] = new CaptureProcessor(() -> engine, () -> true, stt::submit);
 		cp[0].onStarted(true);
 		for (int off = 0; off + SpeechEngine.WINDOW <= audio.length; off += SpeechEngine.WINDOW) {
 			now.set(T0 + (off + SpeechEngine.WINDOW) / 16);
@@ -572,7 +657,7 @@ class SpeechTest {
 		}
 		cp[0].onStopped(StopReason.DISCARD);
 		stt.drainNow();
-		return new Offline(String.join(" ", heard), decisions);
+		return new Offline(String.join(" ", heard), decisions, segmentSeconds);
 	}
 
 	/**
@@ -580,13 +665,19 @@ class SpeechTest {
 	 * takes a second or more, and every later run hears the same one.
 	 */
 	private static Wav.Audio kokoro(String text, int voice) throws Exception {
-		Path file = TestAssets.root().resolve("speech-test-tts")
-			.resolve("kokoro-v" + voice + "-" + TestAssets.normalize(text).replace(' ', '-') + ".wav");
+		return kokoro(text, voice, 1.0f);
+	}
+
+	/** {@code text} said by Kokoro in {@code voice} at {@code speed} (1 is normal), kept on disk the first time. */
+	private static Wav.Audio kokoro(String text, int voice, float speed) throws Exception {
+		String name = "kokoro-v" + voice + (speed == 1.0f ? "" : String.format(Locale.ROOT, "-x%.2f", speed)) + "-"
+			+ TestAssets.normalize(text).replace(' ', '-');
+		Path file = TestAssets.root().resolve("speech-test-tts").resolve(name + ".wav");
 		if (!Files.exists(file)) {
 			if (kokoroTts == null) {
 				kokoroTts = new Tts(Tts.Model.KOKORO, 2);
 			}
-			Wav.Audio a = kokoroTts.say(text, voice, 1.0f);
+			Wav.Audio a = kokoroTts.say(text, voice, speed);
 			Files.createDirectories(file.getParent());
 			Path part = file.resolveSibling(file.getFileName() + ".part");
 			Wav.write(part, a.samples(), a.rate());
