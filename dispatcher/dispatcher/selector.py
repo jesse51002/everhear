@@ -18,7 +18,9 @@ the model breaking them:
 - a selection that starts or stops a script not in scripts/ is handed on whole, and so is
   one with picks and no orchestrator part for a task that builds or places, removes or
   replaces blocks;
-- a pick that repeats an earlier one, the same action and the same instruction, is dropped.
+- a pick that repeats an earlier one, the same action and the same instruction, is dropped;
+- a command part that lists ("list Steve's inventory and armor") is a pick of its own, never
+  merged, so the part after it is planned with the listing in hand.
 """
 
 from __future__ import annotations
@@ -61,6 +63,8 @@ NO_MOVE = re.compile(r"\bto (his|her|their|its|your) (own )?((current|present) )
 MAX_PICKS = 4
 # At most this many adjacent command parts become one command pick (it runs five commands).
 MERGE = 3
+# A command part that only looks something up, for the part after it: never merged.
+LISTING = re.compile(r"^\s*list\b", re.IGNORECASE)
 
 # An action part's instruction: one short sentence. The action planner writes the commands;
 # a long one is a slow answer and usually a command written out. An orchestrator part may be
@@ -134,6 +138,9 @@ def picked(selection) -> Picked:
         if p.to == "orchestrator":
             close()
             orchestrator.append((p.instruction or p.part).strip())
+        elif p.to == "command" and LISTING.match(p.instruction):
+            close()
+            picks.append(Pick(action="command", instruction=p.instruction.strip()))
         elif p.to == "command":
             if len(run) == MERGE:
                 close()

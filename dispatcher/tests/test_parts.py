@@ -675,3 +675,21 @@ async def test_a_held_line_never_keeps_a_stop_past_its_deadline(tmp_path):
     t0 = time.monotonic()
     assert await batch.flush(0.2) is False
     assert time.monotonic() - t0 < 0.5 and vfg.hands() == [] and [x["id"] for x in state.batch] == ["T1"]
+
+
+def test_a_listing_names_each_item_by_its_slot_and_marks_the_one_held():
+    from dispatcher.listing import readable
+    inv = ('Steve has the following entity data: [{count: 1, Slot: 0b, id: "minecraft:stick"}, '
+           '{count: 1, Slot: 4b, id: "minecraft:iron_sword"}, {components: {"minecraft:enchantments": '
+           '{"minecraft:sharpness": 5}}, count: 1, Slot: 14b, id: "minecraft:diamond_sword"}, '
+           '{components: {"minecraft:custom_name": "Excalibur", "minecraft:damage": 200}, count: 1, Slot: 21b, '
+           'id: "minecraft:iron_pickaxe"}, {count: 64, Slot: 1b, id: "minecraft:cooked_beef"}]')
+    worn = 'Steve has the following entity data: {feet: {count: 1, id: "minecraft:diamond_boots"}}'
+    assert readable([inv, worn, "Steve has the following entity data: 4"]) == (
+        "Steve's items, by slot: hotbar.0 stick; hotbar.4 iron_sword (held); inventory.5 diamond_sword "
+        '{sharpness 5}; inventory.12 iron_pickaxe {named "Excalibur", damaged 200}; hotbar.1 64 cooked_beef; '
+        "armor.feet diamond_boots (worn)")
+    assert readable(["Steve has the following entity data: []", "Steve has the following entity data: 0"]) == (
+        "Steve carries and wears nothing")
+    assert readable(["Gave 1 [Diamond Sword] to Steve"]) is None
+    assert readable(['Steve has the following entity data: {count: 1, id: "minecraft:stick"}']) is None

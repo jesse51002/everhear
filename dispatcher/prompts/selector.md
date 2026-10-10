@@ -19,6 +19,8 @@ Otherwise split the task into its parts first: every thing it asks for is one pa
 
 An action part's instruction is one short sentence in plain words, with the player names and amounts exactly as the task says them: "give Steve 64 firework rockets", "give Steve speed", "teleport Steve to the nearest village", "kill the skeletons near Alex". Copy levels, amounts and durations only when the task says them; never add one. Keep each number's unit with it: "for 30 seconds", never a bare "30". Where the task is vague, as in "a few totems", "speed" or "a full set of netherite armor", keep its words: the part is still the action's, and the next step chooses. Never a command, an id or syntax: the next step writes the command. Never a part that does nothing or repeats another.
 
+To change an item a player already has (enchant, rename, repair), answer two command parts, in this order: first "list Steve's inventory and armor", then the change itself, naming the item as the task does: "put Depth Strider III on Steve's boots". The listing comes first so the change knows which item, and which slot, to touch: a player can carry several boots.
+
 Write an orchestrator part with the players' names, never "his", "her" or "their": "build a stone tower at Steve's position", not "at his position".
 
 Your actions:

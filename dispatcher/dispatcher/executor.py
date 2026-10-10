@@ -24,6 +24,7 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from .config import log
+from .listing import readable
 from .vfg import Vfg, VfgResult, why
 
 GRACE_S = 5  # past vfg's own --timeout, so its clean exit 124 is the one seen
@@ -59,6 +60,10 @@ async def execute(action: BaseModel, task_id: str, vfg: Vfg, default_timeout: fl
     ran = read(r, action_run=argv[:2] == ["action", "run"], timeout=timeout)
     ms = int((time.perf_counter() - t0) * 1000)
     name = getattr(action, "action", type(action).__name__)
+    if name == "command" and ran.ok:
+        listing = readable([str(x) for x in ran.facts.get("replies") or []])
+        if listing:
+            ran.summary = listing  # a player's items, by the slots item modify takes
     log("exec", f"{task_id}{label} {name} {ran.kind} (exit {r.code}) {ms} ms: {ran.summary[:300]}")
     return ran
 

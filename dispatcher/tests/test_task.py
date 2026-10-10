@@ -79,6 +79,23 @@ async def test_the_second_action_sees_the_first_ones_report(h):
     assert "EARLIER IN THIS TASK: none" in first
 
 
+async def test_a_listing_is_its_own_pick_and_the_change_after_it_sees_it(h):
+    h.llm.add("Selection", select(("command", "list Alex's inventory and armor"),
+                                  ("command", "put Depth Strider III on Alex's boots")))
+    look = cmd("data get entity Alex Inventory")
+    put = cmd("item modify entity Alex armor.feet {type:\"minecraft:set_enchantments\",enchantments:{\"minecraft:depth_strider\":3},add:true}")
+    h.llm.add("Planned_command", planned(look, say="listing"), planned(look, say="listing"),
+              planned(put, say="boots"), planned(put, say="boots"))
+    h.vfg.on("action", "run", "command", answer=ok('Alex has the following entity data: {feet: {count: 1, id: "minecraft:diamond_boots"}}'))
+
+    await h.run("put depth strider on my boots")
+
+    runs = [a for a in h.vfg.calls if a[:2] == ["action", "run"]]
+    assert len(runs) == 2  # two picks, not one merged pick
+    change = h.llm.prompts("Planned_command")[2]
+    assert 'EARLIER IN THIS TASK:\n- listing — Alex has the following entity data: {feet: {count: 1, id: "minecraft:diamond_boots"}}' in change
+
+
 async def test_a_tasks_actions_run_in_the_order_picked_the_second_after_the_first_finished(h):
     h.llm.add("Selection", select(("command", "make it night"), ("teleport", "teleport Alex to a village")))
     h.llm.add("Planned_command", planned(cmd("time set night"), say="night"), planned(cmd("time set night"), say="night"))
