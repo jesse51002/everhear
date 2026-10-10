@@ -1,6 +1,11 @@
 """Tests for the scripts folder, run under the Python EC2 has, with pydantic for the actions:
 
-    uv run --no-project --python 3.12 --with pydantic python scripts/_test/run_tests.py
+    uv run --no-project --python 3.12 --with pydantic python scripts/_test/run_tests.py [-j N]
+    uv run --no-project --python 3.12 --with pydantic python scripts/_test/run_tests.py ScriptTests
+
+With no test named, every test runs in N worker processes at once (default twice the CPUs, at
+most 24, or VFG_TEST_JOBS), each test on its own, and a failing test's output is shown with it.
+With tests named, they run in this process one after the other, as unittest runs them.
 
 They start fake_rcon.py on a free port with a temp server.properties and check _lib/mc.py. Then
 every script (every folder without a leading "_") runs, all at once, each against its own fake
@@ -21,6 +26,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import signal
 import socket
 import subprocess
@@ -31,6 +37,8 @@ import time
 import unittest
 
 sys.dont_write_bytecode = True
+if __name__ == "__main__":
+    sys.modules.setdefault("run_tests", sys.modules[__name__])   # `import run_tests` is this module, not a second one
 # A script that ends by itself cleans up at once, not after mc's 0.4 s grace for a last blast.
 os.environ.setdefault("VFG_EXIT_GRACE_S", "0")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -435,6 +443,8 @@ class ScriptTests(unittest.TestCase):
     ASKS) as a copy of its first action with nothing given, a seed (README.md beside it) too,
     and a seed that ends by itself run to its end, its sleeps ten times as fast."""
 
+    run_whole = True     # the runner gives one worker the whole class: setUpClass runs every script
+
     @classmethod
     def setUpClass(cls):
         threads = []
@@ -578,8 +588,194 @@ def _add_kit_and_preset_tests():
 
 _add_kit_and_preset_tests()
 
+# ---- the runner: every test at once, in worker processes ------------------------------------
+
+def _flat(suite):
+    for t in suite:
+        if isinstance(t, unittest.TestSuite):
+            yield from _flat(t)
+        else:
+            yield t
+
+
+def _units():
+    """The tests as the workers take them: a class whose setUpClass runs every script at once
+    (ScriptTests) whole and first, every other test on its own."""
+    tests = list(_flat(unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])))
+    whole = {}
+    units = []
+    for t in tests:
+        if getattr(type(t), "run_whole", False):
+            whole.setdefault(type(t), []).append(t.id())
+        else:
+            units.append([t.id()])
+    return list(whole.values()) + units, len(tests)
+
+
+class _Rows(unittest.TestResult):
+    """Each test's outcome, as (id, outcome, traceback)."""
+
+    def __init__(self):
+        unittest.TestResult.__init__(self)
+        self.rows = []
+
+    def addSuccess(self, test):
+        unittest.TestResult.addSuccess(self, test)
+        self.rows.append((test.id(), "ok", ""))
+
+    def addFailure(self, test, err):
+        unittest.TestResult.addFailure(self, test, err)
+        self.rows.append((test.id(), "FAIL", self.failures[-1][1]))
+
+    def addError(self, test, err):
+        unittest.TestResult.addError(self, test, err)
+        self.rows.append((test.id(), "ERROR", self.errors[-1][1]))
+
+    def addSkip(self, test, reason):
+        unittest.TestResult.addSkip(self, test, reason)
+        self.rows.append((test.id(), "skipped %r" % reason, ""))
+
+    def addExpectedFailure(self, test, err):
+        unittest.TestResult.addExpectedFailure(self, test, err)
+        self.rows.append((test.id(), "expected failure", ""))
+
+    def addUnexpectedSuccess(self, test):
+        unittest.TestResult.addUnexpectedSuccess(self, test)
+        self.rows.append((test.id(), "FAIL", "unexpected success"))
+
+    def addSubTest(self, test, subtest, err):
+        unittest.TestResult.addSubTest(self, test, subtest, err)
+        if err is not None:
+            failed = issubclass(err[0], test.failureException)
+            self.rows.append((subtest.id(), "FAIL" if failed else "ERROR",
+                              (self.failures if failed else self.errors)[-1][1]))
+
+
+def _worker():
+    """Run the units the runner sends on stdin, one JSON list of test ids a line, answering
+    each with a JSON line: the outcomes, how many ran, how long it took, and what the tests
+    printed. Its own stdout is the runner's alone: whatever a test prints (or a thread a test
+    left, between tests) goes to that test's log, or nowhere."""
+    channel = os.fdopen(os.dup(1), "w", buffering=1)
+    nowhere = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(nowhere, 1)
+    os.dup2(nowhere, 2)
+    tests = {t.id(): t for t in _flat(unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__]))}
+    for line in sys.stdin:
+        ids = json.loads(line)
+        result = _Rows()
+        t0 = time.time()
+        with tempfile.TemporaryFile() as log:
+            os.dup2(log.fileno(), 1)
+            os.dup2(log.fileno(), 2)
+            try:
+                unittest.TestSuite([tests[i] for i in ids]).run(result)
+            finally:
+                sys.stdout.flush()
+                sys.stderr.flush()
+                os.dup2(nowhere, 1)
+                os.dup2(nowhere, 2)
+            log.seek(0)
+            output = log.read().decode("utf-8", "replace")
+        channel.write(json.dumps({"rows": result.rows, "ran": result.testsRun, "output": output,
+                                  "took": time.time() - t0}) + "\n")
+
+
+def _run_all(jobs):
+    """Every unit on the first free worker; each test's outcome as it comes, then the failures
+    with their output, and unittest's summary. True when all passed."""
+    t0 = time.time()
+    units, total = _units()
+    expected = [i for unit in units for i in unit]
+    todo = list(reversed(units))
+    lock = threading.Lock()
+    rows, ran, outputs, took = [], [0], {}, []
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+
+    def work():
+        proc = subprocess.Popen([sys.executable, "-u", os.path.abspath(__file__), "--worker"], env=env,
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, universal_newlines=True)
+        try:
+            while True:
+                with lock:
+                    if not todo:
+                        return
+                    unit = todo.pop()
+                proc.stdin.write(json.dumps(unit) + "\n")
+                proc.stdin.flush()
+                line = proc.stdout.readline()
+                got = json.loads(line) if line else {"rows": [(i, "ERROR", "the worker died") for i in unit],
+                                                     "ran": len(unit), "output": "", "took": 0.0}
+                with lock:
+                    ran[0] += got["ran"]
+                    took.append((got["took"], unit[0].rsplit(".", 1)[0] if len(unit) > 1 else unit[0]))
+                    for test_id, outcome, tb in got["rows"]:
+                        rows.append((test_id, outcome, tb))
+                        if outcome in ("FAIL", "ERROR"):
+                            outputs[test_id] = got["output"]
+                        print("%s ... %s" % (test_id, outcome), flush=True)
+                if not line:
+                    return
+        finally:
+            proc.stdin.close()
+            proc.wait()
+
+    threads = [threading.Thread(target=work) for _ in range(min(jobs, len(units)))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    bad = [r for r in rows if r[1] in ("FAIL", "ERROR")]
+    for test_id, outcome, tb in bad:
+        print("=" * 70)
+        print("%s: %s" % (outcome, test_id))
+        print("-" * 70)
+        print(tb.rstrip())
+        if outputs.get(test_id, "").strip():
+            print("-" * 30 + " its output " + "-" * 28)
+            print(outputs[test_id].rstrip()[-4000:])
+    print("-" * 70)
+    print("Slowest: " + ", ".join("%s %.1f s" % (name.split(".", 1)[-1], t) for t, name in sorted(took)[::-1][:5]))
+    print("Ran %d tests in %.3fs (%d workers)" % (ran[0], time.time() - t0, len(threads)))
+    print()
+    missing = sorted(set(expected) - set(r[0] for r in rows))
+    if missing:
+        print("Not run: " + ", ".join(missing))
+    if bad or ran[0] < total:
+        print("FAILED (failures=%d, errors=%d%s)" % (len([r for r in bad if r[1] == "FAIL"]),
+                                                     len([r for r in bad if r[1] == "ERROR"]),
+                                                     ", not run=%d" % (total - ran[0]) if ran[0] < total else ""))
+        return False
+    print("OK")
+    return True
+
+
+def _jobs(argv):
+    """-j N from argv (taken out of it), else VFG_TEST_JOBS, else twice the CPUs, at most 24."""
+    jobs = os.environ.get("VFG_TEST_JOBS") or min(24, 2 * (os.cpu_count() or 4))
+    if "-j" in argv:
+        i = argv.index("-j")
+        jobs = argv[i + 1]
+        del argv[i:i + 2]
+    return max(1, int(jobs))
+
+
 if __name__ == "__main__":
     try:
-        unittest.main(verbosity=2)
+        if sys.argv[1:] == ["--worker"]:
+            try:
+                _worker()
+            finally:
+                for d in {TMP, getattr(sys.modules.get("test_kit"), "TMP", TMP),
+                          getattr(sys.modules.get("test_core"), "TMP", TMP),
+                          getattr(sys.modules.get("test_examples_rays"), "TMP", TMP)}:
+                    shutil.rmtree(d, ignore_errors=True)
+        else:
+            args = sys.argv[1:]
+            jobs = _jobs(args)
+            if args:
+                unittest.main(argv=sys.argv[:1] + args, verbosity=2)
+            else:
+                sys.exit(0 if _run_all(jobs) else 1)
     finally:
         FAKE.stop()
