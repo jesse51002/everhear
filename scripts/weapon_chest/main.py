@@ -3,7 +3,7 @@ ASKS = ["make cool weapons, like the netherite stuff, randomized with effects an
         "put them in a chest for all of us to access", "where's the chest of mysterious weapons",
         "weapon powers", "a bow whose arrows explode", "a trident that calls lightning where it lands",
         "a bow that freezes what it hits", "weapons with powers for all of us"]
-from kit import values, items, aim, loop, exclude, world, area
+from kit import values, result, items, aim, loop, exclude, world, area
 import itertools
 import json
 import math
@@ -12,45 +12,6 @@ import random
 import re
 import time
 import threading
-
-VALUES = {
-    "player":                    {"type": "player", "default": "@a"},
-    "per_player":                {"type": "bool", "default": False},
-    "at":                        {"type": "list", "of": "number", "default": []},
-    "cooldown":                  {"type": "number", "min": 0, "max": 60, "default": 1, "live": True},
-    "range":                     {"type": "int", "min": 4, "max": 300, "default": 120, "live": True},
-    "damage_amount":             {"type": "number", "min": 0, "max": 100000, "default": 10, "live": True},
-    "damage_type":               {"type": "enum", "of": ["player_attack", "magic", "lightning_bolt", "explosion", "freeze", "on_fire", "sonic_boom", "arrow", "wither", "generic"], "default": "lightning_bolt", "live": True},
-    "damage_kill":               {"type": "bool", "default": False, "live": True},
-    "damage_what":               {"type": "enum", "of": ["all", "mobs", "hostile", "players"], "default": "all", "live": True},
-    "damage_most":               {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
-    "damage_head":               {"type": "number", "min": 1, "max": 10, "default": 1, "live": True},
-    "damage_spare":              {"type": "list", "of": "player", "default": [], "live": True},
-    "lightning_count":           {"type": "int", "min": 1, "max": 50, "default": 1, "live": True},
-    "lightning_spread":          {"type": "number", "min": 0, "max": 32, "default": 3, "live": True},
-    "lightning_layout":          {"type": "enum", "of": ["scatter", "ring"], "default": "scatter", "live": True},
-    "lightning_every":           {"type": "number", "min": 0, "max": 5, "default": 0, "live": True},
-    "lightning_spare":           {"type": "list", "of": "player", "default": [], "live": True},
-    "around_radius":             {"type": "number", "min": 1, "max": 128, "default": 4, "live": True},
-    "around_what":               {"type": "enum", "of": ["mobs", "hostile", "players", "everything", "projectiles"], "default": "mobs", "live": True},
-    "around_most":               {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
-    "projectile_lands_kind":     {"type": "enum", "of": ["both", "arrow", "trident"], "default": "both", "live": True},
-    "projectile_lands_named":    {"type": "list", "of": "str", "default": ["Hellfire Longbow", "Glacier Bow", "Stormcaller"], "live": True},
-    "projectile_lands_cooldown": {"type": "number", "min": 0, "max": 60, "default": 0, "live": True},
-    "projectile_lands_remove":   {"type": "bool", "default": False, "live": True},
-    "explosion_power":           {"type": "number", "min": 0, "max": 16, "default": 3, "live": True},
-    "explosion_layout":          {"type": "enum", "of": ["one", "plus", "ring", "rings"], "default": "one", "live": True},
-    "explosion_spread":          {"type": "number", "min": 1, "max": 32, "default": 4, "live": True},
-    "explosion_breaks":          {"type": "bool", "default": False, "live": True},
-    "explosion_keep":            {"type": "number", "min": 0, "max": 32, "default": 0, "live": True},
-    "explosion_spare":           {"type": "list", "of": "player", "default": [], "live": True},
-    "freeze_seconds":            {"type": "number", "min": 1, "max": 120, "default": 6, "live": True},
-    "freeze_shell":              {"type": "bool", "default": False, "live": True},
-    "freeze_block":              {"type": "enum", "of": ["ice", "packed_ice", "blue_ice", "snow_block"], "default": "ice", "live": True},
-    "freeze_blindness":          {"type": "bool", "default": False, "live": True},
-    "push_way":                  {"type": "enum", "of": ["away", "toward", "up"], "default": "up", "live": True},
-    "push_strength":             {"type": "number", "min": 0.5, "max": 40, "default": 8, "live": True},
-}
 
 
 # --- preset: damage_hits (copied from _presets/damage_hits.py) ---
@@ -591,15 +552,16 @@ def weapon(w):
                                                   lore, ench))
 
 
-def chest(p, v):
-    """A chest of every weapon and 64 arrows at `at`, or two blocks from a player where there is
-    room. True once it is there."""
-    if len(v["at"]) >= 3:
-        spots, dim = [tuple(int(math.floor(c)) for c in v["at"][:3])], None
+def chest(p, at, beside=False):
+    """A chest of every weapon and 64 arrows at `at` (a Pos; beside: two blocks from it), or,
+    with None, two blocks from player p, where there is room. Where it is, or None until it is
+    there."""
+    if at is not None and not beside:
+        spots, dim = [at.block()], at.dim
     else:
-        feet, dim = mc.pos(p), world.dim_of(p)
+        feet, dim = (at, at.dim) if at is not None else (mc.pos(p), world.dim_of(p))
         if feet is None:
-            return False
+            return None
         x, y, z = (int(math.floor(c)) for c in feet)
         spots = [(x + dx, y, z + dz) for dx, dz in ((2, 0), (0, 2), (-2, 0), (0, -2), (2, 2), (-2, -2))]
     for x, y, z in spots:
@@ -612,8 +574,8 @@ def chest(p, v):
             mc.rcon(world.run(dim, "item replace block %s container.%d with %s" % (here, i, weapon(w))))
         mc.rcon(world.run(dim, "item replace block %s container.%d with arrow 64" % (here, len(WEAPONS))))
         mc.log("weapon chest at", here, "for", p)
-        return True
-    return False
+        return world.Pos(x, y, z, dim)
+    return None
 
 
 def clicks(w, v):
@@ -634,14 +596,24 @@ def lands(v):
             WHAT[what[weapon]](at, p, v)
 
 
-v = values(VALUES)
+v = values()
+chest_at = world.place(v["at"])     # where the one chest goes; None: beside a player
+beside = chest_at is not None and v["at"] in loop.online()     # at a player: beside him, as by default
+if v["at"] and chest_at is None:
+    mc.log("the chest goes beside a player instead")
 for w in WEAPONS:
     if w[3] == "click":
         loop.background(clicks, w, v)
 loop.background(lands, v)
-done = set()                    # who has a chest beside them: "all" for one chest for everyone
+done = {}                       # who has a chest beside them ("all" for one chest for everyone): where
 for _ in loop(every=2):
     for p in loop.who(v["player"]):
-        key = p if v["per_player"] and not v["at"] else "all"
-        if key not in done and chest(p, v):
-            done.add(key)
+        key = p if v["per_player"] and chest_at is None else "all"
+        if key not in done:
+            where = chest(p, chest_at, beside)
+            if where is not None:
+                done[key] = where
+                result("%s at %s for %s: %s" % ("Weapon chests" if len(done) > 1 else "A weapon chest",
+                                                "; ".join("%d %d %d" % c.block() for c in done.values()),
+                                                v["player"], ", ".join(w[0] for w in WEAPONS)),
+                       player=v["player"], at=[list(c.block()) for c in done.values()], chests=len(done))
