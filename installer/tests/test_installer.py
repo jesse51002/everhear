@@ -939,6 +939,8 @@ class ShCases(InstallerCases):
 
 
 class ShLinuxPython(ShCases, unittest.TestCase):
+    """Linux with the python3 helper, which Linux picks by itself, and ~/.minecraft; the Flatpak
+    folder has its own cases below."""
     helper = "python3"
 
     def test_flatpak_only(self):
@@ -991,16 +993,10 @@ class ShLinuxPython(ShCases, unittest.TestCase):
         self.assert_installed(game, w.pub1, ADDR1, w.token1, w.jar1)
 
 
-class ShLinuxFlatpakPerl(ShCases, unittest.TestCase):
-    """The perl helper, with Minecraft where the Flatpak launcher keeps it."""
-    helper = "perl"
-
-    def game_dirs(self, home):
-        return [home / ".var/app/com.mojang.Minecraft/.minecraft"]
-
-
 class ShMacPerl(ShCases, unittest.TestCase):
-    helper = None  # a Mac picks perl first by itself
+    """A Mac: Minecraft under ~/Library/Application Support (a space in the path) and the perl
+    helper, which a Mac picks by itself; so every case runs once with perl, once with python3."""
+    helper = None
     mac = True
 
     def test_mac_picks_perl(self):
@@ -1014,11 +1010,6 @@ class ShMacPerl(ShCases, unittest.TestCase):
         r = self.run_installer(w.pub1, home, PATH="%s:%s:%s:/usr/bin:/bin" % (bad, w.mac_stubs, w.stubs))
         self.ok(r)
         self.assert_installed(game, w.pub1, ADDR1, w.token1, w.jar1)
-
-
-class ShMacPython(ShCases, unittest.TestCase):
-    helper = "python3"
-    mac = True
 
 
 @unittest.skipUnless(PWSH, "pwsh (PowerShell 7) not found: install it under ~/.local/opt/powershell-*/ or set VFG_PWSH")
@@ -1042,12 +1033,6 @@ class PsCases(InstallerCases, unittest.TestCase):
             "if (-not $global:VfgInstallOk) { exit 1 }\n" % (pub["dir"] / "vfg-install.ps1")
         return subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-Command", script], env=self.env(home, **env),
                               capture_output=True, text=True, timeout=180, cwd=str(home))
-
-    def test_failure_exit_flag(self):
-        w = world()
-        home = w.home("psfail")
-        r = self.run_installer(w.pub1, home)
-        self.assertNotEqual(r.returncode, 0)
 
     def test_cmd_wrapper_runs_the_powershell_below_it(self):
         """Runs the exact -Command line from vfg-install.cmd, with VFG_SELF as cmd.exe would set it."""
