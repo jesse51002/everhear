@@ -14,12 +14,12 @@ import org.slf4j.LoggerFactory;
  * is in progress and the live peak, for the icon and the mic test.
  *
  * <p>For the turn model it keeps the last 9 s of samples in a {@link SampleRing}, and at
- * every pause while capturing for a line, 0.6 s of silence after the last speech the VAD
+ * every pause while capturing for a line, 0.35 s of silence after the last speech the VAD
  * saw, it queues a {@link Pause} after that speech's segment: a copy of the ring up to 0.2 s
  * past the segment's last sample, what Smart Turn hears upstream, where Pipecat asks it
- * after 0.2 s of silence. A segment the VAD ended after its 0.6 s of silence has its pause
+ * after 0.2 s of silence. A segment the VAD ended after its 0.35 s of silence has its pause
  * at once. One it ended at its 7 s cap, 0.1 s after its last sample, has its pause only
- * once the VAD is not hearing speech and 0.6 s of samples have passed since that sample
+ * once the VAD is not hearing speech and 0.35 s of samples have passed since that sample
  * with no newer segment: if the player was still talking, the speech that follows ends in
  * a segment of its own, with its own pause. A segment flushed because capture stopped has
  * no pause, and with no turn model loaded nothing is copied and there are no pauses.
@@ -29,11 +29,11 @@ public final class CaptureProcessor implements WindowListener {
 	private static final float PEAK_DECAY = 0.85f;
 	/** The silence after a segment's last sample that the turn model hears. */
 	public static final int TAIL_SAMPLES = SampleClock.SAMPLE_RATE / 5;
-	/** The silence that makes a pause: the VAD's own, 0.6 s. */
+	/** The silence that makes a pause: the VAD's own, 0.35 s. */
 	private static final long PAUSE_SAMPLES = Math.round(SpeechEngine.MIN_SILENCE_SECONDS * SampleClock.SAMPLE_RATE);
 	/**
-	 * A segment popped with less silence after it than this, half of 0.6 s, was ended at the
-	 * VAD's 7 s cap: it pops one 0.6 s after a pause, and 0.1 s after a cut at its cap.
+	 * A segment popped with less silence after it than this, half of 0.35 s, was ended at the
+	 * VAD's 7 s cap: it pops one 0.35 s after a pause, and 0.1 s after a cut at its cap.
 	 */
 	private static final long CAPPED_BELOW_SAMPLES = PAUSE_SAMPLES / 2;
 

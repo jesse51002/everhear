@@ -37,7 +37,7 @@ From the environment (systemd reads `/opt/vfg/.env`):
 | `TYPESAFE_API_KEY` | required, from the environment or else `VFG_ENV_FILE`; never logged |
 | `VFG_ENV_FILE`, `VFG_DB`, `VFG_LIB` | `/opt/vfg/.env`, `/opt/vfg/vfg.db`, `/opt/vfg/lib` |
 | `VFG_LOOKOUT` | `/opt/vfg/lookout.md`, what to look out for (`vfg lookout set`) |
-| `VFG_BATCH_SECONDS`, `VFG_POLL_MS` | `5`, `200` |
+| `VFG_BATCH_SECONDS`, `VFG_POLL_MS` | `5`, `50` |
 | `VFG_JEV_URL`, `VFG_JEV_MODEL`, `VFG_JEV_TIMEOUT` | `https://api.typesafe.ai/v1/systemone`, `jev-latest`, `3` s |
 | `VFG_JEV_STATE_TOKENS`, `VFG_JEV_HISTORY_HOURS` | `8000`, `3` |
 

@@ -44,7 +44,7 @@ public final class SpeechEngine implements VoiceDetector, Transcriber, AutoClose
 	 * sample. Past {@link #MAX_SPEECH_SECONDS} it ends one at the first 0.1 s dip instead, and pops
 	 * it 0.1 s after its last sample, while the player is still talking.
 	 */
-	public static final float MIN_SILENCE_SECONDS = 0.6f;
+	public static final float MIN_SILENCE_SECONDS = 0.35f;
 
 	private final Object vadLock = new Object();
 	private final Object sttLock = new Object();

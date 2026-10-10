@@ -3,7 +3,7 @@ package com.voiceforgaming.vfg.speech;
 import java.util.Arrays;
 
 /**
- * A pause the capture thread heard while capturing for a line: 0.6 s of silence after the
+ * A pause the capture thread heard while capturing for a line: 0.35 s of silence after the
  * last speech the VAD saw. It carries what the turn model hears there: {@code audio}, the
  * capture's last 9 s up to 0.2 s past that speech, whose first sample is number
  * {@code audioStart} in the capture's count (the {@link SampleClock}'s, from the last

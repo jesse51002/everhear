@@ -133,7 +133,7 @@ which words they hold, and how long after the end of speech each was ready.
 - **With the mod's defaults** (Smart Turn at its own threshold, `silence_seconds` 3): 12
   short Minecraft requests ("Build me a castle by the cave", "Summon an ender dragon", …)
   spoken by Kokoro TTS in eleven voices must each become their own line, **within 1 s of the
-  last word, median** (0.76 s on 2026-10-09: the VAD's 0.6 s, then speech-to-text and the
+  last word, median** (0.49 s on 2026-10-10: the VAD's 0.35 s, then speech-to-text and the
   turn model's score), and every line, whatever the model heard, by `silence_seconds` +
   0.5 s. Kokoro, because Smart Turn hears most of Kitten's finished sentences as unfinished
   (`reports/turn-compare.md`).
@@ -229,10 +229,10 @@ id for a repeated `client_line_id` — and prints one line per accepted request.
 
 ## How a line ends
 
-The Silero VAD ends a segment of speech at 0.6 s of silence. At that pause, once the segment
+The Silero VAD ends a segment of speech at 0.35 s of silence. At that pause, once the segment
 is transcribed, the turn model scores the line's audio — from 0.5 s before its first speech
 to 0.2 s after its last, the last 8 s of that at most — for whether you have finished. At or
-above its threshold the line goes at once, about 0.7 s after your last word; below it the
+above its threshold the line goes at once, about 0.5 s after your last word; below it the
 line stays open, and speech that follows joins it and is scored again at its own pause. A
 line the model keeps waiting goes at `silence_seconds` (3) + 0.5 s after the last speech.
 Speech starting again before a line goes keeps it open. A thought cut off is not repaired:
@@ -245,7 +245,7 @@ It installs and loads after the speech engine is ready, so it never holds up voi
 it is in, or if it cannot download (tried again after 30 s, 2 min, then every 10 min) or
 load, lines end on silence alone, and Voice settings says which under the status. The model
 is asked at every pause, even after a cough or laugh that makes no line of its own; after
-speech the VAD cut at its 7 s limit, it is asked once 0.6 s of silence follow.
+speech the VAD cut at its 7 s limit, it is asked once 0.35 s of silence follow.
 `turn_model: turn-1-mini` swaps in [turn-1-mini](https://huggingface.co/p99lab/turn-1-mini)
 (p99lab, Apache-2.0); `./gradlew turnCompare` is how the two were measured.
 
