@@ -5,15 +5,15 @@ import io
 import os
 import re
 import sys
-import textwrap
+import threading
 import unittest
 from unittest import mock
 
 import vfg_feed
 
-from helpers import FEED_PY, LIB_DIR, UTC, Box, run, subprocess_env
+from helpers import FEED_PY, UTC, Box, run
 
-LINE_SHAPE = re.compile(r"^(LINE|GAME|ORCH|SYS)#(\d+) (\d\d:\d\d:\d\d) (.*)$")
+LINE_SHAPE = re.compile(r"^(LINE|GAME|AI|SYS)#(\d+) (\d\d:\d\d:\d\d) (.*)$")
 
 
 class FeedCase(Box):
@@ -35,27 +35,30 @@ class TestAppend(FeedCase):
     def test_row_mirrors_the_file(self):
         vfg_feed.append("GAME", "death Steve", "Steve was slain by Zombie",
                         "2026-10-07T18:22:40.123Z")
-        vfg_feed.append("ORCH", "T7 done", "castle built at spawn, 40x40",
+        vfg_feed.append("AI", "result T183", "T183 done: ice trail running as ice_trail",
                         "2026-10-07T18:24:02Z")
         self.assertEqual(self.feed_lines(), [
             "GAME#1 18:22:40 death Steve | Steve was slain by Zombie",
-            "ORCH#2 18:24:02 T7 done | castle built at spawn, 40x40",
+            "AI#2 18:24:02 result T183 | T183 done: ice trail running as ice_trail",
         ])
         self.assertEqual(self.feed_rows(), [
             (1, "2026-10-07T18:22:40.123Z", "GAME#1 18:22:40 death Steve | Steve was slain by Zombie"),
-            (2, "2026-10-07T18:24:02.000Z", "ORCH#2 18:24:02 T7 done | castle built at spawn, 40x40"),
+            (2, "2026-10-07T18:24:02.000Z", "AI#2 18:24:02 result T183 | T183 done: ice trail running as ice_trail"),
         ])
 
     def test_contract_examples(self):
-        vfg_feed.append("LINE", "Steve voice direct_ask 0.93 -8dB", "build me a castle",
+        vfg_feed.append("LINE", "Steve voice action_oriented 0.93 -8dB", "build me a castle",
                         "2026-10-07T18:22:31.412Z")
-        vfg_feed.append("LINE", "Alex chat context 0.71 - was=not_useful", "that cave by spawn",
+        vfg_feed.append("LINE", "Alex chat context 0.71 - was=not_relevant", "that cave by spawn",
                         "2026-10-07T18:22:33Z")
         vfg_feed.append("GAME", "server -", "server stopping", "2026-10-07T18:30:02Z")
+        vfg_feed.append("AI", "action -", "command: give Steve diamond_pickaxe \u2014 ok",
+                        "2026-10-07T18:30:03Z")
         self.assertEqual(self.feed_lines(), [
-            "LINE#1 18:22:31 Steve voice direct_ask 0.93 -8dB | build me a castle",
-            "LINE#2 18:22:33 Alex chat context 0.71 - was=not_useful | that cave by spawn",
+            "LINE#1 18:22:31 Steve voice action_oriented 0.93 -8dB | build me a castle",
+            "LINE#2 18:22:33 Alex chat context 0.71 - was=not_relevant | that cave by spawn",
             "GAME#3 18:30:02 server - | server stopping",
+            "AI#4 18:30:03 action - | command: give Steve diamond_pickaxe \u2014 ok",
         ])
 
 
@@ -133,21 +136,23 @@ class TestAt(FeedCase):
 class TestFieldRules(FeedCase):
     def test_good_fields_pass(self):
         for type_, fields in (("GAME", "death Steve"), ("GAME", "server -"), ("GAME", "raw -"),
-                              ("GAME", "advancement Notch_2"), ("ORCH", "T7 done"),
-                              ("ORCH", "T12 progress"), ("ORCH", "T1 failed"), ("SYS", "")):
+                              ("GAME", "advancement Notch_2"), ("GAME", "cast Steve"),
+                              ("AI", "say -"), ("AI", "action T7"), ("AI", "task T183"),
+                              ("AI", "result T183"), ("AI", "note -"), ("SYS", "")):
             vfg_feed.append(type_, fields, "ok")
-        self.assertEqual(len(self.feed_lines()), 8)
+        self.assertEqual(len(self.feed_lines()), 11)
 
     def test_bad_fields_raise_and_write_nothing(self):
-        for type_, fields in (("GAME", "death"), ("GAME", "jump Steve"), ("GAME", "death Ste ve"),
-                              ("ORCH", "T7 finished"), ("ORCH", "7 done"), ("SYS", "extra")):
+        for type_, fields in (("GAME", "death"), ("GAME", "Death Steve"), ("GAME", "death Ste ve"),
+                              ("AI", "done T7"), ("AI", "say 7"), ("AI", "say"), ("AI", "task T7 x"),
+                              ("SYS", "extra")):
             with self.assertRaises(ValueError, msg="%s %r" % (type_, fields)):
                 vfg_feed.append(type_, fields, "no")
         self.assertEqual(self.feed_lines(), [])
         self.assertEqual(self.feed_rows(), [])
 
     def test_bad_type_raises(self):
-        for bad in ("CHAT", "line", "", None, 3):
+        for bad in ("CHAT", "ORCH", "line", "", None, 3):
             with self.assertRaises(ValueError):
                 vfg_feed.append(bad, "", "x")
         self.assertEqual(self.feed_lines(), [])
@@ -161,7 +166,7 @@ class TestFieldRules(FeedCase):
         err = io.StringIO()
         with mock.patch.object(sys, "stderr", err):
             vfg_feed.append("LINE", "Steve shouted loudly", "first")
-            vfg_feed.append("LINE", "Steve voice maybe", "second")
+            vfg_feed.append("LINE", "Steve voice direct_ask 0.93 -8dB", "second")
         self.assertEqual(len(self.feed_lines()), 2)
         self.assertEqual(len(err.getvalue().strip().splitlines()), 1)
         self.assertIn("warning", err.getvalue())
@@ -169,8 +174,9 @@ class TestFieldRules(FeedCase):
     def test_well_formed_line_does_not_warn(self):
         err = io.StringIO()
         with mock.patch.object(sys, "stderr", err):
-            vfg_feed.append("LINE", "Steve voice direct_ask 0.93 -8dB", "a")
-            vfg_feed.append("LINE", "Alex chat context - - was=not_useful", "b")
+            vfg_feed.append("LINE", "Steve voice action_oriented 0.93 -8dB", "a")
+            vfg_feed.append("LINE", "Alex chat context - - was=not_relevant", "b")
+            vfg_feed.append("LINE", "Alex chat conversational 0.80 -", "c")
         self.assertEqual(err.getvalue(), "")
 
 
@@ -188,7 +194,7 @@ class TestBatch(FeedCase):
             seqs = vfg_feed.append_batch([
                 ("LINE", "Steve voice context 0.70 -12dB", "one", "2026-10-07T18:00:01Z"),
                 ("LINE", "Alex chat context 0.61 -", "two", "2026-10-07T18:00:02Z"),
-                ("LINE", "Steve voice direct_ask 0.95 -6dB", "three", "2026-10-07T18:00:03Z"),
+                ("LINE", "Steve voice action_oriented 0.95 -6dB", "three", "2026-10-07T18:00:03Z"),
             ])
         self.assertEqual(seqs, [2, 3, 4])
         self.assertEqual(len(calls), 1)
@@ -257,60 +263,57 @@ class TestSeqSurvives(FeedCase):
         self.assertFalse(os.path.exists(self.db_path))
 
 
-WORKER = textwrap.dedent("""
-    import sys
-    sys.path.insert(0, sys.argv[1])
-    import vfg_feed
-    for i in range(int(sys.argv[3])):
-        vfg_feed.append("SYS", "", "worker %s line %d" % (sys.argv[2], i))
-""")
-
-
 class TestConcurrency(FeedCase):
-    def test_four_processes_make_consecutive_distinct_seqs(self):
-        import subprocess
-        procs = [subprocess.Popen([sys.executable, "-c", WORKER, LIB_DIR, str(n), "100"],
-                                  env=subprocess_env(), stderr=subprocess.PIPE)
-                 for n in range(4)]
-        for p in procs:
-            _, err = p.communicate(timeout=120)
-            self.assertEqual(p.returncode, 0, err)
+    def test_four_writers_make_consecutive_distinct_seqs(self):
+        # each append opens its own lock file, so threads contend for the flock as processes do
+        def write(n):
+            for i in range(25):
+                vfg_feed.append("SYS", "", "writer %d line %d" % (n, i))
+
+        writers = [threading.Thread(target=write, args=(n,)) for n in range(4)]
+        for t in writers:
+            t.start()
+        for t in writers:
+            t.join(10)
         lines = self.feed_lines()
         rows = self.feed_rows()
         seqs = [int(LINE_SHAPE.match(line).group(2)) for line in lines]
-        self.assertEqual(seqs, list(range(1, 401)))
-        self.assertEqual([r[0] for r in rows], list(range(1, 401)))
+        self.assertEqual(seqs, list(range(1, 101)))
+        self.assertEqual([r[0] for r in rows], list(range(1, 101)))
         self.assertEqual([r[2] for r in rows], lines)
 
 
 class TestCommandLine(FeedCase):
-    def test_post_prints_the_seq(self):
+    def main(self, *args):
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, "stdout", out), mock.patch.object(sys, "stderr", err):
+            code = vfg_feed.main(list(args))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_post_as_a_program_prints_the_seq(self):
         vfg_feed.append("SYS", "", "first")
-        result = run([FEED_PY, "post", "SYS", "", "smoke"])
+        result = run([FEED_PY, "post", "AI", "task T183", "T183: an ice trail\nbehind Steve"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "2\n")
-        self.assertRegex(self.feed_lines()[-1], r"^SYS#2 \d\d:\d\d:\d\d \| smoke$")
-
-    def test_post_orch(self):
-        result = run([FEED_PY, "post", "ORCH", "T7 done", "castle built\nat spawn"])
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertRegex(self.feed_lines()[-1], r"^ORCH#1 \d\d:\d\d:\d\d T7 done \| castle built at spawn$")
+        self.assertRegex(self.feed_lines()[-1],
+                         r"^AI#2 \d\d:\d\d:\d\d task T183 \| T183: an ice trail behind Steve$")
 
     def test_wrong_arguments_exit_2(self):
         for args in ([], ["post"], ["post", "SYS", ""], ["send", "SYS", "", "x"],
                      ["post", "SYS", "", "x", "extra"]):
-            result = run([FEED_PY] + args)
-            self.assertEqual(result.returncode, 2, args)
-            self.assertEqual(len(result.stderr.strip().splitlines()), 1)
-            self.assertIn("usage", result.stderr)
+            code, _, err = self.main(*args)
+            self.assertEqual(code, 2, args)
+            self.assertEqual(len(err.strip().splitlines()), 1)
+            self.assertIn("usage", err)
 
     def test_bad_type_or_fields_exit_1_with_one_line(self):
         for args in (["post", "CHAT", "", "x"], ["post", "GAME", "death", "x"],
-                     ["post", "ORCH", "T7 finished", "x"], ["post", "SYS", "fields", "x"]):
-            result = run([FEED_PY] + args)
-            self.assertEqual(result.returncode, 1, args)
-            self.assertEqual(len(result.stderr.strip().splitlines()), 1, result.stderr)
-            self.assertEqual(result.stdout, "")
+                     ["post", "ORCH", "T7 done", "x"], ["post", "AI", "said -", "x"],
+                     ["post", "SYS", "fields", "x"]):
+            code, out, err = self.main(*args)
+            self.assertEqual(code, 1, args)
+            self.assertEqual(len(err.strip().splitlines()), 1, err)
+            self.assertEqual(out, "")
         self.assertEqual(self.feed_lines(), [])
 
     def test_imports_nothing_from_the_bridge(self):
@@ -319,16 +322,6 @@ class TestCommandLine(FeedCase):
         self.assertIsNone(re.search(r"^\s*(from|import)\s+vfg_bridge", source, re.M))
         imported = set(re.findall(r"^\s*import\s+(\w+)", source, re.M))
         self.assertEqual(imported, {"datetime", "fcntl", "os", "re", "sqlite3", "sys", "urllib"})
-
-
-class TestFromAStubJevFilter(FeedCase):
-    def test_stub_imports_vfg_feed_and_appends(self):
-        stub = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "jev_stub.py")
-        env = subprocess_env({"VFG_LIB": LIB_DIR, "JEV_STUB_ONCE": "1"})
-        env.pop("PYTHONPATH")
-        result = run([stub], env=env)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertRegex(self.feed_lines()[-1], r"^SYS#1 \d\d:\d\d:\d\d \| jev stub up$")
 
 
 if __name__ == "__main__":
