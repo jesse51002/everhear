@@ -2,37 +2,20 @@
 ASKS = ["give me a trident that explodes", "it exploded on me, make sure it blows on the target it hits, not when it comes back to me",
         "my trident is not consistent, it doesn't explode every single time, make it work consistent",
         "give me a spear bomb", "spear bomb and make it like the biggest explosion humanly possible"]
-from kit import values, items, loop, world, exclude, area
+from kit import values, result, items, loop, world, exclude, area
+import json
 import re
 import time
 import mc
 import math
 import threading
 
-VALUES = {
-    "player":                    {"type": "player", "default": "@a"},
-    "give":                      {"type": "bool", "default": True},
-    "crater":                    {"type": "bool", "default": False, "live": True},
-    "projectile_lands_kind":     {"type": "enum", "of": ["both", "arrow", "trident"], "default": "trident", "live": True},
-    "projectile_lands_named":    {"type": "list", "of": "str", "default": [], "live": True},
-    "projectile_lands_cooldown": {"type": "number", "min": 0, "max": 60, "default": 0, "live": True},
-    "projectile_lands_remove":   {"type": "bool", "default": False, "live": True},
-    "explosion_power":           {"type": "number", "min": 0, "max": 16, "default": 6, "live": True},
-    "explosion_layout":          {"type": "enum", "of": ["one", "plus", "ring", "rings"], "default": "one", "live": True},
-    "explosion_spread":          {"type": "number", "min": 1, "max": 32, "default": 4, "live": True},
-    "explosion_breaks":          {"type": "bool", "default": True, "live": True},
-    "explosion_keep":            {"type": "number", "min": 0, "max": 32, "default": 0, "live": True},
-    "explosion_spare":           {"type": "list", "of": "player", "default": [], "live": True},
-    "crater_radius":             {"type": "int", "min": 0, "max": 300, "default": 4, "live": True},
-    "crater_tunnel":             {"type": "int", "min": 0, "max": 8, "default": 0, "live": True},
-    "crater_leave":              {"type": "enum", "of": ["air", "lava", "fire"], "default": "air", "live": True},
-    "crater_spare_protected":    {"type": "bool", "default": True, "live": True},
-    "crater_load":               {"type": "bool", "default": True, "live": True},
-}
 
-# The trident it gives: it comes back when thrown (loyalty), never breaks, and is known by its id.
-TRIDENT = ('trident[custom_data={vfg_item:"boom_trident"},item_name={"text":"Boom Trident","color":"red"},'
-           'enchantments={"minecraft:loyalty":3},unbreakable={},enchantment_glint_override=true]')
+def trident(name):
+    """The trident it gives: it comes back when thrown (loyalty), never breaks, and is known by
+    its id (items.item_id of its name: "boom_trident", "spear_bomb")."""
+    return ('trident[custom_data={vfg_item:"%s"},item_name=%s,enchantments={"minecraft:loyalty":3},unbreakable={},'
+            'enchantment_glint_override=true]' % (items.item_id(name), json.dumps({"text": name, "color": "red"})))
 
 
 # --- preset: projectile_lands (copied from _presets/projectile_lands.py) ---
@@ -304,7 +287,7 @@ def _crater_carve(at, v, path):
             area.release(box)
 
 
-v = values(VALUES)
+v = values()
 given = set()
 
 
@@ -314,13 +297,18 @@ def arm():
         for p in loop.who(v["player"]):
             if p not in given:
                 given.add(p)
-                if not items.has(p, "Boom Trident") and "Gave" in mc.rcon("give %s %s" % (p, TRIDENT)):
-                    mc.log("gave a Boom Trident to", p)
+                if not items.has(p, v["item"]) and "Gave" in mc.rcon("give %s %s" % (p, trident(v["item"]))):
+                    mc.log("gave a %s to" % v["item"], p)
 
 
 if v["give"]:
-    mc.on_stop(lambda: [items.take(p, "Boom Trident") for p in sorted(given)])
+    mc.on_stop(lambda: [items.take(p, v["item"]) for p in sorted(given)])
     loop.background(arm)
+    result("%s gets the %s: throw it and it %s where it lands" % (
+        v["player"], v["item"], "blows a crater" if v["crater"] else "explodes"), player=v["player"], item=v["item"])
+else:
+    result("%s's thrown tridents %s where they land" % (v["player"], "blow a crater" if v["crater"] else "explode"),
+           player=v["player"])
 for at, p, weapon in loop(projectile_lands(v["player"], v)):
     n = explosion(at, p, v)
     if v["crater"]:

@@ -9,8 +9,9 @@ snapshot in fixtures/, read from each file's literal VALUES before the port (ast
     uv run --no-project --with pytest --with pydantic pytest actions/tests/test_values_parity.py
 
 A script with no action yet is skipped (listed in one log line); every preset has its class.
-The defaults are compared after the action's `defaults` and before its `fixed`, for each
-action that is not a variant of another; a variant fixes what it changes.
+The defaults are compared after the action's `defaults` and before its `fixed` (a value it
+fixes at the script's own default counts), for each action that is not a variant of another;
+a variant fixes what it changes.
 
 To take the snapshot again (it keeps a script whose VALUES is gone, as it was):
     uv run --no-project --with pytest python actions/tests/test_values_parity.py --write
@@ -40,6 +41,19 @@ COMPATIBLE = {
 # Values the spec gives a script's action that its VALUES did not have: {script: {value: why}}.
 ADDED = {
     "horde_boss": {"at": "Library_Actions: horde_boss has no place and gets one"},
+    # c2 (weapons): weapon_chest ice_staff lightning_staff boom_trident wither_wand meteor_staff sniper_rifle
+    # gravity_staff boom_bow zeus gun_chests projectile_shield tether
+    "boom_trident": {"item": "Library_Actions gaps: spear_bomb gives a trident of its own name"},
+    # end c2
+    # c3 (bosses, mobs, rules): ice_queen dragon_boss horde_boss god_visits zoo horde horror_mode herobrine
+    # walking_dead sneaky_creepers demon_lord lucky_blocks attribute_guard anti_camp grave_marks arena
+    "ice_queen": {"boss_minion": "the boss preset's; her abilities replace its minions, so it does nothing",
+                  "boss_minions": "the boss preset's; her abilities replace its minions, so it does nothing"},
+    # end c3
+}
+# Values renamed as their script was ported, where the old name cannot be a field: {script: {old: new}}.
+RENAMED = {
+    "god_visits": {"takes": "take_items"},   # c3: `takes` is every action's ClassVar, the fields the planner fills
 }
 
 
@@ -181,7 +195,12 @@ def test_every_action_over_a_library_script_takes_its_values(catalog):
         for name in names:
             cls = catalog.get(name)
             variant = any(k is not cls and k in {catalog.get(n) for n in catalog.names()} for k in cls.__mro__)
-            bad = problems(cls.model_fields, cls.__vfg__["unfixed"], SCRIPTS[script], T,
+            before = {RENAMED.get(script, {}).get(k, k): e for k, e in SCRIPTS[script].items()}
+            defaults = dict(cls.__vfg__["unfixed"])
+            for k, x in cls.fixed.items():   # fixed at the script's own default: wither_wand's summon_mob=wither
+                if k in before and x == before[k]["default"]:
+                    defaults[k] = x
+            bad = problems(cls.model_fields, defaults, before, T,
                            ADDED.get(script, {}), check_defaults=not variant)
             if bad:
                 failed[name] = bad

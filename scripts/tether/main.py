@@ -1,19 +1,9 @@
 """Tether: keeps a player near others: whoever gets further than a radius from all of them is brought back to the nearest."""
 ASKS = ["he has to stay next to us no matter what", "teleport him to us every time", "keep him near me",
         "teleport him back if he leaves", "he can't run away from us", "bring him back whenever he wanders off"]
-from kit import values, fx, loop, world
+from kit import values, result, fx, loop, world
 import math
 import mc
-
-VALUES = {
-    "player":           {"type": "player", "default": "@a"},
-    "message":          {"type": "str", "default": "Stay with the group", "live": True},
-    "leaves_area":      {"type": "enum", "of": ["radius", "box", "player"], "default": "player"},
-    "leaves_radius":    {"type": "number", "min": 1, "max": 10000, "default": 30, "live": True},
-    "leaves_center":    {"type": "list", "of": "number", "default": [], "live": True},
-    "leaves_box":       {"type": "list", "of": "number", "default": [], "live": True},
-    "leaves_of_player": {"type": "player", "default": "@a", "live": True},
-}
 
 
 # --- preset: leaves_area (copied from _presets/leaves_area.py) ---
@@ -78,7 +68,11 @@ def _leaves_back(p, at, home, last, anchors, v):
     return None if at.dim == centre.dim and _leaves_flat(at, centre) <= r else centre
 
 
-v = values(VALUES)
+v = values()
+where = {"player": "within %g blocks of %s" % (v["leaves_radius"], v["leaves_of_player"]),
+         "radius": "within %g blocks of the middle" % v["leaves_radius"], "box": "inside the box"}
+result("%s is tethered %s" % (v["player"], where[v["leaves_area"]]), player=v["player"], area=v["leaves_area"],
+       radius=v["leaves_radius"], near=v["leaves_of_player"])
 for p, back in loop(leaves_area(v["player"], v)):     # back: where the nearest of leaves_of_player stands
     mc.rcon(world.run(back.dim, "tp %s %.2f %.2f %.2f" % (p, back[0], back[1], back[2])))
     fx.sound("entity.enderman.teleport", p, volume=1.5)

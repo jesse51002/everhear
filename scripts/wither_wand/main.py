@@ -1,27 +1,9 @@
 """Wither Wand: right-click to summon withers where you look, with mob griefing off while any of them lives."""
 ASKS = ["can you give me a wand that wherever I right click spawns five withers", "spawn withers where I look",
         "a wand that summons mobs wherever I right click", "summon zombies where I point", "a summoning staff"]
-from kit import values, items, aim, fx, loop, mobs, world
+from kit import values, result, items, aim, fx, loop, mobs, world
 import json
 import mc
-
-VALUES = {
-    "player":        {"type": "player", "default": "@a"},
-    "item":          {"type": "str", "default": "Wither Wand"},
-    "cooldown":      {"type": "number", "min": 0, "max": 60, "default": 5, "live": True},
-    "range":         {"type": "int", "min": 4, "max": 300, "default": 100, "live": True},
-    "summon_mob":    {"type": "mob", "default": "wither", "live": True},
-    "summon_count":  {"type": "int", "min": 1, "max": 200, "default": 5, "live": True},
-    "summon_spread": {"type": "int", "min": 1, "max": 100, "default": 3, "live": True},
-    "summon_cap":    {"type": "int", "min": 1, "max": 1000, "default": 15, "live": True},
-    "summon_scale":  {"type": "number", "min": 0.1, "max": 16, "default": 1, "live": True},
-    "summon_health": {"type": "number", "min": 0, "max": 2048, "default": 0, "live": True},
-    "summon_gear":   {"type": "enum", "of": ["none", "leather", "chainmail", "iron", "golden", "diamond", "netherite"], "default": "none", "live": True},
-    "summon_weapon": {"type": "str", "default": "", "live": True},
-    "summon_name":   {"type": "str", "default": "", "live": True},
-    "summon_glow":   {"type": "bool", "default": False, "live": True},
-    "summon_nbt":    {"type": "str", "default": "", "live": True},
-}
 
 
 # --- preset: summon (copied from _presets/summon.py) ---
@@ -75,7 +57,7 @@ def _summon_nbt(v):
     return ",".join(parts)
 
 
-v = values(VALUES)
+v = values()
 
 
 def griefing_back():
@@ -86,6 +68,9 @@ def griefing_back():
 
 
 loop.background(griefing_back)
+result("%s has the %s: right-click to summon %d %s where you look" % (v["player"], v["item"], v["summon_count"],
+                                                                     v["summon_mob"]),
+       player=v["player"], item=v["item"], mob=v["summon_mob"], count=v["summon_count"])
 for p in loop(items.clicks(v["player"], v["item"], cooldown=v["cooldown"], color="dark_purple")):
     r = aim.ray(p, v["range"])
     if r is None:

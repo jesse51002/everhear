@@ -155,7 +155,7 @@ Small additions a part may rely on: `vfg watch --tail N` (for a person at a term
 
 ## 11. Secrets
 
-- On EC2, `TYPESAFE_API_KEY` and `VFG_CLIENT_TOKEN` live in `/opt/vfg/.env` with mode 600.
+- On EC2, `TYPESAFE_API_KEY` and `VFG_CLIENT_TOKEN` live in `/opt/vfg/.env` with mode 600. On the owner's PC they may live in the `.env` file `VFG_BOX_ENV` names (default `~/.vfg/box.env`, mode 600, outside any repo). `deploy.sh provision` and `deploy.sh env` send only the names `env.example` lists, over SSH on stdin, and make the client token on the box when none is given.
 - On the owner's PC, settings live in `~/.vfg/config`. The client token also lives in each player's mod config. The OpenRouter key is `OPEN_ROUTER_API` in the environment, or alone in the file `VFG_OPENROUTER_KEY` names (default `~/.vfg/openrouter.key`, mode 600); the config holds the path, never the key, and only `structured()` reads it.
 - The RCON password never leaves `server.properties` on EC2.
 - No secret goes in the repo.

@@ -5,7 +5,8 @@
 They start fake_rcon.py on a free port with a temp server.properties, check
 _lib/mc.py, then run every script (every folder without a leading "_") the way
 EC2 does: `python3 -u main.py` in its own folder with PYTHONPATH=scripts/_lib.
-A seed (README.md beside main.py) runs with its Usage line's arguments. An example
+A seed (README.md beside main.py) runs with its Usage line's arguments (one ported to its
+action, as a copy of it, like an example below). An example
 (main.py with ASKS, no README.md) runs with its defaults and VFG_INSTANCE set: one with
 VALUES reads them; one ported to its action (v = values()) gets the meta file `vfg action
 run` would write for its first action with nothing given (lib/py/vfg_actions.py). It runs
@@ -295,7 +296,7 @@ def run_script(name):
     fake = FakeRcon(password).start()
     out_path = os.path.join(TMP, name + ".out")
     env = script_env(properties(password, fake.port))
-    meta = action_meta(name, source)          # a seed ported to its action runs as a copy of it
+    meta = action_meta(name, source)      # a seed ported to its action runs as a copy of it
     if meta is not None:
         env.update(VFG_INSTANCE=name, VFG_SCRIPT=name, VFG_RUN_DIR=tempfile.mkdtemp(dir=TMP))
         with open(os.path.join(env["VFG_RUN_DIR"], name + ".json"), "w") as f:
@@ -371,13 +372,23 @@ _CATALOG_LOCK = threading.Lock()
 
 
 def catalog():
-    """(lib/py/vfg_actions.py, the library's actions), loaded once."""
+    """(vfg_actions, its Catalog of the actions), loaded once."""
     with _CATALOG_LOCK:   # the scripts run in threads: the actions load once
         if not _CATALOG:
             sys.path.insert(0, os.path.join(os.path.dirname(SCRIPTS), "lib", "py"))
             import vfg_actions
             _CATALOG.append((vfg_actions, vfg_actions.Catalog(os.path.dirname(SCRIPTS), None)))
         return _CATALOG[0]
+
+
+def copy_meta(action, given, copy=None):
+    """The meta file vfg action run writes for a copy of an action run with these values."""
+    va, cat = catalog()
+    cls = cat.get(action)
+    with _CATALOG_LOCK:
+        checked = va.check_values(cls, given)
+    return {"copy": copy or action, "action": action, "script": cls.script, "source": "library",
+            "values": checked.values, "live": checked.live, "runs": cls.runs, "task": None, "started": None}
 
 
 def action_meta(name, source):
@@ -387,15 +398,11 @@ def action_meta(name, source):
     if re.search(r"^VALUES\s*=", source, re.M):
         return None
     va, cat = catalog()
-    meta_of = va.check_values
     over = sorted(n for n in cat.names() if cat.get(n).script == name)
     if not over:
-        raise AssertionError("%s has no VALUES and no action runs it" % name)
-    action = name if name in over else over[0]
-    with _CATALOG_LOCK:
-        checked = meta_of(cat.get(action), {})
-    return {"copy": name, "action": action, "script": name, "source": "library", "values": checked.values,
-            "live": checked.live, "runs": cat.get(action).runs, "task": None, "started": None}
+        why = cat.errors().get(name)
+        raise AssertionError("%s has no VALUES and no action runs it%s" % (name, " (%s)" % why if why else ""))
+    return copy_meta(name if name in over else over[0], {}, copy=name)
 
 
 def run_example(name, seconds=4.0, folder=None):
@@ -613,10 +620,6 @@ def _add_kit_and_preset_tests():
                 globals()[name if mod.__name__ in ("test_kit", "test_instances") else "%s__%s" % (mod.__name__, name)] = obj
 
 
-# The actions load before the preset tests import each preset as a module of its own name:
-# pydantic finds a values class's descriptions through inspect.getmodule, which would then
-# take the preset's file for the test's module, find none, and the action would be left out.
-catalog()
 _add_kit_and_preset_tests()
 
 if __name__ == "__main__":
