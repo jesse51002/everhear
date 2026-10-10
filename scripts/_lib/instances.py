@@ -129,15 +129,21 @@ class Box(object):
         return os.path.join(self.run, name + ext)
 
     def pid(self, name):
-        """The copy's pid while it runs; a stale pid file is removed."""
+        """The copy's pid while it runs; a stale pid file is removed. A process that lives but
+        does not show the marker yet (between the execs of setsid, nohup and python, its
+        environment cannot be read) is asked again for half a second before it is called stale."""
         path = self.path(name, ".pid")
         try:
             with open(path) as f:
                 pid = int(f.read().strip())
         except (OSError, ValueError):
             return None
-        if has_marker(pid, "VFG_SCRIPT=" + name):
-            return pid
+        for _ in range(10):
+            if has_marker(pid, "VFG_SCRIPT=" + name):
+                return pid
+            if gone(pid):
+                break
+            time.sleep(0.05)
         remove(path)
         return None
 
