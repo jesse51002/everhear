@@ -2,33 +2,10 @@
 ASKS = ["let the world burn, make this place look like a hellscape",
         "I want the entire world to look like... I want every block replaced with lava, fire, and netherrack",
         "I want this place to feel barren", "turn everything into the nether", "make it look like hell"]
-from kit import values, area, loop, world
+from kit import values, result, area, loop, world
 import random
 import re
 import mc
-
-VALUES = {
-    "player":         {"type": "player", "default": "@a"},
-    "radius":         {"type": "int", "min": 1, "max": 512, "default": 48},
-    "height":         {"type": "int", "min": 0, "max": 384, "default": 32},
-    "dims":           {"type": "list", "of": ["overworld", "the_nether", "the_end"], "default": ["overworld"]},
-    "replace_rules":  {"type": "list", "of": "str", "live": True, "default": [
-        "water > lava",
-        "#minecraft:leaves > air",
-        "#minecraft:logs > basalt",
-        "#minecraft:replaceable_by_trees #minecraft:flowers #minecraft:crops #minecraft:saplings > fire",
-        "grass_block podzol mycelium mud moss_block #minecraft:dirt farmland dirt_path > netherrack",
-        "#minecraft:base_stone_overworld > netherrack",
-        "#minecraft:sand > soul_sand",
-        "gravel clay > soul_soil",
-        "#minecraft:snow > air",
-        "#minecraft:ice > lava",
-        "netherrack > 92% keep, 5% magma_block, 3% blackstone",
-    ]},
-    "replace_rate":   {"type": "int", "min": 1, "max": 100, "default": 100, "live": True},
-    "replace_cell":   {"type": "int", "min": 1, "max": 16, "default": 4, "live": True},
-    "replace_radius": {"type": "int", "min": 0, "max": 128, "default": 4, "live": True},
-}
 
 
 # --- preset: replace_blocks (copied from _presets/replace_blocks.py) ---
@@ -165,7 +142,7 @@ def _replace_blocks_free(boxes):
             return
 
 
-v = values(VALUES)
+v = values()
 # Round each player the player value names, in a dimension dims allows: radius blocks each way,
 # height blocks above and below their feet (0: the world's whole height), only where loaded.
 # The rules go in order: water to lava first, then leaves gone, trunks burnt to basalt, grass,
@@ -174,7 +151,7 @@ v = values(VALUES)
 # to soul sand, snow gone, ice to lava, and patches of magma and blackstone in the netherrack,
 # a cube of replace_cell blocks each. Then it ends; the blocks stay. For every chunk as they
 # walk, the same rules in chunk_changer.
-total = 0
+total, done = 0, []
 for p in loop.who(v["player"]):
     at, dim = mc.pos(p), world.dim_of(p)
     if not at or (dim or world.OVERWORLD).split(":")[-1] not in v["dims"]:
@@ -184,5 +161,12 @@ for p in loop.who(v["player"]):
     lo, hi = area.band(at[1], h, h, dim) if h else world.limits(dim)
     n = replace_blocks(world.Box(at[0] - r, lo, at[2] - r, at[0] + r, hi, at[2] + r, dim=dim), v)
     total += n
+    done.append(p)
     mc.log("round %s: %d blocks changed" % (p, n))
 mc.log("done: %d blocks changed" % total)
+if done:
+    result("the land round %s turned to the Nether, %d each way: %d blocks changed" % (", ".join(done), v["radius"],
+                                                                                    total),
+           players=done, blocks=total, radius=v["radius"])
+else:
+    result("nothing changed: %s is not online in %s" % (v["player"], " or ".join(v["dims"])), players=[], blocks=0)

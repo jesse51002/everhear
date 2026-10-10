@@ -3,25 +3,12 @@ ASKS = ["build me a castle", "build the castle where I'm standing now", "can you
         "a bigger castle out of obsidian, with my name on it, that says it is better than the stone castle",
         "build an ice castle where I'm standing right now", "with gigantic stairs that go all the way down to bedrock",
         "a castle with towers, walls, a gate and a courtyard"]
-from kit import values, aim, area, loop, world
+from kit import values, result, aim, area, loop, world
 import json
 import math
 import random
 import re
 import mc
-
-VALUES = {
-    "player":              {"type": "player", "default": "@a"},
-    "castle_size":         {"type": "int", "min": 11, "max": 101, "default": 23},
-    "castle_height":       {"type": "int", "min": 4, "max": 40, "default": 7},
-    "castle_tower_blocks": {"type": "str", "default": "cobblestone"},
-    "castle_ahead":        {"type": "int", "min": 0, "max": 64, "default": 6},
-    "castle_at":           {"type": "list", "of": "number", "default": []},
-    "castle_sign":         {"type": "list", "of": "str", "default": []},
-    "castle_stairs":       {"type": "int", "min": 0, "max": 380, "default": 0},
-    "shape_facing":        {"type": "enum", "of": ["look", "north", "east", "south", "west"], "default": "look", "live": True},
-    "shape_blocks":        {"type": "str", "default": "stone_bricks", "live": True},
-}
 
 
 # --- preset: shape_fill (copied from _presets/shape_fill.py) ---
@@ -171,12 +158,13 @@ def _shape_fill_cells(b):
             for x in range(b[0], b[3] + 1, n) for y in range(b[1], b[4] + 1, n) for z in range(b[2], b[5] + 1, n)]
 
 
-v = values(VALUES)
+v = values()
 # The castle is shape_fill's parts, each placed by [right, up, forward] from the middle of the
 # castle's front, which is castle_ahead blocks in front of the player, its gate facing them (or
-# at castle_at, x y z, its gate facing north). shape_blocks is the walls' block or a mix, which the
-# keep and the gate share; the towers are castle_tower_blocks. The run's two, as values: the
-# stone castle is the defaults; the ice castle is castle_size=61 castle_height=13
+# at castle_at, a saved place, x y z or a player, its gate facing north: one castle there, the
+# first player's). shape_blocks is the walls' block or a mix, which the keep and the gate
+# share; the towers are castle_tower_blocks. The run's two, as values: the stone castle is the
+# defaults; the ice castle (the ice_castle action) is castle_size=61 castle_height=13
 # shape_blocks=packed_ice castle_tower_blocks=blue_ice castle_stairs=120; the obsidian one,
 # castle_size=31 shape_blocks=obsidian castle_tower_blocks=crying_obsidian
 # castle_sign="{player}'s Castle,better than,the stone one". It ends when it is built.
@@ -188,20 +176,23 @@ def part(kind, width, depth, height, offset, blocks=None, hollow=False):
                       blocks=blocks or v["shape_blocks"], hollow=hollow)
 
 
+place = world.place(v["castle_at"]) if v["castle_at"] else None
+if v["castle_at"] and place is None:
+    result("no castle: %s is not a saved place nor a player online" % v["castle_at"], at=v["castle_at"], castles=0)
+    raise SystemExit(0)
+built = []                                                          # (player, where its middle is)
 for p in loop.who(v["player"]):
-    at = aim.look(p)
+    at = place or aim.look(p)
     if at is None:
         continue
-    placed = len(v["castle_at"]) >= 3
-    if placed:
-        at = world.Pos(v["castle_at"][0], v["castle_at"][1], v["castle_at"][2], at.dim)
+    placed = place is not None
     size, h = v["castle_size"] | 1, v["castle_height"]             # odd, so it has a middle
     s, d = size // 2, (0 if placed else v["castle_ahead"]) + size // 2
     tw, th = 5 + 2 * (size // 30), h + max(4, h // 2)               # a tower's width and height
     gw, gh = 5 + 4 * (size // 40), min(h - 2, 4 + size // 30)       # the gate's
     tower = v["castle_tower_blocks"]
     part("box", size + 4, size + 4, th + 4, [0, 0, d], "air")       # room for it: trees and hills go
-    part("box", size + 4, size + 4, 1, [0, -1, d])                  # its floor
+    floor = part("box", size + 4, size + 4, 1, [0, -1, d])          # its floor
     for right, fwd, w, dp in ((0, -s, size, 1), (0, s, size, 1), (-s, 0, 1, size), (s, 0, 1, size)):
         part("box", w, dp, h, [right, 0, d + fwd])                  # the four walls
     for k in range(-s, s + 1, 2):                                   # battlements, every other block
@@ -229,3 +220,13 @@ for p in loop.who(v["player"]):
         n = v["castle_stairs"]
         part("staircase_down", max(3, size // 5), n, n, [0, -n, d - s + 2 + n // 2], hollow=True)
     mc.log("castle for %s: %d wide, walls %d high, %s" % (p, size, h, v["shape_blocks"]))
+    built.append((p, "%d %d %d" % ((floor[0] + floor[3]) // 2, floor[4] + 1, (floor[2] + floor[5]) // 2)
+                  + (" in " + floor.dim.split(":")[-1] if floor.dim else "")))
+    if placed:
+        break
+if built:
+    result("built %s, %d wide, of %s: %s" % ("a castle" if len(built) == 1 else "%d castles" % len(built), size,
+                                              v["shape_blocks"], "; ".join("%s's at %s" % b for b in built)),
+           players=[p for p, _ in built], at=[a for _, a in built], size=size, castles=len(built))
+else:
+    result("no castle: %s is not online" % v["player"], players=[], castles=0)

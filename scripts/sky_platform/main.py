@@ -1,23 +1,11 @@
 """Sky Platform: a platform of obsidian high in the sky over a player, with a low rim and lights; they are put on it and their spawn is set there."""
 ASKS = ["can you change my spawn to an obsidian base in the sky", "an obsidian platform in the sky",
         "put me on a platform in the sky", "a sky base", "make it higher"]
-from kit import values, aim, area, loop, world
+from kit import values, result, aim, area, loop, world
 import math
 import random
 import re
 import mc
-
-VALUES = {
-    "player":         {"type": "player", "default": "@a"},
-    "platform_y":     {"type": "int", "min": -60, "max": 317, "default": 200},
-    "platform_size":  {"type": "int", "min": 3, "max": 64, "default": 9},
-    "platform_at":    {"type": "list", "of": "number", "default": []},
-    "platform_rim":   {"type": "bool", "default": True},
-    "platform_tp":    {"type": "bool", "default": True},
-    "platform_spawn": {"type": "bool", "default": True},
-    "shape_facing":   {"type": "enum", "of": ["look", "north", "east", "south", "west"], "default": "look", "live": True},
-    "shape_blocks":   {"type": "str", "default": "obsidian", "live": True},
-}
 
 
 # --- preset: shape_fill (copied from _presets/shape_fill.py) ---
@@ -167,11 +155,11 @@ def _shape_fill_cells(b):
             for x in range(b[0], b[3] + 1, n) for y in range(b[1], b[4] + 1, n) for z in range(b[2], b[5] + 1, n)]
 
 
-v = values(VALUES)
+v = values()
 # For each player the player value names: a platform_size square of shape_blocks at height
-# platform_y over where they stand (or over platform_at, x z), with a rim a block high and
-# glowstone on its corners; then they are put on it, facing as they were, and their spawn is
-# set there. Then it ends; the platform stays.
+# platform_y over where they stand (or one over platform_at, a saved place, x y z or a player,
+# for them all), with a rim a block high and glowstone on its corners; then they are put on
+# it, facing as they were, and their spawn is set there. Then it ends; the platform stays.
 
 
 def part(kind, width, depth, height, offset, blocks=None, hollow=False):
@@ -180,12 +168,8 @@ def part(kind, width, depth, height, offset, blocks=None, hollow=False):
                       blocks=blocks or v["shape_blocks"], hollow=hollow)
 
 
-for p in loop.who(v["player"]):
-    feet, dim = mc.pos(p), world.dim_of(p)
-    if feet is None:
-        continue
-    x, z = (v["platform_at"][0], v["platform_at"][-1]) if len(v["platform_at"]) >= 2 else (feet[0], feet[2])
-    at = world.Pos(x, min(v["platform_y"], world.limits(dim)[1] - 3), z, dim)
+def build():
+    """The platform at `at`; the box of its floor."""
     size = v["platform_size"] | 1                                   # odd, so it has a middle
     floor = part("box", size, size, 1, [0, 0, 0])
     if v["platform_rim"]:
@@ -194,9 +178,31 @@ for p in loop.who(v["player"]):
         for cx in (-(size // 2), size // 2):
             for cz in (-(size // 2), size // 2):
                 part("box", 1, 1, 1, [cx, 1, cz], "glowstone")
+    return floor
+
+
+place = world.place(v["platform_at"]) if v["platform_at"] else None
+if v["platform_at"] and place is None:
+    result("no platform: %s is not a saved place nor a player online" % v["platform_at"], at=v["platform_at"])
+    raise SystemExit(0)
+floor, made = None, []
+for p in loop.who(v["player"]):
+    feet, dim = (place, place.dim) if place is not None else (mc.pos(p), world.dim_of(p))
+    if feet is None:
+        continue
+    if floor is None or place is None:                              # over a place: one for them all
+        at = world.Pos(feet[0], min(v["platform_y"], world.limits(dim)[1] - 3), feet[2], dim)
+        floor = build()
     x, y, z = (floor[0] + floor[3]) // 2, floor[1] + 1, (floor[2] + floor[5]) // 2
     if v["platform_tp"]:
         mc.rcon(world.run(floor, "tp %s %.1f %d %.1f" % (p, x + 0.5, y, z + 0.5)))
     if v["platform_spawn"]:
         mc.rcon(world.run(floor, "spawnpoint %s %d %d %d" % (p, x, y, z)))
     mc.log("sky platform for %s at %d %d %d%s" % (p, x, y, z, "" if dim is None else " in " + dim))
+    made.append((p, "%d %d %d" % (x, y, z) + ("" if dim is None else " in " + dim.split(":")[-1])))
+if made:
+    how = "put on a sky platform" if v["platform_tp"] else "has a sky platform"
+    result("; ".join("%s %s at %s" % (p, how, a) for p, a in made)
+           + (", spawn set there" if v["platform_spawn"] else ""), players=[p for p, _ in made], at=[a for _, a in made], spawn=v["platform_spawn"])
+else:
+    result("no platform: %s is not online" % v["player"], players=[])

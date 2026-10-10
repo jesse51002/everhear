@@ -2,26 +2,13 @@
 ASKS = ["drop a nuke in ten minutes, with the countdown in the chat automatically, and then it will destroy everything in it",
         "what is the block radius", "I said one thousand block radius, not two hundred",
         "I want a nuke", "just nuke the world", "it doesn't nuke the world, it doesn't create a bigger crater"]
-from kit import values, fx, loop, area, world
+from kit import values, result, fx, loop, area, world
 import json
 import math
+import re
 import time
 import mc
 import threading
-
-VALUES = {
-    "player":                 {"type": "player", "default": "@a"},
-    "nuke_at":                {"type": "list", "of": "number", "default": []},
-    "nuke_kill":              {"type": "bool", "default": True, "live": True},
-    "countdown_seconds":      {"type": "int", "min": 1, "max": 3600, "default": 600},
-    "countdown_text":         {"type": "str", "default": "\u2622 Nuke", "live": True},
-    "countdown_to":           {"type": "player", "default": "@a", "live": True},
-    "crater_radius":          {"type": "int", "min": 0, "max": 1000, "default": 1000, "live": True},
-    "crater_tunnel":          {"type": "int", "min": 0, "max": 8, "default": 0, "live": True},
-    "crater_leave":           {"type": "enum", "of": ["air", "lava", "fire"], "default": "air", "live": True},
-    "crater_spare_protected": {"type": "bool", "default": True, "live": True},
-    "crater_load":            {"type": "bool", "default": False, "live": True},
-}
 
 
 # --- preset: countdown (copied from _presets/countdown.py) ---
@@ -134,24 +121,33 @@ def _crater_carve(at, v, path):
             area.release(box)
 
 
-v = values(VALUES)
+v = values()
 # The middle is where the first player the player value names stands when it starts (or
-# nuke_at, x y z, in their dimension), fixed then. countdown_seconds of countdown (600: ten
-# minutes); a stop before zero calls it off. At zero: a white flash and blindness, the blast
-# heard by everyone, and with nuke_kill every mob and player in survival within crater_radius
-# killed. Then the crater: a ball of crater_radius carved to air from the middle out, in the
-# chunks that are loaded (crater_load would forceload all the others first: for small ones
-# only), never the bedrock floor nor a protected box. A stop while it carves leaves the rest.
+# nuke_at: a saved place, x y z, or a player, found then), fixed then. countdown_seconds of
+# countdown (600: ten minutes); a stop before zero calls it off. At zero: a white flash and
+# blindness, the blast heard by everyone, and with nuke_kill every mob and player in survival
+# within crater_radius killed. Then the crater: a ball of crater_radius carved to air from the
+# middle out, in the chunks that are loaded (crater_load would forceload all the others first:
+# for small ones only), never the bedrock floor nor a protected box. A stop while it carves
+# leaves the rest.
 who = loop.who(v["player"])
-feet = mc.pos(who[0]) if who else None
-if feet is None:
-    mc.log("nobody online to drop it on")
+if v["nuke_at"]:
+    middle = world.place(v["nuke_at"])
+    where = v["nuke_at"]
+else:
+    feet = mc.pos(who[0]) if who else None
+    middle = world.Pos(feet[0], feet[1], feet[2], world.dim_of(who[0])) if feet else None
+    where = who[0] if who else v["player"]
+if middle is None:
+    mc.log("nowhere to drop it: %s" % where)
+    result("no nuke: %s is %s" % (where, "not a saved place nor a player online" if v["nuke_at"] else "not online"),
+           at=v["nuke_at"] or None, players=who)
     raise SystemExit(0)
-at = list(v["nuke_at"])[:3] if len(v["nuke_at"]) >= 3 else feet
-middle = world.Pos(at[0], at[1], at[2], world.dim_of(who[0]))
+spot = "%d %d %d" % middle.block() + (" in " + middle.dim.split(":")[-1] if middle.dim else "")
 r = v["crater_radius"]
-mc.log("nuke at %d %d %d%s, radius %d, in %d s" % (middle.block() + (" in " + middle.dim if middle.dim else "", r,
-                                                                      v["countdown_seconds"])))
+mc.log("nuke at %s, radius %d, in %d s" % (spot, r, v["countdown_seconds"]))
+result("nuke counting down on %s at %s: radius %d, goes off in %s" % (
+    where, spot, r, _countdown_span(v["countdown_seconds"])), at=spot, radius=r, seconds=v["countdown_seconds"])
 _countdown_say(v, "%s: middle %.0f %.0f %.0f, radius %d. Everything in it goes." % (
     v["countdown_text"], middle[0], middle[1], middle[2], r))
 if countdown(v):
@@ -162,9 +158,15 @@ if countdown(v):
     for sound in ("entity.generic.explode", "entity.warden.sonic_boom", "entity.lightning_bolt.thunder"):
         mc.rcon("execute as @a at @s run playsound minecraft:%s master @s ~ ~ ~ 1000 0.6" % sound)
     fx.particle("explosion_emitter", middle, spread=min(30, r), count=60)
+    killed = 0
     if v["nuke_kill"]:
-        mc.rcon(here + "run kill @e[type=!player,type=!item,distance=..%d]" % r)
-        mc.rcon(here + "run kill @a[distance=..%d,gamemode=!creative,gamemode=!spectator]" % r)
+        for c in ("kill @e[type=!player,type=!item,distance=..%d]" % r,
+                  "kill @a[distance=..%d,gamemode=!creative,gamemode=!spectator]" % r):
+            said = mc.rcon(here + "run " + c)                      # "Killed 5 entities", "Killed Bob"
+            m = re.match(r"Killed (\d+) entities", said)
+            killed += int(m.group(1)) if m else 1 if said.startswith("Killed ") else 0
     _countdown_say(v, "%s: detonated." % v["countdown_text"])
     n = crater(middle, v)
     _countdown_say(v, "%s: crater complete, %d blocks gone." % (v["countdown_text"], n), "gray")
+    result("nuke went off at %s: radius %d, %d killed, %d blocks gone" % (spot, r, killed, n),
+           at=spot, radius=r, killed=killed, blocks=n)

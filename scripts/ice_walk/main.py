@@ -7,27 +7,11 @@ ASKS = ["can you turn everything I walk on into ice", "also on regular ground to
         "it should turn the blocks that are already buried into ice",
         "why is it not changing grass blocks", "don't exclude anything from the ice list, just make it include everything",
         "freeze the water and lava too", "ice under my feet"]
-from kit import values, fx, loop, world, area
+from kit import values, result, fx, loop, world, area
 import math
 import re
 import mc
 import random
-
-VALUES = {
-    "player":         {"type": "player", "default": "@a", "live": True},
-    "flash":          {"type": "bool", "default": True, "live": True},
-    "walk_every":     {"type": "number", "min": 0.5, "max": 32, "default": 2, "live": True},
-    "under_radius":   {"type": "int", "min": 0, "max": 32, "default": 10, "live": True},
-    "under_depth":    {"type": "int", "min": 1, "max": 64, "default": 11, "live": True},
-    "under_above":    {"type": "int", "min": 0, "max": 64, "default": 11, "live": True},
-    "replace_rules":  {"type": "list", "of": "str", "live": True, "default": [
-        "solid water lava bubble_column kelp kelp_plant #minecraft:replaceable_by_trees "
-        "#minecraft:flowers #minecraft:crops #minecraft:saplings > packed_ice",
-    ]},
-    "replace_rate":   {"type": "int", "min": 1, "max": 100, "default": 100, "live": True},
-    "replace_cell":   {"type": "int", "min": 1, "max": 16, "default": 4, "live": True},
-    "replace_radius": {"type": "int", "min": 0, "max": 128, "default": 4, "live": True},
-}
 
 
 # --- preset: walk_steps (copied from _presets/walk_steps.py) ---
@@ -210,13 +194,16 @@ def _replace_blocks_free(boxes):
             return
 
 
-v = values(VALUES)
+v = values()
 # At each step a player takes on the ground (walk_every blocks, or a block up or down, or a
 # teleport), every block that replace_rules names in the box round them becomes packed ice:
 # under_radius each way, under_depth down from the block they stand on, under_above up from
 # it. Solid ground, water, lava, plants and leaves; never air, so nobody is shut in; never
 # bedrock (frozen bedrock in the run opened the floor of the world), nor what is protected.
-# under_radius=2 under_depth=1 under_above=0 is a path of ice under the feet only.
+# under_radius=2 under_depth=1 under_above=0 is a path of ice under the feet only (ice_path).
+result("ice walk on for %s: everything %d blocks round each step turns to ice, %d down and %d up"
+       % (v["player"], v["under_radius"], v["under_depth"], v["under_above"]), player=v["player"],
+       radius=v["under_radius"], depth=v["under_depth"], above=v["under_above"])
 last = {}
 for p, at in loop(walk_steps(v["player"], v)):
     replace_blocks(under_feet(at, v), v)

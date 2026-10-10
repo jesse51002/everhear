@@ -1,22 +1,10 @@
 """Lava Rain: drops of lava and flame fall out of the sky round every player, only to look at: no blocks, no fire, no harm."""
 ASKS = ["if you can make it rain lava, like lava particles over the world, that'd be even better",
         "make it rain lava", "lava particles falling over all of us", "more lava rain", "remove the lava rain"]
-from kit import values, aim, fx, loop, world
+from kit import values, result, aim, fx, loop, world
 import math
 import random
 import mc
-
-VALUES = {
-    "player":     {"type": "player", "default": "@a", "live": True},
-    "every":      {"type": "number", "min": 0.1, "max": 10, "default": 0.4, "live": True},
-    "particles":  {"type": "list", "of": "particle", "default": ["falling_lava", "falling_lava", "dripping_lava", "lava", "flame"], "live": True},
-    "drops":      {"type": "int", "min": 1, "max": 200, "default": 25, "live": True},
-    "sky_radius": {"type": "number", "min": 0, "max": 128, "default": 14, "live": True},
-    "sky_height": {"type": "number", "min": 1, "max": 300, "default": 15, "live": True},
-    "sky_band":   {"type": "number", "min": 0, "max": 100, "default": 7, "live": True},
-    "sky_count":  {"type": "int", "min": 1, "max": 100, "default": 6, "live": True},
-    "sky_open":   {"type": "bool", "default": True, "live": True},
-}
 
 
 # --- preset: sky_above (copied from _presets/sky_above.py) ---
@@ -51,10 +39,12 @@ def sky_above(at, v):
     return kept
 
 
-v = values(VALUES)
+v = values()
 # Every `every` s, sky_count spots in the open sky round each player the player value names
 # (sky_radius out, sky_height above them give or take sky_band), and at each a puff of drops
 # of one of `particles`, picked at random, spread 4 blocks wide. Until it is stopped.
+result("lava rain on %s: %d puffs of %d drops round each, every %g s" % (v["player"], v["sky_count"], v["drops"],
+                                                                        v["every"]), player=v["player"])
 for _ in loop(every=v["every"]):
     for at in sky_above(v["player"], v):
         fx.particle(random.choice(v["particles"] or ["falling_lava"]), at, spread=(4, 1, 4), count=v["drops"])

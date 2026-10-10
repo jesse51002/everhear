@@ -4,25 +4,23 @@ import random
 import re
 import time
 from mc import rcon, pos, log
-from kit import values, area, loop, world
+from kit import values, result, area, loop, world
 
-VALUES = {
-    "player": {"type": "player", "default": "@a"},
-    "away":   {"type": "int", "min": 0, "max": 1000, "default": 60},
-    "corner": {"type": "list", "of": "int", "default": []},
-    "n":      {"type": "int", "min": 1, "max": 2000, "default": 250},
-    "seed":   {"type": "int", "min": 0, "max": 1000000, "default": 5},
-}
-
-v = values(VALUES)
+v = values()
 # The same area as mountains with the same values: `away` blocks east of the first player the
-# player value names, or corner=x,z. In the overworld.
-if len(v["corner"]) >= 2:
-    X0, Z0 = int(v["corner"][0]), int(v["corner"][1])
+# player value names, or at corner (a saved place, x y z or a player, its y not used). In the
+# overworld.
+if v["corner"]:
+    at = world.place(v["corner"])
+    if at is None:
+        result("no trees: %s is not a saved place nor a player online" % v["corner"], corner=v["corner"], trees=0)
+        raise SystemExit(0)
+    X0, _, Z0 = at.block()
 else:
     near = [c for c in (pos(p) for p in loop.who(v["player"])) if c]
     if not near:
-        log("nowhere to plant: %s is not online, and no corner=x,z" % v["player"])
+        log("nowhere to plant: %s is not online, and no corner" % v["player"])
+        result("no trees: %s is not online" % v["player"], trees=0)
         raise SystemExit(0)
     X0, Z0 = int(near[0][0]) + v["away"], int(near[0][2]) - 50
 N = v["n"]
@@ -63,3 +61,5 @@ while placed < N and tries < N * 8:
         placed += 1
 log("trees placed", placed, "tries", tries)
 area.release()
+result("%d spruce trees planted on the slopes over x %d..%d, z %d..%d" % (placed, X0, X0 + 200, Z0, Z0 + 100),
+       trees=placed, tries=tries, corner="%d %d" % (X0, Z0))

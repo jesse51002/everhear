@@ -1,20 +1,9 @@
 """TNT Rain: primed TNT falls from the sky round every player, or the ones named, a volley every few seconds."""
 ASKS = ["rain TNT on us", "TNT falling from the sky", "make it rain TNT"]
-from kit import values, aim, loop, world
+from kit import values, result, aim, loop, world
 import math
 import random
 import mc
-
-VALUES = {
-    "player":     {"type": "player", "default": "@a"},
-    "every":      {"type": "number", "min": 1, "max": 3600, "default": 20, "live": True},
-    "fuse":       {"type": "number", "min": 0.5, "max": 10, "default": 4, "live": True},
-    "sky_radius": {"type": "number", "min": 0, "max": 128, "default": 7, "live": True},
-    "sky_height": {"type": "number", "min": 1, "max": 300, "default": 25, "live": True},
-    "sky_band":   {"type": "number", "min": 0, "max": 100, "default": 0, "live": True},
-    "sky_count":  {"type": "int", "min": 1, "max": 40, "default": 10, "live": True},
-    "sky_open":   {"type": "bool", "default": True, "live": True},
-}
 
 
 # --- preset: sky_above (copied from _presets/sky_above.py) ---
@@ -49,8 +38,10 @@ def sky_above(at, v):
     return kept
 
 
-v = values(VALUES)
+v = values()
 mc.log("every", v["every"], "s,", v["sky_count"], "TNT each, on", v["player"])
+result("TNT rain on %s: %d TNT round each every %g s, the first now" % (v["player"], v["sky_count"], v["every"]),
+       player=v["player"], every=v["every"], count=v["sky_count"])
 for _ in loop(every=v["every"]):
     points = sky_above(v["player"], v)
     for at in points:

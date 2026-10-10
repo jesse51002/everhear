@@ -3,29 +3,11 @@ ASKS = ["whatever I ask to change blocks, do it chunk by chunk, a script that ch
         "replace all the snow, all the types of snow, with random blocks",
         "when I enter a chunk, every single block that is green turns into cobwebs",
         "it should be every chunk I enter", "change the blocks as I walk, not just where I am now"]
-from kit import values, area, loop, world
+from kit import values, result, area, loop, world
 import queue
 import random
 import re
 import mc
-
-VALUES = {
-    "player":         {"type": "player", "default": "@a", "live": True},
-    "around":         {"type": "int", "min": 0, "max": 3, "default": 1, "live": True},
-    "replace_rules":  {"type": "list", "of": "str", "live": True, "default": [
-        "#minecraft:snow > white_wool light_gray_wool red_wool blue_wool lime_wool yellow_wool cyan_wool "
-        "purple_wool orange_wool pink_wool white_concrete light_blue_concrete green_concrete "
-        "magenta_concrete terracotta orange_terracotta brown_terracotta oak_planks spruce_planks "
-        "dark_oak_planks stone andesite granite diorite stone_bricks deepslate quartz_block glass "
-        "coal_ore lapis_ore",
-    ]},
-    "replace_rate":   {"type": "int", "min": 1, "max": 100, "default": 100, "live": True},
-    "replace_cell":   {"type": "int", "min": 1, "max": 16, "default": 4, "live": True},
-    "replace_radius": {"type": "int", "min": 0, "max": 128, "default": 4, "live": True},
-    "enters_dims":    {"type": "list", "of": ["overworld", "the_nether", "the_end"], "default": ["overworld", "the_nether", "the_end"], "live": True},
-    "enters_below":   {"type": "int", "min": 0, "max": 384, "default": 32, "live": True},
-    "enters_above":   {"type": "int", "min": 0, "max": 384, "default": 40, "live": True},
-}
 
 
 # --- preset: replace_blocks (copied from _presets/replace_blocks.py) ---
@@ -190,7 +172,7 @@ def enters_chunk(player, v):
         loop.wait(0.5)
 
 
-v = values(VALUES)
+v = values()
 # Each chunk a player enters, from enters_below under their feet to enters_above over them,
 # and with around=1 the eight round it too (so a player at a corner sees no seam), nearest
 # first, each once: replace_blocks works through them in the background while the walking is
@@ -213,6 +195,10 @@ def work():
 
 
 loop.background(work)
+n, k = len(v["replace_rules"]), v["around"]
+result("chunk changer on for %s: %d rule%s in each chunk they walk into%s" % (
+    v["player"], n, "" if n == 1 else "s", " and the %d round it" % ((2 * k + 1) ** 2 - 1) if k else ""),
+    player=v["player"], rules=list(v["replace_rules"]))
 for p, box in loop(enters_chunk(v["player"], v)):
     cx, cz, k = box[0] >> 4, box[2] >> 4, v["around"]
     near = [(dx, dz) for dx in range(-k, k + 1) for dz in range(-k, k + 1)]
