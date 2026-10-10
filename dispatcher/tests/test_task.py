@@ -729,6 +729,26 @@ async def test_an_until_stopped_copy_is_named_in_its_report(h):
     assert h.vfg.replies(tid) == [(tid, "done", "a railgun for Alex — Alex has a railgun (running as railgun_2)")]
 
 
+async def test_one_for_another_player_too_is_the_action_again_never_an_edit(h):
+    """The live test of 2026-10-10: the selector's rules gave "for Alex too" as an edit, so "one for
+    Alex too" put Alex on Steve's copy (galick_gun, player=Steve,Alex), and "no cooldown on Alex's"
+    and "stop Steve's" could no longer reach one player's gun. It is the action again: a copy of its own."""
+    h.running(galick_gun={"action": "galick_gun", "task": "T3", "values": {"player": "Steve"}})
+    h.llm.add("Selection", select(("galick_gun", "give Alex a Galick Gun")))
+    h.llm.add("Planned_galick_gun", planned({"player": "Alex"}, say="a Galick Gun for Alex"))
+    h.vfg.on("action", "run", "galick_gun", answer=ok("Alex has the Galick Gun", copy="galick_gun_2",
+                                                       action="galick_gun", running=True))
+    tid = await h.run("one for Alex too")
+    rules = h.llm.prompts("Selection")[0].split("\nYour actions:")[0]
+    edit = next(x for x in rules.splitlines() if x.startswith("- edit:"))
+    assert '"for Alex too"' not in edit.split(" is never an edit")[0]
+    assert 'One for another player too ("one for Alex too", "give Alex one as well") is never an edit' in edit
+    ran = h.vfg.actions()
+    assert len(ran) == 1 and ran[0][2] == "galick_gun" and not [a for a in ran[0] if a.startswith(("as=", "copy="))]
+    assert h.vfg.replies(tid) == [(tid, "done", "a Galick Gun for Alex — Alex has the Galick Gun "
+                                                "(running as galick_gun_2)")]
+
+
 async def test_a_once_action_past_its_timeout_is_done_still_running_and_never_run_again(h):
     h.llm.add("Selection", select(("summon_around", "summon 100 zombies round Steve")))
     h.llm.add("Planned_summon_around", planned({"players": "Steve", "mob": "zombie", "count": 100}, say="zombies"))
