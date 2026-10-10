@@ -15,6 +15,7 @@ after another: a follow-up waits behind the task's running implementer, then res
 so two implementers never edit one script. Each run writes its usage with `vfg usage add`, off the
 critical path, after its report has gone."""
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -100,6 +101,22 @@ def scrub_environ() -> None:
             del os.environ[k]
 
 
+def system_file(cfg: ImplementerConfig, system: str) -> str:
+    """The system prompt in a file of the brain's folder, named by its hash, written once: about
+    180K characters with `vfg prefix`, too long for one argument of the CLI's command line (Linux
+    takes at most 128 KiB in one), so it goes to the CLI as --system-prompt-file. The same bytes
+    always make the same file, so every implementer's prompt starts the same."""
+    data = system.encode("utf-8")
+    path = os.path.join(cfg.brain_dir, "implementer-system-%s.md" % hashlib.sha256(data).hexdigest()[:12])
+    if not os.path.exists(path):
+        os.makedirs(cfg.brain_dir, mode=0o700, exist_ok=True)
+        tmp = "%s.%d.tmp" % (path, os.getpid())
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    return path
+
+
 def build_options(cfg: ImplementerConfig, system: str, guard: GuardContext, resume: str | None = None,
                   stderr: Callable[[str], None] | None = None) -> ClaudeAgentOptions:
     """One implementer's options: the implementer is the main thread."""
@@ -109,7 +126,7 @@ def build_options(cfg: ImplementerConfig, system: str, guard: GuardContext, resu
     return ClaudeAgentOptions(
         model=cfg.model,
         effort=cfg.effort,
-        system_prompt=system,
+        system_prompt={"type": "file", "path": system_file(cfg, system)},
         cwd=cfg.repo,
         setting_sources=[],
         skills=[],
