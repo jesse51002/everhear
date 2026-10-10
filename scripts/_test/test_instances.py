@@ -50,7 +50,15 @@ class InstancesTests(unittest.TestCase):
     def start(self, as_=None, **values):
         name, pid, proc = self.box.start(self.meta(**values), as_)
         self.addCleanup(proc.wait)
+        self.up(name)
         return name, pid, proc
+
+    def up(self, name):
+        """Wait until the copy's script runs (it printed its values): a stop sent sooner, while
+        setsid has not made its process group yet, is lost and the copy is killed 5 s later."""
+        end = time.time() + 5
+        while time.time() < end and not any(l.startswith("values ") for l in self.box.tail(name)):
+            time.sleep(0.02)
 
     def test_names_the_action_then_2_3_or_as_given_never_a_running_one(self):
         self.assertEqual([self.start()[0] for _ in range(3)], ["nap", "nap_2", "nap_3"])
@@ -87,7 +95,8 @@ class InstancesTests(unittest.TestCase):
         got = self.box.edit(name, {"cooldown": 0, "length": 60}, ["cooldown"], True)
         self.assertEqual((got["live"], got["restarted"], self.box.pid(name)), (True, None, pid))
         self.assertEqual(self.box.live(name), {"cooldown": 0})
-        got = self.box.edit(name, {"cooldown": 0, "length": 9}, ["length"], False)
+        got = self.box.edit(name, {"cooldown": 0, "length": 9}, ["length"], False, wait=0)
+        self.up(name)
         self.assertFalse(got["live"])
         self.assertNotEqual(got["restarted"], pid)
         self.assertEqual(self.box.meta(name)["values"], {"cooldown": 0, "length": 9})   # the live edit kept
@@ -97,8 +106,9 @@ class InstancesTests(unittest.TestCase):
         with self.assertRaises(instances.CopyError):
             self.box.edit("nobody", {"cooldown": 1}, ["cooldown"], True)
         # A field the copy's meta does not list as live is never written live.
-        got = self.box.edit(name, {"length": 4}, None, True)
+        got = self.box.edit(name, {"length": 4}, None, True, wait=0)
         self.assertFalse(got["live"])
+        self.up(name)
 
     def test_two_live_edits_at_once_both_land(self):
         name, pid, proc = self.start(cooldown=2, colour="red")
