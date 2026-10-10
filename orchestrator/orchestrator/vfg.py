@@ -16,17 +16,18 @@ class VfgResult:
 VfgRunner = Callable[..., Awaitable[VfgResult]]
 
 
-async def vfg(args: list[str], timeout_ms: float = 60_000) -> VfgResult:
+async def vfg(args: list[str], timeout_ms: float = 60_000, stdin: str | None = None) -> VfgResult:
+    """`stdin`, when given, is what vfg reads (vfg route takes the brief there); otherwise nothing."""
     try:
         proc = await asyncio.create_subprocess_exec(
             "vfg", *args,
-            stdin=asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.DEVNULL if stdin is None else asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
     except OSError as e:
         return VfgResult(127, "", str(e), False)
-    output = asyncio.ensure_future(proc.communicate())
+    output = asyncio.ensure_future(proc.communicate(None if stdin is None else stdin.encode("utf-8")))
     done, _ = await asyncio.wait({output}, timeout=timeout_ms / 1000)
     timed_out = not done
     if timed_out:

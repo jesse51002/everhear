@@ -457,10 +457,11 @@ def guard(cfg, **over):
     return GuardContext(**fields)
 
 
-def test_defaults_opus_low_sonnet_implementers_at_low_all_overridable():
+def test_defaults_opus_low_haiku_5_5_implementers_at_low_all_overridable():
     d = temp_dir()
     c = config_in(d)
-    assert [c.model, c.effort, c.implementer_model, c.implementer_effort] == ["opus", "low", "sonnet", "low"]
+    # Haiku 5.5 implementers while the prototype runs on the owner's subscription (the script library spec)
+    assert [c.model, c.effort, c.implementer_model, c.implementer_effort] == ["opus", "low", "claude-haiku-5-5", "low"]
     over = config_in(d, {"VFG_ORCH_MODEL": "haiku", "VFG_ORCH_EFFORT": "medium"})
     assert [over.model, over.effort] == ["haiku", "medium"]
     o = config_in(d, {"VFG_IMPL_MODEL": "haiku", "VFG_IMPL_EFFORT": "medium", "VFG_ORCH_EFFORT": "high"})
@@ -505,7 +506,7 @@ def test_implementers_mode_the_sessions_options():
     assert "ANTHROPIC_API_KEY" not in o.env
     assert o.env["CLAUDE_AGENT_SDK_CLIENT_APP"] == "vfg-orchestrator/0.1"
     impl = o.agents["implementer"]
-    assert impl.model == "sonnet"  # VFG_IMPL_MODEL's default
+    assert impl.model == "claude-haiku-5-5"  # VFG_IMPL_MODEL's default
     assert impl.effort == "low"  # VFG_IMPL_EFFORT's default, set on the agent definition
     assert impl.tools == ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]
     assert impl.background is True
@@ -513,7 +514,9 @@ def test_implementers_mode_the_sessions_options():
     assert impl.prompt == "impl " + cfg.repo
     assert o.allowed_tools == rules(cfg.repo)
     assert "Read(/%s/**)" % cfg.repo in o.allowed_tools
-    assert "Write(/%s/scripts/**)" % cfg.repo in o.allowed_tools
+    # implementers write in this server's folder, never in the library
+    assert {"Write(/%s/made/main/**)" % cfg.repo, "Edit(/%s/made/main/**)" % cfg.repo} <= set(o.allowed_tools)
+    assert not any("/scripts/" in r for r in o.allowed_tools if r.startswith(("Write(", "Edit(")))
     assert ("Read(/%s/**)" % cfg.repo).startswith("Read(//")
     assert not any("vfg say" in r for r in o.allowed_tools)
     # saved places: implementers save and list them; nobody forgets one
@@ -542,3 +545,82 @@ def test_the_runners_own_environment_loses_what_the_cli_must_not_see():
     assert "CLAUDE_CODE_SSE_PORT" not in os.environ
     assert os.environ["CLAUDE_CODE_OAUTH_TOKEN"] == "subscription-token"
     assert os.environ["VFG_REPO"] == "/r"
+
+
+# ====================================================== the script library: the implementer's prefix and cache
+
+def _real_vfg(d: str) -> str:
+    """A bin dir whose vfg is this repo's toolkit/vfg, with a VFG_HOME of its own: `vfg prefix` reads
+    only the library."""
+    bindir = os.path.join(d, "realbin")
+    os.makedirs(bindir)
+    toolkit = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "toolkit", "vfg")
+    with open(os.path.join(bindir, "vfg"), "w") as f:
+        f.write('#!/bin/sh\nVFG_HOME="%s" exec python3 "%s" "$@"\n' % (os.path.join(d, "vfghome"), toolkit))
+    os.chmod(os.path.join(bindir, "vfg"), 0o755)
+    os.environ["PATH"] = bindir + ":" + os.environ["PATH"]
+    return bindir
+
+
+async def test_the_implementers_system_prompt_is_its_rules_then_vfg_prefix_the_same_bytes_in_every_session():
+    s = setup()
+    _real_vfg(s.dir)
+    s.session.prompts.implementer = "RULES for %SERVER% in %REPO%\n"
+    await s.session.open()
+    first = s.q().options.agents["implementer"].prompt
+    s.session.close_query()
+    await s.session.open()  # a restart or a rollover builds it again
+    second = s.q().options.agents["implementer"].prompt
+    s.session.close_query()
+    assert first == second
+    rules = "RULES for main in %s\n" % s.cfg.repo
+    assert first.startswith(rules + "\nHOW A SCRIPT AND A PRESET ARE WRITTEN\n")
+    assert "THE KIT, IN FULL" in first and "=== scripts/_lib/kit/values.py ===" in first
+    assert "made/" + "main/scripts/" not in first.split("THE LIBRARY", 1)[-1]  # nothing made: that is in each brief
+    # and that is exactly vfg prefix, after the rules
+    import subprocess
+    assert first == rules + "\n" + subprocess.run(["vfg", "prefix"], stdout=subprocess.PIPE, check=True).stdout.decode()
+
+
+async def test_without_vfg_prefix_the_implementer_starts_with_its_rules_alone():
+    s = setup()
+    os.environ.pop("VFG_FAKE_PREFIX", None)  # the fake prints nothing
+    await s.session.open()
+    assert s.q().options.agents["implementer"].prompt == "impl"
+    s.session.close_query()
+    os.environ["VFG_FAKE_PREFIX"] = os.path.join(s.dir, "prefix")
+    with open(os.environ["VFG_FAKE_PREFIX"], "w") as f:
+        f.write("THE KIT\n")
+    await s.session.open()
+    assert s.q().options.agents["implementer"].prompt == "impl\n\nTHE KIT\n"
+    s.session.close_query()
+
+
+def test_the_implementer_is_haiku_5_5_with_the_cache_life_as_a_flag_setting():
+    import json
+    d = temp_dir()
+    cfg = config_in(d)
+    o = build_options(cfg, Prompts(orchestrator="o", implementer="i", prefix="P\n"), new_store(d), guard(cfg))
+    impl = o.agents["implementer"]
+    assert impl.model == "claude-haiku-5-5"
+    assert impl.prompt == "i\n\nP\n"
+    assert json.loads(o.settings) == {"subagentPromptCacheTtl": "5m"}
+    for ttl, want in (("1h", "1h"), ("5m", "5m"), ("2h", "5m"), ("", "5m")):
+        c = config_in(d, {"VFG_SUBAGENT_CACHE_TTL": ttl})
+        assert json.loads(build_options(c, Prompts("o", "i"), new_store(d), guard(c)).settings) == {"subagentPromptCacheTtl": want}
+    # VFG_IMPL_MODEL still wins
+    c = config_in(d, {"VFG_IMPL_MODEL": "sonnet"})
+    assert build_options(c, Prompts("o", "i"), new_store(d), guard(c)).agents["implementer"].model == "sonnet"
+
+
+def test_the_guard_and_the_rules_know_the_server_folder():
+    d = temp_dir()
+    cfg = config_in(d, {"VFG_SERVER": "lobby"})
+    s = setup(None, {"VFG_SERVER": "lobby"})
+    assert s.session.guard_context().server == "lobby"
+    r = rules(cfg.repo, cfg.server)
+    assert "Write(/%s/made/lobby/**)" % cfg.repo in r and "Edit(/%s/made/lobby/**)" % cfg.repo in r
+    for cmd in ("vfg script new *", "vfg script set *", "vfg script save *", "vfg script check", "vfg script check *",
+                "vfg preset save *", "vfg state", "vfg state *"):
+        assert "Bash(%s)" % cmd in r
+    assert not any("route" in x or "prefix" in x for x in r)

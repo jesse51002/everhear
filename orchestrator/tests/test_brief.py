@@ -5,6 +5,7 @@ import time
 from helpers import temp_dir, use_fake_vfg, write
 
 from orchestrator import brief
+from orchestrator.examples import examples
 from orchestrator.guard import GuardContext, make_guard
 
 PLACES = "castle 197 68 251 overworld (T23)\nhome -368 70 912 overworld (T41)\n"
@@ -64,7 +65,7 @@ async def test_saved_places_a_slow_vfg_is_cut_off(monkeypatch):
 
 def test_the_runner_waits_10_s_for_the_places():
     assert brief.PLACES_TIMEOUT_MS == 10_000
-    assert brief.STEPS == [brief.saved_places]
+    assert brief.STEPS == [brief.saved_places, examples]  # the EXAMPLES block after the places (test_examples.py)
 
 
 # ---------------------------------------------------------------- the steps

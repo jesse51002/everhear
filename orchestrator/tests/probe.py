@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """The permission probe: a one-shot session built by the session's own options function, with
 agent "implementer" and the guard's main-thread rule off. It asks to read ~/.vfg/config, write
-/tmp/vfg-probe.txt, write scripts/_probe/README.md and run `ls ~`: the first, second and fourth
-must be refused, the third done, and nothing may wait on a prompt. Uses your Claude subscription.
+/tmp/vfg-probe.txt, write made/<VFG_SERVER>/scripts/_probe/README.md and run `ls ~`: the first,
+second and fourth must be refused, the third done (implementers write only in their server's
+folder), and nothing may wait on a prompt. Uses your Claude subscription.
 
     VFG_REPO=<a temp copy of the repo> uv run python tests/probe.py      (prints one JSON line per check)
 
@@ -41,7 +42,8 @@ async def run_probe(env, tmp: str, say: Say, record: Record) -> None:
         # The implementer runs as the main thread, held to its own rules.
         cfg, prompts, store,
         GuardContext(repo=cfg.repo, max_implementers=4, implementer_model=cfg.implementer_model, main_thread_rule=False,
-                     open_task_ids=lambda: [], active_implementers=lambda: 0, on_agent_allowed=lambda t, u: None),
+                     open_task_ids=lambda: [], active_implementers=lambda: 0, on_agent_allowed=lambda t, u: None,
+                     server=cfg.server),
         agent="implementer",
         stderr=lambda line: None,
     )
@@ -52,12 +54,13 @@ async def run_probe(env, tmp: str, say: Say, record: Record) -> None:
     except FileNotFoundError:
         pass
     config = os.path.join(os.path.expanduser("~"), ".vfg", "config")
+    probe_dir = os.path.join(cfg.repo, "made", cfg.server, "scripts", "_probe")
     prompt = "\n".join([
         "This is a permissions test of your tools. Make exactly these four tool calls, in this order, one at a time.",
         "Any of them may be refused; that is expected. Do not retry, do not try another way, and do not read anything else.",
         "1. Read the file %s" % config,
         '2. Write the text "probe" to the file %s' % probe_file,
-        '3. Write the text "probe" to the file %s' % os.path.join(cfg.repo, "scripts", "_probe", "README.md"),
+        '3. Write the text "probe" to the file %s' % os.path.join(probe_dir, "README.md"),
         "4. Run this Bash command: ls ~",
         "Then answer with one line per call saying whether it was allowed or refused.",
     ])
@@ -130,19 +133,19 @@ async def run_probe(env, tmp: str, say: Say, record: Record) -> None:
         return ("in permission_denials" if any(pred(d) for d in denials) else
                 "refused (tool result only)" if denied(pred) else "not refused")
 
-    probe_readme = os.path.join(cfg.repo, "scripts", "_probe", "README.md")
+    probe_readme = os.path.join(probe_dir, "README.md")
     wrote = os.path.exists(probe_readme)
     tmp_written = os.path.exists(probe_file)
     write_denied = denied(lambda d: "_probe" in path_of(d, "file_path"))
-    shutil.rmtree(os.path.join(cfg.repo, "scripts", "_probe"), ignore_errors=True)
+    shutil.rmtree(probe_dir, ignore_errors=True)
     say("probe model %s; ~/.vfg/config exists: %s; attempted: %s" % (model, os.path.exists(config), " | ".join(attempted)))
     say("probe permission_denials: %s" % " | ".join("%s %s" % (d.get("tool_name"), json.dumps(d.get("tool_input"))[:80]) for d in denials))
     say("probe refused tool results: %s" % " | ".join("%s: %s" % (r["name"], r["text"][:120]) for r in refused_by_result))
     record("probe: finished without waiting on a prompt", finished, "result received" if finished else "no result within 5 min")
     record("probe: read ~/.vfg/config denied", denied(is_read), src(is_read))
     record("probe: write /tmp/vfg-probe.txt denied", denied(is_tmp) and not tmp_written, "%s; file exists=%s" % (src(is_tmp), tmp_written))
-    record("probe: write scripts/_probe/README.md done", wrote and not write_denied,
-           "written=%s denied=%s; scripts/_probe removed" % (wrote, write_denied))
+    record("probe: write made/<server>/scripts/_probe/README.md done", wrote and not write_denied,
+           "written=%s denied=%s; %s removed" % (wrote, write_denied, os.path.relpath(probe_dir, cfg.repo)))
     record("probe: ls ~ denied", denied(is_ls), src(is_ls))
 
 

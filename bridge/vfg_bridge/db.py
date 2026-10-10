@@ -30,7 +30,14 @@ CREATE TABLE IF NOT EXISTS usage (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT 
   model TEXT, input_tokens INTEGER, output_tokens INTEGER, cost_usd REAL, ref TEXT);
 """
 
-USER_VERSION = 1
+# Columns added since section 4's DDL, as (table, column, type): a fresh history and
+# one made before them both get each, once, by ALTER TABLE on start.
+COLUMNS = [
+    ("usage", "cache_read_tokens", "INTEGER"),   # vfg usage add --cache-read
+    ("usage", "cache_write_tokens", "INTEGER"),  # vfg usage add --cache-write
+]
+
+USER_VERSION = 2
 BUSY_TIMEOUT_MS = 10000  # tests patch it low
 
 
@@ -48,8 +55,24 @@ def connect(path, busy_timeout_ms=None):
 
 def apply_schema(conn):
     conn.executescript(SCHEMA)
+    migrate(conn)
     conn.execute("PRAGMA journal_mode=WAL").fetchone()
     conn.execute("PRAGMA user_version=%d" % USER_VERSION)
+
+
+def migrate(conn):
+    """Add each of COLUMNS the history does not have yet; run on every start."""
+    for table, column, kind in COLUMNS:
+        have = {row[1] for row in conn.execute("PRAGMA table_info(%s)" % table)}
+        if column in have:
+            continue
+        try:
+            conn.execute("ALTER TABLE %s ADD COLUMN %s %s" % (table, column, kind))
+        except sqlite3.OperationalError:
+            # another process added it between the look and the ALTER
+            have = {row[1] for row in conn.execute("PRAGMA table_info(%s)" % table)}
+            if column not in have:
+                raise
 
 
 class DB:

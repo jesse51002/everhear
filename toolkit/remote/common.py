@@ -143,6 +143,92 @@ def mc_refused(out):
             or "<--[HERE]" in out)
 
 
+RCON_LOCK_WAIT = 15.0
+
+
+def rcon_lock_path(port):
+    """The lock file every RCON client of the server on `port` holds from send to reply:
+    VFG_RCON_LOCK, else /tmp/vfg-rcon-<port>.lock, as scripts/_lib/mc.py's lock_path()."""
+    return os.environ.get("VFG_RCON_LOCK") or "/tmp/vfg-rcon-%d.lock" % port
+
+
+def open_lock(path):
+    """A descriptor flock can hold on `path`, made if missing. Read-only and without O_CREAT
+    when it exists: flock needs neither write access nor ownership, and a sticky /tmp
+    refuses O_CREAT on another user's file (fs.protected_regular)."""
+    for _ in range(3):
+        try:
+            return os.open(path, os.O_RDONLY)
+        except FileNotFoundError:
+            pass
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        except FileExistsError:
+            continue
+        try:
+            os.fchmod(fd, 0o666)
+        except OSError:
+            pass
+        return fd
+    return os.open(path, os.O_RDONLY)
+
+
+def held_locks():
+    """This process's RCON locks, {path: [thread ident, depth, the fd that holds the flock]},
+    shared through one entry in sys.modules with every other RCON client loaded in the process
+    (scripts/_lib/mc.py's is the same), so a thread that already holds the lock takes it again
+    without waiting on itself; other threads and processes still wait."""
+    import threading
+    h = sys.modules.get("_vfg_rcon_held")
+    if h is None:
+        h = type(sys)("_vfg_rcon_held")
+        h.locks, h.guard = {}, threading.RLock()
+        h = sys.modules.setdefault("_vfg_rcon_held", h)
+    return h
+
+
+def take_lock(path, fd, deadline=None):
+    """Hold the RCON lock `path` through `fd` (re-entrant per thread); False past `deadline`."""
+    import fcntl
+    import threading
+    held, me = held_locks(), threading.get_ident()
+    with held.guard:
+        got = held.locks.get(path)
+        if got and got[0] == me:
+            got[1] += 1
+            return True
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | (fcntl.LOCK_NB if deadline is not None else 0))
+            break
+        except OSError:
+            if deadline is None or time.time() >= deadline:
+                return False
+            time.sleep(0.002)
+    with held.guard:
+        held.locks[path] = [me, 1, fd]
+    return True
+
+
+def drop_lock(path, fd):
+    """Let go of take_lock's hold: count down, or unlock the fd that took it."""
+    import fcntl
+    import threading
+    held, me = held_locks(), threading.get_ident()
+    with held.guard:
+        got = held.locks.get(path)
+        if got and got[0] == me:
+            if got[1] > 1:
+                got[1] -= 1
+                return
+            del held.locks[path]
+            fd = got[2]
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except (OSError, TypeError):
+        pass
+
+
 class Rcon(object):
     """A vanilla RCON client: one packet per write, a reply read by size.
 
@@ -150,7 +236,13 @@ class Rcon(object):
     one packet per read, so nothing is sent before the last packet was
     answered (no empty sentinel packet). A reply longer than 4096
     characters arrives as several packets: while the last body was 4000
-    bytes or more, one more packet is read with a 1 s timeout."""
+    bytes or more, one more packet is read with a 1 s timeout.
+
+    Vanilla also answers every RCON connection from one shared buffer, so two
+    clients with a command out at once get each other's output glued into
+    their replies. Each command therefore holds rcon_lock_path(port) (flock)
+    from its send to its last reply packet, as every script's mc.rcon does,
+    and lets it go between commands so nobody waits long."""
 
     def __init__(self, mc_dir):
         path = os.path.join(mc_dir, "server.properties")
@@ -162,6 +254,8 @@ class Rcon(object):
             self.port = int(props.get("rcon.port") or 25575)
         except ValueError:
             self.port = 25575
+        self.lock_path = rcon_lock_path(self.port)
+        self._lock_fd = None
         refused = "minecraft is not running (RCON on 127.0.0.1:%d refused)" % self.port
         if props.get("enable-rcon", "false").lower() != "true":
             raise RconDown(refused)
@@ -209,21 +303,38 @@ class Rcon(object):
         rid, typ = struct.unpack("<ii", data[:8])
         return rid, typ, data[8:-2]
 
-    def command(self, cmd):
-        self._send(2, 2, cmd)
-        rid, _typ, body = self._read()
-        parts = [body]
-        while len(body) >= 4000:
-            self.sock.settimeout(1.0)
+    def _lock(self):
+        """Hold the RCON lock, waiting at most RCON_LOCK_WAIT seconds."""
+        if self._lock_fd is None:
             try:
-                (length,) = struct.unpack("<i", self._exact(4))
-                data = self._exact(length)
-                body = data[8:-2]
-                parts.append(body)
-            except socket.timeout:
-                break
-            finally:
-                self.sock.settimeout(10)
+                self._lock_fd = open_lock(self.lock_path)
+            except OSError as e:
+                raise RconDown("cannot open the RCON lock %s (%s)" % (self.lock_path, e.strerror or e))
+        if not take_lock(self.lock_path, self._lock_fd, time.time() + RCON_LOCK_WAIT):
+            raise RconDown("another RCON client held %s for %d s" % (self.lock_path, RCON_LOCK_WAIT))
+
+    def _unlock(self):
+        drop_lock(self.lock_path, self._lock_fd)
+
+    def command(self, cmd):
+        self._lock()
+        try:
+            self._send(2, 2, cmd)
+            rid, _typ, body = self._read()
+            parts = [body]
+            while len(body) >= 4000:
+                self.sock.settimeout(1.0)
+                try:
+                    (length,) = struct.unpack("<i", self._exact(4))
+                    data = self._exact(length)
+                    body = data[8:-2]
+                    parts.append(body)
+                except socket.timeout:
+                    break
+                finally:
+                    self.sock.settimeout(10)
+        finally:
+            self._unlock()
         return b"".join(parts).decode("utf-8", errors="replace")
 
     def close(self):
@@ -231,3 +342,9 @@ class Rcon(object):
             self.sock.close()
         except Exception:
             pass
+        if self._lock_fd is not None:
+            try:
+                os.close(self._lock_fd)
+            except OSError:
+                pass
+            self._lock_fd = None

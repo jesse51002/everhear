@@ -6,6 +6,7 @@ from typing import Awaitable, Callable
 
 from . import vfg as vfg_module
 from .config import log
+from .examples import examples
 from .vfg import VfgResult, why
 
 # (the brief so far, the Agent tool's input) -> the brief to use
@@ -32,7 +33,9 @@ async def saved_places(brief: str, tool_input: dict) -> str:
     return "%s\n\n%s" % (brief.rstrip(), line)
 
 
-STEPS: list[BriefStep] = [saved_places]
+# saved_places, then the EXAMPLES block (examples.py): the scripts and presets for this job in full,
+# this server's first lines and the state of the server.
+STEPS: list[BriefStep] = [saved_places, examples]
 
 
 async def rewrite(brief: str, tool_input: dict) -> str:

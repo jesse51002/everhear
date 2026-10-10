@@ -78,3 +78,21 @@ VFG_DISPATCH_RETRIES=
 VFG_DISPATCH_WINDOW_S=
 # Seconds an action may run on EC2; teleport allows itself 60. Default: 20
 VFG_DISPATCH_ACTION_TIMEOUT_S=
+
+# --- Scripts (vfg script, vfg preset, vfg state) ---
+# The server this PC drives, and the name of its folder under made/, where what its
+# implementers make is kept apart from the library in scripts/. Default: main
+VFG_SERVER=
+# How often a running script looks again for the values vfg script set wrote, in seconds.
+# Default: 0.5
+VFG_LIVE_POLL_S=
+
+# --- The router (vfg route) and the implementers' cache ---
+# Seconds vfg route waits for Jev before it picks by words instead. Default: 3
+VFG_ROUTE_TIMEOUT_S=
+# What loads an example script for an implementer (runs_it and close together)
+# or a preset (use), from 0 to 1. Default: 0.3
+VFG_ROUTE_LOAD=
+# How long an implementer's prompt cache lives, 5m or 1h; the orchestrator passes
+# it as subagentPromptCacheTtl. An hour doubles the price of every cache write. Default: 5m
+VFG_SUBAGENT_CACHE_TTL=

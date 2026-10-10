@@ -26,11 +26,15 @@ def _n(u: dict, key: str):
 
 
 def totals_of(u: dict) -> ModelTotals:
-    """One model's totals from the SDK's modelUsage entry (inputTokens, cacheReadInputTokens, …)."""
+    """One model's totals from the SDK's modelUsage entry (inputTokens, cacheReadInputTokens, …).
+    "in" counts every input token; cacheRead and cacheWrite are the parts of it read from and
+    written to the cache."""
     return {
         "in": _n(u, "inputTokens") + _n(u, "cacheReadInputTokens") + _n(u, "cacheCreationInputTokens"),
         "out": _n(u, "outputTokens"),
         "cost": _n(u, "costUSD"),
+        "cacheRead": _n(u, "cacheReadInputTokens"),
+        "cacheWrite": _n(u, "cacheCreationInputTokens"),
     }
 
 
@@ -42,15 +46,21 @@ def usage_deltas(snapshot: dict[str, ModelTotals], model_usage: dict[str, dict] 
     rows = []
     for model, u in (model_usage or {}).items():
         now = totals_of(u)
-        prev = snapshot.get(model) or {"in": 0, "out": 0, "cost": 0}
-        reset = now["in"] < prev["in"] or now["out"] < prev["out"] or now["cost"] < prev["cost"] - 1e-9
-        base = {"in": 0, "out": 0, "cost": 0} if reset else prev
+        zero = {"in": 0, "out": 0, "cost": 0, "cacheRead": 0, "cacheWrite": 0}
+        prev = snapshot.get(model) or zero
+        reset = (now["in"] < prev["in"] or now["out"] < prev["out"] or now["cost"] < prev["cost"] - 1e-9
+                 or now["cacheRead"] < prev.get("cacheRead", 0) or now["cacheWrite"] < prev.get("cacheWrite", 0))
+        base = zero if reset else prev
         d = {"in": now["in"] - base["in"], "out": now["out"] - base["out"], "cost": max(0, now["cost"] - base["cost"])}
         nxt[model] = now
         if d["in"] == 0 and d["out"] == 0:
             continue
         row = {"component": component_of(model, implementer_model), "model": model,
                "in": d["in"], "out": d["out"], "cost": d["cost"]}
+        # A snapshot from before the cache was counted has no cacheRead: that row's share is unknown.
+        if "cacheRead" in base and "cacheWrite" in base:
+            row["cacheRead"] = now["cacheRead"] - base["cacheRead"]
+            row["cacheWrite"] = now["cacheWrite"] - base["cacheWrite"]
         ref = join_refs(refs)
         if ref:
             row["ref"] = ref
@@ -77,6 +87,8 @@ def join_refs(refs: list[str]) -> str:
 def usage_args(row: dict) -> list[str]:
     args = ["usage", "add", "--component", row["component"], "--model", row["model"],
             "--in", js_num(row["in"]), "--out", js_num(row["out"]), "--cost", "%.6f" % row["cost"]]
+    if "cacheRead" in row:
+        args += ["--cache-read", js_num(row["cacheRead"]), "--cache-write", js_num(row["cacheWrite"])]
     if row.get("ref"):
         args += ["--ref", row["ref"]]
     return args
@@ -119,6 +131,8 @@ class UsageMeter:
                 log("usage", "vfg usage add failed (%s): %s %s in=%s out=%s" % (why(r), row["component"], row["model"],
                                                                          js_num(row["in"]), js_num(row["out"])))
             else:
-                log("usage", "%s %s in=%s out=%s cost=%.4f%s" % (row["component"], row["model"], js_num(row["in"]), js_num(row["out"]),
-                                                              row["cost"], " ref=" + row["ref"] if row.get("ref") else ""))
+                cache = (" cache_read=%s cache_write=%s" % (js_num(row["cacheRead"]), js_num(row["cacheWrite"]))
+                         if "cacheRead" in row else "")
+                log("usage", "%s %s in=%s out=%s%s cost=%.4f%s" % (row["component"], row["model"], js_num(row["in"]), js_num(row["out"]),
+                                                                cache, row["cost"], " ref=" + row["ref"] if row.get("ref") else ""))
         return rows

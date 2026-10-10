@@ -17,7 +17,7 @@ REFUSED = frozenset(["stop", "op", "deop", "ban", "ban-ip", "pardon", "pardon-ip
 # seeded games use the world border).
 SERVER_WIDE = frozenset(["setworldspawn", "defaultgamemode", "difficulty", "worldborder"])
 
-# The main thread orchestrates: these, and Bash for `vfg place list` alone.
+# The main thread orchestrates: these, and Bash for `vfg place list` or `vfg script list` alone.
 MAIN_THREAD_TOOLS = frozenset(["Agent", "TaskStop", "Read", "Glob", "Grep", REPLY_TOOL])
 
 
@@ -29,7 +29,18 @@ class DENY:
     def server_wide(word: str) -> str:
         return "%s changes the whole server: implementers may not run it. Leave it out and say so in your report." % word
 
-    lib = "Never edit scripts/_lib/: it is shared by every script. Copy what you need into your own script."
+    @staticmethod
+    def library(server: str) -> str:
+        return ("scripts/ is the library (its _presets/ and _lib/ too) and is read-only during play. Copy what you "
+                "need into this server's folder instead: vfg script new <name> --from <script> --preset <preset> "
+                "makes made/%s/scripts/<name>/main.py, and you edit that." % server)
+
+    @staticmethod
+    def made_only(server: str) -> str:
+        return ("You write only in this server's folder, made/%s/: a script made with vfg script new, a preset with "
+                "vfg preset save." % server)
+
+    library_flag = "--library is for coding sessions: leave it out, and vfg script new writes into this server's folder."
     expansion = "Write the server command literally inside single quotes: no $( ), backticks or variables in a vfg cmd."
     agent_type = 'Use subagent_type "implementer": it is the only agent you have.'
     foreground = ("Implementers run in the background: leave run_in_background out, end your turn, and you are "
@@ -37,8 +48,9 @@ class DENY:
     overrides = "Leave model, mode and isolation out: the implementer definition sets them."
     shape = (
         "Refused, but Bash works: only these run, each as a plain command (join several with && or ;): "
-        "vfg cmd '<command>' | vfg script deploy|run|stop|logs|list ... | vfg place save|list ... | vfg history ... | "
-        "python3 -m py_compile <file> | sleep N. No cd, echo, ls, cat, grep, sed, ps, find, $?, pipes into "
+        "vfg cmd '<command>' | vfg script new|run|set|save|stop|logs|list|check|deploy ... | vfg preset save ... | "
+        "vfg state | vfg place save|list ... | vfg history ... | python3 -m py_compile <file> | sleep N. "
+        "No cd, echo, ls, cat, grep, sed, ps, find, $?, pipes into "
         "other programs, or redirections: vfg's output and exit status come back to you as they are, and the "
         "Read, Glob and Grep tools look at files. Send the allowed command again on its own."
     )
@@ -62,6 +74,8 @@ class GuardContext:
     active_implementers: Callable[[], int]
     # An Agent call was allowed: count it until its task_started arrives.
     on_agent_allowed: Callable[[str, str], None]
+    # VFG_SERVER: implementers write only in made/<server>/.
+    server: str = "main"
 
 
 def task_id_of(description) -> str | None:
@@ -185,12 +199,22 @@ def allowed_form(words: list[str]) -> bool:
         return True
     if b == "place":
         return c == "list" or (c == "save" and len(words) >= 4)
+    if b == "state":
+        return words[2:] in ([], ["--json"])
+    if b == "preset":
+        return c == "save" and len(words) == 6
     if b != "script":
         return False
     if c == "list":
         return len(words) == 3
-    if c == "deploy":
-        return len(words) <= 4
+    if c in ("deploy", "check"):
+        return c == "check" or len(words) <= 4
+    if c == "new":
+        return len(words) >= 4
+    if c == "save":
+        return len(words) == 5
+    if c == "set":
+        return len(words) >= 5
     return c in ("run", "stop", "logs") and len(words) >= 4
 
 
@@ -224,13 +248,19 @@ def check_bash(command: str) -> str | None:
             return DENY.shape
         if len(w) >= 3 and w[0] == "vfg" and w[1] == "script" and w[2] == "logs" and "--follow" in w:
             return DENY.follow
+        if len(w) >= 3 and w[0] == "vfg" and w[1] == "script" and w[2] == "new" and "--library" in w:
+            return DENY.library_flag
     return None
 
 
+# What the main thread may run: the saved places, and what runs (to keep work from colliding).
+MAIN_THREAD_COMMANDS = (["vfg", "place", "list"], ["vfg", "script", "list"])
+
+
 def place_list_only(inp: dict) -> bool:
-    """Is this Bash call exactly `vfg place list`, the one command the main thread may run?"""
+    """Is this Bash call exactly `vfg place list` or `vfg script list`, the commands the main thread may run?"""
     cmds = split_shell(str(inp.get("command") or ""))
-    return (inp.get("run_in_background") is not True and len(cmds) == 1 and cmds[0].words == ["vfg", "place", "list"]
+    return (inp.get("run_in_background") is not True and len(cmds) == 1 and cmds[0].words in MAIN_THREAD_COMMANDS
             and not cmds[0].expands and not cmds[0].redirects)
 
 
@@ -279,9 +309,14 @@ def decide(call: dict, g: GuardContext) -> str | None:
     if name == "Read" and inp.get("file_path") and not within(g.repo, str(inp["file_path"])):
         return DENY.read_outside
 
-    if name in ("Write", "Edit") and inp.get("file_path"):
-        if within(os.path.abspath(os.path.join(g.repo, "scripts/_lib")), str(inp["file_path"]), g.repo):
-            return DENY.lib
+    # An implementer writes in this server's folder and nowhere else: never in the library.
+    if name in ("Write", "Edit") and implementer and inp.get("file_path"):
+        path = str(inp["file_path"])
+        if within(os.path.join(g.repo, "made", g.server), path, g.repo):
+            return None
+        if within(os.path.join(g.repo, "scripts"), path, g.repo):
+            return DENY.library(g.server)
+        return DENY.made_only(g.server)
     return None
 
 

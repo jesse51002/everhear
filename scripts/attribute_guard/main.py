@@ -1,11 +1,15 @@
-#!/usr/bin/env python3
-# Attribute guard: every 5 s, puts any player attribute that was changed back to its default,
-# and says so in chat.
+"""Attribute Guard: every few seconds, any player attribute that was changed is put back to its default, and chat says so."""
+ASKS = ["reset my attributes to regular", "I'm really small, please fix that", "reset all my attributes to default so I'm normal size again"]
 import json
 import re
-import time
 
-from mc import rcon, players, on_stop, log
+import mc
+from kit import values, loop
+
+VALUES = {
+    "player": {"type": "player", "default": "@a"},
+    "every":  {"type": "number", "min": 1, "max": 600, "default": 5, "live": True},
+}
 
 DEFAULTS = {
     "minecraft:max_health": 20.0, "minecraft:movement_speed": 0.10000000149011612, "minecraft:attack_speed": 4.0,
@@ -18,20 +22,19 @@ DEFAULTS = {
 ATTR = re.compile(r'id: "(minecraft:[a-z_]+)", base: ([0-9.Ee+-]+)d')
 
 
-def sweep():
-    for p in players():
-        for aid, base in ATTR.findall(rcon("data get entity %s attributes" % p)):
+def sweep(player):
+    for p in loop.who(player):
+        for aid, base in ATTR.findall(mc.rcon("data get entity %s attributes" % p)):
             b, d = float(base), DEFAULTS.get(aid)
             if (d is not None and abs(b - d) > 1e-6) or (d is None and abs(b) > 1000):
-                rcon("attribute %s %s base reset" % (p, aid))
-                log("reset", p, aid, b)
-                rcon("tellraw @a " + json.dumps([{"text": "[Demon Lord] ", "color": "dark_red", "bold": True},
-                                                  {"text": "Someone tampered with %s. I undid it." % p,
-                                                   "color": "red", "bold": False}]))
+                mc.rcon("attribute %s %s base reset" % (p, aid))
+                mc.log("reset", p, aid, b)
+                mc.rcon("tellraw @a " + json.dumps([{"text": "[Demon Lord] ", "color": "dark_red", "bold": True},
+                                                    {"text": "Someone tampered with %s. I undid it." % p,
+                                                     "color": "red", "bold": False}]))
 
 
-on_stop(lambda: log("guard off"))
-log("guarding player attributes")
-while True:
-    sweep()
-    time.sleep(5)
+v = values(VALUES)
+mc.log("guarding the attributes of", v["player"])
+for _ in loop(every=v["every"]):
+    sweep(v["player"])

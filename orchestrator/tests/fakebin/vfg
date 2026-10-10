@@ -7,6 +7,12 @@
 #   orch reply ...                exit 1 while the number in $VFG_FAKE_FAIL_REPLIES is above 0 (it is decremented)
 #   place list                    the file $VFG_FAKE_PLACES, else "none"; with $VFG_FAKE_PLACES_FAIL set, that
 #                                 text on stderr and exit 1; with $VFG_FAKE_PLACES_SLEEP, it sleeps that long first
+#   route ...                     the brief on stdin into the file $VFG_FAKE_ROUTE_STDIN (if set); then the file
+#                                 $VFG_FAKE_ROUTE (vfg route's JSON) and "route (fake)" on stderr; _SLEEP and _FAIL
+#                                 as for place list
+#   state ...                     the file $VFG_FAKE_STATE (vfg state --json), exit $VFG_FAKE_STATE_CODE (default 0);
+#                                 _SLEEP and _FAIL as for place list
+#   prefix                        the file $VFG_FAKE_PREFIX, else nothing
 #   everything else               exit 0
 set -u
 
@@ -48,6 +54,23 @@ case "${1:-}" in
       if [ -n "${VFG_FAKE_PLACES_FAIL:-}" ]; then echo "vfg: $VFG_FAKE_PLACES_FAIL" >&2; exit 1; fi
       if [ -n "${VFG_FAKE_PLACES:-}" ] && [ -f "$VFG_FAKE_PLACES" ]; then cat "$VFG_FAKE_PLACES"; else echo none; fi
     fi
+    exit 0
+    ;;
+  route)
+    if [ -n "${VFG_FAKE_ROUTE_STDIN:-}" ]; then cat > "$VFG_FAKE_ROUTE_STDIN"; else cat > /dev/null; fi
+    if [ -n "${VFG_FAKE_ROUTE_SLEEP:-}" ]; then exec sleep "$VFG_FAKE_ROUTE_SLEEP"; fi
+    if [ -n "${VFG_FAKE_ROUTE_FAIL:-}" ]; then echo "vfg: $VFG_FAKE_ROUTE_FAIL" >&2; exit 1; fi
+    if [ -n "${VFG_FAKE_ROUTE:-}" ] && [ -f "$VFG_FAKE_ROUTE" ]; then cat "$VFG_FAKE_ROUTE"; echo "route (fake)" >&2; fi
+    exit 0
+    ;;
+  state)
+    if [ -n "${VFG_FAKE_STATE_SLEEP:-}" ]; then exec sleep "$VFG_FAKE_STATE_SLEEP"; fi
+    if [ -n "${VFG_FAKE_STATE_FAIL:-}" ]; then echo "vfg: $VFG_FAKE_STATE_FAIL" >&2; exit 1; fi
+    if [ -n "${VFG_FAKE_STATE:-}" ] && [ -f "$VFG_FAKE_STATE" ]; then cat "$VFG_FAKE_STATE"; fi
+    exit "${VFG_FAKE_STATE_CODE:-0}"
+    ;;
+  prefix)
+    if [ -n "${VFG_FAKE_PREFIX:-}" ] && [ -f "$VFG_FAKE_PREFIX" ]; then cat "$VFG_FAKE_PREFIX"; fi
     exit 0
     ;;
   orch)

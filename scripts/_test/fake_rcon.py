@@ -9,8 +9,8 @@ every command, and answers a few the way the fake toolkit does.
     anything else                 (nothing)
 
 A `responder` (a callable taking the command and returning its reply, or None to fall
-back to the answers above) makes it any server a test needs: fake_places_world.FakeWorld is one,
-speaking Minecraft 26.3's real replies.
+back to the answers above) makes it any server a test needs: fake_world.World.respond is
+one, fake_places_world.FakeWorld another, speaking Minecraft 26.3's real replies.
 
 Use it in-process (FakeRcon) or on its own:
     python3 fake_rcon.py --port 25575 --password secret
@@ -47,9 +47,11 @@ class FakeRcon:
     def __init__(self, password: str, port: int = 0, delay_on: Optional[str] = None,
                  delay_s: float = 0.0, responder: Optional[Callable[[str], Optional[str]]] = None):
         self.password = password
-        self.responder = responder  # cmd -> reply, or None for answer(cmd)
         self.delay_on = delay_on  # a command starting with this is answered late
         self.delay_s = delay_s
+        # responder(cmd) -> str or None answers first (fake_world.World.respond,
+        # fake_places_world); None falls through to answer().
+        self.responder = responder
         self.commands = []
         self.logins = 0
         self.failed_logins = 0

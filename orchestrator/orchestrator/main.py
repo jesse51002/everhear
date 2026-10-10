@@ -6,6 +6,7 @@ import signal
 import sys
 import traceback
 
+from . import examples
 from .config import Config, ignored_mode, load_config, log, now_ms
 from .inbox import InboxFollower
 from .reply import Outbox
@@ -125,6 +126,10 @@ async def _run(exit_) -> int | None:
 
     outbox = Outbox(store, vfg)
     store.on_reply = outbox.kick
+    # Every allowed Agent call's brief gets the EXAMPLES block; its picks go into this store.
+    examples.use(cfg, store)
+    log("main", "script library: server %s (implementers write in made/%s/), vfg route within %g s, "
+        "implementers' cache %s" % (cfg.server, cfg.server, cfg.route_timeout_s, cfg.subagent_cache_ttl))
     usage = UsageMeter(store, vfg, cfg.implementer_model)
     follower: InboxFollower | None = None
     session: Session | None = None
