@@ -33,14 +33,14 @@ from pathlib import Path
 from typing import Annotated, Any, ClassVar, Literal, Union, get_args, get_origin
 
 import annotated_types
-from pydantic import (AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints,
+from pydantic import (BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints,
                       ValidationInfo, model_validator)
 from pydantic.fields import FieldInfo
 
 REPO = Path(__file__).resolve().parent.parent
 
 __all__ = ["Action", "Values", "Live", "preset", "Field", "Literal", "Player", "Players", "MobId", "BlockId",
-           "ItemId", "ParticleId", "SoundId", "Place", "Command"]
+           "ItemId", "ParticleId", "SoundId", "Place", "Command", "CopyName", "Any"]
 
 
 # The command-safety rules: scripts/_lib/commands.py's, loaded by path, the one list of
@@ -87,6 +87,7 @@ _NUM = r"-?\d+(?:\.\d+)?"
 # those, or one name: a saved place's, else a player's.
 AT_PATTERN = r"^(|%s %s %s( the_nether| the_end)?|[A-Za-z0-9_]{1,32})$" % (_NUM, _NUM, _NUM)
 PLACE_PATTERN = r"^[a-z0-9_]{1,32}$"          # a saved place's name
+COPY_PATTERN = r"^[a-z0-9][a-z0-9_]{0,47}$"   # a running copy's name, as EC2 names it
 BORDER = 30_000_000                            # no x or z this far out is in the world
 HEIGHTS = {"": (-64, 319), "the_nether": (0, 255), "the_end": (0, 255)}  # kit/world.py's LIMITS
 _DIMS = {"overworld": "", "nether": "the_nether", "the_nether": "the_nether", "end": "the_end", "the_end": "the_end"}
@@ -230,6 +231,9 @@ ParticleId = Annotated[str, Field(pattern=ID_PATTERNS["particle"]), Kind("partic
 SoundId = Annotated[str, Field(pattern=ID_PATTERNS["sound"]), Kind("sound"), BeforeValidator(_id("sound"))]
 Place = Annotated[str, Field(pattern=AT_PATTERN), Kind("place"), BeforeValidator(_place)]
 Command = Annotated[str, Kind("command"), BeforeValidator(clean_command)]
+# A running copy's name (stop's and edit's `copy`); empty, the default, names none, and the
+# stop and edit scripts refuse it.
+CopyName = Annotated[str, Field(pattern=r"^(|%s)$" % COPY_PATTERN[1:-1])]
 
 # The functions inside those types: the only validators a field may carry.
 _OURS = frozenset(m.func for t in (Players, MobId, BlockId, ItemId, ParticleId, SoundId, Place, Command)
@@ -279,6 +283,8 @@ def kind(t: Any, meta: tuple | list = ()) -> str:
     if get_origin(t) is list:
         args = get_args(t)
         return "list of " + kind(args[0]) if args else "list"
+    if get_origin(t) is dict:
+        return "values"
     return "?"
 
 
@@ -311,8 +317,9 @@ def is_live(meta: tuple | list) -> bool:
 
 def type_problem(t: Any, meta: tuple | list = ()) -> str | None:
     """None when a field's type is one of this file's: bool, int, float, str, Literal[...],
-    list[...] of these, Player, Players, MobId, BlockId, ItemId, ParticleId, SoundId, Place or
-    Command, Live[...] of any, with Field() limits. Else what is not."""
+    list[...] of these, Player, Players, MobId, BlockId, ItemId, ParticleId, SoundId, Place,
+    Command or CopyName, Live[...] of any, with Field() limits; or dict[str, Any], the values
+    an edit changes, checked against the copy's own action. Else what is not."""
     while get_origin(t) is Annotated:
         args = get_args(t)
         t, meta = args[0], list(meta) + list(args[1:])
@@ -332,6 +339,8 @@ def type_problem(t: Any, meta: tuple | list = ()) -> str | None:
     if get_origin(t) is list:
         args = get_args(t)
         return type_problem(args[0]) if args else "list[...] says what it holds: list[Player]"
+    if get_origin(t) is dict:
+        return None if get_args(t) == (str, Any) else "a dict is dict[str, Any], the values an edit changes"
     return "%s is not one of actions/_types.py's types" % _name(t)
 
 
@@ -437,7 +446,7 @@ class Values(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _read_words(cls, data: Any, info: ValidationInfo) -> Any:
-        if not isinstance(data, dict) or "action" in cls.model_fields:  # the six old folder actions
+        if not isinstance(data, dict):
             return data
         ctx = info.context or {}
         notes = ctx["notes"] if isinstance(ctx.get("notes"), list) else []
@@ -478,17 +487,6 @@ class Action(Values):
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
         super().__pydantic_init_subclass__(**kwargs)
         _merge(cls)
-
-    # The six old folder actions (actions/<name>/action.py) are run through this; it goes
-    # with them.
-    def vfg_argv(self, task: str) -> list[str]:
-        """The vfg argv that runs this action for task `task` (T7)."""
-        args = self.model_dump(mode="json", exclude={"action"})
-        argv = ["action", "run", self.action, "--args",  # type: ignore[attr-defined]
-                json.dumps(args, ensure_ascii=False, separators=(",", ":")), "--task", task]
-        if self.timeout_s:
-            argv += ["--timeout", str(self.timeout_s)]
-        return argv
 
 
 def _merge(cls: type[Action]) -> None:
@@ -603,56 +601,3 @@ def _preset_class(path: Path, name: str) -> type[Values]:
 
 def _base_name(node: ast.expr) -> str:
     return node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) else ""
-
-
-# ---- the six old folder actions' names (PlayerOrAll, Id, BiomeId, StructureId, PlaceName,
-# ScriptName, SCRIPT_NAMES, script_names, ID_PATTERN, PLAYER_OR_ALL_PATTERN; Action.vfg_argv
-# above): they go when command, teleport, summon_around, save_place, run_script and
-# stop_script are scripts with actions over them.
-
-PLAYER_OR_ALL_PATTERN = r"^([A-Za-z0-9_]{1,16}|@a)$"
-ID_PATTERN = r"^#?(minecraft:)?[a-z0-9_]+$"
-
-
-def _lower(v: object) -> object:
-    return v.strip().lower() if isinstance(v, str) else v
-
-
-def _drop_namespace(v: str) -> str:
-    """'#minecraft:village' -> '#village', 'minecraft:zombie' -> 'zombie'."""
-    tag = v.startswith("#")
-    v = v.lstrip("#")
-    if v.startswith("minecraft:"):
-        v = v[len("minecraft:"):]
-    return ("#" if tag else "") + v
-
-
-def _place_name(v: object) -> object:
-    """'My Castle' -> 'my_castle', so a name said aloud still fits the pattern."""
-    if isinstance(v, str):
-        return re.sub(r"[\s-]+", "_", v.strip().lower())
-    return v
-
-
-PlayerOrAll = Annotated[str, StringConstraints(strip_whitespace=True, pattern=PLAYER_OR_ALL_PATTERN)]
-Id = Annotated[str, Field(pattern=ID_PATTERN), BeforeValidator(_lower), AfterValidator(_drop_namespace)]
-BiomeId = Id
-StructureId = Id
-PlaceName = Annotated[str, Field(pattern=PLACE_PATTERN), BeforeValidator(_place_name)]
-
-
-def script_names(scripts: Path = REPO / "scripts") -> tuple[str, ...]:
-    """The folders in scripts/ that have a main.py, skipping every one whose name starts
-    with _ (_lib, _test, _presets...) or a dot."""
-    if not scripts.is_dir():
-        return ()
-    return tuple(sorted(p.name for p in scripts.iterdir()
-                        if p.is_dir() and not p.name.startswith(("_", "."))
-                        and (p / "main.py").is_file()))
-
-
-SCRIPT_NAMES = script_names()
-if SCRIPT_NAMES:
-    ScriptName = Literal[SCRIPT_NAMES]  # type: ignore[valid-type]
-else:  # no scripts at all: nothing validates
-    ScriptName = Annotated[str, Field(pattern=r"^(?!)$")]  # type: ignore[misc]
