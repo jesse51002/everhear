@@ -307,7 +307,7 @@ class Seeds(unittest.TestCase):
                          "director_weights=1,0", "gifts=diamond 5", instance="god_visits-b")
         self.assertTrue(until(lambda: count("@e[type=mannequin,tag=vfg_god_visits-b]") == 1, 16), "no god came")
         self.assertTrue(until(lambda: items("diamond") == 5, 3), "no gift")
-        self.set_(inst, "director_weights=0,1", "takes=bread")
+        self.set_(inst, "director_weights=0,1", "take_items=bread")
         self.assertTrue(until(lambda: items("bread") == 12, 20), "the god took no bread")
         self.stop(inst)
 
