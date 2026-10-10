@@ -5,7 +5,9 @@ Run on EC2 by toolkit/remote/action.py: Python 3.9, standard library only. It ne
 places or removes a block. The steps, as the Minecraft_Actions page has them:
 
 1. Resolve the target: `locate` from the player's position, a saved place, the
-   player's own `respawn` or `LastDeathLocation`, coordinates, or a random point.
+   player's own `respawn` or `LastDeathLocation`, coordinates, or a random point. A
+   structure id Minecraft does not know, such as `village`, is tried once as its tag,
+   `#minecraft:village`, before it fails.
 2. Cushion: Resistance V and Slow Falling for 5 seconds.
 3. A target with a known x y z (a saved place, the spawn point, the last death) is
    reached exactly: when the block below is solid and not unsafe, and the feet and the
@@ -215,7 +217,14 @@ def locate(kind, target, dim, player, pos0, dim0):
         raise Failed("%r is not a %s id" % (target, kind))
     full = ("#" if tag else "") + "minecraft:" + ident
     cx, cz = scaled(pos0, dim0, dim)
-    out = rcon("execute in %s positioned %d 0 %d run locate %s %s" % (dim, cx, cz, kind, full))
+    ask = "execute in %s positioned %d 0 %d run locate %s %%s" % (dim, cx, cz, kind)
+    out = rcon(ask % full)
+    if kind == "structure" and not tag and out.startswith("There is no structure"):
+        # village, ruined_portal...: a tag of several structures, not one. Try the tag once.
+        again = rcon(ask % ("#" + full))
+        if LOCATED.match(again) or again.startswith("Could not find"):
+            log("no structure %s, but a tag #%s: using it" % (full, full))
+            full, out = "#" + full, again
     m = LOCATED.match(out)
     if m:
         found = m.group(2) or m.group(1)

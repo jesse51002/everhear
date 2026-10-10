@@ -66,12 +66,24 @@ def test_locate_finding_nothing_fails_before_anything_moves(serve):
     assert not sent(w, "effect") and not sent(w, "spreadplayers")
 
 
+def test_a_structure_id_that_is_a_tag_is_tried_once_as_the_tag(serve):
+    w = one_player()
+    w.located[("structure", "minecraft:village")] = "invalid"  # village is a tag of villages, not a structure
+    w.located[("structure", "#minecraft:village")] = (-544, 0, 320, "minecraft:village_plains")
+    out = tp(serve, w, player="Steve", to="structure", target="village")
+    assert out["ok"] is True and out["summary"] == "teleported Steve to a plains village at -544 64 320"
+    assert [c.split(" run ")[1] for c in sent(w, "locate")] == ["locate structure minecraft:village",
+                                                                  "locate structure #minecraft:village"]
+
+
 def test_an_unknown_id(serve):
     w = one_player()
     w.located[("structure", "minecraft:castle")] = "invalid"
+    w.located[("structure", "#minecraft:castle")] = "invalid"  # no tag of that name either
     w.located[("biome", "minecraft:nonsense")] = "invalid"
     assert tp(serve, w, player="Steve", to="structure", target="castle")["summary"] == \
         "Minecraft has no structure called minecraft:castle"
+    assert len(sent(w, "locate")) == 2  # the tag tried once, then the failure
     assert tp(serve, w, player="Steve", to="biome", target="nonsense")["summary"] == \
         "Minecraft has no biome called minecraft:nonsense"
 
