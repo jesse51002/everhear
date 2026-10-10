@@ -29,6 +29,11 @@ VFG_BACKUP_DIR=
 # Set it to true once you have read and accepted Minecraft's EULA
 # (https://aka.ms/MinecraftEULA); deploy.sh provision needs it for a new world.
 VFG_ACCEPT_EULA=
+# A .env file, mode 600, outside any repo, holding the box's secrets (TYPESAFE_API_KEY, and
+# VFG_CLIENT_TOKEN to keep one token across boxes). deploy.sh provision and deploy.sh env send
+# those names to /opt/vfg/.env; any other key in the file stays on this PC.
+# Default: ~/.vfg/box.env
+VFG_BOX_ENV=
 
 # --- The installer link (installer/publish.sh) ---
 # The private S3 bucket; publish.sh makes one and writes its name here on the first run.
