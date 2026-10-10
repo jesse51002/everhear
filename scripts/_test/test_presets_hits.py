@@ -7,9 +7,9 @@ values class:
 Each preset is loaded from scripts/_presets/ as it is and run in this process against a
 fresh fake world (test_kit's KitCase, with a few more commands the hits presets send:
 effect, data modify and merge, tp, damage by someone who must be there, a tag added twice,
-and a volume selector). It sends the commands it should, its values class clamps or refuses
-values outside its limits, and a script that copies all eight leaves nothing behind after a
-stop.
+and a volume selector). It sends the commands it should, and a script that copies all eight
+leaves nothing behind after a stop (its values class is checked with every preset's, in
+test_presets_values.py).
 """
 import importlib.util
 import math
@@ -140,22 +140,6 @@ class HitsCase(KitCase):
 
 
 # ---- values ------------------------------------------------------------------------------
-
-class ValuesTests(unittest.TestCase):
-    def test_every_preset_clamps_or_refuses_values_outside_its_limits(self):
-        T = test_kit._vfg_actions()._types()
-        for name in NAMES:
-            cls = test_kit.values_class(P[name])
-            for key, f in cls.model_fields.items():
-                self.assertTrue(library.prefixed(name, key), key)
-                self.assertTrue(T.is_live(f.metadata), "%s: a preset reads its values each call, so all are live" % key)
-            test_kit.assert_checked_on_the_pc(self, P[name])
-        self.assertNotIn("bedrock", str(test_kit.values_meta(P["freeze"])["values"]))
-
-    def test_the_checker_passes(self):
-        for name in NAMES:
-            self.assertEqual(library.check(library.parse(os.path.join(PRESETS, name + ".py"), "preset")), [], name)
-
 
 # ---- the hits: around, lock_on, damage_hits ----------------------------------------------------
 

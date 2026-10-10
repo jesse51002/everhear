@@ -4,8 +4,8 @@ server and fake_world, under the Python EC2 has:
     uv run --no-project --python 3.12 --with pydantic python scripts/_test/test_presets_ongoing.py
 
 boss, horde_wave, director, leaves_area, stands_still and beam_clash. Each sends the commands
-it should; its values class clamps or refuses what is outside its limits; and nothing it made
-is left after a stop: the ones that make things are run as scripts the way EC2 does (the
+it should (its values class is checked with every preset's, in test_presets_values.py), and
+nothing it made is left after a stop: the ones that make things are run as scripts the way EC2 does (the
 preset's file with a line of wiring under it, and the meta file vfg action run writes), then
 sent SIGTERM.
 """
@@ -45,7 +45,6 @@ def load(name):
 
 BOSS, HORDE, DIRECTOR = load("boss"), load("horde_wave"), load("director")
 LEAVES, STANDS, CLASH = load("leaves_area"), load("stands_still"), load("beam_clash")
-ALL = [BOSS, HORDE, DIRECTOR, LEAVES, STANDS, CLASH]
 
 
 def vals(preset, *argv):
@@ -80,20 +79,6 @@ class OngoingCase(test_kit.KitCase):
     def tagged(self, prefix=None):
         prefix = prefix or mc.TAG
         return [e for e in self.world.entities if any(t == prefix or t.startswith(prefix + "_") for t in e["tags"])]
-
-
-# ---- values ---------------------------------------------------------------------------
-
-class OngoingValuesTests(unittest.TestCase):
-    def test_defaults_pass_and_values_outside_their_limits_are_clamped_or_refused(self):
-        for p in ALL:
-            test_kit.assert_checked_on_the_pc(self, p)
-
-    def test_every_value_carries_its_presets_name(self):
-        for p in ALL:
-            name = p.__name__[len("preset_"):]
-            for key in test_kit.values_class(p).model_fields:
-                self.assertTrue(key.startswith(name.split("_")[0] + "_"), key)
 
 
 # ---- boss --------------------------------------------------------------------------------

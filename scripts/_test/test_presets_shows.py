@@ -4,9 +4,9 @@ pydantic for a preset's values class:
 
     uv run --no-project --python 3.12 --with pydantic python scripts/_test/test_presets_shows.py
 
-Each preset: its function sends the commands it should, its values class clamps or refuses
-values outside its limits, and, copied into a script the way `vfg script new --preset` copies
-it and stopped with SIGTERM, nothing it made is left. The kit's harness (test_kit.KitCase) points
+Each preset: its function sends the commands it should, and, copied into a script the way
+`vfg script new --preset` copies it and stopped with SIGTERM, nothing it made is left (its
+values class is checked with every preset's, in test_presets_values.py). The kit's harness (test_kit.KitCase) points
 mc at a fake whose world each test makes afresh.
 """
 import importlib.util
@@ -17,7 +17,6 @@ import signal
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import unittest
 
@@ -54,7 +53,6 @@ theme_mod, charge_mod, sneak_mod, proj_mod, count_mod, death_mod = (
 sys.path.insert(0, TOOLKIT_LIB)
 import library  # noqa: E402
 
-MODS = [theme_mod, charge_mod, sneak_mod, proj_mod, count_mod, death_mod]
 
 
 def vals(mod, *argv):
@@ -193,30 +191,6 @@ class ShowCase(KitCase):
         KitCase.setUp(self)
         type(self).current = self.world = ShowWorld()
         self.world.add_player("Steve", (10.5, 64.0, -3.5), rot=(-90.0, 0.0), prefix="[Owner] ")
-
-
-# ---- values ----------------------------------------------------------------------------------
-
-class PresetValuesTests(unittest.TestCase):
-    def test_every_value_is_clamped_or_refused_outside_its_limits(self):
-        va = test_kit._vfg_actions()
-        T = va._types()
-        for mod in MODS:
-            test_kit.assert_checked_on_the_pc(self, mod)
-            cls = test_kit.values_class(mod)
-            for key, f in cls.model_fields.items():
-                for o in T.choices(f.annotation, f.metadata) or []:
-                    if T.kind(f.annotation, f.metadata) == "enum":     # an option in any case
-                        self.assertEqual(va.check_values(cls, {key: o.upper()}, allow_fixed=True).values[key], o)
-                if T.kind(f.annotation, f.metadata) == "particle":
-                    self.assertRaises(ValueError, va.check_values, cls, {key: "Not A Particle"}, allow_fixed=True)
-
-    def test_every_preset_passes_vfg_script_check(self):
-        lib = library.Library(os.path.dirname(SCRIPTS))
-        for mod in MODS:
-            item = library.parse(mod.__file__, "preset", source="library", rel="scripts/_presets/" +
-                                 os.path.basename(mod.__file__))
-            self.assertEqual(library.check(item, lib), [], mod.__name__)
 
 
 # ---- theme_music -----------------------------------------------------------------------------

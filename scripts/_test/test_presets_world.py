@@ -5,9 +5,9 @@ under the Python EC2 has, with pydantic for a preset's values class:
     uv run --no-project --python 3.12 --with pydantic python scripts/_test/test_presets_world.py
 
 Each preset is loaded from scripts/_presets/ as it is, its function run in this process
-against a fresh fake world (test_kit's KitCase): it sends the commands it should, its values
-class clamps or refuses values outside its limits, and a script that copies them leaves
-nothing behind after a stop.
+against a fresh fake world (test_kit's KitCase): it sends the commands it should, and a script
+that copies them leaves nothing behind after a stop (its values class is checked with every
+preset's, in test_presets_values.py).
 """
 import importlib.util
 import os
@@ -62,21 +62,6 @@ def cells(fills, block=None):
                     for z in range(b[2], b[5] + 1):
                         out[(x, y, z)] = blk
     return out
-
-
-class WorldValuesTests(unittest.TestCase):
-    def test_every_preset_clamps_or_refuses_values_outside_its_limits(self):
-        for name in NAMES:
-            for key in test_kit.values_class(P[name]).model_fields:
-                self.assertTrue(key.startswith(name.split("_")[0][:3]), key)
-            test_kit.assert_checked_on_the_pc(self, P[name])
-        for name, key, bad in (("summon", "summon_mob", "potion"), ("projectile", "projectile_block",
-                                                                     "#minecraft:tall_flowers"),
-                               ("shape_fill", "shape_offset", "1,up,2"), ("shape_fill", "shape_blocks", "#logs"),
-                               ("meteor_fall", "meteor_blocks", "0% magma_block"),
-                               ("replace_blocks", "replace_rules", "stone"), ("summon", "summon_weapon", "#swords")):
-            with self.assertRaises(ValueError, msg=key):
-                test_kit.values_meta(P[name], given={key: bad})
 
 
 class WorldReplaceBlocksTests(KitCase):
