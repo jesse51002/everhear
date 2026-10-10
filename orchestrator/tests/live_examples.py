@@ -11,8 +11,9 @@ subscription. The spec's "Test": the guard, the cache, saving back.
    effect under dontAsk). The orchestrator's own next call is no bigger for it.
 2. T2, then T3 a minute later: the second implementer reads the shared prefix (its rules and
    `vfg prefix`) from the cache. Each implementer's calls come from its own transcript.
-3. T4: a job that needs something new ends with a new script in made/<server>/scripts/ that passes
-   `vfg script check`. T5: an implementer told to edit a library file is refused by the guard, and
+3. T4: a job that needs something new ends with a new script in made/<server>/scripts/ and its action
+   in made/<server>/actions/, which passes `vfg action check`. T5: an implementer told to edit a
+   library file is refused by the guard, and
    the file is unchanged.
 4. --ttl-check: a second runner with VFG_SUBAGENT_CACHE_TTL=1h and one small job: its implementer's
    cache writes are 1-hour ones, so the setting reaches the CLI.
@@ -269,10 +270,10 @@ def main() -> int:
         r.wait_closed(["T4", "T5"], 900)
     finally:
         r.stop()
-        for line in vfg(env, "script", "list").stdout.splitlines():
-            inst = line.split()[0] if line.strip() else ""
-            if inst and "running" in line:
-                vfg(env, "script", "stop", inst)
+        for line in vfg(env, "script", "list", "--fresh").stdout.splitlines():
+            copy = line.split()[0] if line.strip() else ""
+            if copy and line.strip() != "nothing running":
+                vfg(env, "script", "stop", copy)
 
     analyse(r, env, a, prefix, rules, crater_before, has_key)
 
@@ -404,9 +405,12 @@ def analyse(r: Runner, env: dict, a, prefix: str, rules: str, crater_before: str
     made_presets = sorted(glob.glob(os.path.join(REPO, "made", a.server, "presets", "*.py")))
     names = [os.path.basename(os.path.dirname(p)) for p in made_scripts] + \
             [os.path.splitext(os.path.basename(p))[0] for p in made_presets]
+    made_actions = sorted(os.path.splitext(os.path.basename(p))[0]
+                          for p in glob.glob(os.path.join(REPO, "made", a.server, "actions", "*.py")))
     checks = [(n, vfg(env, "script", "check", n)) for n in names]
-    record("saving back: T4 left a new script in made/%s/scripts/ that passes vfg script check" % a.server,
-           bool(made_scripts) and all(c.returncode == 0 for _, c in checks),
+    checks += [("action " + n, vfg(env, "action", "check", n)) for n in made_actions]
+    record("saving back: T4 left a new script in made/%s/scripts/ and its action, and both pass their checks" % a.server,
+           bool(made_scripts) and bool(made_actions) and all(c.returncode == 0 for _, c in checks),
            "; ".join("%s: exit %d %s" % (n, c.returncode, (c.stdout + c.stderr).strip().replace("\n", " ")[:160])
                      for n, c in checks) or "nothing in made/%s/" % a.server)
     for p in made_scripts:

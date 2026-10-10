@@ -98,7 +98,7 @@ TABLE = [
     ("vfg cmd kick after run", bash("vfg cmd 'execute at Steve run /kick Steve'"), DENY.owner),
     ("vfg cmd save-off", bash("vfg cmd save-off"), DENY.owner),
     ("vfg cmd pardon", bash("vfg cmd 'PARDON Steve'"), DENY.owner),
-    ("chained after a good command", bash("vfg script run tnt_rain && vfg cmd 'deop Steve'"), DENY.owner),
+    ("chained after a good command", bash("vfg action run tnt_rain --task T7 && vfg cmd 'deop Steve'"), DENY.owner),
     ("after a semicolon", bash("sleep 2; vfg cmd 'stop'"), DENY.owner),
     ("a flag before the command", bash("vfg cmd --quiet 'op Steve'"), DENY.owner),
     ("an env prefix", bash("FOO=1 vfg cmd 'op Steve'"), DENY.owner),
@@ -108,7 +108,7 @@ TABLE = [
     ("a dollar in single quotes is literal", bash("vfg cmd 'say costs $5'"), None),
     ("stop inside a word", bash("vfg cmd 'say stop that'"), None),
     ("run inside JSON text", bash("""vfg cmd 'tellraw @a {"text":"run stop"}'"""), None),
-    ("script run is not a server command", bash("vfg script run anti_camp 15"), None),
+    ("an action run is not a server command", bash("vfg action run anti_camp seconds=15 --task T7"), None),
     ("script stop is fine", bash("vfg script stop tnt_rain"), None),
     ("other programs get the shape reason", bash("curl https://example.com"), DENY.shape),
     ("ls outside the repository", bash("ls ~"), DENY.outside_bash),
@@ -119,8 +119,7 @@ TABLE = [
     ("seen: cd && ls; grep; sed", bash("""cd /x/repo/scripts && ls; ls _lib; grep -n "^def " _lib/mc.py; sed -n '/^def pos/,/^def /p' _lib/mc.py | head -30"""), DENY.cd),
     # the shapes that run
     ("sleep then logs", bash("sleep 5 && vfg script logs tnt_rain -n 20"), None),
-    ("compile then run", bash("python3 -m py_compile scripts/torch_ring/main.py && vfg script run torch_ring"), None),
-    ("run with --wait", bash("vfg script run --wait 30 gun_chests 4"), None),
+    ("compile then run", bash("python3 -m py_compile made/main/scripts/torch_ring/main.py && vfg action run torch_ring --task T7"), None),
     ("deploy all", bash("vfg script deploy"), None),
     ("deploy one", bash("vfg script deploy torch_ring"), None),
     ("list", bash("vfg script list"), None),
@@ -129,7 +128,7 @@ TABLE = [
     ("2>&1", bash("vfg cmd 'time set day' 2>&1"), None),
     ("to /dev/null", bash("vfg script stop tnt_rain > /dev/null"), None),
     ("a global vfg option", bash("vfg --timeout 30 cmd 'time set day'"),
-     "Refused: vfg takes no option before its command: vfg cmd '<command>', vfg script run ..., as it is."),
+     "Refused: vfg takes no option before its command: vfg cmd '<command>', vfg action run ..., as it is."),
     ("vfg say is not for implementers", bash("vfg say 'hi'"), "Refused: vfg say is not an implementer's. These are: %s." % VFG_FORMS),
     ("logs --follow never ends", bash("vfg script logs tnt_rain --follow"), DENY.follow),
     ("sleep with a variable", bash("sleep $N"), DENY.variables),
@@ -152,7 +151,36 @@ TABLE = [
     ("script save with one name", bash("vfg script save galick-alex"), usage("script save")),
     ("script check everything", bash("vfg script check"), None),
     ("script check some", bash("vfg script check galick_ice crater"), None),
-    ("script run with values and a task", bash("vfg script run --task T7 spirit_bomb player=Steve as=bomb-steve"), None),
+    # actions: the only way anything runs
+    ("action run with values, a copy name and a task", bash("vfg action run spirit_bomb player=Steve as=bomb_steve --task T7"), None),
+    ("action run with the task first", bash("vfg action run --task T7 castle at=home"), None),
+    ("action run with --task=", bash("vfg action run castle at='197 68 251' --task=T12"), None),
+    ("action run with no task", bash("vfg action run castle at=home"), DENY.action_task),
+    ("action run with a task that is no task id", bash("vfg action run castle at=home --task castle"), DENY.action_task),
+    ("action run with nothing to run", bash("vfg action run"), usage("action run")),
+    ("action run, then its logs", bash("vfg action run railgun player=Alex --task T7 && sleep 3 && vfg script logs railgun -n 40"), None),
+    ("action run of edit", bash("vfg action run edit copy=railgun_2 cooldown=0 --task T7"), None),
+    ("action list", bash("vfg action list"), None),
+    ("action list --json", bash("vfg action list --json | head -n 50"), None),
+    ("action list of something", bash("vfg action list railgun"), usage("action list")),
+    ("action check", bash("vfg action check tnt_crouch"), None),
+    ("action check two", bash("vfg action check a b"), usage("action check")),
+    ("action check nothing", bash("vfg action check"), usage("action check")),
+    ("action refs is not an implementer's", bash("vfg action refs"), usage("action")),
+    ("script run is gone", bash("vfg script run --task T7 spirit_bomb player=Steve as=bomb-steve"), DENY.script_run),
+    ("script run is gone, piped", bash("vfg script run x 2>&1 | head -n 5"), DENY.script_run),
+    ("the command action's commands are checked as vfg cmd is",
+     bash("vfg action run command commands='op Steve' --task T7"), DENY.owner),
+    ("a JSON list of commands", bash("""vfg action run command 'commands=["time set day","kick Alex"]' --task T7"""), DENY.owner),
+    ("a comma list of commands", bash("vfg action run command 'commands=time set day,execute as @a run ban Bob' --task T7"), DENY.owner),
+    ("a server-wide command in an action", bash("vfg action run command commands='difficulty peaceful' --task T7"),
+     DENY.server_wide("difficulty")),
+    ("an edit to a copy's command", bash("vfg script set crouch_rule on_command='op Steve'"), DENY.owner),
+    ("an owner word in other text is fine", bash("vfg action run sign text='stop here, ban the creepers' --task T7"), None),
+    ("the command action's plain commands", bash("vfg action run command commands='time set day' --task T7"), None),
+    ("script list --fresh", bash("vfg script list --fresh"), None),
+    ("script list --json --fresh", bash("vfg script list --json --fresh"), None),
+    ("script list --all", bash("vfg script list --all"), usage("script list")),
     ("preset save", bash("vfg preset save galick_ice ice_path ice_trail"), None),
     ("preset save short", bash("vfg preset save galick_ice ice_path"), usage("preset")),
     ("preset list is not a command", bash("vfg preset list"), usage("preset")),
@@ -161,7 +189,8 @@ TABLE = [
     ("state with other words", bash("vfg state Steve"), usage("state")),
     ("route is the runner's", bash("vfg route --task T7"), "Refused: vfg route is not an implementer's. These are: %s." % VFG_FORMS),
     ("prefix is the runner's", bash("vfg prefix"), "Refused: vfg prefix is not an implementer's. These are: %s." % VFG_FORMS),
-    ("script with no op", bash("vfg script frobnicate x"), "Refused: vfg script takes new|run|set|save|check|stop|logs|list|deploy."),
+    ("script with no op", bash("vfg script frobnicate x"),
+     "Refused: vfg script takes new|set|stop|logs|list|check|save|deploy; a script runs through its action."),
     ("a server command after script new", bash("vfg script new x --preset crater; vfg cmd 'op Steve'"), DENY.owner),
     # the pilot's nine refusals (2026-10-09), each a turn: seven now run, two say what to send
     ("pilot: echo separators, ls in the repo, 2>/dev/null",
@@ -200,7 +229,7 @@ TABLE = [
     (">& a file", bash("vfg state >&out.txt"), DENY.redirect),
     ("a redirection with nothing after it", bash("vfg state >"), DENY.redirect),
     # groups, the background, variables
-    ("a lone & (the background)", bash("vfg script run x &"), DENY.group),
+    ("a lone & (the background)", bash("vfg action run x --task T7 &"), DENY.group),
     ("a subshell", bash("(vfg state; vfg script list)"), DENY.group),
     ("braces", bash("{ vfg state; }"), DENY.group),
     ("echo a variable", bash('echo "$HOME"'), DENY.variables),
@@ -250,6 +279,12 @@ TABLE = [
     ("Write a new script in made/", impl("Write", {"file_path": REPO + "/made/main/scripts/torch_ring/main.py"}), None),
     ("Edit a made script", impl("Edit", {"file_path": REPO + "/made/main/scripts/torch_ring/main.py"}), None),
     ("Write a made preset", impl("Write", {"file_path": REPO + "/made/main/presets/ice_trail.py"}), None),
+    ("Write a made action (a variant)", impl("Write", {"file_path": REPO + "/made/main/actions/sniper_rail.py"}), None),
+    ("Edit a made action", impl("Edit", {"file_path": "made/main/actions/tnt_crouch.py"}), None),
+    ("Write a library action", impl("Write", {"file_path": REPO + "/actions/sniper_rail.py"}), DENY.library_actions("main")),
+    ("Edit a library action", impl("Edit", {"file_path": REPO + "/actions/railgun.py"}), DENY.library_actions("main")),
+    ("Edit the value types", impl("Edit", {"file_path": "actions/_types.py"}), DENY.library_actions("main")),
+    ("Write another server's action", impl("Write", {"file_path": REPO + "/made/other/actions/x.py"}), DENY.made_only("main")),
     ("Edit a made script by a relative path", impl("Edit", {"file_path": "made/main/scripts/x/main.py"}), None),
     ("Write a new script in scripts/", impl("Write", {"file_path": REPO + "/scripts/torch_ring/main.py"}), DENY.library("main")),
     ("Edit a library script", impl("Edit", {"file_path": REPO + "/scripts/tnt_rain/main.py"}), DENY.library("main")),
@@ -301,7 +336,7 @@ def test_server_wide_settings_refused_for_implementers_and_the_probe():
     assert "report" in DENY.server_wide("difficulty")
     assert decide(impl("Bash", {"command": "vfg cmd 'say difficulty is hard'"}), g) is None
     assert decide(impl("Bash", {"command": "vfg cmd 'time set day'"}), g) is None
-    assert decide(impl("Bash", {"command": "vfg script run demon_lord"}), g) is None  # scripts are not refused
+    assert decide(impl("Bash", {"command": "vfg action run demon_lord --task T7"}), g) is None  # actions are not refused
     assert decide(impl("Bash", {"command": "vfg cmd 'op Steve'"}), g) == DENY.owner
 
 
@@ -374,7 +409,8 @@ def test_every_refusal_of_an_implementers_bash_is_one_line_saying_what_to_send()
                 "FOO=1 vfg state", "cd x", "cat x", "find .", "rm x", "ps", "python3 -c 1", "grep x", "grep -f a b",
                 "tail -f x", "mkdir x", "vfg say hi", "vfg script set x", "vfg --x cmd y", "vfg script logs x --follow",
                 "vfg script new x --library", "(vfg state)", "vfg cmd 'op Steve'", "vfg cmd $(echo hi)",
-                "vfg cmd 'difficulty hard'"]
+                "vfg cmd 'difficulty hard'", "vfg script run x", "vfg action run x", "vfg action refs",
+                "vfg action run command commands='op Steve' --task T7"]
     for command in commands:
         reason = check_bash(command, REPO)
         assert reason and "\n" not in reason, command
@@ -426,9 +462,9 @@ async def test_an_edit_to_a_made_script_another_tasks_instance_runs_is_refused_w
     beam = os.path.join(repo, "made/main/scripts/beam/main.py")
     reason = await call_hook(g, "Edit", {"file_path": beam, "old_string": "a", "new_string": "b"})
     assert reason == DENY.running("beam", BEAM_ALEX, "main")
-    assert reason == ("Refused: beam-alex (T3) runs made/main/scripts/beam/, and code a running instance uses is not "
-                      "changed: vfg script new <new_name> --from beam copies it for you to Edit; then vfg script stop "
-                      "beam-alex and run the copy with its values.")
+    assert reason == ("Refused: beam-alex (T3) runs made/main/scripts/beam/, and code a running copy uses is not "
+                      "changed: vfg script new <new_name> --from beam copies it, with its action, for you to Edit; then "
+                      "vfg script stop beam-alex and run the new action.")
     assert await call_hook(g, "Write", {"file_path": "made/main/scripts/beam/main.py", "content": ""}) == reason
     # another script, not running: let through, and not asked again for it
     asked = running.calls
@@ -484,14 +520,34 @@ async def test_when_what_runs_cannot_be_told_the_edit_goes_through():
     assert await call_hook(ctx(repo=repo), "Edit", {"file_path": beam}) is None  # no check at all
 
 
-async def test_running_from_vfg_reads_vfg_state_and_keeps_it_three_seconds(monkeypatch):
+async def test_running_copies_reads_running_json_and_asks_nothing():
+    from helpers import use_fake_vfg, write
+    from orchestrator import guard
+    d = temp_dir()
+    fake = use_fake_vfg(d)
+    write(os.path.join(d, "running.json"), json.dumps({"fetched_at": 1, "copies": {
+        "beam-alex": {"action": "beam", "script": "beam", "values": {}, "task": "T3"}, "junk": "x"}}))
+    running = guard.running_copies(d)
+    assert await running() == [{"action": "beam", "script": "beam", "values": {}, "task": "T3", "instance": "beam-alex",
+                                "copy": "beam-alex"}]
+    assert fake.calls() == []
+    # and the guard refuses an edit to the script another task's copy runs, by its copy's name
+    repo = made_repo()
+    g = ctx(repo=repo, running=running, task_of=lambda agent: "T7")
+    reason = await call_hook(g, "Edit", {"file_path": os.path.join(repo, "made/main/scripts/beam/main.py")})
+    assert reason == ("Refused: beam-alex (T3) runs made/main/scripts/beam/, and code a running copy uses is not "
+                      "changed: vfg script new <new_name> --from beam copies it, with its action, for you to Edit; then "
+                      "vfg script stop beam-alex and run the new action.")
+
+
+async def test_running_copies_without_running_json_reads_vfg_state_and_keeps_it_three_seconds(monkeypatch):
     from helpers import use_fake_vfg, write
     from orchestrator import guard
     d = temp_dir()
     fake = use_fake_vfg(d)
     os.environ["VFG_FAKE_STATE"] = os.path.join(d, "state.json")
     write(os.environ["VFG_FAKE_STATE"], json.dumps({"online": [], "instances": [BEAM_ALEX, "junk"], "rcon": None}))
-    running = guard.running_from_vfg()
+    running = guard.running_copies(d)
     assert await running() == [BEAM_ALEX]
     assert await running() == [BEAM_ALEX]
     assert fake.calls() == [["state", "--json"]]

@@ -643,6 +643,16 @@ def test_the_guard_and_the_rules_know_the_server_folder():
     assert not any("route" in x or "prefix" in x for x in r)
 
 
+def test_the_rules_run_actions_and_no_script_runs():
+    r = rules("/repo")
+    for cmd in ("vfg action run *", "vfg action list", "vfg action list *", "vfg action check *", "vfg cmd *",
+                "vfg script set *", "vfg script stop *"):
+        assert "Bash(%s)" % cmd in r
+    assert not any(x.startswith("Bash(vfg script run") or "action refs" in x for x in r)
+    # a made action is written where scripts and presets are
+    assert "Write(//repo/made/main/**)" in r
+
+
 def test_the_guard_knows_each_implementers_task_and_asks_vfg_what_runs():
     s = setup()
     g = s.session.guard_context()
@@ -650,7 +660,7 @@ def test_the_guard_knows_each_implementers_task_and_asks_vfg_what_runs():
     s.session.handle({"type": "system", "subtype": "task_started", "task_id": "a1", "tool_use_id": "u1",
                       "description": "T7 castle at spawn", "task_type": "local_agent"})
     assert g.task_of("a1") == "T7"
-    assert g.running is not None  # running_from_vfg: vfg state --json when an edit needs it
+    assert g.running is not None  # running_copies: running.json in VFG_HOME, else vfg state --json
 
 
 def test_the_rules_let_the_guards_pipes_and_file_looks_reach_the_cli():
