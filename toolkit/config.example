@@ -80,6 +80,30 @@ VFG_PLAN_REASONING=low
 VFG_BRAIN_BATCH_S=60
 # Hours of the feed the brain reads as its context; vfg context's default. Default: 6
 VFG_BRAIN_HISTORY_HOURS=6
+# Every how many minute-blocks of the conversation a brain call marks for the prompt cache
+# (at most three marks, plus the fixed opening). Default: 5
+VFG_BRAIN_CHECKPOINT=
+# Seconds a brain call may take before it is given up. Default: 20
+VFG_BRAIN_TIMEOUT_S=
+# OpenRouter providers to try first for the brain's call, comma-separated; none lets
+# OpenRouter choose. Default: none
+VFG_BRAIN_PROVIDERS=
+# on: the retry planner checks its own draft against the command's reference first (about
+# 1 s more). Default: off
+VFG_PLAN_CHECK=
+# The brain's folder: tasks.json, brain.log, brain.pid, lock and the command references.
+# Default: $VFG_HOME/brain
+VFG_BRAIN_DIR=
+# Seconds between fetches of the running copies the brain's menu lists. Default: 30
+VFG_RUNNING_TTL_S=
+
+# --- Implementers (started by the brain, on your Claude subscription) ---
+# Their model, effort and turns. Defaults: claude-haiku-5-5, low, 40
+VFG_IMPL_MODEL=
+VFG_IMPL_EFFORT=
+VFG_IMPL_MAX_TURNS=
+# Minutes an implementer may run before it is stopped and its task failed. Default: 10
+VFG_IMPLEMENTER_MINUTES=
 
 # --- Scripts (vfg script, vfg preset, vfg state) ---
 # The server this PC drives, and the name of its folder under made/, where what its
@@ -99,5 +123,5 @@ VFG_ROUTE_TIMEOUT_S=
 # or a preset (use), from 0 to 1. Default: 0.3
 VFG_ROUTE_LOAD=
 # How long an implementer's prompt cache lives, 5m or 1h. An hour doubles the price of
-# every cache write. Default: 5m
-VFG_SUBAGENT_CACHE_TTL=
+# every cache write. VFG_SUBAGENT_CACHE_TTL is read when this is empty. Default: 5m
+VFG_IMPL_CACHE_TTL=

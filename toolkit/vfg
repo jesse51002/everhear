@@ -286,8 +286,8 @@ class Config(object):
 
     @property
     def brain(self):
-        """$VFG_HOME/brain: the brain's tasks.json, pid, log and lock."""
-        return os.path.join(self.home, "brain")
+        """VFG_BRAIN_DIR, else $VFG_HOME/brain: the brain's tasks.json, pid, log and lock."""
+        return os.path.expanduser(self.get("VFG_BRAIN_DIR") or os.path.join(self.home, "brain"))
 
     def require_ssh(self):
         where = tilde(self.path)
