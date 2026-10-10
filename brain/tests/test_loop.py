@@ -59,6 +59,11 @@ async def test_history_is_the_old_feed_at_the_start_and_a_line_on_the_watch_is_l
     k.brain.feed("LINE#10 18:31:30 Steve voice action_oriented 0.9 - | give me a diamond pickaxe")
     await k.settle()
     assert len(k.ask.calls) == 1 and "LINE #10" in k.ask.calls[0]["prompt"].split("THE EVENT")[1]
+    # after a drop, the backlog the watch catches up with is judged by its age, as a start's is
+    k.brain.feed("SYS#0 18:30:00 | reconnected")
+    k.brain.feed("LINE#11 18:21:00 Steve voice action_oriented 0.9 - | give me a diamond axe")
+    await k.settle()
+    assert len(k.ask.calls) == 1
 
 
 async def test_two_lines_at_once_neither_waits_for_the_other(kit):

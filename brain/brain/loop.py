@@ -46,6 +46,7 @@ MARK_CHUNK = 500  # seqs in one `vfg context mark`
 SORRY = "sorry, I lost that one — say it again?"
 WATCH_AGAIN_S = 2.0  # after `vfg watch` exits, or the feed restarted, before it is followed again
 RESTARTED = "feed restarted"  # in vfg watch's notice of a new feed.log
+RECONNECTED = "reconnected"  # vfg watch's notice once EC2 answers again after a drop
 
 
 def utc_now() -> datetime:
@@ -82,6 +83,7 @@ class Brain:
         self.inflight: set[asyncio.Task] = set()
         self.stopping = False
         self.restarted = False        # the watch said the feed restarted, or gave a seq it had passed
+        self.catching_up = False      # after a reconnect: the backlog is judged by its age
 
     # ------------------------------------------------------------- rows in
 
@@ -108,6 +110,9 @@ class Brain:
         if row.seq == 0:  # vfg watch's own notices: EC2 unreachable, reconnected, lines skipped, feed restarted
             log("watch", row.text)
             self.restarted = self.restarted or RESTARTED in row.text
+            # What the watch prints after a drop is a backlog: its lines are judged by their age,
+            # as a start's are, until one of the last HISTORY_S arrives.
+            self.catching_up = self.catching_up or row.text.startswith(RECONNECTED)
             return None
         if row.seq <= self.position():  # `vfg watch --after` gives none but after the feed restarted
             log("watch", f"#{row.seq} is not past #{self.position()}: the feed restarted")
@@ -121,7 +126,10 @@ class Brain:
     def route(self, row: Row) -> asyncio.Task | None:
         if self.stopping or row.type != "LINE" or row.cls not in LIVE or row.processed:
             return None
-        if row.seq <= self.start and row.at < iso(self.now() - timedelta(seconds=HISTORY_S)):
+        old = row.at < iso(self.now() - timedelta(seconds=HISTORY_S))
+        if not old:
+            self.catching_up = False
+        if old and (row.seq <= self.start or self.catching_up):
             row.processed = True
             self.later("context", "mark", str(row.seq))
             log("line", f"#{row.seq} {row.who} from {row.hms} is history, not acted on: {row.text[:120]!r}")
