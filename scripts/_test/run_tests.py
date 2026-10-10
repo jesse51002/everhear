@@ -588,13 +588,14 @@ _add_script_tests()
 def _add_kit_and_preset_tests():
     import glob
     import importlib
-    for path in [os.path.join(HERE, "test_kit.py")] + sorted(glob.glob(os.path.join(HERE, "test_presets_*.py"))) \
+    for path in [os.path.join(HERE, "test_kit.py"), os.path.join(HERE, "test_instances.py")] \
+            + sorted(glob.glob(os.path.join(HERE, "test_presets_*.py"))) \
             + sorted(glob.glob(os.path.join(HERE, "test_examples_*.py"))):
         mod = importlib.import_module(os.path.basename(path)[:-3])
         for name in dir(mod):
             obj = getattr(mod, name)
             if isinstance(obj, type) and issubclass(obj, unittest.TestCase) and obj.__module__ == mod.__name__:
-                globals()[name if mod.__name__ == "test_kit" else "%s__%s" % (mod.__name__, name)] = obj
+                globals()[name if mod.__name__ in ("test_kit", "test_instances") else "%s__%s" % (mod.__name__, name)] = obj
 
 
 _add_kit_and_preset_tests()
