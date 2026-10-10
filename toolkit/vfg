@@ -518,7 +518,7 @@ def cmd_cmd(cfg, a):
     else:
         out(line["summary"])
     if not line["ok"]:
-        raise Fail(1, line.get("error") or "minecraft rejected the command")
+        raise Fail(1, "minecraft rejected the command" if line["facts"].get("failed") else line.get("error"))
     return 0
 
 
@@ -1234,7 +1234,7 @@ def cmd_script_deploy(cfg, a):
     tars = [{"root": "scripts", "tar": pack(cfg, with_lib(cfg, lib_names))}]
     if made_names:
         tars.append({"root": made_root(cfg), "tar": pack(cfg, made_names, made)})
-    rc, o, e = remote(cfg, a, "scripts.py", {"op": "deploy", "tars": tars}, 30)
+    rc, o, e = remote(cfg, a, "scripts.py", {"op": "deploy", "tars": tars}, 30, libs=SCRIPTS_LIBS)
     finish(rc, o, e)
     if skipped:
         raise Fail(1, "skipped, not scripts (a script is <name>/main.py starting with its docstring, "
@@ -1424,6 +1424,7 @@ def run_action(cfg, a, name, given, as_=None, task=None, extra=None):
     """Check the values here, run the action on EC2, write the copy through to running.json:
     the JSON line's dict. Fail for anything that stopped it before it ran. `extra` goes into
     the copy's values as it is, checked already (an edit's values, against its copy's action)."""
+    cfg.require_ssh()
     va, cat, cls = action_class(cfg, name)
     checked = checked_values(cfg, a, va, cls, given)
     values = dict(checked.values)
@@ -1791,10 +1792,61 @@ def copy_script(src_folder, dest, text):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def report_check(library, lib, path, kind, name, source):
-    """Run check on what was just written; print its problems. True when it passes."""
+ACTION_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
+
+
+def actions_over(cfg, cat, item):
+    """The names of the actions that run a script: for a made script, this server's; for a
+    library one, the library's."""
+    return [n for n in cat.names() if getattr(cat.get(n), "script", None) == item.name
+            and cat.source(n) == item.source]
+
+
+def todo_problems(cfg, cat, name):
+    """An action vfg script new wrote and nobody finished: its line or a description still a TODO."""
+    cls = cat.get(name)
+    rel = action_rel(cfg, cat, name)
+    out_ = []
+    doc = (cls.__doc__ or "").strip().split("\n", 1)[0]
+    if doc.upper().startswith("TODO"):
+        out_.append("%s: its line on the menu is still a TODO: say what it does, in players' words" % rel)
+    for k, f in cls.model_fields.items():
+        if (f.description or "").strip().upper().startswith("TODO"):
+            out_.append("%s: %s's description is still a TODO" % (rel, k))
+    return out_
+
+
+def script_problems(cfg, library, lib, va, cat, item):
+    """vfg script check of one script or preset: library.check, with a ported script's reads
+    checked against its actions' fields; and each action over a script, as vfg action check
+    sees it, with its TODOs. A made script with no action is a problem."""
+    if item.kind != "script":
+        return library.check(item, lib)
+    names = actions_over(cfg, cat, item)
+    fields = None
+    if names:
+        fields = set()
+        for n in names:
+            fields.update(cat.get(n).model_fields)
+    problems = library.check(item, lib, fields)
+    for n in names:
+        problems += todo_problems(cfg, cat, n)
+    why = cat.errors().get(item.name)
+    if why:
+        where = "made/%s/actions/%s.py" % (lib.server, item.name) if item.source == "made" else "actions/%s.py" % item.name
+        problems.append("%s: left out: %s" % (where, why))
+    elif not names and item.source == "made" and not item.legacy:
+        problems.append("%s: no action runs it: every script gets one (made/%s/actions/%s.py)"
+                        % (os.path.dirname(item.rel), lib.server, item.name))
+    return problems
+
+
+def report_check(cfg, library, lib, path, kind, name, source):
+    """Run check on what was just written (and its action); print its problems. True when it passes."""
     item = library.parse(path, kind, name, source, os.path.relpath(path, lib.repo))
-    problems = library.check(item, lib)
+    va, cat = catalog(cfg)
+    cat.refresh()
+    problems = script_problems(cfg, library, lib, va, cat, item)
     if problems:
         out("check: %d to fix before it is done:" % len(problems))
         out("\n".join("  " + p for p in problems))
@@ -1803,14 +1855,75 @@ def report_check(library, lib, path, kind, name, source):
     return not problems
 
 
+def new_action(cfg, library, lib, cat, name, src, presets, text):
+    """The source of the action beside a new script: the values class of every preset the
+    script holds that has one, inherited; every other value it reads as a field, from the
+    source script's action (its fields, line aside, takes, runs, defaults, fixed), else from
+    its VALUES and the presets' VALUES. (text, the presets inherited)."""
+    held = list(src.holds if src else []) + [p.name for p in presets if p.name not in (src.holds if src else [])]
+    inherit, inherited = [], set()
+    for p in held:
+        it = lib.preset(p)
+        keys = library.values_class_fields(it) if it is not None else None
+        if keys is not None:
+            inherit.append(p)
+            inherited.update(keys)
+    base = None
+    if src is not None:
+        over = actions_over(cfg, cat, src)
+        if over:
+            pick = src.name if src.name in over else over[0]
+            base = va_cache_entry(cfg, cat, pick)
+    fields = []
+    if base is not None:
+        fields = [(k, f) for k, f in base["fields"].items() if k not in inherited]
+    node = library.values_node(text)
+    if node is not None and base is None:
+        known = {}
+        for d in [src.values if src is not None else None] + [p.values for p in presets]:
+            known.update(d if isinstance(d, dict) else {})
+        entries, _closing = library.read_entries(text, node)
+        for e in entries:
+            if e.key not in inherited and isinstance(known.get(e.key), dict):
+                fields.append((e.key, library.field_of_entry(known[e.key])))
+    for p in presets:
+        if p.name in inherit or not isinstance(p.values, dict):
+            continue
+        have = set(k for k, _f in fields)
+        fields += [(k, library.field_of_entry(e)) for k, e in p.values.items() if k not in have]
+    if src is None:
+        fields = [f for f in library.SKELETON_FIELDS if f[0] not in inherited] + \
+            [f for f in fields if f[0] not in dict(library.SKELETON_FIELDS)]
+    known = set(k for k, _f in fields) | inherited
+    takes = [k for k in (base or {}).get("takes", []) if k in known] if base else \
+        (["player"] if "player" in known else [])
+    keep = lambda d: dict((k, v) for k, v in (d or {}).items() if k in known)  # noqa: E731
+    return library.action_text(name, name, inherit, fields, runs=(base or {}).get("runs") or "until_stopped",
+                               takes=takes, defaults=keep((base or {}).get("defaults")),
+                               fixed=keep((base or {}).get("fixed"))), inherit
+
+
+def va_cache_entry(cfg, cat, name):
+    """One action as actions.json holds it (vfg_actions.entry)."""
+    va = actions_lib()
+    return va.entry(name, cat.get(name), cat.source(name), action_rel(cfg, cat, name))
+
+
 def cmd_script_new(cfg, a):
-    """A new script: a copy of --from (or an empty one), each --preset copied in."""
-    if not NAME_RE.match(a.name):
-        raise Fail(2, "%s is not a script name (a-z, 0-9, _ and -, at most 48)" % a.name)
+    """A new script, a copy of --from (or an empty one) with each --preset copied in, ported
+    to its action (no VALUES: v = values()); and its action beside it."""
+    if not ACTION_NAME_RE.match(a.name):
+        raise Fail(2, "%s is not a name for a script and its action (a-z, 0-9 and _, starting with a "
+                      "letter, at most 48)" % a.name)
     library, lib = load_library(cfg)
     taken = lib.taken(a.name, "script")
     if taken:
         raise Fail(1, "%s is taken: %s — pick another name" % (a.name, taken))
+    actions_dir = os.path.join(cfg.repo, "actions") if a.library else os.path.join(cfg.repo, "made", lib.server, "actions")
+    for d in (os.path.join(cfg.repo, "actions"), os.path.join(cfg.repo, "made", lib.server, "actions")):
+        if os.path.exists(os.path.join(d, a.name + ".py")):
+            raise Fail(1, "%s is taken: %s — pick another name"
+                       % (a.name, os.path.relpath(os.path.join(d, a.name + ".py"), cfg.repo)))
     presets = []
     for p in a.preset or []:
         it = lib.preset(p)
@@ -1828,9 +1941,9 @@ def cmd_script_new(cfg, a):
             raise Fail(1, "no script %s in scripts/ or made/%s/scripts/" % (a.source, lib.server))
         if src.problem:
             raise Fail(1, "%s: %s" % (src.rel, src.problem))
-        if presets and src.values_node is None:
-            raise Fail(1, "%s has no VALUES (written the old way): presets go into a script that has them "
-                          "— start from an example, or from none" % a.source)
+        if src.legacy:
+            raise Fail(1, "%s has no VALUES (written the old way): start from an example, or from none"
+                       % a.source)
         text = src.text
     else:
         text = library.SKELETON
@@ -1841,16 +1954,24 @@ def cmd_script_new(cfg, a):
         except ValueError as e:
             raise Fail(1, "cannot copy %s in: %s" % (p.name, e))
         added.append((p, keys, imports))
+    va, cat = catalog(cfg)
+    action, inherit = new_action(cfg, library, lib, cat, a.name, src, presets, text)
     dest = os.path.join(scripts_dir(cfg) if a.library else lib.made_scripts, a.name)
-    copy_script(src.folder if src else None, dest, text)
+    copy_script(src.folder if src else None, dest, library.strip_values(text))
+    os.makedirs(actions_dir, exist_ok=True)
+    action_path = os.path.join(actions_dir, a.name + ".py")
+    atomic_write(action_path, action, 0o644)
     rel = os.path.relpath(dest, cfg.repo)
     out("made %s/ %s" % (rel, "from %s/ (%s)" % (os.path.dirname(src.rel), src.source) if src
                           else "from nothing"))
     for p, keys, imports in added:
         out("  + %s (%s): %s" % (p.name, p.source, ", ".join(keys) if keys else "no values"))
-    report_check(library, lib, os.path.join(dest, "main.py"), "script", a.name,
+    out("made %s: class %s(%s)" % (os.path.relpath(action_path, cfg.repo), library.camel(a.name),
+                                   ", ".join(["Action"] + ['preset("%s")' % p for p in inherit])))
+    report_check(cfg, library, lib, os.path.join(dest, "main.py"), "script", a.name,
                  "library" if a.library else "made")
-    out("next: edit its first line, ASKS and the wiring, then vfg script check %s" % a.name)
+    out("next: edit its first line, ASKS and the wiring; the action's line, takes and descriptions; "
+        "then vfg script check %s" % a.name)
     return 0
 
 
@@ -1883,7 +2004,10 @@ def check_targets(cfg, library, lib, target):
 
 
 def cmd_script_check(cfg, a):
+    """Scripts and presets (library.check), each script's actions with them; with no target,
+    every one, and every action the loader left out."""
     library, lib = load_library(cfg)
+    va, cat = catalog(cfg)
     if a.targets:
         items = []
         for t in a.targets:
@@ -1892,9 +2016,15 @@ def cmd_script_check(cfg, a):
         items = lib.scripts() + lib.presets()
     problems, bad = [], 0
     for it in items:
-        got = library.check(it, lib)
+        got = script_problems(cfg, library, lib, va, cat, it)
         problems.extend(got)
         bad += 1 if got else 0
+    if not a.targets:
+        scripts_ = set(i.name for i in items if i.kind == "script")
+        for stem, why in sorted(cat.errors().items()):
+            if stem not in scripts_:
+                problems.append("%s.py: left out: %s" % (stem, why))
+                bad += 1
     if problems:
         out("\n".join(problems))
         raise Fail(1, "%d problem%s in %d of %d file%s" % (len(problems), "" if len(problems) == 1 else "s",
@@ -1963,7 +2093,7 @@ def cmd_script_save(cfg, a):
                                              else "the same defaults"))
     if skipped:
         out("left at their defaults, not in its VALUES: %s" % ", ".join(skipped))
-    report_check(library, lib, os.path.join(dest, "main.py"), "script", a.new_name, "made")
+    report_check(cfg, library, lib, os.path.join(dest, "main.py"), "script", a.new_name, "made")
     out("next: put the player's words in its ASKS, then vfg script check %s" % a.new_name)
     return 0
 
@@ -1992,7 +2122,7 @@ def cmd_preset_save(cfg, a):
     out("saved %s from %s.%s: values %s%s" % (os.path.relpath(dest, cfg.repo), a.script, a.function,
                                               vals or "none",
                                               "; helpers " + ", ".join(helpers) if helpers else ""))
-    report_check(library, lib, dest, "preset", a.name, "made")
+    report_check(cfg, library, lib, dest, "preset", a.name, "made")
     return 0
 
 
@@ -2307,7 +2437,7 @@ def cmd_place(cfg, a):
         given["at"] = " ".join(list(a.at) + ([dim] if dim else []))
     line = run_action(cfg, a, "save_place", given, task=a.by)
     if not line["ok"]:
-        raise Fail(1, line.get("error") or "the place was not saved")
+        raise Fail(1, line["summary"] or line.get("error") or "the place was not saved")
     out(line["summary"])
     facts = line["facts"]
     m = SAVED_RE.match(line["summary"].strip())
@@ -2994,6 +3124,12 @@ def build_parser():
     w = as_.add_parser("run", help="run an action: its values checked here, then a copy started on "
                        "EC2; prints one JSON line {ok, copy, action, running, summary, facts, notes, "
                        "error}, exit 0 when ok",
+                       description="Run an action: its values are checked here against its class, then "
+                                   "one SSH call deploys its script and starts a copy on EC2. A once action "
+                                   "is waited for (its timeout_s, else VFG_DISPATCH_ACTION_TIMEOUT_S); an "
+                                   "until-stopped one answers with its first result() or after a 2 s check. "
+                                   "Prints one JSON line {ok, copy, action, running, summary, facts, notes, "
+                                   "error}; exit 0 when ok.",
                        usage="vfg action run <action> key=value … [as=<copy>] [--task T7]")
     w.add_argument("rest", nargs=argparse.REMAINDER, metavar="<action> key=value … [as=<copy>] [--task T7]",
                    help="as=<copy> names the copy (refused while one of that name runs); --task is "
@@ -3161,7 +3297,7 @@ def run(argv, started):
 
 
 # The commands that may load the actions (pydantic).
-NEEDS_ACTIONS = ("action", "cmd", "script", "place", "state")
+NEEDS_ACTIONS = ("action", "cmd", "script", "place", "state", "preset")
 
 
 def under_uv(argv):

@@ -184,7 +184,7 @@ from kit import result, values, world
 v = values()
 at = world.place(v["player"] or v["at"])
 if at is None:
-    result("nowhere to save")
+    result("%s is not online" % v["player"] if v["player"] else "nowhere to save")
     sys.exit(1)
 p = places.save(mc.rcon, v["name"], at, at.dim or "overworld", mc.TASK)
 result("saved %s at %d %d %d in %s" % (v["name"], p["pos"][0], p["pos"][1], p["pos"][2], p["dim"].split(":")[-1]),
@@ -226,6 +226,16 @@ def write(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
+
+
+def install_types(repo):
+    """What an action needs to load: actions/__init__.py, the real actions/_types.py, and what
+    it reads: the one list of refused commands, scripts/_lib/commands.py, and kit/world.py's GONE."""
+    write(os.path.join(repo, "actions", "__init__.py"), "")
+    shutil.copy(os.path.join(REPO, "actions", "_types.py"), os.path.join(repo, "actions", "_types.py"))
+    os.makedirs(os.path.join(repo, "scripts", "_lib", "kit"), exist_ok=True)
+    for rel in ("commands.py", os.path.join("kit", "world.py")):
+        shutil.copy(os.path.join(REAL_LIB, rel), os.path.join(repo, "scripts", "_lib", rel))
 
 
 def install(repo, names=None):
