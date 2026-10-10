@@ -1,91 +1,35 @@
-# scripts.py: vfg script deploy|run|set|stop|logs|list|save and vfg state, on EC2. ARGS:
-#   {"vfg": "/opt/vfg", "op": "deploy", "tar": "<base64 tar.gz>"}   into scripts/, or
+# scripts.py: the box's side of vfg action run, vfg script deploy|logs|list|save and vfg state.
+# Appended after common.py, ARGS and scripts/_lib/instances.py (the module `instances`), the
+# code that starts, stops and edits a copy, which the stop and edit scripts import too. ARGS:
 #   {"vfg": "/opt/vfg", "op": "deploy", "tars": [{"root": "scripts"|"made/<server>/scripts", "tar": ...}]}
-#   {"vfg": "/opt/vfg", "op": "run", "instance": "galick-alex", "script": "galick_gun",
-#    "source": "library"|"made", "server": "main", "values": {...}|null, "argv": [...],
-#    "task": "T7"|null, "wait": 2, "tars": [{"root": ..., "tar": ...}], "owner": ..., "poll": 0.5}
-#   {"vfg": "/opt/vfg", "op": "set", "instance": "galick-alex", "live": {...}, "fixed": {...},
-#    "expect": null|{"script": "galick_gun", "source": "library"}, "wait": 2}
-#   {"vfg": "/opt/vfg", "op": "info", "instance": "galick-alex"}
-#   {"vfg": "/opt/vfg", "op": "stop", "name": "galick-alex"}
-#   {"vfg": "/opt/vfg", "op": "logs", "name": "galick-alex", "n": 40, "follow": false}
-#   {"vfg": "/opt/vfg", "op": "instances"}
+#   {"vfg": "/opt/vfg", "mc": "/opt/mc", "op": "run", "action": "galick_gun", "script": "galick_gun",
+#    "source": "library"|"made", "server": "main", "values": {...}, "live": [...], "runs": "once"|
+#    "until_stopped", "task": "T7"|null, "as": null|"steve_gun", "tars": [...], "owner": ..., "poll": 0.5,
+#    "wait": 20, "on_result": false}
+#   {"vfg": "/opt/vfg", "op": "info", "copy": "galick_gun_2"}
+#   {"vfg": "/opt/vfg", "op": "logs", "name": "galick_gun_2", "n": 40, "follow": false}
+#   {"vfg": "/opt/vfg", "op": "copies"}
 #   {"vfg": "/opt/vfg", "mc": "/opt/mc", "op": "state"}
 #
-# An instance is one run of a script, named by `as=` or after its script. Its files in
-# run/: <instance>.pid, <instance>.log, <instance>.json (what was started:
-# {"instance", "script", "source", "values", "task", "started"}, plus "server" for a
-# made script and "args" for one without VALUES) and <instance>.values.json, the live
-# values `vfg script set` writes and kit.values reads again while it runs.
+# `run` deploys, starts the copy (instances.Box.start) and waits: a once copy until it ends or
+# "wait" s pass, an until-stopped one until its first result() or "wait" s (the 2 s check). It
+# prints one JSON object: {"copy", "pid", "running", "code", "result", "tail"}, "tail" being the
+# last lines it printed when it ended with an error.
 import base64
 import io
 import re
 import shutil
-import signal
-import subprocess
 import tarfile
 
-NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 ROOT_RE = re.compile(r"^(scripts|made/[a-z0-9][a-z0-9_-]{0,47}/scripts)$")
 PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
 BASE = ARGS["vfg"]
-SCRIPTS = os.path.join(BASE, "scripts")
 RUN = os.path.join(BASE, "run")
 
 
-def pidfile(name):
-    return os.path.join(RUN, name + ".pid")
-
-
-def logfile(name):
-    return os.path.join(RUN, name + ".log")
-
-
-def metafile(name):
-    return os.path.join(RUN, name + ".json")
-
-
-def livefile(name):
-    return os.path.join(RUN, name + ".values.json")
-
-
-def read_json(path, default):
-    try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return default
-
-
-def running_pid(name):
-    """The instance's pid when it is running; a stale pid file is removed."""
-    path = pidfile(name)
-    pid = read_pid(path)
-    if pid is None:
-        return None
-    if pid_with_marker(pid, "VFG_SCRIPT=" + name):
-        return pid
-    try:
-        os.remove(path)
-    except OSError:
-        pass
-    return None
-
-
-def folder_of(meta):
-    """Where an instance's script is deployed: scripts/<name>, or made/<server>/scripts/<name>."""
-    if meta.get("source") == "made":
-        return os.path.join(BASE, "made", meta["server"], "scripts", meta["script"])
-    return os.path.join(SCRIPTS, meta["script"])
-
-
-def meta_of(name):
-    """An instance's <name>.json; one started before instances had it is its own script."""
-    meta = read_json(metafile(name), None)
-    if not isinstance(meta, dict):
-        meta = {"instance": name, "script": name, "source": "library", "values": None,
-                "task": None, "started": None}
-    return meta
+def box(rcon=None):
+    return instances.Box(BASE, ARGS.get("mc") or "/opt/mc", owner=ARGS.get("owner") or "",
+                         poll=ARGS.get("poll") or 0.5, rcon=rcon)
 
 
 def deploy(b64, root="scripts"):
@@ -109,7 +53,7 @@ def deploy(b64, root="scripts"):
         if not (m.isfile() or m.isdir()):
             die(1, "deploy refused: %r is not a plain file or folder" % name)
         top = parts[0]
-        if not ((top == "_lib" and root == "scripts") or NAME_RE.match(top)):
+        if not ((top == "_lib" and root == "scripts") or instances.NAME_RE.match(top)):
             die(1, "deploy refused: %r is not a script name" % top)
         if top not in tops:
             tops.append(top)
@@ -165,6 +109,10 @@ def write_out(data):
     sys.stdout.flush()
 
 
+def answer(obj):
+    print(json.dumps(obj, ensure_ascii=False))
+
+
 def op_deploy():
     """One tar ("tar", into "root" or scripts/), or several ("tars": [{"root", "tar"}])."""
     tars = ARGS.get("tars") or [{"root": ARGS.get("root") or "scripts", "tar": ARGS["tar"]}]
@@ -175,190 +123,42 @@ def op_deploy():
               + " ".join(tops))
 
 
-def start(meta, argv, wait):
-    """Start an instance as its meta says, detached, with `argv` after main.py.
-
-    Writes <instance>.json and .pid; checks it after `wait` seconds and, if it
-    has ended by then, prints its output and exits as it did."""
-    name = meta["instance"]
-    folder = folder_of(meta)
-    main_py = os.path.join(folder, "main.py")
-    if not os.path.isfile(main_py):
-        die(1, "%s is not deployed (no %s)" % (meta["script"], main_py))
-    os.makedirs(RUN, exist_ok=True)
-    log = logfile(name)
-    with open(log, "w", encoding="utf-8") as f:
-        f.write("--- %s run %s %s ---\n" % (now_iso(), name, json.dumps(argv, ensure_ascii=False)))
-    env = dict(os.environ)
-    # VFG_SCRIPT is the pid marker (running_pid); VFG_INSTANCE names its tag, vfg_<instance>.
-    env["VFG_SCRIPT"] = name
-    env["VFG_INSTANCE"] = name
-    # kit.values reads <VFG_RUN_DIR>/<instance>.values.json again every VFG_LIVE_POLL_S, and
-    # kit.world.protected() the places nothing may touch from VFG_PROTECTED.
-    env["VFG_RUN_DIR"] = RUN
-    env["VFG_PROTECTED"] = os.path.join(BASE, "protected.json")
-    env["VFG_LIVE_POLL_S"] = str(ARGS.get("poll") or 0.5)
-    env["PYTHONPATH"] = os.path.join(SCRIPTS, "_lib")
-    env["PYTHONUNBUFFERED"] = "1"
-    # mc.py finds RCON's settings by VFG_MC_PROPERTIES (default /opt/mc/...).
-    env["VFG_MC_PROPERTIES"] = os.path.join(ARGS["mc"], "server.properties")
-    # ...and the player a script acts for by default by VFG_OWNER (~/.vfg/config on the PC).
-    if ARGS.get("owner"):
-        env["VFG_OWNER"] = ARGS["owner"]
-    else:
-        env.pop("VFG_OWNER", None)
-    meta["started"] = now_iso()
-    atomic_write(metafile(name), json.dumps(meta, ensure_ascii=False) + "\n")
-    logf = open(log, "ab")
-    # No shell, and no start_new_session: the child is then not a group
-    # leader, so `setsid` keeps its pid, which becomes the script's.
-    proc = subprocess.Popen(["setsid", "nohup", "python3", "-u", main_py] + list(argv),
-                            cwd=folder, stdin=subprocess.DEVNULL, stdout=logf,
-                            stderr=subprocess.STDOUT, env=env, close_fds=True)
-    logf.close()
-    atomic_write(pidfile(name), "%d\n" % proc.pid)
-    try:
-        code = proc.wait(timeout=float(wait or 2))
-    except subprocess.TimeoutExpired:
-        return proc.pid
-    # Its output: the last 40 lines of the log, without the log's header.
-    with open(log, "rb") as f:
-        header = f.readline().rstrip(b"\n")
-    lines = tail_lines(log, 41)
-    if lines and lines[0] == header:
-        lines = lines[1:]
-    lines = lines[-40:]
-    if lines:
-        write_out(b"\n".join(lines) + b"\n")
-    try:
-        os.remove(pidfile(name))
-    except OSError:
-        pass
-    if code != 0:
-        die(1, "%s exited with code %d" % (name, code))
-    return None
-
-
 def op_run():
-    name = ARGS["instance"]
-    pid = running_pid(name)
-    if pid:
-        die(1, "%s is running (pid %d) — vfg script stop %s" % (name, pid, name))
+    """Deploy, start one copy of an action and wait for it, as the module comment says."""
     for t in ARGS.get("tars") or []:
         deploy(t["tar"], t["root"])
-    meta = {"instance": name, "script": ARGS["script"], "source": ARGS.get("source") or "library",
-            "values": ARGS.get("values"), "task": ARGS.get("task"), "started": None}
+    meta = {"action": ARGS["action"], "script": ARGS["script"], "source": ARGS.get("source") or "library",
+            "values": ARGS.get("values") or {}, "live": ARGS.get("live") or [],
+            "runs": ARGS.get("runs") or "until_stopped", "task": ARGS.get("task")}
     if meta["source"] == "made":
         meta["server"] = ARGS["server"]
-    if ARGS.get("values") is None:
-        meta["args"] = list(ARGS["argv"])
-    # A new run starts from its command: live values an earlier run was set to are gone.
+    b = box()
     try:
-        os.remove(livefile(name))
-    except OSError:
-        pass
-    pid = start(meta, ARGS["argv"], ARGS.get("wait"))
-    if pid:
-        print("running %s pid %d — vfg script logs %s" % (name, pid, name))
-
-
-def gone(pid):
-    """True once `pid` no longer exists or is a zombie."""
-    try:
-        with open("/proc/%d/stat" % pid) as f:
-            state = f.read().rsplit(")", 1)[1].split()[0]
-        return state in ("Z", "X")
-    except (OSError, IndexError):
-        return True
-
-
-def stop_instance(name):
-    """SIGTERM its process group, SIGKILL after 5 s; False when it was not running."""
-    pid = running_pid(name)
-    if not pid:
-        return False
-    try:
-        os.killpg(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    except PermissionError as e:
-        die(1, "cannot stop %s: %s" % (name, e))
-    deadline = time.time() + 5
-    while time.time() < deadline and not gone(pid):
-        time.sleep(0.1)
-    try:
-        os.killpg(pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass
-    try:
-        os.remove(pidfile(name))
-    except OSError:
-        pass
-    return True
-
-
-def op_stop():
-    name = ARGS["name"]
-    if stop_instance(name):
-        print("stopped %s" % name)
-    else:
-        print("%s not running" % name)
+        name, pid, proc = b.start(meta, ARGS.get("as"))
+    except instances.CopyError as e:
+        die(1, str(e))
+    got = b.wait(name, proc, float(ARGS.get("wait") or instances.CHECK_S), on_result=bool(ARGS.get("on_result")))
+    got.update(copy=name, pid=pid)
+    if not got["running"] and got["code"]:
+        got["tail"] = b.tail(name, 20)
+    answer(got)
 
 
 def op_info():
-    name = ARGS["instance"]
-    if not (os.path.exists(metafile(name)) or os.path.exists(pidfile(name))):
-        die(1, "no instance %s — vfg script list" % name)
-    print(json.dumps(instance(name), ensure_ascii=False))
+    name = ARGS["copy"]
+    b = box()
+    if not (os.path.exists(b.path(name, ".json")) or os.path.exists(b.path(name, ".pid"))):
+        die(1, "no copy %s — vfg script list" % name)
+    answer(b.copy(name))
 
 
-def argv_word(value):
-    """A value as the command line carries it, as library.argv_word writes it on the PC."""
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, float) and value.is_integer() and abs(value) < 1e15:
-        return "%d" % value
-    if isinstance(value, (list, dict)):
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    return "%s" % (value,)
-
-
-def op_set():
-    """Live values into <instance>.values.json; any other value restarts it with them.
-
-    With "expect" ({"script", "source"}, what the PC checked the values against), an
-    instance that now runs something else changes nothing and answers {"mismatch": ...}."""
-    name = ARGS["instance"]
-    if not running_pid(name):
-        die(1, "%s is not running — vfg script list" % name)
-    meta = meta_of(name)
-    expect = ARGS.get("expect")
-    if expect and (meta.get("script"), meta.get("source") or "library") != (expect["script"], expect["source"]):
-        print(json.dumps({"mismatch": instance(name)}, ensure_ascii=False))
-        return
-    live = ARGS.get("live") or {}
-    if live:
-        cur = read_json(livefile(name), {})
-        if not isinstance(cur, dict):
-            cur = {}
-        cur.update(live)
-        atomic_write(livefile(name), json.dumps(cur, ensure_ascii=False) + "\n")
-    out = {"live": read_json(livefile(name), {}), "restarted": None, "values": meta.get("values")}
-    fixed = ARGS.get("fixed") or {}
-    if fixed:
-        command = dict(meta.get("values") or {})
-        command.update(fixed)
-        stop_instance(name)
-        meta["values"] = command
-        out["values"] = command
-        out["restarted"] = start(meta, ["%s=%s" % (k, argv_word(v)) for k, v in command.items()],
-                                 ARGS.get("wait"))
-    print(json.dumps(out, ensure_ascii=False))
+def op_copies():
+    answer(box().copies())
 
 
 def op_logs():
     name = ARGS["name"]
-    log = logfile(name)
+    log = os.path.join(RUN, name + ".log")
     if not os.path.exists(log):
         die(1, "no log for %s — it has not been run" % name)
     lines = tail_lines(log, int(ARGS.get("n") or 40))
@@ -389,40 +189,6 @@ def op_logs():
                 write_out(data)
             except OSError:
                 return
-
-
-def instance(name):
-    """One instance as the PC reads it: its meta, live values, pid and since."""
-    meta = meta_of(name)
-    live = read_json(livefile(name), {})
-    pid = running_pid(name)
-    since = None
-    if pid:
-        try:
-            since = hms(os.stat(pidfile(name)).st_mtime)
-        except OSError:
-            since = "?"
-    meta.update({"instance": name, "live": live if isinstance(live, dict) else {},
-                 "pid": pid, "since": since})
-    return meta
-
-
-def instance_names():
-    """Every instance with a .json or a .pid in run/, by name."""
-    names = set()
-    try:
-        files = os.listdir(RUN)
-    except OSError:
-        return []
-    for fn in files:
-        for ext in (".json", ".pid"):
-            if fn.endswith(ext) and not fn.endswith(".values.json") and NAME_RE.match(fn[:-len(ext)]):
-                names.add(fn[:-len(ext)])
-    return sorted(names)
-
-
-def op_instances():
-    print(json.dumps([instance(n) for n in instance_names()], ensure_ascii=False))
 
 
 # ------------------------------------------------------------------ state
@@ -497,12 +263,12 @@ def op_state():
             r.close()
     except RconDown as e:
         world["rcon"] = str(e)
-    world["instances"] = [i for i in (instance(n) for n in instance_names()) if i["pid"]]
+    world["copies"] = box().copies()
     world["ms"] = int((time.time() - t0) * 1000)
     print(json.dumps(world, ensure_ascii=False))
     if world["rcon"]:
         die(5, world["rcon"])
 
 
-{"deploy": op_deploy, "run": op_run, "set": op_set, "info": op_info, "stop": op_stop,
- "logs": op_logs, "instances": op_instances, "state": op_state}[ARGS["op"]]()
+{"deploy": op_deploy, "run": op_run, "info": op_info, "logs": op_logs, "copies": op_copies,
+ "state": op_state}[ARGS["op"]]()
