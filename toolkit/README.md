@@ -211,18 +211,29 @@ on the PC; the router reads them through it too. A name is a script in one place
 ## Tests
 
 ```sh
-python3 -m unittest discover -s toolkit/tests      # vfg itself starts again under uv
+python3 -m unittest discover -s toolkit/tests      # from the repo's root; about 8 s
 ```
 
-No EC2 and no network: `tests/fake_ssh` runs the remote command locally,
-`fake_rcon.py` speaks RCON on localhost, `fake_vfg_feed.py` stands in for the
-bridge's writer (and `TestRealFeedWriter` uses `../bridge/vfg_feed.py` when it is
-there), and `tests/bin/` holds fake `systemctl`, `sudo` and `journalctl`; the fake box's
-Python is the one running the tests. `test_copies.py` runs actions as copies on the real
-kit, with the stand-in `command`, `edit`, `stop` and `save_place` actions and scripts of
-`tests/standins.py` and a few of its own. The place tests answer RCON with
-`../scripts/_test/fake_places_world.py`, a small world speaking Minecraft 26.3's recorded
-replies; a fake `java` stands in for the data generator. The library tests use a stand-in
-kit with `values()` only; `TestRealLibrary` reads the repo's own examples and presets,
-when there are any, and copies every preset into every example. Two environment knobs
-exist for the tests only: `VFG_WATCH_SILENCE_S` (35) and `VFG_WATCH_UNREACHABLE_S` (60).
+No EC2 and no network, and where `python3` has no pydantic the run starts itself again under
+`uv`, as vfg does. `tests/harness.py` makes each test a box in a temp folder: the PC (`HOME`,
+`VFG_HOME`, a repo) and the EC2 box (`vfg.db`, `feed.log`, `tests/fake_vfg_feed.py` as the
+feed's writer). vfg's `main()` runs in the test's process, and so does every remote program it
+sends: the harness replaces `Ssh`'s one subprocess call and nothing else, and gives the program
+the box's environment, none of the PC's. A test class shares one `fake_rcon.py`, Minecraft's RCON
+in-process on localhost; a copy an action starts is a real process on the real kit, from the
+stand-in actions of `tests/standins.py`. vfg's own waits are short in the tests (the 2 s check
+0.2 s, `vfg brain start`'s 3 s check 0.1 s).
+
+- `test_vfg.py`: every command at its edge, with `fake_places_world.py` (26.3's recorded
+  replies) for places, a fake `java` for the data generator and `tests/bin/`'s fake
+  `systemctl`, `sudo` and `journalctl` for `vfg up`; `TestRealFeedWriter` runs the bridge's
+  `vfg_feed.py` in place of the fake.
+- `test_copies.py`: `vfg action run` and its copies, edits, stops, `running.json`, script save.
+- `test_route.py`: the router, `remote/jev.py` against `fake_jev_route.py`, `vfg prefix`.
+- `test_library.py`: `vfg script new` and `check`, `vfg preset save`, five real presets in one script.
+- `test_e2e.py`: a handful with vfg as a process, through `tests/fake_ssh`, which runs the remote
+  command here with bash: a command and its SSH options, closed descriptors, and watches
+  following the feed.
+
+`tests/route_eval/` is an eval, not a test: it calls Jev for real. Two environment knobs exist for
+the tests only: `VFG_WATCH_SILENCE_S` (35) and `VFG_WATCH_UNREACHABLE_S` (60).

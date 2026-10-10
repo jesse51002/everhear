@@ -1,11 +1,13 @@
 """Stand-in actions and scripts for the vfg tests: the command, edit, stop and save_place
-actions as the dispatcher's will be (their real ones come in a later wave), and a few of the
-tests' own: beam (until stopped, live values), ping and slow (once).
+actions, smaller than the library's, and a few of the tests' own: beam (until stopped, live
+values), ping and slow (once).
 
     standins.install(repo)    # writes them into a test's repo, with the real scripts/_lib
 
 Each action is a class over the repo's own actions/_types.py, as the library's are; each script
 uses the kit as a library script does: values(), result(), and instances.py for edit and stop.
+Each sets mc.EXIT_GRACE to 0: it sets nothing off that needs a tick to go, and a copy that ends
+then ends at once, not 0.4 s later.
 """
 import os
 import shutil
@@ -133,6 +135,8 @@ class Slow(Ping):
 
 SCRIPTS = {
     "command": '''"""Command: runs its commands in order and stops at the first Minecraft refuses."""
+import mc
+mc.EXIT_GRACE = 0  # a stand-in sets nothing off that needs a tick to go
 import sys
 
 import mc
@@ -150,6 +154,8 @@ result("; ".join(r or "(no reply)" for r in replies), replies=replies, failed=fa
 sys.exit(1 if failed else 0)
 ''',
     "edit": '''"""Edit: changes values on a running copy; live ones land in place, any other restarts it."""
+import mc
+mc.EXIT_GRACE = 0  # a stand-in sets nothing off that needs a tick to go
 import sys
 
 import instances
@@ -169,6 +175,8 @@ else:
     result("%s restarted with %s, pid %d" % (v["copy"], shown, got["restarted"]), **got)
 ''',
     "stop": '''"""Stop: stops a running copy; everything it made goes."""
+import mc
+mc.EXIT_GRACE = 0  # a stand-in sets nothing off that needs a tick to go
 import sys
 
 import instances
@@ -186,6 +194,8 @@ else:
     result("%s was not running" % v["copy"], copy=v["copy"], was_running=False)
 ''',
     "save_place": '''"""Save place: saves where a player stands, or x y z, under a name."""
+import mc
+mc.EXIT_GRACE = 0  # a stand-in sets nothing off that needs a tick to go
 import sys
 
 import mc
@@ -202,6 +212,8 @@ result("saved %s at %d %d %d in %s" % (v["name"], p["pos"][0], p["pos"][1], p["p
        name=v["name"], pos=p["pos"], dim=p["dim"], by=p["by"])
 ''',
     "beam": '''"""Beam: logs its values every 0.1 s, so a test can see them change."""
+import mc
+mc.EXIT_GRACE = 0  # a stand-in sets nothing off that needs a tick to go
 import json
 import time
 
@@ -216,6 +228,8 @@ while True:
     time.sleep(0.1)
 ''',
     "ping": '''"""Ping: asks who is online, then ends."""
+import mc
+mc.EXIT_GRACE = 0  # a stand-in sets nothing off that needs a tick to go
 import sys
 import time
 
