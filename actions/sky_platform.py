@@ -1,4 +1,4 @@
-from actions._types import Action, Field, Literal, Live, Place, Players
+from actions._types import Action, BlockMix, Field, Literal, Live, Place, Players
 
 
 class SkyPlatform(Action):
@@ -24,5 +24,5 @@ class SkyPlatform(Action):
     """set each player's spawn on it"""
     shape_facing: Live[Literal["look", "north", "east", "south", "west"]] = "look"
     """which way it is laid out: look, the way the player looks, or a compass direction; a square looks the same each way"""
-    shape_blocks: Live[str] = "obsidian"
+    shape_blocks: Live[BlockMix] = "obsidian"
     """what its floor and rim are made of: a block id or a mix, "70% obsidian 30% crying_obsidian" (no %: counts 1)"""

@@ -292,6 +292,65 @@ def test_a_gone_id_says_what_to_use():
         TypeAdapter(T().BlockId).validate_python("#tall_flowers")
 
 
+def kit_reads(mixes: list, rules: list) -> list:
+    """How the presets read mixes (shape_fill's) and rules (replace_blocks' joining), run in a
+    subprocess as a script would: [[[block, weight] ...] ..., [rule ...]]."""
+    code = textwrap.dedent("""
+        import json, sys
+        sys.path.insert(1, %r)
+        from _presets.shape_fill import _shape_fill_mix
+        from _presets.replace_blocks import _replace_blocks_texts
+        mixes, rules = json.load(sys.stdin)
+        print(json.dumps([[_shape_fill_mix(m) for m in mixes], _replace_blocks_texts(rules)]))
+    """ % str(REPO / "scripts"))
+    env = {**os.environ, "PYTHONPATH": "%s:%s" % (REPO / "scripts" / "_lib", REPO), "VFG_INSTANCE": "t",
+           "PYTHONDONTWRITEBYTECODE": "1"}
+    p = subprocess.run([sys.executable, "-c", code], input=json.dumps([mixes, rules]), env=env, capture_output=True,
+                       text=True, timeout=60)
+    assert p.returncode == 0, p.stderr
+    return json.loads(p.stdout)
+
+
+def test_a_block_mix_is_read_as_the_kit_reads_it_and_refused_where_it_builds_nothing():
+    mix = TypeAdapter(T().BlockMix)
+    good = ["stone_bricks", " 70% stone_bricks 30% cobblestone ", "70% stone, 30% minecraft:andesite",
+            "oak_stairs[facing=east] 2.5% glowstone", "air"]
+    kit_mixes, _ = kit_reads([g.strip() for g in good], [])
+    for raw, kit in zip(good, kit_mixes):
+        assert mix.validate_python(raw) == raw.strip()
+        assert [list(m) for m in T()._mix(raw.strip())] == kit
+    for bad, says in (("", "is not a block or a mix"), ("#logs", "not a #tag"), ("Stone", "Stone is not a block id"),
+                      ("70%", "is not a block or a mix"), ("0% stone", "add up to 0%"), ("stone {x", "is not a block")):
+        with pytest.raises(ValidationError, match=re.escape(says)):
+            mix.validate_python(bad)
+
+
+def test_replace_rules_join_as_the_kit_joins_them_and_each_is_a_rule():
+    rules = TypeAdapter(T().ReplaceRules)
+    pieces = ["stone > 70% netherrack", "30% magma_block", "solid water > packed_ice", "#minecraft:snow > keep"]
+    _, kit = kit_reads([], pieces)
+    assert rules.validate_python(pieces) == kit == [
+        "stone > 70% netherrack, 30% magma_block", "solid water > packed_ice", "#minecraft:snow > keep"]
+    for bad, says in ((["stone"], "is not a rule"), (["> lava"], "name the blocks to change"),
+                      (["stone > #logs"], "not a #tag"), (["50% stone > lava"], "a weight goes after >"),
+                      (["#minecraft:tall_flowers > air"], "gone in 26.3"), (["stone >"], "after > is")):
+        with pytest.raises(ValidationError, match=re.escape(says)):
+            rules.validate_python(bad)
+
+
+def test_an_item_name_and_an_item_id_that_may_be_empty():
+    name = TypeAdapter(T().ItemName)
+    assert name.validate_python("  Super   Sniper ") == "Super Sniper" and name.validate_python("") == ""
+    for bad in ("!!!", "x" * 65):
+        with pytest.raises(ValidationError):
+            name.validate_python(bad)
+    held = TypeAdapter(T().ItemIdOrEmpty)
+    assert held.validate_python("") == "" and held.validate_python("minecraft:diamond_sword") == "diamond_sword"
+    for bad in ("#swords", "diamond_sword[foo]", "Diamond Sword"):
+        with pytest.raises(ValidationError):
+            held.validate_python(bad)
+
+
 def test_player_takes_one_name():
     p = TypeAdapter(T().Player)
     assert p.validate_python(" Steve ") == "Steve"

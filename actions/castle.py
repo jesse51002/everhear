@@ -1,4 +1,4 @@
-from actions._types import Action, Field, Literal, Live, Place, Players
+from actions._types import Action, BlockMix, Field, Literal, Live, Place, Players
 
 
 class Castle(Action):
@@ -16,7 +16,7 @@ class Castle(Action):
     """how wide the castle is, side to side and front to back, in blocks (an even size is made odd)"""
     castle_height: int = Field(7, ge=4, le=40)
     """how high its walls are, in blocks; the towers rise half as high again"""
-    castle_tower_blocks: str = "cobblestone"
+    castle_tower_blocks: BlockMix = "cobblestone"
     """what the towers and their roofs are made of: a block id or a mix, "70% cobblestone 30% mossy_cobblestone" (no %: counts 1)"""
     castle_ahead: int = Field(6, ge=0, le=64)
     """how far in front of the player its gate is, in blocks; not used at castle_at"""
@@ -28,5 +28,5 @@ class Castle(Action):
     """a staircase from the yard this many blocks down, carved through the ground (0: none)"""
     shape_facing: Live[Literal["look", "north", "east", "south", "west"]] = "look"
     """which way it faces, from the gate in: look, the way the player looks (south at castle_at), or a compass direction"""
-    shape_blocks: Live[str] = "stone_bricks"
+    shape_blocks: Live[BlockMix] = "stone_bricks"
     """what the walls, the keep and the floor are made of: a block id or a mix, "70% stone_bricks 30% cobblestone" (no %: counts 1)"""

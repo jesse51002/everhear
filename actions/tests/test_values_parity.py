@@ -34,10 +34,13 @@ log = logging.getLogger("parity")
 
 # A VALUES type, and the kinds (actions/_types.py's kind()) its field may have now.
 COMPATIBLE = {
-    "int": {"int"}, "number": {"number"}, "bool": {"bool"}, "enum": {"enum"}, "str": {"str", "place"},
+    "int": {"int"}, "number": {"number"}, "bool": {"bool"}, "enum": {"enum"},
+    "str": {"str", "place", "block mix", "item name", "item or empty", "replace rule"},
     "player": {"players", "player"}, "mob": {"mob"}, "block": {"block"}, "item": {"item"},
     "particle": {"particle"}, "sound": {"sound"},
 }
+# A list type of its own, as `list of <its item's kind>`.
+LISTS = {"replace rules": "list of replace rule"}
 # Values the spec gives a script's action that its VALUES did not have: {script: {value: why}}.
 ADDED = {
     "horde_boss": {"at": "Library_Actions: horde_boss has no place and gets one"},
@@ -120,6 +123,7 @@ def problems(fields: dict, defaults: dict, values: dict, T, added: dict = {}, ch
         if f is None:
             continue
         kind = T.kind(f.annotation, f.metadata)
+        kind = LISTS.get(kind, kind)
         was_coords = e["type"] == "list" and e["of"] in ("number", "int") and e["default"] == []
         if e["type"] == "list":
             item = kind[len("list of "):] if kind.startswith("list of ") else None

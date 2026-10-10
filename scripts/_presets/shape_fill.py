@@ -5,7 +5,7 @@ import re
 
 import mc
 from kit import aim, area, world
-from actions._types import Field, Literal, Live, Values  # the values class: read on the PC only
+from actions._types import BlockMix, Field, Literal, Live, Values  # the values class: read on the PC only
 
 VALUES = {
     "shape_kind": {"type": "enum", "of": ["box", "cylinder", "dome", "pyramid", "staircase", "staircase_down", "wall"],
@@ -33,7 +33,7 @@ class ShapeFill(Values):
     """where it goes from the player or place, as [right, up, forward] in blocks; [0, 0, 0]: its base's middle there"""
     shape_facing: Live[Literal["look", "north", "east", "south", "west"]] = "look"
     """which way its forward is: look, the way the player faces (south from a place), or a compass direction"""
-    shape_blocks: Live[str] = "stone_bricks"
+    shape_blocks: Live[BlockMix] = "stone_bricks"
     """what it is made of: a block id or a mix, "70% stone_bricks 30% cobblestone" (no %: counts 1); air carves"""
     shape_hollow: Live[bool] = False
     """leave air inside a one-block shell (a staircase: three blocks of headroom); only when every side is 3 or more"""

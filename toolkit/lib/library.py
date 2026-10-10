@@ -1172,8 +1172,9 @@ SKELETON_FIELDS = [("player", {"type": "players", "default": "@a", "ge": None, "
 # is written from what actions.json says of one (type, default, ge, le, choices, live,
 # description), or from a VALUES entry made into that shape.
 TYPE_NAMES = {"player": "Player", "players": "Players", "mob": "MobId", "block": "BlockId", "item": "ItemId",
-              "particle": "ParticleId", "sound": "SoundId", "place": "Place", "command": "Command",
-              "int": "int", "number": "float", "bool": "bool", "str": "str"}
+              "item or empty": "ItemIdOrEmpty", "particle": "ParticleId", "sound": "SoundId",
+              "block mix": "BlockMix", "replace rules": "ReplaceRules", "item name": "ItemName",
+              "place": "Place", "command": "Command", "int": "int", "number": "float", "bool": "bool", "str": "str"}
 VALUES_KINDS = {"int": "int", "number": "number", "bool": "bool", "enum": "enum", "str": "str", "player": "players",
                 "block": "block", "mob": "mob", "item": "item", "particle": "particle", "sound": "sound"}
 TODO_LINE = "TODO: what it does, in players' words: its line on the menu."

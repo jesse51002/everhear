@@ -3,7 +3,7 @@ import json
 
 import mc
 from kit import loop, mobs
-from actions._types import Field, Literal, Live, MobId, Values  # the values class: read on the PC only
+from actions._types import Field, ItemIdOrEmpty, Literal, Live, MobId, Values  # the values class: read on the PC only
 
 VALUES = {
     "summon_mob": {"type": "mob", "default": "zombie", "live": True},
@@ -36,7 +36,7 @@ class Summon(Values):
     """their health, in half-hearts (a player has 20; 0: the mob's own)"""
     summon_gear: Live[Literal["none", "leather", "chainmail", "iron", "golden", "diamond", "netherite"]] = "none"
     """a full suit of armour of this kind, never dropped; none: their own"""
-    summon_weapon: Live[str] = ""
+    summon_weapon: Live[ItemIdOrEmpty] = ""
     """the id of an item they hold, never dropped ("diamond_sword"; empty: their own)"""
     summon_name: Live[str] = ""
     """a name shown over their heads (empty: none)"""

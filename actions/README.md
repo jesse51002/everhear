@@ -61,6 +61,10 @@ class GatlingGun(Railgun):
 | `Place` | a saved place's name, `x y z` (then `the_nether` or `the_end`), or a player's name; empty for none | a saved name against the places cache when one is given; coordinates inside the world. EC2 finds where it is as the script runs |
 | `Command` | one server command, no slash | the owner's commands and the block commands refused (`scripts/_lib/commands.py`) |
 | `CopyName` | a running copy's name, such as `galick_gun_2`; empty for none | `^[a-z0-9][a-z0-9_]{0,47}$` |
+| `ItemIdOrEmpty` | an item a mob holds or wears, such as `diamond_sword`; empty for none | an `ItemId` with no `#tag` or `[components]` |
+| `BlockMix` | a block or a mix to build with, `70% stone_bricks 30% cobblestone` (no `%`: counts 1) | each block an id with no `#tag`, weights adding up to more than 0, nothing the kit would skip over |
+| `ReplaceRules` | rules in order, each `from ... > to`: from, block ids, `#tags` or `solid`; to, a block or a mix, `keep` leaving the block as it was | each as the `replace_blocks` preset reads it; a piece with no `>` joins the rule before it, as there (a command line splits a mix at its commas) |
+| `ItemName` | the name of an item a script gave, such as `Spirit Bomb`; empty for none | a letter or a digit in it, at most 64 letters |
 | `int`, `float` with `Field(ge=, le=)` | a number | out of range is clamped to the limit and a note says so, as the kit does |
 | `bool`, `Literal[...]`, `str`, `list[...]` | true or false, one of a few words, text, several of a type | a word from the command line is read as the type: `yes`/`off`/`1`, an option in any case, a list as `a,b,c` or JSON |
 | `Live[T]` | any of these | as `T` |

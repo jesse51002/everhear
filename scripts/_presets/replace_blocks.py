@@ -4,7 +4,7 @@ import re
 
 import mc
 from kit import area, world
-from actions._types import Field, Live, Values  # the values class: read on the PC only
+from actions._types import Field, Live, ReplaceRules, Values  # the values class: read on the PC only
 
 VALUES = {
     "replace_rules": {"type": "list", "of": "str", "live": True,
@@ -16,7 +16,7 @@ VALUES = {
 
 
 class ReplaceBlocks(Values):
-    replace_rules: Live[list[str]] = ["#minecraft:snow > white_wool light_gray_wool white_concrete quartz_block"]
+    replace_rules: Live[ReplaceRules] = ["#minecraft:snow > white_wool light_gray_wool white_concrete quartz_block"]
     """rules in order, each "from > to": from, block ids, #tags or solid; to, a block or a mix "70% lava 30% keep" (keep: as it was)"""
     replace_rate: Live[int] = Field(100, ge=1, le=100)
     """how much of the area changes, in percent, picked cube by cube (100: all of it)"""
