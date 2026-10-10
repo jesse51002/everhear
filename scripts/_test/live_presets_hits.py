@@ -111,6 +111,21 @@ def leftover_tags():
     return sorted(set(t for t in re.findall(r'"([^"]+)"', reply) if t.startswith("vfg_livehits_")))
 
 
+
+# A script with its VALUES, written the old way: these tests read the presets' values through
+# values(VALUES) (vfg script new now writes a script ported to its action, library.SKELETON).
+OLD_SKELETON = '''"""TODO <Title>: say what it does in one line."""
+ASKS = []
+from kit import values
+
+VALUES = {
+    "player": {"type": "player", "default": "@a"},
+}
+
+v = values(VALUES)
+'''
+
+
 class Live(unittest.TestCase):
     def setUp(self):
         self.forced = mc.rcon("forceload query")
@@ -392,7 +407,7 @@ class LiveScript(Live):
     """All eight copied into one script, as `vfg script new` does, run as on EC2 and stopped."""
 
     def test_eight_presets_in_one_script_run_and_stop_clean(self):
-        text = library.SKELETON.replace("from kit import values", "from kit import values, aim, loop\nimport mc")
+        text = OLD_SKELETON.replace("from kit import values", "from kit import values, aim, loop\nimport mc")
         for name in ("damage_hits", "freeze", "push", "around", "lock_on", "lightning", "explosion", "crater"):
             item = library.parse(os.path.join(PRESETS, name + ".py"), "preset")
             text = library.add_preset(text, item, "main")[0]
@@ -537,7 +552,7 @@ class LiveStaff(Live):
     player looks, frozen in a shell and hurt, by Steve himself."""
 
     def test_a_click_locks_on_freezes_and_hurts(self):
-        text = library.SKELETON.replace("from kit import values", "from kit import values, items, loop\nimport mc")
+        text = OLD_SKELETON.replace("from kit import values", "from kit import values, items, loop\nimport mc")
         for name in ("lock_on", "freeze", "damage_hits"):
             text = library.add_preset(text, library.parse(os.path.join(PRESETS, name + ".py"), "preset"), "main")[0]
         folder = os.path.join(TMP, "icestaffprobe")

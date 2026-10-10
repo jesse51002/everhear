@@ -57,6 +57,21 @@ def vals(name, **given):
                   run_dir=tempfile.mkdtemp(dir=TMP), instance="t")
 
 
+
+# A script with its VALUES, written the old way: these tests read the presets' values through
+# values(VALUES) (vfg script new now writes a script ported to its action, library.SKELETON).
+OLD_SKELETON = '''"""TODO <Title>: say what it does in one line."""
+ASKS = []
+from kit import values
+
+VALUES = {
+    "player": {"type": "player", "default": "@a"},
+}
+
+v = values(VALUES)
+'''
+
+
 class HitsWorld(World):
     """fake_world, and what the hits presets send besides: effects, Motion, TicksFrozen, tp, a
     volume (dx, dy, dz), damage `by` someone who must be there, and a tag already there."""
@@ -539,7 +554,7 @@ for n in loop(every=0.2):
 
 class ScriptTests(unittest.TestCase):
     def test_eight_presets_in_one_script_leave_nothing_after_a_stop(self):
-        text = library.SKELETON.replace("from kit import values", "from kit import values, aim, loop\nimport mc")
+        text = OLD_SKELETON.replace("from kit import values", "from kit import values, aim, loop\nimport mc")
         for name in NAMES:
             text = library.add_preset(text, library.parse(os.path.join(PRESETS, name + ".py"), "preset"), "main")[0]
         w = HitsWorld()
