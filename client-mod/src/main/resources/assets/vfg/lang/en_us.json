@@ -56,5 +56,10 @@
 	"vfg.status.ready": "Ready",
 	"vfg.status.listening": "Ready · listening",
 	"vfg.status.token_rejected": "The server rejected the client token",
-	"vfg.status.delivery_problem": "Ready · lines are not reaching the bridge"
+	"vfg.status.delivery_problem": "Ready · lines are not reaching the bridge",
+	"vfg.status.turn.off": "Turn model off: lines end on silence",
+	"vfg.status.turn.loading": "Turn model: loading…",
+	"vfg.status.turn.ready": "Turn model: %s",
+	"vfg.status.turn.retrying": "Turn model, retrying: %s",
+	"vfg.status.turn.failed": "Turn model failed: %s"
 }

@@ -18,7 +18,9 @@ public record VoiceStatus(
 	boolean speaking,
 	boolean lineOpen,
 	float livePeak,
-	String lastHeard
+	String lastHeard,
+	TurnModel turnModel,
+	String turnError
 ) {
 	public enum Setup {
 		RUNNING,
@@ -30,11 +32,26 @@ public record VoiceStatus(
 		UNSUPPORTED
 	}
 
+	/**
+	 * The turn model, which only makes lines end sooner: without it they end on silence alone,
+	 * so none of these is an error for the icon.
+	 */
+	public enum TurnModel {
+		/** {@code turn_model: off}. */
+		OFF,
+		LOADING,
+		READY,
+		/** The download failed; it is tried again in the background. */
+		RETRYING,
+		/** It downloaded but would not load; not tried again until the next setup. */
+		FAILED
+	}
+
 	/** The icon's look, in the order the table in the spec gives them; the first that applies wins. */
 	public enum Icon { HIDDEN, SETUP, ERROR, MUTED, NO_TOKEN, DELIVERY_PROBLEM, HEARING, LISTENING }
 
 	public static final VoiceStatus INITIAL = new VoiceStatus(Setup.RUNNING, 0, null, null, false, false, false,
-		false, false, false, false, false, 0f, "");
+		false, false, false, false, false, 0f, "", TurnModel.LOADING, null);
 
 	public boolean setupFailed() {
 		return setup == Setup.SETUP_FAILED || setup == Setup.ENGINE_FAILED || setup == Setup.UNSUPPORTED;

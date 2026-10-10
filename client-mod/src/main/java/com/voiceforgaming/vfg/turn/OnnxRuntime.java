@@ -232,34 +232,53 @@ public final class OnnxRuntime {
 		}
 
 		/**
-		 * Runs the model: each input by its name, and each named output written into its
-		 * tensor, which must have the output's shape. A tensor is not both an input and an output.
+		 * What one run reads and writes: each input tensor by its name, and each named output
+		 * written into its tensor, which must have the output's shape. A tensor is not both an
+		 * input and an output. Laid out once, in the session's memory, for every run that uses it.
 		 */
-		public void run(Map<String, Tensor> inputs, Map<String, Tensor> outputs) {
+		public Binding binding(Map<String, Tensor> inputs, Map<String, Tensor> outputs) {
 			live();
-			try (Arena scratch = Arena.ofConfined()) {
-				MemorySegment inNames = scratch.allocate(ADDRESS, inputs.size());
-				MemorySegment inValues = scratch.allocate(ADDRESS, inputs.size());
-				int i = 0;
-				for (Map.Entry<String, Tensor> e : inputs.entrySet()) {
-					inNames.setAtIndex(ADDRESS, i, scratch.allocateFrom(e.getKey()));
-					inValues.setAtIndex(ADDRESS, i, own(e.getValue()).value);
-					i++;
+			for (Map.Entry<String, Tensor> e : outputs.entrySet()) {
+				if (inputs.containsValue(e.getValue())) {
+					throw new IllegalArgumentException(e.getKey() + ": a tensor is not both an input and an output");
 				}
-				MemorySegment outNames = scratch.allocate(ADDRESS, outputs.size());
-				MemorySegment outValues = scratch.allocate(ADDRESS, outputs.size());
-				i = 0;
-				for (Map.Entry<String, Tensor> e : outputs.entrySet()) {
-					if (inputs.containsValue(e.getValue())) {
-						throw new IllegalArgumentException(e.getKey() + ": a tensor is not both an input and an output");
-					}
-					outNames.setAtIndex(ADDRESS, i, scratch.allocateFrom(e.getKey()));
-					outValues.setAtIndex(ADDRESS, i, own(e.getValue()).value);
-					i++;
-				}
-				check(call(run, session, MemorySegment.NULL, inNames, inValues, (long) inputs.size(), outNames,
-					(long) outputs.size(), outValues));
 			}
+			return new Binding(this, names(inputs), values(inputs), inputs.size(), names(outputs), values(outputs),
+				outputs.size());
+		}
+
+		private MemorySegment names(Map<String, Tensor> tensors) {
+			MemorySegment names = arena.allocate(ADDRESS, tensors.size());
+			int i = 0;
+			for (String name : tensors.keySet()) {
+				names.setAtIndex(ADDRESS, i++, arena.allocateFrom(name));
+			}
+			return names;
+		}
+
+		private MemorySegment values(Map<String, Tensor> tensors) {
+			MemorySegment values = arena.allocate(ADDRESS, tensors.size());
+			int i = 0;
+			for (Tensor t : tensors.values()) {
+				values.setAtIndex(ADDRESS, i++, own(t).value);
+			}
+			return values;
+		}
+
+		/** Runs the model on a binding of this session. */
+		public void run(Binding b) {
+			live();
+			if (b.session != this) {
+				throw new IllegalArgumentException("a binding of another session");
+			}
+			MemorySegment status;
+			try {
+				status = (MemorySegment) run.invokeExact(session, MemorySegment.NULL, b.inNames, b.inValues, b.inputs,
+					b.outNames, b.outputs, b.outValues);
+			} catch (Throwable t) {
+				throw rethrow(t);
+			}
+			check(status);
 		}
 
 		private Tensor own(Tensor t) {
@@ -288,6 +307,28 @@ public final class OnnxRuntime {
 			call(releaseSession, session);
 			session = null;
 			arena.close();
+		}
+	}
+
+	/** The names and {@code OrtValue}s of one run's inputs and outputs, as {@code Run} takes them. */
+	public static final class Binding {
+		private final Session session;
+		private final MemorySegment inNames;
+		private final MemorySegment inValues;
+		private final long inputs;
+		private final MemorySegment outNames;
+		private final MemorySegment outValues;
+		private final long outputs;
+
+		private Binding(Session session, MemorySegment inNames, MemorySegment inValues, long inputs, MemorySegment outNames,
+				MemorySegment outValues, long outputs) {
+			this.session = session;
+			this.inNames = inNames;
+			this.inValues = inValues;
+			this.inputs = inputs;
+			this.outNames = outNames;
+			this.outValues = outValues;
+			this.outputs = outputs;
 		}
 	}
 
@@ -329,14 +370,23 @@ public final class OnnxRuntime {
 		return LINKER.downcallHandle(api.getAtIndex(ADDRESS, index), descriptor);
 	}
 
+	/** For the calls made at load and close; {@link Session#run} calls {@code Run} with {@code invokeExact}. */
 	private static Object call(MethodHandle function, Object... args) {
 		try {
 			return function.invokeWithArguments(args);
-		} catch (RuntimeException | Error e) {
-			throw e;
 		} catch (Throwable t) {
-			throw new IllegalStateException(t);
+			throw rethrow(t);
 		}
+	}
+
+	private static RuntimeException rethrow(Throwable t) {
+		if (t instanceof RuntimeException e) {
+			return e;
+		}
+		if (t instanceof Error e) {
+			throw e;
+		}
+		return new IllegalStateException(t);
 	}
 
 	/** A non-null {@code OrtStatus*} becomes an {@link OrtException} with its message, and is released. */

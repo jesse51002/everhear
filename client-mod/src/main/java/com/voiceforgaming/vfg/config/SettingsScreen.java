@@ -18,9 +18,9 @@ import net.minecraft.util.FormattedCharSequence;
 /**
  * Voice settings, from K in the game or the {@code Voice…} button on the Multiplayer
  * screen: server address (and {@code Use this server}), bridge URL, client token (masked),
- * microphone, {@code Test mic}, model, icon corner, status with {@code Retry}, and
- * {@code Test connection}. {@code Done} checks the bridge URL, saves and applies;
- * {@code Cancel} discards.
+ * microphone, {@code Test mic}, model, icon corner, status with {@code Retry} (and, once
+ * voice is ready, the turn model's under it), and {@code Test connection}. {@code Done}
+ * checks the bridge URL, saves and applies; {@code Cancel} discards.
  */
 public final class SettingsScreen extends Screen {
 	private static final int WHITE = 0xFFFFFFFF;
@@ -307,12 +307,17 @@ public final class SettingsScreen extends Screen {
 			g.text(font, font.plainSubstrByWidth(heard, fieldW), fieldX, row(4) + widgetH + 2, GREY);
 		}
 
-		// Status line.
+		// Status line; once voice is ready, the turn model's under it, in the same row.
 		int statusW = retryButton != null && retryButton.visible ? fieldW - 64 : fieldW;
 		Component status = statusText(st);
 		int statusColor = st.setupFailed() || st.micError() != null || st.tokenRejected() ? RED
 			: st.setup() == VoiceStatus.Setup.RUNNING ? AMBER : GREEN;
-		g.text(font, font.plainSubstrByWidth(status.getString(), statusW), fieldX, row(7) + 12 + textDy, statusColor);
+		Component turn = st.setup() == VoiceStatus.Setup.READY ? turnText(st) : null;
+		int statusY = turn == null ? row(7) + 12 + textDy : row(7) + 12 + (widgetH - 18) / 2;
+		g.text(font, font.plainSubstrByWidth(status.getString(), statusW), fieldX, statusY, statusColor);
+		if (turn != null) {
+			g.text(font, font.plainSubstrByWidth(turn.getString(), fieldW), fieldX, statusY + 10, GREY);
+		}
 
 		Component result = connectionResult;
 		if (result != null) {
@@ -342,6 +347,17 @@ public final class SettingsScreen extends Screen {
 				}
 				yield Component.translatable(service.listening() ? "vfg.status.listening" : "vfg.status.ready");
 			}
+		};
+	}
+
+	/** Never red: without the turn model lines still go, on silence alone. */
+	private Component turnText(VoiceStatus st) {
+		return switch (st.turnModel()) {
+			case OFF -> Component.translatable("vfg.status.turn.off");
+			case LOADING -> Component.translatable("vfg.status.turn.loading");
+			case READY -> Component.translatable("vfg.status.turn.ready", service.config().turnModel);
+			case RETRYING -> Component.translatable("vfg.status.turn.retrying", nullToEmpty(st.turnError()));
+			case FAILED -> Component.translatable("vfg.status.turn.failed", nullToEmpty(st.turnError()));
 		};
 	}
 
