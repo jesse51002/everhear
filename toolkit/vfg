@@ -329,6 +329,11 @@ def _library(name, source):
 '''
 
 
+# What remote/action.py imports, as the old folder actions (actions/<name>/handler.py) ran it.
+# vfg no longer runs it; its tests do, until those actions are scripts and it goes with them.
+ACTION_LIBS = ("commands.py",)
+
+
 def lib_source(lib):
     """A library a program ships with: scripts/_lib/<lib> (deployed with the kit too), else remote/<lib>."""
     path = os.path.join(KIT_LIB, lib)

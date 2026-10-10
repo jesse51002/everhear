@@ -37,8 +37,8 @@ PY39 = shutil.which("python3.9") or sys.executable
 
 
 def load_places():
-    """toolkit/remote/places.py as a module, the way a handler sees it."""
-    spec = importlib.util.spec_from_file_location("places", REMOTE / "places.py")
+    """scripts/_lib/places.py as a module, the way a handler sees it."""
+    spec = importlib.util.spec_from_file_location("places", REPO / "scripts" / "_lib" / "places.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -109,7 +109,7 @@ class Server:
     def handler(self, name: str, args: dict, task: str = "T7", **kw) -> Ran:
         source = (REPO / "actions" / name / "handler.py").read_text()
         ran = self.run({"mode": "handler", "name": name, "task": task, "args": args,
-                        "handler": source, "places": (REMOTE / "places.py").read_text()}, **kw)
+                        "handler": source, "places": (REPO / "scripts" / "_lib" / "places.py").read_text()}, **kw)
         # A handler never places or removes a block, whatever it was asked.
         from actions._types import command_problem
         for c in self.world.sent:

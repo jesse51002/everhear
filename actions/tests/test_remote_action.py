@@ -7,7 +7,7 @@ import socket
 import pytest
 
 import mc_26_3 as R
-from conftest import PY39, REMOTE, FakeWorld, action_namespace
+from conftest import PY39, REMOTE, REPO, FakeWorld, action_namespace
 
 
 def world() -> FakeWorld:
@@ -146,7 +146,7 @@ def test_mc_error_on_every_recorded_reply():
 
 def handler_run(s, source, args=None, name="probe", task="T9"):
     return s.run({"mode": "handler", "name": name, "task": task, "args": args or {},
-                  "handler": source, "places": (REMOTE / "places.py").read_text()})
+                  "handler": source, "places": (REPO / "scripts" / "_lib" / "places.py").read_text()})
 
 
 def test_a_handler_gets_its_args_mc_and_places(serve):
@@ -215,12 +215,12 @@ def test_handler_mode_without_the_scripts_lib_exits_3(serve, tmp_path):
     s = serve(world())
     r = s.run({"mode": "handler", "name": "probe", "task": "T1", "args": {},
                "handler": "def run(args):\n    return {'ok': True, 'summary': 'x'}\n",
-               "places": (REMOTE / "places.py").read_text()}, vfg=tmp_path / "empty")
+               "places": (REPO / "scripts" / "_lib" / "places.py").read_text()}, vfg=tmp_path / "empty")
     assert r.code == 3 and "mc.py is missing" in r.stderr
 
 
 def test_the_remote_programs_are_python_39():
     import ast
-    for name in ("action.py", "places.py", "common.py"):
-        ast.parse((REMOTE / name).read_text(), feature_version=(3, 9))
+    for path in (REMOTE / "action.py", REPO / "scripts" / "_lib" / "places.py", REMOTE / "common.py"):
+        ast.parse(path.read_text(), feature_version=(3, 9))
     assert PY39  # the end-to-end tests above ran under it when it is installed

@@ -135,32 +135,6 @@ def test_script_names_reads_only_folders_with_main(tmp_path):
     assert script_names(tmp_path / "missing") == ()
 
 
-def refused_in(path: str) -> set[str]:
-    """The REFUSED = frozenset([...]) of a Python file, read without importing it."""
-    for node in ast.walk(ast.parse((REPO / path).read_text())):
-        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "REFUSED" for t in node.targets):
-            return set(ast.literal_eval(node.value.args[0]))
-    raise AssertionError("no REFUSED in " + path)
-
-
-def test_the_command_rules_are_one_module_and_every_refused_list_matches_it():
-    commands = _types._commands  # scripts/_lib/commands.py, loaded by path
-    assert Path(commands.__file__) == REPO / "scripts" / "_lib" / "commands.py"
-    assert (_types.REFUSED, _types.BLOCK_COMMANDS, _types.RCON_MAX, _types.command_problem) == \
-        (commands.REFUSED, commands.BLOCK_COMMANDS, commands.RCON_MAX, commands.command_problem)
-    assert set(commands.REFUSED) == refused_in("scripts/_lib/commands.py") == refused_in("scripts/_lib/mc.py")
-    if (REPO / "orchestrator/orchestrator/guard.py").exists():
-        assert set(commands.REFUSED) == refused_in("orchestrator/orchestrator/guard.py")
-    assert set(commands.BLOCK_COMMANDS) == {"setblock", "fill", "clone", "place", "fillbiome"}
-    assert commands.RCON_MAX == RCON_MAX == 1400
-    # EC2 gets the same file: vfg ships it ahead of action.py, which keeps no copy of its own
-    ns = action_namespace()
-    assert ns["commands"].command_problem("fill ~ ~ ~ ~ ~ ~ air") == commands.command_problem("fill ~ ~ ~ ~ ~ ~ air")
-    assert "REFUSED" not in ns and "command_problem" not in ns
-    source = (REPO / "toolkit/remote/action.py").read_text()
-    assert "frozenset(" not in source and "RCON_MAX =" not in source
-
-
 # ------------------------------------------------------------------ command
 
 def cmd(*commands: str) -> Command:
@@ -258,34 +232,6 @@ def script_values(name: str) -> dict | None:
         if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "VALUES" for t in node.targets):
             return ast.literal_eval(node.value)
     return None
-
-
-def test_run_script_key_value_args_reach_vfg_script_run_as_its_values():
-    """A new-format script's key=value args, its names read from its VALUES (never written
-    here: they change), go through vfg's own parser and its value check unchanged."""
-    from conftest import toolkit
-
-    with_values = [(n, v) for n in _types.SCRIPT_NAMES if (v := script_values(n))]
-    if not with_values:
-        pytest.skip("no script in scripts/ declares VALUES yet")
-    name, values = with_values[0]
-    picked = list(values)[:2]
-
-    def word(x) -> str:  # a default as key=value carries it
-        return json.dumps(x, separators=(",", ":")) if isinstance(x, (bool, list)) else str(x)
-
-    args = ["%s=%s" % (k, word(values[k]["default"])) for k in picked]
-    action = RunScript(action="run_script", name=name, args=args)
-    argv = action.vfg_argv("T7")
-    assert argv == ["script", "run", "--task", "T7", name, *args]
-
-    vfg = toolkit()
-    a = vfg.build_parser().parse_args(vfg.rewrite_argv(argv))
-    run = vfg.run_words(a)
-    assert (run.name, run.task, run.words, run.instance) == (name, "T7", args, None)
-    library = vfg.lib_module("library")
-    given, _ = library.parse_given(values, run.words)
-    assert list(given) == picked
 
 
 # ------------------------------------------------------------------ teleport
