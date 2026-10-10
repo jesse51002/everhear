@@ -51,7 +51,9 @@ The prompt is laid out for the cache ([`call.py`](brain/call.py)):
    time and the weather), the open tasks, what is new since the last read, and the event.
 
 One `Decision` answers every event, and its schema never changes with the actions, so nothing
-before the conversation changes between calls. The old selector's code rules that still hold are
+before the conversation changes between calls: a part names its action, and writes it as one
+`{key, value}` per field it sets, closed objects as OpenAI's schemas demand, checked here as `vfg`
+checks them. The old selector's code rules that still hold are
 its validators: an action not on the menu, values its action refuses (a command that places blocks
 among them), an instruction that does nothing, a teleport that moves nobody, a part with no reply.
 `structured()` sends a broken answer back once with why.

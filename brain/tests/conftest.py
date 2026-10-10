@@ -132,8 +132,10 @@ def decision(*parts: dict, reply: str = "", record: str = "", status: str = "") 
 
 def part(to: str, instruction: str = "", action: dict | None = None, *, drop: str = "", task: str = "",
          said: str = "") -> dict:
+    """One part as the model writes it: the action's values as key and value pairs."""
+    pairs = None if action is None else [{"key": k, "value": v} for k, v in action.items()]
     return {"part": said or instruction or to, "to": to, "instruction": instruction, "task": task,
-            "action": action, "drop": drop}
+            "action": pairs, "drop": drop}
 
 
 def cmd(*commands: str) -> dict:

@@ -24,6 +24,10 @@ def test_a_good_decision_passes_and_the_code_rules_send_a_wrong_one_back():
                        part("implementer", "a meteor staff for Steve that rains meteors where he looks"),
                        part("talk"), reply="there you go, and a staff is on its way"))
     assert [p.to for p in d.parts] == ["command", "implementer", "talk"]
+    assert d.parts[0].values() == {"commands": ["give Steve diamond_pickaxe"]}
+    edit = check(decision(part("edit", "no cooldown on Alex's railgun", {"copy": "railgun_2", "cooldown": 0}),
+                          reply="no more cooldown"))
+    assert edit.parts[0].values() == {"copy": "railgun_2", "values": {"cooldown": 0}}
     assert check(decision(record="T3 done: castle up", status="done")).parts == []  # a report: no parts, no reply
     wrong = {
         "not on the menu": decision(part("castle_maker", "a castle", {"at": "home"}), reply="ok"),
@@ -36,6 +40,8 @@ def test_a_good_decision_passes_and_the_code_rules_send_a_wrong_one_back():
         "moves nobody": decision(part("teleport", "teleport Steve to his current position",
                                       {"player": "Steve", "to": "spawn_point"}), reply="ok"),
         "not a task id": decision(part("implementer", "make it bigger", task="the castle"), reply="ok"),
+        "range=far": decision(part("railgun", "a railgun for Steve", {"player": "Steve", "range": "far"}),
+                             reply="ok"),
     }
     for says, answer in wrong.items():
         with pytest.raises(ValidationError, match=says):

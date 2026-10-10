@@ -58,6 +58,14 @@ BATCH = ("BATCH: the rows under NEW are what was said as background and what hap
          "trouble, a moment worth a short line in chat. Otherwise answer no parts and an empty reply.")
 
 
+class Value(BaseModel):
+    """One value of an action: a closed object, as OpenAI's schemas demand, so the schema stays
+    the same whatever the actions."""
+    key: str = Field(description="the field's name, as the action's FIELDS give it")
+    value: str | int | float | bool | list[str] | list[int | float] = Field(
+        description="its value: text, a number, true or false, or a list for a list field")
+
+
 class PartBase(BaseModel):
     part: str = Field(description="the words of the line this part covers, short, as the player said them")
     to: str = Field(description="the name of the action on the menu that does this part, or implementer, or talk")
@@ -65,11 +73,22 @@ class PartBase(BaseModel):
                                              "and amounts as said; implementer: the brief; talk: empty")
     task: str = Field("", description="implementer: empty for a new task, or the id of the open or earlier "
                                       "task this follows up, such as T183; any other part: empty")
-    action: dict[str, Any] | None = Field(None, description="an action part: the values that action takes, "
-                                                            "written in full, ready to run; null for "
-                                                            "implementer, talk and a drop")
+    action: list[Value] | None = Field(None, description="an action part: the action written in full, ready "
+                                                         "to run, one key and value per field it sets; null for "
+                                                         "implementer, talk and a drop")
     drop: str = Field("", description="only when an action part cannot be done (an item the player does not "
                                       "have): why, in words a player understands; else empty")
+
+
+    def values(self) -> dict[str, Any]:
+        """The action as `vfg action run` takes it: {field: value}; for edit, the copy and the
+        values to change, {"copy": …, "values": {…}}."""
+        given = {v.key.strip(): v.value for v in self.action or []}
+        if self.to != "edit":
+            return given
+        copy = given.pop("copy", "")
+        nested = given.pop("values", None)
+        return {"copy": copy, "values": nested if isinstance(nested, dict) else given}
 
 
 class DecisionBase(BaseModel):
@@ -111,8 +130,11 @@ def decision_type(catalog: Catalog) -> type[DecisionBase]:
                     raise ValueError(f"the {self.to} part {self.part!r} has no action: write it, or drop it "
                                      "and say why")
                 else:
+                    keys = [v.key.strip() for v in self.action]
+                    if len(set(keys)) < len(keys):
+                        raise ValueError(f"the {self.to} part {self.part!r} sets a field twice: once each")
                     try:
-                        check_values(cls, self.action)
+                        check_values(cls, self.values())
                     except ValueError as e:
                         raise ValueError(f"the {self.to} part {self.part!r}: "
                                          + str(e).replace("the orchestrator's: hand it on", "an implementer's")

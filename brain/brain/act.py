@@ -91,7 +91,7 @@ def distinct(parts: list) -> list:
     """The action parts, each (action, values) once, in order."""
     seen, out = set(), []
     for p in parts:
-        key = (p.to, repr(sorted((p.action or {}).items())), p.drop.strip())
+        key = (p.to, repr(sorted(p.values().items())), p.drop.strip())
         if key not in seen:
             seen.add(key)
             out.append(p)
@@ -225,7 +225,7 @@ class Acts:
         if cls is None:
             return Outcome(p.instruction, False, f"{name} is no longer on the menu")
         try:
-            values, notes = self.values(name, cls, p.action or {}, seen)
+            values, notes = self.values(name, cls, p.values(), seen)
         except NotRunning as e:
             return Outcome(p.instruction, False, str(e), dropped=True)
         except ValueError as e:
