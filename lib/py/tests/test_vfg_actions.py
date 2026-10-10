@@ -32,9 +32,12 @@ def purge():
 @pytest.fixture(autouse=True)
 def fresh_modules():
     """No test sees another's actions: the actions package and the made and preset modules
-    go before and after each, and sys.path is put back."""
+    go before and after each, and sys.path is put back. actions/_types.py stays, the repo's,
+    which every test repo links to: importing it again reads the command rules and the kit's
+    GONE each time."""
     saved = list(sys.path)
     purge()
+    sys.modules["actions._types"] = T()
     yield
     purge()
     sys.path[:] = saved
