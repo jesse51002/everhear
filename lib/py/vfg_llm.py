@@ -153,21 +153,19 @@ async def structured(
 
 
 def user_content(prompt: str, cached: str | Sequence[tuple[str, bool]] | None) -> str | list[dict]:
-    """The user message's content: the prompt alone, or text parts, one ending at each mark.
-    Unmarked blocks join the next part, so the parts up to every mark are the same from one
-    call to the next whenever the blocks are."""
+    """The user message's content: the prompt alone, or one text part per block, then the prompt.
+    Each block keeps a part of its own, marked or not, so the text is the same from one call to
+    the next wherever the marks move."""
     if not cached:
         return prompt
     blocks = [(cached, True)] if isinstance(cached, str) else list(cached)
     if sum(1 for _, marked in blocks if marked) > MAX_MARKS:
         raise ValueError(f"at most {MAX_MARKS} cached blocks may be marked")
-    parts, text = [], ""
-    for block, marked in blocks:
-        text += block
-        if marked and text:
-            parts.append({"type": "text", "text": text, "cache_control": {"type": "ephemeral"}})
-            text = ""
-    return parts + [{"type": "text", "text": text + prompt}]
+    parts = []
+    for text, marked in blocks:
+        if text:
+            parts.append({"type": "text", "text": text, **({"cache_control": {"type": "ephemeral"}} if marked else {})})
+    return parts + [{"type": "text", "text": prompt}]
 
 
 def _session():

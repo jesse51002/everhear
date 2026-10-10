@@ -84,14 +84,14 @@ async def test_valid_answer(monkeypatch):
     assert KEY not in repr(answer)
 
 
-async def test_cached_blocks_end_a_part_at_each_mark(monkeypatch):
+async def test_cached_blocks_go_before_the_prompt_each_marked_or_not(monkeypatch):
     seen = serve(monkeypatch, ok(GOOD), ok(GOOD))
-    await structured("TAIL", Mobs, cached=[("RULES ", True), ("a ", False), ("b ", True), ("c ", False)])
+    await structured("TAIL", Mobs, cached=[("RULES ", True), ("a ", False), ("b ", True), ("", True), ("c ", False)])
     marked = {"type": "ephemeral"}
     assert json.loads(seen[0].content)["messages"] == [{"role": "user", "content": [
-        {"type": "text", "text": "RULES ", "cache_control": marked},
-        {"type": "text", "text": "a b ", "cache_control": marked},
-        {"type": "text", "text": "c TAIL"}]}]
+        {"type": "text", "text": "RULES ", "cache_control": marked}, {"type": "text", "text": "a "},
+        {"type": "text", "text": "b ", "cache_control": marked}, {"type": "text", "text": "c "},
+        {"type": "text", "text": "TAIL"}]}]
     await structured("TAIL", Mobs, cached="RULES ")  # one opening: one mark
     assert json.loads(seen[1].content)["messages"][0]["content"] == [
         {"type": "text", "text": "RULES ", "cache_control": marked}, {"type": "text", "text": "TAIL"}]
