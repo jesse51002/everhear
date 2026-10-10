@@ -8,7 +8,6 @@ to `vfg action check` whether or not their scripts are written yet.
 """
 from __future__ import annotations
 
-import ast
 import shutil
 import sys
 from pathlib import Path
@@ -211,22 +210,13 @@ def test_every_pattern_reaches_the_planners_schema(catalog):
     assert prop("teleport", "to")["enum"][0] == "biome"
 
 
-def refused_in(path: str) -> set[str]:
-    """The REFUSED = frozenset([...]) of a Python file, read without importing it."""
-    for node in ast.walk(ast.parse((REPO / path).read_text())):
-        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "REFUSED" for t in node.targets):
-            return set(ast.literal_eval(node.value.args[0]))
-    raise AssertionError("no REFUSED in " + path)
-
-
-def test_the_command_rules_are_one_module_and_every_refused_list_matches_it():
+def test_the_command_rules_are_the_one_module():
+    """The actions use scripts/_lib/commands.py, the one list; that mc.py, vfg and the guard
+    import it too, and nothing writes the words out again, is toolkit/tests' TestOneRefusedList."""
     from actions import _types
     commands = _types._commands  # scripts/_lib/commands.py, loaded by path
     assert Path(commands.__file__) == REPO / "scripts" / "_lib" / "commands.py"
     assert (_types.REFUSED, _types.BLOCK_COMMANDS, _types.RCON_MAX, _types.command_problem) == \
         (commands.REFUSED, commands.BLOCK_COMMANDS, commands.RCON_MAX, commands.command_problem)
-    assert set(commands.REFUSED) == refused_in("scripts/_lib/commands.py") == refused_in("scripts/_lib/mc.py")
-    if (REPO / "orchestrator/orchestrator/guard.py").exists():
-        assert set(commands.REFUSED) == refused_in("orchestrator/orchestrator/guard.py")
     assert set(commands.BLOCK_COMMANDS) == {"setblock", "fill", "clone", "place", "fillbiome"}
     assert commands.RCON_MAX == _types.RCON_MAX == 1400

@@ -558,15 +558,15 @@ class TestOneRefusedList(unittest.TestCase):
             self.skipTest("no orchestrator/ beside the toolkit")
         with open(path, encoding="utf-8") as f:
             tree = ast.parse(f.read())
-        fn = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_commands"]
-        assigned = [ast.unparse(n.value) for n in tree.body if isinstance(n, ast.Assign)
-                    and any(getattr(t, "id", "") == "REFUSED" for t in n.targets)]
-        self.assertEqual(assigned, ["_commands().REFUSED"])
+        keep = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name == "refused")
+                or (isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "_COMMANDS")]
+        self.assertEqual(len(keep), 2)
+        self.assertFalse([n for n in tree.body if isinstance(n, ast.Assign)
+                          and any(getattr(t, "id", "") == "REFUSED" for t in n.targets)])
         ns = {"os": os, "__file__": path}
-        exec(compile(ast.Module(body=fn, type_ignores=[]), path, "exec"), ns)
-        got = ns["_commands"]()
-        self.assertEqual(os.path.realpath(got.__file__), os.path.realpath(self.COMMANDS))
-        self.assertEqual(got.REFUSED, self.commands().REFUSED)
+        exec(compile(ast.Module(body=keep, type_ignores=[]), path, "exec"), ns)
+        self.assertEqual(ns["refused"](), self.commands().REFUSED)
+        self.assertEqual(os.path.realpath(ns["_COMMANDS"][0].__file__), os.path.realpath(self.COMMANDS))
 
     def test_no_other_file_writes_the_words_out(self):
         words = re.compile(r"frozenset\(\[[^\]]*\"deop\"")

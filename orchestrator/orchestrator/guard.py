@@ -15,18 +15,21 @@ from .examples import server_state
 from .reply import REPLY_TOOL
 
 
-def _commands():
-    """scripts/_lib/commands.py, loaded by path: it is deployed with the kit, not a package."""
-    import importlib.util
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts", "_lib", "commands.py")
-    spec = importlib.util.spec_from_file_location("vfg_commands", os.path.normpath(path))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+_COMMANDS = []
 
 
-# Server commands that are the owner's to run: the one list, which mc.py, vfg and the actions use too.
-REFUSED = _commands().REFUSED
+def refused() -> frozenset:
+    """Server commands that are the owner's to run: the one list, scripts/_lib/commands.py, which
+    mc.py, vfg and the actions use too. Loaded by path (it is deployed with the kit, not a
+    package), on first use."""
+    if not _COMMANDS:
+        import importlib.util
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts", "_lib", "commands.py")
+        spec = importlib.util.spec_from_file_location("vfg_commands", os.path.normpath(path))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _COMMANDS.append(mod)
+    return _COMMANDS[0].REFUSED
 
 # Server-wide settings an implementer may not change (scripts/_lib/mc.py does not refuse them:
 # seeded games use the world border).
@@ -205,7 +208,7 @@ def command_word_in(cmd: str, words_set: frozenset) -> str | None:
 
 def refused_word(cmd: str) -> str | None:
     """The refused word in a server command (its first word, or the word after any `run`), or None."""
-    return command_word_in(cmd, REFUSED)
+    return command_word_in(cmd, refused())
 
 
 @dataclass
