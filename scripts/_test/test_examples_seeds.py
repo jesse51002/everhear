@@ -29,12 +29,14 @@ RESULTS = {}
 
 
 def values_of(name):
+    """The values a seed takes: its VALUES, or once it is ported, its first action's fields."""
     with open(os.path.join(run_tests.SCRIPTS, name, "main.py"), encoding="utf-8") as f:
-        tree = ast.parse(f.read())
-    for node in tree.body:
+        source = f.read()
+    for node in ast.parse(source).body:
         if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "VALUES" for t in node.targets):
             return ast.literal_eval(node.value)
-    return None
+    meta = run_tests.action_meta(name, source)
+    return meta and meta["values"]
 
 
 class SeedExampleTests(unittest.TestCase):
@@ -60,7 +62,7 @@ class SeedExampleTests(unittest.TestCase):
         self.assertNotIn("error", res, res.get("error"))
         self.assertIsNone(res.get("compiles"), "main.py does not compile")
         self.check_example(name, res)
-        self.assertIsNotNone(values_of(name), "no VALUES")
+        self.assertIsNotNone(values_of(name), "no VALUES and no action")
 
     def check_readme(self, name):
         values = values_of(name)
