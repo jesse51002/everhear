@@ -1,10 +1,10 @@
-# commands.py: which server commands an action may send. Python 3.9, standard library only.
+# commands.py: which server commands may run. Python 3.9+, standard library only.
 #
-# The one copy of these rules. toolkit/vfg ships it to EC2 ahead of remote/action.py (as the
-# module `commands`, the way place.py gets places.py), and actions/_types.py loads this same
-# file by path on the PC, so the action planner's refusal and EC2's are the same words.
-# scripts/_lib/mc.py and the orchestrator's guard keep their own REFUSED; a test keeps every
-# list equal.
+# The one list of refused commands, deployed with the kit: mc.py imports it, so no script
+# sends the owner's commands; actions/_types.py loads it by path on the PC, so the planner's
+# Command refuses them and the block commands too; the orchestrator's guard loads it by path;
+# and vfg ships it with the programs that need it. A test checks that each uses this file and
+# that no other writes the words out again (toolkit/tests, TestOneRefusedList).
 
 # The owner's commands: never an action's.
 REFUSED = frozenset(["stop", "op", "deop", "ban", "ban-ip", "pardon", "pardon-ip",
