@@ -8,8 +8,8 @@ It answers the commands the kit sends the way 26.3 does, closely enough to test 
 plumbing: list, data get entity, scoreboards, execute chains (in, as, at, positioned,
 positioned over, summon, if and unless block, loaded, entity, items, data, a sneaking
 predicate; run), give, clear, fill (with the 32,768 limit and
-"That position is not loaded"), forceload, bossbars, gamerules, tick query, summon, kill and
-tag. Blocks below `ground` are solid, and `solid` adds more; chunks in `unloaded` are not
+"That position is not loaded"), forceload, bossbars, gamerules, tick query, summon, kill,
+tag, and a saved place from the storage everhear:places (set in `storage`). Blocks below `ground` are solid, and `solid` adds more; chunks in `unloaded` are not
 loaded. What it was told is kept in `fills`, `gives`, `bossbars`, `forced`, `gamerules`.
 Anything it does not know gets "" (the default answer of fake_rcon is not used). As on 26.3,
 a command run inside "execute ... run" that fails says nothing, and the answers of several
@@ -85,6 +85,7 @@ class World(object):
         self.gamerules = {"mob_griefing": "true", "fall_damage": "true", "keep_inventory": "false",
                           "advance_time": "true", "pvp": "true"}
         self.mspt = 12.0
+        self.storage = {}                    # everhear:places: {name: {"pos": [x, y, z], "dim", "by"}}
         self.next_id = 1
         self.no_negation = False             # True: refuse "!" in an item predicate, as an older server would
 
@@ -430,6 +431,13 @@ class World(object):
                 "Sample: 100" % (self.mspt, self.mspt, self.mspt, self.mspt))
 
     def _cmd_data(self, args, ctx):
+        m = re.match(r"get storage everhear:places ([a-z0-9_]+)$", args)
+        if m:
+            p = self.storage.get(m.group(1))
+            if p is None:
+                raise Fail("Found no elements matching %s" % m.group(1))
+            return 'Storage everhear:places has the following contents: {pos: [%d, %d, %d], by: "%s", dim: "%s"}' % (
+                p["pos"][0], p["pos"][1], p["pos"][2], p.get("by", ""), p.get("dim", OVERWORLD))
         m = re.match(r"get entity (\S+) (\S+)$", args)
         if not m:
             return ""

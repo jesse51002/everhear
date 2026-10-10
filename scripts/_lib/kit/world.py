@@ -1,6 +1,7 @@
-"""The world as 26.3 has it: limits, a position that knows its dimension, many conditions
-tested in one command, the ground's height, the server's mspt, a gamerule set and put back,
-an objective the script owns, and the protected boxes.
+"""The world as 26.3 has it: limits, a position that knows its dimension, a Place value
+resolved to one (place), many conditions tested in one command, the ground's height, the
+server's mspt, a gamerule set and put back, an objective the script owns, and the protected
+boxes.
 
 A command sent over RCON runs in the overworld. Anything at coordinates in another
 dimension goes through run(dim, cmd) or prefix(dim), which add "execute in <dim>".
@@ -137,6 +138,62 @@ def dim_of(player):
     d = None if d == OVERWORLD else d
     _dims[player] = (d, now)
     return d
+
+
+# ---- a place ------------------------------------------------------------------------------
+
+_PLACE_NAME = re.compile(r"^[a-z0-9_]{1,32}$")
+_PLAYER = re.compile(r"^[A-Za-z0-9_]{1,16}$")
+_NUM = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)"
+_COORDS = re.compile(r"^(%s)\s+(%s)\s+(%s)(?:\s+([a-z0-9_.:/-]+))?$" % (_NUM, _NUM, _NUM))
+
+
+def place(value):
+    """Where a Place value is now, as a Pos that knows its dimension; None (logged) when it is
+    nowhere: a saved place that is gone, a player who is offline.
+
+    A Place is what an action's Place field holds, checked on the PC: a saved place's name
+    (Minecraft's storage everhear:places, read through places.py), `x y z` with an optional
+    dimension (`100 64 -20 the_nether`), or a player's name (where they stand now). A name
+    that is both is the saved place. A Pos, or three numbers, is itself."""
+    if isinstance(value, Pos):
+        return value
+    if isinstance(value, (list, tuple)) and len(value) in (3, 4):
+        try:
+            return Pos(value[0], value[1], value[2], _norm_dim(value[3]) if len(value) == 4 else None)
+        except (TypeError, ValueError):
+            pass
+    text = " ".join(str(value or "").split())
+    m = _COORDS.match(text)
+    if m:
+        try:
+            return Pos(m.group(1), m.group(2), m.group(3), _norm_dim(m.group(4)) if m.group(4) else None)
+        except ValueError as e:
+            mc.log("place %r: %s" % (text, e))
+            return None
+    if _PLACE_NAME.match(text):
+        import places
+        try:
+            saved = places.get(mc.rcon, text)
+        except (places.PlaceError, ValueError) as e:
+            mc.log("place %r: %s" % (text, e))
+            saved = None
+        if saved is not None:
+            x, y, z = saved["pos"]
+            return Pos(x, y, z, saved["dim"])
+    if _PLAYER.match(text):
+        at = mc.pos(text)
+        if at is not None:
+            return Pos(at[0], at[1], at[2], dim_of(text))
+        mc.log("place %r: no saved place and no player online by that name" % text)
+        return None
+    mc.log("place %r: not a saved place, x y z [dim] or a player" % text)
+    return None
+
+
+def _norm_dim(d):
+    import places
+    return places.norm_dim(d)
 
 
 # ---- many conditions in one command ------------------------------------------------------

@@ -7,6 +7,8 @@ run_tests.py runs these too. In this process mc is pointed at a fake whose world
 makes afresh; the tests that need a script of their own (two scripts on one player, a stop)
 start one the way EC2 does, with PYTHONPATH=scripts/_lib and VFG_INSTANCE set.
 """
+import contextlib
+import io
 import json
 import os
 import secrets
@@ -190,6 +192,116 @@ class ValuesTests(KitCase):
         self.world.click("Steve")          # the cooldown is 0 now
         time.sleep(0.4)
         self.assertEqual([p for p, _ in got], ["Steve", "Steve"])
+
+
+class CopyValuesTests(KitCase):
+    """values() with no VALUES: a copy's meta file, checked on the PC, and its live file; and
+    result(), what the copy reports."""
+
+    def copy(self, name, vals, live=(), edits=None):
+        d = tempfile.mkdtemp(dir=TMP)
+        with open(os.path.join(d, name + ".json"), "w") as f:
+            json.dump({"copy": name, "action": "gun", "script": "gun", "values": vals, "live": list(live)}, f)
+        if edits is not None:
+            with open(os.path.join(d, name + ".values.json"), "w") as f:
+                json.dump(edits, f)
+        return d
+
+    def test_the_meta_values_then_the_live_file_for_live_fields_only(self):
+        d = self.copy("gun", {"player": "Steve", "cooldown": 2.0, "range": 100, "spare": ["Alex"], "on": True},
+                      live=["cooldown", "on"], edits={"cooldown": 0.5, "range": 5, "nope": 1})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            v = values(run_dir=d, instance="gun", poll=0.05)
+            self.assertEqual(v["cooldown"], 0.5)      # live: the edit
+            self.assertEqual(v["range"], 100)         # not live: the edit is left out
+            v["range"]
+        self.assertEqual((v["player"], v["spare"], v["on"]), ("Steve", ["Alex"], True))
+        self.assertEqual(sorted(v), ["cooldown", "on", "player", "range", "spare"])
+        with self.assertRaises(KeyError):
+            v["crater_radius"]
+        said = out.getvalue()
+        self.assertEqual(said.count("live file: ignored range, not live"), 1)
+        self.assertEqual(said.count("live file: ignored nope, not one of its values"), 1)
+        cooldown = v["cooldown"]                      # handed on as it is, it stays live
+        t0 = time.time()
+        with open(os.path.join(d, "gun.values.json.tmp"), "w") as f:
+            json.dump({"cooldown": 7, "on": False}, f)
+        os.replace(os.path.join(d, "gun.values.json.tmp"), os.path.join(d, "gun.values.json"))
+        while values.now(cooldown) != 7 and time.time() - t0 < 2:
+            time.sleep(0.02)
+        self.assertEqual(values.now(cooldown), 7)
+        self.assertLess(time.time() - t0, 1.0)
+        self.assertIs(v["on"], False)
+
+    def test_the_meta_as_a_dict_or_a_path_and_none_is_an_error(self):
+        v = values(meta={"values": {"n": 3}, "live": []}, run_dir=tempfile.mkdtemp(dir=TMP), instance="x")
+        self.assertEqual(dict(v), {"n": 3})
+        d = self.copy("other", {"n": 4})
+        self.assertEqual(values(meta=os.path.join(d, "other.json"), run_dir=d, instance="other")["n"], 4)
+        with self.assertRaises(RuntimeError) as e:
+            values(run_dir=tempfile.mkdtemp(dir=TMP), instance="nothing")
+        self.assertIn("vfg action run", str(e.exception))
+
+    def test_values_VALUES_reads_the_copys_meta_until_every_script_is_ported(self):
+        d = self.copy("old", {"cooldown": 99, "radius": 30, "leave": "LAVA", "action_only": 1},
+                      edits={"cooldown": 4})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            v = values(VALUES, run_dir=d, instance="old", poll=0.05)
+        self.assertEqual((v["cooldown"], v["radius"], v["leave"]), (4, 30, "lava"))
+        self.assertIn("ignored action_only: not in VALUES", out.getvalue())
+        v = values(VALUES, argv=["radius=12"], run_dir=d, instance="old")   # argv given: the old way
+        self.assertEqual(v["radius"], 12)
+
+    def test_result_writes_the_copys_result_file_and_the_last_call_wins(self):
+        d = tempfile.mkdtemp(dir=TMP)
+        src = ("from kit import result\n"
+               "import mc\n"
+               "result('half way', n=1)\n"
+               "result('summoned  100 zombies\\nround Steve', who=['Steve'], at=(197, 68, 251), n=100)\n"
+               "mc.log('end')\n")
+        proc = start_script("reporter", src, self.fake, self.password, instance="reporter_2", run_dir=d)
+        out = proc.communicate(timeout=10)[0].decode()
+        self.assertEqual(proc.returncode, 0, out)
+        with open(os.path.join(d, "reporter_2.result.json")) as f:
+            got = json.load(f)
+        self.assertEqual(got["summary"], "summoned 100 zombies round Steve")
+        self.assertEqual(got["facts"], {"who": ["Steve"], "at": [197, 68, 251], "n": 100})
+        self.assertAlmostEqual(got["at"], time.time(), delta=30)
+        self.assertIn("reporter_2 result: summoned 100 zombies round Steve", out)
+        self.assertEqual([n for n in os.listdir(d) if ".tmp" in n], [])
+
+
+class PlaceTests(KitCase):
+    """world.place: a Place value (a saved name, x y z [dim], a player) to where it is now."""
+
+    def test_a_saved_place_coordinates_and_a_player(self):
+        self.world.storage["castle"] = {"pos": [197, 68, 251], "dim": "minecraft:overworld", "by": "T23"}
+        self.world.storage["hell"] = {"pos": [1, 70, -2], "dim": "minecraft:the_nether", "by": ""}
+        p = world.place("castle")
+        self.assertEqual((tuple(p), p.dim), ((197.0, 68.0, 251.0), None))
+        self.assertEqual(world.place("hell").dim, "minecraft:the_nether")
+        p = world.place("100 64 -20")
+        self.assertEqual((tuple(p), p.dim), ((100.0, 64.0, -20.0), None))
+        self.assertEqual(world.place(" 100  64.5 -20 the_nether ").dim, "minecraft:the_nether")
+        self.assertEqual(world.place("1 2 3 end").dim, "minecraft:the_end")
+        p = world.place("Steve")
+        self.assertEqual((tuple(p), p.dim), ((10.5, 64.0, -3.5), None))
+        self.assertEqual(tuple(world.place((1, 2, 3))), (1.0, 2.0, 3.0))
+        self.assertIs(world.place(p), p)
+
+    def test_a_saved_name_wins_over_a_player_and_nowhere_is_none(self):
+        self.world.add_player("builder", (5.5, 70.0, 5.5))
+        self.world.storage["builder"] = {"pos": [9, 9, 9], "dim": "minecraft:overworld", "by": ""}
+        self.assertEqual(tuple(world.place("builder")), (9.0, 9.0, 9.0))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertIsNone(world.place("Nobody"))
+            self.assertIsNone(world.place("gone_place"))
+            self.assertIsNone(world.place("1 2 three"))
+            self.assertIsNone(world.place(""))
+        self.assertIn("no saved place and no player online by that name", out.getvalue())
 
 
 # ---- mc ---------------------------------------------------------------------------------

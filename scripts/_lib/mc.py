@@ -1,12 +1,13 @@
 """Shared helpers for every script in the scripts folder.
 
-On EC2 a script runs as `python3 -u <folder>/main.py key=value ...`, in its own folder,
-with PYTHONPATH=/opt/vfg/scripts/_lib and VFG_INSTANCE=<instance>. It imports the kit
+On EC2 a script runs as one copy of an action: `python3 -u <folder>/main.py`, in its own
+folder, with PYTHONPATH=/opt/vfg/scripts/_lib and VFG_SCRIPT=<copy> (instances.py starts it;
+its values are in the copy's meta file, which kit.values reads). It imports the kit
 (_lib/kit), and this for whatever the kit does not do:
 
     from mc import rcon, say, players, pos, spawn, on_stop, log, TAG
 
-Python 3.9, standard library only. Seeded from the old rcon.py and demon.py.
+Python 3.9+, standard library only. Seeded from the old rcon.py and demon.py.
 
 The RCON password is read from server.properties on first use and kept only in
 memory: it is never printed, logged or written.
@@ -26,13 +27,15 @@ import threading
 import time
 from typing import Optional, Tuple
 
-# This script's folder name, from sys.argv[0]; the instance it runs as (VFG_INSTANCE, which
-# `vfg script run` sets, else the folder name); and the tag for everything it makes.
+# This script's folder name, from sys.argv[0]; the copy it runs as (VFG_INSTANCE or VFG_SCRIPT,
+# which instances.py sets, else the folder name); the tag for everything it makes; and the task
+# that started it (VFG_TASK, "" when none did).
 NAME = os.path.basename(os.path.dirname(os.path.abspath(sys.argv[0] or "."))) or "script"
-INSTANCE = os.environ.get("VFG_INSTANCE", "").strip()
+INSTANCE = (os.environ.get("VFG_INSTANCE") or os.environ.get("VFG_SCRIPT") or "").strip()
 if not re.match(r"^[a-z0-9][a-z0-9_-]{0,47}$", INSTANCE):
     INSTANCE = NAME
 TAG = "vfg_" + INSTANCE
+TASK = os.environ.get("VFG_TASK", "").strip()
 
 PROPERTIES = os.environ.get("VFG_MC_PROPERTIES", "/opt/mc/server.properties")
 HOST = os.environ.get("VFG_RCON_HOST", "127.0.0.1")
@@ -50,7 +53,7 @@ EXIT_GRACE = 0.4
 # that talks RCON to the same server should take it too. Default /tmp/vfg-rcon-<port>.lock.
 RCON_LOCK = os.environ.get("VFG_RCON_LOCK", "")
 
-# The server's owner: VFG_OWNER, which `vfg script run` sets from ~/.vfg/config; "" when unset.
+# The server's owner: VFG_OWNER, which vfg sets from ~/.vfg/config; "" when unset.
 OWNER = os.environ.get("VFG_OWNER", "").strip()
 if not re.match(r"^[A-Za-z0-9_]{1,16}$", OWNER):
     OWNER = ""
