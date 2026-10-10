@@ -158,11 +158,14 @@ A script runs only as a copy of an action: the box starts `/opt/vfg/python/bin/p
 ## Tests
 
 ```bash
-uv run --no-project --python 3.12 --with pydantic python scripts/_test/run_tests.py   # mc, the kit, every preset test file (test_presets_*.py), every script
+uv run --no-project --python 3.12 --with pydantic python scripts/_test/run_tests.py   # mc, the kit, every preset test file (test_presets_*.py), every script: about 6 s
+uv run --no-project --python 3.12 --with pydantic python scripts/_test/run_tests.py ScriptTests   # some, here, one after another
 uv run --no-project --python 3.12 --with pydantic python scripts/_test/test_kit.py   # the kit alone
 eval "$(integration/realmc/env kit)" && uv run --no-project --python 3.12 python scripts/_test/live_kit.py   # the kit on a real 26.3 server
 ```
 
-`run_tests.py` starts every example as on EC2 (as a copy of its first action with nothing given; `VFG_INSTANCE` its folder name) against a fake world with Steve and Alex online; Steve tries each item it gives him (a click, a 1.5 s hold) and crouches; then it is stopped. It must send commands, raise nothing, exit 0 within 2 s, and leave nothing tagged `vfg_<name>`: no entity, bossbar, forceload or objective (an example that ends by itself may leave the mobs it made, never a marker).
+`run_tests.py` runs every test at once in worker processes (`-j N`, default twice the CPUs, at most 16), each test on its own, and shows a failing test's output under it. It starts every script as on EC2 (as a copy of its first action with nothing given; `VFG_INSTANCE` its folder name), all at once, each against a fake world with Steve and Alex online; Steve tries each item it gives him (a click, a 1.5 s hold) and crouches; after 4 s it is stopped. It must send commands, raise nothing, exit 0 within 2 s, and leave nothing tagged `vfg_<name>`: no entity, bossbar, forceload or objective (an example that ends by itself may leave the mobs it made, never a marker). A seed's README is checked too, and it must end as its README says; one that ends by itself runs to its end on a clock ten times as fast.
+
+A test waits for what it checks, never for a guessed time: `test_kit.looked()` waits for the kit's next looks (its poll commands), and a `test_kit.Clock` stands in for a preset's or the kit's `time`, faster, or skipped ahead past a timer. A script a test starts can run on a faster clock too (`_test/fast_clock/`, on its `PYTHONPATH`), and cleans up as it ends without mc's 0.4 s grace (`VFG_EXIT_GRACE_S=0`). Neither is ever set on the box.
 
 `_test/fake_rcon.py` is a fake RCON server; `_test/fake_world.py` is a small fake 26.3 world behind it (players, blocks, chunks, scoreboards, fills, bossbars, forceloads). The fake proves the plumbing; a real 26.3 server is the bar for "it works": `live_kit.py` runs only against a realmc test server, never the box.

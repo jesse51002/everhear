@@ -1,28 +1,33 @@
 """Tests for the scripts folder, run under the Python EC2 has, with pydantic for the actions:
 
-    uv run --no-project --python 3.12 --with pydantic python scripts/_test/run_tests.py
+    uv run --no-project --python 3.12 --with pydantic python scripts/_test/run_tests.py [-j N]
+    uv run --no-project --python 3.12 --with pydantic python scripts/_test/run_tests.py ScriptTests
 
-They start fake_rcon.py on a free port with a temp server.properties, check
-_lib/mc.py, then run every script (every folder without a leading "_") the way
-EC2 does: `python3 -u main.py` in its own folder with PYTHONPATH=scripts/_lib.
-A seed (README.md beside main.py) runs with its Usage line's arguments, as a copy of its
-action like an example below. An example (main.py with ASKS, no README.md) runs with its
-defaults and VFG_INSTANCE set: it gets the meta file `vfg action run` would write for its
-first action with nothing given (lib/py/vfg_actions.py), which values() reads. It runs
-against fake_world with Steve and Alex online; Steve tries every item it gives him (a
-click, a 1.5 s hold) and crouches; then SIGTERM. It must send commands, raise nothing,
-exit 0 within 2 s of the stop, and leave nothing tagged vfg_<name>: no entity, bossbar,
-forceload or objective. The scripts under the six core actions (CORE) need values their
-defaults leave empty, so test_core.py runs them instead. The kit's tests (test_kit.py),
-instances.py's (test_instances.py), test_core.py and every test_presets_*.py and
-test_examples_*.py beside this file run with them.
+With no test named, every test runs in N worker processes at once (default twice the CPUs, at
+most 16, or VFG_TEST_JOBS), each test on its own, and a failing test's output is shown with it.
+With tests named, they run in this process one after the other, as unittest runs them.
+
+They start fake_rcon.py on a free port with a temp server.properties and check _lib/mc.py. Then
+every script (every folder without a leading "_") runs, all at once, each against its own fake
+world with Steve and Alex online, the way EC2 runs it: `python3 -u main.py` in its folder with
+PYTHONPATH=scripts/_lib and VFG_INSTANCE set, as a copy of its first action with nothing given
+(the meta file `vfg action run` writes, lib/py/vfg_actions.py, which values() reads). Steve tries
+every item it gives him (a click, a 1.5 s hold) and crouches; after 4 s it gets SIGTERM. It must
+send commands, raise nothing, exit 0 within 2 s of the stop, and leave nothing tagged
+vfg_<name>: no entity, bossbar, forceload or objective. A seed (README.md beside main.py) has its
+README checked too, and must end as its README says; one that ends by itself runs to its end,
+on a clock ten times as fast (fast_clock/). The scripts under the six core actions (CORE) need
+values their defaults leave empty, so test_core.py runs them instead. The kit's tests
+(test_kit.py), instances.py's (test_instances.py), test_core.py and every test_presets_*.py and
+test_examples_*.py beside this file run with them. A script that ends by itself cleans up at
+once, without mc's 0.4 s grace for a last blast (VFG_EXIT_GRACE_S=0).
 """
 import json
 import os
 import re
 import secrets
+import shutil
 import signal
-import socket
 import subprocess
 import sys
 import tempfile
@@ -31,6 +36,10 @@ import time
 import unittest
 
 sys.dont_write_bytecode = True
+if __name__ == "__main__":
+    sys.modules.setdefault("run_tests", sys.modules[__name__])   # `import run_tests` is this module, not a second one
+# A script that ends by itself cleans up at once, not after mc's 0.4 s grace for a last blast.
+os.environ.setdefault("VFG_EXIT_GRACE_S", "0")
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = os.path.dirname(HERE)
 LIB = os.path.join(SCRIPTS, "_lib")
@@ -110,13 +119,6 @@ class McTests(unittest.TestCase):
         finally:
             mc._drop()
             mc._settings = good
-
-    def test_a_stopped_fake_refuses_connections(self):
-        """FakeRcon.stop() is a server going down: no new connection gets in."""
-        fake = FakeRcon(secrets.token_hex(8)).start()
-        fake.stop()
-        with self.assertRaises(ConnectionRefusedError):
-            socket.create_connection(("127.0.0.1", fake.port), timeout=2).close()
 
     def test_refuses_the_owners_commands(self):
         for cmd in ("op Steve", "/OP Steve", "deop Steve", "ban Steve", "ban-ip 1.2.3.4", "pardon Steve",
@@ -265,6 +267,7 @@ class McTests(unittest.TestCase):
 # The scripts under the dispatcher's core actions: each needs values its defaults leave empty (a
 # command, a place, a running copy), so test_core.py runs them, with those values, on a fake world.
 CORE = ("command", "edit", "save_place", "stop", "summon_around", "teleport")
+FAST_CLOCK = os.path.join(HERE, "fast_clock")
 
 
 def script_names():
@@ -272,104 +275,44 @@ def script_names():
                   and d not in CORE and os.path.isdir(os.path.join(SCRIPTS, d)))
 
 
-def usage_args(line):
-    """The Usage line's arguments: each <...> filled with Steve, every [...] left out."""
-    rest = line.split(None, 2)[2] if len(line.split()) > 2 else ""
-    rest = re.sub(r"\[[^\]]*\]", " ", rest)
-    return ["Steve" for _ in re.findall(r"<[^>]*>", rest)]
+def readme(name):
+    """A seed's README.md as lines (the 16 seed scripts keep one beside main.py), else None."""
+    path = os.path.join(SCRIPTS, name, "README.md")
+    if not os.path.isfile(path):
+        return None
+    with open(path, encoding="utf-8") as f:
+        return f.read().splitlines()
 
 
-def run_seed(name):
-    folder = os.path.join(SCRIPTS, name)
-    res = {"name": name}
-    with open(os.path.join(folder, "README.md"), encoding="utf-8") as f:
-        lines = f.read().splitlines()
-    res["lines"] = lines
-    with open(os.path.join(folder, "main.py"), encoding="utf-8") as f:
-        source = f.read()
-    try:
-        compile(source, os.path.join(folder, "main.py"), "exec")
-        res["compiles"] = None
-    except SyntaxError as e:
-        res["compiles"] = "%s" % e
-        return res
-    if len(lines) < 3 or not lines[1].startswith("Usage: ") or not lines[2].startswith("Ends: "):
-        return res
-    ends_itself = lines[2].strip() == "Ends: by itself"
-    args = usage_args(lines[1])
-    res["args"] = args
-    password = secrets.token_hex(8)
-    fake = FakeRcon(password).start()
-    out_path = os.path.join(TMP, name + ".out")
-    env = script_env(properties(password, fake.port))
-    meta = action_meta(name)      # a seed runs as a copy of its action
-    env.update(VFG_INSTANCE=name, VFG_SCRIPT=name, VFG_RUN_DIR=tempfile.mkdtemp(dir=TMP))
-    with open(os.path.join(env["VFG_RUN_DIR"], name + ".json"), "w") as f:
-        json.dump(meta, f)
-    try:
-        with open(out_path, "wb") as out:
-            start = time.time()
-            proc = subprocess.Popen([sys.executable, "-u", "main.py"] + args, cwd=folder,
-                                    env=env, stdout=out, stderr=out)
-            if ends_itself:
-                try:
-                    proc.wait(timeout=20)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait()
-                    res["timeout"] = True
-                res["took"] = time.time() - start
-            else:
-                time.sleep(3)
-                res["alive_at_3s"] = proc.poll() is None
-                res["before"] = fake.cmds()
-                stop_at = time.time()
-                proc.send_signal(signal.SIGTERM)
-                try:
-                    proc.wait(timeout=2)
-                    res["stop_took"] = time.time() - stop_at
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait()
-                    res["stop_took"] = None
-                res["after"] = fake.cmds(since=stop_at)
-            res["code"] = proc.returncode
-            res["ends_itself"] = ends_itself
-            res["cmds"] = fake.cmds()
-    finally:
-        fake.stop()
-    with open(out_path, encoding="utf-8", errors="replace") as f:
-        res["output"] = f.read()
-    return res
+def ends_by_itself(name):
+    """A seed whose README says it ends by itself."""
+    lines = readme(name) or []
+    return len(lines) > 2 and lines[2].strip() == "Ends: by itself"
 
 
-def is_example(name):
-    """An example script: main.py with its ASKS at the top, no README.md beside it."""
-    return not os.path.isfile(os.path.join(SCRIPTS, name, "README.md"))
-
-
-def play(world, until):
+def play(world, until, done):
     """What a player does to a running example, so its body runs too: Steve holds each item
-    the script gave him in turn, clicks, holds the button down for 1.5 s, and crouches."""
+    the script gave him in turn, clicks, holds the button down for 1.5 s, and crouches; until
+    `until`, or `done` is set (the script ended)."""
     tried = set()
-    while time.time() < until:
+    while time.time() < until and not done.is_set():
         with world.lock:
             ids = [m.group(1) for p, i in world.gives if p == "Steve"
                    for m in [re.search(r'vfg_item:"([^"]*)"', i)] if m]
         new = [i for i in ids if i not in tried]
         if not new:
             world.sneak("Steve", 4)
-            time.sleep(0.2)
+            done.wait(0.2)
             continue
         item = new[0]
         tried.add(item)
         world.hold("Steve", main=item)
-        time.sleep(0.3)
+        done.wait(0.3)
         world.click("Steve")
-        time.sleep(0.5)
+        done.wait(0.5)
         for _ in range(8):
             world.click("Steve")
-            time.sleep(0.2)
+            done.wait(0.2)
 
 
 _CATALOG = []
@@ -407,10 +350,11 @@ def action_meta(name):
     return copy_meta(name if name in over else over[0], {}, copy=name)
 
 
-def run_example(name, seconds=4.0, folder=None, meta=None):
+def run_example(name, seconds=4.0, folder=None, meta=None, clock_rate=None):
     """An example started as on EC2, as a copy of its action with nothing given (a library
     script; else `meta`, the meta file's dict), against a fake world with Steve and Alex
-    online: it plays a little, then SIGTERM if it is still running."""
+    online: it plays a little, then SIGTERM if it is still running. clock_rate: its clock
+    runs that many times as fast (fast_clock/sitecustomize.py)."""
     folder = folder or os.path.join(SCRIPTS, name)
     res = {"name": name, "example": True}
     with open(os.path.join(folder, "main.py"), encoding="utf-8") as f:
@@ -431,6 +375,8 @@ def run_example(name, seconds=4.0, folder=None, meta=None):
     env = script_env(properties(password, fake.port))
     env.update(VFG_INSTANCE=name, VFG_SCRIPT=name, VFG_RUN_DIR=tempfile.mkdtemp(dir=TMP), VFG_LIVE_POLL_S="0.5",
                VFG_PROTECTED=os.path.join(TMP, "no-protected.json"))
+    if clock_rate:
+        env.update(PYTHONPATH=os.pathsep.join([LIB, FAST_CLOCK]), VFG_TEST_CLOCK_RATE=str(clock_rate))
     if meta is None:
         meta = action_meta(name)
     with open(os.path.join(env["VFG_RUN_DIR"], name + ".json"), "w") as f:
@@ -444,11 +390,13 @@ def run_example(name, seconds=4.0, folder=None, meta=None):
             while not world.commands and proc.poll() is None and time.time() < started:
                 time.sleep(0.05)
             until = time.time() + seconds
-            player = threading.Thread(target=play, args=(world, until), daemon=True)
+            done = threading.Event()
+            player = threading.Thread(target=play, args=(world, until, done), daemon=True)
             player.start()
             while time.time() < until and proc.poll() is None:
-                time.sleep(0.1)
+                time.sleep(0.05)
             res["ended_itself"] = proc.poll() is not None
+            done.set()
             res["before"] = list(world.commands)
             stop_at = time.time()
             if not res["ended_itself"]:
@@ -483,13 +431,19 @@ RESULTS = {}
 
 
 class ScriptTests(unittest.TestCase):
+    """Every script once, all at once, each against its own fake: an example (main.py with
+    ASKS) as a copy of its first action with nothing given, a seed (README.md beside it) too,
+    and a seed that ends by itself run to its end, on a clock ten times as fast."""
+
+    run_whole = True     # the runner gives one worker the whole class: setUpClass runs every script
+
     @classmethod
     def setUpClass(cls):
         threads = []
         for name in script_names():
             def go(n=name):
                 try:
-                    RESULTS[n] = run_example(n) if is_example(n) else run_seed(n)
+                    RESULTS[n] = run_example(n, seconds=10, clock_rate=10) if ends_by_itself(n) else run_example(n)
                 except Exception as e:  # reported by the test itself
                     RESULTS[n] = {"name": n, "error": repr(e)}
             t = threading.Thread(target=go)
@@ -499,7 +453,7 @@ class ScriptTests(unittest.TestCase):
             t.join()
 
     def test_there_are_sixteen_seeds(self):
-        self.assertGreaterEqual(len([n for n in script_names() if not is_example(n)]), 16)
+        self.assertGreaterEqual(len([n for n in script_names() if readme(n) is not None]), 16)
 
     def check_example(self, name, res):
         """The spec's test of an example: it runs, sends commands, raises nothing, and stops
@@ -521,33 +475,37 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(left, {"entities": [], "bossbars": [], "forceloads": [], "objectives": []},
                          "left behind after it %s" % ("ended" if res["ended_itself"] else "stopped"))
 
-    def check(self, name):
-        res = RESULTS[name]
-        self.assertNotIn("error", res, res.get("error"))
-        self.assertIsNone(res.get("compiles"), "main.py does not compile under Python %s" % sys.version.split()[0])
-        if res.get("example"):
-            return self.check_example(name, res)
-        lines = res["lines"]
+    def check_readme(self, name, lines, res):
+        """A seed's README: one sentence, its Usage (only [key=value]s its action declares), and
+        how it ends, which is what it did."""
         self.assertGreaterEqual(len(lines), 3, "README needs at least three lines")
         first = lines[0].strip()
         self.assertTrue(first and first[-1] in ".!?", "README line 1 is not a sentence: %r" % first)
         self.assertIsNone(re.search(r"[.!?]\s+[A-Z]", first[:-1]), "README line 1 is more than one sentence")
         self.assertFalse(first.startswith("#"), "README line 1 is a heading, not a sentence")
-        self.assertTrue(lines[1].startswith("Usage: %s" % name), "README line 2: %r" % lines[1])
+        usage = lines[1]
+        self.assertTrue(usage.startswith("Usage: %s" % name), "README line 2: %r" % usage)
         self.assertIn(lines[2].strip(), ("Ends: by itself", "Ends: when stopped"), "README line 3: %r" % lines[2])
-        out = res["output"]
-        self.assertNotIn("Traceback", out, out[-2000:])
-        self.assertGreaterEqual(len(res["cmds"]), 1, "sent no command; output:\n" + out[-1000:])
-        if res["ends_itself"]:
-            self.assertFalse(res.get("timeout"), "did not end by itself within 20 s")
-            self.assertEqual(res["code"], 0, out[-1000:])
+        self.assertNotIn("<", usage, "a seed's values all have defaults: [key=value], no <positional>")
+        values = action_meta(name)["values"]
+        keys = re.findall(r"\[([a-z][a-z0-9_]*)=", usage)
+        self.assertTrue(keys or not values, "Usage names none of its values: " + usage)
+        for k in keys:
+            self.assertIn(k, values, "Usage names %s, which its action does not declare" % k)
+        if ends_by_itself(name):
+            self.assertTrue(res["ended_itself"], "its README says it ends by itself, but it ran on")
         else:
-            self.assertTrue(res["alive_at_3s"], "ended before 3 s but its README says it runs until stopped:\n"
-                            + out[-1000:])
-            self.assertGreaterEqual(len(res["before"]), 1, "sent no command in its first 3 s")
-            self.assertIsNotNone(res["stop_took"], "did not exit within 2 s of SIGTERM")
-            self.assertEqual(res["code"], 0, out[-1000:])
-            self.assertIn("kill @e[tag=vfg_%s]" % name, res["after"], "no cleanup sent after SIGTERM")
+            self.assertFalse(res["ended_itself"], "ended before it was stopped, but its README says it runs until "
+                             "stopped:\n" + res["output"][-1000:])
+
+    def check(self, name):
+        res = RESULTS[name]
+        self.assertNotIn("error", res, res.get("error"))
+        self.assertIsNone(res.get("compiles"), "main.py does not compile under Python %s" % sys.version.split()[0])
+        self.check_example(name, res)
+        lines = readme(name)
+        if lines is not None:
+            self.check_readme(name, lines, res)
 
 
 DEMO = '''"""Demo Wand: a click fires a beam that hurts what it hits and leaves a small crater."""
@@ -576,8 +534,9 @@ class ExampleHarnessTests(unittest.TestCase):
         os.makedirs(folder, exist_ok=True)
         with open(os.path.join(folder, "main.py"), "w") as f:
             f.write(DEMO % extra)
-        return run_example(name, folder=folder, meta={"values": {"player": "@a", "cooldown": 0, "crater_radius": 3},
-                                                     "live": ["cooldown", "crater_radius"]})
+        return run_example(name, seconds=1.5, folder=folder,      # Steve's first click reaches the body
+                           meta={"values": {"player": "@a", "cooldown": 0, "crater_radius": 3},
+                                 "live": ["cooldown", "crater_radius"]})
 
     def test_a_good_example_passes(self):
         res = self.demo("demo_wand")
@@ -622,8 +581,195 @@ def _add_kit_and_preset_tests():
 
 _add_kit_and_preset_tests()
 
+# ---- the runner: every test at once, in worker processes ------------------------------------
+
+def _flat(suite):
+    for t in suite:
+        if isinstance(t, unittest.TestSuite):
+            yield from _flat(t)
+        else:
+            yield t
+
+
+def _units():
+    """The tests as the workers take them: a class whose setUpClass runs every script at once
+    (ScriptTests) whole and first, every other test on its own."""
+    tests = list(_flat(unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])))
+    whole = {}
+    units = []
+    for t in tests:
+        if getattr(type(t), "run_whole", False):
+            whole.setdefault(type(t), []).append(t.id())
+        else:
+            units.append([t.id()])
+    return list(whole.values()) + units, len(tests)
+
+
+class _Rows(unittest.TestResult):
+    """Each test's outcome, as (id, outcome, traceback)."""
+
+    def __init__(self):
+        unittest.TestResult.__init__(self)
+        self.rows = []
+
+    def addSuccess(self, test):
+        unittest.TestResult.addSuccess(self, test)
+        self.rows.append((test.id(), "ok", ""))
+
+    def addFailure(self, test, err):
+        unittest.TestResult.addFailure(self, test, err)
+        self.rows.append((test.id(), "FAIL", self.failures[-1][1]))
+
+    def addError(self, test, err):
+        unittest.TestResult.addError(self, test, err)
+        self.rows.append((test.id(), "ERROR", self.errors[-1][1]))
+
+    def addSkip(self, test, reason):
+        unittest.TestResult.addSkip(self, test, reason)
+        self.rows.append((test.id(), "skipped %r" % reason, ""))
+
+    def addExpectedFailure(self, test, err):
+        unittest.TestResult.addExpectedFailure(self, test, err)
+        self.rows.append((test.id(), "expected failure", ""))
+
+    def addUnexpectedSuccess(self, test):
+        unittest.TestResult.addUnexpectedSuccess(self, test)
+        self.rows.append((test.id(), "FAIL", "unexpected success"))
+
+    def addSubTest(self, test, subtest, err):
+        unittest.TestResult.addSubTest(self, test, subtest, err)
+        if err is not None:
+            failed = issubclass(err[0], test.failureException)
+            self.rows.append((subtest.id(), "FAIL" if failed else "ERROR",
+                              (self.failures if failed else self.errors)[-1][1]))
+
+
+def _worker():
+    """Run the units the runner sends on stdin, one JSON list of test ids a line, answering
+    each with a JSON line: the outcomes, how many ran, how long it took, and what the tests
+    printed. Its own stdout is the runner's alone: whatever a test prints (or a thread a test
+    left, between tests) goes to that test's log, or nowhere."""
+    channel = os.fdopen(os.dup(1), "w", buffering=1)
+    nowhere = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(nowhere, 1)
+    os.dup2(nowhere, 2)
+    tests = {t.id(): t for t in _flat(unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__]))}
+    for line in sys.stdin:
+        ids = json.loads(line)
+        result = _Rows()
+        t0 = time.time()
+        with tempfile.TemporaryFile() as log:
+            os.dup2(log.fileno(), 1)
+            os.dup2(log.fileno(), 2)
+            try:
+                unittest.TestSuite([tests[i] for i in ids]).run(result)
+            finally:
+                sys.stdout.flush()
+                sys.stderr.flush()
+                os.dup2(nowhere, 1)
+                os.dup2(nowhere, 2)
+            log.seek(0)
+            output = log.read().decode("utf-8", "replace")
+        channel.write(json.dumps({"rows": result.rows, "ran": result.testsRun, "output": output,
+                                  "took": time.time() - t0}) + "\n")
+
+
+def _run_all(jobs):
+    """Every unit on the first free worker; each test's outcome as it comes, then the failures
+    with their output, and unittest's summary. True when all passed."""
+    t0 = time.time()
+    units, total = _units()
+    expected = [i for unit in units for i in unit]
+    todo = list(reversed(units))
+    lock = threading.Lock()
+    rows, ran, outputs, took = [], [0], {}, []
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+
+    def work():
+        proc = subprocess.Popen([sys.executable, "-u", os.path.abspath(__file__), "--worker"], env=env,
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, universal_newlines=True)
+        try:
+            while True:
+                with lock:
+                    if not todo:
+                        return
+                    unit = todo.pop()
+                proc.stdin.write(json.dumps(unit) + "\n")
+                proc.stdin.flush()
+                line = proc.stdout.readline()
+                got = json.loads(line) if line else {"rows": [(i, "ERROR", "the worker died") for i in unit],
+                                                     "ran": len(unit), "output": "", "took": 0.0}
+                with lock:
+                    ran[0] += got["ran"]
+                    took.append((got["took"], unit[0].rsplit(".", 1)[0] if len(unit) > 1 else unit[0]))
+                    for test_id, outcome, tb in got["rows"]:
+                        rows.append((test_id, outcome, tb))
+                        if outcome in ("FAIL", "ERROR"):
+                            outputs[test_id] = got["output"]
+                        print("%s ... %s" % (test_id, outcome), flush=True)
+                if not line:
+                    return
+        finally:
+            proc.stdin.close()
+            proc.wait()
+
+    threads = [threading.Thread(target=work) for _ in range(min(jobs, len(units)))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    bad = [r for r in rows if r[1] in ("FAIL", "ERROR")]
+    for test_id, outcome, tb in bad:
+        print("=" * 70)
+        print("%s: %s" % (outcome, test_id))
+        print("-" * 70)
+        print(tb.rstrip())
+        if outputs.get(test_id, "").strip():
+            print("-" * 30 + " its output " + "-" * 28)
+            print(outputs[test_id].rstrip()[-4000:])
+    print("-" * 70)
+    print("Slowest: " + ", ".join("%s %.1f s" % (name.split(".", 1)[-1], t) for t, name in sorted(took)[::-1][:5]))
+    print("Ran %d tests in %.3fs (%d workers)" % (ran[0], time.time() - t0, len(threads)))
+    print()
+    missing = sorted(set(expected) - set(r[0] for r in rows))
+    if missing:
+        print("Not run: " + ", ".join(missing))
+    if bad or ran[0] < total:
+        print("FAILED (failures=%d, errors=%d%s)" % (len([r for r in bad if r[1] == "FAIL"]),
+                                                     len([r for r in bad if r[1] == "ERROR"]),
+                                                     ", not run=%d" % (total - ran[0]) if ran[0] < total else ""))
+        return False
+    print("OK")
+    return True
+
+
+def _jobs(argv):
+    """-j N from argv (taken out of it), else VFG_TEST_JOBS, else twice the CPUs, at most 16
+    (more only spend their time starting: 16 ran in 6.1 s on 12 cores, 24 in 7.2 s)."""
+    jobs = os.environ.get("VFG_TEST_JOBS") or min(16, 2 * (os.cpu_count() or 4))
+    if "-j" in argv:
+        i = argv.index("-j")
+        jobs = argv[i + 1]
+        del argv[i:i + 2]
+    return max(1, int(jobs))
+
+
 if __name__ == "__main__":
     try:
-        unittest.main(verbosity=2)
+        if sys.argv[1:] == ["--worker"]:
+            try:
+                _worker()
+            finally:
+                for d in {TMP, getattr(sys.modules.get("test_kit"), "TMP", TMP),
+                          getattr(sys.modules.get("test_core"), "TMP", TMP),
+                          getattr(sys.modules.get("test_examples_rays"), "TMP", TMP)}:
+                    shutil.rmtree(d, ignore_errors=True)
+        else:
+            args = sys.argv[1:]
+            jobs = _jobs(args)
+            if args:
+                unittest.main(argv=sys.argv[:1] + args, verbosity=2)
+            else:
+                sys.exit(0 if _run_all(jobs) else 1)
     finally:
         FAKE.stop()

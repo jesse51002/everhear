@@ -55,7 +55,8 @@ MAX_COMMAND = 1446
 STOP_BUDGET = 1.5
 # A script that ends by itself waits this long before its cleanup, so a blast it just set off
 # (fuse 0: the next tick) goes off before a gamerule is put back or a forceload released.
-EXIT_GRACE = 0.4
+# VFG_EXIT_GRACE_S is for the tests only (scripts/_test sets it to 0); the box never sets it.
+EXIT_GRACE = float(os.environ.get("VFG_EXIT_GRACE_S") or 0.4)
 # The server answers every RCON connection from one shared buffer, so two clients sending at
 # once get each other's output glued into their replies. Every command therefore holds this
 # lock file (flock) from send to reply, across every process on the machine; anything else
