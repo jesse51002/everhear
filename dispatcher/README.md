@@ -78,13 +78,34 @@ environment or the repo's `.env`. Each full run costs well under a cent.
 ## Replay
 
 ```sh
-cd dispatcher && uv run python -m dispatcher.replay [--model <id>] [--limit N] [--only T3,T9] [--jobs 8] [--eval labels.jsonl]
+cd dispatcher && uv run python -m dispatcher.replay [--model <id>] [--limit N] [--only T3,T9] [--jobs 8] \
+                                                    [--eval labels.jsonl] [--out results.jsonl]
 ```
 
 Sends the playtest's tasks from `~/.vfg/orch/inbox.jsonl` (read only) through the complexity
 selector alone, with every action on the menu and nothing running, and prints each selection, its
 cost and time, then the totals. It acts on nothing. It is how a cheaper model or a prompt change is
 judged before a live run.
+
+With `--eval` it replays only the tasks the file labels and scores each against its label: the
+route (exact, or any route the label accepts), each part (did it reach its action, or the
+orchestrator), and the work lost (a part that went nowhere, or the orchestrator's part given only
+to an action). The labels are kept outside the repo, in `~/.vfg/dispatch/eval/`.
+`python -m dispatcher.label --from <old labels> --to <new labels>` labels the same tasks again for
+the menu as it is now, with a stronger model through `structured()`: it prints its cost estimate
+and the OpenRouter credit left first, and runs only under `--max-cost` (default $10).
+
+| Date | Labels | Selector | Agreement | Lost | Time p50 / p90 | Cost |
+|---|---|---|---|---|---|---|
+| 2026-10-09 | `selector.jsonl`: by hand, for the six actions | DeepSeek V4 Flash, reasoning off | 91% of routes | 0 | 0.8 s | $0.02 |
+| 2026-10-10 | `selector-actions-2026-10-10.jsonl`: Claude Opus 5.5 at high reasoning, for the 67 actions, all 172 read by hand and 20 changed | GPT-6.1 Sol, reasoning low, OpenRouter's providers | 168/172 routes (97.7%); 146/172 the label's own route (84.9%); 183/192 parts (95.3%) | 0 tasks, 0 parts | 2.0 s / 3.2 s | $1.78 |
+
+Both over the 172 tasks of the 2026-10-08 playtest, with nothing running and no saved place, so
+`edit` and `stop` are never the answer. On 2026-10-10 every disagreement was the selector handing
+the whole task to the orchestrator when an action could do it, or part of it: never a wrong
+action, never the orchestrator's work given to an action. Before this prompt's paragraph on the
+context, the same run agreed on 151/172 routes: the playtest's contexts tell the orchestrator how
+to build each ask, and the selector took that as more than any action does.
 
 ## Settings
 
