@@ -40,6 +40,16 @@ COMPATIBLE = {
 # Values the spec gives a script's action that its VALUES did not have: {script: {value: why}}.
 ADDED = {
     "horde_boss": {"at": "Library_Actions: horde_boss has no place and gets one"},
+    # --- c3: ice_queen ... arena ---
+    "ice_queen": {"boss_minion": "the boss preset's; her abilities replace its minions, so it does nothing",
+                  "boss_minions": "the boss preset's; her abilities replace its minions, so it does nothing"},
+    # --- end c3 ---
+}
+# Values renamed as their script was ported, where the old name cannot be a field: {script: {old: new}}.
+RENAMED = {
+    # --- c3: ice_queen ... arena ---
+    "god_visits": {"takes": "take_items"},   # `takes` is every action's ClassVar: the fields the planner fills
+    # --- end c3 ---
 }
 
 
@@ -181,7 +191,8 @@ def test_every_action_over_a_library_script_takes_its_values(catalog):
         for name in names:
             cls = catalog.get(name)
             variant = any(k is not cls and k in {catalog.get(n) for n in catalog.names()} for k in cls.__mro__)
-            bad = problems(cls.model_fields, cls.__vfg__["unfixed"], SCRIPTS[script], T,
+            before = {RENAMED.get(script, {}).get(k, k): e for k, e in SCRIPTS[script].items()}
+            bad = problems(cls.model_fields, cls.__vfg__["unfixed"], before, T,
                            ADDED.get(script, {}), check_defaults=not variant)
             if bad:
                 failed[name] = bad
