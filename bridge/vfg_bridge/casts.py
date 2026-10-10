@@ -12,7 +12,9 @@ through one lock, so each cast's checks see every cast before it:
 3. the incantation's own ``cooldown_s`` since it last fired for that player, then
    VFG_CAST_GAP_S since any of the player's casts fired, are ``cooldown``;
 4. otherwise its copy is started (instances.Box.start, from the entry, with no round trip
-   to the PC), and the cast is ``fired``, or ``failed`` when the copy could not start.
+   to the PC), and the cast is ``fired``, or ``failed`` when the copy could not start;
+   ``stale`` when the bridge itself has held it VFG_CAST_WAIT_S since its request came
+   (on this lock, or on instances' copies.lock), so it never fires seconds late.
 
 The cast's row is stored before the answer; its events row and GAME line after it.
 Windows are on the mod's audio clock, cooldowns on the bridge's.
@@ -83,7 +85,8 @@ class Casts:
     LIST_WAIT_MAX = 30.0
 
     def __init__(self, db, kit, feed, store_path, base, mc="/opt/mc", owner="", poll=0.5,
-                 gap_s=1.0, slack_s=0.3, allowance=0.25, layer2=True, clock=None, logger=None):
+                 gap_s=1.0, slack_s=0.3, allowance=0.25, layer2=True, wait_s=1.5, clock=None,
+                 monotonic=None, logger=None):
         self.db = db
         self.kit = kit
         self.feed = feed
@@ -96,14 +99,18 @@ class Casts:
         self.slack_s = slack_s
         self.allowance = allowance
         self.layer2 = layer2
+        self.wait_s = wait_s
         self.clock = clock or timeutil.utcnow
+        self.monotonic = monotonic or time.monotonic  # the request's arrival is on this clock
         self.log = logger or log
         self.lock = threading.Lock()  # every cast, the spotter's and Layer 2's
+        self._read = (None, None)     # the store's file key, and its parse
 
     @classmethod
     def from_config(cls, cfg, db, kit, feed, clock=None):
         return cls(db, kit, feed, cfg.incantations, cfg.base, cfg.mc, cfg.owner, cfg.live_poll_s,
-                   cfg.cast_gap_s, cfg.cast_slack_s, cfg.incant_allowance, cfg.incant_layer2, clock)
+                   cfg.cast_gap_s, cfg.cast_slack_s, cfg.incant_allowance, cfg.incant_layer2,
+                   cfg.cast_wait_s, clock)
 
     # -- the kit and the store -----------------------------------------------------
 
@@ -115,12 +122,22 @@ class Casts:
         return mods
 
     def _store(self, inc):
-        return inc.Store(self.store_path)
+        """The store, parsed again only when its file changes (writes replace it whole)."""
+        store = inc.Store(self.store_path)
+        key = self._file_key()
+        seen, doc = self._read
+        if key is None or key != seen:
+            doc = store.read()
+            self._read = (key, doc)
+        store.read = lambda: doc  # for_player and lookup read it through read()
+        return store
 
     # -- POST /v1/casts ------------------------------------------------------------
 
-    def cast(self, player, phrase, heard, started, ended, client_cast_id):
-        """A spotter's cast: (HTTP status, body, what to do once answered, or None)."""
+    def cast(self, player, phrase, heard, started, ended, client_cast_id, arrived=None):
+        """A spotter's cast: (HTTP status, body, what to do once answered, or None).
+        ``arrived``: when its request came, on ``self.monotonic``."""
+        arrived = self.monotonic() if arrived is None else arrived
         inc, ins = self._modules()
         with self.lock:
             first = self.db.cast_by_client_id(client_cast_id)
@@ -129,7 +146,8 @@ class Casts:
             entry = self._store(inc).lookup(player, phrase)
             if entry is None:
                 return 404, {"error": "%s has no incantation %r" % (player, phrase)}, None
-            cast = self._try(ins, entry, player, heard, "spotter", started, ended, client_cast_id)
+            cast = self._try(ins, entry, player, heard, "spotter", started, ended, client_cast_id,
+                             arrived)
         return 202, answer(cast), lambda: self._after(inc, cast, entry)
 
     def _after(self, inc, cast, entry):
@@ -147,7 +165,7 @@ class Casts:
         except Exception:
             self.log.exception("could not drop the line of cast %s", cast["id"])
 
-    def _try(self, ins, entry, player, heard, layer, started, ended, client_cast_id):
+    def _try(self, ins, entry, player, heard, layer, started, ended, client_cast_id, arrived):
         """Check, start and store one cast; call under the lock. Answers the stored row."""
         now = self.clock()
         cast = {"id": ulid.new(), "at": timeutil.format_time(now),
@@ -156,10 +174,15 @@ class Casts:
                 "incantation_id": entry.get("id"), "action": entry.get("action"),
                 "client_cast_id": client_cast_id}
         status, why = self._check(entry, player, started, ended, now)
+        left = self.wait_s - (self.monotonic() - arrived)
+        if status is None and left <= 0:
+            status, why = "stale", "held %.1f s before it could start" % (self.wait_s - left)
         if status is None:
             try:
                 box = ins.Box(self.base, self.mc, owner=self.owner, poll=self.poll)
-                copy, _, proc = box.start(self.meta(entry, player))
+                copy, _, proc = box.start(self.meta(entry, player), wait=left)
+            except ins.Busy as exc:  # copies.lock held past the wait: too late to fire
+                status, why = "stale", _one_line(exc)
             except Exception as exc:  # NotDeployed, CopyError, OSError: the cast failed
                 status, why = "failed", _one_line(exc)
             else:
@@ -244,10 +267,14 @@ class Casts:
 
     # -- POST /v1/lines ------------------------------------------------------------
 
-    def on_line(self, player, text, started, ended, client_line_id):
+    def on_line(self, player, text, started, ended, client_line_id, arrived=None, made=None):
         """Layer 2 and the drop rule for a voice line, before it is stored: a LineCasts.
 
-        Nothing for a player with no incantations, or a line already stored."""
+        Nothing for a player with no incantations, or a line already stored. Each cast Layer
+        2 makes goes into ``made`` (the caller's list) as soon as it is stored, so the caller
+        announces it whatever happens after."""
+        arrived = self.monotonic() if arrived is None else arrived
+        made = [] if made is None else made
         mods = self.kit.modules()
         if mods is None:
             return NOTHING
@@ -255,7 +282,6 @@ class Casts:
         entries = self._store(inc).for_player(player)
         if not entries or self.db.line_id(client_line_id) is not None:
             return NOTHING
-        made = []
         if self.layer2:
             words = inc.words(text)
             taken = []  # the word spans cast already: one cast for the same words
@@ -268,7 +294,8 @@ class Casts:
                 with self.lock:
                     if self.db.cast_by_client_id(key) is not None:
                         continue
-                    cast = self._try(ins, m.entry, player, heard, "transcript", started, ended, key)
+                    cast = self._try(ins, m.entry, player, heard, "transcript", started, ended,
+                                     key, arrived)
                 made.append(cast)
         with self.lock:  # a spotter's cast being started right now is stored first
             near = self._near(player, started, ended, self.clock())
@@ -307,11 +334,10 @@ class Casts:
         """(200, the player's list) at once, or when ``after`` is the version, once it changes;
         (304, None) when it has not changed in ``wait`` s."""
         inc, _ = self._modules()
-        store = self._store(inc)
         wait = self.LIST_WAIT_DEFAULT if wait is None else min(wait, self.LIST_WAIT_MAX)
         deadline = time.monotonic() + wait
         key = self._file_key()
-        doc = store.read()  # a missing or unreadable store is version 0, with none
+        doc = self._store(inc).read()  # a missing or unreadable store is version 0, with none
         while after is not None and doc["version"] == after:
             while self._file_key() == key:
                 left = deadline - time.monotonic()
@@ -319,7 +345,7 @@ class Casts:
                     return 304, None
                 time.sleep(min(self.LIST_POLL_S, left))
             key = self._file_key()
-            doc = store.read()
+            doc = self._store(inc).read()
         entries = [e for e in doc["incantations"] if inc.applies_to(e, player)]
         entries.sort(key=lambda e: str(e.get("player")).lower() == "@a")  # their own first
         out = []

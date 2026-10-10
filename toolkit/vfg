@@ -2644,15 +2644,6 @@ def fetch_incantations(cfg, a, stamps=None):
     return store, stale
 
 
-def incant_rows(cfg, a, fresh=False):
-    """The store's entries, and whether they were fetched now: the cache's while it is younger
-    than VFG_INCANT_TTL_S, else the box's."""
-    cached = read_incant_cache(cfg)
-    if cached is not None and not fresh and 0 <= cached[1] < incant_ttl(cfg):
-        return cached[0]["incantations"], False
-    return fetch_incantations(cfg, a)[0]["incantations"], True
-
-
 def note_incantations(cfg, put=(), drop=(), version=None):
     """Write a run through to the cache, keeping its age: the entries it stored or changed, by
     id, and the ids it removed. No cache, nothing to update: a few entries would pass for the
@@ -2815,15 +2806,22 @@ def run_incantation(cfg, a, name, given, as_=None, task=None):
     except Fail as f:
         raise Fail(f.code, "values for %s: %s" % (v["action"], f.msg))
     notes = own.notes + checked.notes
-    variants, why, call = incant_alias_call(cfg, phrase)
-    if why:
-        notes.append(why)
-    aliases = inc.merge_aliases(phrase, inc.code_aliases(phrase), variants)
     home = script_home(cfg, bcat.source(v["action"]), bcls.script)
     # The bound script with the kit; a library one with this action's own script too, so a box
     # that needs them all gets them in one deploy.
     folders = [bcls.script] + (["incantations"] if home == "library" else [])
+    # The alias call (about 1 s) runs in a thread while the store and the stamps are read, so
+    # neither waits for the other; a daemon, so a failed read is not held up by it.
+    import threading
+    answer = []
+    caller = threading.Thread(target=lambda: answer.append(incant_alias_call(cfg, phrase)), daemon=True)
+    caller.start()
     store, stale = fetch_incantations(cfg, a, stamps_for(cfg, home, folders))
+    caller.join()
+    variants, why, call = answer[0] if answer else ([], "aliases from code only: the alias call failed", None)
+    if why:
+        notes.append(why)
+    aliases = inc.merge_aliases(phrase, inc.code_aliases(phrase), variants)
     rows = store["incantations"]
     notes += incant_warnings(inc, phrase, aliases, players, rows)
     for p in players:
@@ -2850,17 +2848,16 @@ def run_incantation(cfg, a, name, given, as_=None, task=None):
 
 
 def edit_incantation(cfg, a, inc, va, given, v, players, phrase, mine, notes, as_, task):
-    """incantation_edit: each player's entry found (the cache's, else the box's), its values
-    checked against its action over the ones it has, its aliases normalised and bind-checked
-    again; then the box updates what changed."""
+    """incantation_edit: each player's entry read from the box (never the cache: two edits close
+    together must both see what the other did), its values checked against its action over the
+    ones it has, its aliases normalised and bind-checked again; then the box updates what
+    changed, the values as only the keys given, merged over what the store holds as it writes,
+    so two edits of different values both land."""
     change = [k for k in ("cooldown_s", "aliases") if k in given] + (["values"] if given.get("values") else [])
     if not change:
         raise Fail(2, "nothing to change: give values=, cooldown_s= or aliases=")
-    rows, fetched = incant_rows(cfg, a)
+    rows = fetch_incantations(cfg, a)[0]["incantations"]
     found = [incant_find(inc, rows, p, phrase) for p in players]
-    if None in found and not fetched:
-        rows, _ = incant_rows(cfg, a, fresh=True)  # one made since the cache was fetched
-        found = [incant_find(inc, rows, p, phrase) for p in players]
     missing = [p for p, e in zip(players, found) if e is None]
     if missing:
         raise Fail(1, 'no incantation "%s" for %s — vfg incantation list'
@@ -2881,7 +2878,7 @@ def edit_incantation(cfg, a, inc, va, given, v, players, phrase, mine, notes, as
             except Fail as f:
                 raise Fail(f.code, "values for %s: %s" % (e.get("action"), f.msg))
             notes += [n for n in ed.notes if n not in notes]
-            sets["values"] = dict(ed.values, **dict((k, "") for k in caster))
+            sets["values"] = dict((k, "" if k in caster else ed.values[k]) for k in v["values"])
             sets["caster_fields"] = caster
         if "cooldown_s" in change:
             sets["cooldown_s"] = float(v["cooldown_s"])
@@ -2894,7 +2891,8 @@ def edit_incantation(cfg, a, inc, va, given, v, players, phrase, mine, notes, as
             notes += [w for w in incant_warnings(inc, phrase, sets["aliases"], [e["player"]], rows, skip=e)
                       if w not in notes]
         entries.append({"player": e["player"], "phrase": e["phrase"], "set": sets})
-        after.append(dict(e, **sets))
+        after.append(dict(e, **dict(sets, values=dict(e.get("values") or {}, **sets["values"])))
+                     if "values" in sets else dict(e, **sets))
     line = run_action(cfg, a, "incantation_edit", dict(mine, **dict((k, v[k]) for k in change)), as_, task,
                       extra={"op": "update", "entries": entries})
     line["notes"] = notes + line["notes"]

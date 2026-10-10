@@ -5,7 +5,7 @@ from collections import namedtuple
 
 Config = namedtuple("Config", "db feed watch state console_log bind port client_token"
                               " base mc kit incantations owner live_poll_s cast_gap_s cast_slack_s"
-                              " incant_allowance incant_layer2")
+                              " cast_wait_s incant_allowance incant_layer2")
 
 DEFAULTS = {
     "VFG_DB": "/opt/vfg/vfg.db",
@@ -20,6 +20,7 @@ DEFAULTS = {
     "VFG_LIVE_POLL_S": "0.5",
     "VFG_CAST_GAP_S": "1.0",
     "VFG_CAST_SLACK_S": "0.3",
+    "VFG_CAST_WAIT_S": "1.5",
     "VFG_INCANT_ALLOWANCE": "0.25",
     "VFG_INCANT_LAYER2": "on",
 }
@@ -67,6 +68,7 @@ def load(environ=None):
         live_poll_s=number("VFG_LIVE_POLL_S"),
         cast_gap_s=number("VFG_CAST_GAP_S"),
         cast_slack_s=number("VFG_CAST_SLACK_S"),
+        cast_wait_s=number("VFG_CAST_WAIT_S"),
         incant_allowance=number("VFG_INCANT_ALLOWANCE"),
         incant_layer2=get("VFG_INCANT_LAYER2").strip().lower() not in OFF,
     )

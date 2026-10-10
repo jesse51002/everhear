@@ -6,10 +6,12 @@ import datetime as _dt
 import http.client
 import json
 import os
+import sqlite3
 import threading
 import time
 import unittest
 import uuid
+from unittest import mock
 
 import vfg_feed
 
@@ -238,6 +240,11 @@ class TestWho(CastCase):
     def test_an_everyone_phrase_fires_for_anyone(self):
         self.assertEqual(self.cast("light up", player="Notch")[1]["status"], "fired")
 
+    def test_a_store_change_is_seen_on_the_next_cast(self):
+        self.assertEqual(self.cast("water bolt")[0], 404)
+        self.write_store(entry("Steve", "water bolt"), version=2)
+        self.assertEqual(self.cast("water bolt")[1]["status"], "fired")
+
     def test_an_alias_as_the_phrase(self):
         self.write_store(entry("Steve", "fire ball", aliases=["fireball"]))
         self.assertEqual(self.cast("fireball")[1]["status"], "fired")
@@ -270,6 +277,20 @@ class TestCooldowns(CastCase):
         self.assertEqual(self.cast()[1]["status"], "fired")
         self.clock.advance(1.0)
         self.assertEqual(self.cast()[1]["status"], "fired")
+
+
+class TestStale(CastCase):
+    def test_a_cast_held_past_the_wait_is_stale(self):
+        late = time.monotonic() + 1.6  # the bridge's own clock, 1.6 s after the request came
+        self.casts.monotonic = lambda: late
+        status, doc = self.cast()
+        self.assertEqual((status, doc["status"]), (202, "stale"))
+        self.assertNotIn("copy", doc)
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "zap.json")))  # not started
+        self.casts.monotonic = time.monotonic
+        self.assertEqual(self.cast(start=-1.0, length=0.3)[1]["status"], "fired")  # said again
+        self.assertTrue(self.events(1))
+        self.assertEqual(self.rows("SELECT count(*) FROM events"), [(1,)])  # not the stale one
 
 
 class TestRepeats(CastCase):
@@ -408,6 +429,12 @@ class TestLayer2(CastCase):
         self.line("fire ball")
         self.assertEqual(self.rows("SELECT incantation_id FROM casts"), [("steve.fire_ball",)])
 
+    def test_a_cast_is_announced_when_its_line_is_not_stored(self):
+        with mock.patch.object(self.db, "insert_voice", side_effect=sqlite3.OperationalError("locked")):
+            self.assertEqual(self.line("fire ball")[0], 503)
+        self.assertEqual(self.rows("SELECT layer, status FROM casts"), [("transcript", "fired")])
+        self.assertTrue(self.events(1))
+
     def test_a_repeated_line_does_not_cast_again(self):
         started, ended = self.window(-2.5, 1.5)
         body = {"client_line_id": "l-1", "player_name": "Steve", "text": "ice wall",
@@ -466,8 +493,8 @@ class TestConfig(unittest.TestCase):
         cfg = config.load({})
         self.assertEqual((cfg.base, cfg.mc, cfg.kit, cfg.incantations, cfg.owner),
                          ("/opt/vfg", "/opt/mc", "/opt/vfg/scripts/_lib", "/opt/vfg/incantations.json", ""))
-        self.assertEqual((cfg.live_poll_s, cfg.cast_gap_s, cfg.cast_slack_s, cfg.incant_allowance,
-                          cfg.incant_layer2), (0.5, 1.0, 0.3, 0.25, True))
+        self.assertEqual((cfg.live_poll_s, cfg.cast_gap_s, cfg.cast_slack_s, cfg.cast_wait_s,
+                          cfg.incant_allowance, cfg.incant_layer2), (0.5, 1.0, 0.3, 1.5, 0.25, True))
         cfg = config.load({"VFG_BASE": "/b", "VFG_INCANT_LAYER2": "off", "VFG_CAST_GAP_S": "2"})
         self.assertEqual((cfg.kit, cfg.incantations, cfg.incant_layer2, cfg.cast_gap_s),
                          ("/b/scripts/_lib", "/b/incantations.json", False, 2.0))

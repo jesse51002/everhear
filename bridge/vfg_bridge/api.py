@@ -289,27 +289,30 @@ class Handler(BaseHTTPRequestHandler):
             return
         started, ended = self.server.clock_guard(line)
         casts = self.server.casts
-        found = NOTHING
-        if casts is not None:
-            try:
-                found = casts.on_line(line["player_name"], line["text"], started, ended,
-                                      line["client_line_id"])
-            except Exception:  # never lose a line over an incantation
-                log.exception("a line's casts failed; it is stored as it is")
+        made = []  # the casts Layer 2 made: each is announced, whatever becomes of the line
         try:
-            line_id = self.server.db.insert_voice(
-                timeutil.format_time(started), timeutil.format_time(ended),
-                line["player_uuid"], line["player_name"], line["text"],
-                line["peak_dbfs"], line["mean_dbfs"], line["client_line_id"],
-                dropped=found.dropped, cast_id=found.cast_id, cast_ids=found.cast_ids)
-        except (sqlite3.Error, OSError) as exc:  # locked past the busy timeout, a full disk
-            log.error("storing a line failed: %s: %s", type(exc).__name__, exc)
-            self._send(503, {"error": "busy"})
-            return
-        self._line_id = line_id
-        self._send(202, {"id": line_id})
-        for cast in found.made:
-            casts.announce(cast)
+            found = NOTHING
+            if casts is not None:
+                try:
+                    found = casts.on_line(line["player_name"], line["text"], started, ended,
+                                          line["client_line_id"], arrived=self._start, made=made)
+                except Exception:  # never lose a line over an incantation
+                    log.exception("a line's casts failed; it is stored as it is")
+            try:
+                line_id = self.server.db.insert_voice(
+                    timeutil.format_time(started), timeutil.format_time(ended),
+                    line["player_uuid"], line["player_name"], line["text"],
+                    line["peak_dbfs"], line["mean_dbfs"], line["client_line_id"],
+                    dropped=found.dropped, cast_id=found.cast_id, cast_ids=found.cast_ids)
+            except (sqlite3.Error, OSError) as exc:  # locked past the busy timeout, a full disk
+                log.error("storing a line failed: %s: %s", type(exc).__name__, exc)
+                self._send(503, {"error": "busy"})
+                return
+            self._line_id = line_id
+            self._send(202, {"id": line_id})
+        finally:
+            for cast in made:
+                casts.announce(cast)
 
     # -- POST /v1/casts and GET /v1/incantations ---------------------------------
 
@@ -329,7 +332,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             status, doc, after = casts.cast(cast["player_name"], cast["phrase"], cast["heard"],
-                                            started, ended, cast["client_cast_id"])
+                                            started, ended, cast["client_cast_id"],
+                                            arrived=self._start)
         except Unavailable as exc:
             self._send(503, {"error": str(exc)})
             return

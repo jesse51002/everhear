@@ -240,8 +240,10 @@ class Store(object):
                 ch.items[i] = e
         return dict(e), old is not None
 
-    def update(self, player, phrase, **changes):
+    def update(self, player, phrase, merge_values=False, **changes):
         """Change fields of one entry (values, cooldown_s, aliases ...): the entry as stored.
+        With merge_values, a values change is merged over the values the store holds as it
+        writes, under its lock, so two edits of different values close together both land.
         KeyError when there is none; ValueError for a change to id, player or phrase."""
         bad = sorted(set(changes) & {"id", "player", "phrase"})
         if bad:
@@ -252,6 +254,8 @@ class Store(object):
                 raise KeyError("%s has no incantation %r" % (player, normalize(phrase)))
             new = dict(old)
             new.update(changes)
+            if merge_values and isinstance(changes.get("values"), dict):
+                new["values"] = dict(old.get("values") or {}, **changes["values"])
             ch.items[i] = new
         return dict(new)
 
@@ -688,14 +692,14 @@ def words_left(text, entry):
     """The drop rule's count: the line's words, fillers never counted, less the phrase's.
     The phrase is found by its exact words (the phrase or an alias, as a run of words: every
     such run is taken out), else by Layer 2 at DROP_ALLOWANCE (the words it covers) when that
-    run is plausibly the phrase (_plausible), else not found, and the phrase's word count is
-    taken off."""
+    run is plausibly the phrase (_plausible). A line it is not found in has nothing taken out,
+    so every word of it is left: it goes on to Jev and the brain, which see the cast."""
     return _left(text, entry)[0]
 
 
 def _left(text, entry):
-    """words_left's count, and the words left: when the phrase is not found, every word of the
-    line but the phrase's own (there is no telling which the count left)."""
+    """words_left's count, and the words left (every word of the line when the phrase is not
+    found in it)."""
     ws = [w for w in words(text) if w not in FILLERS]
     runs = []
     for target in targets(entry):
@@ -721,8 +725,7 @@ def _left(text, entry):
         first, last = word_of[start], word_of[end - 1] + 1
         if _plausible(d, target, t, end - start, last - first):
             return len(ws) - (last - first), ws[:first] + ws[last:]
-    own = set(w for r in runs for w in r)
-    return max(0, len(ws) - len(words(entry.get("phrase")))), [w for w in ws if w not in own]
+    return len(ws), ws
 
 
 def _plausible(d, target, t, phones_run, covered):

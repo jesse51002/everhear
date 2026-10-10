@@ -11,11 +11,13 @@ an empty store and no cache. TestCli runs vfg itself.
 """
 import argparse
 import contextlib
+import copy
 import io
 import json
 import os
 import shutil
 import sys
+import threading
 import types
 import unittest
 from unittest import mock
@@ -46,14 +48,16 @@ def install(repo):
                     ignore=shutil.ignore_patterns("__pycache__"))
 
 
-def fake_llm(variants=None, fail=None):
-    """A stand-in for lib/py/vfg_llm: structured() answers `variants`, or raises `fail`; the
-    calls it had in .calls."""
+def fake_llm(variants=None, fail=None, after=None):
+    """A stand-in for lib/py/vfg_llm: structured() answers `variants`, or raises `fail`, once
+    `after` (an Event) is set, if given; the calls it had in .calls."""
     mod = types.ModuleType("vfg_llm")
     mod.calls = []
 
     async def structured(prompt, output, **kw):
         mod.calls.append(dict(kw, prompt=prompt))
+        if after is not None and not after.wait(5):
+            raise RuntimeError("answered only after the store was read")
         if fail:
             raise fail
         return types.SimpleNamespace(value=output(variants=variants), cost=0.00012, ms=840)
@@ -203,6 +207,21 @@ class TestCreate(Case):
         self.assertEqual((call["model"], call["reasoning"], call["timeout"]), ("test/m", False, 8.0))
         self.assertIn('The phrase: "fire ball"', call["prompt"])
 
+    def test_the_alias_call_runs_while_the_store_is_read(self):
+        reading = threading.Event()
+        fetch = self.vfg.fetch_incantations
+
+        def fetch_and_say(cfg, a, stamps=None):
+            reading.set()
+            return fetch(cfg, a, stamps)
+        llm = fake_llm(["fire bowl"], after=reading)
+        with mock.patch.dict(sys.modules, {"vfg_llm": llm}), mock.patch.dict(os.environ, VFG_INCANT_ALIAS_MODEL="test/m"), \
+                mock.patch.object(self.vfg, "fetch_incantations", fetch_and_say):
+            self.cfg = self.vfg.Config()
+            line = self.create()
+        self.assertEqual(line["notes"], [])
+        self.assertEqual(self.entry("steve.fire_ball")["aliases"], ["fireball", "fire bowl"])
+
     def test_a_failed_alias_call_is_a_note(self):
         llm = fake_llm(fail=RuntimeError("no answer from test/m within 8 s"))
         with mock.patch.dict(sys.modules, {"vfg_llm": llm}), mock.patch.dict(os.environ, VFG_INCANT_ALIAS_MODEL="test/m"):
@@ -257,6 +276,16 @@ class TestEdit(Case):
         self.run_("incantation_edit", player="Steve", phrase="beam me", values={"player": "Alex"})
         e = self.entry("steve.beam_me")
         self.assertEqual((e["values"]["player"], e["caster_fields"]), ("Alex", []))
+
+    def test_two_edits_of_different_values_both_land(self):
+        self.create(phrase="beam me", action="beam", values={"length": 50})
+        read_before = copy.deepcopy(self.vfg.fetch_incantations(self.cfg, self.a))
+        self.run_("incantation_edit", player="Steve", phrase="beam me", values={"length": 80})
+        # The second edit read the entry before the first landed: length still 50 to it.
+        with mock.patch.object(self.vfg, "fetch_incantations", lambda cfg, a, stamps=None: read_before):
+            self.run_("incantation_edit", player="Steve", phrase="beam me", values={"cooldown": 1})
+        e = self.entry("steve.beam_me")
+        self.assertEqual((e["values"]["length"], e["values"]["cooldown"], e["values"]["player"]), (80, 1.0, ""))
 
     def test_aliases_are_normalised_and_bind_checked(self):
         self.create()

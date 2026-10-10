@@ -25,13 +25,25 @@ class Kit:
         self._lock = threading.Lock()
         self._stamp = self      # never a stamp: the first call loads
         self._mods = None
+        self._seen = (None, None)  # the stamp file's key, and what it said
 
     def stamp(self):
+        """What .vfg-stamp says, read again only when its file changes (vfg replaces it whole)."""
+        path = os.path.join(self.path, STAMP)
         try:
-            with open(os.path.join(self.path, STAMP), encoding="ascii") as f:
-                return f.read().strip()
-        except (OSError, ValueError):
+            st = os.stat(path)
+        except OSError:
             return None
+        key = (st.st_ino, st.st_size, st.st_mtime_ns)
+        seen, text = self._seen
+        if key != seen:
+            try:
+                with open(path, encoding="ascii") as f:
+                    text = f.read().strip()
+            except (OSError, ValueError):
+                return None
+            self._seen = (key, text)
+        return text
 
     def modules(self):
         """(incantations, instances), or None when the kit does not have them."""

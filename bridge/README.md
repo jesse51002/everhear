@@ -48,19 +48,22 @@ No network and no EC2: a temporary database, feed and console log, a stub Jev fi
 The store is `/opt/vfg/incantations.json`, written by the incantation actions' box script; the
 bridge only reads it, through the kit's `incantations` module (`scripts/_lib/incantations.py`), and
 starts copies through its `instances`. Both are imported from `VFG_KIT`, and imported again when
-the kit's `.vfg-stamp` changes, so a deploy of the kit needs no restart. Without them, casts and the
-list answer `503` and lines are stored as before. Every endpoint takes the client token.
+the kit's `.vfg-stamp` changes, so a deploy of the kit needs no restart. The store is parsed again,
+and the stamp read again, only when its file changes. Without them, casts and the list answer `503`
+and lines are stored as before. Every endpoint takes the client token.
 
 - **`POST /v1/casts`** `{"client_cast_id", "player_uuid", "player_name", "phrase", "heard"?,
   "started_at", "ended_at"}`: the mod's keyword spotter heard `phrase`. `202 {"id", "status",
-  "copy"?, "error"?}`, the status `fired`, `cooldown`, `duplicate` or `failed`; `404` when the player
-  has no such incantation (their own or `@a`). Under one lock with Layer 2's casts: a repeated
-  `client_cast_id` answers what the first did; a cast of an incantation whose window, widened by
-  `VFG_CAST_SLACK_S` on each side, overlaps an earlier cast of it by that player, whatever its
-  status, is `duplicate`; its `cooldown_s` since it last fired for the player, then
-  `VFG_CAST_GAP_S` since any of theirs fired, are `cooldown`. Otherwise its copy starts (`instances.Box.start`, task `cast`, every
-  `caster_fields` value the caster's name) and the answer goes as soon as it is spawned; the copy
-  is reaped on a thread. A fired or failed cast also writes an `events` row (kind `cast`) and a feed
+  "copy"?, "error"?}`, the status `fired`, `cooldown`, `duplicate`, `failed` or `stale`; `404`
+  when the player has no such incantation (their own or `@a`). Under one lock with Layer 2's
+  casts: a repeated `client_cast_id` answers what the first did; a cast of an incantation whose
+  window, widened by `VFG_CAST_SLACK_S` on each side, overlaps an earlier cast of it by that
+  player, whatever its status, is `duplicate`; its `cooldown_s` since it last fired for the
+  player, then `VFG_CAST_GAP_S` since any of theirs fired, are `cooldown`. A cast the bridge has
+  held `VFG_CAST_WAIT_S` since its request came (on that lock, or on `run/copies.lock` while a
+  copy stops for an edit) is `stale`: stored, never started or announced. Otherwise its copy
+  starts (`instances.Box.start`, task `cast`, every `caster_fields` value the caster's name) and
+  the answer goes as soon as it is spawned; the copy is reaped on a thread. A fired or failed cast also writes an `events` row (kind `cast`) and a feed
   line, whatever `watch.json` says: `GAME#n HH:MM:SS cast Steve | Steve cast "fire ball": command,
   running as command_2`, or `... failed — <error>`. Also after the answer, a cast that came after
   its line drops that line, by the drop rule, if Jev has not judged it yet.
@@ -97,6 +100,7 @@ On the box, from `/opt/vfg/.env` (its names are in `deploy/env.example`):
 | `VFG_INCANTATIONS` | `$VFG_BASE/incantations.json`; for tests only: the box script and vfg use that path |
 | `VFG_OWNER`, `VFG_LIVE_POLL_S` | none, `0.5`: passed to a cast's copy |
 | `VFG_CAST_GAP_S`, `VFG_CAST_SLACK_S` | `1.0` s between a player's casts, `0.3` s of overlap slack |
+| `VFG_CAST_WAIT_S` | `1.5`: a cast held longer than this since its request is `stale` |
 | `VFG_INCANT_ALLOWANCE`, `VFG_INCANT_LAYER2` | `0.25`, `on` (`off` turns Layer 2 off) |
 
 On the owner's PC, from `~/.vfg/config`: `VFG_SSH_HOST`, `VFG_SSH_USER`, `VFG_SSH_KEY`,

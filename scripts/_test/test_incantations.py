@@ -113,6 +113,13 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.store.find("Steve", "fire ball"), entry)
         self.assertEqual(self.store.version(), 2)
 
+    def test_update_merging_values_keeps_the_others(self):
+        self.put("Steve", "fire ball", values={"power": 2, "speed": 1})
+        self.assertEqual(self.store.update("Steve", "fire ball", values={"power": 4})["values"], {"power": 4})
+        self.store.update("Steve", "fire ball", values={"power": 2, "speed": 1})
+        entry = self.store.update("Steve", "fire ball", merge_values=True, values={"power": 4})
+        self.assertEqual(entry["values"], {"power": 4, "speed": 1})
+
     def test_update_of_none_or_of_the_phrase_refused_without_a_write(self):
         self.put("Steve", "fire ball")
         with self.assertRaises(KeyError):
@@ -308,7 +315,7 @@ class DropTests(unittest.TestCase):
 
     def test_a_false_spotter_hit_never_drops_a_real_ask(self):
         # "build me a castle" is kamehameha at 0.4: within 0.5, but four words for a one-word alias
-        self.assertEqual(inc.words_left("build me a castle", KAMEHAMEHA), 2)
+        self.assertEqual(inc.words_left("build me a castle", KAMEHAMEHA), 4)
         self.assertFalse(inc.drop("build me a castle", KAMEHAMEHA))
 
     def test_split_rendering_still_dropped(self):
@@ -317,11 +324,15 @@ class DropTests(unittest.TestCase):
 
     def test_a_run_of_unlike_length_is_not_the_phrase(self):
         with mock.patch.object(inc, "DROP_SPAN_RATIO", (0.6, 1.1)):
-            self.assertEqual(inc.words_left("come a hammer ha", KAMEHAMEHA), 2)   # 10 phonemes for 8
+            self.assertEqual(inc.words_left("come a hammer ha", KAMEHAMEHA), 4)   # 10 phonemes for 8
 
-    def test_not_found_takes_off_the_phrases_word_count(self):
-        self.assertEqual(inc.words_left("the creeper blew up my house", FIRE_BALL), 4)
-        self.assertFalse(inc.drop("the creeper blew up my house", FIRE_BALL))
+    def test_not_found_takes_nothing_out(self):
+        self.assertEqual(inc.words_left("can you make it night time", FIRE_BALL), 6)
+        for line in ("make it night", "give me food", "heal me now", "teleport me home"):
+            self.assertEqual(inc.words_left(line, FIRE_BALL), 3, line)
+            self.assertFalse(inc.drop(line, FIRE_BALL), line)
+        self.assertTrue(inc.drop("fire ball", FIRE_BALL))
+        self.assertTrue(inc.drop("come a hammer ha", KAMEHAMEHA))
 
 
 class AliasTests(unittest.TestCase):

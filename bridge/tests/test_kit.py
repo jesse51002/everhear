@@ -32,8 +32,10 @@ class TestKit(unittest.TestCase):
             with open(path, "w") as f:
                 f.write("VALUE = %d\n\ndef warm():\n    pass\n" % value)
             os.utime(path, (1e9 + value, 1e9 + value))  # a cached .pyc of the last one is stale
-        with open(os.path.join(self.path, ".vfg-stamp"), "w") as f:
+        tmp = os.path.join(self.path, ".vfg-stamp.tmp")  # replaced whole, as vfg writes it
+        with open(tmp, "w") as f:
             f.write(stamp + "\n")
+        os.replace(tmp, os.path.join(self.path, ".vfg-stamp"))
 
     def test_a_new_stamp_imports_them_again(self):
         self.deploy(1, "a" * 64)

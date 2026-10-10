@@ -3,8 +3,8 @@ ASKS = ["make fire ball shoot a fireball", "give my fire ball a ten second coold
 # Run by the incantation_create, incantation_edit and incantation_remove actions. vfg checks
 # everything on the PC (toolkit/vfg, run_incantation) and sends, beside the action's own fields,
 # "op" and "entries": put, each a whole entry; update, each {"player", "phrase", "set"}, the
-# keys that change; remove, each {"player", "phrase"}. The store is the kit's incantations.Store,
-# which the bridge reads as players cast.
+# keys that change, "values" holding only the values that change; remove, each {"player",
+# "phrase"}. The store is the kit's incantations.Store, which the bridge reads as players cast.
 from kit import values, result
 import json
 import sys
@@ -52,6 +52,17 @@ phrase = entries[0]["phrase"]
 done, replaced, missing, said = [], [], [], ""
 
 
+def update(e):
+    """Store.update, with the values given merged over the ones the store holds as it writes,
+    under its lock, so two edits of different values close together both land: (the entry
+    before, for the summary, the entry after), or (None, None)."""
+    old = store.find(e["player"], e["phrase"])
+    try:
+        return old or {}, store.update(e["player"], e["phrase"], merge_values=True, **e["set"])
+    except KeyError:
+        return None, None
+
+
 def apply(e):
     """One entry's change; what it did lands in done, replaced, missing and said."""
     global said
@@ -61,10 +72,8 @@ def apply(e):
         if was:
             replaced.append(got)
     elif op == "update":
-        old = store.find(e["player"], e["phrase"]) or {}
-        try:
-            got = store.update(e["player"], e["phrase"], **e["set"])
-        except KeyError:
+        old, got = update(e)
+        if got is None:
             missing.append(e["player"])
             return
         done.append(got)

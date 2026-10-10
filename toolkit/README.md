@@ -186,14 +186,16 @@ once vfg has checked everything here (`run_incantation`):
   words split) and one `structured()` call's, 12 at most: `VFG_INCANT_ALIAS_MODEL`, by default
   the dispatcher's planner's model and providers, reasoning off, 8 s at most (about 1 s and
   $0.00005); `off` skips it, and a failure is a note. Its prompt is `INCANT_ALIAS_PROMPT` in
-  `vfg`. One SSH call reads the store and the bound script's stamps: the bind warnings (a
-  short phrase; one that sounds like, or starts like, another of the player's) and a replaced
-  one are notes, and the bound script and `_lib` are deployed when their stamps say so, as a
-  run would.
-- **Edit** finds each player's entry by its player and phrase and changes what is given: the
-  values, checked against its action over the stored ones (a player field set empty becomes a
-  caster's, one given a name stops being one); the cooldown; the aliases, normalised, capped
-  and bind-checked again.
+  `vfg`. The call is made while one SSH call reads the store and the bound script's stamps: the
+  bind warnings (a short phrase; one that sounds like, or starts like, another of the player's)
+  and a replaced one are notes, and the bound script and `_lib` are deployed when their stamps
+  say so, as a run would.
+- **Edit** reads each player's entry from the box (never the cache), by its player and phrase,
+  and changes what is given: the values, checked against its action over the stored ones (a
+  player field set empty becomes a caster's, one given a name stops being one) and sent as only
+  the keys given, which the box merges over what the store holds as it writes, so two edits of
+  different values both land; the cooldown; the aliases, normalised, capped and bind-checked
+  again.
 - **Remove** removes each player's entry; one nobody had is `"ok": false`.
 - **`vfg incantation list`** answers from `$VFG_HOME/incantations.json`, `{"fetched_at",
   "version", "incantations": [entries]}`, while it is younger than `VFG_INCANT_TTL_S` (30 s),
