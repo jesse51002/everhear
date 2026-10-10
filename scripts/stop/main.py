@@ -25,7 +25,8 @@ try:
     was = instances.stop(copy)   # SIGTERM: its cleanup takes away what carries its tag
 except instances.CopyError as e:
     fail(str(e), copy=copy)
-# What a copy that ended by itself kept, or a cleanup that ran out of time left, goes too.
+# What a cleanup that ran out of time left goes too. What a copy that ended by itself kept is
+# under vfg_left_<copy> (mc.py), which no stop takes: a later copy may have this name.
 tag = "vfg_" + copy
 left = mc.count("@e[tag=%s]" % tag)
 if left:

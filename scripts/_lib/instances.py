@@ -27,8 +27,9 @@ A copy's files in run/ (VFG_RUN_DIR):
 A copy's name is `as=` when the run gives one (refused while that copy runs), else the action's
 name, else the next free <action>_2, _3 ...; it is picked, and the copy started, under
 run/copies.lock, so two runs at once never take one name. Everything a copy makes carries the
-tag vfg_<copy>; mc.py removes it when the copy is stopped or ends by itself, and a stop that
-had to SIGKILL sends that kill itself.
+tag vfg_<copy>: mc.py kills it when the copy is stopped (or fails), and a stop that had to
+SIGKILL sends that kill itself; a copy that ends by itself hands it over to vfg_left_<copy>,
+so the next copy under its name, which is free again, never takes it with its stop.
 """
 import fcntl
 import json

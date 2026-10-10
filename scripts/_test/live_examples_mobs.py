@@ -159,10 +159,11 @@ FORCED = rc("forceload query")
 
 
 def left(copy, tags=()):
-    """What a copy left behind: entities tagged vfg_<copy> (or one of its own tags), its
-    bossbars, and forceloads that were not there before."""
+    """What a copy left behind: entities tagged vfg_<copy>, vfg_left_<copy> (what it kept as it
+    ended by itself) or one of its own tags, its bossbars, and forceloads that were not there
+    before."""
     out = []
-    for t in ("vfg_" + copy,) + tuple("vfg_%s_%s" % (copy, s) for s in tags):
+    for t in ("vfg_" + copy, "vfg_left_" + copy) + tuple("vfg_%s_%s" % (copy, s) for s in tags):
         if count("@e[tag=%s]" % t):
             out.append("entity tagged " + t)
     for k in (1, 2):

@@ -47,6 +47,14 @@ print("values", json.dumps(meta["values"], sort_keys=True), flush=True)
 time.sleep(60)
 '''
 
+# A once script that summons one zombie with its copy's tag, named, then naps and ends.
+HORDE = '''import json, os, time
+import mc
+meta = json.load(open(os.path.join(os.environ["VFG_RUN_DIR"], os.environ["VFG_SCRIPT"] + ".json")))
+mc.rcon('summon minecraft:zombie ~ ~ ~ {Tags:["vfg","%s"],CustomName:"%s"}' % (mc.TAG, meta["values"]["name"]))
+time.sleep(meta["values"]["nap"])
+'''
+
 _catalog = []
 
 
@@ -797,6 +805,39 @@ class StopTests(BoxTest):
         self.assertEqual((r.code, r.summary), (0, "stopped nap_2"))
         self.assertTrue(b.box.pid("nap"))
         self.assertIsNone(b.box.pid("nap_2"))
+
+    def test_what_an_ended_copy_left_is_never_taken_by_the_stop_of_a_later_copy_named_the_same(self):
+        w = FakeWorld()
+        b = self.box(w)
+        os.symlink(LIB, os.path.join(b.base, "scripts", "_lib"))
+        horde = os.path.join(b.base, "scripts", "horde")
+        os.makedirs(horde)
+        with open(os.path.join(horde, "main.py"), "w") as f:
+            f.write(HORDE)
+
+        def run(name, nap):
+            meta = {"action": "horde", "script": "horde", "source": "library", "values": {"name": name, "nap": nap},
+                    "live": [], "runs": "once", "task": "T7"}
+            copy, pid, proc = b.box.start(meta, "horde")
+            b.procs.append(proc)
+            return copy, proc
+
+        copy, proc = run("first", 0)
+        got = b.box.wait(copy, proc, 15)
+        self.assertEqual((copy, got["running"], got["code"]), ("horde", False, 0))
+        # It ended by itself: its zombie stays, handed over from vfg_horde to vfg_left_horde.
+        self.assertEqual([(e["name"], e["tags"]) for e in w.entities], [("first", {"vfg", "vfg_left_horde"})])
+        copy, proc = run("second", 60)                    # the name is free again: the same copy name
+        self.assertEqual(copy, "horde")
+        deadline = time.time() + 10
+        while len(w.entities) < 2 and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertEqual([e["name"] for e in w.entities], ["first", "second"])
+        r = b.run("stop", {"copy": "horde"})
+        self.assertEqual((r.code, r.summary), (0, "stopped horde"))
+        self.assertEqual([(e["name"], e["tags"]) for e in w.entities], [("first", {"vfg", "vfg_left_horde"})])
+        self.assertIn("kill @e[tag=vfg_horde]", w.sent)
+        self.assertNotIn("kill @e[tag=vfg_left_horde]", w.sent)
 
     def test_a_copy_that_ended(self):
         b = self.box(FakeWorld())

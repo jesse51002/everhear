@@ -79,6 +79,8 @@ SUMMON_PLAYER = "Can't summon entity of type minecraft:player"
 SUMMON_UNKNOWN = ("Can't find element 'minecraft:%s' of type 'minecraft:entity_type'"
                   "...t:%s ~ ~ ~<--[HERE]")
 SUMMON_PEACEFUL = "Monsters cannot be summoned in Peaceful difficulty"
+TAG_ADDED = "Added tag '%s' to %d entities"                                  # these two: 2026-10-10, realmc
+TAG_ADD_FAILED = "Target either already has the tag or has too many tags"   # all it matched have it
 TAG_REMOVED = "Removed tag '%s' from %d entities"
 TAG_REMOVED_ONE = "Removed tag '%s' from %s"
 KILLED = "Killed %d entities"

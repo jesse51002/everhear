@@ -36,6 +36,13 @@ INSTANCE = (os.environ.get("VFG_INSTANCE") or os.environ.get("VFG_SCRIPT") or ""
 if not re.match(r"^[a-z0-9][a-z0-9_-]{0,47}$", INSTANCE):
     INSTANCE = NAME
 TAG = "vfg_" + INSTANCE
+# What a copy that ended by itself left is handed over to this tag, so a later copy under the
+# same name, whose TAG is the same, never takes it with its stop; `kill @e[tag=vfg_left_<copy>]`
+# clears it by hand.
+LEFT_TAG = "vfg_left_" + INSTANCE
+# TAG as a whole tag in a command (a tag is A-Z, a-z, 0-9 and _.+-): once one is sent, something
+# may carry it, and an end by itself hands it over.
+_TAG_IN = re.compile(re.escape(TAG) + r"(?![A-Za-z0-9_.+-])")
 TASK = os.environ.get("VFG_TASK", "").strip()
 
 PROPERTIES = os.environ.get("VFG_MC_PROPERTIES", "/opt/mc/server.properties")
@@ -70,6 +77,7 @@ _settings = None
 _next_id = [1]
 _stoppers = []      # (fn, at_exit), oldest first
 _failed = []        # an error nothing caught ended the script (sys.excepthook)
+_tagged = []        # a command named TAG (_TAG_IN)
 _stopping = threading.Event()
 _stop = {"thread": None, "deadline": 0.0, "conn": None}
 
@@ -334,6 +342,8 @@ def rcon(cmd: str) -> str:
         cmd = cmd[1:]
     if not cmd:
         return ""
+    if not _tagged and _TAG_IN.search(cmd):
+        _tagged.append(True)
     bad = refused_word(cmd)
     if bad:
         log("refused:", repr(bad), "is the server owner's to do")
@@ -475,7 +485,7 @@ def spawn(player, mob, nbt="", spread=6, y=1, tags=()) -> bool:
 def _clean_up(stopped=True) -> None:
     """A stop (or a failure): every on_stop cleanup, newest first, then everything tagged TAG,
     within the budget. An end by itself: only the cleanups that run at exit too, and nothing
-    is killed."""
+    is killed: what carries TAG is handed over to LEFT_TAG."""
     for fn, at_exit in reversed(list(_stoppers)):
         if not (stopped or at_exit):
             continue
@@ -483,11 +493,17 @@ def _clean_up(stopped=True) -> None:
             fn()
         except Exception as e:
             log("cleanup error:", type(e).__name__, e)
+    _stop["deadline"] = max(_stop["deadline"], time.time() + 0.3)
     if not stopped:
+        # The name is free once this process is gone, and the next copy under it has this TAG:
+        # what this one made stays, under a tag no stop of that copy sends a kill to. Nothing
+        # carries TAG unless a command named it.
+        if _tagged:
+            rcon("tag @e[tag=%s] add %s" % (TAG, LEFT_TAG))
+            rcon("tag @e[tag=%s] remove %s" % (TAG, TAG))
         log("cleaned up")
         return
     # Anything summoned with TAG goes too, even if a cleanup forgot it or ran out of time.
-    _stop["deadline"] = max(_stop["deadline"], time.time() + 0.3)
     rcon("kill @e[tag=%s]" % TAG)
     log("stopped")
 
@@ -516,8 +532,9 @@ def _on_failure(kind, value, tb) -> None:
 
 def _on_exit() -> None:
     """A script that ends by itself (its main.py returns or exits) keeps what it made on
-    purpose: the mobs it summoned and the blocks it built stay, and nothing tagged TAG is killed.
-    What was only for the while is undone, by the cleanups registered to run at exit too (all
+    purpose: the mobs it summoned and the blocks it built stay, and nothing tagged TAG is killed;
+    what carries TAG is tagged LEFT_TAG in its place, so no stop of a later copy under the same
+    name reaches it. What was only for the while is undone, by the cleanups registered to run at exit too (all
     but on_stop(fn, at_exit=False)): the shells a freeze put up melt, items lent come back, a
     boss's bar goes, a gamerule goes back, forceloads are released. A script that fails (an
     error nothing caught, its traceback in the log) cleans up as a stopped one does, so nothing
@@ -539,9 +556,9 @@ def on_stop(fn, at_exit=True) -> None:
     """Run fn when the script is stopped (SIGTERM or SIGINT: vfg script stop), and when it ends
     by itself too unless at_exit=False. A stop (or a failure) runs every fn, newest first, then
     kills everything tagged TAG: what the script made goes. An end by itself runs only the fns
-    registered at_exit, and kills nothing: what it made stays. So at_exit=True (the default) is
-    for undoing what was only for the while (an effect, a shell of ice, a gamerule, a tag on
-    players), and at_exit=False for taking away what the script made, which must outlast a
+    registered at_exit, and kills nothing: what it made stays, handed over to LEFT_TAG. So
+    at_exit=True (the default) is for undoing what was only for the while (an effect, a shell of
+    ice, a gamerule, a tag on players), and at_exit=False for taking away what the script made, which must outlast a
     script that has done its job (mobs, a build). Other threads' commands are dropped from then
     on, and the whole cleanup takes at most STOP_BUDGET s."""
     _stoppers.append((fn, at_exit))

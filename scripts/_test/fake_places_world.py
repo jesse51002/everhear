@@ -10,7 +10,7 @@ places module ask: `list`, a player's Pos, Dimension, respawn and LastDeathLocat
 the centre at y 64), `execute in <dim> positioned <x y z> (if|unless) block ~ ~[-1|1] ~ ...`
 (blocks set in `world.blocks`, else grass under and air above; the tags #campfires and
 #replaceable) and `if biome ~ ~ ~ <id>` (`world.biomes`), `effect`, `tp`, `spawnpoint`,
-`summon`, tags and counts, the command storage, and a few plain commands (time, weather, give,
+`summon`, tags (added and removed) and counts, the command storage, and a few plain commands (time, weather, give,
 kill, difficulty). Anything else is "Unknown or incomplete command", as Minecraft says it.
 Python 3.9.
 
@@ -306,15 +306,22 @@ class FakeWorld(object):
         return R.SUMMONED % (name or MOBS[mob])
 
     def tag(self, rest, dim, at):
-        m = re.match(r"^@e\[tag=([A-Za-z0-9_.+-]+)\] remove (\S+)$", rest)
+        m = re.match(r"^@e\[tag=([A-Za-z0-9_.+-]+)\] (add|remove) (\S+)$", rest)
         if not m:
             return "Incorrect argument for commandtag %s<--[HERE]" % rest[:20]
         hit = [e for e in self.entities if m.group(1) in e["tags"]]
         if not hit:
             return R.NO_ENTITY
+        if m.group(2) == "add":
+            new = [e for e in hit if m.group(3) not in e["tags"]]
+            if not new:
+                return R.TAG_ADD_FAILED
+            for e in new:
+                e["tags"].add(m.group(3))
+            return R.TAG_ADDED % (m.group(3), len(new))
         for e in hit:
-            e["tags"].discard(m.group(2))
-        return R.TAG_REMOVED % (m.group(2), len(hit))
+            e["tags"].discard(m.group(3))
+        return R.TAG_REMOVED % (m.group(3), len(hit))
 
     def kill(self, rest, dim, at):
         m = re.match(r"^@e\[tag=([A-Za-z0-9_.+-]+)\]$", rest)

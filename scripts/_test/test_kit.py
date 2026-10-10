@@ -1017,10 +1017,14 @@ mc.log("done")
         self.assertEqual(self.world.forced, set())
         self.assertEqual(self.world.gamerules["mob_griefing"], "false")
         self.assertNotIn("vfg_ender_kills", self.world.objectives)
-        # what it made stays: the boss's body and the two zombies, and no kill was sent
-        self.assertEqual(sorted(e["type"] for e in self.world.entities if "vfg_ender" in e["tags"]),
+        # what it made stays: the boss's body and the two zombies, and no kill was sent; they are
+        # handed over to vfg_left_ender, so a later copy named ender never takes them with its stop
+        self.assertEqual(sorted(e["type"] for e in self.world.entities if "vfg_left_ender" in e["tags"]),
                          ["zombie", "zombie", "zombie"])
+        self.assertEqual([e for e in self.world.entities if "vfg_ender" in e["tags"]], [])
         self.assertEqual([c for c in self.world.commands if c.startswith("kill")], [])
+        self.assertEqual(self.world.commands[-2:], ["tag @e[tag=vfg_ender] add vfg_left_ender",
+                                                    "tag @e[tag=vfg_ender] remove vfg_ender"])
 
     def test_a_one_shot_spawner_leaves_its_mobs_when_it_ends(self):
         src = '''"""Spiders: 39 giant spiders round a player, then it is done."""
@@ -1040,7 +1044,7 @@ mc.log("summoned", n)
         self.assertIn("summoned 39", out)
         self.assertIn("ended by itself", out)
         time.sleep(0.2)
-        spiders = [e for e in self.world.entities if e["type"] == "spider" and "vfg_spiders" in e["tags"]]
+        spiders = [e for e in self.world.entities if e["type"] == "spider" and "vfg_left_spiders" in e["tags"]]
         self.assertEqual(len(spiders), 39)
         self.assertEqual([c for c in self.world.commands if c.startswith("kill")], [])
 

@@ -152,17 +152,17 @@ def objectives():
 
 
 def left(copy, own_tags=(), shared=()):
-    """What a copy left behind: entities tagged vfg_<copy> (with the kit's "vfg" tag, or one
-    of its own tags on the world's mobs), its objectives (and the seed's shared ones), and
-    forceloads that were not there before."""
+    """What a copy left behind: entities tagged vfg_<copy> or vfg_left_<copy> (what it kept as
+    it ended by itself) (with the kit's "vfg" tag, or one of its own tags on the world's mobs),
+    its objectives (and the seed's shared ones), and forceloads that were not there before."""
     out = []
     tag = "vfg_" + copy
-    for t in (tag,) + tuple("%s_%s" % (tag, s) for s in own_tags):
+    for t in (tag, "vfg_left_" + copy) + tuple("%s_%s" % (tag, s) for s in own_tags):
         if count("@e[tag=%s]" % t):
             out.append("entity tagged " + t)
     for m in re.finditer(r"\[([^\]]*)\]", rc("execute as @e[tag=vfg] run data get entity @s Tags")):
         tags = re.findall(r'"([^"]+)"', m.group(1))
-        if any(t == tag or t.startswith(tag + "_") for t in tags):
+        if any(t in (tag, "vfg_left_" + copy) or t.startswith(tag + "_") for t in tags):
             out.append("entity tagged " + ",".join(tags))
     for o in objectives():
         if o == tag or o.startswith(tag + "_") or o in shared:

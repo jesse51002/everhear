@@ -466,7 +466,7 @@ def run_example(name, seconds=4.0, folder=None, meta=None):
                 res["cmds"] = list(world.commands)
                 res["after"] = res["cmds"][len(res["before"]):]
                 res["left"] = {
-                    "entities": [e["type"] for e in world.entities if tag in e["tags"]
+                    "entities": [e["type"] for e in world.entities if tag in e["tags"] or "vfg_left_" + name in e["tags"]
                                  or any(t.startswith(tag + "_") for t in e["tags"])],
                     "bossbars": [b for b in world.bossbars if b.startswith("vfg:%s" % name)],
                     "forceloads": sorted(world.forced),
@@ -516,7 +516,7 @@ class ScriptTests(unittest.TestCase):
             self.assertIsNotNone(res["stop_took"], "did not exit within 2 s of SIGTERM")
             self.assertIn("kill @e[tag=vfg_%s]" % name, res["after"], "no cleanup sent after SIGTERM")
         else:
-            # Ended by itself: the mobs it made stay; a helper (a marker) never does.
+            # Ended by itself: the mobs it made stay (under vfg_left_<name>); a helper (a marker) never does.
             left["entities"] = [t for t in left["entities"] if t == "marker"]
         self.assertEqual(left, {"entities": [], "bossbars": [], "forceloads": [], "objectives": []},
                          "left behind after it %s" % ("ended" if res["ended_itself"] else "stopped"))
