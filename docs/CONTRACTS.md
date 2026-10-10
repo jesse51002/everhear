@@ -137,8 +137,8 @@ Small additions a part may rely on: `vfg watch --tail N` (for a person at a term
 ## 9. The orchestrator — the owner's PC
 
 - **Inbox** `~/.vfg/orch/inbox.jsonl`, one task per line: `{"id": "T7", "at": "…", "task": "…", "context": "…"}`. Only `vfg orch hand` appends to it, for the dispatcher (§14). Tasks handed together arrive together, and the runner folds them into one turn.
-- **The runner**'s entry point is the executable `orchestrator/run`. `vfg orch start` runs it detached, with its log in `~/.vfg/orch/runner.log` and its pid in `~/.vfg/orch/runner.pid`. It is one Claude Agent SDK process on Opus, logged in with the owner's Claude subscription, always running. It reads the inbox; every task becomes a message in its one long-running conversation.
-- **Implementers only.** Every task goes to an implementer subagent (Sonnet), several in parallel; the orchestrator runs no command on the server itself, and its one command is `vfg place list`. The runner's hook on `Agent` adds `SAVED PLACES: …` (§14), read fresh, to every implementer's brief as it starts.
+- **The runner**'s entry point is the executable `orchestrator/run`. `vfg orch start` runs it detached, with its log in `~/.vfg/orch/runner.log` and its pid in `~/.vfg/orch/runner.pid`. It is one Claude Agent SDK process on Haiku 5.5, logged in with the owner's Claude subscription, always running. It reads the inbox; every task becomes a message in its one long-running conversation.
+- **Implementers only.** Every task goes to an implementer subagent (Haiku 5.5), several in parallel; the orchestrator runs no command on the server itself, and its one command is `vfg place list`. The runner's hook on `Agent` adds `SAVED PLACES: …` (§14), read fresh, to every implementer's brief as it starts.
 - It answers every task with exactly one `done` or `failed` through `vfg orch reply`, plus any number of `progress` replies. A task the dispatcher handed on has had its `progress` lines already; the orchestrator's answer closes it.
 - It never talks to a player. It writes `usage` rows with `component` set to `orchestrator` or `implementer`.
 
@@ -160,7 +160,7 @@ Small additions a part may rely on: `vfg watch --tail N` (for a person at a term
 
 ## 12. Startup — the conversation sets everything up
 
-1. The owner runs `claude` on Sonnet at low effort in `conversation/` (`conversation/start` does it). It is a normal session, and the owner can type to it at any time.
+1. The owner runs `claude` on Haiku 5.5 at low effort in `conversation/` (`conversation/start` does it). It is a normal session, and the owner can type to it at any time.
 2. The conversation runs `vfg up`, then `vfg watchers set …`, then `vfg lookout set …`, then `vfg orch start`.
 3. It arms Monitor on `vfg watch` with the longest timeout, and re-arms it each time it expires. Resuming from the cursor means nothing is lost in between.
 4. From then on `LINE`, `GAME` and `ORCH` events arrive as notifications. It answers with `vfg say`, stays quiet, or hands work on with `vfg orch send`, and it never runs anything slow itself.

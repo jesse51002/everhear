@@ -25,14 +25,15 @@ class Config:
     fresh_file: str
     # orchestrator/prompts, beside the package.
     prompts_dir: str
-    # Every task goes to an implementer; the session itself runs no command.
+    # Every task goes to an implementer; the session itself runs no command. Haiku 5.5, as every
+    # agent is (the actions spec); VFG_ORCH_MODEL changes it.
     model: str
     effort: str
     # The implementer subagents' own effort (AgentDefinition.effort).
     implementer_effort: str
     # A fresh session once a main-thread call's input passes this many tokens (0: never).
     max_context: int
-    # Haiku 5.5 for now (the prototype runs on the owner's subscription); VFG_IMPL_MODEL changes it.
+    # Haiku 5.5, as every agent is (the actions spec); VFG_IMPL_MODEL changes it.
     implementer_model: str
     max_implementers: int
     stale_minutes: int
@@ -131,7 +132,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         lock_file=os.path.join(orch_dir, "lock"),
         fresh_file=os.path.join(orch_dir, "fresh"),
         prompts_dir=os.path.join(ORCH, "prompts"),
-        model=env.get("VFG_ORCH_MODEL") or "opus",
+        model=env.get("VFG_ORCH_MODEL") or "claude-haiku-5-5",
         effort=env.get("VFG_ORCH_EFFORT") or "low",
         implementer_model=env.get("VFG_IMPL_MODEL") or env.get("VFG_IMPLEMENTER_MODEL") or "claude-haiku-5-5",
         implementer_effort=env.get("VFG_IMPL_EFFORT") or "low",

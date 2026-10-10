@@ -79,7 +79,11 @@ What changes during play is in their first message: the brief, the saved places 
 block. Their cache life is `VFG_SUBAGENT_CACHE_TTL`, passed to the CLI as the flag setting
 `subagentPromptCacheTtl` (`--settings`; its `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` variable would
 not reach it, since the runner keeps `CLAUDE_CODE_*` out of the CLI's environment). The usage rows
-carry `--cache-read` and `--cache-write`, so a cache that is not hitting shows in them.
+carry `--cache-read` and `--cache-write`, so a cache that is not hitting shows in them. The SDK
+counts usage per model, so when the session and its implementers share one (Haiku 5.5 by default),
+the main thread's own calls, seen in the stream, are the `orchestrator` row and the rest the
+`implementer` row, the SDK's cost split between them by each side's tokens at Anthropic's price
+ratios ([`orchestrator/usage.py`](orchestrator/usage.py)).
 
 The code is the [`orchestrator/`](orchestrator/) package, on the Python Claude Agent SDK
 (`claude-agent-sdk`, pinned in `pyproject.toml`; it brings its own Claude Code CLI): `config` (the
@@ -97,7 +101,7 @@ cd orchestrator && uv run pytest            # no model, no network
 ```
 
 Live checks, on your subscription and not part of `uv run pytest`:
-`VFG_ORCH_MODEL=haiku uv run python tests/integration.py` (the real SDK and runner against a fake
+`uv run python tests/integration.py` (the real SDK and runner against a fake
 toolkit), `VFG_REPO=<temp copy of the repo> uv run python tests/probe.py` (the permission probe), and
 `tests/live_box.py` against a local stand-in box with the real `vfg` (`--preflight` uses no model).
 `tests/live_examples.py` runs the runner against a real 26.3 server and its stand-in
@@ -115,8 +119,8 @@ script library's three also from `~/.vfg/config` (`$VFG_HOME/config`), as `vfg` 
 | `VFG_REPO` | the repo this `orchestrator/` is in |
 | `VFG_ORCH_DIR` | `~/.vfg/orch` |
 | `VFG_ORCH_MODE` | gone: every task goes to an implementer; any other value is logged as a warning and ignored |
-| `VFG_ORCH_MODEL`, `VFG_ORCH_EFFORT` | `opus`, `low` |
-| `VFG_IMPL_MODEL` (or `VFG_IMPLEMENTER_MODEL`), `VFG_IMPL_EFFORT` | `claude-haiku-5-5` (Haiku 5.5, while the prototype runs on the owner's subscription), `low` |
+| `VFG_ORCH_MODEL`, `VFG_ORCH_EFFORT` | `claude-haiku-5-5` (Haiku 5.5, as every agent), `low` |
+| `VFG_IMPL_MODEL` (or `VFG_IMPLEMENTER_MODEL`), `VFG_IMPL_EFFORT` | `claude-haiku-5-5`, `low` |
 | `VFG_ORCH_MAX_IMPLEMENTERS` | `4` running at once |
 | `VFG_ORCH_MAX_CONTEXT` | `70000` input tokens before a fresh session; `0` never |
 | `VFG_ORCH_STALE_MINUTES`, `VFG_IMPLEMENTER_MINUTES` | `10`, `10` |

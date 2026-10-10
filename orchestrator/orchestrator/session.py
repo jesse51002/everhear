@@ -464,6 +464,7 @@ class Session:
             self.busy = True
             if not msg.get("parent_tool_use_id"):
                 self._log_assistant(msg)
+                self.usage.note_main_call(msg.get("message") or {})
                 u = (msg.get("message") or {}).get("usage")
                 if isinstance(u, dict):
                     self.context_tokens = ((u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
