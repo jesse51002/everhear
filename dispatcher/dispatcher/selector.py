@@ -31,7 +31,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 from vfg_llm import Answer
 
-from .actions import Catalog, menu_line
+from .actions import Catalog, menu_line, named_scripts
 from .config import log
 
 PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "selector.md"
@@ -216,9 +216,9 @@ def distinct(picks: list) -> list:
 def unknown_scripts(selection, scripts: Iterable[str]) -> list[str]:
     """The run_script and stop_script instructions that name no script in scripts/; a name
     said with spaces, "tnt rain", counts as tnt_rain."""
-    said = [re.compile(r"\b" + r"[_ ]".join(map(re.escape, n.split("_"))) + r"\b", re.IGNORECASE) for n in scripts]
+    names = list(scripts)
     return [f"{p.action}: {p.instruction}" for p in selection.picks
-            if p.action in SCRIPT_ACTIONS and not any(r.search(p.instruction) for r in said)]
+            if p.action in SCRIPT_ACTIONS and not named_scripts(p.instruction, names)]
 
 
 def describe(selection) -> str:

@@ -2,8 +2,8 @@
 
 It sees ONE action: its full docstring, each option's description and limits, the pick's
 instruction, the task's context, the saved places, the reports of the task's earlier
-actions and the last failure; for `run_script`, what each script does and every value it
-takes; for `stop_script`, what each script does.
+actions and the last failure; for `run_script`, every value of the scripts the
+instruction names and what each other script does; for `stop_script`, what each does.
 It never sees the other actions, the task's other parts or the server.
 
 `command` is written in steps, with Minecraft's own reference in between:
@@ -27,7 +27,7 @@ from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, Field, create_model, model_validator
 
-from .actions import action_name, doc
+from .actions import action_name, doc, named_scripts
 from .config import log as default_log
 
 PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "action_planner.md"
@@ -150,6 +150,11 @@ class Checked:
     subs: set[str] = field(default_factory=set)
 
 
+def first_line(about: str) -> str:
+    """A script's description's first line: what it does."""
+    return (about.splitlines() or [""])[0]
+
+
 class Planner:
     def __init__(self, ask, model: str, refs, scripts: dict[str, str] | None = None, *,
                  hidden: frozenset[str] = frozenset(), log=default_log, prompt: Path = PROMPT):
@@ -163,23 +168,26 @@ class Planner:
 
     # ------------------------------------------------------------------ prompts
 
-    def describe(self, cls: type[BaseModel]) -> str:
+    def describe(self, cls: type[BaseModel], instruction: str = "") -> str:
         name = action_name(cls) or cls.__name__
         text = f"ACTION: {name}\n{doc(cls)}\n\nOPTIONS:\n{options(cls)}\n"
-        if name == "run_script" and self.scripts:
-            rows = "\n".join(f"- {n}: {about}" for n, about in self.scripts.items())
-            text += ("\nSCRIPTS (each: what it does, then every value it takes as key (type, default, "
-                     "limits or options), set as key=value with the key exactly as listed; "
-                     "for one written the old way, its usage and how it ends):\n"
-                     f"{rows}\n")
-        elif name in SHOWS_SCRIPTS and self.scripts:
-            rows = "\n".join(f"- {n}: {(about.splitlines() or [''])[0]}" for n, about in self.scripts.items())
-            text += f"\nSCRIPTS (each: what it does):\n{rows}\n"
+        if name in SHOWS_SCRIPTS and self.scripts:
+            # run_script: every value of the scripts the instruction names (the selector made
+            # sure it names one); one line for each of the rest, as for stop_script.
+            named = set(named_scripts(instruction, self.scripts)) if name == "run_script" else set()
+            if named:
+                rows = "\n".join(f"- {n}: {about}" for n, about in self.scripts.items() if n in named)
+                text += ("\nTHE SCRIPT THE INSTRUCTION NAMES (what it does, then every value it takes as key "
+                         "(type, default, limits or options), set as key=value with the key exactly as listed; "
+                         f"for one written the old way, its usage and how it ends):\n{rows}\n")
+            rows = "\n".join(f"- {n}: {first_line(about)}" for n, about in self.scripts.items() if n not in named)
+            if rows:
+                text += f"\n{'THE OTHER SCRIPTS' if named else 'SCRIPTS'} (each: what it does):\n{rows}\n"
         return text
 
     def base(self, cls: type[BaseModel], p: Pick) -> str:
         earlier = "".join(f"\n- {r}" for r in p.reports) or " none"
-        return (f"{self.describe(cls)}\nINSTRUCTION: {p.instruction}\nCONTEXT: {p.context or '(none)'}\n"
+        return (f"{self.describe(cls, p.instruction)}\nINSTRUCTION: {p.instruction}\nCONTEXT: {p.context or '(none)'}\n"
                 f"{p.places}\nEARLIER IN THIS TASK:{earlier}\n")
 
     def draft_prompt(self, cls, p: Pick) -> str:

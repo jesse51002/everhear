@@ -16,8 +16,10 @@ import ast
 import importlib
 import inspect
 import json
+import re
 import sys
 import typing
+from collections.abc import Iterable
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -106,6 +108,17 @@ def scripts(repo: Path) -> dict[str, str]:
             continue
         out[folder.name] = describe_script(folder)
     return out
+
+
+def script_pattern(name: str) -> re.Pattern[str]:
+    """How a sentence names a script: its name, with a space allowed for each _, so "tnt
+    rain" names tnt_rain."""
+    return re.compile(r"\b" + r"[_ ]".join(map(re.escape, name.split("_"))) + r"\b", re.IGNORECASE)
+
+
+def named_scripts(text: str, names: Iterable[str]) -> list[str]:
+    """The scripts `text` names, in the order of `names`."""
+    return [n for n in names if script_pattern(n).search(text)]
 
 
 def describe_script(folder: Path) -> str:

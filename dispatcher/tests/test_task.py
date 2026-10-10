@@ -695,13 +695,34 @@ async def test_run_script_sees_each_scripts_values_and_an_old_ones_usage(h):
     h.vfg.on("script", "run", answer=ok_lines("started zeus (T1); stop: vfg script stop zeus"))
     tid = await h.run("make my tridents call lightning")
     prompt = h.llm.prompts("Planned_run_script")[0]
-    assert ("\nSCRIPTS (each: what it does, then every value it takes as key (type, default, limits or options), "
-            "set as key=value with the key exactly as listed; for one written the old way, its usage and how it "
-            "ends):\n- zeus: Zeus: every trident a player throws calls lightning where it lands.\n"
-            "  player (player, default @a)\n  strikes (int, default 1, 1..10)\n"
-            "- tnt_rain: Drops TNT round players.\n  Usage: tnt_rain [every_s=20]\n  Ends: when stopped\n") in prompt
+    assert ("\nTHE SCRIPT THE INSTRUCTION NAMES (what it does, then every value it takes as key (type, default, "
+            "limits or options), set as key=value with the key exactly as listed; for one written the old way, "
+            "its usage and how it ends):\n- zeus: Zeus: every trident a player throws calls lightning where it "
+            "lands.\n  player (player, default @a)\n  strikes (int, default 1, 1..10)\n"
+            "\nTHE OTHER SCRIPTS (each: what it does):\n- tnt_rain: Drops TNT round players.\n\nINSTRUCTION:") in prompt
+    assert "Usage: tnt_rain" not in prompt
     assert h.vfg.actions() == [["script", "run", "zeus", "player=Alex"]]
     assert h.vfg.replies() == [(tid, "done", "zeus — started zeus (T1); stop: vfg script stop zeus")]
+
+
+async def test_run_script_names_with_spaces_and_an_old_scripts_usage_and_no_name_at_all(h):
+    from conftest import RunScript
+
+    h.llm.add("Selection", select(("run_script", "start tnt rain on Steve")))
+    h.llm.add("Planned_run_script",
+              planned({"action": "run_script", "name": "tnt_rain", "args": ["every_s=5"]}, say="tnt rain"))
+    h.vfg.on("script", "run", answer=ok_lines("started tnt_rain (T1)"))
+    await h.run("rain tnt on Steve")
+    [named] = h.llm.prompts("Planned_run_script")
+    assert ("its usage and how it ends):\n- tnt_rain: Drops TNT round players.\n  Usage: tnt_rain [every_s=20]\n"
+            "  Ends: when stopped\n\nTHE OTHER SCRIPTS (each: what it does):\n- zeus: Zeus: every trident") in named
+    assert "player (player" not in named
+    # no script named (the selector hands such a task on before the planner, but the planner
+    # holds on its own): what each does, one line each, and no value at all
+    unnamed = h.d.planner.describe(RunScript, "start the lightning thing for Alex")
+    assert unnamed.endswith("\nSCRIPTS (each: what it does):\n- zeus: Zeus: every trident a player throws calls "
+                            "lightning where it lands.\n- tnt_rain: Drops TNT round players.\n")
+    assert "THE SCRIPT THE INSTRUCTION NAMES" not in unnamed and "(player, default" not in unnamed
 
 
 async def test_stop_script_sees_the_scripts_too(tmp_path):

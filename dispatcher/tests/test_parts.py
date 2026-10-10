@@ -410,7 +410,7 @@ def test_the_repos_scripts_reach_the_selectors_menu_and_the_planner_with_every_v
     run_line = next(x for x in Selector(catalog, None, "m", scripts=found).rules.splitlines()
                     if x.startswith("- run_script:"))
     assert run_line.endswith(" The only scripts: %s." % ", ".join(sorted(found)))
-    text = Planner(None, "m", None, found).describe(catalog["run_script"])
+    planner = Planner(None, "m", None, found)
     for name in found:
         tree = actions.parse(config.REPO / "scripts" / name / "main.py")
         values = actions.script_values(tree)
@@ -418,7 +418,37 @@ def test_the_repos_scripts_reach_the_selectors_menu_and_the_planner_with_every_v
             continue
         first = actions.docstring_of(tree).strip().splitlines()[0]
         block = "\n".join(["- %s: %s" % (name, first), *("  " + actions.value_line(k, e) for k, e in values.items())])
-        assert block + "\n" in text, name
+        assert block + "\n" in planner.describe(catalog["run_script"], "start %s for Steve" % name), name
+
+
+RUN_SCRIPT_PROMPT_MAX = 12_000  # bytes, for an instruction naming one script
+
+
+def test_the_planner_sees_every_value_of_the_script_named_and_one_line_for_each_other(fresh_actions_package):
+    """"start tnt_rain on Steve": tnt_rain's values, none of zeus's, every other script as its
+    first line, and the whole prompt small. The value names come from the scripts."""
+    from dispatcher.action_planner import Pick, Planner
+
+    found = actions.scripts(config.REPO)
+    values = {n: actions.script_values(actions.parse(config.REPO / "scripts" / n / "main.py")) for n in ("tnt_rain", "zeus")
+              if n in found}
+    if len(values) < 2 or not all(values.values()) or not (config.REPO / "actions" / "run_script").is_dir():
+        pytest.skip("needs scripts/tnt_rain and scripts/zeus with VALUES, and actions/run_script")
+    catalog = actions.load(config.REPO)
+    pick = Pick(task_id="T1", index=0, instruction="start tnt_rain on Steve", context="Steve asked",
+                places="SAVED PLACES: none", reports=[])
+    prompt = Planner(None, "m", None, found).base(catalog["run_script"], pick)
+    zeus_first = found["zeus"].splitlines()[0]
+    assert found["tnt_rain"] + "\n" in prompt  # its first line and every value
+    assert "\n- zeus: %s\n" % zeus_first in prompt  # one line, no values under it
+    for key in set(values["zeus"]) - set(values["tnt_rain"]):
+        assert "  %s (" % key not in prompt, key
+    for name, about in found.items():
+        if name != "tnt_rain":
+            assert "\n- %s: %s\n" % (name, about.splitlines()[0]) in prompt
+    size = len(prompt.encode("utf-8"))
+    print("run_script planner prompt for 'start tnt_rain on Steve': %d bytes" % size)
+    assert size < RUN_SCRIPT_PROMPT_MAX
 
 
 # ---------------------------------------------------------------- replay
