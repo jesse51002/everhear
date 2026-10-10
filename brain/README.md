@@ -19,7 +19,7 @@ apart each get a call at once.
 | Event | Comes from | The call |
 |---|---|---|
 | `LINE` | a `LINE` Jev classed `action_oriented`; or a `conversational` one Respond handed up | routes and does every part, and replies |
-| `REPORT` | an implementer ending (`Implementers`' `on_report`) | the player's chat line, one record for the context (`T183 done: …`), the task's status; while a follow-up to the task already runs, the task stays open with the record as its result so far, and the call is told so |
+| `REPORT` | an implementer ending (`Implementers`' `on_report`) | the player's chat line, one record for the context (`T183 done: …`), the task's status; when the call gives no record or no line, or fails, both are written in code from the task's brief, never the implementer's words; while a follow-up to the task already runs, the task stays open with the record as its result so far, and the call is told so |
 | `BATCH` | the timer: `VFG_BRAIN_BATCH_S` (60 s) with no read of any kind and something unread | usually nothing; acts where something clearly needs it |
 
 **Respond** ([`respond.py`](brain/respond.py)) takes a `conversational` line: a cheap model (Gemini

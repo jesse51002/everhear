@@ -213,21 +213,18 @@ class Brain:
             answer = await self.call.decide(event, self.ctx, seen, self.open_tasks(), [], self.refs)
         except LlmError as e:
             log("brain", f"{tid} report FAILED: {e}")
-            self.result(tid, status, f"{tid} {status}: {short(text, 160)}", following)
-            brief = short(task.get("task") or "", 80)
-            await self.acts.say(f"still on it: {brief}" if following else f"done: {brief}" if status == "done"
-                                else f"sorry, that one failed: {brief}", tid)
+            self.result(tid, status, self.written(tid, status), following)
+            await self.acts.say(self.line_for(tid, status, following), tid)
             return
         self.usage("brain", self.model, answer, tid)
         d = answer.value
         log("brain", f"{tid} report ({status}) -> {describe(d)}")
         final = d.status or status
-        record = d.record.strip() or f"{tid} {final}: {short(text, 160)}"
-        self.result(tid, final, record, following)
+        self.result(tid, final, d.record.strip() or self.written(tid, final), following)
         if d.parts:
             await self.acts.run(d, player=task.get("player") or "", line=task.get("line") or "", seen=seen)
-        elif d.reply.strip():
-            await self.acts.say(d.reply, tid)
+        else:  # every report gets its chat line: the call's, else one written here
+            await self.acts.say(d.reply.strip() or self.line_for(tid, final, following), tid)
 
     def keep_session(self, tid: str) -> None:
         """The task's implementer session into tasks.json, in case on_session missed it."""
@@ -261,6 +258,13 @@ class Brain:
         """A task's record written in code, never the implementer's words: `T7 done: <its brief>`."""
         brief = short((self.tasks.get(tid) or {}).get("task") or "", 120)
         return f"{tid} {status}" + (f": {brief}" if brief else "")
+
+    def line_for(self, tid: str, status: str, following: bool = False) -> str:
+        """A report's chat line written in code, when the call gave none."""
+        brief = short((self.tasks.get(tid) or {}).get("task") or "", 80) or tid
+        if following:
+            return f"still on it: {brief}"
+        return f"done: {brief}" if status == "done" else f"sorry, that one failed: {brief}"
 
     def batch_now(self) -> asyncio.Task:
         return self.spawn(self.batch(), "batch")

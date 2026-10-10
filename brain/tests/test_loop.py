@@ -125,6 +125,23 @@ async def test_a_report_while_the_brain_stops_closes_its_task_in_code(kit):
     assert k.vfg.rows("result") == [("result T1", "T1 done: a castle at spawn, 40 by 40")]
 
 
+async def test_a_report_gets_a_record_and_a_chat_line_written_in_code_when_the_call_gives_none(kit):
+    k = kit(Decision=decision())                          # an answer with no record and no reply
+    trail = k.tasks.open("Steve", "make me an ice trail", "an ice trail behind Steve")
+    await k.brain.on_report(trail, "failed", "Failed: vfg script check said line 40 of scripts/ice/main.py …")
+    await k.settle()
+    k.ask.answers["Decision"] = LlmError("no answer")     # and a call that fails
+    beam = k.tasks.open("Alex", "an ice beam", "an ice beam for Alex")
+    await k.brain.on_report(beam, "done", "Done: ice_beam running as ice_beam_alex; I also cleaned up …")
+    await k.settle()
+    assert k.vfg.rows("result") == [("result T1", "T1 failed: an ice trail behind Steve"),
+                                    ("result T2", "T2 done: an ice beam for Alex")]  # never the implementer's words
+    assert [t["result"] for t in k.tasks.tasks.values()] == ["T1 failed: an ice trail behind Steve",
+                                                             "T2 done: an ice beam for Alex"]
+    assert k.vfg.said() == [["sorry, that one failed: an ice trail behind Steve", "--task", "T1"],
+                            ["done: an ice beam for Alex", "--task", "T2"]]
+
+
 class Finished:
     """A batch call that is over at once."""
 
