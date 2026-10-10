@@ -3,21 +3,32 @@ import json
 
 import mc
 from kit import loop, mobs
+from actions._types import Field, ItemIdOrEmpty, Literal, Live, MobId, Values  # the values class: read on the PC only
 
-VALUES = {
-    "summon_mob": {"type": "mob", "default": "zombie", "live": True},
-    "summon_count": {"type": "int", "min": 1, "max": 200, "default": 5, "live": True},
-    "summon_spread": {"type": "int", "min": 1, "max": 100, "default": 8, "live": True},
-    "summon_cap": {"type": "int", "min": 1, "max": 1000, "default": 60, "live": True},
-    "summon_scale": {"type": "number", "min": 0.1, "max": 16, "default": 1, "live": True},
-    "summon_health": {"type": "number", "min": 0, "max": 2048, "default": 0, "live": True},
-    "summon_gear": {"type": "enum", "of": ["none", "leather", "chainmail", "iron", "golden", "diamond", "netherite"],
-                    "default": "none", "live": True},
-    "summon_weapon": {"type": "str", "default": "", "live": True},
-    "summon_name": {"type": "str", "default": "", "live": True},
-    "summon_glow": {"type": "bool", "default": False, "live": True},
-    "summon_nbt": {"type": "str", "default": "", "live": True},
-}
+
+class Summon(Values):
+    summon_mob: Live[MobId] = "zombie"
+    """the mob to summon"""
+    summon_count: Live[int] = Field(5, ge=1, le=200)
+    """how many each time, round each player or the place"""
+    summon_spread: Live[int] = Field(8, ge=1, le=100)
+    """how far round the player or the place they appear, in blocks"""
+    summon_cap: Live[int] = Field(60, ge=1, le=1000)
+    """the most of them alive at once; no more are summoned past it"""
+    summon_scale: Live[float] = Field(1, ge=0.1, le=16)
+    """their size: 1 is the mob's own, 2 twice as big"""
+    summon_health: Live[float] = Field(0, ge=0, le=2048)
+    """their health, in half-hearts (a player has 20; 0: the mob's own)"""
+    summon_gear: Live[Literal["none", "leather", "chainmail", "iron", "golden", "diamond", "netherite"]] = "none"
+    """a full suit of armour of this kind, never dropped; none: their own"""
+    summon_weapon: Live[ItemIdOrEmpty] = ""
+    """the id of an item they hold, never dropped ("diamond_sword"; empty: their own)"""
+    summon_name: Live[str] = ""
+    """a name shown over their heads (empty: none)"""
+    summon_glow: Live[bool] = False
+    """they glow, seen through walls"""
+    summon_nbt: Live[str] = ""
+    """more NBT for each, for what no other value sets ("IsBaby:1b"; empty: none)"""
 
 
 def summon(at, v):

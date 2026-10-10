@@ -1,45 +1,53 @@
 # Not in the TypeScript tests: the script library's EXAMPLES block, which the guard adds to every
-# implementer's brief after the saved places (examples.py, route.py).
+# implementer's brief after the saved places (examples.py, route.py), with every action whole
+# (actions.py, from the actions cache vfg_actions keeps) and what runs (running.json).
 import json
 import os
+import shutil
 import time
 
 import pytest
 from helpers import config_in, new_store, read, temp_dir, use_fake_vfg, write
 
-from orchestrator import brief, examples, route
+from orchestrator import actions, brief, examples, route
 from orchestrator.guard import GuardContext, make_guard
+
+# The real repo's: what a temp repo needs for its actions to load through lib/py/vfg_actions.py.
+REAL_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ACTIONS_BASE = ["actions/__init__.py", "actions/_types.py", "scripts/_lib/commands.py", "scripts/_lib/kit/world.py"]
 
 ICE_BEAM = '''"""Ice Beam: a beam from the eyes that freezes what it hits."""
 ASKS = ["ice beam", "freeze ray"]
 from kit import values, aim
 
-VALUES = {
-    "player": {"type": "player", "default": "@a"},
-    "freeze_seconds": {"type": "int", "min": 1, "max": 60, "default": 5, "live": True},
-}
-
-v = values(VALUES)
+v = values()
 '''
 GALICK = '''"""Galick Gun: charge, then a purple beam that leaves a crater."""
 ASKS = ["galick gun"]
-VALUES = {"player": {"type": "player", "default": "@a"}, "cooldown": {"type": "number", "min": 0, "max": 60, "default": 10, "live": True}}
 '''
 ZOO = '''"""Zoo: animals in pens round a player."""
 ASKS = ["a zoo"]
-VALUES = {"player": {"type": "player", "default": "@a"}}
 '''
 CRATER = '''"""Carve a sphere out of the world at a place, leaving air, lava or fire."""
 from kit import area
+from actions._types import Field, Live, Values
 
-VALUES = {"crater_radius": {"type": "int", "min": 2, "max": 64, "default": 8, "live": True}}
+
+class Crater(Values):
+    crater_radius: Live[int] = Field(8, ge=2, le=64)
+    """how wide the crater is, in blocks"""
 
 
 def crater(at, v):
     area.sphere(at, v["crater_radius"], block="air")
 '''
 REPLACE = '''"""Replace one kind of block with another in a box."""
-VALUES = {"replace_to": {"type": "block", "default": "ice"}}
+from actions._types import BlockId, Values
+
+
+class ReplaceBlocks(Values):
+    replace_to: BlockId = "ice"
+    """what the blocks become"""
 
 
 def replace_blocks(box, v):
@@ -47,14 +55,84 @@ def replace_blocks(box, v):
 '''
 GALICK_ICE = '''"""Galick Ice: the Galick Gun, laying ice where it hits."""
 ASKS = ["galick gun that freezes"]
-VALUES = {"player": {"type": "player", "default": "@a"}}
 '''
 ICE_TRAIL = '''"""Lay packed ice under a player's feet as they walk."""
-VALUES = {"ice_trail_block": {"type": "block", "default": "packed_ice"}}
+from actions._types import BlockId, Values
+
+
+class IceTrail(Values):
+    ice_trail_block: BlockId = "packed_ice"
+    """what it lays"""
 
 
 def ice_trail(p, v):
     pass
+'''
+
+ICE_BEAM_ACTION = '''from actions._types import Action, Field, Live, Players
+
+
+class IceBeam(Action):
+    """Give a player an ice beam: a beam from the eyes that freezes what it hits."""
+
+    script = "ice_beam"
+    runs = "until_stopped"
+    takes = ["player", "freeze_seconds"]
+
+    player: Players = "@a"
+    """who gets one: a name, several separated by commas, or @a"""
+    freeze_seconds: Live[int] = Field(5, ge=1, le=60)
+    """how long what it hits stays frozen, in seconds"""
+'''
+FROST_RAY_ACTION = '''from actions.ice_beam import IceBeam
+
+
+class FrostRay(IceBeam):
+    """Give a player a frost ray: an ice beam that freezes for a whole minute."""
+
+    takes = ["player"]
+    fixed = {"freeze_seconds": 60}
+'''
+GALICK_ACTION = '''from actions._types import Action, Field, Live, Players
+
+
+class GalickGun(Action):
+    """Give a player a Galick Gun: charge, then a purple beam that leaves a crater."""
+
+    script = "galick_gun"
+    runs = "until_stopped"
+    takes = ["player", "cooldown"]
+
+    player: Players = "@a"
+    """who gets one"""
+    cooldown: Live[float] = Field(10, ge=0, le=60)
+    """seconds between shots"""
+'''
+ZOO_ACTION = '''from actions._types import Action, Place
+
+
+class Zoo(Action):
+    """Build a zoo: animals in pens at a place."""
+
+    script = "zoo"
+    runs = "once"
+    takes = ["at"]
+
+    at: Place = ""
+    """where the zoo goes: a saved place, x y z, or a player"""
+'''
+GALICK_ICE_ACTION = '''from actions._types import Action, Players
+
+
+class GalickIce(Action):
+    """Give a player a Galick Ice gun: the Galick Gun, laying ice where it hits."""
+
+    script = "galick_ice"
+    runs = "until_stopped"
+    takes = ["player"]
+
+    player: Players = "@a"
+    """who gets one"""
 '''
 
 FILES = {
@@ -67,6 +145,11 @@ FILES = {
     "scripts/_presets/replace_blocks.py": REPLACE,
     "made/main/scripts/galick_ice/main.py": GALICK_ICE,
     "made/main/presets/ice_trail.py": ICE_TRAIL,
+    "actions/ice_beam.py": ICE_BEAM_ACTION,
+    "actions/frost_ray.py": FROST_RAY_ACTION,
+    "actions/galick_gun.py": GALICK_ACTION,
+    "actions/zoo.py": ZOO_ACTION,
+    "made/main/actions/galick_ice.py": GALICK_ICE_ACTION,
 }
 
 ROUTE = {"task": "T7", "scripts": [
@@ -91,6 +174,15 @@ STATE = {"online": [{"name": "Steve", "pos": [120, 64, -40], "dimension": "overw
               "values": {"player": "Steve"}, "changed": {"player": "Steve"}, "args": [], "touches": ["Steve"]}],
          "rcon": None, "ms": 300}
 
+# running.json: what vfg wrote through for every run (the state's instances, above, are what an older vfg gives)
+RUNNING = {"fetched_at": 1760000000, "copies": {
+    "galick-alex": {"action": "galick_gun", "script": "galick_gun", "values": {"player": "Alex", "cooldown": 0},
+                    "live": ["cooldown"], "task": "T5", "started": "2026-10-09T12:00:00Z", "runs": "until_stopped"},
+    "horror_mode": {"action": "horror_mode", "script": "horror_mode", "values": {}, "live": [], "task": "T2",
+                    "started": "2026-10-09T11:00:00Z", "runs": "until_stopped"},
+    "zoo-steve": {"action": "zoo", "script": "zoo", "values": {"at": "Steve"}, "live": [], "task": "T3",
+                  "started": "2026-10-09T11:30:00Z", "runs": "once"}}}
+
 JOB = "T7: give Steve an ice beam with a crater where it hits. Leave tnt_rain alone."
 AGENT = {"subagent_type": "implementer", "description": "T7 ice beam for Steve", "prompt": JOB, "run_in_background": True}
 
@@ -99,18 +191,29 @@ AGENT = {"subagent_type": "implementer", "description": "T7 ice beam for Steve",
 def _off_after():
     yield
     examples.reset()
+    actions.forget()
 
 
 class Box:
-    """A temp repo with a small library and a made/main/, the fake vfg answering route and state."""
+    """A temp repo with a small library, its actions and a made/main/, its own VFG_HOME with
+    running.json, the fake vfg answering route and state."""
 
-    def __init__(self, route_json=ROUTE, state=STATE, extra=None):
+    def __init__(self, route_json=ROUTE, state=STATE, extra=None, running=RUNNING):
         self.dir = temp_dir()
         self.fake = use_fake_vfg(self.dir)
+        for rel in ACTIONS_BASE:
+            os.makedirs(os.path.dirname(os.path.join(self.dir, rel)), exist_ok=True)
+            shutil.copy(os.path.join(REAL_REPO, rel), os.path.join(self.dir, rel))
         for rel, text in FILES.items():
             path = os.path.join(self.dir, rel)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             write(path, text)
+        for rel in ACTIONS_BASE + list(FILES):  # written a minute ago: a cache built now is fresh
+            os.utime(os.path.join(self.dir, rel), (time.time() - 60, time.time() - 60))
+        self.home = os.path.join(self.dir, "vfg-home")
+        os.makedirs(self.home)
+        if running is not None:
+            write(os.path.join(self.home, "running.json"), json.dumps(running))
         self.stdin = os.path.join(self.dir, "route-stdin")
         os.environ["VFG_FAKE_ROUTE_STDIN"] = self.stdin
         if route_json is not None:
@@ -119,7 +222,7 @@ class Box:
         if state is not None:
             os.environ["VFG_FAKE_STATE"] = os.path.join(self.dir, "state.json")
             write(os.environ["VFG_FAKE_STATE"], json.dumps(state))
-        self.cfg = config_in(self.dir, extra)
+        self.cfg = config_in(self.dir, {"VFG_HOME": self.home, **(extra or {})})
         self.store = new_store(os.path.join(self.dir, "orch"))
         self.store.add("T7", at="2026-10-09T12:00:00.000Z", task="an ice beam for Steve", context="")
         self.store.save()
@@ -135,27 +238,50 @@ def whole(rel: str) -> str:
     return "=== %s ===\n%s" % (rel, FILES[rel])
 
 
+def parts(block: str) -> tuple[str, str, str, str]:
+    """The block's header, its made first lines, its ACTIONS and its files."""
+    head, rest = block.split("\n\n", 1)
+    made, rest = rest.split("\n\n", 1)
+    acts, _, files = rest.partition("\n\n=== ")
+    return head, made, acts, ("=== " + files if files else "")
+
+
 # ---------------------------------------------------------------- the block
 
 async def test_the_block_in_the_specs_shape_with_every_file_whole_in_order():
     b = Box()
     block = await b.block()
-    head, rest = block.split("\n\n", 1)
+    head, made, acts, files = parts(block)
     assert head.split("\n") == [
         "EXAMPLES, picked for T7 by Jev in 0.3 s.",
-        "ice_beam runs this job: run it, or change its values. galick_gun is close.",
+        "ice_beam runs this job: run one of its actions, ice_beam or frost_ray, with the values the job needs. "
+        "galick_gun is close.",
         "Presets to copy: crater and replace_blocks.",
         "Named in your brief, in full below: tnt_rain.",
-        "Running: galick-alex (galick_gun, player=Alex, cooldown=0, T5), horror_mode (T2), zoo-steve (zoo, player=Steve, T3).",
+        "Running: galick-alex (galick_gun, player=Alex, cooldown=0, T5), horror_mode (T2), zoo-steve (zoo, at=Steve, T3).",
         "Online: Steve 120 64 -40 overworld, Alex 98 70 -12 overworld. Night, clear.",
         examples.NOW,
     ]
-    made, files = rest.split("\n\n", 1)
     assert made.split("\n") == [
         "Made on this server (made/main/), by first line:",
         "  galick_ice (script): Galick Ice: the Galick Gun, laying ice where it hits.",
         "  ice_trail (preset): Lay packed ice under a player's feet as they walk.",
     ]
+    # every action whole, the library's by name then this server's
+    assert acts.startswith("ACTIONS: every action, the library's (actions/) then this server's (made/main/actions/), "
+                           "whole, as they were when you started. Run one with vfg action run <action> key=value ... "
+                           "--task T7; * marks the values it takes, and any value but a fixed one can be given.\n")
+    firsts = [line.split(" — ")[0] for line in acts.split("\n") if " — " in line]
+    assert firsts == ["frost_ray", "galick_gun", "ice_beam", "zoo", "galick_ice"]
+    assert "\nMade on this server (made/main/actions/):\n\ngalick_ice — Give a player a Galick Ice gun" in acts
+    ice = acts[acts.index("ice_beam — "):].split("\n\n")[0].split("\n")
+    assert ice == ["ice_beam — Give a player an ice beam: a beam from the eyes that freezes what it hits.",
+                   "script ice_beam · runs until stopped",
+                   "values (* = the planner fills it):",
+                   "* player (player names separated by commas, or @a, @r, @p; default \"@a\"): who gets one: a name, "
+                   "several separated by commas, or @a",
+                   "* freeze_seconds (a whole number 1..60; live; default 5): how long what it hits stays frozen, in seconds"]
+    assert "  freeze_seconds (a whole number 1..60; live; fixed 60): how long" in acts  # the variant's
     # whole files, never cut: the router's scripts (runs_it first), its presets, then the named
     order = ["scripts/ice_beam/main.py", "scripts/galick_gun/main.py", "scripts/_presets/crater.py",
              "scripts/_presets/replace_blocks.py", "scripts/tnt_rain/main.py"]
@@ -168,26 +294,39 @@ async def test_the_block_in_the_specs_shape_with_every_file_whole_in_order():
     assert "Your brief names" not in block
 
 
-async def test_a_running_instance_the_brief_names_comes_with_its_values_and_its_script():
+async def test_a_running_copy_the_brief_names_comes_with_its_values_and_its_script():
     b = Box()
     job = "T7: make the zoo-steve pens bigger, and galick-alex fires faster."
     block = await b.block({**AGENT, "prompt": job})
     lines = block.split("\n")
-    # another task's instances: their code is copied to be changed, never edited (the guard refuses it)
-    assert ("Your brief names galick-alex, running galick_gun for T5 now with player=Alex, cooldown=0; its script is "
-            "below; to change its code, copy it: vfg script new <new_name> --from galick_gun.") in lines
-    assert ("Your brief names zoo-steve, running zoo for T3 now with player=Steve; its script is below; to change its "
-            "code, copy it: vfg script new <new_name> --from zoo.") in lines
+    # another task's copies: their code is copied to be changed, never edited (the guard refuses it)
+    assert ("Your brief names galick-alex, a copy of galick_gun running for T5 with player=Alex, cooldown=0: vfg script "
+            "set galick-alex key=value changes it; its script is below; to change its code, copy it: vfg script new "
+            "<new_name> --from galick_gun.") in lines
+    assert ("Your brief names zoo-steve, a copy of zoo running for T3 with at=Steve: vfg script set zoo-steve key=value "
+            "changes it; its script is below; to change its code, copy it: vfg script new <new_name> --from zoo.") in lines
     # galick_gun is the router's already, so it is not there twice; zoo comes last, whole
     assert block.count("=== scripts/galick_gun/main.py ===") == 1
     assert block.endswith(whole("scripts/zoo/main.py"))
 
 
-async def test_an_instance_this_task_started_is_its_own_to_change():
+async def test_a_copy_this_task_started_is_its_own_to_change():
     b = Box()
     job = "T5: galick-alex fires faster."
     lines = (await b.block({**AGENT, "description": "T5 galick gun faster", "prompt": job})).split("\n")
-    assert "Your brief names galick-alex, running galick_gun for T5 now with player=Alex, cooldown=0; its script is below." in lines
+    assert ("Your brief names galick-alex, a copy of galick_gun running for T5 with player=Alex, cooldown=0: vfg script "
+            "set galick-alex key=value changes it; its script is below.") in lines
+
+
+async def test_a_copy_is_named_by_its_action_too_and_one_at_its_actions_values_says_so():
+    running = {"fetched_at": 1, "copies": {"galick_gun_2": {"action": "galick_gun", "script": "galick_gun",
+                                                            "values": {"player": "@a", "cooldown": 10}, "task": "T6"}}}
+    b = Box(running=running)
+    lines = (await b.block({**AGENT, "prompt": "T7: the galick gun, for Steve too"})).split("\n")
+    assert "Running: galick_gun_2 (galick_gun, T6)." in lines
+    assert ("Your brief names galick_gun_2, a copy of galick_gun running for T6 with its action's values: vfg script "
+            "set galick_gun_2 key=value changes it; its script is below; to change its code, copy it: vfg script new "
+            "<new_name> --from galick_gun.") in lines
 
 
 async def test_names_match_as_words_in_a_row_however_they_are_written():
@@ -215,6 +354,7 @@ async def test_the_router_gets_the_orchestrators_brief_and_the_task_and_the_pick
     assert entry["loaded"][0] == "scripts/ice_beam/main.py" and entry["loaded"][-1] == "scripts/tnt_rain/main.py"
     assert entry["named"] == ["tnt_rain"]
     assert entry["state"] == "ok"
+    assert entry["actions"] == 5
     assert json.load(open(b.store.file))["tasks"]["T7"]["implementers"][0]["route"]["tokens"] == 11840
 
 
@@ -282,6 +422,25 @@ async def test_the_server_state_line_says_to_act_on_it_only_when_the_state_was_r
                              "and the weather are unknown.") + 1] == examples.UNKNOWN
 
 
+async def test_which_actions_run_the_picked_scripts_and_a_script_with_none():
+    acts = {"actions": {"ice_beam": {"script": "ice_beam", "source": "library"},
+                        "frost_ray": {"script": "ice_beam", "source": "library"},
+                        "galick_ice": {"script": "galick_ice", "source": "made"},
+                        "railgun": {"script": "railgun", "source": "library"}}}
+    ice = {"name": "ice_beam", "source": "library"}
+    made = {"name": "galick_ice", "source": "made"}
+    seed = {"name": "tnt_rain", "source": "library"}
+    assert examples.runs_line([made], acts, "main") == ("galick_ice (made) runs this job: run its action, galick_ice, "
+                                                        "with the values the job needs.")
+    assert examples.runs_line([ice, made], acts, "main") == (
+        "ice_beam and galick_ice (made) run this job: run one of their actions, ice_beam, frost_ray or galick_ice, "
+        "with the values the job needs.")
+    assert examples.runs_line([seed], acts, "main") == (
+        "tnt_rain runs this job, but no action runs it yet: write one in made/main/actions/<name>.py, vfg action "
+        "check <name>, then run it.")
+    assert examples.runs_line([ice], None, "main") == "ice_beam runs this job: run its action with the values the job needs."
+
+
 async def test_nothing_close_and_a_made_pick_say_so():
     picks = {**ROUTE, "scripts": [], "presets": [{"name": "ice_trail", "source": "made", "p_use": 0.8,
                                                   "path": "made/main/presets/ice_trail.py"}]}
@@ -292,21 +451,24 @@ async def test_nothing_close_and_a_made_pick_say_so():
 
 
 async def test_an_empty_server_folder_and_nobody_online():
-    b = Box(state={**STATE, "online": [], "instances": [], "weather": "rain", "time": {"phase": "day"}})
-    for rel in ("made/main/scripts/galick_ice/main.py", "made/main/presets/ice_trail.py"):
+    b = Box(state={**STATE, "online": [], "instances": [], "weather": "rain", "time": {"phase": "day"}},
+            running={"fetched_at": 1, "copies": {}})
+    for rel in ("made/main/scripts/galick_ice/main.py", "made/main/presets/ice_trail.py", "made/main/actions/galick_ice.py"):
         os.remove(os.path.join(b.dir, rel))
     block = await b.block()
     assert "Running: nothing." in block.split("\n")
     assert "Online: nobody. Day, rain." in block.split("\n")
     assert "Made on this server (made/main/): nothing yet." in block.split("\n")
+    assert "Made on this server (made/main/actions/): none yet." in block.split("\n")
 
 
 async def test_the_server_folder_is_vfg_server():
     b = Box(extra={"VFG_SERVER": "lobby"})
     os.makedirs(os.path.join(b.dir, "made", "lobby", "scripts", "moat"))
-    write(os.path.join(b.dir, "made", "lobby", "scripts", "moat", "main.py"), '"""Moat: water round a build."""\nVALUES = {}\n')
+    write(os.path.join(b.dir, "made", "lobby", "scripts", "moat", "main.py"), '"""Moat: water round a build."""\nASKS = ["a moat"]\n')
     block = await b.block()
     assert "Made on this server (made/lobby/), by first line:\n  moat (script): Moat: water round a build." in block
+    assert "Made on this server (made/lobby/actions/): none yet." in block
     assert "galick_ice" not in block
 
 
@@ -344,21 +506,26 @@ async def test_a_hung_vfg_is_cut_off_by_the_steps_own_limit(monkeypatch):
 
 
 async def test_the_server_down_the_block_still_goes_and_says_what_is_missing():
-    b = Box()
+    b = Box(running=None)
     os.environ["VFG_FAKE_STATE_FAIL"] = "EC2 unreachable (fake)"
     block = await b.block()
     lines = block.split("\n")
     assert lines[:4] == ["EXAMPLES, picked for T7 by Jev in 0.3 s.",
-                         "ice_beam runs this job: run it, or change its values. galick_gun is close.",
+                         "ice_beam runs this job: run one of its actions, ice_beam or frost_ray, with the values the job "
+                         "needs. galick_gun is close.",
                          "Presets to copy: crater and replace_blocks.",
                          "Named in your brief, in full below: tnt_rain."]
     assert lines[4:6] == ["Server state: unavailable (exit 1: vfg: EC2 unreachable (fake)).", examples.UNKNOWN]
+    # what runs still comes from running.json when there is one
+    lines = (await Box().block()).split("\n")
+    assert lines[4].startswith("Running: galick-alex (galick_gun, player=Alex, cooldown=0, T5)")
+    assert lines[5].startswith("Server state: unavailable")
     assert whole("scripts/ice_beam/main.py") in block
     assert b.store.get("T7").implementers[0]["state"] == "exit 1: vfg: EC2 unreachable (fake)"
 
 
 async def test_minecraft_not_answering_is_said_and_what_runs_is_still_listed():
-    b = Box(state={**STATE, "online": [], "rcon": "Minecraft is not answering on RCON"})
+    b = Box(state={**STATE, "online": [], "rcon": "Minecraft is not answering on RCON"}, running=None)
     os.environ["VFG_FAKE_STATE_CODE"] = "5"
     lines = (await b.block()).split("\n")
     assert "Minecraft is not answering (Minecraft is not answering on RCON): who is online, the time and the weather are unknown." in lines
@@ -402,5 +569,6 @@ async def test_an_allowed_agent_call_goes_out_with_the_places_then_the_examples(
     updated = out["hookSpecificOutput"]["updatedInput"]
     assert {k: v for k, v in updated.items() if k != "prompt"} == {k: v for k, v in AGENT.items() if k != "prompt"}
     assert updated["prompt"].startswith(JOB + "\n\nSAVED PLACES: none\n\nEXAMPLES, picked for T7 by Jev in 0.3 s.\n")
+    assert "\nACTIONS: every action" in updated["prompt"] and "\nice_beam — Give a player an ice beam" in updated["prompt"]
     assert whole("scripts/ice_beam/main.py") in updated["prompt"]
     assert brief.STEPS[-1] is examples.examples

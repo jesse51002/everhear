@@ -7,6 +7,9 @@ run_tests.py runs these too. In this process mc is pointed at a fake whose world
 makes afresh; the tests that need a script of their own (two scripts on one player, a stop)
 start one the way EC2 does, with PYTHONPATH=scripts/_lib and VFG_INSTANCE set.
 """
+import ast
+import contextlib
+import io
 import json
 import os
 import secrets
@@ -46,6 +49,61 @@ from kit import values, items, aim, area, mobs, fx, world, exclude, loop  # noqa
 
 signal.signal(signal.SIGINT, signal.default_int_handler)
 signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+REPO = os.path.dirname(os.path.dirname(HERE))
+
+
+def _vfg_actions():
+    """lib/py/vfg_actions.py, with the repo importable for actions._types (and pydantic)."""
+    for path in (REPO, os.path.join(REPO, "lib", "py")):
+        if path not in sys.path:
+            sys.path.append(path)
+    import vfg_actions
+    return vfg_actions
+
+
+def values_class(p):
+    """A preset's values class, from its module (as a test loads it), its class or its name."""
+    T = _vfg_actions()._types()
+    if isinstance(p, str):
+        return T.preset(p)
+    if isinstance(p, type):
+        return p
+    return getattr(p, T.camel(os.path.splitext(os.path.basename(p.__file__))[0]))
+
+
+def values_meta(*presets, given=()):
+    """The meta file vfg action run writes for a copy of a script holding these presets: every
+    value of their values classes (each a preset's module, its class or a preset's name), its
+    default, then `given` (key=value words, or a dict), checked on the PC as vfg checks a run's
+    values (lib/py/vfg_actions.py, with pydantic). For values(meta=...)."""
+    from pydantic import create_model
+    classes = [values_class(p) for p in presets]
+    model = create_model("Script", __base__=tuple(classes)) if len(classes) > 1 else classes[0]
+    if not isinstance(given, dict):
+        given = dict(w.split("=", 1) for w in given)
+    checked = _vfg_actions().check_values(model, given, allow_fixed=True)
+    return {"values": checked.values, "live": checked.live}
+
+
+def assert_checked_on_the_pc(case, preset):
+    """A preset's values as vfg checks a run's: the defaults pass, a number past its limits is
+    clamped with a note, and a word that is not of its type is refused."""
+    va = _vfg_actions()
+    T, cls = va._types(), values_class(preset)
+    va.check_values(cls, {}, allow_fixed=True)
+    bad = {"int": "lots", "number": "lots", "enum": "nonsense", "bool": "nonsense", "mob": "potion",
+           "players": "not a name!", "list of number": "x", "list of int": "x", "list of mob": "potion"}
+    for key, f in cls.model_fields.items():
+        kind = T.kind(f.annotation, f.metadata)
+        lo, hi = T.limits(f.annotation, f.metadata)
+        for edge, past in ((lo, -1), (hi, 1)):
+            if edge is not None:
+                notes = va.check_values(cls, {key: str(edge + past)}, allow_fixed=True).notes
+                case.assertIn("clamped", " ".join(notes), key)
+        if kind in bad:
+            with case.assertRaises(ValueError, msg=key):
+                va.check_values(cls, {key: bad[kind]}, allow_fixed=True)
 
 
 class KitCase(unittest.TestCase):
@@ -114,69 +172,11 @@ def collect(gen, seconds):
 
 # ---- values ------------------------------------------------------------------------------
 
-VALUES = {
-    "player": {"type": "player", "default": "@a"},
-    "cooldown": {"type": "number", "min": 0, "max": 60, "default": 10, "live": True},
-    "radius": {"type": "int", "min": 2, "max": 64, "default": 8},
-    "leave": {"type": "enum", "of": ["air", "lava", "fire"], "default": "air", "live": True},
-    "loud": {"type": "bool", "default": False},
-    "mob": {"type": "mob", "default": "zombie"},
-    "spare": {"type": "list", "of": "player", "default": []},
-}
-
-
 class ValuesTests(KitCase):
-    def run_dir(self):
-        d = tempfile.mkdtemp(dir=TMP)
-        return d
-
-    def test_defaults_then_command_then_live_file_in_order_and_clamped(self):
-        d = self.run_dir()
-        with open(os.path.join(d, "bomb.values.json"), "w") as f:
-            json.dump({"cooldown": 3, "radius": 30, "leave": "LAVA"}, f)
-        v = values(VALUES, argv=["cooldown=99", "radius=1", "player=Steve,Alex", "loud=yes", "spare=Alex",
-                                 "mob=potion", "nope=1", "positional"],
-                   run_dir=d, instance="bomb", poll=0.05)
-        self.assertEqual(v["cooldown"], 3)          # the live file wins over the command
-        self.assertEqual(v["radius"], 2)            # clamped to its min; not live, so the file's 30 is ignored
-        self.assertEqual(v["leave"], "lava")        # enum matched without case, canonical spelling
-        self.assertEqual(v["player"], "Steve,Alex")
-        self.assertIs(v["loud"], True)
-        self.assertEqual(v["spare"], ["Alex"])
-        self.assertEqual(v["mob"], "zombie")        # potion is not an entity type on 26.3: refused
-        with self.assertRaises(KeyError):
-            v["crater_radius"]
-        self.assertEqual(sorted(v), sorted(VALUES))
-
-    def test_bad_values_are_refused_and_the_old_one_kept(self):
-        v = values(VALUES, argv=["cooldown=lots", "leave=water", "player=@e[type=zombie]"], run_dir=self.run_dir())
-        self.assertEqual((v["cooldown"], v["leave"], v["player"]), (10, "air", "@a"))
-        with self.assertRaises(ValueError):
-            values({"x": {"type": "int", "min": 0, "max": 5, "default": 9}}, argv=[])
-        with self.assertRaises(ValueError):
-            values({"x": {"type": "int", "default": 1, "step": 2}}, argv=[])
-        for kind, bad in (("block", "#minecraft:tall_flowers"), ("mob", "chest_boat"), ("mob", "Zombie Pig")):
-            with self.assertRaises(ValueError):
-                values.check("x", {"type": kind, "default": ""}, bad)
-
-    def test_a_live_value_is_picked_up_within_a_second(self):
-        d = self.run_dir()
-        v = values(VALUES, argv=[], run_dir=d, instance="gun", poll=0.5)
-        cooldown = v["cooldown"]          # handed to the kit as it is, it stays live
-        self.assertEqual(cooldown, 10)
-        t0 = time.time()
-        with open(os.path.join(d, "gun.values.json.tmp"), "w") as f:
-            json.dump({"cooldown": 0, "radius": 40}, f)
-        os.replace(os.path.join(d, "gun.values.json.tmp"), os.path.join(d, "gun.values.json"))
-        while values.now(cooldown) != 0 and time.time() - t0 < 2:
-            time.sleep(0.05)
-        self.assertEqual(values.now(cooldown), 0)
-        self.assertLess(time.time() - t0, 1.0)
-        self.assertEqual(v["radius"], 8)  # not live: a restart changes it, not the file
-
     def test_a_live_value_reaches_a_running_generator(self):
-        d = self.run_dir()
-        v = values(VALUES, argv=["cooldown=30"], run_dir=d, instance="rail", poll=0.05)
+        d = tempfile.mkdtemp(dir=TMP)
+        v = values(meta={"values": {"player": "@a", "cooldown": 30.0}, "live": ["cooldown"]}, run_dir=d,
+                   instance="rail", poll=0.05)
         self.world.hold("Steve", main="railgun")
         got, th = collect(items.clicks(v["player"], "Railgun", cooldown=v["cooldown"], every=0.05), 3)
         time.sleep(0.3)
@@ -190,6 +190,115 @@ class ValuesTests(KitCase):
         self.world.click("Steve")          # the cooldown is 0 now
         time.sleep(0.4)
         self.assertEqual([p for p, _ in got], ["Steve", "Steve"])
+
+    def test_a_values_meta_is_every_preset_value_checked_on_the_pc(self):
+        meta = values_meta("crater", "sneak", given=["crater_radius=999", "sneak_item=Spirit Bomb"])
+        self.assertEqual(meta["values"]["crater_radius"], 300)        # clamped, as vfg action run clamps
+        self.assertEqual(meta["values"]["sneak_item"], "Spirit Bomb")
+        self.assertIn("crater_radius", meta["live"])
+        with self.assertRaises(ValueError):
+            values_meta("crater", given={"crater_leave": "water"})
+
+
+class CopyValuesTests(KitCase):
+    """values(): a copy's meta file, checked on the PC, and its live file; and result(), what
+    the copy reports."""
+
+    def copy(self, name, vals, live=(), edits=None):
+        d = tempfile.mkdtemp(dir=TMP)
+        with open(os.path.join(d, name + ".json"), "w") as f:
+            json.dump({"copy": name, "action": "gun", "script": "gun", "values": vals, "live": list(live)}, f)
+        if edits is not None:
+            with open(os.path.join(d, name + ".values.json"), "w") as f:
+                json.dump(edits, f)
+        return d
+
+    def test_the_meta_values_then_the_live_file_for_live_fields_only(self):
+        d = self.copy("gun", {"player": "Steve", "cooldown": 2.0, "range": 100, "spare": ["Alex"], "on": True},
+                      live=["cooldown", "on"], edits={"cooldown": 0.5, "range": 5, "nope": 1})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            v = values(run_dir=d, instance="gun", poll=0.05)
+            self.assertEqual(v["cooldown"], 0.5)      # live: the edit
+            self.assertEqual(v["range"], 100)         # not live: the edit is left out
+            v["range"]
+        self.assertEqual((v["player"], v["spare"], v["on"]), ("Steve", ["Alex"], True))
+        self.assertEqual(sorted(v), ["cooldown", "on", "player", "range", "spare"])
+        with self.assertRaises(KeyError):
+            v["crater_radius"]
+        said = out.getvalue()
+        self.assertEqual(said.count("live file: ignored range, not live"), 1)
+        self.assertEqual(said.count("live file: ignored nope, not one of its values"), 1)
+        cooldown = v["cooldown"]                      # handed on as it is, it stays live
+        t0 = time.time()
+        with open(os.path.join(d, "gun.values.json.tmp"), "w") as f:
+            json.dump({"cooldown": 7, "on": False}, f)
+        os.replace(os.path.join(d, "gun.values.json.tmp"), os.path.join(d, "gun.values.json"))
+        while values.now(cooldown) != 7 and time.time() - t0 < 2:
+            time.sleep(0.02)
+        self.assertEqual(values.now(cooldown), 7)
+        self.assertLess(time.time() - t0, 1.0)
+        self.assertIs(v["on"], False)
+
+    def test_the_meta_as_a_dict_or_a_path_and_none_is_an_error(self):
+        v = values(meta={"values": {"n": 3}, "live": []}, run_dir=tempfile.mkdtemp(dir=TMP), instance="x")
+        self.assertEqual(dict(v), {"n": 3})
+        d = self.copy("other", {"n": 4})
+        self.assertEqual(values(meta=os.path.join(d, "other.json"), run_dir=d, instance="other")["n"], 4)
+        with self.assertRaises(RuntimeError) as e:
+            values(run_dir=tempfile.mkdtemp(dir=TMP), instance="nothing")
+        self.assertIn("vfg action run", str(e.exception))
+
+    def test_result_writes_the_copys_result_file_and_the_last_call_wins(self):
+        d = tempfile.mkdtemp(dir=TMP)
+        src = ("from kit import result\n"
+               "import mc\n"
+               "result('half way', n=1)\n"
+               "result('summoned  100 zombies\\nround Steve', who=['Steve'], at=(197, 68, 251), n=100)\n"
+               "mc.log('end')\n")
+        proc = start_script("reporter", src, self.fake, self.password, instance="reporter_2", run_dir=d)
+        out = proc.communicate(timeout=10)[0].decode()
+        self.assertEqual(proc.returncode, 0, out)
+        with open(os.path.join(d, "reporter_2.result.json")) as f:
+            got = json.load(f)
+        self.assertEqual(got["summary"], "summoned 100 zombies round Steve")
+        self.assertEqual(got["facts"], {"who": ["Steve"], "at": [197, 68, 251], "n": 100})
+        self.assertAlmostEqual(got["at"], time.time(), delta=30)
+        self.assertIn("reporter_2 result: summoned 100 zombies round Steve", out)
+        self.assertEqual([n for n in os.listdir(d) if ".tmp" in n], [])
+
+
+class PlaceTests(KitCase):
+    """world.place: a Place value (a saved name, x y z [dim], a player) to where it is now."""
+
+    def test_a_saved_place_coordinates_and_a_player(self):
+        self.world.storage["castle"] = {"pos": [197, 68, 251], "dim": "minecraft:overworld", "by": "T23"}
+        self.world.storage["hell"] = {"pos": [1, 70, -2], "dim": "minecraft:the_nether", "by": ""}
+        p = world.place("castle")
+        self.assertEqual((tuple(p), p.dim), ((197.0, 68.0, 251.0), None))
+        self.assertEqual(world.place("hell").dim, "minecraft:the_nether")
+        p = world.place("100 64 -20")
+        self.assertEqual((tuple(p), p.dim), ((100.0, 64.0, -20.0), None))
+        self.assertEqual(world.place(" 100  64.5 -20 the_nether ").dim, "minecraft:the_nether")
+        self.assertEqual(world.place("1 2 3 end").dim, "minecraft:the_end")
+        p = world.place("Steve")
+        self.assertEqual((tuple(p), p.dim), ((10.5, 64.0, -3.5), None))
+        self.assertEqual(tuple(world.place((1, 2, 3))), (1.0, 2.0, 3.0))
+        self.assertIs(world.place(p), p)
+
+    def test_a_saved_name_wins_over_a_player_and_nowhere_is_none(self):
+        self.world.add_player("builder", (5.5, 70.0, 5.5))
+        self.world.storage["builder"] = {"pos": [9, 9, 9], "dim": "minecraft:overworld", "by": ""}
+        self.assertEqual(tuple(world.place("builder")), (9.0, 9.0, 9.0))
+        self.assertEqual(tuple(world.place("Builder")), (9.0, 9.0, 9.0))   # a saved name, lowercased
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertIsNone(world.place(""))                              # not given: quietly none
+            self.assertEqual(out.getvalue(), "")
+            self.assertIsNone(world.place("Nobody"))
+            self.assertIsNone(world.place("gone_place"))
+            self.assertIsNone(world.place("1 2 three"))
+        self.assertIn("no saved place and no player online by that name", out.getvalue())
 
 
 # ---- mc ---------------------------------------------------------------------------------
@@ -735,7 +844,6 @@ class KitPolishTests(KitCase):
         self.assertEqual([e for e in self.world.entities if e["type"] == "marker"], [other])
 
     def test_at_p_is_the_owner_when_online_else_the_first(self):
-        self.assertEqual(values.check("player", {"type": "player", "default": "@a"}, "@p"), ("@p", ""))
         self.world.add_player("Alex", (1, 64, 1))
         self.assertEqual(loop.who("@p"), [loop.online()[0]])
         old, mc.OWNER = mc.OWNER, "Alex"
@@ -755,11 +863,16 @@ class KitPolishTests(KitCase):
 
 # ---- scripts: two at once, and a stop ------------------------------------------------------
 
-def start_script(name, source, fake, password, instance=None, run_dir=None):
+def start_script(name, source, fake, password, instance=None, run_dir=None, vals=None):
+    """A script started as the box starts a copy, with the meta file values() reads: vals,
+    {name: value} (none live), or a values_meta()."""
     folder = os.path.join(TMP, name)
     os.makedirs(folder, exist_ok=True)
     with open(os.path.join(folder, "main.py"), "w") as f:
         f.write(source)
+    meta = vals if vals is None or "values" in vals else {"values": vals, "live": []}
+    with open(os.path.join(run_dir or TMP, (instance or name) + ".json"), "w") as f:
+        json.dump(meta or {"values": {}, "live": []}, f)
     env = dict(os.environ, PYTHONPATH=LIB, VFG_MC_PROPERTIES=_properties(password, fake.port),
                VFG_RCON_HOST="127.0.0.1", PYTHONDONTWRITEBYTECODE="1", VFG_INSTANCE=instance or name,
                VFG_RUN_DIR=run_dir or TMP, VFG_PROTECTED=os.path.join(TMP, "none.json"))
@@ -767,12 +880,24 @@ def start_script(name, source, fake, password, instance=None, run_dir=None):
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
 
+def copied(path):
+    """A preset's file as a script on the box holds it: without its values class and its
+    import from actions, which only the PC reads (vfg script new --preset leaves them out)."""
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    drop = set()
+    for node in ast.parse(text).body:
+        if (isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "actions") or \
+                (isinstance(node, ast.ClassDef) and any(getattr(b, "id", None) == "Values" for b in node.bases)):
+            drop.update(range(node.lineno, node.end_lineno + 1))
+    return "".join(line for n, line in enumerate(text.splitlines(True), 1) if n not in drop)
+
+
 WAND = '''"""%s: logs each click."""
 ASKS = []
 from kit import values, items, loop
 import mc
-VALUES = {"player": {"type": "player", "default": "@a"}}
-v = values(VALUES)
+v = values()
 for p in loop(items.clicks(v["player"], "%s", every=0.05)):
     mc.log("fired", p)
 '''
@@ -794,8 +919,8 @@ class KitScriptTests(unittest.TestCase):
         self.fake.stop()
 
     def test_two_scripts_on_one_player_each_react_to_their_own_item(self):
-        a = start_script("alpha", WAND % ("Alpha", "Alpha Wand"), self.fake, self.password)
-        b = start_script("beta", WAND % ("Beta", "Beta Wand"), self.fake, self.password)
+        a = start_script("alpha", WAND % ("Alpha", "Alpha Wand"), self.fake, self.password, vals={"player": "@a"})
+        b = start_script("beta", WAND % ("Beta", "Beta Wand"), self.fake, self.password, vals={"player": "@a"})
         self.procs += [a, b]
         deadline = time.time() + 5
         while len(self.world.gives) < 2 and time.time() < deadline:
@@ -824,8 +949,7 @@ class KitScriptTests(unittest.TestCase):
 ASKS = []
 from kit import values, items, area, mobs, world, loop
 import mc
-VALUES = {"player": {"type": "player", "default": "Steve"}}
-v = values(VALUES)
+v = values()
 world.gamerule("mob_griefing", True)
 world.objective("dummy", "kills")
 area.forceload((0, 0, 0, 40, 0, 40), wait=0)
@@ -837,7 +961,7 @@ mc.log("ready")
 for p in loop(items.clicks(v["player"], "Probe Wand", every=0.05)):
     pass
 '''
-        proc = start_script("probe", src, self.fake, self.password)
+        proc = start_script("probe", src, self.fake, self.password, vals={"player": "Steve"})
         self.procs.append(proc)
         deadline = time.time() + 6
         while not self.world.gives and time.time() < deadline:
@@ -870,8 +994,7 @@ for p in loop(items.clicks(v["player"], "Probe Wand", every=0.05)):
 ASKS = []
 from kit import values, area, mobs, world
 import mc
-VALUES = {"player": {"type": "player", "default": "Steve"}}
-v = values(VALUES)
+v = values()
 world.gamerule("mob_griefing", True)
 world.objective("dummy", "kills")
 area.forceload((0, 0, 0, 40, 0, 40), wait=0)
@@ -881,7 +1004,7 @@ mc.on_stop(lambda: mc.log("own cleanup ran"))
 mc.on_stop(lambda: mc.log("stop-only cleanup ran"), at_exit=False)
 mc.log("done")
 '''
-        proc = start_script("ender", src, self.fake, self.password)
+        proc = start_script("ender", src, self.fake, self.password, vals={"player": "Steve"})
         self.procs.append(proc)
         out = proc.communicate(timeout=8)[0].decode()
         self.assertEqual(proc.returncode, 0, out)
@@ -894,23 +1017,26 @@ mc.log("done")
         self.assertEqual(self.world.forced, set())
         self.assertEqual(self.world.gamerules["mob_griefing"], "false")
         self.assertNotIn("vfg_ender_kills", self.world.objectives)
-        # what it made stays: the boss's body and the two zombies, and no kill was sent
-        self.assertEqual(sorted(e["type"] for e in self.world.entities if "vfg_ender" in e["tags"]),
+        # what it made stays: the boss's body and the two zombies, and no kill was sent; they are
+        # handed over to vfg_left_ender, so a later copy named ender never takes them with its stop
+        self.assertEqual(sorted(e["type"] for e in self.world.entities if "vfg_left_ender" in e["tags"]),
                          ["zombie", "zombie", "zombie"])
+        self.assertEqual([e for e in self.world.entities if "vfg_ender" in e["tags"]], [])
         self.assertEqual([c for c in self.world.commands if c.startswith("kill")], [])
+        self.assertEqual(self.world.commands[-2:], ["tag @e[tag=vfg_ender] add vfg_left_ender",
+                                                    "tag @e[tag=vfg_ender] remove vfg_ender"])
 
     def test_a_one_shot_spawner_leaves_its_mobs_when_it_ends(self):
         src = '''"""Spiders: 39 giant spiders round a player, then it is done."""
 ASKS = ["spawn 39 giant spiders"]
 from kit import values, mobs
 import mc
-VALUES = {"player": {"type": "player", "default": "Steve"}}
-v = values(VALUES)
+v = values()
 n = mobs.around(v["player"], "spider", 38, 'attributes:[{id:"scale",base:3}]', spread=12, tags=("spiders",))
 n += 1 if mc.spawn(v["player"], "spider", 'attributes:[{id:"scale",base:3}]') else 0
 mc.log("summoned", n)
 '''
-        proc = start_script("spiders", src, self.fake, self.password)
+        proc = start_script("spiders", src, self.fake, self.password, vals={"player": "Steve"})
         self.procs.append(proc)
         out = proc.communicate(timeout=10)[0].decode()
         self.assertEqual(proc.returncode, 0, out)
@@ -918,7 +1044,7 @@ mc.log("summoned", n)
         self.assertIn("summoned 39", out)
         self.assertIn("ended by itself", out)
         time.sleep(0.2)
-        spiders = [e for e in self.world.entities if e["type"] == "spider" and "vfg_spiders" in e["tags"]]
+        spiders = [e for e in self.world.entities if e["type"] == "spider" and "vfg_left_spiders" in e["tags"]]
         self.assertEqual(len(spiders), 39)
         self.assertEqual([c for c in self.world.commands if c.startswith("kill")], [])
 
@@ -927,12 +1053,12 @@ mc.log("summoned", n)
 ASKS = []
 from kit import values, mobs
 import mc
-v = values({"player": {"type": "player", "default": "Steve"}})
+v = values()
 mobs.around(v["player"], "spider", 3)
 mc.on_stop(lambda: mc.log("stop-only cleanup ran"), at_exit=False)
 oops()
 '''
-        proc = start_script("broken", src, self.fake, self.password)
+        proc = start_script("broken", src, self.fake, self.password, vals={"player": "Steve"})
         self.procs.append(proc)
         out = proc.communicate(timeout=10)[0].decode()
         self.assertIn("NameError", out)
@@ -940,10 +1066,12 @@ oops()
         self.assertIn("stop-only cleanup ran", out)
         self.assertEqual([e for e in self.world.entities if "vfg_broken" in e["tags"]], [])
         self.assertEqual(self.world.commands[-1], "kill @e[tag=vfg_broken]")
+        # The error's last line, for vfg action run's answer, beside the copy's other files.
+        with open(os.path.join(TMP, "broken.error")) as f:
+            self.assertEqual(f.read(), "NameError: name 'oops' is not defined\n")
 
     def test_ice_shells_still_melt_when_a_script_ends_by_itself(self):
-        with open(os.path.join(os.path.dirname(HERE), "_presets", "freeze.py"), encoding="utf-8") as f:
-            preset = f.read()
+        preset = copied(os.path.join(os.path.dirname(HERE), "_presets", "freeze.py"))
         src = ('''"""Ice Probe: freezes a zombie in a shell of ice for a minute, then it is done."""
 ASKS = []
 from kit import aim

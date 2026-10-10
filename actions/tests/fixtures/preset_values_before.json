@@ -1,0 +1,211 @@
+{
+ "around": {
+  "around_radius": {"type": "number", "default": 8, "min": 1, "max": 128, "of": null, "live": true},
+  "around_what": {"type": "enum", "default": "mobs", "min": null, "max": null, "of": ["mobs", "hostile", "players", "everything", "projectiles"], "live": true},
+  "around_most": {"type": "int", "default": 0, "min": 0, "max": 1000, "of": null, "live": true}
+ },
+ "beam_clash": {
+  "beam_clash_power": {"type": "number", "default": 10, "min": 1, "max": 1000, "of": null, "live": true},
+  "beam_clash_gap": {"type": "number", "default": 4, "min": 0.5, "max": 16, "of": null, "live": true},
+  "beam_clash_window": {"type": "number", "default": 1.5, "min": 0, "max": 10, "of": null, "live": true},
+  "beam_clash_aimed": {"type": "bool", "default": true, "min": null, "max": null, "of": null, "live": true},
+  "beam_clash_seconds": {"type": "number", "default": 6, "min": 1, "max": 30, "of": null, "live": true},
+  "beam_clash_blast": {"type": "int", "default": 4, "min": 0, "max": 8, "of": null, "live": true},
+  "beam_clash_particle": {"type": "particle", "default": "dust{color:[0.6,0.1,0.9],scale:2.0}", "min": null, "max": null, "of": null, "live": true}
+ },
+ "boss": {
+  "boss_name": {"type": "str", "default": "Horde King", "min": null, "max": null, "of": null, "live": false},
+  "boss_mob": {"type": "mob", "default": "zombie", "min": null, "max": null, "of": null, "live": false},
+  "boss_bodies": {"type": "int", "default": 1, "min": 1, "max": 8, "of": null, "live": false},
+  "boss_health": {"type": "int", "default": 800, "min": 1, "max": 1024, "of": null, "live": false},
+  "boss_scale": {"type": "number", "default": 3, "min": 0.25, "max": 16, "of": null, "live": false},
+  "boss_attack": {"type": "number", "default": 12, "min": 0, "max": 100, "of": null, "live": false},
+  "boss_gear": {"type": "enum", "default": "netherite", "min": null, "max": null, "of": ["none", "leather", "golden", "iron", "diamond", "netherite"], "live": false},
+  "boss_bar": {"type": "enum", "default": "red", "min": null, "max": null, "of": ["red", "blue", "green", "pink", "purple", "white", "yellow"], "live": false},
+  "boss_every": {"type": "number", "default": 10, "min": 1, "max": 120, "of": null, "live": true},
+  "boss_minion": {"type": "mob", "default": "zombie", "min": null, "max": null, "of": null, "live": true},
+  "boss_minions": {"type": "int", "default": 3, "min": 0, "max": 20, "of": null, "live": true},
+  "boss_phases": {"type": "list", "default": [0.5, 0.25], "min": null, "max": null, "of": "number", "live": false},
+  "boss_reward": {"type": "item", "default": "diamond", "min": null, "max": null, "of": null, "live": true},
+  "boss_reward_count": {"type": "int", "default": 8, "min": 0, "max": 64, "of": null, "live": true},
+  "boss_music": {"type": "enum", "default": "none", "min": null, "max": null, "of": ["none", "pigstep", "otherside", "relic", "creator", "precipice"], "live": false},
+  "boss_griefing": {"type": "bool", "default": true, "min": null, "max": null, "of": null, "live": false}
+ },
+ "charge_up": {
+  "charge_style": {"type": "enum", "default": "sphere", "min": null, "max": null, "of": ["sphere", "orbs", "aura"], "live": true},
+  "charge_seconds": {"type": "number", "default": 3, "min": 0.2, "max": 15, "of": null, "live": true},
+  "charge_particle": {"type": "particle", "default": "dust{color:[0.3,0.7,1.0],scale:2.5}", "min": null, "max": null, "of": null, "live": true},
+  "charge_size": {"type": "number", "default": 6, "min": 1, "max": 30, "of": null, "live": true},
+  "charge_orbs": {"type": "list", "default": [], "min": null, "max": null, "of": "particle", "live": true}
+ },
+ "countdown": {
+  "countdown_seconds": {"type": "int", "default": 10, "min": 1, "max": 3600, "of": null, "live": false},
+  "countdown_text": {"type": "str", "default": "Detonation", "min": null, "max": null, "of": null, "live": true},
+  "countdown_to": {"type": "player", "default": "@a", "min": null, "max": null, "of": null, "live": true}
+ },
+ "crater": {
+  "crater_radius": {"type": "int", "default": 8, "min": 0, "max": 300, "of": null, "live": true},
+  "crater_tunnel": {"type": "int", "default": 0, "min": 0, "max": 8, "of": null, "live": true},
+  "crater_leave": {"type": "enum", "default": "air", "min": null, "max": null, "of": ["air", "lava", "fire"], "live": true},
+  "crater_spare_protected": {"type": "bool", "default": true, "min": null, "max": null, "of": null, "live": true},
+  "crater_load": {"type": "bool", "default": true, "min": null, "max": null, "of": null, "live": true}
+ },
+ "damage_hits": {
+  "damage_amount": {"type": "number", "default": 20, "min": 0, "max": 100000, "of": null, "live": true},
+  "damage_type": {"type": "enum", "default": "player_attack", "min": null, "max": null, "of": ["player_attack", "magic", "lightning_bolt", "explosion", "freeze", "on_fire", "sonic_boom", "arrow", "wither", "generic"], "live": true},
+  "damage_kill": {"type": "bool", "default": false, "min": null, "max": null, "of": null, "live": true},
+  "damage_what": {"type": "enum", "default": "all", "min": null, "max": null, "of": ["all", "mobs", "hostile", "players"], "live": true},
+  "damage_most": {"type": "int", "default": 0, "min": 0, "max": 1000, "of": null, "live": true},
+  "damage_head": {"type": "number", "default": 1, "min": 1, "max": 10, "of": null, "live": true},
+  "damage_spare": {"type": "list", "default": [], "min": null, "max": null, "of": "player", "live": true}
+ },
+ "director": {
+  "director_events": {"type": "list", "default": ["sound", "shadow", "mob", "message", "dark"], "min": null, "max": null, "of": "str", "live": true},
+  "director_weights": {"type": "list", "default": [4, 1, 1, 2, 1], "min": null, "max": null, "of": "number", "live": true},
+  "director_min_s": {"type": "number", "default": 25, "min": 1, "max": 3600, "of": null, "live": true},
+  "director_max_s": {"type": "number", "default": 60, "min": 1, "max": 3600, "of": null, "live": true},
+  "director_messages": {"type": "list", "default": ["i see you", "turn around", "you are not alone", "why are you still here", "behind you"], "min": null, "max": null, "of": "str", "live": true},
+  "director_each": {"type": "bool", "default": true, "min": null, "max": null, "of": null, "live": true}
+ },
+ "enters_chunk": {
+  "enters_dims": {"type": "list", "default": ["overworld", "the_nether", "the_end"], "min": null, "max": null, "of": ["overworld", "the_nether", "the_end"], "live": true},
+  "enters_below": {"type": "int", "default": 32, "min": 0, "max": 384, "of": null, "live": true},
+  "enters_above": {"type": "int", "default": 40, "min": 0, "max": 384, "of": null, "live": true}
+ },
+ "explosion": {
+  "explosion_power": {"type": "number", "default": 4, "min": 0, "max": 16, "of": null, "live": true},
+  "explosion_layout": {"type": "enum", "default": "one", "min": null, "max": null, "of": ["one", "plus", "ring", "rings"], "live": true},
+  "explosion_spread": {"type": "number", "default": 4, "min": 1, "max": 32, "of": null, "live": true},
+  "explosion_breaks": {"type": "bool", "default": true, "min": null, "max": null, "of": null, "live": true},
+  "explosion_keep": {"type": "number", "default": 0, "min": 0, "max": 32, "of": null, "live": true},
+  "explosion_spare": {"type": "list", "default": [], "min": null, "max": null, "of": "player", "live": true}
+ },
+ "freeze": {
+  "freeze_seconds": {"type": "number", "default": 5, "min": 1, "max": 120, "of": null, "live": true},
+  "freeze_shell": {"type": "bool", "default": false, "min": null, "max": null, "of": null, "live": true},
+  "freeze_block": {"type": "enum", "default": "ice", "min": null, "max": null, "of": ["ice", "packed_ice", "blue_ice", "snow_block"], "live": true},
+  "freeze_blindness": {"type": "bool", "default": false, "min": null, "max": null, "of": null, "live": true}
+ },
+ "horde_wave": {
+  "horde_mobs": {"type": "list", "default": ["zombie"], "min": null, "max": null, "of": "mob", "live": true},
+  "horde_per_player": {"type": "int", "default": 10, "min": 1, "max": 100, "of": null, "live": true},
+  "horde_every": {"type": "number", "default": 30, "min": 1, "max": 3600, "of": null, "live": true},
+  "horde_cap": {"type": "int", "default": 60, "min": 1, "max": 400, "of": null, "live": true},
+  "horde_spread": {"type": "int", "default": 12, "min": 4, "max": 100, "of": null, "live": true},
+  "horde_waves": {"type": "int", "default": 0, "min": 0, "max": 1000, "of": null, "live": false},
+  "horde_explode": {"type": "bool", "default": false, "min": null, "max": null, "of": null, "live": true},
+  "horde_announce": {"type": "bool", "default": true, "min": null, "max": null, "of": null, "live": true}
+ },
+ "land_safely": {
+  "land_cushion": {"type": "int", "default": 5, "min": 0, "max": 60, "of": null, "live": false},
+  "land_ring": {"type": "int", "default": 8, "min": 1, "max": 64, "of": null, "live": false},
+  "land_tries": {"type": "int", "default": 4, "min": 1, "max": 8, "of": null, "live": false},
+  "land_spawn_after": {"type": "int", "default": 1000, "min": 0, "max": 60000000, "of": null, "live": false}
+ },
+ "leaves_area": {
+  "leaves_area": {"type": "enum", "default": "radius", "min": null, "max": null, "of": ["radius", "box", "player"], "live": false},
+  "leaves_radius": {"type": "number", "default": 40, "min": 1, "max": 10000, "of": null, "live": true},
+  "leaves_center": {"type": "list", "default": [], "min": null, "max": null, "of": "number", "live": true},
+  "leaves_box": {"type": "list", "default": [], "min": null, "max": null, "of": "number", "live": true},
+  "leaves_of_player": {"type": "player", "default": "@a", "min": null, "max": null, "of": null, "live": true}
+ },
+ "lightning": {
+  "lightning_count": {"type": "int", "default": 1, "min": 1, "max": 50, "of": null, "live": true},
+  "lightning_spread": {"type": "number", "default": 3, "min": 0, "max": 32, "of": null, "live": true},
+  "lightning_layout": {"type": "enum", "default": "scatter", "min": null, "max": null, "of": ["scatter", "ring"], "live": true},
+  "lightning_every": {"type": "number", "default": 0, "min": 0, "max": 5, "of": null, "live": true},
+  "lightning_spare": {"type": "list", "default": [], "min": null, "max": null, "of": "player", "live": true}
+ },
+ "lock_on": {
+  "lock_range": {"type": "int", "default": 100, "min": 4, "max": 500, "of": null, "live": true},
+  "lock_cone": {"type": "number", "default": 6, "min": 1, "max": 45, "of": null, "live": true},
+  "lock_players": {"type": "bool", "default": false, "min": null, "max": null, "of": null, "live": true}
+ },
+ "meteor_fall": {
+  "meteor_size": {"type": "number", "default": 4, "min": 1, "max": 24, "of": null, "live": true},
+  "meteor_blocks": {"type": "str", "default": "magma_block blackstone obsidian", "min": null, "max": null, "of": null, "live": true},
+  "meteor_height": {"type": "int", "default": 60, "min": 10, "max": 300, "of": null, "live": true},
+  "meteor_slant": {"type": "int", "default": 20, "min": 0, "max": 100, "of": null, "live": true},
+  "meteor_seconds": {"type": "number", "default": 3, "min": 0.5, "max": 20, "of": null, "live": true}
+ },
+ "on_death": {
+  "on_death_event": {"type": "enum", "default": "death", "min": null, "max": null, "of": ["death", "kill", "both"], "live": true}
+ },
+ "projectile": {
+  "projectile_kind": {"type": "enum", "default": "orb", "min": null, "max": null, "of": ["orb", "block"], "live": true},
+  "projectile_size": {"type": "number", "default": 2, "min": 0.2, "max": 16, "of": null, "live": true},
+  "projectile_speed": {"type": "number", "default": 30, "min": 2, "max": 200, "of": null, "live": true},
+  "projectile_particle": {"type": "particle", "default": "end_rod", "min": null, "max": null, "of": null, "live": true},
+  "projectile_block": {"type": "block", "default": "magma_block", "min": null, "max": null, "of": null, "live": true}
+ },
+ "projectile_lands": {
+  "projectile_lands_kind": {"type": "enum", "default": "both", "min": null, "max": null, "of": ["both", "arrow", "trident"], "live": true},
+  "projectile_lands_named": {"type": "list", "default": [], "min": null, "max": null, "of": "str", "live": true},
+  "projectile_lands_cooldown": {"type": "number", "default": 0, "min": 0, "max": 60, "of": null, "live": true},
+  "projectile_lands_remove": {"type": "bool", "default": false, "min": null, "max": null, "of": null, "live": true}
+ },
+ "push": {
+  "push_way": {"type": "enum", "default": "away", "min": null, "max": null, "of": ["away", "toward", "up"], "live": true},
+  "push_strength": {"type": "number", "default": 6, "min": 0.5, "max": 40, "of": null, "live": true}
+ },
+ "replace_blocks": {
+  "replace_rules": {"type": "list", "default": ["#minecraft:snow > white_wool light_gray_wool white_concrete quartz_block"], "min": null, "max": null, "of": "str", "live": true},
+  "replace_rate": {"type": "int", "default": 100, "min": 1, "max": 100, "of": null, "live": true},
+  "replace_cell": {"type": "int", "default": 4, "min": 1, "max": 16, "of": null, "live": true},
+  "replace_radius": {"type": "int", "default": 4, "min": 0, "max": 128, "of": null, "live": true}
+ },
+ "shape_fill": {
+  "shape_kind": {"type": "enum", "default": "box", "min": null, "max": null, "of": ["box", "cylinder", "dome", "pyramid", "staircase", "staircase_down", "wall"], "live": true},
+  "shape_width": {"type": "int", "default": 9, "min": 1, "max": 256, "of": null, "live": true},
+  "shape_height": {"type": "int", "default": 5, "min": 1, "max": 256, "of": null, "live": true},
+  "shape_depth": {"type": "int", "default": 9, "min": 1, "max": 256, "of": null, "live": true},
+  "shape_offset": {"type": "list", "default": [0, 0, 0], "min": null, "max": null, "of": "int", "live": true},
+  "shape_facing": {"type": "enum", "default": "look", "min": null, "max": null, "of": ["look", "north", "east", "south", "west"], "live": true},
+  "shape_blocks": {"type": "str", "default": "stone_bricks", "min": null, "max": null, "of": null, "live": true},
+  "shape_hollow": {"type": "bool", "default": false, "min": null, "max": null, "of": null, "live": true}
+ },
+ "sky_above": {
+  "sky_radius": {"type": "number", "default": 14, "min": 0, "max": 128, "of": null, "live": true},
+  "sky_height": {"type": "number", "default": 20, "min": 1, "max": 300, "of": null, "live": true},
+  "sky_band": {"type": "number", "default": 0, "min": 0, "max": 100, "of": null, "live": true},
+  "sky_count": {"type": "int", "default": 6, "min": 1, "max": 100, "of": null, "live": true},
+  "sky_open": {"type": "bool", "default": true, "min": null, "max": null, "of": null, "live": true}
+ },
+ "sneak": {
+  "sneak_mode": {"type": "enum", "default": "while", "min": null, "max": null, "of": ["while", "tap", "three_taps"], "live": true},
+  "sneak_seconds": {"type": "number", "default": 1.5, "min": 0.3, "max": 5, "of": null, "live": true},
+  "sneak_item": {"type": "str", "default": "", "min": null, "max": null, "of": null, "live": true}
+ },
+ "stands_still": {
+  "stands_radius": {"type": "number", "default": 4, "min": 0.5, "max": 64, "of": null, "live": true},
+  "stands_seconds": {"type": "number", "default": 15, "min": 1, "max": 3600, "of": null, "live": true},
+  "stands_warning": {"type": "str", "default": "Move!", "min": null, "max": null, "of": null, "live": true}
+ },
+ "summon": {
+  "summon_mob": {"type": "mob", "default": "zombie", "min": null, "max": null, "of": null, "live": true},
+  "summon_count": {"type": "int", "default": 5, "min": 1, "max": 200, "of": null, "live": true},
+  "summon_spread": {"type": "int", "default": 8, "min": 1, "max": 100, "of": null, "live": true},
+  "summon_cap": {"type": "int", "default": 60, "min": 1, "max": 1000, "of": null, "live": true},
+  "summon_scale": {"type": "number", "default": 1, "min": 0.1, "max": 16, "of": null, "live": true},
+  "summon_health": {"type": "number", "default": 0, "min": 0, "max": 2048, "of": null, "live": true},
+  "summon_gear": {"type": "enum", "default": "none", "min": null, "max": null, "of": ["none", "leather", "chainmail", "iron", "golden", "diamond", "netherite"], "live": true},
+  "summon_weapon": {"type": "str", "default": "", "min": null, "max": null, "of": null, "live": true},
+  "summon_name": {"type": "str", "default": "", "min": null, "max": null, "of": null, "live": true},
+  "summon_glow": {"type": "bool", "default": false, "min": null, "max": null, "of": null, "live": true},
+  "summon_nbt": {"type": "str", "default": "", "min": null, "max": null, "of": null, "live": true}
+ },
+ "theme_music": {
+  "theme_tune": {"type": "enum", "default": "galick_gun", "min": null, "max": null, "of": ["galick_gun", "hollow_purple", "ice_beam", "spirit_bomb", "spirit_bomb_throw", "super_saiyan", "boss", "none"], "live": true},
+  "theme_to": {"type": "enum", "default": "near", "min": null, "max": null, "of": ["near", "everyone", "player"], "live": true},
+  "theme_reach": {"type": "int", "default": 48, "min": 8, "max": 256, "of": null, "live": true},
+  "theme_loop": {"type": "bool", "default": false, "min": null, "max": null, "of": null, "live": true}
+ },
+ "under_feet": {
+  "under_radius": {"type": "int", "default": 2, "min": 0, "max": 32, "of": null, "live": true},
+  "under_depth": {"type": "int", "default": 1, "min": 1, "max": 64, "of": null, "live": true},
+  "under_above": {"type": "int", "default": 0, "min": 0, "max": 64, "of": null, "live": true}
+ },
+ "walk_steps": {
+  "walk_every": {"type": "number", "default": 1, "min": 0.5, "max": 32, "of": null, "live": true}
+ }
+}

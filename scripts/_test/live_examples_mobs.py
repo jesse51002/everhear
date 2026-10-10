@@ -1,17 +1,20 @@
 """The mobs examples on a real Minecraft 26.3 server, run the way a player's ask runs them.
 
     integration/realmc/up e4 --fresh && eval "$(integration/realmc/env e4)"
-    uv run --python 3.9 python scripts/_test/live_examples_mobs.py [-k horde]
+    uv run --no-project --python 3.12 python scripts/_test/live_examples_mobs.py [-k horde]
 
-Each example is started with `vfg script run` (deployed to the server's stand-in and run there on
-Python 3.9, as on the box), with Carpet's fake players Steve and Alex doing what sets it off; the
-world is then asked over RCON whether it did what the run's script did; one value is changed with
-`vfg script set` while it runs and the change is seen; and after `vfg script stop`, or after the
-example ended by itself, nothing tagged vfg_<instance> is left: no entity, bossbar or forceload.
-It runs only against a realmc test server with Carpet, never the box. The examples: horde_boss,
-dragon_boss, ice_queen, horde, horror_mode, keep_effects, barrier_shield, projectile_shield,
-weapon_chest, arena and tether.
+Each example is a copy of its action, started with `vfg action run` (its values checked here,
+then deployed to the server's stand-in and run there on Python 3.12, as on the box), with
+Carpet's fake players Steve and Alex doing what sets it off. A once action's run waits for the
+copy to end, so the bosses and the hordes are started in the background and played out while
+their run waits. The world is then asked over RCON whether it did what the copy's script did; one
+live value is changed with `vfg script set` while it runs and the change is seen; and after
+`vfg script stop`, or after the copy ended by itself, nothing tagged vfg_<copy> is left: no
+entity, bossbar or forceload. It runs only against a realmc test server with Carpet, never the
+box. The actions: horde_boss, three_headed_dragon, ice_queen, horde, horror_mode, keep_effects,
+barrier_shield, projectile_shield, weapon_chest, arena and tether.
 """
+import json
 import math
 import os
 import re
@@ -58,6 +61,54 @@ def vfg(*args):
     return out
 
 
+def last_json(out):
+    """The JSON line vfg printed last (a warning on stderr may come before it)."""
+    for line in reversed(out.strip().splitlines()):
+        if line.startswith("{"):
+            return json.loads(line)
+    raise AssertionError("no JSON line from vfg:\n%s" % out)
+
+
+def copy_of(action, words):
+    """The copy a run makes: as=<copy>, else the action's own name (nothing of it runs first)."""
+    return next((w[3:] for w in words if w.startswith("as=")), action)
+
+
+def run(action, *words):
+    """vfg action run for an until-stopped action, which answers once its copy is ready: its
+    JSON line, ok, for the copy named, running."""
+    line = last_json(vfg("action", "run", action, *words))
+    if not (line["ok"] and line["copy"] == copy_of(action, words) and line["running"]):
+        raise AssertionError("vfg action run %s: %s" % (action, line))
+    return line
+
+
+def answer(p, copy, seconds=60):
+    """The JSON line of a run started in the background: ok, for the copy. A once action's run
+    answers when the copy has ended (running false, its result), or when its wait is over
+    (running true, "still running as <copy>")."""
+    try:
+        out = p.communicate(timeout=seconds)[0].decode()
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.communicate()
+        raise AssertionError("vfg action run for %s did not answer within %d s" % (copy, seconds))
+    line = last_json(out)
+    if p.returncode != 0 or not line["ok"] or line["copy"] != copy:
+        raise AssertionError("vfg action run for %s: exit %d\n%s" % (copy, p.returncode, out))
+    return line
+
+
+def set_live(copy, *values):
+    """vfg script set <copy> k=v …, each a live value: the edit lands in the running copy, no
+    restart, and says so, `<copy>: k=v …, live`. That line."""
+    said = vfg("script", "set", copy, *values).strip().splitlines()[-1]
+    if not (said.startswith(copy + ": ") and said.endswith(", live")) or \
+            any(v.split("=", 1)[0] + "=" not in said for v in values):
+        raise AssertionError("vfg script set %s %s: %s" % (copy, " ".join(values), said))
+    return said
+
+
 def until(test, seconds=10.0, every=0.2):
     end = time.time() + seconds
     got = test()
@@ -99,23 +150,25 @@ def effect(who, name):
     return None
 
 
-def running(instance):
-    return re.search(r"^%s running" % re.escape(instance), vfg("script", "list"), re.M) is not None
+def running(copy):
+    """True while the box runs the copy: vfg script list --json --fresh asks it now."""
+    return copy in last_json(vfg("script", "list", "--json", "--fresh"))["copies"]
 
 
 FORCED = rc("forceload query")
 
 
-def left(instance, tags=()):
-    """What an instance left behind: entities tagged vfg_<instance> (or one of its own tags),
-    its bossbars, and forceloads that were not there before."""
+def left(copy, tags=()):
+    """What a copy left behind: entities tagged vfg_<copy>, vfg_left_<copy> (what it kept as it
+    ended by itself) or one of its own tags, its bossbars, and forceloads that were not there
+    before."""
     out = []
-    for t in ("vfg_" + instance,) + tuple("vfg_%s_%s" % (instance, s) for s in tags):
+    for t in ("vfg_" + copy, "vfg_left_" + copy) + tuple("vfg_%s_%s" % (copy, s) for s in tags):
         if count("@e[tag=%s]" % t):
             out.append("entity tagged " + t)
     for k in (1, 2):
-        if "No bossbar" not in rc("bossbar get vfg:%s_boss%d max" % (instance, k)):
-            out.append("bossbar vfg:%s_boss%d" % (instance, k))
+        if "No bossbar" not in rc("bossbar get vfg:%s_boss%d max" % (copy, k)):
+            out.append("bossbar vfg:%s_boss%d" % (copy, k))
     if rc("forceload query") != FORCED:
         out.append("forceloads: " + rc("forceload query")[:200])
     return out
@@ -123,7 +176,7 @@ def left(instance, tags=()):
 
 class Live(unittest.TestCase):
     """Steve and Alex, in creative so nothing kills them unless a test says otherwise."""
-    INSTANCES = ()
+    COPIES = ()
 
     @classmethod
     def setUpClass(cls):
@@ -131,9 +184,10 @@ class Live(unittest.TestCase):
             PLAYERS.spawn(name, at, gamemode="creative")
 
     def setUp(self):
-        for inst in self.INSTANCES:
-            if running(inst):
-                vfg("script", "stop", inst)
+        self.runs = []                                                 # runs started in the background
+        for copy in self.COPIES:
+            if running(copy):
+                vfg("script", "stop", copy)
         for name, at in (("Steve", (X, Y, Z)), ("Alex", (X + 6, Y, Z))):
             if name not in PLAYERS.online():
                 PLAYERS.spawn(name, at, gamemode="creative")
@@ -145,19 +199,36 @@ class Live(unittest.TestCase):
         rc("kill @e[tag=lxprobe]")
 
     def tearDown(self):
-        for inst in self.INSTANCES:
-            if running(inst):
-                vfg("script", "stop", inst)
+        for copy in self.COPIES:
+            if running(copy):
+                vfg("script", "stop", copy)
+        for p in self.runs:                                            # a run the test never read
+            if p.poll() is None:
+                p.kill()
+            p.communicate()
         rc("kill @e[tag=lxprobe]")
         rc("kill @e[type=item,x=%d,y=%d,z=%d,distance=..200]" % (X, Y, Z))
         rc("kill @e[type=experience_orb,x=%d,y=%d,z=%d,distance=..200]" % (X, Y, Z))
         rc("kill @e[type=arrow,x=%d,y=%d,z=%d,distance=..200]" % (X, Y, Z))
 
-    def stopped_clean(self, instance, tags=(), wait=3.0):
+    def start(self, action, *words):
+        """vfg action run for a once action, in the background: its run waits for the copy to
+        end while the test plays it out; answer(p, copy) reads its line. Back once the copy runs."""
+        copy = copy_of(action, words)
+        p = subprocess.Popen(["vfg", "action", "run", action] + list(words), stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT)
+        self.runs.append(p)
+        if not until(lambda: p.poll() is not None or running(copy), 30, 0.5):
+            raise AssertionError("%s did not start within 30 s" % copy)
+        if p.poll() is not None:
+            answer(p, copy)                                            # ended already: ok, or why not
+        return p
+
+    def stopped_clean(self, copy, tags=(), wait=3.0):
         """vfg script stop, then nothing of it left."""
-        vfg("script", "stop", instance)
-        self.assertFalse(running(instance))
-        self.assertEqual(until(lambda: not left(instance, tags), wait) or left(instance, tags), True)
+        self.assertIn("stopped " + copy, vfg("script", "stop", copy))
+        self.assertFalse(running(copy))
+        self.assertEqual(until(lambda: not left(copy, tags), wait) or left(copy, tags), True)
 
     def probe(self, mob, x, y, z, nbt=""):
         """A mob for a test to watch, tagged lxprobe (never the script's)."""
@@ -167,7 +238,7 @@ class Live(unittest.TestCase):
 # ---- the bosses -------------------------------------------------------------------------------
 
 class Bosses(Live):
-    INSTANCES = ("horde_boss", "hb_stop", "dragon_boss", "ice_queen")
+    COPIES = ("horde_boss", "hb_stop", "three_headed_dragon", "ice_queen")
 
     def tearDown(self):
         super().tearDown()
@@ -175,9 +246,7 @@ class Bosses(Live):
             rc("fill %d %d %d %d %d %d air replace %s" % (X - 20, Y, Z - 20, X + 20, Y + 3, Z + 20, block))
 
     def test_horde_boss_fought_to_the_death(self):
-        out = vfg("script", "run", "horde_boss", "boss_health=60", "boss_every=2", "boss_minions=2",
-                  "boss_reward_count=3")
-        self.assertIn("running horde_boss", out)
+        p = self.start("horde_boss", "boss_health=60", "boss_every=2", "boss_minions=2", "boss_reward_count=3")
         body = "@e[tag=vfg_horde_boss_boss1,limit=1]"
         self.assertTrue(until(lambda: count("@e[tag=vfg_horde_boss_boss1]") == 1, 15), "no Horde King")
         self.assertIn("Horde King", rc("data get entity %s CustomName" % body))
@@ -187,48 +256,57 @@ class Bosses(Live):
         self.assertEqual(number(rc("bossbar get vfg:horde_boss_boss1 max")), 60)
         self.assertTrue(until(lambda: count("@e[tag=vfg_horde_boss_boss1_minion]") >= 1, 8), "no minions")
         self.assertLessEqual(count("@e[tag=vfg_horde_boss_boss1_minion]"), 6)       # three times boss_minions
-        self.assertIn("boss_reward_count=5", vfg("script", "set", "horde_boss", "boss_reward_count=5"))
+        set_live("horde_boss", "boss_reward_count=5")
         time.sleep(1.0)
         rc("damage %s 35 minecraft:magic" % body)                                   # 25 of 60: below half
         self.assertTrue(until(lambda: number(rc("bossbar get vfg:horde_boss_boss1 value")) == 25, 5))
         self.assertTrue(until(lambda: effect(body, "speed") is not None, 5), "it did not enrage")
         rc("damage %s 100 minecraft:magic" % body)
         self.assertTrue(until(lambda: not running("horde_boss"), 10), "it did not end when the boss died")
+        line = answer(p, "horde_boss")                  # its run answers when it ends, or said it still ran
+        if not line["running"]:
+            self.assertIn("is dead", line["summary"])
         self.assertIn("is dead", vfg("script", "logs", "horde_boss"))
         self.assertEqual(count('@e[type=item,x=%d,y=%d,z=%d,distance=..40,nbt={Item:{id:"minecraft:diamond",count:5}}]'
                                % (X, Y, Z)), 1, "no reward of 5 (set while it ran) where it died")
         self.assertEqual(left("horde_boss", ("boss1", "boss1_minion")), [])
 
     def test_horde_boss_stopped_mid_fight(self):
-        vfg("script", "run", "horde_boss", "as=hb_stop", "boss_every=1", "boss_mob=husk", "boss_minion=husk")
+        p = self.start("horde_boss", "as=hb_stop", "boss_every=1", "boss_mob=husk", "boss_minion=husk")
         self.assertTrue(until(lambda: count("@e[tag=vfg_hb_stop_boss1_minion]") >= 1, 15))
         self.assertEqual(count("@e[type=husk,tag=vfg_hb_stop_boss1]"), 1)
         self.stopped_clean("hb_stop", ("boss1", "boss1_minion"))
+        answer(p, "hb_stop")                                        # its run answers, the copy stopped
 
-    def test_dragon_boss_three_heads_one_bar(self):
+    def test_three_headed_dragon_one_bar(self):
         old = rc("gamerule mob_griefing")
-        vfg("script", "run", "dragon_boss", "boss_health=50", "height=40")
-        heads = "@e[type=ender_dragon,tag=vfg_dragon_boss_boss1]"
+        p = self.start("three_headed_dragon", "boss_health=50", "height=40")
+        heads = "@e[type=ender_dragon,tag=vfg_three_headed_dragon_boss1]"
         self.assertTrue(until(lambda: count(heads) == 3, 15), "not three dragons")
-        y = pos("@e[tag=vfg_dragon_boss_boss1_0,limit=1]")[1]
+        y = pos("@e[tag=vfg_three_headed_dragon_boss1_0,limit=1]")[1]
         self.assertGreater(y, Y + 25, "not up in the sky")
-        self.assertEqual(number(rc("bossbar get vfg:dragon_boss_boss1 max")), 150)
+        self.assertEqual(number(rc("bossbar get vfg:three_headed_dragon_boss1 max")), 150)
         self.assertIn("false", rc("gamerule mob_griefing"))
-        self.assertEqual(count("@e[tag=vfg_dragon_boss_boss1_minion]"), 0)           # no ground in the sky
-        self.assertIn("Three-Headed Dragon", rc("data get entity @e[tag=vfg_dragon_boss_boss1_1,limit=1] CustomName"))
-        rc("kill @e[tag=vfg_dragon_boss_boss1_1]")                                     # one head down
-        self.assertTrue(until(lambda: number(rc("bossbar get vfg:dragon_boss_boss1 value")) == 100, 8))
-        self.assertIn("boss_reward_count=2", vfg("script", "set", "dragon_boss", "boss_reward_count=2"))
-        self.assertTrue(running("dragon_boss"))
+        self.assertEqual(count("@e[tag=vfg_three_headed_dragon_boss1_minion]"), 0)   # no ground in the sky
+        self.assertIn("Three-Headed Dragon",
+                      rc("data get entity @e[tag=vfg_three_headed_dragon_boss1_1,limit=1] CustomName"))
+        rc("kill @e[tag=vfg_three_headed_dragon_boss1_1]")                             # one head down
+        self.assertTrue(until(lambda: number(rc("bossbar get vfg:three_headed_dragon_boss1 value")) == 100, 8))
+        set_live("three_headed_dragon", "boss_reward_count=2")
+        self.assertTrue(running("three_headed_dragon"))
         rc("kill %s" % heads)
-        self.assertTrue(until(lambda: not running("dragon_boss"), 12), "it did not end when they died")
-        log = vfg("script", "logs", "dragon_boss")
+        self.assertTrue(until(lambda: not running("three_headed_dragon"), 12), "it did not end when they died")
+        line = answer(p, "three_headed_dragon")
+        if not line["running"]:
+            self.assertIn("is dead", line["summary"])
+        log = vfg("script", "logs", "three_headed_dragon")
         self.assertIn("is dead", log)
         self.assertNotIn("Traceback", log)
         self.assertTrue(until(lambda: count('@e[type=item,nbt={Item:{id:"minecraft:diamond",count:2}}]') == 1, 5),
                         "no reward of 2 (set while they flew) where the last fell")
         self.assertEqual(rc("gamerule mob_griefing"), old)
-        self.assertEqual(until(lambda: not left("dragon_boss", ("boss1",)), 15) or left("dragon_boss", ("boss1",)), True)
+        self.assertEqual(until(lambda: not left("three_headed_dragon", ("boss1",)), 15)
+                         or left("three_headed_dragon", ("boss1",)), True)
 
     def test_ice_queen_freezes_and_calls_servants(self):
         PLAYERS.tp("Alex", X + 30, Y, Z + 30)                       # out of her reach
@@ -236,7 +314,7 @@ class Bosses(Live):
         rc("effect give Steve resistance infinite 2 true")          # hurt, not killed
         rc("effect give Steve health_boost infinite 4 true")
         rc("effect give Steve instant_health 1 10 true")
-        vfg("script", "run", "ice_queen", "boss_health=80", "boss_every=3", "summon_count=2", "cold=4")
+        p = self.start("ice_queen", "boss_health=80", "boss_every=3", "summon_count=2", "cold=4")
         queen = "@e[tag=vfg_ice_queen_boss1,limit=1]"
         self.assertTrue(until(lambda: count("@e[type=stray,tag=vfg_ice_queen_boss1]") == 1, 15), "no Ice Queen")
         self.assertIn("is 2.0", rc("execute as %s run attribute @s scale base get" % queen))
@@ -257,7 +335,7 @@ class Bosses(Live):
         self.assertIn("Frost Servant", rc("data get entity @e[tag=vfg_ice_queen_summon,limit=1] CustomName"))
         self.assertLessEqual(count("@e[tag=vfg_ice_queen_summon]"), 6)
         # A value changed while she fights: the next shell is snow.
-        vfg("script", "set", "ice_queen", "freeze_block=snow_block")
+        set_live("ice_queen", "freeze_block=snow_block")
         snow = []
 
         def snowed():
@@ -268,6 +346,9 @@ class Bosses(Live):
         rc("effect give Steve instant_health 1 10 true")
         rc("damage %s 200 minecraft:magic" % queen)
         self.assertTrue(until(lambda: not running("ice_queen"), 10), "it did not end when she died")
+        line = answer(p, "ice_queen")
+        if not line["running"]:
+            self.assertIn("is dead", line["summary"])
         self.assertEqual(count("@e[tag=vfg_ice_queen_summon]"), 0, "her servants outlived her")
         dropped = count('@e[type=item,x=%d,y=%d,z=%d,distance=..40,nbt={Item:{id:"minecraft:blue_ice"}}]' % (X, Y, Z))
         picked = "Found 16" in rc("clear Steve blue_ice 0")            # she fell at his feet
@@ -282,11 +363,11 @@ class Bosses(Live):
 # ---- the hordes and the dark ------------------------------------------------------------------
 
 class Hordes(Live):
-    INSTANCES = ("horde", "horde_once", "horror_mode")
+    COPIES = ("horde", "horde_once", "horror_mode")
 
     def test_horde_waves_held_at_the_cap(self):
-        vfg("script", "run", "horde", "horde_per_player=4", "horde_cap=6", "horde_every=2", "horde_waves=0",
-            "horde_spread=10", "horde_mobs=husk,spider")
+        p = self.start("horde", "horde_per_player=4", "horde_cap=6", "horde_every=2", "horde_waves=0",
+                       "horde_spread=10", "horde_mobs=husk,spider")
         tag = "@e[tag=vfg_horde_horde]"
         self.assertTrue(until(lambda: count(tag) == 6, 10), "never reached the cap: %d" % count(tag))
         most = 0
@@ -296,7 +377,7 @@ class Hordes(Live):
         self.assertEqual(most, 6, "over the cap")
         rc("kill @e[tag=vfg_horde_horde,limit=3,sort=random]")
         self.assertTrue(until(lambda: count(tag) == 6, 6), "the next wave did not fill it again")
-        self.assertIn("horde_cap=10", vfg("script", "set", "horde", "horde_cap=10"))
+        set_live("horde", "horde_cap=10")
         self.assertTrue(until(lambda: count(tag) == 10, 8), "horde_cap=10 did not reach it: %d" % count(tag))
         self.assertEqual(count("@e[type=husk,tag=vfg_horde_horde]") + count("@e[type=spider,tag=vfg_horde_horde]"), 10)
         steve, near = pos("Steve"), 0
@@ -304,9 +385,10 @@ class Hordes(Live):
             near += flat(steve, tuple(float(c) for c in m)) < 40
         self.assertGreater(near, 0)
         self.stopped_clean("horde", ("horde",))
+        answer(p, "horde")                                       # waves=0 never ends: still ran, or stopped
 
     def test_one_wave_ends_when_it_is_dead(self):
-        vfg("script", "run", "horde", "as=horde_once", "horde_per_player=3", "horde_spread=10")
+        p = self.start("horde", "as=horde_once", "horde_per_player=3", "horde_spread=10")
         tag = "@e[tag=vfg_horde_once_horde]"
         self.assertTrue(until(lambda: count(tag) == 6, 10), "not 3 round each of 2: %d" % count(tag))  # 3 round each of two
         time.sleep(2.5)
@@ -314,22 +396,25 @@ class Hordes(Live):
         self.assertTrue(running("horde_once"))
         rc("kill %s" % tag)
         self.assertTrue(until(lambda: not running("horde_once"), 6), "it did not end when they were dead")
+        line = answer(p, "horde_once")
+        if not line["running"]:
+            self.assertIn("is dead", line["summary"])
         self.assertEqual(left("horde_once", ("horde",)), [])
 
     def test_horror_mode_scares_and_the_dark_spares_who_asked(self):
-        vfg("script", "run", "horror_mode", "director_events=mob,shadow", "director_min_s=1", "director_max_s=1")
+        run("horror_mode", "director_events=mob,shadow", "director_min_s=1", "director_max_s=1")
         self.assertTrue(until(lambda: count("@e[type=creeper,tag=vfg_horror_mode]") >= 1, 12), "no fake creeper")
         self.assertIn("NoAI: 1b", rc("data get entity @e[type=creeper,tag=vfg_horror_mode,limit=1]"))
         self.assertTrue(until(lambda: count("@e[type=armor_stand,tag=vfg_horror_mode]") >= 1, 12), "no shadow")
-        vfg("script", "set", "horror_mode", "director_events=dark")
+        set_live("horror_mode", "director_events=dark")
         self.assertTrue(until(lambda: effect("Steve", "darkness") is not None and effect("Alex", "darkness") is not None, 6),
                         "the dark did not come")
-        vfg("script", "set", "horror_mode", "no_dark=Alex")
+        set_live("horror_mode", "no_dark=Alex")
         self.assertTrue(until(lambda: effect("Alex", "darkness") is None, 4), "the dark did not lift from Alex")
         rc("effect clear Steve darkness")
         self.assertTrue(until(lambda: effect("Steve", "darkness") is not None, 5), "Steve's dark stopped too")
         self.assertIsNone(effect("Alex", "darkness"), "Alex was put in the dark again")
-        vfg("script", "stop", "horror_mode")
+        self.assertIn("stopped horror_mode", vfg("script", "stop", "horror_mode"))
         self.assertIsNone(effect("Steve", "darkness"), "the dark outlived the stop")
         self.assertEqual(until(lambda: not left("horror_mode"), 3) or left("horror_mode"), True)
 
@@ -337,18 +422,18 @@ class Hordes(Live):
 # ---- what is kept on players, and round them ----------------------------------------------------
 
 class Round(Live):
-    INSTANCES = ("keep_effects", "barrier_shield", "projectile_shield", "weapon_chest", "arena", "tether")
+    COPIES = ("keep_effects", "barrier_shield", "projectile_shield", "weapon_chest", "arena", "tether")
 
     def test_keep_effects_kept_changed_and_taken_off(self):
-        vfg("script", "run", "keep_effects", "player=Steve")
+        run("keep_effects", "player=Steve")
         self.assertTrue(until(lambda: effect("Steve", "speed") == 4, 4), "no Speed V")
         self.assertIsNone(effect("Alex", "speed"))
         self.assertIn("show_particles: 0b", rc("data get entity Steve active_effects"))
         rc("effect clear Steve")                                        # as milk, or a death, does
         self.assertTrue(until(lambda: effect("Steve", "speed") == 4, 3), "not given again")
-        vfg("script", "set", "keep_effects", "level=2")                 # "reduce my speed to two"
+        set_live("keep_effects", "level=2")                     # "reduce my speed to two"
         self.assertTrue(until(lambda: effect("Steve", "speed") == 1, 3), "level=2 did not lower it")
-        vfg("script", "set", "keep_effects", "effect=night_vision", "player=Steve,Alex")
+        set_live("keep_effects", "effect=night_vision", "player=Steve,Alex")
         self.assertTrue(until(lambda: effect("Alex", "night_vision") == 1 and effect("Steve", "night_vision") == 1, 4))
         self.assertIsNone(effect("Steve", "speed"), "the old effect was left on")
         self.stopped_clean("keep_effects")
@@ -358,13 +443,13 @@ class Round(Live):
     def test_barrier_shield_throws_mobs_out(self):
         self.probe("husk", X + 2, Y, Z)                                 # 2 blocks from Steve
         inside = "@e[tag=lxprobe,x=%.1f,y=%.1f,z=%.1f,distance=..%d]"
-        vfg("script", "run", "barrier_shield", "player=Steve", "around_radius=5", "push_strength=4")
+        run("barrier_shield", "player=Steve", "around_radius=5", "push_strength=4")
         self.assertTrue(until(lambda: count(inside % (X, Y, Z, 5)) == 0, 5), "the husk stayed inside")
         self.assertTrue(count("@e[tag=lxprobe]"), "the husk is gone, not thrown")
         self.probe("husk", X - 8, Y, Z)                                 # outside 5, inside 12
         time.sleep(1.5)
         self.assertEqual(count(inside % (X, Y, Z, 4)), 0)
-        vfg("script", "set", "barrier_shield", "around_radius=12")
+        set_live("barrier_shield", "around_radius=12")
         self.assertTrue(until(lambda: count(inside % (X, Y, Z, 12)) == 0, 6), "around_radius=12 did not reach")
         self.stopped_clean("barrier_shield")
 
@@ -372,7 +457,7 @@ class Round(Live):
         PLAYERS.tp("Alex", X + 30, Y, Z + 30)
         rc("gamemode survival Steve")
         self.assertEqual(health("Steve"), 20)
-        vfg("script", "run", "projectile_shield", "player=Steve")
+        run("projectile_shield", "player=Steve")
         time.sleep(2.0)
         rc("summon arrow %.2f %.2f %.2f {Motion:[0.0d,0.0d,-1.5d],Tags:[\"lxprobe\"]}" % (X, Y + 1.3, Z + 9))
         self.assertTrue(until(lambda: count("@e[type=arrow,tag=vfg_projectile_shield]") == 1, 3), "the arrow was not turned")
@@ -390,7 +475,7 @@ class Round(Live):
         time.sleep(1.0)
         self.assertEqual(count("@e[tag=lxown,tag=vfg_projectile_shield]"), 0, "his own arrow was turned")
         # The shield moved to Alex while it runs: the next arrow at Steve hurts him.
-        vfg("script", "set", "projectile_shield", "player=Alex")
+        set_live("projectile_shield", "player=Alex")
         time.sleep(1.0)
         rc("summon arrow %.2f %.2f %.2f {Motion:[0.0d,0.0d,-1.5d],Tags:[\"lxprobe\"]}" % (X, Y + 1.3, Z + 9))
         self.assertTrue(until(lambda: health("Steve") < 20, 3), "Steve is still shielded after player=Alex")
@@ -398,7 +483,7 @@ class Round(Live):
         self.stopped_clean("projectile_shield")
 
     def test_weapon_chest_and_its_weapons(self):
-        vfg("script", "run", "weapon_chest")
+        run("weapon_chest")
         spots = [(X + dx, Y, Z + dz) for dx, dz in ((2, 0), (0, 2), (-2, 0), (0, -2), (2, 2), (-2, -2))]
         chest = until(lambda: next((s for s in spots if "minecraft:bow" in rc("data get block %d %d %d Items" % tuple(
             int(math.floor(c)) for c in s))), None), 6)
@@ -420,7 +505,7 @@ class Round(Live):
                         "nothing where he looked was hurt")
         side = "@e[tag=lxprobe,tag=!lxnear,limit=1]"
         self.assertEqual(health(side), 20, "around_radius 4 reached 5 blocks")
-        vfg("script", "set", "weapon_chest", "around_radius=8")
+        set_live("weapon_chest", "around_radius=8")
         time.sleep(1.5)                                                 # its cooldown is 1 s
         PLAYERS.use("Steve")
         self.assertTrue(until(lambda: not count(side) or health(side) < 15, 3), "around_radius=8 did not reach")  # 10, less armour
@@ -453,11 +538,11 @@ class Round(Live):
         rc("setblock %d %d %d air" % (cx, cy, cz))
 
     def test_arena_sends_back_who_leaves(self):
-        vfg("script", "run", "arena", "leaves_radius=10", "leaves_center=%g,%g,%g" % (X, Y, Z))
+        run("arena", "leaves_radius=10", "leaves_center=%g,%g,%g" % (X, Y, Z))
         time.sleep(1.5)
         PLAYERS.tp("Alex", X + 25, Y, Z)
         self.assertTrue(until(lambda: flat(pos("Alex"), (X, Y, Z)) < 1.5, 4), "Alex was not sent back")
-        vfg("script", "set", "arena", "leaves_radius=40")
+        set_live("arena", "leaves_radius=40")
         time.sleep(1.0)
         PLAYERS.tp("Alex", X + 25, Y, Z)
         time.sleep(2.5)
@@ -465,14 +550,14 @@ class Round(Live):
         self.stopped_clean("arena")
 
     def test_tether_pulls_one_back_to_the_other(self):
-        vfg("script", "run", "tether", "player=Alex", "leaves_of_player=Steve", "leaves_radius=8")
+        run("tether", "player=Alex", "leaves_of_player=Steve", "leaves_radius=8")
         time.sleep(1.5)
         PLAYERS.tp("Alex", X + 25, Y, Z + 5)
         self.assertTrue(until(lambda: flat(pos("Alex"), pos("Steve")) < 1.5, 4), "Alex was not brought back to Steve")
         time.sleep(1.0)                                                # seen back inside, so it can fire again
         PLAYERS.tp("Steve", X - 10, Y, Z - 10)                         # Steve walks off: Alex follows
         self.assertTrue(until(lambda: flat(pos("Alex"), pos("Steve")) < 1.5, 4), "Alex did not follow Steve")
-        vfg("script", "set", "tether", "leaves_radius=40")
+        set_live("tether", "leaves_radius=40")
         time.sleep(1.0)
         PLAYERS.tp("Alex", X + 15, Y, Z + 5)
         time.sleep(2.5)

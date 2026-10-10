@@ -2,28 +2,10 @@
 ASKS = ["can you give me a railgun", "a rail gun", "can I have a rail gun as well",
         "you know the rail gun you gave him, give me the same thing but make it a gatling gun",
         "it does not do enough damage"]
-from kit import values, items, aim, fx, loop, exclude, world
+from kit import values, result, items, aim, fx, loop, exclude, world
 import itertools
 import math
 import mc
-
-VALUES = {
-    "player":        {"type": "player", "default": "@a"},
-    "item":          {"type": "str", "default": "Railgun"},
-    "fire":          {"type": "enum", "of": ["click", "hold"], "default": "click"},
-    "cooldown":      {"type": "number", "min": 0, "max": 60, "default": 2, "live": True},
-    "range":         {"type": "int", "min": 4, "max": 300, "default": 100, "live": True},
-    "through_walls": {"type": "bool", "default": True, "live": True},
-    "particle":      {"type": "particle", "default": "end_rod", "live": True},
-    "sound":         {"type": "sound", "default": "entity.firework_rocket.blast", "live": True},
-    "damage_amount": {"type": "number", "min": 0, "max": 100000, "default": 30, "live": True},
-    "damage_type":   {"type": "enum", "of": ["player_attack", "magic", "lightning_bolt", "explosion", "freeze", "on_fire", "sonic_boom", "arrow", "wither", "generic"], "default": "magic", "live": True},
-    "damage_kill":   {"type": "bool", "default": False, "live": True},
-    "damage_what":   {"type": "enum", "of": ["all", "mobs", "hostile", "players"], "default": "all", "live": True},
-    "damage_most":   {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
-    "damage_head":   {"type": "number", "min": 1, "max": 10, "default": 1, "live": True},
-    "damage_spare":  {"type": "list", "of": "player", "default": [], "live": True},
-}
 
 
 # --- preset: damage_hits (copied from _presets/damage_hits.py) ---
@@ -82,13 +64,15 @@ def _damage_on_head(h, look):
     return t > 0 and math.sqrt(sum((w[i] - t * d[i]) ** 2 for i in range(3))) <= 0.5
 
 
-v = values(VALUES)
+v = values()
 # fire=hold is the gatling gun: a shot every `cooldown` s while the button is held down
 # (item="Gatling Gun" cooldown=0.1 range=24 particle=crit sound=entity.arrow.shoot).
 if v["fire"] == "hold":
     uses = items.holds(v["player"], v["item"], every=v["cooldown"])
 else:
     uses = items.clicks(v["player"], v["item"], cooldown=v["cooldown"])
+result("%s has the %s: %s to fire" % (v["player"], v["item"], "hold right-click" if v["fire"] == "hold"
+                                      else "right-click"), player=v["player"], item=v["item"])
 for p in loop(uses):
     lk = aim.look(p)
     if lk is None:

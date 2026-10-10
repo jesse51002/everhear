@@ -5,12 +5,16 @@ import time
 
 import mc
 from kit import fx, loop
+from actions._types import Field, Live, Players, Values  # the values class: read on the PC only
 
-VALUES = {
-    "countdown_seconds": {"type": "int", "min": 1, "max": 3600, "default": 10},
-    "countdown_text": {"type": "str", "default": "Detonation", "live": True},
-    "countdown_to": {"type": "player", "default": "@a", "live": True},
-}
+
+class Countdown(Values):
+    countdown_seconds: int = Field(10, ge=1, le=3600)
+    """how long it counts down, in seconds"""
+    countdown_text: Live[str] = "Detonation"
+    """what it counts down to, in chat ("Detonation in 5m 00s.") and under the big numbers of the last ten seconds"""
+    countdown_to: Live[Players] = "@a"
+    """who sees and hears it: @a, or names separated by commas"""
 
 
 def countdown(v):

@@ -1,28 +1,11 @@
 """Sniper Rifle: right-click a Super Sniper to fire a long hitscan shot, double damage on the head; sneak while holding it to zoom."""
 ASKS = ["give me a sniper rifle with zoom scope", "give me subclass super sniper",
         "give them a sniper rifle to make them fight"]
-from kit import values, items, aim, fx, loop, exclude, world
+from kit import values, result, items, aim, fx, loop, exclude, world
 import itertools
 import math
 import mc
 import time
-
-VALUES = {
-    "player":        {"type": "player", "default": "@a"},
-    "cooldown":      {"type": "number", "min": 0, "max": 60, "default": 0.5, "live": True},
-    "range":         {"type": "int", "min": 8, "max": 500, "default": 400, "live": True},
-    "zoom":          {"type": "int", "min": 0, "max": 7, "default": 4, "live": True},
-    "damage_amount": {"type": "number", "min": 0, "max": 100000, "default": 150, "live": True},
-    "damage_type":   {"type": "enum", "of": ["player_attack", "magic", "lightning_bolt", "explosion", "freeze", "on_fire", "sonic_boom", "arrow", "wither", "generic"], "default": "player_attack", "live": True},
-    "damage_kill":   {"type": "bool", "default": False, "live": True},
-    "damage_what":   {"type": "enum", "of": ["all", "mobs", "hostile", "players"], "default": "mobs", "live": True},
-    "damage_most":   {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
-    "damage_head":   {"type": "number", "min": 1, "max": 10, "default": 2, "live": True},
-    "damage_spare":  {"type": "list", "of": "player", "default": [], "live": True},
-    "sneak_mode":    {"type": "enum", "of": ["while", "tap", "three_taps"], "default": "while", "live": True},
-    "sneak_seconds": {"type": "number", "min": 0.3, "max": 5, "default": 1.5, "live": True},
-    "sneak_item":    {"type": "str", "default": "Super Sniper", "live": True},
-}
 
 
 # --- preset: damage_hits (copied from _presets/damage_hits.py) ---
@@ -126,7 +109,7 @@ def sneak(player, v):
         time.sleep(0.1)
 
 
-v = values(VALUES)
+v = values()
 rifle = v["sneak_item"]         # the rifle, and what sneak() zooms with
 zoomed = {}                     # player: when they last crouched with it
 
@@ -150,6 +133,8 @@ def unzoom():
 mc.on_stop(lambda: [mc.rcon("effect clear %s slowness" % p) for p in list(zoomed)])
 loop.background(zoom)
 loop.background(unzoom)
+result("%s has the %s: right-click to fire, crouch with it to zoom" % (v["player"], rifle),
+       player=v["player"], item=rifle)
 for p in loop(items.clicks(v["player"], rifle, cooldown=v["cooldown"])):
     lk = aim.look(p, eyes="auto")      # a zoomed shot is fired crouching: from crouching eyes
     if lk is None:

@@ -3,11 +3,11 @@
 
     python3 tests/live_box.py --preflight         no model: the box and every vfg shape an
                                                   implementer uses, plus the guard on each
-    VFG_ORCH_MODEL=haiku python3 tests/live_box.py the live run: your subscription, once
-    python3 tests/live_box.py --quick             the real defaults (Opus, Sonnet implementers): two tasks, timed
+    python3 tests/live_box.py                     the live run: your subscription, once
+    python3 tests/live_box.py --quick             the real defaults (every agent on Haiku 5.5): two tasks, timed
 
 The box is integration/harness.py's Box (imported, read-only): the real bridge, Jev filter and
-feed writer on Python 3.9, the toolkit's fake_ssh, and a temp VFG_HOME whose config points into
+feed writer on the box's Python 3.12, the toolkit's fake_ssh, and a temp VFG_HOME whose config points into
 it. In place of the toolkit's bare fake RCON this runs tests/realistic_rcon.py on the box's RCON
 port, so an implementer can confirm what it did. `vfg orch start|stop` starts and stops the
 dispatcher alongside the runner; tasks go in with `vfg orch send`, as the conversation sends them,
@@ -73,7 +73,7 @@ def load_harness(path=HARNESS, name="vfg_integration_harness"):
 
 class Live:
     def __init__(self, H, model):
-        ec2 = subprocess.run([UV, "python", "find", "3.9"], stdout=subprocess.PIPE, universal_newlines=True).stdout.strip()
+        ec2 = subprocess.run([UV, "python", "find", "3.12"], stdout=subprocess.PIPE, universal_newlines=True).stdout.strip()
         self.root = tempfile.mkdtemp(prefix="vfg-orch-live-")
         self.box = H.Box(self.root, ec2)
         self.model = model
@@ -107,7 +107,7 @@ class Live:
         self.seeds = set(os.listdir(os.path.join(b.repo, "scripts")))
         self.env = b.base_env()
         if model:
-            self.env["VFG_ORCH_MODEL"] = model  # unset: the runner's own default (opus)
+            self.env["VFG_ORCH_MODEL"] = model  # unset: the runner's own default (claude-haiku-5-5)
         for k in ("VFG_ORCH_EFFORT", "VFG_IMPL_MODEL", "VFG_IMPL_EFFORT"):
             if os.environ.get(k):
                 self.env[k] = os.environ[k]
@@ -117,7 +117,7 @@ class Live:
             "VFG_HOME": b.vhome, "VFG_REPO": b.repo, "VFG_ORCH_DIR": self.orch_dir,
             "VFG_DISPATCH_DIR": self.dispatch_dir,
             "FAKE_UNITS": b.units,
-            # the box's python3 (3.9) first: fake_ssh runs the remote side with this PATH
+            # the box's python3 (3.12) first: fake_ssh runs the remote side with this PATH
             "PATH": os.pathsep.join([b.ec2bin, os.path.dirname(REAL_VFG), os.path.join(TOOLKIT, "tests", "bin"),
                                      os.environ.get("PATH", "")]),
         })
@@ -322,12 +322,12 @@ SHAPES = [
     ("vfg", "cmd", "data get entity Steve Pos"),
     ("vfg", "cmd", "give Steve minecraft:diamond 1"),
     ("vfg", "script", "deploy"),
-    ("vfg", "script", "run", "tnt_rain"),
+    ("vfg", "action", "run", "tnt_rain", "--task", "T1"),
     ("sleep", "3"),
     ("vfg", "script", "logs", "tnt_rain", "-n", "5"),
     ("vfg", "script", "list"),
     ("vfg", "script", "stop", "tnt_rain"),
-    ("vfg", "script", "run", "--wait", "gun_chests"),
+    ("vfg", "action", "run", "gun_chests", "--task", "T1"),
     ("vfg", "script", "logs", "gun_chests", "-n", "5"),
     ("vfg", "history", "--source", "ai", "--limit", "3"),
     ("vfg", "history", "--feed", "--limit", "3"),
@@ -553,8 +553,8 @@ def quick_run(H, model):
         say("usage rows: %s" % rows)
         comps = {(r["component"], r["model"]) for r in rows}
         if live.last_id() and os.path.exists(os.path.join(live.orch_dir, "inbox.jsonl")):
-            record("usage: orchestrator rows on opus, implementer rows on sonnet, each priced",
-                   any(c == "orchestrator" and "opus" in m for c, m in comps) and any(c == "implementer" and "sonnet" in m for c, m in comps)
+            record("usage: orchestrator rows and implementer rows, each priced",
+                   any(c == "orchestrator" for c, m in comps) and any(c == "implementer" for c, m in comps)
                    and all((r["cost"] or 0) > 0 for r in rows), str(rows))
         else:
             say("usage: the dispatcher did both tasks, so the orchestrator wrote no rows: %s" % rows)
@@ -573,7 +573,7 @@ def live_run(H, model):
         # 8. usage rows, in the box's vfg.db
         rows = live.box.sql("SELECT component, model, COUNT(*) n FROM usage GROUP BY component, model")
         comps = {r["component"] for r in rows}
-        ok = "implementer" in comps and ("haiku" in model or "orchestrator" in comps)
+        ok = "implementer" in comps and "orchestrator" in comps
         record("8. usage rows land in the box", ok, str(rows))
         feed = live.feed_orch()
         counts = {tid: len([1 for _, t, st, _ in feed if t == tid and st in ("done", "failed")]) for tid in ids if tid}
@@ -611,7 +611,7 @@ def main():
     elif args.quick:
         quick_run(H, os.environ.get("VFG_ORCH_MODEL", ""))
     else:
-        live_run(H, os.environ.get("VFG_ORCH_MODEL", "haiku"))
+        live_run(H, os.environ.get("VFG_ORCH_MODEL", ""))
     passed = sum(1 for _, ok, _ in RESULTS if ok)
     print("\n%d/%d passed" % (passed, len(RESULTS)))
     for name, ok, _ in RESULTS:

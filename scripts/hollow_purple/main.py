@@ -4,7 +4,7 @@ ASKS = ["give me the ability to do a hollow purple, whatever I want", "hollow pu
         "make hollow purple like in the show, make it erase everything, so it destroys everything it goes through",
         "make it have infinite range", "remove the cool down and make it faster and make it spam more",
         "hollow purple versus galick gun"]
-from kit import values, aim, fx, loop, exclude, world, area, items
+from kit import values, result, aim, fx, loop, exclude, world, area, items
 import math
 import random
 import time
@@ -15,48 +15,6 @@ import re
 import fcntl
 import json
 import os
-
-VALUES = {
-    "player":                 {"type": "player", "default": "@a"},
-    "item":                   {"type": "str", "default": "Hollow Purple"},
-    "cooldown":               {"type": "number", "min": 0, "max": 60, "default": 0, "live": True},
-    "length":                 {"type": "int", "min": 4, "max": 1000, "default": 1000, "live": True},
-    "width":                  {"type": "number", "min": 1, "max": 32, "default": 6, "live": True},
-    "through_walls":          {"type": "bool", "default": True, "live": True},
-    "beam_particle":          {"type": "particle", "default": "dust{color:[0.6,0.1,0.9],scale:2.5}", "live": True},
-    "charge_style":           {"type": "enum", "of": ["sphere", "orbs", "aura"], "default": "orbs", "live": True},
-    "charge_seconds":         {"type": "number", "min": 0.2, "max": 15, "default": 0.5, "live": True},
-    "charge_particle":        {"type": "particle", "default": "dust{color:[0.6,0.1,0.9],scale:2.5}", "live": True},
-    "charge_size":            {"type": "number", "min": 1, "max": 30, "default": 5, "live": True},
-    "charge_orbs":            {"type": "list", "of": "particle", "default": ["dust{color:[0.2,0.4,1.0],scale:1.6}", "dust{color:[1.0,0.1,0.1],scale:1.6}"], "live": True},
-    "theme_tune":             {"type": "enum", "of": ["galick_gun", "hollow_purple", "ice_beam", "spirit_bomb", "spirit_bomb_throw", "super_saiyan", "boss", "none"], "default": "hollow_purple", "live": True},
-    "theme_to":               {"type": "enum", "of": ["near", "everyone", "player"], "default": "near", "live": True},
-    "theme_reach":            {"type": "int", "min": 8, "max": 256, "default": 48, "live": True},
-    "theme_loop":             {"type": "bool", "default": False, "live": True},
-    "damage_amount":          {"type": "number", "min": 0, "max": 100000, "default": 100, "live": True},
-    "damage_type":            {"type": "enum", "of": ["player_attack", "magic", "lightning_bolt", "explosion", "freeze", "on_fire", "sonic_boom", "arrow", "wither", "generic"], "default": "magic", "live": True},
-    "damage_kill":            {"type": "bool", "default": True, "live": True},
-    "damage_what":            {"type": "enum", "of": ["all", "mobs", "hostile", "players"], "default": "all", "live": True},
-    "damage_most":            {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
-    "damage_head":            {"type": "number", "min": 1, "max": 10, "default": 1, "live": True},
-    "damage_spare":           {"type": "list", "of": "player", "default": [], "live": True},
-    "crater_radius":          {"type": "int", "min": 0, "max": 300, "default": 7, "live": True},
-    "crater_tunnel":          {"type": "int", "min": 0, "max": 8, "default": 2, "live": True},
-    "crater_leave":           {"type": "enum", "of": ["air", "lava", "fire"], "default": "air", "live": True},
-    "crater_spare_protected": {"type": "bool", "default": True, "live": True},
-    "crater_load":            {"type": "bool", "default": True, "live": True},
-    "around_radius":          {"type": "number", "min": 0, "max": 128, "default": 15, "live": True},
-    "around_what":            {"type": "enum", "of": ["mobs", "hostile", "players", "everything", "projectiles"], "default": "everything", "live": True},
-    "around_most":            {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
-    "beam_clash_power":       {"type": "number", "min": 1, "max": 1000, "default": 10, "live": True},
-    "beam_clash_gap":         {"type": "number", "min": 0.5, "max": 16, "default": 4, "live": True},
-    "beam_clash_window":      {"type": "number", "min": 0, "max": 10, "default": 1.5, "live": True},
-    "beam_clash_aimed":       {"type": "bool", "default": True, "live": True},
-    "beam_clash_seconds":     {"type": "number", "min": 1, "max": 30, "default": 6, "live": True},
-    "beam_clash_blast":       {"type": "int", "min": 0, "max": 8, "default": 4, "live": True},
-    "beam_clash_particle":    {"type": "particle", "default": "dust{color:[0.6,0.1,0.9],scale:2.5}", "live": True},
-}
-
 
 # --- preset: charge_up (copied from _presets/charge_up.py) ---
 def charge_up(player, v):
@@ -655,7 +613,7 @@ def _around_projectiles(at, me, r):
     return sorted(hits, key=lambda h: h.t)
 
 
-v = values(VALUES)
+v = values()
 busy, ready, quiet = set(), {}, {}      # shots under way; when each player may fire again; when their tune ends
 
 
@@ -686,6 +644,7 @@ def fire(p):
         busy.discard(p)
 
 
+result("%s has %s: right-click to fire" % (v["player"], v["item"]), player=v["player"], item=v["item"])
 for p in loop(items.clicks(v["player"], v["item"], color="light_purple")):
     if p in busy:
         continue

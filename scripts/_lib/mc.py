@@ -1,12 +1,14 @@
 """Shared helpers for every script in the scripts folder.
 
-On EC2 a script runs as `python3 -u <folder>/main.py key=value ...`, in its own folder,
-with PYTHONPATH=/opt/vfg/scripts/_lib and VFG_INSTANCE=<instance>. It imports the kit
+On EC2 a script runs as one copy of an action: `/opt/vfg/python/bin/python3 -u <folder>/main.py`
+(the box's Python 3.12), in its own
+folder, with PYTHONPATH=/opt/vfg/scripts/_lib and VFG_SCRIPT=<copy> (instances.py starts it;
+its values are in the copy's meta file, which kit.values reads). It imports the kit
 (_lib/kit), and this for whatever the kit does not do:
 
     from mc import rcon, say, players, pos, spawn, on_stop, log, TAG
 
-Python 3.9, standard library only. Seeded from the old rcon.py and demon.py.
+Python 3.9+, standard library only. Seeded from the old rcon.py and demon.py.
 
 The RCON password is read from server.properties on first use and kept only in
 memory: it is never printed, logged or written.
@@ -24,15 +26,25 @@ import struct
 import sys
 import threading
 import time
+import traceback
 from typing import Optional, Tuple
 
-# This script's folder name, from sys.argv[0]; the instance it runs as (VFG_INSTANCE, which
-# `vfg script run` sets, else the folder name); and the tag for everything it makes.
+# This script's folder name, from sys.argv[0]; the copy it runs as (VFG_INSTANCE or VFG_SCRIPT,
+# which instances.py sets, else the folder name); the tag for everything it makes; and the task
+# that started it (VFG_TASK, "" when none did).
 NAME = os.path.basename(os.path.dirname(os.path.abspath(sys.argv[0] or "."))) or "script"
-INSTANCE = os.environ.get("VFG_INSTANCE", "").strip()
+INSTANCE = (os.environ.get("VFG_INSTANCE") or os.environ.get("VFG_SCRIPT") or "").strip()
 if not re.match(r"^[a-z0-9][a-z0-9_-]{0,47}$", INSTANCE):
     INSTANCE = NAME
 TAG = "vfg_" + INSTANCE
+# What a copy that ended by itself left is handed over to this tag, so a later copy under the
+# same name, whose TAG is the same, never takes it with its stop; `kill @e[tag=vfg_left_<copy>]`
+# clears it by hand.
+LEFT_TAG = "vfg_left_" + INSTANCE
+# TAG as a whole tag in a command (a tag is A-Z, a-z, 0-9 and _.+-): once one is sent, something
+# may carry it, and an end by itself hands it over.
+_TAG_IN = re.compile(re.escape(TAG) + r"(?![A-Za-z0-9_.+-])")
+TASK = os.environ.get("VFG_TASK", "").strip()
 
 PROPERTIES = os.environ.get("VFG_MC_PROPERTIES", "/opt/mc/server.properties")
 HOST = os.environ.get("VFG_RCON_HOST", "127.0.0.1")
@@ -50,15 +62,14 @@ EXIT_GRACE = 0.4
 # that talks RCON to the same server should take it too. Default /tmp/vfg-rcon-<port>.lock.
 RCON_LOCK = os.environ.get("VFG_RCON_LOCK", "")
 
-# The server's owner: VFG_OWNER, which `vfg script run` sets from ~/.vfg/config; "" when unset.
+# The server's owner: VFG_OWNER, which vfg sets from ~/.vfg/config; "" when unset.
 OWNER = os.environ.get("VFG_OWNER", "").strip()
 if not re.match(r"^[A-Za-z0-9_]{1,16}$", OWNER):
     OWNER = ""
 
-# Server commands that are the owner's to run, never a script's. The orchestrator's
-# guard refuses the same words.
-REFUSED = frozenset(["stop", "op", "deop", "ban", "ban-ip", "pardon", "pardon-ip",
-                     "whitelist", "kick", "save-off"])
+# Server commands that are the owner's to run, never a script's: the one list, commands.py
+# beside this file, which the actions, vfg, the dispatcher and the orchestrator's guard import too.
+from commands import REFUSED  # noqa: E402
 
 _lock = threading.RLock()
 _local = threading.local()
@@ -66,7 +77,8 @@ _conn = None
 _settings = None
 _next_id = [1]
 _stoppers = []      # (fn, at_exit), oldest first
-_failed = []        # an error nothing caught ended the script (sys.excepthook)
+_failed = []        # an error nothing caught ended the script (sys.excepthook): its last line
+_tagged = []        # a command named TAG (_TAG_IN)
 _stopping = threading.Event()
 _stop = {"thread": None, "deadline": 0.0, "conn": None}
 
@@ -331,6 +343,8 @@ def rcon(cmd: str) -> str:
         cmd = cmd[1:]
     if not cmd:
         return ""
+    if not _tagged and _TAG_IN.search(cmd):
+        _tagged.append(True)
     bad = refused_word(cmd)
     if bad:
         log("refused:", repr(bad), "is the server owner's to do")
@@ -472,7 +486,7 @@ def spawn(player, mob, nbt="", spread=6, y=1, tags=()) -> bool:
 def _clean_up(stopped=True) -> None:
     """A stop (or a failure): every on_stop cleanup, newest first, then everything tagged TAG,
     within the budget. An end by itself: only the cleanups that run at exit too, and nothing
-    is killed."""
+    is killed: what carries TAG is handed over to LEFT_TAG."""
     for fn, at_exit in reversed(list(_stoppers)):
         if not (stopped or at_exit):
             continue
@@ -480,11 +494,17 @@ def _clean_up(stopped=True) -> None:
             fn()
         except Exception as e:
             log("cleanup error:", type(e).__name__, e)
+    _stop["deadline"] = max(_stop["deadline"], time.time() + 0.3)
     if not stopped:
+        # The name is free once this process is gone, and the next copy under it has this TAG:
+        # what this one made stays, under a tag no stop of that copy sends a kill to. Nothing
+        # carries TAG unless a command named it.
+        if _tagged:
+            rcon("tag @e[tag=%s] add %s" % (TAG, LEFT_TAG))
+            rcon("tag @e[tag=%s] remove %s" % (TAG, TAG))
         log("cleaned up")
         return
     # Anything summoned with TAG goes too, even if a cleanup forgot it or ran out of time.
-    _stop["deadline"] = max(_stop["deadline"], time.time() + 0.3)
     rcon("kill @e[tag=%s]" % TAG)
     log("stopped")
 
@@ -507,24 +527,40 @@ def _on_signal(signum, frame) -> None:
 
 
 def _on_failure(kind, value, tb) -> None:
-    _failed.append(kind.__name__)
+    lines = traceback.format_exception_only(kind, value)
+    _failed.append(lines[-1].strip() if lines else kind.__name__)   # NameError: name 'x' is not defined
     _excepthook(kind, value, tb)
+
+
+def _write_error(text) -> None:
+    """A failure's last line, into run/<copy>.error: what vfg action run answers it failed with."""
+    path = os.path.join(os.environ.get("VFG_RUN_DIR") or "/opt/vfg/run", INSTANCE + ".error")
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text + "\n")
+        os.replace(tmp, path)
+    except OSError:
+        pass
 
 
 def _on_exit() -> None:
     """A script that ends by itself (its main.py returns or exits) keeps what it made on
-    purpose: the mobs it summoned and the blocks it built stay, and nothing tagged TAG is killed.
-    What was only for the while is undone, by the cleanups registered to run at exit too (all
+    purpose: the mobs it summoned and the blocks it built stay, and nothing tagged TAG is killed;
+    what carries TAG is tagged LEFT_TAG in its place, so no stop of a later copy under the same
+    name reaches it. What was only for the while is undone, by the cleanups registered to run at exit too (all
     but on_stop(fn, at_exit=False)): the shells a freeze put up melt, items lent come back, a
     boss's bar goes, a gamerule goes back, forceloads are released. A script that fails (an
-    error nothing caught, its traceback in the log) cleans up as a stopped one does, so nothing
-    of a broken run is left when it is fixed and run again. Only for a script (main.py), never
-    for a test that imports mc."""
+    error nothing caught, its traceback in the log) writes the traceback's last line to
+    run/<copy>.error and cleans up as a stopped one does, so nothing of a broken run is left when
+    it is fixed and run again. Only for a script (main.py), never for a test that imports mc."""
     if _stopping.is_set() or os.path.basename(sys.argv[0] or "") != "main.py":
         return
     _stop["thread"] = threading.get_ident()
     _stopping.set()
     log("failed, cleaning up as a stop does" if _failed else "ended by itself, cleaning up")
+    if _failed:
+        _write_error(_failed[-1])
     # What it set off last goes off first: TNT or a creeper with no fuse explodes on the next
     # tick, a bolt strikes, before a gamerule is put back or its chunk let go.
     time.sleep(EXIT_GRACE)
@@ -536,9 +572,9 @@ def on_stop(fn, at_exit=True) -> None:
     """Run fn when the script is stopped (SIGTERM or SIGINT: vfg script stop), and when it ends
     by itself too unless at_exit=False. A stop (or a failure) runs every fn, newest first, then
     kills everything tagged TAG: what the script made goes. An end by itself runs only the fns
-    registered at_exit, and kills nothing: what it made stays. So at_exit=True (the default) is
-    for undoing what was only for the while (an effect, a shell of ice, a gamerule, a tag on
-    players), and at_exit=False for taking away what the script made, which must outlast a
+    registered at_exit, and kills nothing: what it made stays, handed over to LEFT_TAG. So
+    at_exit=True (the default) is for undoing what was only for the while (an effect, a shell of
+    ice, a gamerule, a tag on players), and at_exit=False for taking away what the script made, which must outlast a
     script that has done its job (mobs, a build). Other threads' commands are dropped from then
     on, and the whole cleanup takes at most STOP_BUDGET s."""
     _stoppers.append((fn, at_exit))

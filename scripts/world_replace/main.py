@@ -3,21 +3,10 @@ ASKS = ["remove all the obsidian in the world", "delete all of the obsidian in t
         "replace all of the end stone with bedrock", "can you clear all the water",
         "replace all the snow with random blocks", "turn every block of this into that, everywhere",
         "I'm gonna make the whole world ice"]
-from kit import values, area, loop, world
+from kit import values, result, area, loop, world
 import random
 import re
 import mc
-
-VALUES = {
-    "player":         {"type": "player", "default": "@a"},
-    "radius":         {"type": "int", "min": 1, "max": 512, "default": 80},
-    "height":         {"type": "int", "min": 0, "max": 384, "default": 0},
-    "dims":           {"type": "list", "of": ["overworld", "the_nether", "the_end"], "default": ["overworld", "the_nether", "the_end"]},
-    "replace_rules":  {"type": "list", "of": "str", "live": True, "default": ["obsidian > air"]},
-    "replace_rate":   {"type": "int", "min": 1, "max": 100, "default": 100, "live": True},
-    "replace_cell":   {"type": "int", "min": 1, "max": 16, "default": 4, "live": True},
-    "replace_radius": {"type": "int", "min": 0, "max": 128, "default": 4, "live": True},
-}
 
 
 # --- preset: replace_blocks (copied from _presets/replace_blocks.py) ---
@@ -154,14 +143,14 @@ def _replace_blocks_free(boxes):
             return
 
 
-v = values(VALUES)
+v = values()
 # Round each player the player value names, in a dimension dims allows: radius blocks each way,
 # the whole height of the world (or height blocks above and below their feet). Only loaded
 # chunks change, so what is far from everyone is left as it is: for every chunk as a player
 # walks in, see chunk_changer. Then it ends; the blocks stay as they are.
 # The run's asks, as values: replace_rules="end_stone > bedrock" dims=the_end radius=64;
 # replace_rules="water bubble_column seagrass tall_seagrass kelp kelp_plant > air" radius=150.
-total = 0
+total, done = 0, []
 for p in loop.who(v["player"]):
     at, dim = mc.pos(p), world.dim_of(p)
     if not at or (dim or world.OVERWORLD).split(":")[-1] not in v["dims"]:
@@ -171,5 +160,12 @@ for p in loop.who(v["player"]):
     lo, hi = area.band(at[1], h, h, dim) if h else world.limits(dim)
     n = replace_blocks(world.Box(at[0] - r, lo, at[2] - r, at[0] + r, hi, at[2] + r, dim=dim), v)
     total += n
+    done.append(p)
     mc.log("round %s in %s: %d blocks changed" % (p, dim or world.OVERWORLD, n))
 mc.log("done: %d blocks changed" % total)
+if done:
+    result("%d blocks changed round %s, %d each way: %s" % (total, ", ".join(done), v["radius"],
+                                                           "; ".join(v["replace_rules"])),
+           players=done, blocks=total, radius=v["radius"], rules=list(v["replace_rules"]))
+else:
+    result("nothing changed: %s is not online in %s" % (v["player"], " or ".join(v["dims"])), players=[], blocks=0)

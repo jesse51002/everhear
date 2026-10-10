@@ -1,15 +1,14 @@
 """Tests for the world presets (replace_blocks, shape_fill, summon, sky_above, meteor_fall,
 projectile, under_feet, walk_steps, enters_chunk) against the fake RCON server and fake_world,
-under the Python EC2 has:
+under the Python EC2 has, with pydantic for a preset's values class:
 
-    uv run --python 3.9 python scripts/_test/test_presets_world.py
+    uv run --no-project --python 3.12 --with pydantic python scripts/_test/test_presets_world.py
 
 Each preset is loaded from scripts/_presets/ as it is, its function run in this process
-against a fresh fake world (test_kit's KitCase): it sends the commands it should, its VALUES
-refuse values outside their limits, and a script that copies them leaves nothing behind
-after a stop.
+against a fresh fake world (test_kit's KitCase): it sends the commands it should, its values
+class clamps or refuses values outside its limits, and a script that copies them leaves
+nothing behind after a stop.
 """
-import ast
 import importlib.util
 import os
 import signal
@@ -21,9 +20,11 @@ import unittest
 sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
 PRESETS = os.path.join(os.path.dirname(HERE), "_presets")
+sys.path.append(os.path.dirname(os.path.dirname(HERE)))  # the repo: a preset's values class imports actions._types
 sys.path.insert(0, HERE)
 
-from test_kit import KitCase, collect, start_script, TMP  # noqa: E402
+import test_kit  # noqa: E402
+from test_kit import KitCase, collect, copied, start_script, TMP  # noqa: E402
 from fake_rcon import FakeRcon  # noqa: E402
 from fake_world import World  # noqa: E402
 import secrets  # noqa: E402
@@ -47,9 +48,8 @@ P = {n: load(n) for n in NAMES}
 
 
 def vals(name, **given):
-    """A preset's values: its defaults, then these."""
-    return values(P[name].VALUES, argv=["%s=%s" % kv for kv in given.items()],
-                  run_dir=tempfile.mkdtemp(dir=TMP), instance="t")
+    """A preset's values: its defaults, then these, checked as vfg action run checks them."""
+    return values(meta=test_kit.values_meta(P[name], given=given), run_dir=tempfile.mkdtemp(dir=TMP), instance="t")
 
 
 def cells(fills, block=None):
@@ -65,32 +65,18 @@ def cells(fills, block=None):
 
 
 class WorldValuesTests(unittest.TestCase):
-    def test_every_preset_refuses_values_outside_its_limits(self):
+    def test_every_preset_clamps_or_refuses_values_outside_its_limits(self):
         for name in NAMES:
-            for key, entry in P[name].VALUES.items():
+            for key in test_kit.values_class(P[name]).model_fields:
                 self.assertTrue(key.startswith(name.split("_")[0][:3]), key)
-                values.check(key, entry, entry["default"])
-                if entry["type"] in ("int", "number"):
-                    x, note = values.check(key, entry, entry["max"] + 1)
-                    self.assertEqual((x, bool(note)), (entry["max"], True), key)
-                    x, note = values.check(key, entry, entry["min"] - 1)
-                    self.assertEqual((x, bool(note)), (entry["min"], True), key)
-                    self.assertRaises(ValueError, values.check, key, entry, "lots")
-                elif entry["type"] == "enum" or (entry["type"] == "list" and isinstance(entry.get("of"), list)):
-                    self.assertRaises(ValueError, values.check, key, entry, "nowhere")
-                elif entry["type"] == "bool":
-                    self.assertRaises(ValueError, values.check, key, entry, "maybe")
-        self.assertRaises(ValueError, values.check, "summon_mob", P["summon"].VALUES["summon_mob"], "potion")
-        self.assertRaises(ValueError, values.check, "projectile_block", P["projectile"].VALUES["projectile_block"],
-                          "#minecraft:tall_flowers")
-        self.assertRaises(ValueError, values.check, "shape_offset", P["shape_fill"].VALUES["shape_offset"], "1,up,2")
-
-    def test_values_are_literals_named_for_their_preset(self):
-        for name in NAMES:
-            with open(os.path.join(PRESETS, name + ".py")) as f:
-                tree = ast.parse(f.read())
-            node = next(n for n in tree.body if isinstance(n, ast.Assign) and n.targets[0].id == "VALUES")
-            self.assertEqual(ast.literal_eval(node.value), P[name].VALUES)
+            test_kit.assert_checked_on_the_pc(self, P[name])
+        for name, key, bad in (("summon", "summon_mob", "potion"), ("projectile", "projectile_block",
+                                                                     "#minecraft:tall_flowers"),
+                               ("shape_fill", "shape_offset", "1,up,2"), ("shape_fill", "shape_blocks", "#logs"),
+                               ("meteor_fall", "meteor_blocks", "0% magma_block"),
+                               ("replace_blocks", "replace_rules", "stone"), ("summon", "summon_weapon", "#swords")):
+            with self.assertRaises(ValueError, msg=key):
+                test_kit.values_meta(P[name], given={key: bad})
 
 
 class WorldReplaceBlocksTests(KitCase):
@@ -159,12 +145,12 @@ class WorldReplaceBlocksTests(KitCase):
         real = self.world.respond
 
         def respond(cmd):
-            if "#minecraft:tall_flowers" in cmd:
-                return "Unknown block tag 'minecraft:tall_flowers'...<--[HERE]"
+            if "#minecraft:no_such_tag" in cmd:
+                return "Unknown block tag 'minecraft:no_such_tag'...<--[HERE]"
             return real(cmd)
         self.world.respond = respond
-        v = vals("replace_blocks", replace_rules="#minecraft:tall_flowers > air,dirt > coarse_dirt",
-                 replace_radius=1)
+        # A tag the PC takes (it cannot know every tag): the server refuses it.
+        v = vals("replace_blocks", replace_rules="#minecraft:no_such_tag > air,dirt > coarse_dirt", replace_radius=1)
         self.assertIsNone(P["replace_blocks"]._replace_blocks_rule("stone"))       # no >: not a rule
         self.rb((0, 64, 0), v)
         self.assertEqual(set(m for _, _, _, m in self.world.fills), {"replace dirt strict"})
@@ -251,7 +237,7 @@ class WorldShapeFillTests(KitCase):
         self.assertEqual(whole.facing, "east")
 
     def test_a_value_no_one_gives_is_the_presets_default(self):
-        v = values({"shape_blocks": P["shape_fill"].VALUES["shape_blocks"]}, argv=[], run_dir=tempfile.mkdtemp(dir=TMP),
+        v = values(meta={"values": {"shape_blocks": "stone_bricks"}, "live": []}, run_dir=tempfile.mkdtemp(dir=TMP),
                    instance="t")
         whole = self.sf(world.Pos(0.5, 70, 0.5), v, kind="box", width=3)
         self.assertEqual(tuple(whole), (-1, 70, -4, 1, 74, 4))         # depth 9, height 5: the defaults
@@ -367,16 +353,14 @@ class WorldShowTests(KitCase):
 
 PROBE = '''"""Probe: the world presets mid-way when it is stopped."""
 ASKS = []
-import os
 import mc
 from kit import values, loop
-V = {}
+COPIED = %r
 for name in ("shape_fill", "summon", "meteor_fall"):
     g = {"__name__": name}
-    exec(open(os.path.join(%r, name + ".py")).read(), g)
+    exec(COPIED[name], g)
     globals()[name] = g[name]
-    V.update(g["VALUES"])
-v = values(V)
+v = values()
 summon("Steve", v)
 loop.background(meteor_fall, (0.5, 70, 0.5), v)
 loop.background(shape_fill, (100.5, 64, 100.5), v)
@@ -395,7 +379,9 @@ class WorldStopTests(unittest.TestCase):
         password = secrets.token_hex(8)
         fake = FakeRcon(password, responder=w.respond).start()
         try:
-            proc = start_script("probe_world", PROBE % PRESETS, fake, password)
+            copies = {n: copied(os.path.join(PRESETS, n + ".py")) for n in ("shape_fill", "summon", "meteor_fall")}
+            proc = start_script("probe_world", PROBE % (copies,), fake, password,
+                                vals=test_kit.values_meta("shape_fill", "summon", "meteor_fall"))
             deadline = time.time() + 8
             while not (w.forced and [e for e in w.entities if e["type"] == "block_display"]) \
                     and time.time() < deadline:

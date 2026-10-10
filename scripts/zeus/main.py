@@ -1,24 +1,11 @@
 """Zeus: every trident a player throws calls lightning down where it lands or hits, in any weather."""
 ASKS = ["a trident that calls lightning where it lands", "call a lightning strike on impact", "Zeus's trident"]
-from kit import values, items, loop, world
+from kit import values, result, items, loop, world
 import re
 import time
 import mc
 import math
 import random
-
-VALUES = {
-    "player":                    {"type": "player", "default": "@a"},
-    "projectile_lands_kind":     {"type": "enum", "of": ["both", "arrow", "trident"], "default": "trident", "live": True},
-    "projectile_lands_named":    {"type": "list", "of": "str", "default": [], "live": True},
-    "projectile_lands_cooldown": {"type": "number", "min": 0, "max": 60, "default": 0, "live": True},
-    "projectile_lands_remove":   {"type": "bool", "default": False, "live": True},
-    "lightning_count":           {"type": "int", "min": 1, "max": 50, "default": 1, "live": True},
-    "lightning_spread":          {"type": "number", "min": 0, "max": 32, "default": 3, "live": True},
-    "lightning_layout":          {"type": "enum", "of": ["scatter", "ring"], "default": "scatter", "live": True},
-    "lightning_every":           {"type": "number", "min": 0, "max": 5, "default": 0, "live": True},
-    "lightning_spare":           {"type": "list", "of": "player", "default": [], "live": True},
-}
 
 
 # --- preset: projectile_lands (copied from _presets/projectile_lands.py) ---
@@ -186,8 +173,9 @@ def lightning(at, by, v):
     return struck
 
 
-v = values(VALUES)
-mc.log("tridents of", v["player"], "call lightning")
+v = values()
+result("%s's thrown %s call lightning where they land" % (v["player"], {"trident": "tridents", "arrow": "arrows"}.get(
+    v["projectile_lands_kind"], "tridents and arrows")), player=v["player"], bolts=v["lightning_count"])
 for at, p, weapon in loop(projectile_lands(v["player"], v)):
     struck = lightning(at, p, v)
     mc.log("lightning x%d where %s's trident came down: %.0f %.0f %.0f" % (struck, p, at[0], at[1], at[2]))

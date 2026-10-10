@@ -3,12 +3,16 @@ import math
 
 import mc
 from kit import world
+from actions._types import Field, Live, Values  # the values class: read on the PC only
 
-VALUES = {
-    "under_radius": {"type": "int", "min": 0, "max": 32, "default": 2, "live": True},
-    "under_depth": {"type": "int", "min": 1, "max": 64, "default": 1, "live": True},
-    "under_above": {"type": "int", "min": 0, "max": 64, "default": 0, "live": True},
-}
+
+class UnderFeet(Values):
+    under_radius: Live[int] = Field(2, ge=0, le=32)
+    """how far out round the player, in blocks each way (0: the one block they stand on)"""
+    under_depth: Live[int] = Field(1, ge=1, le=64)
+    """how deep, in blocks down from the block they stand on (1: that block only)"""
+    under_above: Live[int] = Field(0, ge=0, le=64)
+    """how many blocks above it are taken in too (2: their feet and head; 0: none)"""
 
 
 def under_feet(at, v):

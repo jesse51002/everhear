@@ -5,21 +5,30 @@ import re
 
 import mc
 from kit import aim, area, world
+from actions._types import BlockMix, Field, Literal, Live, Values  # the values class: read on the PC only
 
-VALUES = {
-    "shape_kind": {"type": "enum", "of": ["box", "cylinder", "dome", "pyramid", "staircase", "staircase_down", "wall"],
-                   "default": "box", "live": True},
-    "shape_width": {"type": "int", "min": 1, "max": 256, "default": 9, "live": True},
-    "shape_height": {"type": "int", "min": 1, "max": 256, "default": 5, "live": True},
-    "shape_depth": {"type": "int", "min": 1, "max": 256, "default": 9, "live": True},
-    "shape_offset": {"type": "list", "of": "int", "default": [0, 0, 0], "live": True},
-    "shape_facing": {"type": "enum", "of": ["look", "north", "east", "south", "west"], "default": "look", "live": True},
-    "shape_blocks": {"type": "str", "default": "stone_bricks", "live": True},
-    "shape_hollow": {"type": "bool", "default": False, "live": True},
-}
+
+class ShapeFill(Values):
+    shape_kind: Live[Literal["box", "cylinder", "dome", "pyramid", "staircase", "staircase_down", "wall"]] = "box"
+    """box, cylinder, dome, pyramid, staircase (climbing forward), staircase_down, or wall (one block thick)"""
+    shape_width: Live[int] = Field(9, ge=1, le=256)
+    """how wide it is, side to side, in blocks"""
+    shape_height: Live[int] = Field(5, ge=1, le=256)
+    """how tall it is, in blocks (a staircase's rise)"""
+    shape_depth: Live[int] = Field(9, ge=1, le=256)
+    """how deep it is, forward, in blocks (a staircase's run); a wall is always 1"""
+    shape_offset: Live[list[int]] = [0, 0, 0]
+    """where it goes from the player or place, as [right, up, forward] in blocks; [0, 0, 0]: its base's middle there"""
+    shape_facing: Live[Literal["look", "north", "east", "south", "west"]] = "look"
+    """which way its forward is: look, the way the player faces (south from a place), or a compass direction"""
+    shape_blocks: Live[BlockMix] = "stone_bricks"
+    """what it is made of: a block id or a mix, "70% stone_bricks 30% cobblestone" (no %: counts 1); air carves"""
+    shape_hollow: Live[bool] = False
+    """leave air inside a one-block shell (a staircase: three blocks of headroom); only when every side is 3 or more"""
+
 
 _SHAPE_FILL_WAYS = {"south": (0, 1), "west": (-1, 0), "north": (0, -1), "east": (1, 0)}    # forward, as x and z
-# What a part reads when neither the call nor VALUES gives it: the defaults above.
+# What a part reads when neither the call nor v gives it: the values class's defaults.
 _SHAPE_FILL_DEFAULTS = {"kind": "box", "width": 9, "height": 5, "depth": 9, "offset": [0, 0, 0], "facing": "look",
                         "blocks": "stone_bricks", "hollow": False}
 _SHAPE_FILL_CELL = 2        # a mix picks one block per cube this wide
@@ -36,7 +45,7 @@ def shape_fill(at, v, **change):
     that are not loaded are forceloaded for the build and let go after. Protected boxes and
     the bedrock floor are never built in. change: values for this call only, without shape_:
     shape_fill(p, v, kind="wall", width=21, offset=[0, 0, 12]); a value neither the call nor
-    VALUES gives is the preset's default. Returns the world.Box it covered, with .facing the
+    v gives is the preset's default. Returns the world.Box it covered, with .facing the
     way it faced ("south"...: a sign on it faces the other way), or None when `at` cannot be
     read."""
     def val(key):

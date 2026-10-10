@@ -1,26 +1,55 @@
-"""The Action base class and the option types every action shares.
+"""The Action base, the Values base and the value types every action and preset uses.
 
-Imported on the owner's PC by the dispatcher (Python >= 3.12, pydantic 2). Every
-value an action carries is checked here, before anything is sent to EC2; the
-handlers there run under Python 3.9 without pydantic and get plain dicts.
+An action is one class in actions/<name>.py (made/<server>/actions/<name>.py for one this
+server's implementers made), named as its file in CamelCase. It holds no code: its
+docstring's first line is its line on the menu, its ClassVars say which script it runs and
+how, and its fields are the values that script reads, each with a type from here, a default,
+its limits as Field(ge=, le=) and the string under it as its description. A preset's values
+are a Values class beside its function in scripts/_presets/<name>.py, and the action over a
+script inherits the classes of the presets the script copied:
+
+    class Railgun(Action, preset("damage_hits")): ...
+
+lib/py/vfg_actions.py loads, checks and renders the actions. Imported on the PC only (Python
+3.12, pydantic 2): every value is checked here before anything is sent to EC2, where the
+scripts get plain JSON and no pydantic.
+
+A value given as a word (key=value on the command line) is read as its field's type: a
+number; true, false, yes, no, on, off, 1 or 0; a list as a,b,c or as JSON; an option in any
+case. A number outside its limits is clamped and a note says so, as the kit does; anything
+else that does not fit is refused.
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
+import inspect
 import json
+import math
+import os
 import re
+import sys
+import types
+from copy import copy
 from pathlib import Path
-from typing import Annotated, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal, Union, get_args, get_origin
 
-from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
+import annotated_types
+from pydantic import (BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints,
+                      ValidationInfo, model_validator)
+from pydantic.fields import FieldInfo
 
 REPO = Path(__file__).resolve().parent.parent
 
-# The command-safety rules: toolkit/remote/commands.py's, loaded by path, the very file
-# toolkit/vfg ships to EC2, so the PC and EC2 refuse the same words. scripts/_lib/mc.py and
-# the orchestrator's guard keep their own REFUSED; a test keeps every list equal.
+__all__ = ["Action", "Values", "Live", "preset", "Field", "Literal", "Player", "Players", "MobId", "BlockId",
+           "ItemId", "ItemIdOrEmpty", "ParticleId", "SoundId", "BlockMix", "ReplaceRules", "ItemName", "Place",
+           "Command", "CopyName", "Any"]
+
+
+# The command-safety rules: scripts/_lib/commands.py's, loaded by path, the one list of
+# refused commands, so the PC and EC2 refuse the same words.
 def _load_commands():
-    path = REPO / "toolkit" / "remote" / "commands.py"
+    path = REPO / "scripts" / "_lib" / "commands.py"
     spec = importlib.util.spec_from_file_location("vfg_remote_commands", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -33,66 +62,252 @@ BLOCK_COMMANDS = _commands.BLOCK_COMMANDS    # commands that place or remove blo
 RCON_MAX = _commands.RCON_MAX                # what one RCON packet carries, in bytes of UTF-8
 command_problem = _commands.command_problem  # why a command may not run, for the planner, or None
 
+
+def _load_gone(path: Path = REPO / "scripts" / "_lib" / "kit" / "world.py") -> dict[str, str]:
+    """kit/world.py's GONE, the ids 26.3 refuses and what to use instead, read without running
+    it (it imports mc)."""
+    for node in ast.parse(path.read_text(encoding="utf-8")).body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "GONE" for t in node.targets):
+            return dict(ast.literal_eval(node.value))
+    raise ImportError("%s has no GONE" % path)
+
+
+GONE = _load_gone()
+
 PLAYER_PATTERN = r"^[A-Za-z0-9_]{1,16}$"
-PLAYER_OR_ALL_PATTERN = r"^([A-Za-z0-9_]{1,16}|@a)$"
-ID_PATTERN = r"^#?(minecraft:)?[a-z0-9_]+$"
-PLACE_PATTERN = r"^[a-z0-9_]{1,32}$"
+PLAYERS_PATTERN = r"^(@[arp]|[A-Za-z0-9_]{1,16}(,[A-Za-z0-9_]{1,16})*)$"
+# What kit/values.py takes for each kind of id: a namespace is allowed, minecraft: is dropped.
+_ID = r"(?:[a-z0-9_.-]+:)?[a-z0-9_./-]+"
+ID_PATTERNS = {
+    "mob": r"^%s$" % _ID,
+    "block": r"^#?%s(\[[^\]]*\])?(\{.*\})?$" % _ID,
+    "item": r"^#?%s(\[.*\])?$" % _ID,
+    "particle": r"^%s(\{.*\})?$" % _ID,
+    "sound": r"^%s$" % _ID,
+}
+_NUM = r"-?\d+(?:\.\d+)?"
+# A place as it is sent: empty (none), "x y z" with the_nether or the_end after it for
+# those, or one name: a saved place's, else a player's.
+AT_PATTERN = r"^(|%s %s %s( the_nether| the_end)?|[A-Za-z0-9_]{1,32})$" % (_NUM, _NUM, _NUM)
+PLACE_PATTERN = r"^[a-z0-9_]{1,32}$"          # a saved place's name
+COPY_PATTERN = r"^[a-z0-9][a-z0-9_]{0,47}$"   # a running copy's name, as EC2 names it
+BORDER = 30_000_000                            # no x or z this far out is in the world
+HEIGHTS = {"": (-64, 319), "the_nether": (0, 255), "the_end": (0, 255)}  # kit/world.py's LIMITS
+_DIMS = {"overworld": "", "nether": "the_nether", "the_nether": "the_nether", "end": "the_end", "the_end": "the_end"}
+_COORDS = re.compile(r"^(%s)[ ,]+(%s)[ ,]+(%s)(?:[ ,]+(?:minecraft:)?([a-z_]+))?$" % (_NUM, _NUM, _NUM))
+_BOOLS = {"true": True, "yes": True, "on": True, "1": True, "y": True,
+          "false": False, "no": False, "off": False, "0": False, "n": False}
 
 
-def _lower(v: object) -> object:
-    return v.strip().lower() if isinstance(v, str) else v
+class Kind:
+    """Marks a type as one of this file's, by name: what vfg action check, the menu and
+    actions.json call it."""
+
+    __slots__ = ("name",)
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def __repr__(self) -> str:
+        return "Kind(%r)" % self.name
 
 
-def _drop_namespace(v: str) -> str:
-    """'#minecraft:village' -> '#village', 'minecraft:zombie' -> 'zombie'."""
-    tag = v.startswith("#")
-    v = v.lstrip("#")
-    if v.startswith("minecraft:"):
-        v = v[len("minecraft:"):]
-    return ("#" if tag else "") + v
+class _LiveMark:
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "LIVE"
 
 
-def _no_tag(v: str) -> str:
-    if v.startswith("#"):
-        raise ValueError("one mob, not a #tag")
-    return v
+LIVE = _LiveMark()
 
 
-def _place_name(v: object) -> object:
-    """'My Castle' -> 'my_castle', so a name said aloud still fits the pattern."""
-    if isinstance(v, str):
-        return re.sub(r"[\s-]+", "_", v.strip().lower())
-    return v
+class Live:
+    """Live[T]: a value the script reads again while it runs, so an edit to it lands within
+    VFG_LIVE_POLL_S; an edit to any other value restarts the copy with the rest kept."""
+
+    def __class_getitem__(cls, item):
+        return Annotated[item, LIVE]
 
 
-# The pattern comes first in each Annotated, so it stays in the JSON schema that
-# constrains the model's structured output; a BeforeValidator placed after it wraps
-# the checked string and still runs first. (A BeforeValidator ahead of the pattern
-# turns the pattern into a function check that never reaches the schema.)
-Player = Annotated[str, StringConstraints(strip_whitespace=True, pattern=PLAYER_PATTERN)]
-PlayerOrAll = Annotated[str, StringConstraints(strip_whitespace=True, pattern=PLAYER_OR_ALL_PATTERN)]
-Id = Annotated[str, Field(pattern=ID_PATTERN), BeforeValidator(_lower), AfterValidator(_drop_namespace)]
-MobId = Annotated[Id, AfterValidator(_no_tag)]
-BiomeId = Id
-StructureId = Id
-PlaceName = Annotated[str, Field(pattern=PLACE_PATTERN), BeforeValidator(_place_name)]
+def _players(v: object) -> object:
+    """' Steve , Alex ' -> 'Steve,Alex', as the kit reads it; a list of names is joined."""
+    if isinstance(v, (list, tuple)) and all(isinstance(x, str) for x in v):
+        v = ",".join(v)
+    if not isinstance(v, str):
+        return v
+    s = v.strip()
+    if s in ("@a", "@r", "@p"):
+        return s
+    return ",".join(n.strip() for n in s.split(",") if n.strip())
 
 
-def script_names(scripts: Path = REPO / "scripts") -> tuple[str, ...]:
-    """The folders in scripts/ that have a main.py, skipping every one whose name starts
-    with _ (_lib, _test, _presets...) or a dot."""
-    if not scripts.is_dir():
-        return ()
-    return tuple(sorted(p.name for p in scripts.iterdir()
-                        if p.is_dir() and not p.name.startswith(("_", "."))
-                        and (p / "main.py").is_file()))
+def _id(kind: str):
+    def norm(v: object) -> object:
+        """'minecraft:zombie' -> 'zombie', '#minecraft:logs' -> '#logs', [states] and {nbt}
+        kept; a mob or a sound lowercased first, as the kit does; an id 26.3 refuses is refused."""
+        if not isinstance(v, str):
+            return v
+        s = v.strip().lower() if kind in ("mob", "sound") else v.strip()
+        cut = min([i for i in (s.find("["), s.find("{")) if i >= 0] or [len(s)])
+        head, rest = s[:cut], s[cut:]
+        tag = head.startswith("#")
+        bare = head[1:] if tag else head
+        if bare.startswith("minecraft:"):
+            bare = bare[len("minecraft:"):]
+        if kind == "mob" and bare in GONE:
+            raise ValueError("%s is gone in 26.3, use %s" % (bare, GONE[bare]))
+        if tag and "#minecraft:" + bare in GONE:
+            raise ValueError("#%s is gone in 26.3, use %s" % (bare, GONE["#minecraft:" + bare]))
+        return ("#" if tag else "") + bare + rest
+    norm.__name__ = "_%s_id" % kind
+    return norm
 
 
-SCRIPT_NAMES = script_names()
-if SCRIPT_NAMES:
-    ScriptName = Literal[SCRIPT_NAMES]  # type: ignore[valid-type]
-else:  # no scripts at all: nothing validates
-    ScriptName = Annotated[str, Field(pattern=r"^(?!)$")]  # type: ignore[misc]
+def _num_word(x: float) -> str:
+    return str(int(x)) if float(x).is_integer() else repr(float(x))
+
+
+def _place(v: object, info: ValidationInfo) -> object:
+    """'100, 64, -20' -> '100 64 -20'; '1 2 3 nether' -> '1 2 3 the_nether'; 'My Castle' ->
+    'my_castle' when it is saved; else a player's name as it is. With places in the context
+    ({"places": {name: ...}}, the places cache), a name that is neither saved nor a player's
+    name is refused; without them, names go unchecked."""
+    if not isinstance(v, str):
+        return v
+    s = v.strip()
+    if not s:
+        return ""
+    m = _COORDS.match(s.lower())
+    if m:
+        x, y, z = (float(g) for g in m.groups()[:3])
+        d = _DIMS.get(m.group(4) or "overworld")
+        if d is None:
+            raise ValueError("%r: the dimension after x y z is overworld, the_nether or the_end" % s)
+        lo, hi = HEIGHTS[d]
+        if abs(x) >= BORDER or abs(z) >= BORDER or not lo <= y <= hi:
+            raise ValueError("%s is outside the world (y from %d to %d there)" % (s, lo, hi))
+        return " ".join(_num_word(c) for c in (x, y, z)) + (" " + d if d else "")
+    ctx = info.context or {}
+    places = ctx.get("places")
+    if places is not None and "given" in ctx and info.field_name not in ctx["given"]:
+        places = None  # a default or a value kept from before: checked when it was given
+    name = re.sub(r"[\s-]+", "_", s.lower())
+    if places is not None and name in places:
+        return name
+    if re.match(PLAYER_PATTERN, s):
+        return s  # a player's name (or, unchecked, a saved place's): EC2 finds which as it runs
+    if places is None and re.match(PLACE_PATTERN, name):
+        return name
+    if places is None:
+        raise ValueError("%r is not x y z, a saved place's name or a player's name" % s)
+    raise ValueError("%r is not a saved place (%s), x y z, or a player's name"
+                     % (s, "saved: " + ", ".join(sorted(places)) if places else "none is saved"))
+
+
+# A weight ("70%") or a block with its [states] and {nbt}, between spaces and commas: how the
+# kit reads a mix of blocks (shape_fill's, meteor_fall's) and both sides of a replace rule.
+_MIX_WORD = re.compile(r"(\d+(?:\.\d+)?)%|([^\s,%\[{]+(?:\[[^\]]*\])?(?:\{[^}]*\})?)")
+_MIX_EXAMPLE = "70% stone_bricks 30% cobblestone"
+
+
+def _mix_words(text: str) -> list[tuple[str, str]] | None:
+    """The words of a mix or of one side of a rule: [(weight, "") or ("", block)]; None when
+    there is text the kit would skip over (it reads only these words)."""
+    if _MIX_WORD.sub(" ", text).replace(",", " ").strip():
+        return None
+    return _MIX_WORD.findall(text)
+
+
+def _mix(text: str, keep: bool = False, shown: str | None = None) -> list[tuple[str, float]]:
+    """[(block, weight)] from "70% stone_bricks, 30% cobblestone", as the kit reads a mix: a
+    block with no % weighs 1. Each a block id with no #tag (keep, too, in a rule's mix).
+    Raises ValueError, quoting `shown` (the text), for what the kit would refuse or build
+    nothing from."""
+    shown = text if shown is None else shown
+    what = 'a block or a mix like "%s"%s' % (_MIX_EXAMPLE, ", or keep" if keep else "")
+    words = _mix_words(text)
+    if words is None:
+        raise ValueError("%r: after > is %s" % (shown, what) if keep else "%r is not %s" % (shown, what))
+    mix, weight = [], None
+    for w, block in words:
+        if w:
+            weight = float(w)
+            continue
+        if not (keep and block == "keep"):
+            if block.startswith("#"):
+                raise ValueError("%r: a mix is blocks, not a #tag (%s)" % (shown, block))
+            if not re.match(ID_PATTERNS["block"], block):
+                raise ValueError("%r: %s is not a block id" % (shown, block))
+        mix.append((block, 1.0 if weight is None else weight))
+        weight = None
+    if not mix:
+        raise ValueError("%r: after > is %s" % (shown, what) if keep else "%r is not %s" % (shown, what))
+    if not sum(w for _, w in mix):
+        raise ValueError("%r: its weights add up to 0%%" % shown)
+    return mix
+
+
+def _block_mix(v: object) -> object:
+    """' 70% stone_bricks  30% cobblestone ' -> '70% stone_bricks  30% cobblestone', when the kit
+    reads it as blocks to build with."""
+    if not isinstance(v, str):
+        return v
+    _mix(v.strip())
+    return v.strip()
+
+
+def _replace_rule(v: object) -> object:
+    """One rule as replace_blocks reads it, "from ... > to": from, block ids, #tags or solid;
+    to, a block or a mix, where keep leaves the block as it was."""
+    if not isinstance(v, str):
+        return v
+    s = v.strip()
+    left, arrow, right = s.partition(">")
+    if not arrow:
+        raise ValueError('%r is not a rule: "from ... > to", such as "stone dirt > 70%% lava 30%% keep"' % s)
+    froms, words = [], _mix_words(left)
+    if words is None:
+        raise ValueError("%r: before > are block ids, #tags or solid" % s)
+    for w, block in words:
+        if w:
+            raise ValueError("%r: a weight goes after >, on what blocks become" % s)
+        if block != "solid":
+            if not re.match(ID_PATTERNS["block"], block):
+                raise ValueError("%r: %s is not a block id, a #tag or solid" % (s, block))
+            _id("block")(block)  # a tag 26.3 dropped
+        froms.append(block)
+    if not froms:
+        raise ValueError("%r: name the blocks to change before >: block ids, #tags or solid" % s)
+    _mix(right.strip(), keep=True, shown=s)
+    return s
+
+
+def _replace_rules(v: object) -> object:
+    """The rules as the kit reads them: a piece with no > belongs to the rule before it (a
+    command line splits "stone > 70% lava, 30% keep" at its comma)."""
+    if not isinstance(v, (list, tuple)) or not all(isinstance(t, str) for t in v):
+        return v
+    out: list[str] = []
+    for t in v:
+        if out and (">" not in t or ">" not in out[-1]):
+            out[-1] += ", " + t
+        else:
+            out.append(t)
+    return out
+
+
+def _item_name(v: object) -> object:
+    """The name of an item a script gave ("Spirit Bomb"), which the kit makes its id
+    (spirit_bomb); empty for none."""
+    if not isinstance(v, str):
+        return v
+    s = " ".join(v.split())
+    if s and not re.search(r"[A-Za-z0-9]", s):
+        raise ValueError("%r: an item's name has a letter or a digit in it" % s)
+    if len(s) > 64:
+        raise ValueError("an item's name is at most 64 letters, not %d" % len(s))
+    return s
 
 
 def clean_command(cmd: str) -> str:
@@ -110,19 +325,471 @@ def clean_command(cmd: str) -> str:
     return cmd
 
 
-class Action(BaseModel):
-    """One thing the dispatcher can do on the Minecraft server."""
+# The value types. A pattern comes first in each Annotated, so it stays in the JSON schema
+# that holds the model's structured output to it; a BeforeValidator after it still runs
+# first, so the pattern is checked on the tidied word. (A BeforeValidator ahead of the
+# pattern turns it into a function check that never reaches the schema.)
+Player = Annotated[str, StringConstraints(strip_whitespace=True, pattern=PLAYER_PATTERN), Kind("player")]
+Players = Annotated[str, Field(pattern=PLAYERS_PATTERN), Kind("players"), BeforeValidator(_players)]
+MobId = Annotated[str, Field(pattern=ID_PATTERNS["mob"]), Kind("mob"), BeforeValidator(_id("mob"))]
+BlockId = Annotated[str, Field(pattern=ID_PATTERNS["block"]), Kind("block"), BeforeValidator(_id("block"))]
+ItemId = Annotated[str, Field(pattern=ID_PATTERNS["item"]), Kind("item"), BeforeValidator(_id("item"))]
+ParticleId = Annotated[str, Field(pattern=ID_PATTERNS["particle"]), Kind("particle"),
+                       BeforeValidator(_id("particle"))]
+SoundId = Annotated[str, Field(pattern=ID_PATTERNS["sound"]), Kind("sound"), BeforeValidator(_id("sound"))]
+Place = Annotated[str, Field(pattern=AT_PATTERN), Kind("place"), BeforeValidator(_place)]
+Command = Annotated[str, Kind("command"), BeforeValidator(clean_command)]
+# A running copy's name (stop's and edit's `copy`); empty, the default, names none, and the
+# stop and edit scripts refuse it.
+CopyName = Annotated[str, Field(pattern=r"^(|%s)$" % COPY_PATTERN[1:-1])]
+# An item a mob holds or wears: one id, no #tag or [components]; empty for none.
+ItemIdOrEmpty = Annotated[str, Field(pattern=r"^(|%s)$" % _ID), Kind("item or empty"),
+                          BeforeValidator(_id("item"))]
+# A block or a mix of blocks to build with, "70% stone_bricks 30% cobblestone" (no %: counts 1).
+BlockMix = Annotated[str, Kind("block mix"), BeforeValidator(_block_mix)]
+# replace_blocks' rules, in order, each "from ... > to".
+_ReplaceRule = Annotated[str, Field(pattern=r"^[^>]+>[^>]+$"), Kind("replace rule"), BeforeValidator(_replace_rule)]
+ReplaceRules = Annotated[list[_ReplaceRule], Kind("replace rules"), BeforeValidator(_replace_rules)]
+# The name of an item a script gave ("Spirit Bomb"), as items.clicks and items.give take it; empty for none.
+ItemName = Annotated[str, Kind("item name"), BeforeValidator(_item_name)]
 
-    model_config = ConfigDict(extra="forbid")
+# The functions inside those types: the only validators a field may carry.
+_OURS = frozenset(m.func for t in (Players, MobId, BlockId, ItemId, ParticleId, SoundId, Place, Command,
+                                   ItemIdOrEmpty, BlockMix, _ReplaceRule, ReplaceRules, ItemName)
+                  for m in t.__metadata__ if isinstance(m, BeforeValidator))
 
-    # Seconds the executor allows the action; None is VFG_DISPATCH_ACTION_TIMEOUT_S.
+
+# ---- reading a field's type ---------------------------------------------------------------
+
+def unwrap(t: Any, meta: tuple | list = ()) -> tuple[Any, list]:
+    """A field's type without Annotated (and without Optional, as edit_model has it), and
+    everything that was annotated on it, flattened: (float, [Ge(0), Le(60), LIVE])."""
+    out = []
+    for m in meta:
+        out += m.metadata if isinstance(m, FieldInfo) else [m]
+    while True:
+        if get_origin(t) is Annotated:
+            args = get_args(t)
+            t = args[0]
+            for m in args[1:]:
+                out += m.metadata if isinstance(m, FieldInfo) else [m]
+            continue
+        if get_origin(t) in (Union, types.UnionType):
+            args = [a for a in get_args(t) if a is not type(None)]
+            if len(args) == 1:
+                t = args[0]
+                continue
+        return t, out
+
+
+def kind(t: Any, meta: tuple | list = ()) -> str:
+    """A field's type in a word or two: int, number, bool, str, enum, player, players, mob,
+    block, item, item or empty, particle, sound, block mix, replace rules, item name, place,
+    command, or "list of <kind>"; "?" for none of these."""
+    t, meta = unwrap(t, meta)
+    for m in meta:
+        if isinstance(m, Kind):
+            return m.name
+    if t is bool:
+        return "bool"
+    if t is int:
+        return "int"
+    if t is float:
+        return "number"
+    if t is str:
+        return "str"
+    if get_origin(t) is Literal:
+        return "enum"
+    if get_origin(t) is list:
+        args = get_args(t)
+        return "list of " + kind(args[0]) if args else "list"
+    if get_origin(t) is dict:
+        return "values"
+    return "?"
+
+
+def choices(t: Any, meta: tuple | list = ()) -> list | None:
+    """The options of an enum, or of each item of a list of one; None for anything else."""
+    t, _ = unwrap(t, meta)
+    if get_origin(t) is list and get_args(t):
+        t, _ = unwrap(get_args(t)[0])
+    return list(get_args(t)) if get_origin(t) is Literal else None
+
+
+def limits(t: Any, meta: tuple | list = ()) -> tuple[float | None, float | None]:
+    """A number's (ge, le), None where it has none."""
+    _, meta = unwrap(t, meta)
+    lo = hi = None
+    for m in meta:
+        if isinstance(m, annotated_types.Ge):
+            lo = m.ge
+        elif isinstance(m, annotated_types.Le):
+            hi = m.le
+        elif isinstance(m, annotated_types.Interval):
+            lo = m.ge if m.ge is not None else lo
+            hi = m.le if m.le is not None else hi
+    return lo, hi
+
+
+def is_live(meta: tuple | list) -> bool:
+    return any(m is LIVE for m in meta)
+
+
+def same_type(f: FieldInfo, g: FieldInfo) -> bool:
+    """Whether two fields take the same values: the same type, limits, pattern and live-ness,
+    whatever their defaults and descriptions."""
+    t1, m1 = unwrap(f.annotation, f.metadata)
+    t2, m2 = unwrap(g.annotation, g.metadata)
+    if t1 != t2 or len(m1) != len(m2):
+        return False
+    rest = list(m2)
+    for m in m1:
+        hit = next((i for i, r in enumerate(rest) if _same_meta(m, r)), None)
+        if hit is None:
+            return False
+        del rest[hit]
+    return True
+
+
+def _same_meta(a: object, b: object) -> bool:
+    if isinstance(a, Kind) and isinstance(b, Kind):
+        return a.name == b.name
+    if a == b:
+        return True
+    return type(a) is type(b) and hasattr(a, "__dict__") and vars(a) == vars(b)  # Field(pattern=) made twice
+
+
+def declares(k: type) -> list[str]:
+    """The fields class k writes itself, not those it inherits: its own annotations (read on
+    Python 3.14 too, where they are not in the class's __dict__)."""
+    try:
+        import annotationlib
+    except ImportError:  # Python 3.12, 3.13
+        return list(vars(k).get("__annotations__", {}))
+    return list(annotationlib.get_annotations(k, format=annotationlib.Format.FORWARDREF))
+
+
+def inherited(cls: type, name: str) -> tuple[type, FieldInfo] | None:
+    """Field `name` as cls inherits it, (the class it comes from, its field), whether or not
+    cls writes it again; None when no class cls inherits has it."""
+    for k in cls.__mro__[1:]:
+        f = (vars(k).get("__pydantic_fields__") or {}).get(name)
+        if f is not None and isinstance(k, type) and issubclass(k, Values):
+            return k, f
+    return None
+
+
+def type_problem(t: Any, meta: tuple | list = ()) -> str | None:
+    """None when a field's type is one of this file's: bool, int, float, str, Literal[...],
+    list[...] of these, Player, Players, MobId, BlockId, ItemId, ItemIdOrEmpty, ParticleId,
+    SoundId, BlockMix, ReplaceRules, ItemName, Place, Command or CopyName, Live[...] of any,
+    with Field() limits; or dict[str, Any], the values an edit changes, checked against the
+    copy's own action. Else what is not."""
+    while get_origin(t) is Annotated:
+        args = get_args(t)
+        t, meta = args[0], list(meta) + list(args[1:])
+    for m in meta:
+        if isinstance(m, FieldInfo):
+            m = None if all(_constraint(x) for x in m.metadata) else m
+        if m is None or m is LIVE or isinstance(m, Kind) or _constraint(m):
+            continue
+        if getattr(m, "func", None) in _OURS:
+            continue
+        return "%s is not one of actions/_types.py's types: it carries %r" % (_name(t), m)
+    if t in (bool, int, float, str):
+        return None
+    if get_origin(t) is Literal:
+        bad = [a for a in get_args(t) if not isinstance(a, (str, int, bool))]
+        return "a Literal of words or numbers, not %r" % bad[0] if bad else None
+    if get_origin(t) is list:
+        args = get_args(t)
+        return type_problem(args[0]) if args else "list[...] says what it holds: list[Player]"
+    if get_origin(t) is dict:
+        return None if get_args(t) == (str, Any) else "a dict is dict[str, Any], the values an edit changes"
+    return "%s is not one of actions/_types.py's types" % _name(t)
+
+
+def _constraint(m: object) -> bool:
+    """Field()'s limits and lengths, and a pattern: allowed on any field."""
+    return isinstance(m, (annotated_types.BaseMetadata, StringConstraints)) \
+        or type(m).__name__ == "_PydanticGeneralMetadata"
+
+
+def _name(t: Any) -> str:
+    """A type as it is written: Optional[int] whether spelled so or int | None (Python 3.14
+    names every union Union)."""
+    if get_origin(t) in (Union, types.UnionType):
+        args = get_args(t)
+        rest = [a for a in args if a is not type(None)]
+        if len(rest) == 1 and len(args) == 2:
+            return "Optional[%s]" % _name(rest[0])
+        return "Union[%s]" % ", ".join(_name(a) for a in args)
+    return getattr(t, "__name__", None) or repr(t)
+
+
+# ---- reading words --------------------------------------------------------------------------
+
+def _show(x: object) -> str:
+    if isinstance(x, bool):
+        return "true" if x else "false"
+    if isinstance(x, float) and x.is_integer():
+        return "%d" % x
+    return x if isinstance(x, str) else json.dumps(x, ensure_ascii=False)
+
+
+def _read(key: str, t: Any, meta: list, raw: object, notes: list, problems: list, clamp: bool) -> object:
+    """One value as its field's type reads it: a word from the command line made a number,
+    a bool, a list or an option; a number clamped to its limits, with a note. What still does
+    not fit is left for pydantic to refuse, with the field's name."""
+    t, meta = unwrap(t, meta)
+    if raw is None:
+        return raw
+    if t is bool:
+        if isinstance(raw, str):
+            if raw.strip().lower() not in _BOOLS:
+                problems.append("%s is true or false, not %s" % (key, raw))
+                return raw
+            return _BOOLS[raw.strip().lower()]
+        return raw
+    if t in (int, float):
+        if isinstance(raw, bool):
+            problems.append("%s takes a number, not %s" % (key, _show(raw)))
+            return raw
+        if isinstance(raw, str):
+            try:
+                x = float(raw.strip())
+            except ValueError:
+                return raw
+        elif isinstance(raw, (int, float)):
+            x = float(raw)
+        else:
+            return raw
+        if not math.isfinite(x):
+            problems.append("%s takes a finite number, not %s" % (key, _show(raw)))
+            return raw
+        lo, hi = limits(t, meta)
+        if clamp and lo is not None and x < lo:
+            notes.append("%s=%s is under its min, clamped to %s" % (key, _show(raw), _show(lo)))
+            x = float(lo)
+        elif clamp and hi is not None and x > hi:
+            notes.append("%s=%s is over its max, clamped to %s" % (key, _show(raw), _show(hi)))
+            x = float(hi)
+        return int(round(x)) if t is int else x
+    if get_origin(t) is Literal:
+        if isinstance(raw, str):
+            for o in get_args(t):
+                if isinstance(o, str) and o.lower() == raw.strip().lower():
+                    return o
+        return raw
+    if t is str:
+        if isinstance(raw, str):
+            if any(ord(c) < 32 or ord(c) == 127 for c in raw):
+                problems.append("%s holds a newline or another control character" % key)
+                return raw
+            return raw.strip()
+        return raw
+    if get_origin(t) is list:
+        if isinstance(raw, str):
+            s = raw.strip()
+            if s.startswith("["):
+                try:
+                    raw = json.loads(s)
+                except ValueError:
+                    problems.append('%s is a list: a,b,c or JSON like ["a","b"]' % key)
+                    return raw
+            else:
+                raw = [p.strip() for p in s.split(",") if p.strip()]
+        if isinstance(raw, (list, tuple)) and get_args(t):
+            return [_read("%s[%d]" % (key, i), get_args(t)[0], [], x, notes, problems, clamp)
+                    for i, x in enumerate(raw)]
+        return raw
+    return raw
+
+
+class Values(BaseModel):
+    """Values with their types, limits and descriptions: a preset's, and the base of every action.
+
+    model_validate(data, context={"notes": [], "places": {...}}): words read as their types,
+    numbers clamped with a note in context["notes"], a Place checked against context["places"]
+    (only for the keys in context["given"], when that is there). context["clamp"] False
+    refuses a number out of range instead."""
+
+    model_config = ConfigDict(extra="forbid", use_attribute_docstrings=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _read_words(cls, data: Any, info: ValidationInfo) -> Any:
+        if not isinstance(data, dict):
+            return data
+        ctx = info.context or {}
+        notes = ctx["notes"] if isinstance(ctx.get("notes"), list) else []
+        out, problems = {}, []
+        for key, raw in data.items():
+            field = cls.model_fields.get(key)
+            out[key] = raw if field is None else \
+                _read(key, field.annotation, field.metadata, raw, notes, problems, ctx.get("clamp", True))
+        if problems:
+            raise ValueError("; ".join(problems))
+        return out
+
+
+class Action(Values):
+    """One thing players can ask for: the script it runs and the values it takes. No code.
+
+    The class docstring's first line is the action's line on the menu, in players' words.
+    ClassVars, set without an annotation in an action (script = "railgun"):
+      script     the folder under scripts/ (or made/<server>/scripts/) it runs
+      runs       "once" (it ends by itself; its result() is the answer) or "until_stopped"
+      takes      the fields the planner fills, the target first; the rest keep their default
+      defaults   this action's own defaults for fields it inherits; still given and edited
+      fixed      values this action sets; never given to a run, an edit may still change them
+      descriptions  this action's own words for fields it inherits; their type and limits stay
+      timeout_s  for a once action slower than VFG_DISPATCH_ACTION_TIMEOUT_S
+    A variant subclasses an action: it inherits takes (or replaces them), and its defaults,
+    fixed and descriptions merge over its parent's (a key it puts in defaults is no longer
+    fixed). The merged values are each field's default and description, so GatlingGun().fire
+    is "hold". A field is written again only to change its type or limits, with its whole
+    description under it.
+    """
+
+    script: ClassVar[str] = ""
+    runs: ClassVar[str | None] = None
+    takes: ClassVar[list[str]] = []
+    defaults: ClassVar[dict[str, Any]] = {}
+    fixed: ClassVar[dict[str, Any]] = {}
+    descriptions: ClassVar[dict[str, str]] = {}
     timeout_s: ClassVar[int | None] = None
 
-    def vfg_argv(self, task: str) -> list[str]:
-        """The vfg argv that runs this action for task `task` (T7)."""
-        args = self.model_dump(mode="json", exclude={"action"})
-        argv = ["action", "run", self.action, "--args",  # type: ignore[attr-defined]
-                json.dumps(args, ensure_ascii=False, separators=(",", ":")), "--task", task]
-        if self.timeout_s:
-            argv += ["--timeout", str(self.timeout_s)]
-        return argv
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        _merge(cls)
+
+
+def _merge(cls: type[Action]) -> None:
+    """Merge defaults, fixed and descriptions down from the class's parents, and make them its
+    fields' defaults and descriptions; a field a class writes again drops the descriptions its
+    parents gave it. Kept in cls.__vfg__: each field's default as declared, after defaults
+    ("unfixed"), and the class's own defaults, fixed and descriptions as written."""
+    own_defaults, own_fixed = dict(vars(cls).get("defaults") or {}), dict(vars(cls).get("fixed") or {})
+    own_words = dict(vars(cls).get("descriptions") or {})
+    own = declares(cls)
+    defaults, fixed, words = {}, {}, {}
+    for k in reversed(cls.__mro__):
+        if k is cls:
+            mine, writes = (own_defaults, own_fixed, own_words), own
+        elif "__vfg__" in vars(k):
+            mine, writes = (*vars(k)["__vfg__"]["own"], vars(k)["__vfg__"]["descriptions"]), declares(k)
+        else:
+            continue
+        for key in writes:
+            words.pop(key, None)
+        for key, v in mine[0].items():
+            defaults[key] = v
+            fixed.pop(key, None)
+        for key, v in mine[1].items():
+            fixed[key] = v
+            defaults.pop(key, None)
+        words.update(mine[2])
+    declared = {}
+    parents = [vars(k)["__vfg__"]["declared"] for k in cls.__mro__[1:] if "__vfg__" in vars(k)]
+    for name, f in cls.__pydantic_fields__.items():
+        inherited = next((p[name] for p in parents if name in p), _UNSET)
+        declared[name] = inherited if name not in own and inherited is not _UNSET else \
+            f.get_default(call_default_factory=True)
+    unfixed = {n: defaults.get(n, d) for n, d in declared.items()}
+    changed = False
+    for name, f in list(cls.__pydantic_fields__.items()):
+        want = fixed.get(name, unfixed[name])
+        text = words.get(name)
+        text = text.strip() if isinstance(text, str) and text.strip() else f.description  # else check_action says
+        if f.default_factory is not None or f.default is not want or f.description != text:
+            g = copy(f)
+            g.default, g.default_factory, g.description = want, None, text
+            cls.__pydantic_fields__[name] = g
+            changed = True
+    cls.defaults, cls.fixed, cls.descriptions = defaults, fixed, words
+    cls.__vfg__ = {"declared": declared, "unfixed": unfixed, "own": (own_defaults, own_fixed),
+                   "descriptions": own_words}
+    if changed:
+        cls.model_rebuild(force=True)
+
+
+_UNSET = object()
+
+
+# ---- presets ----------------------------------------------------------------------------------
+
+_PC_ONLY = ("__future__", "actions", "pydantic", "typing", "annotated_types")
+_presets: dict[Path, tuple[tuple, type]] = {}
+
+
+def camel(name: str) -> str:
+    """gatling_gun -> GatlingGun: the class a file holds."""
+    return "".join(p[:1].upper() + p[1:] for p in name.split("_"))
+
+
+def preset(name: str) -> type[Values]:
+    """The values class of preset `name`, class <CamelName>(Values) in scripts/_presets/<name>.py
+    (for a made action, else in made/<server>/presets/<name>.py), to inherit:
+
+        class Horde(Action, preset("horde_wave")): ...
+
+    Only the class is run, with the file's imports from actions, pydantic and typing: the
+    rest of a preset imports mc and the kit, which run on EC2 and in the script tests."""
+    caller = sys._getframe(1).f_globals.get("__file__")
+    roots = _preset_roots(Path(caller).resolve() if caller else None)
+    for root in roots:
+        path = root / (name + ".py")
+        if re.match(r"^[a-z][a-z0-9_]{0,47}$", name) and path.is_file():
+            return _preset_class(path, name)
+    raise ImportError("no preset %r in %s" % (name, " or ".join(str(r) for r in roots)))
+
+
+def _preset_roots(caller: Path | None) -> list[Path]:
+    if caller is not None and caller.parent.name == "actions":
+        if len(caller.parents) > 3 and caller.parents[2].name == "made":
+            return [caller.parents[3] / "scripts" / "_presets", caller.parents[1] / "presets"]
+        return [caller.parents[1] / "scripts" / "_presets"]
+    return [REPO / "scripts" / "_presets"]
+
+
+def _preset_class(path: Path, name: str) -> type[Values]:
+    st = path.stat()
+    stamp = (st.st_mtime_ns, st.st_size)
+    hit = _presets.get(path)
+    if hit and hit[0] == stamp:
+        return hit[1]
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    keep = []
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and not node.level and (node.module or "").split(".")[0] in _PC_ONLY:
+            keep.append(node)
+        elif isinstance(node, ast.Import) and all(a.name.split(".")[0] in _PC_ONLY for a in node.names):
+            keep.append(node)
+        elif isinstance(node, ast.ClassDef) and any(_base_name(b) == "Values" for b in node.bases):
+            keep.append(node)
+    made = path.parent.name != "_presets"
+    modname = "vfg_made__%s__preset__%s" % (path.parents[1].name, name) if made else "vfg_preset__" + name
+    # Pydantic (3.12) reads attribute docstrings from the source of the frame that made the
+    # class, through the module inspect maps this file to: make that this module, not a plain
+    # import of the preset (a script test) nor a copy a test purged.
+    for f in {os.path.normcase(os.path.abspath(path)), os.path.realpath(path)}:
+        inspect.modulesbyfile[f] = modname
+    mod = types.ModuleType(modname)
+    mod.__file__ = str(path)
+    sys.modules[modname] = mod
+    try:
+        exec(compile(ast.Module(body=keep, type_ignores=[]), str(path), "exec"), mod.__dict__)
+    except BaseException:
+        sys.modules.pop(modname, None)
+        raise
+    cls = mod.__dict__.get(camel(name))
+    if not (isinstance(cls, type) and issubclass(cls, Values)):
+        raise ImportError("%s has no class %s(Values)" % (path, camel(name)))
+    _presets[path] = (stamp, cls)
+    return cls
+
+
+def _base_name(node: ast.expr) -> str:
+    return node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) else ""

@@ -8,8 +8,8 @@ the rung it took, its cost by component, and from the implementers' transcripts 
 calls before their first change and the share of their time on calls that only look, measured as
 for the run and set against the run's own figures.
 
-It runs on your Claude subscription: the orchestrator on Opus 5.5 at low effort, implementers on
-Haiku 5.5 (the runner's defaults), and the router's Jev call on the stand-in's TypeSafe key
+It runs on your Claude subscription: the orchestrator and implementers on Haiku 5.5 at low effort
+(the runner's defaults), and the router's Jev call on the stand-in's TypeSafe key
 (`integration/realmc/realmc.py key`; without it `vfg route` falls back to words).
 
 ## Run it

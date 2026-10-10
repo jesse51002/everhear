@@ -24,9 +24,10 @@ integration/realmc/.server/ (gitignored; REALMC_ROOT puts it elsewhere):
     <NAME>/mc/            one server's folder, standing in for /opt/mc: server.properties (its
                           own ports and password), world/, console.log; links to shared/
     <NAME>/vfg/           standing in for /opt/vfg: lib/vfg_feed.py, vfg.db, scripts/, made/, run/,
-                          .env (a link to shared/env)
+                          .env (a link to shared/env), python/bin/python3 (the box's Python 3.12)
     <NAME>/home/          HOME for vfg; home/.vfg is its VFG_HOME (config and a fake key)
-    <NAME>/box/           the box's PATH (bin/python3 is Python 3.9) and FAKE_UNITS (units/)
+    <NAME>/box/           the box's PATH (bin/python3 is Python 3.9, Amazon Linux's own) and
+                          FAKE_UNITS (units/)
 
 Python 3.9+, standard library only, like toolkit/vfg. Nothing here prints the RCON password or
 the key, or writes to ~/.vfg or ~/.ssh. From the owner's ~/.vfg/config it reads two keys and
@@ -638,21 +639,35 @@ def find_java():
     raise Fail(3, "no Java 25 or newer (26.3 needs it): set VFG_JAVA")
 
 
-def find_py39():
-    """The box's Python: VFG_EC2_PYTHON, else the 3.9 uv finds (as integration/run.sh does)."""
-    cands = [os.environ.get("VFG_EC2_PYTHON")]
+def uv_find(version):
+    """The Python `uv python find VERSION` names, or None."""
     uv = shutil.which("uv") or os.path.join(REAL_HOME, ".local", "bin", "uv")
     if os.access(uv, os.X_OK):
         try:
-            cands.append(subprocess.run([uv, "python", "find", "3.9"], stdout=subprocess.PIPE,
-                                        stderr=subprocess.DEVNULL, universal_newlines=True,
-                                        timeout=20).stdout.strip())
+            path = subprocess.run([uv, "python", "find", version], stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL, universal_newlines=True, timeout=20).stdout.strip()
         except (OSError, subprocess.TimeoutExpired):
-            pass
-    for c in cands:
-        if c and os.access(c, os.X_OK):
-            return c
-    raise Fail(3, "no Python 3.9 for the box's side: `uv python install 3.9`, or set VFG_EC2_PYTHON")
+            return None
+        if path and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+def find_box_python():
+    """The box's Python, /opt/vfg/python/bin/python3 there: VFG_EC2_PYTHON, else the 3.12 uv finds."""
+    py = os.environ.get("VFG_EC2_PYTHON")
+    if py and os.access(py, os.X_OK):
+        return py
+    py = uv_find("3.12")
+    if py:
+        return py
+    raise Fail(3, "no Python 3.12 for the box's side: `uv python install 3.12`, or set VFG_EC2_PYTHON")
+
+
+def find_host_python():
+    """Amazon Linux's own python3, 3.9, which the box keeps for the host; the box's 3.12 when there
+    is no 3.9 here, since nothing of vfg's needs it."""
+    return uv_find("3.9") or find_box_python()
 
 
 def eula_ok():
@@ -691,9 +706,16 @@ class Server(object):
         os.chmod(self.vhome, 0o700)
         for name in ("server.jar", "libraries", "versions", "mods"):
             link(os.path.join(SHARED, name), os.path.join(self.mc, name))
-        py = find_py39()
+        host = find_host_python()
         for name in ("python3", "python3.9"):
             path = os.path.join(self.box, "bin", name)
+            if os.path.realpath(path) != os.path.realpath(host):
+                link(host, path)
+        # The box's Python at the box's path: <vfg>/python/bin/python3, as python.sh lays it out.
+        py = find_box_python()
+        os.makedirs(os.path.join(self.vfg, "python", "bin"), exist_ok=True)
+        for name in ("python3", "python3.12"):
+            path = os.path.join(self.vfg, "python", "bin", name)
             if os.path.realpath(path) != os.path.realpath(py):
                 link(py, path)
         # vfg feed post runs <vfg>/lib/vfg_feed.py; vfg say, usage add and history need vfg.db.

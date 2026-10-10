@@ -4,18 +4,25 @@ import math
 
 import mc
 from kit import aim
+from actions._types import Field, Literal, Live, Player, Values  # the values class: read on the PC only
 
-VALUES = {
-    "damage_amount": {"type": "number", "min": 0, "max": 100000, "default": 20, "live": True},
-    "damage_type": {"type": "enum", "of": ["player_attack", "magic", "lightning_bolt", "explosion", "freeze",
-                                           "on_fire", "sonic_boom", "arrow", "wither", "generic"],
-                    "default": "player_attack", "live": True},
-    "damage_kill": {"type": "bool", "default": False, "live": True},
-    "damage_what": {"type": "enum", "of": ["all", "mobs", "hostile", "players"], "default": "all", "live": True},
-    "damage_most": {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
-    "damage_head": {"type": "number", "min": 1, "max": 10, "default": 1, "live": True},
-    "damage_spare": {"type": "list", "of": "player", "default": [], "live": True},
-}
+
+class DamageHits(Values):
+    damage_amount: Live[float] = Field(20, ge=0, le=100000)
+    """damage to each thing hit, in half-hearts (a player has 20); does nothing while damage_kill is on"""
+    damage_type: Live[Literal["player_attack", "magic", "lightning_bolt", "explosion", "freeze", "on_fire",
+                              "sonic_boom", "arrow", "wither", "generic"]] = "player_attack"
+    """the kind of damage, as Minecraft names it: it sets the death message and how much armour stops"""
+    damage_kill: Live[bool] = False
+    """kill everything hit outright instead of hurting it"""
+    damage_what: Live[Literal["all", "mobs", "hostile", "players"]] = "all"
+    """what it hurts: all; mobs (no players); hostile (monsters only, never animals or players); players"""
+    damage_most: Live[int] = Field(0, ge=0, le=1000)
+    """hurt only the nearest this many (1: the first only; 0: all)"""
+    damage_head: Live[float] = Field(1, ge=1, le=10)
+    """how many times the damage a hit takes when the shooter aims within half a block of its head (1: no extra)"""
+    damage_spare: Live[list[Player]] = []
+    """players it never hurts; the shooter, pets and villagers are always spared"""
 
 
 def damage_hits(hits, shooter, v):

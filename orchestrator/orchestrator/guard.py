@@ -8,13 +8,28 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from . import actions
 from . import brief as briefing  # guard.brief() is the log helper below
 from .config import log
 from .examples import server_state
 from .reply import REPLY_TOOL
 
-# Server commands that are the owner's to run. scripts/_lib/mc.py refuses the same words.
-REFUSED = frozenset(["stop", "op", "deop", "ban", "ban-ip", "pardon", "pardon-ip", "whitelist", "kick", "save-off"])
+
+_COMMANDS = []
+
+
+def refused() -> frozenset:
+    """Server commands that are the owner's to run: the one list, scripts/_lib/commands.py, which
+    mc.py, vfg and the actions use too. Loaded by path (it is deployed with the kit, not a
+    package), on first use."""
+    if not _COMMANDS:
+        import importlib.util
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts", "_lib", "commands.py")
+        spec = importlib.util.spec_from_file_location("vfg_commands", os.path.normpath(path))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _COMMANDS.append(mod)
+    return _COMMANDS[0].REFUSED
 
 # Server-wide settings an implementer may not change (scripts/_lib/mc.py does not refuse them:
 # seeded games use the world border).
@@ -36,20 +51,26 @@ class DENY:
     def library(server: str) -> str:
         return ("scripts/ is the library (its _presets/ and _lib/ too) and is read-only during play. Copy what you "
                 "need into this server's folder instead: vfg script new <name> --from <script> --preset <preset> "
-                "makes made/%s/scripts/<name>/main.py, and you edit that." % server)
+                "makes made/%s/scripts/<name>/main.py and its action, and you edit those." % server)
+
+    @staticmethod
+    def library_actions(server: str) -> str:
+        return ("actions/ is the library's and read-only during play. A new action goes in made/%s/actions/<name>.py: "
+                "vfg script new writes one with its script, and a variant is a class there that subclasses a library "
+                "action (from actions.railgun import Railgun)." % server)
 
     @staticmethod
     def made_only(server: str) -> str:
-        return ("You write only in this server's folder, made/%s/: a script made with vfg script new, a preset with "
-                "vfg preset save." % server)
+        return ("You write only in this server's folder, made/%s/: a script and its action made with vfg script new, "
+                "a variant in made/%s/actions/, a preset with vfg preset save." % (server, server))
 
     @staticmethod
     def running(name: str, inst: dict, server: str) -> str:
-        who = inst.get("instance") or name
-        return ("Refused: %s%s runs made/%s/scripts/%s/, and code a running instance uses is not changed: "
-                "vfg script new <new_name> --from %s copies it for you to Edit; then vfg script stop %s and run the "
-                "copy with its values." % (who, " (%s)" % inst["task"] if inst.get("task") else "", server, name,
-                                           name, who))
+        who = inst.get("copy") or inst.get("instance") or name
+        return ("Refused: %s%s runs made/%s/scripts/%s/, and code a running copy uses is not changed: "
+                "vfg script new <new_name> --from %s copies it, with its action, for you to Edit; then vfg script stop "
+                "%s and run the new action." % (who, " (%s)" % inst["task"] if inst.get("task") else "", server, name,
+                                                 name, who))
 
     library_flag = "--library is for coding sessions: leave it out, and vfg script new writes into this server's folder."
     expansion = "Write the server command literally inside single quotes: no $( ), backticks or variables in a vfg cmd."
@@ -58,7 +79,7 @@ class DENY:
                   "woken when it reports.")
     overrides = "Leave model, mode and isolation out: the implementer definition sets them."
     # An implementer's Bash: each says what to send instead, in one line.
-    shape = ("Refused: that program does not run here. These do: vfg cmd|script|preset save|state|place|history ..., "
+    shape = ("Refused: that program does not run here. These do: vfg action|cmd|script|preset save|state|place|history ..., "
              "python3 -m py_compile <file>, sleep N, echo, and ls, grep, head, tail on files in the repository; "
              "join them with && or ;, and pipe vfg into head -n N, tail -n N or grep <pattern>.")
     variables = ("Refused: no $( ), backticks or variables, $? included: write every value out; each command's output "
@@ -72,61 +93,71 @@ class DENY:
     cd = "Refused: no cd: you are already in the repository; send the rest on its own."
     read = "Refused: use the Read tool (offset and limit for a part of a file); an Edit needs it first anyway."
     find = "Refused: use the Glob tool (a pattern like made/**/main.py), or ls <folder>."
-    ps = "Refused: vfg script list shows every instance, and vfg script stop <instance> stops one."
-    python = "Refused: only python3 -m py_compile <file in the repository> runs; vfg script run runs a script on the server."
+    ps = "Refused: vfg script list shows every running copy, and vfg script stop <copy> stops one."
+    python = ("Refused: only python3 -m py_compile <file in the repository> runs; a script runs on the server through "
+              "its action: vfg action run <action> key=value ... --task <task id>.")
     outside_bash = "Refused: ls, grep, head, tail and py_compile read only inside the repository: give a path in it."
     wild = ("Refused: no unquoted * ? [ ], {a,b} or ~name after ls, grep, head, tail, echo, sleep or py_compile, since "
             "bash would expand them where the guard cannot see: put a pattern in single quotes ('def .*') and name "
             "each file by its path in the repository.")
     grep_file = "Refused: grep reads a file in the repository, or what a vfg command pipes into it: name one."
     pattern_file = "Refused: no pattern files: give grep its pattern on the command line, or with -e."
-    tail_follow = "Refused: tail -f never ends: use tail -n N, or vfg script logs <instance> -n 40."
+    tail_follow = "Refused: tail -f never ends: use tail -n N, or vfg script logs <copy> -n 40."
 
     @staticmethod
     def mkdir(server: str) -> str:
         return ("Refused: no mkdir: vfg script new <name> --from <script> --preset <preset> makes made/%s/scripts/<name>/ "
-                "with the code copied in; then Read and Edit its main.py." % server)
+                "with the code copied in, and its action made/%s/actions/<name>.py; then Read and Edit them."
+                % (server, server))
 
     @staticmethod
     def files(server: str) -> str:
         return ("Refused: files change only by Edit and Write in made/%s/, and vfg script new <name> --from <script> "
-                "copies a script." % server)
+                "copies a script with its action." % server)
 
     @staticmethod
     def vfg(words: list[str]) -> str:
         """How to send a vfg command the guard did not let through."""
         b, c = (words + [None, None, None])[1:3]
         if b and b.startswith("-"):
-            return "Refused: vfg takes no option before its command: vfg cmd '<command>', vfg script run ..., as it is."
+            return "Refused: vfg takes no option before its command: vfg cmd '<command>', vfg action run ..., as it is."
         form = VFG_USAGE.get("%s %s" % (b, c)) or VFG_USAGE.get(str(b))
         if form:
             return "Refused: send it as %s." % form
         if b == "script":
-            return "Refused: vfg script takes new|run|set|save|check|stop|logs|list|deploy."
+            return "Refused: vfg script takes new|set|stop|logs|list|check|save|deploy; a script runs through its action."
         return "Refused: vfg %s is not an implementer's. These are: %s." % (b, VFG_FORMS)
 
-    follow = "vfg script logs --follow never ends: use vfg script logs <name> -n 40, and sleep between looks."
+    script_run = ("Refused: vfg script run is gone: a script runs only through its action, vfg action run <action> "
+                  "key=value ... [as=<copy>] --task <task id>.")
+    action_task = "Refused: say which task it is for: vfg action run <action> key=value ... --task <task id>."
+    follow = "vfg script logs --follow never ends: use vfg script logs <copy> -n 40, and sleep between looks."
     outside = "Only the repository can be searched: give a path inside it, or none."
     read_outside = "Only files in the repository can be read."
     no_agents = "There are no implementers: do the task yourself with Bash, Read, Write, Edit, Glob and Grep."
-    background = "Run commands in the foreground: scripts already run detached on the server (vfg script run)."
+    background = "Run commands in the foreground: scripts already run detached on the server (vfg action run)."
 
 
 # Every vfg command an implementer runs, and how each is sent.
-VFG_FORMS = ("vfg cmd '<command>' | vfg script new|run|set|save|check|stop|logs|list|deploy ... | "
+VFG_FORMS = ("vfg action run <action> key=value ... --task <task id> | vfg action list | vfg action check <name> | "
+             "vfg cmd '<command>' | vfg script new|set|stop|logs|list|check|save|deploy ... | "
              "vfg preset save <script> <function> <name> | vfg state | vfg place save|list ... | vfg history ...")
 VFG_USAGE = {
+    "action": "vfg action run <action> key=value ... [as=<copy>] --task <task id>, vfg action list, or "
+              "vfg action check <name>",
+    "action run": "vfg action run <action> key=value ... [as=<copy>] --task <task id>",
+    "action list": "vfg action list, or vfg action list --json",
+    "action check": "vfg action check <name>",
     "cmd": "vfg cmd '<command>'",
     "state": "vfg state, or vfg state --json, with nothing after it",
     "preset": "vfg preset save <script> <function> <name>",
     "place": "vfg place save <name> --at <x> <y> <z> --by <task id>, or vfg place list",
-    "script list": "vfg script list, with nothing after it",
+    "script list": "vfg script list, with --json or --fresh or nothing after it",
     "script new": "vfg script new <name> --from <script> --preset <preset> ...",
-    "script save": "vfg script save <instance> <new_name>",
-    "script set": "vfg script set <instance> key=value ...",
-    "script run": "vfg script run --task <task id> <script> key=value ... [as=<instance>]",
-    "script stop": "vfg script stop <instance>",
-    "script logs": "vfg script logs <instance> -n 40",
+    "script save": "vfg script save <copy> <new_name>",
+    "script set": "vfg script set <copy> key=value ...",
+    "script stop": "vfg script stop <copy>",
+    "script logs": "vfg script logs <copy> -n 40",
     "script deploy": "vfg script deploy, or vfg script deploy <name>",
 }
 
@@ -148,8 +179,8 @@ class GuardContext:
     server: str = "main"
     # The task an implementer works on, by its agent id (the session's records), or None.
     task_of: Callable[[str | None], str | None] = lambda agent_id: None
-    # The instances running now, as `vfg state --json` lists them, or None when that cannot be told;
-    # no callable, no check (running_from_vfg is the runner's).
+    # The copies running now (running.json, else `vfg state --json`), each with its script and task,
+    # or None when that cannot be told; no callable, no check (running_copies is the runner's).
     running: Callable[[], Awaitable[list[dict] | None]] | None = None
     # By agent id ("" for the probe): the scripts in made/<server>/scripts/ that implementer made
     # itself, or was let change once; its own to change while it works.
@@ -180,7 +211,7 @@ def command_word_in(cmd: str, words_set: frozenset) -> str | None:
 
 def refused_word(cmd: str) -> str | None:
     """The refused word in a server command (its first word, or the word after any `run`), or None."""
-    return command_word_in(cmd, REFUSED)
+    return command_word_in(cmd, refused())
 
 
 @dataclass
@@ -364,10 +395,16 @@ def allowed_form(words: list[str]) -> bool:
         return words[2:] in ([], ["--json"])
     if b == "preset":
         return c == "save" and len(words) == 6
+    if b == "action":
+        if c == "list":
+            return words[3:] in ([], ["--json"])
+        if c == "check":
+            return len(words) == 4
+        return c == "run" and len(words) >= 4
     if b != "script":
         return False
     if c == "list":
-        return len(words) == 3
+        return len(set(words[3:])) == len(words[3:]) and set(words[3:]) <= {"--json", "--fresh"}
     if c in ("deploy", "check"):
         return c == "check" or len(words) <= 4
     if c == "new":
@@ -376,7 +413,39 @@ def allowed_form(words: list[str]) -> bool:
         return len(words) == 5
     if c == "set":
         return len(words) >= 5
-    return c in ("run", "stop", "logs") and len(words) >= 4
+    return c in ("stop", "logs") and len(words) >= 4
+
+
+def task_given(words: list[str]) -> bool:
+    """Does `vfg action run ...` say its task: --task T7 or --task=T7?"""
+    for i, a in enumerate(words):
+        if a == "--task" and i + 1 < len(words) and re.fullmatch(r"T\d+", words[i + 1], re.ASCII):
+            return True
+        if a.startswith("--task=") and re.fullmatch(r"T\d+", a[len("--task="):], re.ASCII):
+            return True
+    return False
+
+
+def command_values(words: list[str]) -> list[str]:
+    """The server commands a `vfg action run` or a `vfg script set` gives: the value of every key
+    that names commands (command, commands, …), whole, item by item as a JSON list, and comma by
+    comma as a list on the command line."""
+    if words[1:3] not in (["action", "run"], ["script", "set"]):
+        return []
+    out = []
+    for a in words[3:]:
+        key, eq, value = a.partition("=")
+        if not eq or "command" not in key.lower():
+            continue
+        out.append(value)
+        try:
+            items = json.loads(value)
+        except ValueError:
+            items = None
+        if isinstance(items, list):
+            out += [x for x in items if isinstance(x, str)]
+        out += [x for x in value.split(",") if x.strip()]
+    return out
 
 
 def scan_args(args: list[str], short_arg: str = "", long_arg: tuple[str, ...] = ()) -> tuple[list[tuple[str, str]], list[str]]:
@@ -492,8 +561,12 @@ def command_reason(cmd: ShellCommand, repo: str | None, server: str) -> str | No
             return DENY.pipe
         return DENY.wild if wild else file_reason(first, w[1:], True, repo)
     if first == "vfg":
+        if w[1:3] == ["script", "run"]:
+            return DENY.script_run
         if not allowed_form(w):
             return DENY.vfg(w)
+        if w[1:3] == ["action", "run"] and not task_given(w):
+            return DENY.action_task
         if w[1:3] == ["script", "logs"] and "--follow" in w:
             return DENY.follow
         if w[1:3] == ["script", "new"] and "--library" in w:
@@ -534,19 +607,23 @@ def check_bash(command: str, repo: str | None = None, server: str = "main") -> s
     grep, head and tail on files in the repository (`repo`; None: on none), with no ~name, brace or
     glob outside quotes in their words, which bash would expand past the check of the literal path."""
     cmds = split_shell(command)
-    # Server commands that are the owner's, however they are dressed up, and the server-wide settings.
+    # Server commands that are the owner's, however they are dressed up, and the server-wide settings:
+    # in a vfg cmd, and in the commands an action run or an edit gives.
     for cmd in cmds:
         w = list(cmd.words)
         while w and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", w[0]):
             w.pop(0)  # FOO=bar vfg ...
         prog = w[0].split("/")[-1] if w else None
-        if prog != "vfg" or len(w) < 2 or w[1] != "cmd":
+        if prog != "vfg" or len(w) < 2:
             continue
-        args = w[2:]
-        for a in [" ".join(args)] + args:
+        if w[1] == "cmd":
+            args = [" ".join(w[2:])] + w[2:]
+        else:
+            args = command_values(["vfg"] + w[1:])
+        for a in args:
             if refused_word(a):
                 return DENY.owner
-        for a in [" ".join(args)] + args:
+        for a in args:
             word = command_word_in(a, SERVER_WIDE)
             if word:
                 return DENY.server_wide(word)
@@ -620,24 +697,30 @@ def decide(call: dict, g: GuardContext) -> str | None:
             return None
         if within(os.path.join(g.repo, "scripts"), path, g.repo):
             return DENY.library(g.server)
+        if within(os.path.join(g.repo, "actions"), path, g.repo):
+            return DENY.library_actions(g.server)
         return DENY.made_only(g.server)
     return None
 
 
-# ------------------------------------------------------------------ a script a running instance uses
+# ------------------------------------------------------------------ a script a running copy uses
 
-# `vfg state --json` gets this long when the guard asks what runs; its answer is kept this long, so
-# a run of Edits asks once.
+# `vfg state --json` gets this long when the guard asks what runs and running.json cannot be read;
+# its answer is kept this long, so a run of Edits asks once.
 STATE_TIMEOUT_S = 5.0
 STATE_CACHE_S = 3.0
 
 
-def running_from_vfg() -> Callable[[], Awaitable[list[dict] | None]]:
-    """GuardContext.running for the runner: the instances `vfg state --json` lists, or None when it
-    cannot tell (the guard then lets the edit through)."""
+def running_copies(home: str | None = None) -> Callable[[], Awaitable[list[dict] | None]]:
+    """GuardContext.running for the runner: the copies in `home`/running.json, which vfg writes
+    through on every run, edit and stop; else those `vfg state --json` lists; None when neither
+    can tell (the guard then lets the edit through)."""
     kept: dict[str, Any] = {"at": 0.0, "instances": None}
 
     async def running() -> list[dict] | None:
+        copies = actions.read_running(home) if home else None
+        if copies is not None:
+            return [{**c, "instance": name, "copy": name} for name, c in copies.items()]
         if kept["instances"] is not None and time.monotonic() - kept["at"] < STATE_CACHE_S:
             return kept["instances"]
         state, failed = await server_state(STATE_TIMEOUT_S)
@@ -662,7 +745,7 @@ def made_script(path: str, g: GuardContext) -> str | None:
 
 
 def new_script_name(words: list[str]) -> str | None:
-    """The script `vfg script new <name>` or `vfg script save <instance> <name>` makes, or None."""
+    """The script `vfg script new <name>` or `vfg script save <copy> <name>` makes, or None."""
     if words[:3] not in (["vfg", "script", "new"], ["vfg", "script", "save"]):
         return None
     args, positional = words[3:], []
@@ -680,7 +763,7 @@ def new_script_name(words: list[str]) -> str | None:
 
 def note_made(call: dict, g: GuardContext) -> None:
     """After an implementer's Bash call is let through: a script its vfg script new or vfg script save
-    is about to make in made/<server>/scripts/ is its own to change."""
+    is about to make in made/<server>/scripts/ (with its action) is its own to change."""
     command = str((call.get("tool_input") or {}).get("command") or "")
     for cmd in split_shell(command):
         name = new_script_name(cmd.words)
@@ -690,7 +773,7 @@ def note_made(call: dict, g: GuardContext) -> None:
 
 async def check_running(call: dict, g: GuardContext) -> str | None:
     """Why an implementer may not change this script: it is in made/<server>/scripts/, it did not make
-    it, and an instance another task started runs it. New code is a new script with its own name."""
+    it, and a copy another task started runs it. New code is a new script with its own name."""
     if g.running is None or call.get("tool_name") not in ("Write", "Edit"):
         return None
     name = made_script(str((call.get("tool_input") or {}).get("file_path") or ""), g)

@@ -1,5 +1,5 @@
 """The parts on their own: the batch window, reply's retries, the executor, the inbox, the
-config, the action loader and the replay."""
+config, the actions, the running copies and the replay."""
 
 from __future__ import annotations
 
@@ -12,11 +12,11 @@ import time
 
 import pytest
 
-from conftest import CATALOG, FakeLLM, FakeVfg, fail, select
-from dispatcher import actions, config
+from conftest import FakeLLM, FakeVfg, catalog, fail, line as json_line, select
+from dispatcher import actions, config, running
 from dispatcher.config import now_iso
 from dispatcher.batch import Batch
-from dispatcher.executor import Ran, read
+from dispatcher.executor import Ran, argv, read
 from dispatcher.inbox import Inbox, State
 from dispatcher.replay import read_tasks, replay
 from dispatcher.reply import Reply, clean
@@ -131,31 +131,49 @@ def test_reply_text_is_one_line_never_read_as_an_option():
 # ---------------------------------------------------------------- executor
 
 def test_the_executor_says_which_kind_of_outcome_each_exit_is():
-    assert read(VfgResult(0, 'noise\n{"ok": true, "summary": "teleported", "pos": [1, 2, 3]}\n', "")) == \
-        Ran(True, "teleported", {"pos": [1, 2, 3]}, "ok")
-    assert read(VfgResult(0, '{"ok": false, "summary": "No player was found", "failed": "give Bob bread"}\n', "")) == \
-        Ran(False, "No player was found", {"failed": "give Bob bread"}, "refused")
-    assert read(VfgResult(0, "saved home at -368 70 912 in overworld\n", ""), action_run=False) == \
-        Ran(True, "saved home at -368 70 912 in overworld", kind="ok")
-    # exit 1 is Minecraft's or the toolkit's refusal for a command printing no JSON...
-    assert read(VfgResult(1, "", "vfg: zeus is not running\n"), action_run=False) == \
-        Ran(False, "vfg: zeus is not running", kind="refused")
-    # ...but from vfg action run it means the action cannot be run at all
-    assert read(VfgResult(1, "", "vfg: no actions/tp/ in ~/vfg\n")) == \
-        Ran(False, "could not run it: vfg: no actions/tp/ in ~/vfg", kind="not_run")
-    for code, err in ((2, "vfg: --args is not JSON"), (3, "vfg: mc.py is not deployed"),
+    said = read(VfgResult(0, "noise\n" + json_line(True, "teleported Steve to 1 70 2", copy="teleport",
+                                                     action="teleport", pos=[1, 70, 2]), ""))
+    assert said == Ran(True, "teleported Steve to 1 70 2", {"pos": [1, 70, 2]}, "ok", "teleport", False)
+    # vfg's notes go with the summary; a copy that keeps running says so
+    said = read(VfgResult(0, json_line(True, "running as galick_gun_2", copy="galick_gun_2", running=True,
+                                       notes=["cooldown=500 is over its max, clamped to 60"]), ""))
+    assert (said.summary, said.copy, said.running) == \
+        ("running as galick_gun_2 (cooldown=500 is over its max, clamped to 60)", "galick_gun_2", True)
+    # ok false: Minecraft or the script said no, whatever the exit
+    for code in (0, 1):
+        assert read(VfgResult(code, json_line(False, "No player was found", failed="give Bob bread"), "")) == \
+            Ran(False, "No player was found", {"failed": "give Bob bread"}, "refused")
+    assert read(VfgResult(1, json_line(False, "", error="galick_gun_3 is not running"), "")).summary == \
+        "galick_gun_3 is not running"
+    # it cannot be run at all: exits 2 to 5 (with a JSON line or none), no JSON line, vfg missing
+    for code, err in ((2, "vfg: teleport has no value speed"), (3, "vfg: the scripts are not deployed"),
                       (4, "vfg: cannot reach EC2 (ec2-user@1.2.3.4): ssh exited 255"),
-                      (5, "vfg: Minecraft is not answering RCON"), (127, "cannot run vfg: no such file")):
-        for action_run in (True, False):
-            assert read(VfgResult(code, "", err + "\n"), action_run=action_run) == \
-                Ran(False, f"could not run it: {err}", kind="not_run")
-    partial = read(VfgResult(0, '{"ok": false, "summary": "handler error: ValueError: x", "partial": true, '
-                                '"ran": ["time set day"]}\n', ""))
+                      (5, "vfg: Minecraft is not answering RCON"), (127, "cannot run vfg: no such file"),
+                      (1, "vfg: no action tp")):
+        assert read(VfgResult(code, "", err + "\n")) == Ran(False, f"could not run it: {err}", kind="not_run")
+    assert read(VfgResult(2, json_line(False, "", error="fire is fixed at click"), "")) == \
+        Ran(False, "could not run it: fire is fixed at click", kind="not_run")
+    partial = read(VfgResult(1, json_line(False, "script error: ValueError: x", partial=True,
+                                          ran=["time set day"]), ""))
     assert partial.kind == "partial" and partial.summary == (
-        "it may have partly happened (handler error: ValueError: x); these ran and took effect: time set day "
+        "it may have partly happened (script error: ValueError: x); these ran and took effect: time set day "
         "— check before redoing it")
-    assert read(VfgResult(124, "", "vfg: timed out: give did not finish within 20 s\n"), timeout=20) == \
+    assert read(VfgResult(124, "", "vfg: timed out\n"), timeout=20) == \
         Ran(False, "timed out after 20 s; it may or may not have happened — check before redoing it", kind="timeout")
+
+
+def test_the_executor_runs_vfg_action_run_with_key_value_words():
+    assert argv("railgun", {"player": "Steve,Alex", "cooldown": 0.0, "through_walls": False, "range": 24},
+                "T7") == ["action", "run", "railgun", "player=Steve,Alex", "cooldown=0", "through_walls=false",
+                          "range=24", "--task", "T7"]
+    assert argv("command", {"commands": ["give Steve minecraft:bread", 'say "hi"']}, "T8") == \
+        ["action", "run", "command", 'commands=["give Steve minecraft:bread","say \\"hi\\""]', "--task", "T8"]
+    assert argv("edit", {"copy": "galick_gun_2", "damage_spare": ["Steve"], "particle": "flame"}, "T9") == \
+        ["action", "run", "edit", "copy=galick_gun_2", 'damage_spare=["Steve"]', "particle=flame", "--task", "T9"]
+    assert argv("railgun", {"player": "Steve"}, "T1", as_name="steve_gun") == \
+        ["action", "run", "railgun", "player=Steve", "as=steve_gun", "--task", "T1"]
+    assert argv("save_place", {"name": "home", "at": "1 64 -3 the_nether"}, "T2") == \
+        ["action", "run", "save_place", "name=home", "at=1 64 -3 the_nether", "--task", "T2"]
 
 
 # ---------------------------------------------------------------- inbox
@@ -232,6 +250,9 @@ def test_config_comes_from_the_environment_then_the_config_file_then_defaults(tm
     cfg = config.load({"VFG_HOME": str(tmp_path / "none"), "VFG_DISPATCH_DIR": str(tmp_path / "d")})
     assert cfg.dispatch_dir == tmp_path / "d" and cfg.model == "~deepseek/deepseek-v4-flash-latest"
     assert cfg.repo == config.REPO and (config.REPO / "dispatcher" / "run").exists()
+    assert (cfg.server, cfg.running_ttl_s, cfg.running_file) == ("main", 30.0, tmp_path / "none" / "running.json")
+    cfg = config.load({"VFG_HOME": str(home), "VFG_SERVER": "lobby", "VFG_RUNNING_TTL_S": "5"})
+    assert (cfg.server, cfg.running_ttl_s) == ("lobby", 5.0)
 
 
 async def test_every_model_call_carries_the_providers_of_the_config(tmp_path, monkeypatch):
@@ -265,187 +286,103 @@ def test_a_log_line_is_iso_time_area_message(capsys):
 
 # ---------------------------------------------------------------- actions
 
-@pytest.fixture
-def fresh_actions_package():
-    """The loader imports the package `actions`; give each test its own and put sys back after."""
-    saved_path, saved = list(sys.path), {k: v for k, v in sys.modules.items() if k == "actions" or k.startswith("actions.")}
-    for k in saved:
-        del sys.modules[k]
-    yield
-    for k in [k for k in sys.modules if k == "actions" or k.startswith("actions.")]:
-        del sys.modules[k]
-    sys.modules.update(saved)
-    sys.path[:] = saved_path
+def test_the_repos_actions_all_load_and_build_the_selector():
+    cat = catalog()
+    assert cat.errors() == {}
+    assert {"command", "teleport", "summon_around", "save_place", "stop", "edit", "railgun",
+            "gatling_gun"} <= set(cat.names())
+    assert "run_script" not in cat.names() and "stop_script" not in cat.names()
+    sel = Selector(cat, None, "m")  # the menu and the Literal of names build
+    for name in cat.names():
+        assert f"\n- {name} — " in sel.rules
+    assert actions.command_fields(cat.get("command")) == ["commands"]
+    assert actions.command_fields(cat.get("teleport")) == []
 
 
-def write_action(root, name: str, body: str) -> None:
-    folder = root / "actions" / name
-    folder.mkdir(parents=True)
-    (folder / "__init__.py").write_text("")
-    (folder / "action.py").write_text(textwrap.dedent(body))
+def test_a_copy_is_named_with_its_underscores_or_with_spaces():
+    names = ["galick_gun", "galick_gun_2", "rain"]
+    assert actions.named("stop galick_gun_2 now", names) == ["galick_gun_2"]
+    assert actions.named("stop Galick Gun", names) == ["galick_gun"]
+    assert actions.named("stop the galick gun 2", names) == ["galick_gun", "galick_gun_2"]  # unsure: the planner picks
+    assert actions.named("make it rain harder", names) == ["rain"] and actions.named("raining", names) == []
 
 
-def test_every_action_class_loads_with_its_menu_line(tmp_path, fresh_actions_package):
-    (tmp_path / "actions").mkdir()
-    (tmp_path / "actions" / "__init__.py").write_text("")
-    (tmp_path / "actions" / "_types.py").write_text(textwrap.dedent('''
-        from pydantic import BaseModel, ConfigDict
-        class Action(BaseModel):
-            model_config = ConfigDict(extra="forbid")
-    '''))
-    write_action(tmp_path, "wave", '''
-        from typing import Literal
-        from pydantic import Field
-        from actions._types import Action
-        class Wave(Action):
-            """Make a player wave.
-
-            The rest is for the planner."""
-            action: Literal["wave"]
-            player: str = Field(description="who waves")
-    ''')
-    write_action(tmp_path, "nod", '''
-        from typing import Literal
-        from actions._types import Action
-        class Helper(Action):
-            action: Literal["other"]
-        class Nod(Action):
-            """Make a player nod."""
-            action: Literal["nod"]
-    ''')
-    write_action(tmp_path, "broken", "import nothing_here_at_all\n")
-    (tmp_path / "actions" / "empty").mkdir()  # no action.py: not an action
-
-    catalog = actions.load(tmp_path)
-    assert list(catalog) == ["nod", "wave"]
-    assert actions.menu_line(catalog["wave"]) == "Make a player wave."
-    assert actions.doc(catalog["wave"]).endswith("The rest is for the planner.")
-    assert actions.action_name(catalog["nod"]) == "nod"
+def test_a_value_on_the_command_line():
+    assert [actions.word(v) for v in (True, False, 2.0, 2.5, 3, "a b", [1, "x"], {"k": 1})] == \
+        ["true", "false", "2", "2.5", "3", "a b", '[1,"x"]', '{"k":1}']
 
 
-def test_the_repos_own_actions_all_load(fresh_actions_package):
-    root = config.REPO / "actions"
-    folders = sorted(p.name for p in root.iterdir() if (p / "action.py").is_file()) if root.is_dir() else []
-    if not folders:
-        pytest.skip("actions/ has no action yet")
-    catalog = actions.load(config.REPO)
-    assert sorted(catalog) == folders
-    for name, cls in catalog.items():
-        assert actions.menu_line(cls), f"{name} has no docstring"
-        assert hasattr(cls, "vfg_argv")
-        for field, info in cls.model_fields.items():
-            assert field == "action" or info.description, f"{name}.{field} has no description"
-    Selector(catalog, None, "m")  # the menu and the Literal of names build
+# ---------------------------------------------------------------- running copies
+
+def test_running_json_is_read_as_vfg_writes_it_and_a_bad_file_is_none(tmp_path):
+    path = tmp_path / "running.json"
+    assert running.read(path) == {}
+    path.write_text("{not json")
+    assert running.read(path) == {}
+    path.write_text(json.dumps({"fetched_at": 1, "copies": {"rain": {"action": "lava_rain"}, "bad": 3}}))
+    assert running.read(path) == {"rain": {"action": "lava_rain"}}
 
 
-def script(root, name: str, main: str, readme: str | None = None) -> None:
-    (root / "scripts" / name).mkdir(parents=True)
-    (root / "scripts" / name / "main.py").write_text(main)
-    if readme is not None:
-        (root / "scripts" / name / "README.md").write_text(readme)
+def test_a_copys_line_is_its_name_its_action_the_values_that_differ_and_its_task():
+    cat = catalog()
+    rail = {"action": "railgun", "task": "T12", "values": {
+        "player": "Alex", "cooldown": 0, "range": 100, "fire": "click", "damage_amount": 30, "damage_spare": ["Bob"]}}
+    assert running.line("galick_gun_2", rail, cat) == \
+        'galick_gun_2: railgun, player=Alex cooldown=0 damage_spare=["Bob"], started by T12'
+    # a fixed value is a default; a copy at its defaults says so
+    gat = {"action": "gatling_gun", "task": "", "values": {"player": "@a", "fire": "hold", "cooldown": 0.1}}
+    assert running.line("gatling_gun", gat, cat) == "gatling_gun: gatling_gun, its defaults"
+    # its action not loaded: every value
+    assert running.line("zap", {"action": "zap", "values": {"player": "Steve"}, "task": "T3"}, cat) == \
+        "zap: zap, player=Steve, started by T3"
+    long = {"action": "railgun", "values": {"player": ",".join(["Steve"] * 100)}}
+    assert running.line("r", long, cat).endswith("…") and len(running.line("r", long, cat)) < 330
+    assert running.block({}, cat) == "RUNNING NOW: none"
+    assert running.block({"b": gat, "a": rail}, cat).splitlines()[1:] == [
+        "- " + running.line("a", rail, cat), "- " + running.line("b", gat, cat)]
 
 
-def test_a_new_format_script_is_its_docstrings_first_line_and_one_line_per_value(tmp_path):
-    values = textwrap.dedent("""\
-        VALUES = {
-            "player":  {"type": "player", "default": "@a"},
-            "strikes": {"type": "int", "min": 1, "max": 10, "default": 1, "live": True},
-            "speed":   {"type": "number", "min": 0.5, "default": 2.0},
-            "mode":    {"type": "enum", "of": ["one", "ring"], "default": "one", "live": True},
-            "spare":   {"type": "list", "of": "player", "default": []},
-            "mobs":    {"type": "list", "of": ["zombie", "husk"], "default": ["zombie"]},
-            "loud":    {"type": "bool", "default": False},
-            "label":   {"type": "str", "default": ""},
-        }
-    """)
-    script(tmp_path, "zeus", '"""Zeus: lightning where tridents land.\n\nMore words."""\nASKS = ["zeus"]\n'
-           "from kit import values\nimport mc\n\n" + values + "v = values(VALUES)\nraise SystemExit('never run')\n",
-           "README words that lose.\nx\ny\n")
-    script(tmp_path, "calm", '"""Calm: nothing at all."""\nVALUES = {}\n')
-    assert actions.scripts(tmp_path) == {
-        "calm": "Calm: nothing at all.\n  (takes no values)",
-        "zeus": "Zeus: lightning where tridents land.\n"
-                "  player (player, default @a)\n"
-                "  strikes (int, default 1, 1..10)\n"
-                "  speed (number, default 2, 0.5..)\n"
-                "  mode (enum, default one, one of one, ring)\n"
-                "  spare (list of player, default [])\n"
-                "  mobs (list, default [\"zombie\"], each one of zombie, husk)\n"
-                "  loud (bool, default false)\n"
-                "  label (str, default \"\")",
-    }
+async def test_the_running_copies_are_fetched_in_the_background_every_ttl_and_failures_logged_once(capsys):
+    vfg = FakeVfg().on("script", "list", answer=[fail(255, "ssh: connect to host"), fail(255, "ssh: connect to host"),
+                                                 VfgResult(0, "{}\n", "")])
+    r = running.Refresher(vfg, every=0.05)
+    r.start()
+    await asyncio.sleep(0.18)
+    await r.stop()
+    fetches = [a for a in vfg.calls if a[:2] == ["script", "list"]]
+    assert len(fetches) >= 3 and all(a == ["script", "list", "--json", "--fresh"] for a in fetches)
+    out = capsys.readouterr().out
+    assert out.count("vfg script list --fresh failed (ssh: connect to host)") == 1
+    assert "vfg script list --fresh works again" in out
+    off = running.Refresher(vfg, every=0)
+    off.start()
+    assert off.task is None  # VFG_RUNNING_TTL_S=0: never
 
 
-def test_a_script_with_no_values_is_its_readmes_first_three_lines(tmp_path):
-    script(tmp_path, "tnt_rain", "import mc\n", "Drops TNT.\nUsage: tnt_rain [every_s=20]\nEnds: when stopped\n\nmore")
-    script(tmp_path, "zeus", '"""\nLightning where tridents land.\n\nUsage: zeus <player>\nEnds: when stopped\nMore.\n"""\n'
-           "import mc\n", "Lightning, from the README.\nUsage: zeus <player>\n\nmore")
-    script(tmp_path, "computed", '"""Computed."""\nVALUES = dict(a={"type": "int", "default": 1})\n', "Old words.\n")
-    script(tmp_path, "docs_only", '"""\nDoes a thing.\nUsage: docs_only\nEnds: at once\nMore.\n"""\n')
-    script(tmp_path, "broken", "def (:\n", "Old seed script.\n")
-    script(tmp_path, "bare", "import mc\n")
-    script(tmp_path, "_lib", '"""not a script"""\nVALUES = {}\n')
-    assert actions.scripts(tmp_path) == {
-        "bare": "(no description)",
-        "broken": "Old seed script.",
-        "computed": "Old words.",  # VALUES that is not a literal: as if it had none
-        "docs_only": "Does a thing.\n  Usage: docs_only\n  Ends: at once",
-        "tnt_rain": "Drops TNT.\n  Usage: tnt_rain [every_s=20]\n  Ends: when stopped",
-        "zeus": "Lightning, from the README.\n  Usage: zeus <player>",
-    }
+async def test_an_ask_never_waits_on_the_background_fetch(tmp_path):
+    from conftest import Harness, planned, tp
 
+    h = Harness(tmp_path)
+    slow = asyncio.Event()
 
-def test_the_repos_scripts_reach_the_selectors_menu_and_the_planner_with_every_value(fresh_actions_package):
-    """ScriptName, the selector's menu and the planner's view all list the same scripts, and
-    each new-format one shows its docstring's first line and one line per VALUES entry; the
-    names come from the scripts themselves, never from here."""
-    from dispatcher.action_planner import Planner
+    async def hung(argv):
+        await slow.wait()
+        return VfgResult(0, "{}\n", "")
 
-    if not (config.REPO / "actions" / "run_script" / "action.py").is_file():
-        pytest.skip("actions/ has no run_script yet")
-    catalog = actions.load(config.REPO)
-    found = actions.scripts(config.REPO)
-    from actions import _types
-    assert list(found) == list(_types.SCRIPT_NAMES) and found
-    run_line = next(x for x in Selector(catalog, None, "m", scripts=found).rules.splitlines()
-                    if x.startswith("- run_script:"))
-    assert run_line.endswith(" The only scripts: %s." % ", ".join(sorted(found)))
-    planner = Planner(None, "m", None, found)
-    for name in found:
-        tree = actions.parse(config.REPO / "scripts" / name / "main.py")
-        values = actions.script_values(tree)
-        if values is None:
-            continue
-        first = actions.docstring_of(tree).strip().splitlines()[0]
-        block = "\n".join(["- %s: %s" % (name, first), *("  " + actions.value_line(k, e) for k, e in values.items())])
-        assert block + "\n" in planner.describe(catalog["run_script"], "start %s for Steve" % name), name
-
-
-RUN_SCRIPT_PROMPT_MAX = 4_000  # bytes, for an instruction naming one script
-
-
-def test_the_planner_sees_every_value_of_the_script_named_and_the_others_by_name(fresh_actions_package):
-    """"start tnt_rain on Steve": tnt_rain's first line and values, none of zeus's, every other
-    script by name on one line, and the whole prompt small. The value names come from the scripts."""
-    from dispatcher.action_planner import Pick, Planner
-
-    found = actions.scripts(config.REPO)
-    values = {n: actions.script_values(actions.parse(config.REPO / "scripts" / n / "main.py")) for n in ("tnt_rain", "zeus")
-              if n in found}
-    if len(values) < 2 or not all(values.values()) or not (config.REPO / "actions" / "run_script").is_dir():
-        pytest.skip("needs scripts/tnt_rain and scripts/zeus with VALUES, and actions/run_script")
-    catalog = actions.load(config.REPO)
-    pick = Pick(task_id="T1", index=0, instruction="start tnt_rain on Steve", context="Steve asked",
-                places="SAVED PLACES: none", reports=[])
-    prompt = Planner(None, "m", None, found).base(catalog["run_script"], pick)
-    assert "\n- tnt_rain: %s\n" % found["tnt_rain"] in prompt  # its first line and every value
-    assert "\nOTHER SCRIPTS: %s\n" % ", ".join(n for n in found if n != "tnt_rain") in prompt
-    assert found["zeus"].splitlines()[0] not in prompt  # zeus by name alone
-    for key in set(values["zeus"]) - set(values["tnt_rain"]):
-        assert "  %s (" % key not in prompt, key
-    size = len(prompt.encode("utf-8"))
-    print("run_script planner prompt for 'start tnt_rain on Steve': %d bytes" % size)
-    assert size < RUN_SCRIPT_PROMPT_MAX
+    h.vfg.on("script", "list", answer=hung)
+    fetching = running.Refresher(h.vfg, every=30)
+    fetching.start()
+    await asyncio.sleep(0)
+    h.running(railgun={"action": "railgun", "task": "T3", "values": {"player": "Steve"}})
+    h.llm.add("Selection", select(("teleport", "teleport Alex to a village")))
+    h.llm.add("Planned_teleport", planned(tp("Alex", "structure", "village"), say="village"))
+    t0 = time.monotonic()
+    tid = await asyncio.wait_for(h.run("take me to a village"), 2)
+    assert time.monotonic() - t0 < 1 and h.vfg.replies(tid)[0][1] == "done"
+    assert "- railgun: railgun, player=Steve, started by T3" in h.llm.prompts("Selection")[0]  # read from the file
+    assert not fetching.task.done()  # still hung
+    slow.set()
+    await fetching.stop()
 
 
 # ---------------------------------------------------------------- replay
@@ -466,14 +403,14 @@ async def test_replay_runs_only_the_selector_and_prints_each_selection_with_its_
                "a third": LlmError("down")}
     llm = FakeLLM(Selection=[lambda prompt: next(v for k, v in answers.items() if f"TASK: {k}\n" in prompt)] * 3)
     out = io.StringIO()
-    summary = await replay(tasks, Selector(CATALOG, llm, "some/model"), out)
+    summary = await replay(tasks, Selector(catalog(), llm, "some/model"), out)
     text = out.getvalue()
     assert "T1  7 ms  $0.000010  give me speed\n    command: give Alex speed" in text
     assert "T2  7 ms  $0.000010  a castle, please\n    no picks" in text
     assert "T3  FAILED" in text
     assert summary == {"tasks": 3, "failed": 1, "cost": pytest.approx(0.00002), "median_ms": 7, "p90_ms": 7,
-                       "calls": 2, "calls_median_ms": 7, "calls_p90_ms": 7, "invented": 0, "caught": 0}
-    assert all("SAVED PLACES: none" in p for p in llm.prompts())
+                       "calls": 2, "calls_median_ms": 7, "calls_p90_ms": 7}
+    assert all("SAVED PLACES: none" in p and "RUNNING NOW: none" in p for p in llm.prompts())
     assert inbox.read_bytes() == before
 
 
@@ -503,7 +440,7 @@ def parts(*xs: tuple[str, str]) -> dict:
     (parts(*[(a, f"{a} {i}") for i, a in enumerate(["command", "teleport"] * 3)]), [], ""),
 ])
 async def test_the_parts_become_picks_and_the_orchestrator_text(answer, picks, orchestrator):
-    got = await Selector(CATALOG, FakeLLM(Selection=[answer]), "m").select("t", "", "SAVED PLACES: none")
+    got = await Selector(catalog(), FakeLLM(Selection=[answer]), "m").select("t", "", "SAVED PLACES: none")
     assert [(p.action, p.instruction) for p in got.value.picks] == picks
     assert got.value.orchestrator == orchestrator
 
@@ -513,7 +450,7 @@ async def test_the_parts_become_picks_and_the_orchestrator_text(answer, picks, o
                                   ("teleport", "teleport Steve to where he stands")])
 def test_a_part_that_does_nothing_is_refused(part):
     from pydantic import ValidationError
-    Selection = Selector(CATALOG, None, "m").Selection
+    Selection = Selector(catalog(), None, "m").Selection
     with pytest.raises(ValidationError, match="leave the part out|has no instruction"):
         Selection.model_validate(parts(part))
     Selection.model_validate(parts(("teleport", "teleport Steve to the place home"), ("orchestrator", "")))
@@ -521,56 +458,98 @@ def test_a_part_that_does_nothing_is_refused(part):
         Selection.model_validate({"parts": []})  # a task has at least one part
 
 
-async def test_a_task_that_builds_with_picks_and_no_orchestrator_part_is_handed_whole():
-    llm = FakeLLM(Selection=[select(("command", "give Steve speed")),
-                             select(("command", "give Steve speed"), orchestrator="build Steve a stone tower"),
-                             select(("command", "take the armor off Steve"))])
-    sel = Selector(CATALOG, llm, "m")
-    whole = await sel.select("Give Steve speed and build a small stone tower at his position", "", "")
-    assert whole.value.picks == [] and whole.value.orchestrator == ""
-    split = await sel.select("Give Steve speed and build a small stone tower at his position", "", "")
-    assert [p.action for p in split.value.picks] == ["command"] and split.value.orchestrator
-    plain = await sel.select("Remove all armor from Steve", "", "")  # armor, not blocks
-    assert [p.action for p in plain.value.picks] == ["command"]
+def test_a_part_names_an_action_on_the_menu_or_the_orchestrator():
+    from pydantic import ValidationError
+    Selection = Selector(catalog(), None, "m").Selection
+    Selection.model_validate(parts(("stop", "stop galick_gun_2"), ("edit", "set rain's size to 3")))
+    for gone in ("run_script", "stop_script", "zap"):
+        with pytest.raises(ValidationError):
+            Selection.model_validate(parts((gone, "do it")))
 
 
-async def test_replay_scores_routes_lost_work_and_unknown_scripts_against_labels():
+async def test_a_task_that_builds_with_picks_and_no_orchestrator_part_keeps_its_picks():
+    llm = FakeLLM(Selection=[select(("command", "give Steve speed"))])
+    sel = Selector(catalog(), llm, "m")
+    got = await sel.select("Give Steve speed and build a small stone tower at his position", "", "")
+    assert [p.action for p in got.value.picks] == ["command"]  # what is routed is what runs: no regex hands it on
+
+
+async def test_replay_scores_routes_and_lost_work_against_labels():
     tasks = [{"id": f"T{i}", "task": t, "context": ""} for i, t in enumerate(
         ["give me speed", "a castle, please", "speed and a castle", "save this spot for the castle",
-         "start the lightning script", "make a frost bow", "maybe", "Change to T2: taller"], 1)]
+         "stop the gun", "make a frost bow", "maybe", "Fix T2: taller"], 1)]
     answers = {
         "give me speed": select(("command", "give Alex speed")),                       # agrees
         "a castle, please": select(),                                                       # agrees
         "speed and a castle": select(("command", "give Alex speed"), orchestrator="a castle, please"),  # agrees
         "save this spot for the castle": select(("save_place", "save the castle spot")),  # lost and misrouted
-        "start the lightning script": select(("run_script", "start zeus for Alex")),  # agrees
-        "make a frost bow": select(("run_script", "run frost_bow.py for Alex"),
-                                          orchestrator="make the bow"),                 # caught: handed on whole
+        "stop the gun": select(("stop", "stop galick_gun")),                              # agrees
+        "make a frost bow": select(("railgun", "give Alex a railgun")),                    # misrouted
         "maybe": select(("command", "do it")),                                            # either: not scored
     }
     labels = {"T1": {"accept": {"command"}, "either": False, "parts": ["speed", "rockets?"]},  # rockets dropped
               "T2": {"accept": {"orchestrator"}, "either": False},
               "T3": {"accept": {"command+orchestrator"}, "either": False, "parts": ["speed", "castle"]},
               "T4": {"accept": {"orchestrator"}, "either": False},
-              "T5": {"accept": {"run_script"}, "either": False},
+              "T5": {"accept": {"stop"}, "either": False},
               "T6": {"accept": {"orchestrator"}, "either": False},
               "T7": {"accept": {"command", "orchestrator"}, "either": True},
               "T8": {"accept": {"orchestrator"}, "either": False}}
     llm = FakeLLM(Selection=[lambda prompt: next(v for k, v in answers.items() if f"TASK: {k}\n" in prompt)] * 7)
     out = io.StringIO()
-    catalog = dict(CATALOG, save_place=CATALOG["command"])
-    summary = await replay(tasks, Selector(catalog, llm, "m", scripts=["zeus", "tnt_rain"]), out, labels=labels,
-                           scripts={"zeus", "tnt_rain"}, jobs=3)
-    assert len(llm.calls) == 7  # "Change to T2: taller" needed no model call
-    assert {k: summary[k] for k in ("scored", "agree", "lost", "invented", "caught", "calls", "multipart", "covered")} == \
-        {"scored": 7, "agree": 6, "lost": 2, "invented": 0, "caught": 1, "calls": 7, "multipart": 2, "covered": 1}
+    summary = await replay(tasks, Selector(catalog(), llm, "m"), out, labels=labels, jobs=3)
+    assert len(llm.calls) == 7  # "Fix T2: taller" needed no model call
+    assert {k: summary[k] for k in ("scored", "agree", "lost", "calls", "multipart", "covered")} == \
+        {"scored": 7, "agree": 5, "lost": 3, "calls": 7, "multipart": 2, "covered": 1}
     text = out.getvalue()
     assert "[LOST]" in text and "MISROUTE save_place, expected orchestrator" in text
-    assert "T6  7 ms  $0.000010  make a frost bow  [handed on whole for run_script: run frost_bow.py for Alex]" \
-        "\n    no picks" in text
-    assert "T8  0 ms  $0.000000  Change to T2: taller\n    no picks" in text
+    assert "MISROUTE railgun, expected orchestrator" in text
+    assert "T8  0 ms  $0.000000  Fix T2: taller\n    no picks" in text
     assert "give me speed  [DROPPED rockets?]  [LOST]" in text
-    assert "route agreement 6/7 (85.7%), 2 lost, 1 either, 0 unlabelled; every part named in 1/2 multi-part task(s)" in text
+    assert "route agreement 5/7 (71.4%), 3 lost, 1 either, 0 unlabelled; every part named in 1/2 multi-part task(s)" in text
+
+
+async def test_replay_scores_each_part_of_a_label_in_the_selectors_shape(tmp_path):
+    from dispatcher.replay import read_labels
+
+    def label(tid, *parts, accept):
+        ps = [{"part": k, "to": to, "instruction": k, "key": k, "also": list(also)} for k, to, *also in parts]
+        return {"id": tid, "task": tid, "accept": accept, "either": False,
+                "parts": [p["key"] for p in ps] if len(ps) > 1 else [], "label": {"parts": ps}}
+
+    rows = [{"relabelled": "for the actions menu"},  # the header: skipped
+            label("T1", ("speed", "command"), ("castle", "castle", "orchestrator"),
+                  accept=["castle,command", "command+orchestrator", "orchestrator"]),
+            label("T2", ("speed", "command"), ("frost", "orchestrator"), accept=["command+orchestrator", "orchestrator"]),
+            label("T3", ("tnt", "tnt_rain"), accept=["tnt_rain"]),
+            label("T4", ("speed", "command"), ("rocket", "command"), accept=["command"]),
+            label("T5", ("tower", "orchestrator"), accept=["orchestrator"])]
+    path = tmp_path / "labels.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    labels = read_labels(path)
+    assert sorted(labels) == ["T1", "T2", "T3", "T4", "T5"] and labels["T1"]["first"] == "castle,command"
+
+    answers = {
+        "T1": select(("command", "give Alex speed"), ("castle", "a castle at home")),        # every part agrees
+        "T2": select(("command", "give Alex speed"), ("railgun", "give Alex a frost bow")),   # frost: only an action
+        "T3": select(("meteor", "drop a meteor on Alex")),                                    # one part, elsewhere
+        "T4": select(("command", "give Alex speed")),                                         # rocket: nowhere
+        "T5": select(),                                                                        # handed on whole
+    }
+    tasks = [{"id": i, "task": i, "context": ""} for i in answers]
+    llm = FakeLLM(Selection=[lambda prompt: next(v for k, v in answers.items() if f"TASK: {k}\n" in prompt)] * 5)
+    out, record = io.StringIO(), io.StringIO()
+    summary = await replay(tasks, Selector(catalog(), llm, "m"), out, labels=labels, jobs=2, record=record)
+    assert {k: summary[k] for k in ("agree", "exact", "lost", "parts", "parts_agree", "parts_lost", "covered")} == \
+        {"agree": 3, "exact": 3, "lost": 2, "parts": 8, "parts_agree": 5, "parts_lost": 2, "covered": 2}
+    text = out.getvalue()
+    assert "[PART frost went to railgun, expected orchestrator]" in text
+    assert "[PART tnt went to meteor, expected tnt_rain]" in text and "[PART rocket went to nothing, expected command]" in text
+    assert "exact (the label's own route) 3/5 (60.0%); part by part 5/8 (62.5%), 2 part(s) lost" in text
+    got = {r["id"]: r for r in map(json.loads, record.getvalue().splitlines())}
+    assert sorted(got) == ["T1", "T2", "T3", "T4", "T5"] and got["T2"]["lost"] and not got["T3"]["lost"]
+    assert got["T1"]["picks"] == [{"action": "command", "instruction": "give Alex speed"},
+                                  {"action": "castle", "instruction": "a castle at home"}]
 
 
 # ---------------------------------------------------------------- vfg

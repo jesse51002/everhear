@@ -5,14 +5,7 @@ import math
 import random
 
 import mc
-from kit import values, area, loop
-
-VALUES = {
-    "player":     {"type": "player", "default": "@a"},
-    "per_player": {"type": "int", "min": 1, "max": 10, "default": 4},
-    "nearest":    {"type": "int", "min": 0, "max": 1000, "default": 40},
-    "farthest":   {"type": "int", "min": 1, "max": 1000, "default": 160},
-}
+from kit import values, result, area, loop
 
 FW = 'firework_rocket[fireworks={flight_duration:1,explosions:[{shape:"burst",colors:[I;16711680]}]}]'
 GUNS = [
@@ -28,8 +21,8 @@ GUNS = [
 # every chest's, from every run.
 LABEL = "vfg_gun_chest"
 
-v = values(VALUES)
-placed = 0
+v = values()
+placed, spots, near = 0, [], []
 for p in loop.who(v["player"]):
     c = mc.pos(p)
     if not c:
@@ -50,9 +43,15 @@ for p in loop.who(v["player"]):
                 % LABEL)
         area.release(spot)
         placed += 1
+        spots.append([x, z])
+        if p not in near:
+            near.append(p)
         mc.log("chest at", x, z, "near", p)
 if placed:
     mc.say("%d GUN CHESTS dropped %d-%d blocks around you, marked with glowing gold tags. Inside: AK-47, Shotgun, "
            "Sniper Rifle, Rocket Launcher, Railgun, Harpoon Gun + ammo." % (placed, v["nearest"], v["farthest"]),
            color="gold")
 mc.log("placed", placed)
+result("%d gun chests hidden %d-%d blocks round %s" % (placed, v["nearest"], v["farthest"], ", ".join(near) or "nobody")
+       if placed else "no gun chest: nobody of %s is online" % v["player"],
+       players=near, chests=placed, at=spots)

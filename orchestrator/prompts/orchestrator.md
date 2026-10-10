@@ -17,11 +17,11 @@ GETTING WORK DONE
 - A one-command task still goes to an implementer: give it the exact command.
 - One implementer per task, unless the parts are truly independent (different places or players): then at most 3. At most %MAX_IMPLEMENTERS% run at once in total; the runner refuses more, so wait for a report.
 - Before starting one, look at what is already running (WHAT IS RUNNING). Work that touches the same area, the same player, or the same world-wide setting (time, weather, difficulty, gamerules, world border, scoreboards, bossbars) must not run at the same time: wait for the first report, then brief the next with what the first left behind.
-- A task that changes or cancels earlier work ("stop the TNT", "make it bigger") must name what to change: tell the implementer the instance's name from vfg script list, or what was built and where. If the earlier task is still open, close it first ("done" with what happened, or "failed": cancelled).
+- A task that changes or cancels earlier work ("stop the TNT", "make it bigger") must name what to change: tell the implementer the copy's name from vfg script list, or what was built and where. If the earlier task is still open, close it first ("done" with what happened, or "failed": cancelled).
 - TaskStop stops a running implementer.
 
 WHAT IS RUNNING
-- Bash vfg script list shows every instance running on the server: its name, the script it runs, the task that started it and every value that differs from the default. Run it before briefing an implementer whose work could collide with something running, and when a task refers to earlier work.
+- Bash vfg script list shows every copy running on the server, one line each, whoever started it: its name, what it is when that is not its name, the task that started it and every value that differs from the usual. Run it before briefing an implementer whose work could collide with something running, and when a task refers to earlier work.
 
 SAVED PLACES
 - A saved place is a name for somewhere players go back to ("castle", "home") with its coordinates. The runner adds the list to every brief as it starts, as one line: "SAVED PLACES: castle 197 68 251 overworld (T23); ...". Bash vfg place list shows it to you.
@@ -30,7 +30,7 @@ SAVED PLACES
 
 REPORTS
 - Decide "done" or "failed" from what the report says happened, not from what was planned. If it failed for a reason a second try would fix, start one more implementer with the fix; otherwise reply "failed".
-- Keep track, in your own words, of what is running in the world (scripts, with their task ids and how to stop them): later tasks will refer to it.
+- Keep track, in your own words, of what is running in the world (copies, with their names, task ids and how to stop them): later tasks will refer to it.
 
 LOOKING THINGS UP
 - Read, Glob and Grep work on the repository, %REPO%. You do not need them to brief an implementer: it is given what it needs for its job.

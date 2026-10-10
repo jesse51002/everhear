@@ -1,14 +1,15 @@
 """library.py: the script library and this server's folder, read on the PC.
 
-Python 3.9+, standard library only. `vfg script new|run|set|save|list|check`,
-`vfg preset save` and `vfg state` use it, and so do the router (route.py) and
-the implementer's static prompt (prefix.py). Nothing here touches EC2.
+Python 3.9+, standard library only. `vfg script new|check`, `vfg preset save` and `vfg
+state` use it, and so do the router (route.py) and the implementer's static prompt
+(prefix.py). Nothing here touches EC2, and nothing here reads an action: vfg passes in what
+the actions say (lib/py/vfg_actions.py).
 
 Where things are (scripts/README.md):
 
-    <repo>/scripts/<name>/main.py                 a library script (one written the old way has a
-                                                  README.md and no VALUES)
-    <repo>/scripts/_presets/<name>.py             a library preset
+    <repo>/scripts/<name>/main.py                 a library script
+    <repo>/scripts/_presets/<name>.py             a library preset: its function and its values
+                                                  class, class <CamelName>(Values)
     <repo>/made/<server>/scripts/<name>/main.py   a script this server's implementers made
     <repo>/made/<server>/presets/<name>.py        a preset lifted out of one of them
 
@@ -24,27 +25,19 @@ Reading:
       .name .kind ("script"|"preset") .source ("library"|"made")
       .path      the .py, absolute          .folder  a script's folder (None for a preset)
       .rel       the path from the repo, for showing: scripts/galick_gun/main.py
-      .text      the whole source           .first_line  docstring line 1 (old-style: README line 1)
-      .asks      ASKS as a list, or None    .values  VALUES as a dict, or None
-      .holds     the presets a script holds, from its "# --- preset: <name>" markers
+      .text      the whole source           .first_line  its docstring's first line
+      .asks      ASKS as a list, or None    .holds  the presets a script holds, from its
+                                                    "# --- preset: <name>" markers
       .functions its top-level function names, in order
-      .legacy    True when old-style        .problem  why it could not be read, or None
+      .problem   why it could not be read, or None
 
-Values (the PC checks every value before anything is sent):
+    values_class_fields(preset)         the field names of a preset's values class
 
-    given, notes = parse_given(item.values, ["cooldown=0", "player=Alex"])
-    value, note = coerce(key, entry, raw)      raw is a word from the command line, or a
-                                               typed value from JSON; numbers out of range
-                                               are clamped and `note` says so; ValueProblem
-                                               for anything else
-    argv_word(value)                           the form a value takes on the box's command line
-    defaults(values), differs(values, current)
+Checking: check(item, lib, fields) -> ["<rel>:<line>: <problem>", ...], empty when it passes;
+a script's v[...] reads against its actions' fields, a preset's against its values class.
 
-Checking: check(item, lib) -> ["<rel>:<line>: <problem>", ...], empty when it passes.
-
-Writing: render_values(...), replace_values(text, entries), add_preset(text, preset),
-lift(item, function, name) build the text `vfg script new|save` and `vfg preset save`
-write; vfg does the writing.
+Writing: add_preset(text, preset), lift(item, function, name, fields) and action_text(...)
+build the text `vfg script new` and `vfg preset save` write; vfg does the writing.
 """
 import ast
 import io
@@ -55,33 +48,19 @@ import re
 import sys
 import tokenize
 
-TYPES = ("int", "number", "bool", "enum", "str", "player", "block", "mob", "item",
-         "particle", "sound", "list")
-ENTRY_KEYS = ("type", "default", "min", "max", "of", "live")
 SCRIPT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 PRESET_RE = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
 KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
-PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
-# What kit.values (scripts/_lib/kit/values.py) takes for each kind of id, so the PC never
-# sends a value the box would log and drop.
-_ID = r"(?:[a-z0-9_.-]+:)?[a-z0-9_./-]+"
-ID_RES = {
-    "block": re.compile(r"^#?%s(\[[^\]]*\])?(\{.*\})?$" % _ID),
-    "mob": re.compile(r"^%s$" % _ID),
-    "item": re.compile(r"^#?%s(\[.*\])?$" % _ID),
-    "particle": re.compile(r"^%s(\{.*\})?$" % _ID),
-    "sound": re.compile(r"^%s$" % _ID),
-}
-SELECTORS = ("@a", "@r", "@p")
 MARKER_RE = re.compile(r"^# --- preset: ([a-z][a-z0-9_]*)\b")
-RESERVED_KEYS = ("as",)   # `as=<instance>` on vfg script run
-BOOL_WORDS = {"true": True, "yes": True, "on": True, "1": True, "y": True,
-              "false": False, "no": False, "off": False, "0": False, "n": False}
+RESERVED_KEYS = ("as",)   # `as=<copy>` on vfg action run
 STDLIB = getattr(sys, "stdlib_module_names", None)   # 3.10+; on 3.9 imports go unchecked
-
-
-class ValueProblem(Exception):
-    """A value that does not fit its VALUES entry; the message is one line."""
+# A preset's values class (class <CamelName>(Values), beside its function) and its imports
+# are read on the PC only, by lib/py/vfg_actions.py: never copied into a script.
+PC_ONLY = ("actions", "pydantic")
+# What scripts/_lib deploys on the box beside the standard library: the kit, mc, and the
+# saved places, the refused commands and the copies (the core scripts' places, commands and
+# instances).
+ON_THE_BOX = ("kit", "mc", "places", "commands", "instances")
 
 
 # ------------------------------------------------------------------ reading
@@ -96,12 +75,8 @@ class Item(object):
         self.tree = None
         self.first_line = ""
         self.asks = None
-        self.values = None
-        self.values_node = None
         self.holds = []
         self.functions = []
-        self.legacy = False
-        self.readme_line = None
         self.problem = None
 
     def __repr__(self):
@@ -111,8 +86,7 @@ class Item(object):
 def parse(path, kind, name=None, source="library", rel=None):
     """Read one script's main.py or one preset's .py into an Item.
 
-    Never raises for what is in the file: a file that is not Python 3.9 gets
-    .problem, a VALUES that is not a literal leaves .values None."""
+    Never raises for what is in the file: a file that is not Python 3.9 gets .problem."""
     folder = os.path.dirname(path) if kind == "script" else None
     if name is None:
         name = os.path.basename(folder) if kind == "script" else os.path.splitext(os.path.basename(path))[0]
@@ -123,14 +97,6 @@ def parse(path, kind, name=None, source="library", rel=None):
     except (OSError, UnicodeDecodeError) as e:
         it.problem = "cannot read it (%s)" % (getattr(e, "strerror", None) or e)
         return it
-    if folder:
-        readme = os.path.join(folder, "README.md")
-        if os.path.isfile(readme):
-            try:
-                with open(readme, encoding="utf-8", errors="replace") as f:
-                    it.readme_line = f.readline().strip()
-            except OSError:
-                it.readme_line = ""
     it.holds = []
     for line in it.text.splitlines():
         m = MARKER_RE.match(line)
@@ -140,8 +106,6 @@ def parse(path, kind, name=None, source="library", rel=None):
         it.tree = ast.parse(it.text, filename=it.rel, feature_version=(3, 9))
     except SyntaxError as e:
         it.problem = "line %s: not valid Python 3.9: %s" % (e.lineno, e.msg)
-        it.legacy = it.readme_line is not None
-        it.first_line = it.readme_line or ""
         return it
     body = it.tree.body
     doc = ast.get_docstring(it.tree, clean=True) if body and _is_doc(body[0]) else None
@@ -149,25 +113,13 @@ def parse(path, kind, name=None, source="library", rel=None):
         it.first_line = doc.strip().splitlines()[0].strip()
     it.functions = [n.name for n in body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
     for node in body:
-        target = _assigned(node)
-        if target == "ASKS":
+        if _assigned(node) == "ASKS":
             try:
                 asks = ast.literal_eval(node.value)
                 if isinstance(asks, (list, tuple)):
                     it.asks = list(asks)
             except (ValueError, SyntaxError, TypeError):
                 pass
-        elif target == "VALUES" and it.values_node is None:
-            it.values_node = node.value
-            try:
-                values = ast.literal_eval(node.value)
-                if isinstance(values, dict):
-                    it.values = values
-            except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
-                pass
-    it.legacy = it.readme_line is not None and it.values_node is None
-    if it.legacy and not it.first_line:
-        it.first_line = it.readme_line
     return it
 
 
@@ -185,20 +137,6 @@ def _assigned(node):
     return None
 
 
-def load_gone(path):
-    """The kit's GONE ({id: what to use instead}) from kit/world.py, read without running it."""
-    try:
-        with open(path, encoding="utf-8") as f:
-            tree = ast.parse(f.read())
-        for node in tree.body:
-            if _assigned(node) == "GONE":
-                gone = ast.literal_eval(node.value)
-                return gone if isinstance(gone, dict) else {}
-    except (OSError, SyntaxError, ValueError, TypeError):
-        pass
-    return {}
-
-
 class Library(object):
     """The library in <repo>/scripts and this server's folder in <repo>/made/<server>."""
 
@@ -211,7 +149,6 @@ class Library(object):
         self.made_scripts = os.path.join(self.made, "scripts")
         self.made_presets = os.path.join(self.made, "presets")
         self._cache = {}
-        self.gone = load_gone(os.path.join(self.scripts_dir, "_lib", "kit", "world.py"))
 
     def rel(self, path):
         r = os.path.relpath(path, self.repo)
@@ -305,174 +242,6 @@ class Library(object):
         return os.path.join(self.made_presets, name + ".py")
 
 
-# ------------------------------------------------------------------- values
-
-def _num(x):
-    return isinstance(x, (int, float)) and not isinstance(x, bool)
-
-
-def _fmt(x):
-    if isinstance(x, bool):
-        return "true" if x else "false"
-    if isinstance(x, float) and x.is_integer() and abs(x) < 1e15:
-        return "%d" % x
-    if isinstance(x, (list, dict)):
-        return json.dumps(x, ensure_ascii=False, separators=(",", ":"))
-    return "%s" % (x,)
-
-
-def coerce(key, entry, raw, gone=None):
-    """`raw` as the value `entry` declares: (value, note or None).
-
-    `raw` is a word typed after a script's name, or a value read from JSON. A
-    number out of range is clamped and the note says so; anything else that
-    does not fit raises ValueProblem with one line saying what would. `gone` is
-    the kit's ids that 26.3 no longer has (Library.gone)."""
-    typ = entry.get("type")
-    note = None
-    if raw is None:
-        return None, None
-    word = isinstance(raw, str)
-    if typ in ("int", "number"):
-        if isinstance(raw, bool):
-            raise ValueProblem("%s takes a number, not %s" % (key, _fmt(raw)))
-        try:
-            x = float(raw.strip()) if word else float(raw)
-        except (ValueError, TypeError):
-            raise ValueProblem("%s takes a %s, not %r" % (key, "whole number" if typ == "int" else "number",
-                                                          raw))
-        if math.isnan(x) or math.isinf(x):
-            raise ValueProblem("%s takes a finite number" % key)
-        if typ == "int" and not x.is_integer():
-            raise ValueProblem("%s takes a whole number, not %s" % (key, _fmt(raw)))
-        lo, hi = entry.get("min"), entry.get("max")
-        if _num(lo) and x < lo:
-            note = "%s=%s is below its min: clamped to %s" % (key, _fmt(x), _fmt(lo))
-            x = float(lo)
-        elif _num(hi) and x > hi:
-            note = "%s=%s is above its max: clamped to %s" % (key, _fmt(x), _fmt(hi))
-            x = float(hi)
-        value = int(x) if (typ == "int" or x.is_integer()) else x
-        return value, note
-    if typ == "bool":
-        if isinstance(raw, bool):
-            return raw, None
-        if word and raw.strip().lower() in BOOL_WORDS:
-            return BOOL_WORDS[raw.strip().lower()], None
-        raise ValueProblem("%s is true or false, not %r" % (key, raw))
-    if typ == "enum":
-        options = entry.get("of") or []
-        for o in options:
-            if raw == o or (word and raw == _fmt(o)):
-                return o, None
-        if word:
-            low = [o for o in options if _fmt(o).lower() == raw.strip().lower()]
-            if len(low) == 1:
-                return low[0], None
-        raise ValueProblem("%s is one of %s, not %r" % (key, ", ".join(_fmt(o) for o in options), raw))
-    if typ == "list":
-        items = raw
-        if word:
-            s = raw.strip()
-            if s.startswith("["):
-                try:
-                    items = json.loads(s)
-                except ValueError:
-                    raise ValueProblem("%s is a list: a,b,c or JSON like [\"a\",\"b\"]" % key)
-            else:
-                items = [p.strip() for p in s.split(",") if p.strip()]
-        if not isinstance(items, (list, tuple)):
-            raise ValueProblem("%s is a list, not %r" % (key, raw))
-        of = entry.get("of")
-        out = []
-        for i, item in enumerate(items):
-            if isinstance(of, (list, tuple)):
-                v, _ = coerce("%s[%d]" % (key, i), {"type": "enum", "of": list(of)}, item, gone)
-            elif isinstance(of, str) and of in TYPES and of not in ("list", "enum"):
-                v, _ = coerce("%s[%d]" % (key, i), {"type": of}, item, gone)
-            else:
-                v = item
-            out.append(v)
-        return out, None
-    # The rest are words: str, and the names a command takes.
-    if not isinstance(raw, str):
-        raise ValueProblem("%s takes a word, not %s" % (key, _fmt(raw)))
-    if any(ord(c) < 32 or ord(c) == 127 for c in raw):
-        raise ValueProblem("%s holds no newline or control character" % key)
-    if typ == "player":
-        s = raw.strip()
-        if s in SELECTORS:
-            return s, None
-        names = [n.strip() for n in s.split(",") if n.strip()]
-        if names and all(PLAYER_RE.match(n) for n in names):
-            return ",".join(names), None
-        raise ValueProblem("%s is @a, @r, @p or player names separated by commas, not %r" % (key, raw))
-    if typ in ID_RES:
-        s = raw.strip() if typ in ("block", "item", "particle") else raw.strip().lower()
-        if not ID_RES[typ].match(s):
-            raise ValueProblem("%s is a %s id like minecraft:%s, not %r"
-                               % (key, typ, {"block": "stone", "mob": "zombie", "item": "diamond_sword",
-                                             "particle": "flame", "sound": "entity.wither.spawn"}[typ], raw))
-        bare = s.split("[")[0].split("{")[0]
-        short = bare.replace("minecraft:", "")
-        tag = "#minecraft:" + bare.lstrip("#").replace("minecraft:", "") if bare.startswith("#") else None
-        for gone_key in ((short,) if typ == "mob" else ()) + ((tag,) if tag else ()):
-            if gone_key in (gone or {}):
-                raise ValueProblem("%s: %s is gone in 26.3, use %s" % (key, raw, gone[gone_key]))
-        return s, None
-    return raw, None
-
-
-def parse_given(values, words, gone=None):
-    """Check `key=value` words against VALUES, in order: ({key: value}, [notes]).
-
-    An unknown key, a word without `=` or a value that does not fit raises
-    ValueProblem; a number out of range is clamped and a note says so."""
-    given, notes = {}, []
-    names = list((values or {}).keys())
-    for w in words:
-        if "=" not in w:
-            raise ValueProblem("%r is not key=value; its values are %s" % (w, ", ".join(names) or "none"))
-        key, raw = w.split("=", 1)
-        key = key.strip()
-        if key not in (values or {}):
-            raise ValueProblem("%s is not one of its values: %s" % (key, ", ".join(names) or "none"))
-        entry = values[key] if isinstance(values[key], dict) else {}
-        value, note = coerce(key, entry, raw, gone)
-        given[key] = value
-        if note:
-            notes.append(note)
-    return given, notes
-
-
-def argv_word(value):
-    """A value as the box's command line carries it: `key=<this>`.
-
-    Numbers as written, true/false, a list as compact JSON, words as they are;
-    kit.values reads it back by the type its VALUES declares."""
-    return _fmt(value)
-
-
-def defaults(values):
-    """{key: default} for every entry."""
-    return {k: (e.get("default") if isinstance(e, dict) else None) for k, e in (values or {}).items()}
-
-
-def differs(values, current):
-    """The keys of `current` whose value is not its default, in VALUES order then the rest."""
-    d = defaults(values)
-    out = {}
-    for k in list((values or {}).keys()) + [k for k in current if k not in (values or {})]:
-        if k in current and (k not in d or current[k] != d[k]) and k not in out:
-            out[k] = current[k]
-    return out
-
-
-def show(pairs):
-    """{key: value} as `key=value key=value`."""
-    return " ".join("%s=%s" % (k, _fmt(v)) for k, v in pairs.items())
-
-
 # ----------------------------------------------------------------- checking
 
 def short_forms(name):
@@ -541,60 +310,13 @@ def _fstring_problems(text):
     return out
 
 
-def check_entry(key, entry, gone=None):
-    """What is wrong with one VALUES entry: [message]."""
-    if not isinstance(entry, dict):
-        return ["%s: an entry is a dict like {\"type\": \"int\", \"default\": 1}" % key]
-    out = []
-    extra = [k for k in entry if k not in ENTRY_KEYS]
-    if extra:
-        out.append("%s: %s is not an entry key (%s)" % (key, ", ".join(map(str, extra)), ", ".join(ENTRY_KEYS)))
-    typ = entry.get("type")
-    if typ not in TYPES:
-        out.append("%s: type %r is not one of %s" % (key, typ, ", ".join(TYPES)))
-        return out
-    if "default" not in entry:
-        out.append("%s: no default" % key)
-    if "live" in entry and not isinstance(entry["live"], bool):
-        out.append("%s: live is True or False" % key)
-    for lim in ("min", "max"):
-        if lim in entry:
-            if typ not in ("int", "number"):
-                out.append("%s: %s goes with int and number, not %s" % (key, lim, typ))
-            elif not _num(entry[lim]):
-                out.append("%s: %s is a number" % (key, lim))
-    if _num(entry.get("min")) and _num(entry.get("max")) and entry["min"] > entry["max"]:
-        out.append("%s: min %s is above max %s" % (key, _fmt(entry["min"]), _fmt(entry["max"])))
-    of = entry.get("of")
-    if typ == "enum":
-        if not isinstance(of, (list, tuple)) or not of:
-            out.append("%s: an enum needs its options in \"of\"" % key)
-            return out
-    elif typ == "list":
-        if of is not None and not (isinstance(of, (list, tuple)) and of) \
-                and not (isinstance(of, str) and of in TYPES and of not in ("list", "enum")):
-            out.append("%s: a list's \"of\" is its options, or one type like \"player\"" % key)
-            return out
-    elif "of" in entry:
-        out.append("%s: \"of\" goes with enum and list, not %s" % (key, typ))
-    if "default" in entry and entry["default"] is not None and not out:
-        d = entry["default"]
-        try:
-            value, note = coerce(key, entry, d, gone)
-            if note:
-                out.append("%s: default %s is outside its limits (%s..%s)"
-                           % (key, _fmt(d), _fmt(entry.get("min", "")), _fmt(entry.get("max", ""))))
-            elif typ in ("int", "number") and not _num(d):
-                out.append("%s: default %r is not a number" % (key, d))
-            elif typ == "int" and not isinstance(d, int):
-                out.append("%s: default %s is not a whole number" % (key, _fmt(d)))
-        except ValueProblem as e:
-            out.append("%s (its default)" % e)
-    return out
+def check(item, lib=None, fields=None):
+    """Every problem with one script or preset, as "<rel>:<line>: <what>"; [] passes.
 
-
-def check(item, lib=None):
-    """Every problem with one script or preset, as "<rel>:<line>: <what>"; [] passes."""
+    A script's values are its action's: `fields` are the fields of the actions over it, which
+    its v[...] reads are checked against (None: no action runs it). A preset's are the fields
+    of its values class, class <CamelName>(Values) beside its function: each named for the
+    preset, and described."""
     rel = item.rel
     out = []
 
@@ -608,12 +330,6 @@ def check(item, lib=None):
     tree = item.tree
     for line, msg in _fstring_problems(item.text):
         bad(line, msg)
-    if item.legacy and item.source == "library":
-        # Old-style: README.md beside it says what it does; it reads plain arguments.
-        if not item.readme_line:
-            bad(1, "its README.md's first line should say what it does")
-        _check_imports(tree, bad)
-        return out
     body = tree.body
     if not body or not _is_doc(body[0]):
         bad(1, "line 1 must be a docstring saying what it does in one line")
@@ -631,53 +347,41 @@ def check(item, lib=None):
             bad(asks_node.lineno, "ASKS is a list of strings: what players said")
         elif not item.asks:
             bad(asks_node.lineno, "ASKS is empty: put what players said in it, in their own words")
-    _check_imports(tree, bad)
-    vnodes = [n for n in body if _assigned(n) == "VALUES"]
-    if not vnodes:
-        bad(1, "no VALUES (VALUES = {} when it has none)")
-        values = {}
+    _check_imports(tree, bad, pc_only=item.kind == "preset")
+    if item.kind == "script":
+        values = set(fields or ())
+        declared = "its action has no field of that name"
+        if fields is None:
+            bad(1, "no action runs it: a script's values are its action's fields "
+                   "(made/<server>/actions/<name>.py; vfg script new writes one)")
     else:
-        if len(vnodes) > 1:
-            bad(vnodes[1].lineno, "VALUES is assigned twice")
-        node = vnodes[0]
-        values = item.values
-        if values is None:
-            bad(node.lineno, "VALUES is not a literal: write it out, with no names or calls in it")
-            values = {}
-        if isinstance(node.value, ast.Dict):
-            seen = {}
-            for k in node.value.keys:
-                if k is None:
-                    bad(node.lineno, "VALUES has a ** in it: write every entry out")
+        node = next((n for n in body if _values_class(n, item.name)), None)
+        values = set()
+        declared = "it has no values class to declare it: class %s(Values) beside its function" % camel(item.name)
+        if node is not None:
+            declared = "its values class has no field of that name"
+            for key, line, desc in _class_fields(node):
+                values.add(key)
+                if not KEY_RE.match(key):
+                    bad(line, "%r is not a value name (a-z, 0-9 and _, starting with a letter)" % (key,))
                     continue
-                if not (isinstance(k, ast.Constant) and isinstance(k.value, str)):
-                    continue
-                if k.value in seen:
-                    bad(k.lineno, "%s is in VALUES twice (lines %d and %d): two presets ask for one name"
-                        % (k.value, seen[k.value], k.lineno))
-                else:
-                    seen[k.value] = k.lineno
-        lines = _key_lines(node)
-        for key, entry in values.items():
-            line = lines.get(key, node.lineno)
-            if not isinstance(key, str) or not KEY_RE.match(key):
-                bad(line, "%r is not a value name (a-z, 0-9 and _, starting with a letter)" % (key,))
-                continue
-            if key in RESERVED_KEYS:
-                bad(line, "%s is taken by vfg script run (as=<instance>)" % key)
-            if item.kind == "preset" and not prefixed(item.name, key):
-                bad(line, "%s does not start with the preset's name: %s_..." % (key, item.name))
-            elif item.kind == "preset" and lib is not None:
-                other = theirs(item.name, key, lib)
-                if other:
-                    bad(line, "%s starts with %s_, another preset's name: the two in one script would "
-                              "ask for one value; use %s_... or a short form no other preset has"
-                        % (key, other, item.name))
-            for msg in check_entry(key, entry, lib.gone if lib is not None else None):
-                bad(line, msg)
+                if key in RESERVED_KEYS:
+                    bad(line, "%s is taken by vfg action run (as=<copy>)" % key)
+                if not prefixed(item.name, key):
+                    bad(line, "%s does not start with the preset's name: %s_..." % (key, item.name))
+                elif lib is not None:
+                    other = theirs(item.name, key, lib)
+                    if other:
+                        bad(line, "%s starts with %s_, another preset's name: the two in one script would "
+                                  "ask for one value; use %s_... or a short form no other preset has"
+                            % (key, other, item.name))
+                if not desc:
+                    bad(line, "%s has no description: write it in a string under the field" % key)
+                elif desc.upper().startswith("TODO"):
+                    bad(line, "%s's description is still a TODO: say what it is, in players' words" % key)
     for key, line in _reads(tree):
         if key not in values:
-            bad(line, "v[%s] is read but VALUES does not declare it" % json.dumps(key))
+            bad(line, "v[%s] is read but %s" % (json.dumps(key), declared))
     if item.kind == "preset":
         _check_preset_shape(item, bad)
     else:
@@ -701,13 +405,15 @@ def theirs(preset, key, lib):
     return None
 
 
-def _key_lines(node):
-    lines = {}
-    if isinstance(node.value, ast.Dict):
-        for k in node.value.keys:
-            if isinstance(k, ast.Constant) and isinstance(k.value, str):
-                lines.setdefault(k.value, k.lineno)
-    return lines
+def _class_fields(node):
+    """The fields of a values class as written: [(name, line, its description or "")]."""
+    out = []
+    for i, n in enumerate(node.body):
+        if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name):
+            nxt = node.body[i + 1] if i + 1 < len(node.body) else None
+            desc = nxt.value.value.strip() if nxt is not None and _is_doc(nxt) else ""
+            out.append((n.target.id, n.lineno, desc))
+    return out
 
 
 def _defines(node):
@@ -716,12 +422,12 @@ def _defines(node):
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         return [node.name]
     name = _assigned(node)
-    if name and name not in ("VALUES", "ASKS") and name.lstrip("_").isupper():
+    if name and name != "ASKS" and name.lstrip("_").isupper():
         return [name]
     return []
 
 
-def _check_imports(tree, bad):
+def _check_imports(tree, bad, pc_only=False):
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             mods = [a.name for a in node.names]
@@ -736,11 +442,11 @@ def _check_imports(tree, bad):
             parts = mod.split(".")
             if "_presets" in parts:
                 bad(node.lineno, "imports from _presets: copy the preset in (vfg script new --preset)")
-            elif parts[0] in ("kit", "mc"):
+            elif parts[0] in ON_THE_BOX or (pc_only and parts[0] in PC_ONLY):
                 continue
             elif STDLIB is not None and parts[0] not in STDLIB:
-                bad(node.lineno, "imports %s, which is not on the box: kit, mc and the standard "
-                                 "library only" % parts[0])
+                bad(node.lineno, "imports %s, which is not on the box: kit, mc, the rest of scripts/_lib "
+                                 "and the standard library only" % parts[0])
 
 
 def _check_preset_shape(item, bad):
@@ -754,7 +460,8 @@ def _check_preset_shape(item, bad):
         if not args or args[-1].arg != "v":
             bad(fn.lineno, "%s takes the values v as its last argument: def %s(..., v)" % (name, name))
     for node in body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name != name:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name != name \
+                and not _values_class(node, name):
             if not (node.name.startswith("_") and prefixed(name, node.name[1:])):
                 bad(node.lineno, "%s: a preset's helpers are private and carry its name: _%s_..."
                     % (node.name, name))
@@ -763,7 +470,7 @@ def _check_preset_shape(item, bad):
 # ------------------------------------------------------------------ writing
 
 def literal(x):
-    """A Python literal for x, double-quoted, the way VALUES is written."""
+    """A Python literal for x, double-quoted, the way an action's defaults are written."""
     if isinstance(x, bool) or x is None:
         return repr(x)
     if isinstance(x, int):
@@ -781,106 +488,29 @@ def literal(x):
     raise ValueError("not a literal: %r" % (x,))
 
 
-class Entry(object):
-    """One VALUES entry as written: its key, its dict, and the comments around it."""
-
-    def __init__(self, key, entry, before=None, after=None):
-        self.key, self.entry = key, entry
-        self.before = list(before or [])   # whole-line comments above it
-        self.after = after                 # a comment at the end of its line
+def _values_class(node, preset):
+    """Is a top-level statement the preset's values class, class <CamelName>(Values)?"""
+    return isinstance(node, ast.ClassDef) \
+        and node.name == "".join(p[:1].upper() + p[1:] for p in preset.split("_")) \
+        and any(getattr(b, "id", getattr(b, "attr", None)) == "Values" for b in node.bases)
 
 
-def read_entries(text, node):
-    """The entries of a VALUES literal with their comments: ([Entry], closing comments)."""
-    lines = text.splitlines()
-    d = node.value if isinstance(node, (ast.Assign, ast.AnnAssign)) else node
-    entries, pending = [], []
-    if not isinstance(d, ast.Dict):
-        return entries, pending
-
-    def comments(first, last):
-        got = []
-        for i in range(first, last + 1):
-            if 1 <= i <= len(lines) and lines[i - 1].strip().startswith("#"):
-                got.append(lines[i - 1].strip())
-        return got
-    open_rest = lines[d.lineno - 1][d.col_offset + 1:].strip() if d.lineno <= len(lines) else ""
-    if open_rest.startswith("#"):
-        pending.append(open_rest)
-    prev_end = d.lineno
-    pairs = list(zip(d.keys, d.values))
-    for i, (k, val) in enumerate(pairs):
-        key = ast.literal_eval(k) if k is not None else None
-        try:
-            entry = ast.literal_eval(val)
-        except (ValueError, SyntaxError, TypeError):
-            entry = None
-        before = pending + comments(prev_end + 1, k.lineno - 1 if k is not None else val.lineno - 1)
-        pending = []
-        after = None
-        nxt = pairs[i + 1][0] if i + 1 < len(pairs) else None
-        if nxt is None or nxt.lineno != val.end_lineno:
-            rest = lines[val.end_lineno - 1][val.end_col_offset:].strip()
-            rest = rest.lstrip(",").strip()
-            if rest.startswith("#"):
-                after = rest
-        entries.append(Entry(key, entry, before, after))
-        prev_end = val.end_lineno
-    pending = comments(prev_end + 1, d.end_lineno - 1)
-    return entries, pending
-
-
-def render_values(entries, closing=()):
-    """`{...}` written out, one entry per line, keys lined up, comments kept."""
-    if not entries and not closing:
-        return "{}"
-    width = max([len(literal(e.key)) + 1 for e in entries] or [0])
-    out = ["{"]
-    for e in entries:
-        for c in e.before:
-            out.append("    " + c)
-        line = "    %s %s," % ((literal(e.key) + ":").ljust(width), literal(e.entry))
-        if e.after:
-            line += "  " + e.after
-        out.append(line)
-    for c in closing:
-        out.append("    " + c)
-    out.append("}")
-    return "\n".join(out)
-
-
-def values_node(text):
-    """The top-level VALUES assignment of a source text, or None."""
-    tree = ast.parse(text, feature_version=(3, 9))
-    return next((n for n in tree.body if _assigned(n) == "VALUES"), None)
-
-
-def replace_values(text, entries, closing=()):
-    """`text` with its VALUES literal rewritten from entries (Entry list)."""
-    node = values_node(text)
-    if node is None:
-        raise ValueError("no VALUES")
-    v = node.value
-    lines = text.splitlines(True)
-    start = sum(len(l) for l in lines[:v.lineno - 1]) + _col(lines[v.lineno - 1], v.col_offset)
-    end = sum(len(l) for l in lines[:v.end_lineno - 1]) + _col(lines[v.end_lineno - 1], v.end_col_offset)
-    return text[:start] + render_values(entries, closing) + text[end:]
-
-
-def _col(line, byte_col):
-    """ast columns are UTF-8 byte offsets; this is the character offset."""
-    return len(line.encode("utf-8")[:byte_col].decode("utf-8", errors="ignore"))
+def _pc_only(imp):
+    """Is an import (imports_of form) one only the PC has (PC_ONLY)?"""
+    kind, mod, names, _node = imp
+    roots = [mod.split(".")[0]] if kind == "from" else [n.split(".")[0] for n, _a in names]
+    return all(r in PC_ONLY for r in roots)
 
 
 def preset_body(preset):
-    """The code a preset gives a script: everything but its docstring, its imports and
-    its VALUES (and the comments right above them), and any `if __name__` block."""
+    """The code a preset gives a script: everything but its docstring, its imports and its
+    values class (and the comments right above them), and any `if __name__` block."""
     tree = preset.tree
     lines = preset.text.splitlines()
     drop = set()
     for i, node in enumerate(tree.body):
         if (i == 0 and _is_doc(node)) or isinstance(node, (ast.Import, ast.ImportFrom)) \
-                or _main_guard(node) or _assigned(node) == "VALUES":
+                or _main_guard(node) or _values_class(node, preset.name):
             first = node.lineno
             while first > 1 and lines[first - 2].strip().startswith("#"):
                 first -= 1
@@ -1007,19 +637,16 @@ def _belongs(node, preset):
 
 
 def wiring_line(text):
-    """The line the wiring starts on, presets go above it: the first top-level statement
-    after VALUES that is not a def, a class, an import or an UPPERCASE constant, nor part of
-    the preset block it sits in (a `_<preset>...` variable under that preset's marker), with
-    the comments right above it. None when there is none (the presets go at the end)."""
+    """The line the wiring starts on, presets go above it: the first top-level statement after
+    the docstring that is not a def, a class, an import or an UPPERCASE constant (ASKS too),
+    nor part of the preset block it sits in (a `_<preset>...` variable under that preset's
+    marker), with the comments right above it. None when there is none (the presets go at
+    the end)."""
     tree = ast.parse(text, feature_version=(3, 9))
     lines = text.splitlines()
     markers = [(i + 1, MARKER_RE.match(l).group(1)) for i, l in enumerate(lines) if MARKER_RE.match(l)]
-    after_values = False
-    for node in tree.body:
-        if _assigned(node) == "VALUES":
-            after_values = True
-            continue
-        if not after_values:
+    for i, node in enumerate(tree.body):
+        if i == 0 and _is_doc(node):
             continue
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Import, ast.ImportFrom)):
             continue
@@ -1045,28 +672,19 @@ def marker(preset, server):
 
 
 def add_preset(text, preset, server):
-    """`text` (a script) with `preset` copied in: its imports merged, its VALUES entries
-    appended to the script's VALUES, its code under its marker before the wiring.
+    """`text` (a script) with `preset` copied in: its imports merged (not those of its values
+    class, which the script's action inherits), its code under its marker before the wiring.
 
-    Returns (text, [the value names added], [the imports added]). ValueError when the
-    script has no VALUES, already holds the preset, or a value name is in both."""
-    node = values_node(text)
-    if node is None:
-        raise ValueError("it has no VALUES to add %s's to" % preset.name)
+    Returns (text, [the preset's value names], [the imports added]). ValueError when the
+    script already holds the preset."""
     if any(MARKER_RE.match(l) and MARKER_RE.match(l).group(1) == preset.name for l in text.splitlines()):
         raise ValueError("it already holds %s" % preset.name)
-    entries, closing = read_entries(text, node)
-    have = set(e.key for e in entries)
-    pnode = next((n for n in preset.tree.body if _assigned(n) == "VALUES"), None)
-    new = read_entries(preset.text, pnode)[0] if pnode is not None else []
-    clash = [e.key for e in new if e.key in have]
-    if clash:
-        raise ValueError("%s is in both its VALUES and %s's" % (", ".join(clash), preset.name))
-    if new:
-        new[0].before = list(closing) + new[0].before
-        closing = []
-    text = replace_values(text, entries + new, closing)
-    text, imports = merge_imports(text, imports_of(preset.tree))
+    text, imports = merge_imports(text, [i for i in imports_of(preset.tree) if not _pc_only(i)])
+    return _add_block(text, preset, server), values_class_fields(preset) or [], imports
+
+
+def _add_block(text, preset, server):
+    """The preset's code under its marker, before the script's wiring."""
     block = marker(preset, server) + "\n" + preset_body(preset) + "\n"
     at = wiring_line(text)
     lines = text.splitlines(True)
@@ -1081,32 +699,112 @@ def add_preset(text, preset, server):
         while head and not head[-1].strip():
             head.pop()
         text = "".join(head) + "\n\n" + block + "\n\n" + "".join(lines[at - 1:])
-    return text, [e.key for e in new], imports
-
-
-def set_defaults(text, current):
-    """`text` with each VALUES default in `current` ({key: value}) put in, comments kept."""
-    node = values_node(text)
-    if node is None:
-        raise ValueError("no VALUES")
-    entries, closing = read_entries(text, node)
-    for e in entries:
-        if e.key in current and isinstance(e.entry, dict):
-            e.entry = dict(e.entry)
-            e.entry["default"] = current[e.key]
-    return replace_values(text, entries, closing)
+    return text
 
 
 SKELETON = '''"""TODO <Title>: say what it does in one line."""
 ASKS = []
-from kit import values
+from kit import result, values
 
-VALUES = {
-    "player": {"type": "player", "default": "@a"},
-}
-
-v = values(VALUES)
+v = values()
 '''
+# The field a script made from nothing starts with, in its action.
+SKELETON_FIELDS = [("player", {"type": "players", "default": "@a", "ge": None, "le": None, "choices": None,
+                               "live": False, "description": "who it is for: a name, several separated by "
+                                                             "commas, or @a"})]
+
+
+# ------------------------------------------------------------------ the action
+
+# What `vfg script new` writes beside a new script: made/<server>/actions/<name>.py, one class
+# named as the file, inheriting the values class of every preset the script holds (preset(),
+# in actions/_types.py) and holding a field for every other value the script reads. Each field
+# is written from what actions.json says of one (type, default, ge, le, choices, live,
+# description); so is each field of the values class `vfg preset save` writes.
+TYPE_NAMES = {"player": "Player", "players": "Players", "mob": "MobId", "block": "BlockId", "item": "ItemId",
+              "item or empty": "ItemIdOrEmpty", "particle": "ParticleId", "sound": "SoundId",
+              "block mix": "BlockMix", "replace rules": "ReplaceRules", "item name": "ItemName",
+              "place": "Place", "command": "Command", "int": "int", "number": "float", "bool": "bool", "str": "str"}
+TODO_LINE = "TODO: what it does, in players' words: its line on the menu."
+TODO_FIELD = "TODO: what it is, in players' words"
+TRIPLE = '"' * 3
+
+
+def camel(name):
+    """tnt_crouch -> TntCrouch: the class an action's file holds."""
+    return "".join(p[:1].upper() + p[1:] for p in name.split("_"))
+
+
+def values_class_fields(preset):
+    """The field names of a preset's values class, class <CamelName>(Values), in order; None
+    when it has none (it reads no values)."""
+    for node in preset.tree.body if preset.tree is not None else []:
+        if _values_class(node, preset.name):
+            return [n.target.id for n in node.body if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name)]
+    return None
+
+
+def type_text(kind, choices=None):
+    """A field's type as an action writes it, from its kind in one word (actions.json's)."""
+    if kind == "enum" and choices:
+        return "Literal[%s]" % ", ".join(literal(c) for c in choices)
+    if kind.startswith("list of "):
+        return "list[%s]" % type_text(kind[len("list of "):], choices)
+    if kind == "list":
+        return "list[str]"
+    return TYPE_NAMES.get(kind, "str")
+
+
+def field_lines(key, info):
+    """`    cooldown: Live[float] = Field(2, ge=0, le=60)`, and its description under it."""
+    t = type_text(info.get("type") or "str", info.get("choices"))
+    if info.get("live"):
+        t = "Live[%s]" % t
+    default = literal(info.get("default"))
+    limits = ["%s=%s" % (k, literal(info[k])) for k in ("ge", "le") if info.get(k) is not None]
+    value = "Field(%s)" % ", ".join([default] + limits) if limits else default
+    desc = " ".join(str(info.get("description") or "").split()) or TODO_FIELD
+    return ["    %s: %s = %s" % (key, t, value), "    %s%s%s" % (TRIPLE, desc.replace(TRIPLE, "'''"), TRIPLE)]
+
+
+def fields_body(fields):
+    """`fields` ([(key, info)]) written out as a class's fields, and the names they use from
+    actions._types: (lines, names)."""
+    used, body = set(), []
+    for key, info in fields:
+        lines = field_lines(key, info)
+        for word in re.findall(r"[A-Za-z_]+", lines[0].split(":", 1)[1]):
+            if word in ("Live", "Field", "Literal") or word in TYPE_NAMES.values():
+                used.add(word)
+        body += lines
+    return body, used - set(["int", "float", "bool", "str"])
+
+
+def action_text(name, script, presets=(), fields=(), runs="until_stopped", takes=None, defaults=None,
+                fixed=None, line=None, descriptions=None):
+    """The source of a new action: class <CamelName>(Action, preset("..."), ...) over `script`,
+    with `fields` ([(key, info)]) written out, and `descriptions`, its own words for fields it
+    inherits. The implementer then edits its line, takes and descriptions."""
+    body, used = fields_body(fields)
+    used.add("Action")
+    if presets:
+        used.add("preset")
+    bases = ", ".join(["Action"] + ['preset("%s")' % p for p in presets])
+    out = ["from actions._types import %s" % ", ".join(sorted(used)), "", "",
+           "class %s(%s):" % (camel(name), bases),
+           "    %s%s%s" % (TRIPLE, line or TODO_LINE, TRIPLE), "",
+           '    script = "%s"' % script,
+           '    runs = "%s"%s' % (runs, "" if runs == "once" else '  # or "once": a script that ends by itself'),
+           "    takes = %s" % literal(list(takes or []))]
+    if defaults:
+        out.append("    defaults = %s" % literal(defaults))
+    if fixed:
+        out.append("    fixed = %s" % literal(fixed))
+    if descriptions:
+        out.append("    descriptions = %s" % literal(descriptions))
+    if body:
+        out += [""] + body
+    return "\n".join(out) + "\n"
 
 
 # ------------------------------------------------------------------ lifting
@@ -1120,10 +818,12 @@ def _names_used(nodes):
     return used
 
 
-def lift(item, function, name):
+def lift(item, function, name, fields):
     """A preset's text lifted out of a script: `function` renamed `name`, the private
-    helpers and top-level constants it uses, the imports they need, and the VALUES
-    entries they read, renamed to the preset's prefix where they lack it.
+    helpers and top-level constants it uses, the imports they need, and its values class,
+    class <CamelName>(Values), with a field for each value they read, renamed to the preset's
+    prefix where it lacks it, written as the script's action has it (`fields`, {key: the
+    field as actions.json describes it}), its description too.
 
     Returns (text, {old: new value names}, [helpers]). ValueError when it cannot."""
     tree = item.tree
@@ -1135,7 +835,7 @@ def lift(item, function, name):
     consts = {}
     for n in body:
         t = _assigned(n)
-        if t and t not in ("VALUES", "ASKS", "v"):
+        if t and t not in ("ASKS", "v"):
             consts[t] = n
     take, todo, public = [function], [function], []
     const_take = []
@@ -1160,10 +860,9 @@ def lift(item, function, name):
         for key, _line in _reads(n):
             if key not in reads:
                 reads.append(key)
-    values = item.values or {}
-    missing = [k for k in reads if k not in values]
+    missing = [k for k in reads if k not in (fields or {})]
     if missing:
-        raise ValueError("%s reads %s, which %s's VALUES does not declare"
+        raise ValueError("%s reads %s, which %s's action has no field for"
                          % (function, ", ".join(missing), item.name))
     renames = {}
     for key in reads:
@@ -1210,11 +909,16 @@ def lift(item, function, name):
     doc = ast.get_docstring(fn_node)
     first = doc.strip().splitlines()[0].strip() if doc and doc.strip() else \
         "TODO: say what %s does in one line (lifted from %s.%s)." % (name, item.name, function)
-    entries = [Entry(renames[k], values[k]) for k in reads]
+    body, names_used = fields_body([(renames[k], fields[k]) for k in reads])
+    if body:
+        imp_lines.append("from actions._types import %s  # the values class: read on the PC only"
+                         % ", ".join(sorted(names_used | set(["Values"]))))
     text = '"""%s"""\n' % first.replace('"""', "'''")
     if imp_lines:
         text += "\n".join(imp_lines) + "\n"
-    text += "\nVALUES = " + render_values(entries) + "\n\n\n" + code.rstrip() + "\n"
+    if body:
+        text += "\n\nclass %s(Values):\n%s\n" % (camel(name), "\n".join(body))
+    text += "\n\n" + code.rstrip() + "\n"
     return text, renames, [helper_names[f] for f in take[1:]]
 
 

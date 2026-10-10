@@ -1,31 +1,11 @@
 """God Visits: every few minutes a giant god appears to one player, speaks to them alone, and gives a gift or takes something."""
 ASKS = ["a god that visits us and gives gifts", "a god who gives or takes things", "make a god appear to me"]
-from kit import values, aim, loop, world
+from kit import values, result, aim, loop, world
 import itertools
 import json
 import random
 import time
 import mc
-
-VALUES = {
-    "player":            {"type": "player", "default": "@a"},
-    "director_events":   {"type": "list", "of": "str", "default": ["gift", "take"], "live": True},
-    "director_weights":  {"type": "list", "of": "number", "default": [6, 4], "live": True},
-    "director_min_s":    {"type": "number", "min": 10, "max": 3600, "default": 180, "live": True},
-    "director_max_s":    {"type": "number", "min": 10, "max": 3600, "default": 360, "live": True},
-    "director_messages": {"type": "list", "of": "str", "live": True,
-                          "default": ["i see you", "turn around", "you are not alone", "why are you still here",
-                                      "behind you"]},
-    "director_each":     {"type": "bool", "default": False, "live": True},
-    "gifts":             {"type": "list", "of": "str", "live": True,
-                          "default": ["diamond 4", "golden_apple 3", "enchanted_golden_apple 1", "netherite_ingot 1",
-                                      "totem_of_undying 1", "ender_pearl 8", "experience_bottle 32", "cooked_beef 32"]},
-    "takes":             {"type": "list", "of": "item", "live": True,
-                          "default": ["diamond", "golden_apple", "ender_pearl", "cooked_beef", "iron_ingot", "arrow",
-                                      "torch", "bread"]},
-    "take_most":         {"type": "int", "min": 1, "max": 64, "default": 8, "live": True},
-    "stay_s":            {"type": "number", "min": 2, "max": 60, "default": 8, "live": True},
-}
 
 
 # --- preset: director (copied from _presets/director.py) ---
@@ -154,7 +134,7 @@ def _director_dark(p, v):
         _director_hear(p, "entity.warden.heartbeat", at, 1.0, 0.5)
 
 
-v = values(VALUES)
+v = values()
 
 
 GODS = [("The Radiant One", "Notch", "gold"), ("The Storm God", "jeb_", "aqua"), ("Thanatos, God of Death", "Grim", "dark_gray")]
@@ -176,8 +156,8 @@ def visit(p, give):
         item, n = what[0], (what[1] if len(what) > 1 else "1")
         mc.rcon("give %s %s %s" % (p, item, n))
         msg = "You amuse me, %s. Take this gift: %sx %s." % (p, n, item.replace("minecraft:", "").replace("_", " "))
-    elif not give and v["takes"]:
-        item = random.choice(v["takes"])
+    elif not give and v["take_items"]:
+        item = random.choice(v["take_items"])
         mc.rcon("clear %s %s %d" % (p, item, v["take_most"]))
         msg = "You have grown too comfortable, %s. I take your %s." % (p, item.replace("minecraft:", "").replace("_", " "))
     else:
@@ -189,5 +169,6 @@ def visit(p, give):
     mc.rcon("kill @e[tag=%s]" % tag)
 
 
-mc.log("a god visits every", v["director_min_s"], "to", v["director_max_s"], "s of play")
+result("a god visits %s every %g to %g s of play" % (v["player"], v["director_min_s"], v["director_max_s"]),
+       player=v["player"], events=list(v["director_events"]), min_s=v["director_min_s"], max_s=v["director_max_s"])
 director(v["player"], v, events={"gift": lambda p, v: visit(p, True), "take": lambda p, v: visit(p, False)})

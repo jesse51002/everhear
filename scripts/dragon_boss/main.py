@@ -1,35 +1,9 @@
 """Three-Headed Dragon: three ender dragons rise in the sky over a player, one red bar of their summed health, boss music for everyone until they fall."""
 ASKS = ["summon a three-headed dragon", "play boss music and make it sound really cool",
         "back to the music, the music stopped", "a three-headed dragon boss with music"]
-from kit import values, fx, loop, mobs, world
+from kit import values, result, fx, loop, mobs, world
 import time
 import mc
-
-VALUES = {
-    "player":            {"type": "player", "default": "@a"},
-    "at":                {"type": "list", "of": "number", "default": []},
-    "height":            {"type": "int", "min": 0, "max": 200, "default": 30},
-    "boss_name":         {"type": "str", "default": "Three-Headed Dragon"},
-    "boss_mob":          {"type": "mob", "default": "ender_dragon"},
-    "boss_bodies":       {"type": "int", "min": 1, "max": 8, "default": 3},
-    "boss_health":       {"type": "int", "min": 1, "max": 1024, "default": 600},
-    "boss_scale":        {"type": "number", "min": 0.25, "max": 16, "default": 1},
-    "boss_attack":       {"type": "number", "min": 0, "max": 100, "default": 12},
-    "boss_gear":         {"type": "enum", "of": ["none", "leather", "golden", "iron", "diamond", "netherite"], "default": "none"},
-    "boss_bar":          {"type": "enum", "of": ["red", "blue", "green", "pink", "purple", "white", "yellow"], "default": "red"},
-    "boss_every":        {"type": "number", "min": 1, "max": 120, "default": 10, "live": True},
-    "boss_minion":       {"type": "mob", "default": "zombie", "live": True},
-    "boss_minions":      {"type": "int", "min": 0, "max": 20, "default": 0, "live": True},
-    "boss_phases":       {"type": "list", "of": "number", "default": [0.5, 0.25]},
-    "boss_reward":       {"type": "item", "default": "diamond", "live": True},
-    "boss_reward_count": {"type": "int", "min": 0, "max": 64, "default": 8, "live": True},
-    "boss_music":        {"type": "enum", "of": ["none", "pigstep", "otherside", "relic", "creator", "precipice"], "default": "none"},
-    "boss_griefing":     {"type": "bool", "default": False},
-    "theme_tune":        {"type": "enum", "of": ["galick_gun", "hollow_purple", "ice_beam", "spirit_bomb", "spirit_bomb_throw", "super_saiyan", "boss", "none"], "default": "boss", "live": True},
-    "theme_to":          {"type": "enum", "of": ["near", "everyone", "player"], "default": "everyone", "live": True},
-    "theme_reach":       {"type": "int", "min": 8, "max": 256, "default": 48, "live": True},
-    "theme_loop":        {"type": "bool", "default": True, "live": True},
-}
 
 
 # --- preset: boss (copied from _presets/boss.py) ---
@@ -256,10 +230,12 @@ def _theme_music_again(at, v, tune, hear, key, gen, seconds):
 
 
 def sky(v):
-    """Where the dragons rise: at (x y z, in the overworld), else height blocks over the first
-    player online, below the top of the world; None if the script stopped first."""
-    if len(v["at"]) >= 3:
-        return world.Pos(v["at"][0], v["at"][1], v["at"][2])
+    """Where the dragons rise: height blocks over at (a place: a saved one, x y z or a player),
+    else over the first player online, below the top of the world; None if at is no place now,
+    or the script stopped first."""
+    if v["at"]:
+        at = world.place(v["at"])
+        return at and world.Pos(at[0], min(at[1] + v["height"], world.limits(at.dim)[1] - 20), at[2], at.dim)
     for _ in loop(every=1):
         for p in loop.who(v["player"]):
             feet, dim = mc.pos(p), world.dim_of(p)
@@ -268,11 +244,26 @@ def sky(v):
     return None
 
 
-v = values(VALUES)
+def fight(at, v, won):
+    won.append(boss(at, v))
+
+
+v = values()
 at = sky(v)
 if at:
-    fight = loop.background(boss, at, v)            # boss_minions 0: there is no ground in the sky
+    said = "at %d %d %d%s" % (at[0], at[1], at[2], " in " + at.dim.split(":")[-1] if at.dim else "")
+    facts = {"boss": v["boss_name"], "bodies": v["boss_bodies"], "where": said, "health": v["boss_health"] * v["boss_bodies"]}
+    result("%s rises %s: %d %s, %d health" % (v["boss_name"], said, v["boss_bodies"], v["boss_mob"], facts["health"]),
+           **facts)
+    won = []
+    job = loop.background(fight, at, v, won)        # boss_minions 0: there is no ground in the sky
     theme_music(at, v)                              # theme_loop: it comes round again while they live
-    while fight.is_alive() and loop.wait(1):
+    while job.is_alive() and loop.wait(1):
         pass
     theme_music(at, v, tune="none")                 # and stops when they are dead
+    if won and won[0]:
+        result("%s, which rose %s, is dead" % (v["boss_name"], said), dead=True, **facts)
+    elif not mc.stopping():
+        result("no room for %s %s" % (v["boss_name"], said), **facts)
+elif v["at"] and not mc.stopping():
+    result("no %s: %s is not a place now" % (v["boss_name"], v["at"]), boss=v["boss_name"], at=v["at"])

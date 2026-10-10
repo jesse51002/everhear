@@ -47,9 +47,9 @@ job_figures() below, on the run's 116 implementer transcripts, so both sides are
   task. The replay has no conversation, so its cost is not counted on either side.
 - A task's wait is from its send to the start of its first implementer: the orchestrator's turn,
   and any wait for running work it must not collide with.
-- A call's prompt is its input tokens, fresh, read and written. By the SDK's cost figures a Haiku
-  5.5 call whose prompt passes about 100K tokens costs five times as much a token; the report
-  counts those calls.
+- A call's prompt is its input tokens, fresh, read and written. A Haiku 5.5 call whose prompt is
+  over 100,000 tokens costs five times as much a token (Anthropic's pricing page; the SDK's cost
+  figures agree); the report counts those calls.
 """
 import argparse
 import glob
@@ -65,8 +65,9 @@ from datetime import datetime
 HERE = os.path.dirname(os.path.abspath(__file__))
 TASKS = os.path.join(HERE, "tasks.jsonl")
 MAX_TURNS = 40
-# Past about this many prompt tokens a Haiku 5.5 call costs five times as much a token, by the
-# SDK's own cost figures (fitted on the pilot's usage rows: the step lies between 97K and 110K).
+# Over this many prompt tokens a Haiku 5.5 call costs five times as much a token: $0.50 in and
+# $2.50 out per million against $0.10 and $0.50 (https://platform.claude.com/docs/en/about-claude/pricing,
+# 2026-10-09; the pilot's usage rows put the step between 97K and 110K).
 LONG_PROMPT = 100000
 
 # The run's queries: a vfg cmd whose command starts so only reads the game.

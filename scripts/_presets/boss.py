@@ -3,28 +3,42 @@ import time
 
 import mc
 from kit import fx, loop, mobs, world
+from actions._types import Field, ItemId, Literal, Live, MobId, Values  # the values class: read on the PC only
 
-VALUES = {
-    "boss_name":         {"type": "str", "default": "Horde King"},
-    "boss_mob":          {"type": "mob", "default": "zombie"},
-    "boss_bodies":       {"type": "int", "min": 1, "max": 8, "default": 1},
-    "boss_health":       {"type": "int", "min": 1, "max": 1024, "default": 800},
-    "boss_scale":        {"type": "number", "min": 0.25, "max": 16, "default": 3},
-    "boss_attack":       {"type": "number", "min": 0, "max": 100, "default": 12},
-    "boss_gear":         {"type": "enum", "of": ["none", "leather", "golden", "iron", "diamond", "netherite"],
-                          "default": "netherite"},
-    "boss_bar":          {"type": "enum", "of": ["red", "blue", "green", "pink", "purple", "white", "yellow"],
-                          "default": "red"},
-    "boss_every":        {"type": "number", "min": 1, "max": 120, "default": 10, "live": True},
-    "boss_minion":       {"type": "mob", "default": "zombie", "live": True},
-    "boss_minions":      {"type": "int", "min": 0, "max": 20, "default": 3, "live": True},
-    "boss_phases":       {"type": "list", "of": "number", "default": [0.5, 0.25]},
-    "boss_reward":       {"type": "item", "default": "diamond", "live": True},
-    "boss_reward_count": {"type": "int", "min": 0, "max": 64, "default": 8, "live": True},
-    "boss_music":        {"type": "enum", "of": ["none", "pigstep", "otherside", "relic", "creator", "precipice"],
-                          "default": "none"},
-    "boss_griefing":     {"type": "bool", "default": True},
-}
+
+class Boss(Values):
+    boss_name: str = "Horde King"
+    """the boss's name, over its head, on its health bar and in the titles"""
+    boss_mob: MobId = "zombie"
+    """the mob the boss is"""
+    boss_bodies: int = Field(1, ge=1, le=8)
+    """how many bodies it has, on one health bar; it dies when every one is dead (3: a three-headed dragon)"""
+    boss_health: int = Field(800, ge=1, le=1024)
+    """each body's health, in half-hearts (a player has 20)"""
+    boss_scale: float = Field(3, ge=0.25, le=16)
+    """its size: 1 is the mob's own, 3 three times as big"""
+    boss_attack: float = Field(12, ge=0, le=100)
+    """the damage of each of its hits, in half-hearts, before armour"""
+    boss_gear: Literal["none", "leather", "golden", "iron", "diamond", "netherite"] = "netherite"
+    """the armour and sword it wears, never dropped (leather comes with a wooden sword); none: nothing"""
+    boss_bar: Literal["red", "blue", "green", "pink", "purple", "white", "yellow"] = "red"
+    """the colour of its health bar"""
+    boss_every: Live[float] = Field(10, ge=1, le=120)
+    """seconds between its abilities, used in turn (by default its one ability is calling minions)"""
+    boss_minion: Live[MobId] = "zombie"
+    """the mob it calls as minions; does nothing when the script gives it abilities of its own"""
+    boss_minions: Live[int] = Field(3, ge=0, le=20)
+    """how many it calls each time, never over three times this many alive (0: none); not with abilities of its own"""
+    boss_phases: list[float] = [0.5, 0.25]
+    """the shares of its full health at which a phase starts (0.5: at half); by default it enrages in each, faster and stronger"""
+    boss_reward: Live[ItemId] = "diamond"
+    """the item it drops where it dies (its id only)"""
+    boss_reward_count: Live[int] = Field(8, ge=0, le=64)
+    """how many of boss_reward it drops (0: none)"""
+    boss_music: Literal["none", "pigstep", "otherside", "relic", "creator", "precipice"] = "none"
+    """a music disc every player hears, over and over, until it dies; none: no music"""
+    boss_griefing: bool = True
+    """whether mobs may break blocks in the fight; off turns mob griefing off for every mob until it dies"""
 
 
 def boss(where, v, *, abilities=None, phases=None):

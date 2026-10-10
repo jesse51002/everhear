@@ -195,6 +195,9 @@ async def _run(exit_) -> int | None:
 
     loop.set_exception_handler(on_exception)
 
+    # The actions cache, read once now, so the first brief does not wait on a rebuild.
+    spawn(examples.warm(cfg))
+
     session = Session(cfg=cfg, store=store, outbox=outbox, usage=usage, prompts=prompts, on_fatal=fatal)
 
     # 7. The session, resuming the saved one; an API key is fatal.

@@ -1,7 +1,7 @@
 """Ice Queen: a giant stray in ice gear near a player, with a blue bar; every 8 s she freezes everyone near her in ice or calls frost servants."""
 ASKS = ["put a boss in the ice castle and make her super overpowered", "throw ice spikes everywhere and make her scary",
         "a she-boss", "ice queen"]
-from kit import values, fx, loop, mobs, world, aim, exclude, area
+from kit import values, result, fx, loop, mobs, world, aim, exclude, area
 import time
 import mc
 import math
@@ -9,44 +9,6 @@ import re
 import itertools
 import threading
 import json
-
-VALUES = {
-    "player":            {"type": "player", "default": "@a"},
-    "at":                {"type": "list", "of": "number", "default": []},
-    "cold":              {"type": "number", "min": 0, "max": 100, "default": 6, "live": True},
-    "boss_name":         {"type": "str", "default": "Ice Queen"},
-    "boss_mob":          {"type": "mob", "default": "stray"},
-    "boss_bodies":       {"type": "int", "min": 1, "max": 8, "default": 1},
-    "boss_health":       {"type": "int", "min": 1, "max": 1024, "default": 1000},
-    "boss_scale":        {"type": "number", "min": 0.25, "max": 16, "default": 2},
-    "boss_attack":       {"type": "number", "min": 0, "max": 100, "default": 8},
-    "boss_gear":         {"type": "enum", "of": ["none", "leather", "golden", "iron", "diamond", "netherite", "ice"], "default": "ice"},
-    "boss_bar":          {"type": "enum", "of": ["red", "blue", "green", "pink", "purple", "white", "yellow"], "default": "blue"},
-    "boss_every":        {"type": "number", "min": 1, "max": 120, "default": 8, "live": True},
-    "boss_phases":       {"type": "list", "of": "number", "default": [0.5, 0.25]},
-    "boss_reward":       {"type": "item", "default": "blue_ice", "live": True},
-    "boss_reward_count": {"type": "int", "min": 0, "max": 64, "default": 16, "live": True},
-    "boss_music":        {"type": "enum", "of": ["none", "pigstep", "otherside", "relic", "creator", "precipice"], "default": "none"},
-    "boss_griefing":     {"type": "bool", "default": True},
-    "around_radius":     {"type": "number", "min": 1, "max": 128, "default": 16, "live": True},
-    "around_what":       {"type": "enum", "of": ["mobs", "hostile", "players", "everything", "projectiles"], "default": "players", "live": True},
-    "around_most":       {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
-    "freeze_seconds":    {"type": "number", "min": 1, "max": 120, "default": 4, "live": True},
-    "freeze_shell":      {"type": "bool", "default": True, "live": True},
-    "freeze_block":      {"type": "enum", "of": ["ice", "packed_ice", "blue_ice", "snow_block"], "default": "packed_ice", "live": True},
-    "freeze_blindness":  {"type": "bool", "default": False, "live": True},
-    "summon_mob":        {"type": "mob", "default": "stray", "live": True},
-    "summon_count":      {"type": "int", "min": 1, "max": 200, "default": 3, "live": True},
-    "summon_spread":     {"type": "int", "min": 1, "max": 100, "default": 4, "live": True},
-    "summon_cap":        {"type": "int", "min": 1, "max": 1000, "default": 6, "live": True},
-    "summon_scale":      {"type": "number", "min": 0.1, "max": 16, "default": 1, "live": True},
-    "summon_health":     {"type": "number", "min": 0, "max": 2048, "default": 0, "live": True},
-    "summon_gear":       {"type": "enum", "of": ["none", "leather", "chainmail", "iron", "golden", "diamond", "netherite"], "default": "none", "live": True},
-    "summon_weapon":     {"type": "str", "default": "", "live": True},
-    "summon_name":       {"type": "str", "default": "Frost Servant", "live": True},
-    "summon_glow":       {"type": "bool", "default": False, "live": True},
-    "summon_nbt":        {"type": "str", "default": "", "live": True},
-}
 
 
 # --- preset: boss (copied from _presets/boss.py) ---
@@ -356,8 +318,25 @@ def frost_servants(b, v):
         fx.sound("entity.evoker.prepare_summon", "@e[tag=%s,limit=1]" % b.tag, volume=3, pitch=1.4)
 
 
-v = values(VALUES)
-where = world.Pos(v["at"][0], v["at"][1], v["at"][2]) if len(v["at"]) >= 3 else v["player"]
-boss(where, v, abilities=[ice_blast, frost_servants])      # every boss_every s, each in turn
-mc.rcon("kill @e[tag=%s_summon]" % mc.TAG)                  # her servants fall with her
+def spot(where):
+    """Where the boss rises, in words: near the first of a player value online, or at a place."""
+    if isinstance(where, str):
+        return "near %s" % (loop.who(where) or [where])[0]
+    return "at %d %d %d%s" % (where[0], where[1], where[2], " in " + where.dim.split(":")[-1] if where.dim else "")
+
+
+v = values()
+where = world.place(v["at"]) if v["at"] else v["player"]    # a player value: near the first of them online
+if where is None:
+    result("no %s: %s is not a place now" % (v["boss_name"], v["at"]), boss=v["boss_name"], at=v["at"])
+else:
+    said = spot(where)
+    facts = {"boss": v["boss_name"], "where": said, "health": v["boss_health"] * v["boss_bodies"]}
+    result("%s rises %s, with %d health" % (v["boss_name"], said, facts["health"]), **facts)
+    won = boss(where, v, abilities=[ice_blast, frost_servants])    # every boss_every s, each in turn
+    mc.rcon("kill @e[tag=%s_summon]" % mc.TAG)                      # her servants fall with her
+    if won:
+        result("%s, who rose %s, is dead" % (v["boss_name"], said), dead=True, **facts)
+    elif not mc.stopping():
+        result("no room for %s %s" % (v["boss_name"], said), **facts)
 # The script ends here, and the ice of her last freeze melts (a cleanup that runs at the end too).

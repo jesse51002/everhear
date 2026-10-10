@@ -11,7 +11,7 @@ as `context`, with one `SYS` line in the feed when that starts and another when 
 
 ## Run it
 
-On the box it is the systemd unit `vfg-jev`: `python3 -u /opt/vfg/jev/jev_filter.py`.
+On the box it is the systemd unit `vfg-jev`: `/opt/vfg/python/bin/python3 -u /opt/vfg/jev/jev_filter.py`.
 To judge one text and write nothing: `python3 jev_filter.py --judge "<text>"`, with `--raw` to see
 Jev's answer as sent.
 

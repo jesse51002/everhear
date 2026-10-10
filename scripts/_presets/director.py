@@ -6,18 +6,23 @@ import time
 
 import mc
 from kit import aim, loop, world
+from actions._types import Field, Live, Values  # the values class: read on the PC only
 
-VALUES = {
-    "director_events":   {"type": "list", "of": "str", "default": ["sound", "shadow", "mob", "message", "dark"],
-                          "live": True},
-    "director_weights":  {"type": "list", "of": "number", "default": [4, 1, 1, 2, 1], "live": True},
-    "director_min_s":    {"type": "number", "min": 1, "max": 3600, "default": 25, "live": True},
-    "director_max_s":    {"type": "number", "min": 1, "max": 3600, "default": 60, "live": True},
-    "director_messages": {"type": "list", "of": "str", "live": True,
-                          "default": ["i see you", "turn around", "you are not alone", "why are you still here",
-                                      "behind you"]},
-    "director_each":     {"type": "bool", "default": True, "live": True},
-}
+
+class Director(Values):
+    director_events: Live[list[str]] = ["sound", "shadow", "mob", "message", "dark"]
+    """what it picks from: sound (a noise behind them), shadow (a figure watching), mob (a fake creeper), message, dark, the script's own"""
+    director_weights: Live[list[float]] = [4, 1, 1, 2, 1]
+    """how often each event comes, in director_events' order (4 is four times as often as 1, 0 never; missing: 1)"""
+    director_min_s: Live[float] = Field(25, ge=1, le=3600)
+    """the shortest wait before an event, in seconds the player is online"""
+    director_max_s: Live[float] = Field(60, ge=1, le=3600)
+    """the longest wait before an event, in seconds (under director_min_s: director_min_s)"""
+    director_messages: Live[list[str]] = ["i see you", "turn around", "you are not alone", "why are you still here",
+                                          "behind you"]
+    """what the message event whispers, one at random"""
+    director_each: Live[bool] = True
+    """each player gets events on their own clock; off: one clock for all, each event to one player at random"""
 
 
 def director(player, v, *, events=None):

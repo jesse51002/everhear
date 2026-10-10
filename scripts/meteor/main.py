@@ -2,32 +2,12 @@
 ASKS = ["send an asteroid at me", "if you don't know what that means, figure it out, just make sure an asteroid of some sort comes on to me",
         "that was too small of an asteroid, you have to make it a lot, a lot bigger than that",
         "a big flaming meteor", "drop a meteor on us", "meteor shower"]
-from kit import values, aim, loop, world, fx, exclude
+from kit import values, result, aim, loop, world, fx, exclude
 import math
 import random
 import mc
 import re
 import time
-
-VALUES = {
-    "player":           {"type": "player", "default": "@a"},
-    "sky_radius":       {"type": "number", "min": 0, "max": 128, "default": 7, "live": True},
-    "sky_height":       {"type": "number", "min": 1, "max": 300, "default": 20, "live": True},
-    "sky_band":         {"type": "number", "min": 0, "max": 100, "default": 0, "live": True},
-    "sky_count":        {"type": "int", "min": 1, "max": 100, "default": 1, "live": True},
-    "sky_open":         {"type": "bool", "default": True, "live": True},
-    "meteor_size":      {"type": "number", "min": 1, "max": 24, "default": 10, "live": True},
-    "meteor_blocks":    {"type": "str", "default": "magma_block blackstone obsidian", "live": True},
-    "meteor_height":    {"type": "int", "min": 10, "max": 300, "default": 100, "live": True},
-    "meteor_slant":     {"type": "int", "min": 0, "max": 100, "default": 25, "live": True},
-    "meteor_seconds":   {"type": "number", "min": 0.5, "max": 20, "default": 4.8, "live": True},
-    "explosion_power":  {"type": "number", "min": 0, "max": 16, "default": 4, "live": True},
-    "explosion_layout": {"type": "enum", "of": ["one", "plus", "ring", "rings"], "default": "rings", "live": True},
-    "explosion_spread": {"type": "number", "min": 1, "max": 32, "default": 4, "live": True},
-    "explosion_breaks": {"type": "bool", "default": True, "live": True},
-    "explosion_keep":   {"type": "number", "min": 0, "max": 32, "default": 7.5, "live": True},
-    "explosion_spare":  {"type": "list", "of": "player", "default": [], "live": True},
-}
 
 
 # --- preset: sky_above (copied from _presets/sky_above.py) ---
@@ -212,23 +192,34 @@ def _explosion_blast(pre, p, power, spare):
             mc.rcon(here + "%s run damage @s %.1f minecraft:explosion at %.2f %.2f %.2f" % (frag, amount, x, y, z))
 
 
-v = values(VALUES)
+v = values()
 # One meteor (sky_count) round each player the player value names, falling all at once: a spot
 # up to sky_radius from them, under open sky; the meteor_size cluster falls meteor_height from
 # meteor_slant to one side onto the ground under it; blasts of explosion_power in rings there
 # make the crater. No blast lands within explosion_keep of any player, who is caught at its
 # edge, and pets and villagers come through it. Then it ends. The run's first, small one:
 # meteor_size=3 meteor_height=60 meteor_slant=20 sky_radius=3 explosion_layout=one explosion_keep=0.
+# (The meteor_shower action is this with sky_count=8 sky_radius=40.)
+landed = []
 
 
 def strike(sky):
     land = meteor_fall(sky, v)
     if land is not None:
         n = explosion(land, "", v)
+        landed.append("%d %d %d" % land.block())
         mc.log("impact at %.0f %.0f %.0f: %d blasts" % (land[0], land[1], land[2], n))
 
 
+who = loop.who(v["player"])
 falls = [loop.background(strike, sky) for sky in sky_above(v["player"], v)]
 while any(t.is_alive() for t in falls) and loop.wait(0.2):
     pass
 mc.log("done: %d meteor(s)" % len(falls))
+if landed:
+    result("%d meteor%s fell on %s, size %g%s" % (len(landed), "" if len(landed) == 1 else "s", ", ".join(who),
+                                                   v["meteor_size"], ": " + "; ".join(landed) if len(landed) <= 3 else ""),
+           players=who, meteors=len(landed), at=landed)
+else:
+    result("no meteor fell: %s" % ("no open sky over %s" % ", ".join(who) if who else
+                                   "%s is not online" % v["player"]), players=who, meteors=0)

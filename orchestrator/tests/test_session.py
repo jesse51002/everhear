@@ -448,6 +448,23 @@ async def test_a_subagents_large_context_does_not_count_only_the_main_threads():
     s.session.close_query()
 
 
+async def test_on_one_model_the_main_threads_calls_are_the_orchestrators_row_a_subagents_the_implementers():
+    s = setup()
+    s.session.usage.implementer_model = "claude-haiku-5-5"
+    await s.session.open()
+    msg = {"id": "msg_1", "model": "claude-haiku-5-5", "content": [], "usage": {"input_tokens": 100, "output_tokens": 10}}
+    s.q().emit(type="assistant", parent_tool_use_id=None, message=msg)
+    s.q().emit(type="assistant", parent_tool_use_id="toolu_1",
+               message={**msg, "id": "msg_2", "usage": {"input_tokens": 900, "output_tokens": 90}})
+    s.q().emit(**result(modelUsage={"claude-haiku-5-5": {"inputTokens": 1000, "outputTokens": 100, "cacheReadInputTokens": 0,
+                                                         "cacheCreationInputTokens": 0, "costUSD": 0.0001}}))
+    await until(lambda: len([c for c in s.fake.calls() if c[0] == "usage"]) == 2)
+    await s.session.settled()
+    rows = [(c[3], c[c.index("--in") + 1], c[c.index("--out") + 1]) for c in s.fake.calls() if c[0] == "usage"]
+    assert rows == [("orchestrator", "100", "10"), ("implementer", "900", "90")]
+    s.session.close_query()
+
+
 # ====================================================== options
 
 def guard(cfg, **over):
@@ -457,11 +474,11 @@ def guard(cfg, **over):
     return GuardContext(**fields)
 
 
-def test_defaults_opus_low_haiku_5_5_implementers_at_low_all_overridable():
+def test_defaults_haiku_5_5_at_low_for_the_session_and_its_implementers_all_overridable():
     d = temp_dir()
     c = config_in(d)
-    # Haiku 5.5 implementers while the prototype runs on the owner's subscription (the script library spec)
-    assert [c.model, c.effort, c.implementer_model, c.implementer_effort] == ["opus", "low", "claude-haiku-5-5", "low"]
+    # every agent on Haiku 5.5 (the actions spec)
+    assert [c.model, c.effort, c.implementer_model, c.implementer_effort] == ["claude-haiku-5-5", "low", "claude-haiku-5-5", "low"]
     over = config_in(d, {"VFG_ORCH_MODEL": "haiku", "VFG_ORCH_EFFORT": "medium"})
     assert [over.model, over.effort] == ["haiku", "medium"]
     o = config_in(d, {"VFG_IMPL_MODEL": "haiku", "VFG_IMPL_EFFORT": "medium", "VFG_ORCH_EFFORT": "high"})
@@ -626,6 +643,16 @@ def test_the_guard_and_the_rules_know_the_server_folder():
     assert not any("route" in x or "prefix" in x for x in r)
 
 
+def test_the_rules_run_actions_and_no_script_runs():
+    r = rules("/repo")
+    for cmd in ("vfg action run *", "vfg action list", "vfg action list *", "vfg action check *", "vfg cmd *",
+                "vfg script set *", "vfg script stop *"):
+        assert "Bash(%s)" % cmd in r
+    assert not any(x.startswith("Bash(vfg script run") or "action refs" in x for x in r)
+    # a made action is written where scripts and presets are
+    assert "Write(//repo/made/main/**)" in r
+
+
 def test_the_guard_knows_each_implementers_task_and_asks_vfg_what_runs():
     s = setup()
     g = s.session.guard_context()
@@ -633,7 +660,7 @@ def test_the_guard_knows_each_implementers_task_and_asks_vfg_what_runs():
     s.session.handle({"type": "system", "subtype": "task_started", "task_id": "a1", "tool_use_id": "u1",
                       "description": "T7 castle at spawn", "task_type": "local_agent"})
     assert g.task_of("a1") == "T7"
-    assert g.running is not None  # running_from_vfg: vfg state --json when an edit needs it
+    assert g.running is not None  # running_copies: running.json in VFG_HOME, else vfg state --json
 
 
 def test_the_rules_let_the_guards_pipes_and_file_looks_reach_the_cli():

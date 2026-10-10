@@ -1,23 +1,12 @@
 """Horror Mode: ash only they can see, and every 25 to 60 s a scare for each player: a sound behind them, a figure watching, a creeper that hisses and is gone, a whisper, the dark."""
 ASKS = ["be like a horror mod", "do the horror mod thing", "spooky mode for everyone",
         "can you remove the darkness effects", "remove the darkness, everything else in the horror mode is good"]
-from kit import values, aim, fx, loop, world
+from kit import values, result, aim, fx, loop, world
 import itertools
 import json
 import random
 import time
 import mc
-
-VALUES = {
-    "player":            {"type": "player", "default": "@a"},
-    "no_dark":           {"type": "list", "of": "player", "default": [], "live": True},
-    "director_events":   {"type": "list", "of": "str", "default": ["sound", "shadow", "mob", "message", "dark"], "live": True},
-    "director_weights":  {"type": "list", "of": "number", "default": [4, 1, 1, 2, 1], "live": True},
-    "director_min_s":    {"type": "number", "min": 1, "max": 3600, "default": 25, "live": True},
-    "director_max_s":    {"type": "number", "min": 1, "max": 3600, "default": 60, "live": True},
-    "director_messages": {"type": "list", "of": "str", "live": True, "default": ["i see you", "turn around", "you are not alone", "why are you still here", "behind you"]},
-    "director_each":     {"type": "bool", "default": True, "live": True},
-}
 
 
 # --- preset: director (copied from _presets/director.py) ---
@@ -166,6 +155,9 @@ def haze(v):
         lifted = spared
 
 
-v = values(VALUES)
+v = values()
 loop.background(haze, v)
+result("horror mode on for %s: ash, and a scare every %g to %g s%s" % (
+    v["player"], v["director_min_s"], v["director_max_s"], "; no dark for " + ", ".join(v["no_dark"]) if v["no_dark"] else ""),
+    player=v["player"], events=list(v["director_events"]), no_dark=list(v["no_dark"]))
 director(v["player"], v, events={"dark": dark})

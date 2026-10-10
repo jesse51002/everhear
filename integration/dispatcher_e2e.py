@@ -6,9 +6,9 @@
 Real:  the dispatcher (`vfg orch start` runs dispatcher/run), its model calls through
        OpenRouter (OPEN_ROUTER_API: from the environment, else the first .env above this
        repo that holds it; passed to the dispatcher's process only, never printed or
-       written), the vfg toolkit (toolkit/vfg; its remote programs, remote/action.py and
-       the action handlers run on Python 3.9 through the fake ssh), actions/, and
-       scripts/_lib/mc.py on the box.
+       written), the vfg toolkit (toolkit/vfg, under uv with pydantic; its remote programs
+       run through the fake ssh), actions/, and on the box's Python 3.12 the scripts the
+       actions run (`vfg action run` deploys them with scripts/_lib).
 Stand-ins: SSH (toolkit/tests/fake_ssh, which runs the remote command here), Minecraft
        (scripts/_test/fake_places_world.py over scripts/_test/fake_rcon.py, in this process: 26.3's
        recorded replies, and a world that keeps its players, effects and places), the
@@ -206,9 +206,9 @@ class Box:
     """The temp folder: HOME, VFG_HOME and its orch/ and dispatch/, the repo, the box's /opt/vfg and
     /opt/mc, and the fake world on the box's RCON port."""
 
-    def __init__(self, root, py39, key=None, model=None):
+    def __init__(self, root, box_py, key=None, model=None):
         j = lambda *p: os.path.join(root, *p)  # noqa: E731
-        self.root, self.py39, self.key, self.model = root, py39, key, model
+        self.root, self.box_py, self.key, self.model = root, box_py, key, model
         self.home, self.vhome = j("home"), j("home", ".vfg")
         self.orch, self.dispatch = j("home", ".vfg", "orch"), j("home", ".vfg", "dispatch")
         self.repo, self.rvfg, self.rmc = j("repo"), j("box", "vfg"), j("box", "mc")
@@ -251,12 +251,13 @@ class Box:
         for u in ("minecraft", "vfg-bridge", "vfg-jev"):
             with open(os.path.join(self.units, u), "w") as f:
                 f.write("active\n")
-        # python3 is the box's 3.9, for fake_ssh's remote side; vfg is this repo's, on the same
-        # Python, with that PATH again in front (uv run puts the dispatcher's venv first).
-        os.symlink(self.py39, os.path.join(self.bin, "python3"))
+        # python3 is the box's 3.12, for fake_ssh's remote side and the scripts; vfg is this repo's,
+        # under uv as on the PC, with that PATH again in front (uv run puts the dispatcher's venv first).
+        os.symlink(self.box_py, os.path.join(self.bin, "python3"))
+        os.makedirs(os.path.join(self.rvfg, "python", "bin"), exist_ok=True)
+        os.symlink(self.box_py, os.path.join(self.rvfg, "python", "bin", "python3"))  # the box's Python, at the box's path
         with open(os.path.join(self.bin, "vfg"), "w") as f:
-            f.write("#!/bin/sh\nPATH='%s':\"$PATH\"; export PATH\nexec '%s' '%s' \"$@\"\n"
-                    % (self.bin, self.py39, VFG))
+            f.write("#!/bin/sh\nPATH='%s':\"$PATH\"; export PATH\nexec '%s' \"$@\"\n" % (self.bin, VFG))
         os.chmod(os.path.join(self.bin, "vfg"), 0o755)
         with open(self.ssh_key, "w") as f:
             f.write("not a key: fake_ssh never reads it\n")
@@ -444,7 +445,7 @@ def ask2(run, grove):
     rep.check(near <= 64, "Steve stands in the world within 64 blocks of the cherry grove (%.0f)" % near,
               "Steve at %r; sent %r" % (steve.pos, run.sent(a)))
     rep.check(any("locate biome minecraft:cherry_grove" in x for x in run.sent(a)),
-              "the handler located minecraft:cherry_grove", "sent %r" % run.sent(a))
+              "the teleport script located minecraft:cherry_grove", "sent %r" % run.sent(a))
     if c:
         rep.check(run.secs(a, c[0][0]) <= 10, "done within 10 s of vfg orch send (%.1f s)" % run.secs(a, c[0][0]))
 
@@ -573,19 +574,19 @@ def main():
         print("no %s in the environment or in a .env above %s" % (KEY, REPO), file=sys.stderr)
         return 2
     try:
-        py39 = subprocess.run(["uv", "python", "find", "3.9"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                              universal_newlines=True).stdout.strip()
+        box_py = subprocess.run(["uv", "python", "find", "3.12"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                universal_newlines=True).stdout.strip()
     except OSError:
-        py39 = ""
-    if not py39:
-        py39 = shutil.which("python3")
-        print("no Python 3.9 found: the box's side runs on %s" % py39)
+        box_py = ""
+    if not box_py:
+        box_py = shutil.which("python3")
+        print("no Python 3.12 found: the box's side runs on %s" % box_py)
     root = tempfile.mkdtemp(prefix="vfg-dispatch-e2e-")
-    box = Box(root, py39, key, args.model)
+    box = Box(root, box_py, key, args.model)
     rep = Report()
     run = Run(box, rep)
-    print("dispatcher e2e: temp folder %s\n  key from %s; the box's side and vfg on %s; refs/26.3/ seeded "
-          "from dispatcher/tests/fixtures/refs" % (root, where, py39))
+    print("dispatcher e2e: temp folder %s\n  key from %s; the box's side on %s; refs/26.3/ seeded "
+          "from dispatcher/tests/fixtures/refs" % (root, where, box_py))
     grove = (1412, 92, -2140)
     try:
         box.deploy({"Steve": (197.5, 68.0, 251.5), "Alex": (180.5, 70.0, 240.5)})

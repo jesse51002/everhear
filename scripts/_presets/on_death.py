@@ -4,10 +4,12 @@ import time
 
 import mc
 from kit import items, loop, world
+from actions._types import Literal, Live, Values  # the values class: read on the PC only
 
-VALUES = {
-    "on_death_event": {"type": "enum", "of": ["death", "kill", "both"], "default": "death", "live": True},
-}
+
+class OnDeath(Values):
+    on_death_event: Live[Literal["death", "kill", "both"]] = "death"
+    """what sets it off: death, when the player dies; kill, when they kill anything, a mob or a player; both"""
 
 
 def on_death(player, v):

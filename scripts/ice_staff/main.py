@@ -2,35 +2,12 @@
 ASKS = ["I want some ice ability", "make the range of the ice staff infinite",
         "my staff should do a lot more damage, there is like no damage",
         "make my ice staff work whenever I point at a mob as well and not just the ground"]
-from kit import values, items, aim, fx, loop, exclude, world, area
+from kit import values, result, items, aim, fx, loop, exclude, world, area
 import itertools
 import math
 import mc
 import re
 import threading
-
-VALUES = {
-    "player":           {"type": "player", "default": "@a"},
-    "item":             {"type": "str", "default": "Ice Staff"},
-    "cooldown":         {"type": "number", "min": 0, "max": 60, "default": 1, "live": True},
-    "damage_amount":    {"type": "number", "min": 0, "max": 100000, "default": 200, "live": True},
-    "damage_type":      {"type": "enum", "of": ["player_attack", "magic", "lightning_bolt", "explosion", "freeze", "on_fire", "sonic_boom", "arrow", "wither", "generic"], "default": "magic", "live": True},
-    "damage_kill":      {"type": "bool", "default": False, "live": True},
-    "damage_what":      {"type": "enum", "of": ["all", "mobs", "hostile", "players"], "default": "all", "live": True},
-    "damage_most":      {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
-    "damage_head":      {"type": "number", "min": 1, "max": 10, "default": 1, "live": True},
-    "damage_spare":     {"type": "list", "of": "player", "default": [], "live": True},
-    "lock_range":       {"type": "int", "min": 4, "max": 500, "default": 300, "live": True},
-    "lock_cone":        {"type": "number", "min": 1, "max": 45, "default": 6, "live": True},
-    "lock_players":     {"type": "bool", "default": False, "live": True},
-    "around_radius":    {"type": "number", "min": 1, "max": 128, "default": 15, "live": True},
-    "around_what":      {"type": "enum", "of": ["mobs", "hostile", "players", "everything", "projectiles"], "default": "mobs", "live": True},
-    "around_most":      {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
-    "freeze_seconds":   {"type": "number", "min": 1, "max": 120, "default": 5, "live": True},
-    "freeze_shell":     {"type": "bool", "default": False, "live": True},
-    "freeze_block":     {"type": "enum", "of": ["ice", "packed_ice", "blue_ice", "snow_block"], "default": "ice", "live": True},
-    "freeze_blindness": {"type": "bool", "default": False, "live": True},
-}
 
 
 # --- preset: damage_hits (copied from _presets/damage_hits.py) ---
@@ -257,7 +234,9 @@ def _freeze_melt(shell):
         mc.rcon(world.run(dim, "fill %d %d %d %d %d %d air replace %s" % (b + (block,))))
 
 
-v = values(VALUES)
+v = values()
+result("%s has the %s: right-click a mob or a block to freeze what is round it" % (v["player"], v["item"]),
+       player=v["player"], item=v["item"])
 for p in loop(items.clicks(v["player"], v["item"], cooldown=v["cooldown"])):
     locked = lock_on(p, v)
     if locked:

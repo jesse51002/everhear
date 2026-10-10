@@ -1,14 +1,16 @@
 """Tests for the "ongoing" presets and the presets that watch players, against the fake RCON
 server and fake_world, under the Python EC2 has:
 
-    uv run --python 3.9 python scripts/_test/test_presets_ongoing.py
+    uv run --no-project --python 3.12 --with pydantic python scripts/_test/test_presets_ongoing.py
 
 boss, horde_wave, director, leaves_area, stands_still and beam_clash. Each sends the commands
-it should; its VALUES refuse what is outside their limits; and nothing it made is left after
-a stop: the ones that make things are run as scripts the way EC2 does (the preset's file with
-a line of wiring under it), then sent SIGTERM.
+it should; its values class clamps or refuses what is outside its limits; and nothing it made
+is left after a stop: the ones that make things are run as scripts the way EC2 does (the
+preset's file with a line of wiring under it, and the meta file vfg action run writes), then
+sent SIGTERM.
 """
 import importlib.util
+import json
 import os
 import re
 import secrets
@@ -23,6 +25,7 @@ import unittest
 sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
 PRESETS = os.path.join(os.path.dirname(HERE), "_presets")
+sys.path.append(os.path.dirname(os.path.dirname(HERE)))  # the repo: a preset's values class imports actions._types
 sys.path.insert(0, HERE)
 
 import test_kit  # noqa: E402  (points mc at the fakes, as for the kit's own tests)
@@ -46,7 +49,8 @@ ALL = [BOSS, HORDE, DIRECTOR, LEAVES, STANDS, CLASH]
 
 
 def vals(preset, *argv):
-    return values(preset.VALUES, argv=list(argv), run_dir=tempfile.mkdtemp(dir=TMP), instance="t", poll=0.05)
+    return values(meta=test_kit.values_meta(preset, given=argv), run_dir=tempfile.mkdtemp(dir=TMP), instance="t",
+                  poll=0.05)
 
 
 def until(test, seconds=6.0):
@@ -78,33 +82,17 @@ class OngoingCase(test_kit.KitCase):
         return [e for e in self.world.entities if any(t == prefix or t.startswith(prefix + "_") for t in e["tags"])]
 
 
-# ---- VALUES ---------------------------------------------------------------------------
+# ---- values ---------------------------------------------------------------------------
 
 class OngoingValuesTests(unittest.TestCase):
-    def test_defaults_pass_and_values_outside_their_limits_are_refused(self):
+    def test_defaults_pass_and_values_outside_their_limits_are_clamped_or_refused(self):
         for p in ALL:
-            values(p.VALUES, argv=[], run_dir=tempfile.mkdtemp(dir=TMP), instance="t")     # defaults are good
-            for key, e in p.VALUES.items():
-                kind = e["type"]
-                if kind in ("int", "number"):
-                    if "max" in e:
-                        self.assertIn("clamped", values.check(key, e, e["max"] + 1)[1], key)
-                    if "min" in e:
-                        self.assertIn("clamped", values.check(key, e, e["min"] - 1)[1], key)
-                    self.assertRaises(ValueError, values.check, key, e, "lots")
-                elif kind in ("enum", "bool"):
-                    self.assertRaises(ValueError, values.check, key, e, "nonsense")
-                elif kind == "mob":
-                    self.assertRaises(ValueError, values.check, key, e, "potion")
-                elif kind == "list" and e.get("of") in ("number", "mob"):
-                    self.assertRaises(ValueError, values.check, key, e, ["potion" if e["of"] == "mob" else "x"])
-                elif kind == "player":
-                    self.assertRaises(ValueError, values.check, key, e, "not a name!")
+            test_kit.assert_checked_on_the_pc(self, p)
 
     def test_every_value_carries_its_presets_name(self):
         for p in ALL:
             name = p.__name__[len("preset_"):]
-            for key in p.VALUES:
+            for key in test_kit.values_class(p).model_fields:
                 self.assertTrue(key.startswith(name.split("_")[0] + "_"), key)
 
 
@@ -381,18 +369,17 @@ class OngoingClashTests(OngoingCase):
 # ---- as scripts: a stop leaves nothing -------------------------------------------------------------
 
 WIRING = {
-    "boss": 'v = values(VALUES)\nboss("Steve", v)\n',
-    "horde_wave": 'v = values(VALUES)\nhorde_wave("@a", v)\n',
-    "director": 'v = values(VALUES)\ndirector("@a", v)\n',
-    "beam_clash": ('v = values(VALUES)\nfrom kit import aim, world\n'
+    "boss": 'v = values()\nboss("Steve", v)\n',
+    "horde_wave": 'v = values()\nhorde_wave("@a", v)\n',
+    "director": 'v = values()\ndirector("@a", v)\n',
+    "beam_clash": ('v = values()\nfrom kit import aim, world\n'
                    'import sys\nx, dx = (10.5, 1.0) if sys.argv[-1] == "Steve" else (30.5, -1.0)\n'
                    'mc.log("result", beam_clash(sys.argv[-1], aim.Ray(world.Pos(x, 65.62, -3.5), (dx, 0.0, 0.0), 20), v))\n'),
 }
 
 
 def script(name):
-    with open(os.path.join(PRESETS, name + ".py"), encoding="utf-8") as f:
-        text = f.read()
+    text = test_kit.copied(os.path.join(PRESETS, name + ".py"))
     return text.replace("import mc\n", "import mc\nfrom kit import values\n", 1) + "\n\n" + WIRING[name]
 
 
@@ -414,11 +401,15 @@ class OngoingStopTests(unittest.TestCase):
         self.fake.stop()
 
     def start(self, preset, instance, *argv):
-        """The preset as a script, run as EC2 runs one: python3 -u main.py key=value ..."""
+        """The preset as a script, run as EC2 runs a copy: its key=value words checked into its
+        meta file; any other word after main.py."""
         folder = os.path.join(TMP, instance)
         os.makedirs(folder, exist_ok=True)
         with open(os.path.join(folder, "main.py"), "w") as f:
             f.write(script(preset))
+        with open(os.path.join(self.run_dir, instance + ".json"), "w") as f:
+            json.dump(test_kit.values_meta(load(preset), given=[a for a in argv if "=" in a]), f)
+        argv = [a for a in argv if "=" not in a]
         env = dict(os.environ, PYTHONPATH=test_kit.LIB, VFG_RCON_HOST="127.0.0.1", PYTHONDONTWRITEBYTECODE="1",
                    VFG_MC_PROPERTIES=test_kit._properties(self.password, self.fake.port), VFG_INSTANCE=instance,
                    VFG_RUN_DIR=self.run_dir, VFG_PROTECTED=os.path.join(TMP, "none.json"))

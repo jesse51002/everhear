@@ -2,7 +2,7 @@
 projectile_lands, countdown and on_death, each run for real and the world asked after.
 
     integration/realmc/up ps && eval "$(integration/realmc/env ps)"
-    uv run --python 3.9 python scripts/_test/live_presets_shows.py
+    uv run --no-project --python 3.12 --with pydantic python scripts/_test/live_presets_shows.py
 
 Like live_kit.py it runs only against a realmc test server, never the box. Every command a
 preset sends is recorded with the server's answer, and no answer may be a parse error
@@ -10,6 +10,7 @@ preset sends is recorded with the server's answer, and no answer may be a parse 
 nobody hears here, is checked. What needs a player (a crouch, a player's arrow, a death)
 runs with Carpet's fake players and is skipped without them.
 """
+import json
 import os
 import re
 import signal
@@ -25,9 +26,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = os.path.dirname(HERE)
 LIB = os.path.join(SCRIPTS, "_lib")
 PRESETS = os.path.join(SCRIPTS, "_presets")
+sys.path.append(os.path.dirname(os.path.dirname(HERE)))  # the repo: a preset's values class imports actions._types
 sys.path.insert(0, HERE)
 
 from live_kit import X, FLOOR, Z, ok  # noqa: E402  (refuses anything but a realmc server)
+from test_kit import values_meta  # noqa: E402
 import mc  # noqa: E402
 from kit import items, values, world  # noqa: E402
 
@@ -59,7 +62,8 @@ mc.rcon = _recording
 
 
 def vals(mod, *argv):
-    return values(mod.VALUES, argv=list(argv), run_dir=tempfile.mkdtemp(), instance="t", poll=0.05)
+    """A preset's values with key=value words given, checked as vfg action run checks them."""
+    return values(meta=values_meta(mod, given=argv), run_dir=tempfile.mkdtemp(), instance="t", poll=0.05)
 
 
 def refused(since=0):
@@ -457,11 +461,7 @@ ASKS = ["probe"]
 from kit import values, loop
 import mc
 
-VALUES = {
-    "player": {"type": "player", "default": "@a"},
-}
-
-v = values(VALUES)
+v = values()
 mc.log("ready")
 %(wiring)s
 '''
@@ -478,8 +478,13 @@ class LiveStops(unittest.TestCase):
         os.makedirs(folder)
         with open(os.path.join(folder, "main.py"), "w") as f:
             f.write(text)
-        env = dict(os.environ, PYTHONPATH=LIB, VFG_INSTANCE=name, VFG_RUN_DIR=tempfile.mkdtemp())
-        proc = subprocess.Popen([sys.executable, "-u", "main.py"] + list(argv), cwd=folder, env=env,
+        run_dir = tempfile.mkdtemp()
+        meta = values_meta(preset, given=argv)       # the meta file a copy gets: the preset's values, and player
+        meta["values"]["player"] = "@a"
+        with open(os.path.join(run_dir, name + ".json"), "w") as f:
+            json.dump(meta, f)
+        env = dict(os.environ, PYTHONPATH=LIB, VFG_INSTANCE=name, VFG_RUN_DIR=run_dir)
+        proc = subprocess.Popen([sys.executable, "-u", "main.py"], cwd=folder, env=env,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         lines = []
         reader = threading.Thread(target=lambda: lines.extend(iter(proc.stdout.readline, b"")), daemon=True)

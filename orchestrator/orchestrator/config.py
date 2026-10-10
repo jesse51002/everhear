@@ -25,14 +25,15 @@ class Config:
     fresh_file: str
     # orchestrator/prompts, beside the package.
     prompts_dir: str
-    # Every task goes to an implementer; the session itself runs no command.
+    # Every task goes to an implementer; the session itself runs no command. Haiku 5.5, as every
+    # agent is (the actions spec); VFG_ORCH_MODEL changes it.
     model: str
     effort: str
     # The implementer subagents' own effort (AgentDefinition.effort).
     implementer_effort: str
     # A fresh session once a main-thread call's input passes this many tokens (0: never).
     max_context: int
-    # Haiku 5.5 for now (the prototype runs on the owner's subscription); VFG_IMPL_MODEL changes it.
+    # Haiku 5.5, as every agent is (the actions spec); VFG_IMPL_MODEL changes it.
     implementer_model: str
     max_implementers: int
     stale_minutes: int
@@ -42,6 +43,9 @@ class Config:
     server: str = "main"
     route_timeout_s: float = 3.0
     subagent_cache_ttl: str = "5m"
+    # vfg's own folder, VFG_HOME (~/.vfg): the actions cache and running.json that vfg keeps,
+    # which every implementer's brief is read from.
+    home: str = ""
 
 
 def expand_home(p: str) -> str:
@@ -131,7 +135,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         lock_file=os.path.join(orch_dir, "lock"),
         fresh_file=os.path.join(orch_dir, "fresh"),
         prompts_dir=os.path.join(ORCH, "prompts"),
-        model=env.get("VFG_ORCH_MODEL") or "opus",
+        model=env.get("VFG_ORCH_MODEL") or "claude-haiku-5-5",
         effort=env.get("VFG_ORCH_EFFORT") or "low",
         implementer_model=env.get("VFG_IMPL_MODEL") or env.get("VFG_IMPLEMENTER_MODEL") or "claude-haiku-5-5",
         implementer_effort=env.get("VFG_IMPL_EFFORT") or "low",
@@ -143,6 +147,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         server=server if _SERVER_RE.match(server) else "main",
         route_timeout_s=_seconds_setting(vfg_setting(env, file, "VFG_ROUTE_TIMEOUT_S"), 3.0, 0.1, 60),
         subagent_cache_ttl=ttl if ttl in CACHE_TTLS else "5m",
+        home=os.path.abspath(expand_home(env.get("VFG_HOME") or "~/.vfg")),
     )
 
 

@@ -5,24 +5,25 @@ import random
 import re
 import time
 from mc import rcon, pos, log
-from kit import values, area, loop, world
+from kit import values, result, area, loop, world
 
-VALUES = {
-    "player": {"type": "player", "default": "@a"},
-    "away":   {"type": "int", "min": 0, "max": 1000, "default": 60},
-    "corner": {"type": "list", "of": "int", "default": []},
-    "seed":   {"type": "int", "min": 0, "max": 1000000, "default": 167},
-}
-
-v = values(VALUES)
-# Where: the south-west corner of its 200 x 100 area, `away` blocks east of the first player
-# the player value names (the range spans their z), or corner=x,z. In the overworld.
-if len(v["corner"]) >= 2:
-    X0, Z0 = int(v["corner"][0]), int(v["corner"][1])
+v = values()
+# Where: the north-west corner (the least x and z) of its 200 x 100 area, `away` blocks east of
+# the first player the player value names (the range spans their z), or at corner: a saved
+# place, x y z or a player, its y not used. In the overworld.
+if v["corner"]:
+    at = world.place(v["corner"])
+    if at is None:
+        result("no mountains: %s is not a saved place nor a player online" % v["corner"], corner=v["corner"])
+        raise SystemExit(0)
+    if at.dim:
+        log("corner %s is in %s: the range is built in the overworld" % (v["corner"], at.dim))
+    X0, _, Z0 = at.block()
 else:
     near = [c for c in (pos(p) for p in loop.who(v["player"])) if c]
     if not near:
-        log("nobody to build it beside: %s is not online, and no corner=x,z" % v["player"])
+        log("nobody to build it beside: %s is not online, and no corner" % v["player"])
+        result("no mountains: %s is not online" % v["player"], players=[])
         raise SystemExit(0)
     X0, Z0 = int(near[0][0]) + v["away"], int(near[0][2]) - 50
 W, D = 200, 100
@@ -234,3 +235,6 @@ for bx in range(X0, X0 + W, 4):
 log("fillbiome commands", nb)
 area.release()
 log("done in %.0fs, fills/commands %d, peak y %d, mspt max %.1f" % (time.time() - t_start, cnt[0], peak_max, mspt_max[0]))
+result("mountain range built over x %d..%d, z %d..%d: its highest peak at y %d, %d trees, in %.0f s" % (
+    X0, X0 + W, Z0, Z0 + D, peak_max, placed, time.time() - t_start), corner="%d %d" % (X0, Z0),
+    size="%d x %d" % (W, D), peak=peak_max, trees=placed, seed=v["seed"])

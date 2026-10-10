@@ -4,12 +4,7 @@ import json
 import re
 
 import mc
-from kit import values, loop
-
-VALUES = {
-    "player": {"type": "player", "default": "@a"},
-    "every":  {"type": "number", "min": 1, "max": 600, "default": 5, "live": True},
-}
+from kit import values, result, loop
 
 DEFAULTS = {
     "minecraft:max_health": 20.0, "minecraft:movement_speed": 0.10000000149011612, "minecraft:attack_speed": 4.0,
@@ -34,7 +29,8 @@ def sweep(player):
                                                      "color": "red", "bold": False}]))
 
 
-v = values(VALUES)
-mc.log("guarding the attributes of", v["player"])
+v = values()
+result("the attributes of %s are put back to normal every %g s" % (v["player"], v["every"]),
+       player=v["player"], every=v["every"])
 for _ in loop(every=v["every"]):
     sweep(v["player"])

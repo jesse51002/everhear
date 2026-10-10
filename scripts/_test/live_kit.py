@@ -1,7 +1,7 @@
 """The kit against a real Minecraft 26.3 server: the live counterparts of test_kit.py.
 
     integration/realmc/up kit && eval "$(integration/realmc/env kit)"
-    uv run --python 3.9 python scripts/_test/live_kit.py
+    uv run --no-project --python 3.12 python scripts/_test/live_kit.py
 
 It changes blocks, so it runs only against a realmc test server (REALMC_NAME set, and
 VFG_MC_PROPERTIES inside that server's folder), never against the box. Everything it builds
@@ -9,6 +9,7 @@ is at least 40 blocks above the arena's floor and is taken away again (leaving a
 terrain reached that high; `up kit --fresh` puts the world back); the mobs it summons are
 killed. Nobody needs to be online.
 """
+import json
 import os
 import re
 import signal
@@ -226,6 +227,14 @@ class LiveKitPolish(unittest.TestCase):
         aim.untag("vfg_kit_hit")
 
 
+def run_dir(name):
+    """A run directory with the meta file a copy named `name` gets: its one value, player=@a."""
+    d = tempfile.mkdtemp()
+    with open(os.path.join(d, name + ".json"), "w") as f:
+        json.dump({"values": {"player": "@a"}, "live": []}, f)
+    return d
+
+
 class LiveKit(unittest.TestCase):
     def tearDown(self):
         mc.rcon("kill @e[tag=vfg_kit_live]")
@@ -327,7 +336,7 @@ class LiveKit(unittest.TestCase):
 ASKS = []
 from kit import values, items, area, mobs, world, loop
 import mc
-v = values({"player": {"type": "player", "default": "@a"}})
+v = values()
 world.gamerule("mob_griefing", %s)
 world.objective("dummy", "kills")
 area.forceload((%d, 0, %d, %d, 0, %d), wait=5)
@@ -336,7 +345,7 @@ mc.log("ready")
 for p in loop(items.clicks(v["player"], "Probe Wand", every=0.05)):
     pass
 ''' % ("False" if old == "true" else "True", X + 300, Z + 300, X + 340, Z + 340, X, SKY + 1, Z))
-        env = dict(os.environ, PYTHONPATH=LIB, VFG_INSTANCE="kitprobe", VFG_RUN_DIR=tempfile.mkdtemp())
+        env = dict(os.environ, PYTHONPATH=LIB, VFG_INSTANCE="kitprobe", VFG_RUN_DIR=run_dir("kitprobe"))
         proc = subprocess.Popen([sys.executable, "-u", "main.py"], cwd=folder, env=env,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         self.addCleanup(lambda: proc.poll() is None and (proc.send_signal(signal.SIGTERM), proc.communicate(timeout=5)))
@@ -374,14 +383,14 @@ for p in loop(items.clicks(v["player"], "Probe Wand", every=0.05)):
 ASKS = []
 from kit import values, area, mobs, world
 import mc
-v = values({"player": {"type": "player", "default": "@a"}})
+v = values()
 world.gamerule("mob_griefing", %s)
 world.objective("dummy", "kills")
 area.forceload((%d, 0, %d, %d, 0, %d), wait=5)
 mobs.Boss("Ender Boss", "zombie", health=40, nbt="NoAI:1b").spawn(at=(%d.5, %d, %d.5))
 mc.log("made, ending")
 ''' % ("False" if old == "true" else "True", X + 300, Z + 300, X + 340, Z + 340, X, SKY + 1, Z))
-        env = dict(os.environ, PYTHONPATH=LIB, VFG_INSTANCE="kitender", VFG_RUN_DIR=tempfile.mkdtemp())
+        env = dict(os.environ, PYTHONPATH=LIB, VFG_INSTANCE="kitender", VFG_RUN_DIR=run_dir("kitender"))
         out = subprocess.run([sys.executable, "-u", "main.py"], cwd=folder, env=env, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, timeout=30).stdout.decode()
         self.assertIn("ended by itself", out)
@@ -390,9 +399,10 @@ mc.log("made, ending")
         self.assertEqual(world.gamerule("mob_griefing"), old)
         self.assertNotIn("vfg_kitender_kills", mc.rcon("scoreboard objectives list"))
         self.assertIn("not marked", mc.rcon("forceload query %d %d" % (X + 320, Z + 320)))
-        # What it made stays: the boss's body, its bar gone.
-        self.assertIn("Count: 1", mc.rcon("execute if entity @e[tag=vfg_kitender]"))
-        mc.rcon("kill @e[tag=vfg_kitender]")
+        # What it made stays: the boss's body, its bar gone, handed over to vfg_left_kitender.
+        self.assertIn("Count: 1", mc.rcon("execute if entity @e[tag=vfg_left_kitender]"))
+        self.assertNotIn("passed", mc.rcon("execute if entity @e[tag=vfg_kitender]").lower())
+        mc.rcon("kill @e[tag=vfg_left_kitender]")
 
 REALMC = os.path.join(os.path.dirname(os.path.dirname(HERE)), "integration", "realmc")
 sys.path.insert(0, REALMC)
@@ -409,7 +419,7 @@ WAND = '''"""%s: logs each click."""
 ASKS = []
 from kit import values, items, loop
 import mc
-v = values({"player": {"type": "player", "default": "@a"}})
+v = values()
 for p in loop(items.%s):
     mc.log("fired", p)
 '''
@@ -436,7 +446,7 @@ class LiveClicks(unittest.TestCase):
         os.makedirs(folder)
         with open(os.path.join(folder, "main.py"), "w") as f:
             f.write(WAND % (title, gen))
-        env = dict(os.environ, PYTHONPATH=LIB, VFG_INSTANCE=name, VFG_RUN_DIR=tempfile.mkdtemp())
+        env = dict(os.environ, PYTHONPATH=LIB, VFG_INSTANCE=name, VFG_RUN_DIR=run_dir(name))
         proc = subprocess.Popen([sys.executable, "-u", "main.py"], cwd=folder, env=env,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         self.procs.append(proc)

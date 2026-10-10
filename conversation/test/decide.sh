@@ -5,7 +5,7 @@
 #   test/decide.sh                 every case in test/cases/
 #   test/decide.sh join done       only these cases
 #
-#   VFG_TEST_MODEL   model for the runs (default sonnet, as the session runs)
+#   VFG_TEST_MODEL   model for the runs (default claude-haiku-5-5, as the session runs)
 #   VFG_TEST_EFFORT  effort (default low)
 #
 # The settings are also passed with --settings: until the owner has trusted this
@@ -41,7 +41,7 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 cd "$ROOT"
-MODEL="${VFG_TEST_MODEL:-sonnet}"
+MODEL="${VFG_TEST_MODEL:-claude-haiku-5-5}"
 TEST_OWNER=Sunny
 EFFORT="${VFG_TEST_EFFORT:-low}"
 unset ANTHROPIC_API_KEY

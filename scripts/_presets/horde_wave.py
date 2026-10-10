@@ -4,17 +4,26 @@ import time
 
 import mc
 from kit import fx, loop, mobs
+from actions._types import Field, Live, MobId, Values  # the values class: read on the PC only
 
-VALUES = {
-    "horde_mobs":       {"type": "list", "of": "mob", "default": ["zombie"], "live": True},
-    "horde_per_player": {"type": "int", "min": 1, "max": 100, "default": 10, "live": True},
-    "horde_every":      {"type": "number", "min": 1, "max": 3600, "default": 30, "live": True},
-    "horde_cap":        {"type": "int", "min": 1, "max": 400, "default": 60, "live": True},
-    "horde_spread":     {"type": "int", "min": 4, "max": 100, "default": 12, "live": True},
-    "horde_waves":      {"type": "int", "min": 0, "max": 1000, "default": 0},
-    "horde_explode":    {"type": "bool", "default": False, "live": True},
-    "horde_announce":   {"type": "bool", "default": True, "live": True},
-}
+
+class HordeWave(Values):
+    horde_mobs: Live[list[MobId]] = ["zombie"]
+    """the mobs a wave is made of, each one picked at random from these"""
+    horde_per_player: Live[int] = Field(10, ge=1, le=100)
+    """how many mobs each wave brings round each player"""
+    horde_every: Live[float] = Field(30, ge=1, le=3600)
+    """seconds between waves"""
+    horde_cap: Live[int] = Field(60, ge=1, le=400)
+    """the most of its mobs alive at once; a wave brings fewer, or none, to stay under it"""
+    horde_spread: Live[int] = Field(12, ge=4, le=100)
+    """how far round each player the mobs appear, in blocks"""
+    horde_waves: int = Field(0, ge=0, le=1000)
+    """how many waves; after the last it ends once every mob is dead (0: waves until stopped)"""
+    horde_explode: Live[bool] = False
+    """its creepers blow up; off: their blasts do nothing"""
+    horde_announce: Live[bool] = True
+    """show "Wave N" on each player's screen at each wave"""
 
 
 def horde_wave(player, v):

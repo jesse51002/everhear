@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # The realmc smoke test, against a real 26.3 server: up (its world fresh from the template), one
-# command through vfg, a fill checked with `execute if blocks`, a fake player (with Carpet) that
-# turns, right-clicks a carrot_on_a_stick and sneaks, one seed script run for a few seconds and
-# stopped, down. PASS or FAIL per check; exit 1 if any failed.
+# command through vfg (the command action), a fill checked with `execute if blocks`, a fake
+# player (with Carpet) that turns, right-clicks a carrot_on_a_stick and sneaks, one action run as
+# a copy for a few seconds and stopped, down. PASS or FAIL per check; exit 1 if any failed.
 #
 #   integration/realmc/smoke.sh [NAME] [--keep]    NAME defaults to smoke; --keep leaves it running
 set -uo pipefail
@@ -40,14 +40,18 @@ expect "time query day (26.3's form of daytime)" '^Timeline minecraft:day is at 
 expect "list" '^There are [0-9]+ of a max of [0-9]+ players online' "$(vfg cmd list 2>&1)"
 
 echo "== fill, then execute if blocks"
+# The command action refuses what places or removes blocks (building is a script's), so the
+# test's own fills go straight to RCON.
+rc() { python3 "$here/realmc.py" cmd "$1" 2>&1; }
+expect "vfg cmd refuses a fill" 'fill places or removes blocks' "$(vfg cmd "fill $ax $ay $az $ax $ay $az minecraft:stone" 2>&1)"
 x=$((ax + 4)) y=$ay z=$((az + 4))
-expect "fill 3x3x3 gold" '^Successfully filled 27 block' "$(vfg cmd "fill $x $y $z $((x+2)) $((y+2)) $((z+2)) minecraft:gold_block" 2>&1)"
-expect "fill its twin" '^Successfully filled 27 block' "$(vfg cmd "fill $((x+4)) $y $z $((x+6)) $((y+2)) $((z+2)) minecraft:gold_block" 2>&1)"
+expect "fill 3x3x3 gold" '^Successfully filled 27 block' "$(rc "fill $x $y $z $((x+2)) $((y+2)) $((z+2)) minecraft:gold_block")"
+expect "fill its twin" '^Successfully filled 27 block' "$(rc "fill $((x+4)) $y $z $((x+6)) $((y+2)) $((z+2)) minecraft:gold_block")"
 expect "the two match" '^Test passed\. Count: 27$' "$(vfg cmd "execute if blocks $x $y $z $((x+2)) $((y+2)) $((z+2)) $((x+4)) $y $z all" 2>&1)"
-vfg cmd "setblock $((x+5)) $((y+1)) $((z+1)) minecraft:stone" >/dev/null 2>&1
+rc "setblock $((x+5)) $((y+1)) $((z+1)) minecraft:stone" >/dev/null
 expect "one block changed: they differ" '^Test failed' "$(vfg cmd "execute if blocks $x $y $z $((x+2)) $((y+2)) $((z+2)) $((x+4)) $y $z all" 2>&1)"
 expect "that block is stone" '^Test passed$' "$(vfg cmd "execute if block $((x+5)) $((y+1)) $((z+1)) minecraft:stone" 2>&1)"
-vfg cmd "fill $x $y $z $((x+6)) $((y+2)) $((z+2)) minecraft:air" >/dev/null 2>&1
+rc "fill $x $y $z $((x+6)) $((y+2)) $((z+2)) minecraft:air" >/dev/null
 
 players() { python3 "$here/players.py" --name "$name" "$@" 2>&1; }
 if [[ $mode == carpet ]]; then
@@ -120,18 +124,20 @@ else
   echo "== fake players: skipped (no Carpet; integration/realmc/realmc.py carpet, then run this again)"
 fi
 
-echo "== a seed script: tnt_rain"
-out=$(vfg script run tnt_rain 2>&1)
-expect "vfg script run" '^running tnt_rain pid [0-9]+' "$out"
-sleep 1.5  # its first volley comes at once; the TNT's fuse is 4 s
+echo "== an action: railgun, run as a copy"
+out=$(vfg action run railgun player=Steve 2>&1)
+expect "vfg action run" '"ok": true, "copy": "railgun", "action": "railgun", "running": true' "$out"
+railgun='execute if items entity Steve container.* *[custom_data~{vfg_item:"railgun"}]'
 if [[ $mode == carpet ]]; then
-  expect "it dropped TNT on Steve" '^Test passed' "$(vfg cmd 'execute if entity @e[type=minecraft:tnt]' 2>&1)"
+  expect "it gave Steve the Railgun" '^Test passed' "$(vfg cmd "$railgun" 2>&1)"
 fi
-expect "vfg script list" 'tnt_rain running pid [0-9]+' "$(vfg script list 2>&1)"
-logs=$(vfg script logs tnt_rain 2>&1)
+expect "vfg script list" '^railgun( |$)' "$(vfg script list --fresh 2>&1)"
+logs=$(vfg script logs railgun 2>&1)
 if [[ $logs == *Traceback* ]]; then bad "its log has no traceback" "$logs"; else ok "its log has no traceback"; fi
-expect "vfg script stop" '^stopped tnt_rain' "$(vfg script stop tnt_rain 2>&1)"
-expect "its cleanup took its TNT away" '^Test failed' "$(vfg cmd 'execute if entity @e[type=minecraft:tnt,tag=vfg_tnt_rain]' 2>&1)"
+expect "vfg script stop (the stop action)" '^stopped railgun' "$(vfg script stop railgun 2>&1)"
+if [[ $mode == carpet ]]; then
+  expect "its cleanup took the Railgun back" '^Test failed' "$(vfg cmd "$railgun" 2>&1)"
+fi
 if [[ $mode == carpet ]]; then
   players kill Steve >/dev/null
   expect "kill: he has left" '^There are 0 of a max' "$(vfg cmd list 2>&1)"

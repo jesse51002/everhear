@@ -1,13 +1,16 @@
 """Tests for the "shows" presets (theme_music, charge_up, sneak, projectile_lands, countdown,
-on_death) against the fake RCON server and fake_world, under the Python EC2 has:
+on_death) against the fake RCON server and fake_world, under the Python EC2 has, with
+pydantic for a preset's values class:
 
-    uv run --python 3.9 python scripts/_test/test_presets_shows.py
+    uv run --no-project --python 3.12 --with pydantic python scripts/_test/test_presets_shows.py
 
-Each preset: its function sends the commands it should, its VALUES refuse values outside
-their limits, and, copied into a script the way `vfg script new --preset` copies it and
-stopped with SIGTERM, nothing it made is left. The kit's harness (test_kit.KitCase) points
+Each preset: its function sends the commands it should, its values class clamps or refuses
+values outside its limits, and, copied into a script the way `vfg script new --preset` copies
+it and stopped with SIGTERM, nothing it made is left. The kit's harness (test_kit.KitCase) points
 mc at a fake whose world each test makes afresh.
 """
+import importlib.util
+import json
 import os
 import re
 import signal
@@ -23,22 +26,31 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = os.path.dirname(HERE)
 LIB = os.path.join(SCRIPTS, "_lib")
 PRESETS = os.path.join(SCRIPTS, "_presets")
+sys.path.append(os.path.dirname(os.path.dirname(HERE)))  # the repo: a preset's values class imports actions._types
 TOOLKIT_LIB = os.path.join(os.path.dirname(SCRIPTS), "toolkit", "lib")
 sys.path.insert(0, HERE)
 
-from test_kit import KitCase, collect, TMP, _properties  # noqa: E402  (also points mc at a fake)
+import test_kit  # noqa: E402  (also points mc at a fake)
+from test_kit import KitCase, collect, TMP, _properties  # noqa: E402
 from fake_rcon import FakeRcon  # noqa: E402
 from fake_world import World  # noqa: E402
 import mc  # noqa: E402
 from kit import fx, values, world  # noqa: E402
 
-sys.path.insert(0, PRESETS)
-import theme_music as theme_mod  # noqa: E402
-import charge_up as charge_mod  # noqa: E402
-import sneak as sneak_mod  # noqa: E402
-import projectile_lands as proj_mod  # noqa: E402
-import countdown as count_mod  # noqa: E402
-import on_death as death_mod  # noqa: E402
+
+def _load(name):
+    """A preset as a module from its file, left out of sys.modules: imported by its bare name,
+    inspect would take its file for that module's, and the class preset() reads from the same
+    file for an action run in this process (run_tests.py's) would lose its descriptions."""
+    spec = importlib.util.spec_from_file_location("preset_" + name, os.path.join(PRESETS, name + ".py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+theme_mod, charge_mod, sneak_mod, proj_mod, count_mod, death_mod = (
+    _load(n) for n in ("theme_music", "charge_up", "sneak", "projectile_lands", "countdown", "on_death"))
+
 sys.path.insert(0, TOOLKIT_LIB)
 import library  # noqa: E402
 
@@ -46,8 +58,10 @@ MODS = [theme_mod, charge_mod, sneak_mod, proj_mod, count_mod, death_mod]
 
 
 def vals(mod, *argv):
-    """A preset's values as a script sees them, with key=value words given."""
-    return values(mod.VALUES, argv=list(argv), run_dir=tempfile.mkdtemp(dir=TMP), instance="t", poll=0.05)
+    """A preset's values as a script sees them, with key=value words given, checked as vfg
+    action run checks them."""
+    return values(meta=test_kit.values_meta(mod, given=argv), run_dir=tempfile.mkdtemp(dir=TMP), instance="t",
+                  poll=0.05)
 
 
 def wait_for(cond, seconds=5.0):
@@ -181,31 +195,21 @@ class ShowCase(KitCase):
         self.world.add_player("Steve", (10.5, 64.0, -3.5), rot=(-90.0, 0.0), prefix="[Owner] ")
 
 
-# ---- VALUES ----------------------------------------------------------------------------------
+# ---- values ----------------------------------------------------------------------------------
 
 class PresetValuesTests(unittest.TestCase):
-    def test_every_value_refuses_what_is_outside_its_limits(self):
+    def test_every_value_is_clamped_or_refused_outside_its_limits(self):
+        va = test_kit._vfg_actions()
+        T = va._types()
         for mod in MODS:
-            for key, entry in mod.VALUES.items():
-                kind = entry["type"]
-                if kind in ("int", "number"):
-                    x, note = values.check(key, entry, entry["max"] + 1000)
-                    self.assertEqual(x, entry["max"], key)
-                    self.assertIn("clamped", note, key)
-                    x, note = values.check(key, entry, entry["min"] - 1000)
-                    self.assertEqual(x, entry["min"], key)
-                    self.assertRaises(ValueError, values.check, key, entry, "lots")
-                elif kind == "enum":
-                    self.assertRaises(ValueError, values.check, key, entry, "nonsense")
-                    for o in entry["of"]:
-                        self.assertEqual(values.check(key, entry, o.upper())[0], o)
-                elif kind == "bool":
-                    self.assertRaises(ValueError, values.check, key, entry, "maybe")
-                elif kind == "player":
-                    self.assertRaises(ValueError, values.check, key, entry, "not a name!")
-                elif kind == "particle":
-                    self.assertRaises(ValueError, values.check, key, entry, "Not A Particle")
-                self.assertEqual(values.check(key, entry, entry["default"])[1], "", key)
+            test_kit.assert_checked_on_the_pc(self, mod)
+            cls = test_kit.values_class(mod)
+            for key, f in cls.model_fields.items():
+                for o in T.choices(f.annotation, f.metadata) or []:
+                    if T.kind(f.annotation, f.metadata) == "enum":     # an option in any case
+                        self.assertEqual(va.check_values(cls, {key: o.upper()}, allow_fixed=True).values[key], o)
+                if T.kind(f.annotation, f.metadata) == "particle":
+                    self.assertRaises(ValueError, va.check_values, cls, {key: "Not A Particle"}, allow_fixed=True)
 
     def test_every_preset_passes_vfg_script_check(self):
         lib = library.Library(os.path.dirname(SCRIPTS))
@@ -602,11 +606,7 @@ ASKS = ["probe"]
 from kit import values, loop
 import mc
 
-VALUES = {
-    "player": {"type": "player", "default": "@a"},
-}
-
-v = values(VALUES)
+v = values()
 %(wiring)s
 '''
 
@@ -618,15 +618,22 @@ def make_script(preset, wiring):
     return text
 
 
-def start(name, source, fake, password, *argv):
+def start(name, source, fake, password, preset, *argv):
+    """The script started as the box starts a copy: its meta file holds player=@a and every value
+    of the preset's class, with the key=value words given."""
     folder = os.path.join(TMP, name)
     os.makedirs(folder, exist_ok=True)
     with open(os.path.join(folder, "main.py"), "w") as f:
         f.write(source)
+    run_dir = tempfile.mkdtemp(dir=TMP)
+    meta = test_kit.values_meta(preset, given=argv)
+    meta["values"]["player"] = "@a"
+    with open(os.path.join(run_dir, name + ".json"), "w") as f:
+        json.dump(meta, f)
     env = dict(os.environ, PYTHONPATH=LIB, VFG_MC_PROPERTIES=_properties(password, fake.port),
                VFG_RCON_HOST="127.0.0.1", PYTHONDONTWRITEBYTECODE="1", VFG_INSTANCE=name,
-               VFG_RUN_DIR=tempfile.mkdtemp(dir=TMP), VFG_PROTECTED=os.path.join(TMP, "none.json"))
-    return subprocess.Popen([sys.executable, "-u", "main.py"] + list(argv), cwd=folder, env=env,
+               VFG_RUN_DIR=run_dir, VFG_PROTECTED=os.path.join(TMP, "none.json"))
+    return subprocess.Popen([sys.executable, "-u", "main.py"], cwd=folder, env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
 
@@ -649,7 +656,7 @@ class StopTests(unittest.TestCase):
         self.fake.stop()
 
     def run_and_stop(self, name, preset, wiring, ready, *argv):
-        proc = start(name, make_script(preset, wiring), self.fake, self.password, *argv)
+        proc = start(name, make_script(preset, wiring), self.fake, self.password, preset, *argv)
         self.procs.append(proc)
         self.assertTrue(wait_for(lambda: ready(self.world), 6), "never got going")
         t = time.time()

@@ -1,5 +1,5 @@
 # common.py: prepended to every program vfg sends to EC2.
-# Python 3.9, standard library only. The PC appends `ARGS = json.loads(...)`
+# Python 3.9+, standard library only (the box runs it on its 3.12). The PC appends `ARGS = json.loads(...)`
 # and then the program itself; the program answers with stdout, one line on
 # stderr and its exit code.
 import json

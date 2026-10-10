@@ -1,16 +1,20 @@
-"""Tests for the scripts folder, run under the Python EC2 has:
+"""Tests for the scripts folder, run under the Python EC2 has, with pydantic for the actions:
 
-    uv run --python 3.9 python scripts/_test/run_tests.py
+    uv run --no-project --python 3.12 --with pydantic python scripts/_test/run_tests.py
 
 They start fake_rcon.py on a free port with a temp server.properties, check
 _lib/mc.py, then run every script (every folder without a leading "_") the way
 EC2 does: `python3 -u main.py` in its own folder with PYTHONPATH=scripts/_lib.
-A seed (README.md beside main.py) runs with its Usage line's arguments. An example
-(main.py with ASKS and VALUES, no README.md) runs with its defaults and VFG_INSTANCE set,
+A seed (README.md beside main.py) runs with its Usage line's arguments, as a copy of its
+action like an example below. An example (main.py with ASKS, no README.md) runs with its
+defaults and VFG_INSTANCE set: it gets the meta file `vfg action run` would write for its
+first action with nothing given (lib/py/vfg_actions.py), which values() reads. It runs
 against fake_world with Steve and Alex online; Steve tries every item it gives him (a
 click, a 1.5 s hold) and crouches; then SIGTERM. It must send commands, raise nothing,
 exit 0 within 2 s of the stop, and leave nothing tagged vfg_<name>: no entity, bossbar,
-forceload or objective. The kit's tests (test_kit.py) and every test_presets_*.py and
+forceload or objective. The scripts under the six core actions (CORE) need values their
+defaults leave empty, so test_core.py runs them instead. The kit's tests (test_kit.py),
+instances.py's (test_instances.py), test_core.py and every test_presets_*.py and
 test_examples_*.py beside this file run with them.
 """
 import json
@@ -258,9 +262,14 @@ class McTests(unittest.TestCase):
 
 # ---- every script, against its own fake, all at once -------------------------------------
 
+# The scripts under the dispatcher's core actions: each needs values its defaults leave empty (a
+# command, a place, a running copy), so test_core.py runs them, with those values, on a fake world.
+CORE = ("command", "edit", "save_place", "stop", "summon_around", "teleport")
+
+
 def script_names():
-    return sorted(d for d in os.listdir(SCRIPTS)
-                  if not d.startswith("_") and not d.startswith(".") and os.path.isdir(os.path.join(SCRIPTS, d)))
+    return sorted(d for d in os.listdir(SCRIPTS) if not d.startswith("_") and not d.startswith(".")
+                  and d not in CORE and os.path.isdir(os.path.join(SCRIPTS, d)))
 
 
 def usage_args(line):
@@ -270,7 +279,7 @@ def usage_args(line):
     return ["Steve" for _ in re.findall(r"<[^>]*>", rest)]
 
 
-def run_script(name):
+def run_seed(name):
     folder = os.path.join(SCRIPTS, name)
     res = {"name": name}
     with open(os.path.join(folder, "README.md"), encoding="utf-8") as f:
@@ -292,11 +301,16 @@ def run_script(name):
     password = secrets.token_hex(8)
     fake = FakeRcon(password).start()
     out_path = os.path.join(TMP, name + ".out")
+    env = script_env(properties(password, fake.port))
+    meta = action_meta(name)      # a seed runs as a copy of its action
+    env.update(VFG_INSTANCE=name, VFG_SCRIPT=name, VFG_RUN_DIR=tempfile.mkdtemp(dir=TMP))
+    with open(os.path.join(env["VFG_RUN_DIR"], name + ".json"), "w") as f:
+        json.dump(meta, f)
     try:
         with open(out_path, "wb") as out:
             start = time.time()
             proc = subprocess.Popen([sys.executable, "-u", "main.py"] + args, cwd=folder,
-                                    env=script_env(properties(password, fake.port)), stdout=out, stderr=out)
+                                    env=env, stdout=out, stderr=out)
             if ends_itself:
                 try:
                     proc.wait(timeout=20)
@@ -330,7 +344,7 @@ def run_script(name):
 
 
 def is_example(name):
-    """An example script: main.py with its VALUES at the top, no README.md beside it."""
+    """An example script: main.py with its ASKS at the top, no README.md beside it."""
     return not os.path.isfile(os.path.join(SCRIPTS, name, "README.md"))
 
 
@@ -358,9 +372,45 @@ def play(world, until):
             time.sleep(0.2)
 
 
-def run_example(name, seconds=4.0, folder=None):
-    """An example started as on EC2, with its defaults (no arguments), against a fake world
-    with Steve and Alex online: it plays a little, then SIGTERM if it is still running."""
+_CATALOG = []
+_CATALOG_LOCK = threading.Lock()
+
+
+def catalog():
+    """(vfg_actions, its Catalog of the actions), loaded once."""
+    with _CATALOG_LOCK:   # the scripts run in threads: the actions load once
+        if not _CATALOG:
+            sys.path.insert(0, os.path.join(os.path.dirname(SCRIPTS), "lib", "py"))
+            import vfg_actions
+            _CATALOG.append((vfg_actions, vfg_actions.Catalog(os.path.dirname(SCRIPTS), None)))
+        return _CATALOG[0]
+
+
+def copy_meta(action, given, copy=None):
+    """The meta file vfg action run writes for a copy of an action run with these values."""
+    va, cat = catalog()
+    cls = cat.get(action)
+    with _CATALOG_LOCK:
+        checked = va.check_values(cls, given)
+    return {"copy": copy or action, "action": action, "script": cls.script, "source": "library",
+            "values": checked.values, "live": checked.live, "runs": cls.runs, "task": None, "started": None}
+
+
+def action_meta(name):
+    """The meta file of a copy of a script's first action (the one named as the script, else the
+    first by name) run with nothing given, as vfg action run writes it."""
+    va, cat = catalog()
+    over = sorted(n for n in cat.names() if cat.get(n).script == name)
+    if not over:
+        why = cat.errors().get(name)
+        raise AssertionError("no action runs %s%s" % (name, " (%s)" % why if why else ""))
+    return copy_meta(name if name in over else over[0], {}, copy=name)
+
+
+def run_example(name, seconds=4.0, folder=None, meta=None):
+    """An example started as on EC2, as a copy of its action with nothing given (a library
+    script; else `meta`, the meta file's dict), against a fake world with Steve and Alex
+    online: it plays a little, then SIGTERM if it is still running."""
     folder = folder or os.path.join(SCRIPTS, name)
     res = {"name": name, "example": True}
     with open(os.path.join(folder, "main.py"), encoding="utf-8") as f:
@@ -379,8 +429,13 @@ def run_example(name, seconds=4.0, folder=None):
     fake = FakeRcon(password, responder=world.respond).start()
     out_path = os.path.join(TMP, name + ".out")
     env = script_env(properties(password, fake.port))
-    env.update(VFG_INSTANCE=name, VFG_RUN_DIR=tempfile.mkdtemp(dir=TMP), VFG_LIVE_POLL_S="0.5",
+    env.update(VFG_INSTANCE=name, VFG_SCRIPT=name, VFG_RUN_DIR=tempfile.mkdtemp(dir=TMP), VFG_LIVE_POLL_S="0.5",
                VFG_PROTECTED=os.path.join(TMP, "no-protected.json"))
+    if meta is None:
+        meta = action_meta(name)
+    with open(os.path.join(env["VFG_RUN_DIR"], name + ".json"), "w") as f:
+        json.dump(meta, f)
+    res["action"] = meta.get("action")
     tag = "vfg_" + name
     try:
         with open(out_path, "wb") as out:
@@ -411,7 +466,7 @@ def run_example(name, seconds=4.0, folder=None):
                 res["cmds"] = list(world.commands)
                 res["after"] = res["cmds"][len(res["before"]):]
                 res["left"] = {
-                    "entities": [e["type"] for e in world.entities if tag in e["tags"]
+                    "entities": [e["type"] for e in world.entities if tag in e["tags"] or "vfg_left_" + name in e["tags"]
                                  or any(t.startswith(tag + "_") for t in e["tags"])],
                     "bossbars": [b for b in world.bossbars if b.startswith("vfg:%s" % name)],
                     "forceloads": sorted(world.forced),
@@ -434,7 +489,7 @@ class ScriptTests(unittest.TestCase):
         for name in script_names():
             def go(n=name):
                 try:
-                    RESULTS[n] = run_example(n) if is_example(n) else run_script(n)
+                    RESULTS[n] = run_example(n) if is_example(n) else run_seed(n)
                 except Exception as e:  # reported by the test itself
                     RESULTS[n] = {"name": n, "error": repr(e)}
             t = threading.Thread(target=go)
@@ -461,7 +516,7 @@ class ScriptTests(unittest.TestCase):
             self.assertIsNotNone(res["stop_took"], "did not exit within 2 s of SIGTERM")
             self.assertIn("kill @e[tag=vfg_%s]" % name, res["after"], "no cleanup sent after SIGTERM")
         else:
-            # Ended by itself: the mobs it made stay; a helper (a marker) never does.
+            # Ended by itself: the mobs it made stay (under vfg_left_<name>); a helper (a marker) never does.
             left["entities"] = [t for t in left["entities"] if t == "marker"]
         self.assertEqual(left, {"entities": [], "bossbars": [], "forceloads": [], "objectives": []},
                          "left behind after it %s" % ("ended" if res["ended_itself"] else "stopped"))
@@ -499,13 +554,7 @@ DEMO = '''"""Demo Wand: a click fires a beam that hurts what it hits and leaves 
 ASKS = ["a demo wand"]
 from kit import values, items, aim, area, mobs, loop
 
-VALUES = {
-    "player":        {"type": "player", "default": "@a"},
-    "cooldown":      {"type": "number", "min": 0, "max": 60, "default": 0, "live": True},
-    "crater_radius": {"type": "int", "min": 2, "max": 16, "default": 3, "live": True},
-}
-
-v = values(VALUES)
+v = values()
 mobs.Boss("Demo Boss", "zombie", health=40).spawn(near="Steve")
 area.forceload((100, 0, 100, 130, 0, 130), wait=0)
 for p in loop(items.clicks(v["player"], "Demo Wand", cooldown=v["cooldown"])):
@@ -527,7 +576,8 @@ class ExampleHarnessTests(unittest.TestCase):
         os.makedirs(folder, exist_ok=True)
         with open(os.path.join(folder, "main.py"), "w") as f:
             f.write(DEMO % extra)
-        return run_example(name, folder=folder)
+        return run_example(name, folder=folder, meta={"values": {"player": "@a", "cooldown": 0, "crater_radius": 3},
+                                                     "live": ["cooldown", "crater_radius"]})
 
     def test_a_good_example_passes(self):
         res = self.demo("demo_wand")
@@ -558,13 +608,16 @@ _add_script_tests()
 def _add_kit_and_preset_tests():
     import glob
     import importlib
-    for path in [os.path.join(HERE, "test_kit.py")] + sorted(glob.glob(os.path.join(HERE, "test_presets_*.py"))) \
+    for path in [os.path.join(HERE, "test_kit.py"), os.path.join(HERE, "test_instances.py"),
+                 os.path.join(HERE, "test_core.py")] \
+            + sorted(glob.glob(os.path.join(HERE, "test_presets_*.py"))) \
             + sorted(glob.glob(os.path.join(HERE, "test_examples_*.py"))):
         mod = importlib.import_module(os.path.basename(path)[:-3])
         for name in dir(mod):
             obj = getattr(mod, name)
             if isinstance(obj, type) and issubclass(obj, unittest.TestCase) and obj.__module__ == mod.__name__:
-                globals()[name if mod.__name__ == "test_kit" else "%s__%s" % (mod.__name__, name)] = obj
+                globals()[name if mod.__name__ in ("test_kit", "test_instances", "test_core")
+                          else "%s__%s" % (mod.__name__, name)] = obj
 
 
 _add_kit_and_preset_tests()

@@ -1,5 +1,6 @@
-"""One task, end to end: the saved places, the selector, then each pick in order through the
-action planner and the executor, every report out as it finishes, and the rest to the batch.
+"""One task, end to end: the actions reloaded where a file changed, the saved places and the
+running copies, the selector, then each pick in order through the action planner and the
+executor, every report out as it finishes, and the rest to the batch.
 
 Every task ends one of three ways, and the conversation always hears which:
 - done: the last action's report closes it (`done`), naming anything dropped;
@@ -22,11 +23,12 @@ from typing import Any
 
 from vfg_llm import LlmError
 
+from . import running
 from .action_planner import Checked, Pick, Planner, Spent, Unchecked
-from .actions import Catalog, action_name
+from .actions import Catalog, command_fields, refresh
 from .batch import Batch
 from .config import Config, log
-from .executor import execute
+from .executor import Ran, execute
 from .inbox import State
 from .reply import Reply
 from .selector import Selector, describe
@@ -57,6 +59,17 @@ def report(say: str, summary: str) -> str:
     return say or summary or "done"
 
 
+def told(ran: Ran, notes: list[str] = ()) -> str:
+    """What the executor says of a run: its summary; the copy's name when it keeps running and
+    the summary does not say it, so the conversation can ask to stop or change it; and the
+    numbers clamped to their limits."""
+    text = ran.summary
+    if ran.running and ran.copy and ran.copy not in text:
+        text += f" (running as {ran.copy})"
+    notes = [n for n in notes if n not in text]
+    return text + (f" ({'; '.join(notes)})" if notes else "")
+
+
 def since(at: str) -> str:
     """`, 4.2 s since it was sent`, from the task line's time."""
     try:
@@ -80,22 +93,27 @@ def without_repeats(commands: list[str], already: list[str]) -> list[str]:
     return left
 
 
+def places_named(lines: list[str]) -> set[str]:
+    """The saved places' names, from `vfg place list`'s lines (`castle 197 68 251 overworld (T23)`)."""
+    return {x.split()[0] for x in lines if x.split()}
+
+
 def strip_end(text: str) -> str:
     return text.strip().rstrip(".").strip()
 
 
 class Dispatcher:
     def __init__(self, cfg: Config, *, catalog: Catalog, refs, vfg: Vfg, ask, state: State,
-                 reply: Reply, batch: Batch, scripts: dict[str, str] | None = None,
-                 hidden: frozenset[str] = frozenset()):
+                 reply: Reply, batch: Batch, hidden: frozenset[str] = frozenset()):
         self.cfg = cfg
-        self.catalog = catalog
+        self.catalog = catalog  # kept in memory; refreshed before each ask
+        self.ask = ask
         self.vfg = vfg
         self.state = state
         self.reply = reply
         self.batch = batch
-        self.selector = Selector(catalog, ask, cfg.model, scripts=scripts or ()) if catalog else None
-        self.planner = Planner(ask, cfg.model, refs, scripts, hidden=hidden)
+        self.selector = Selector(catalog, ask, cfg.model) if catalog.names() else None
+        self.planner = Planner(ask, cfg.model, refs, hidden=hidden)
         self.stopping = False
         self.running: dict[str, asyncio.Task] = {}
 
@@ -141,19 +159,36 @@ class Dispatcher:
 
     # ------------------------------------------------------------- a task
 
-    async def places(self, task_id: str) -> str:
-        """The `SAVED PLACES: …` line, from one `vfg place list`."""
+    def reload(self) -> None:
+        """Before each ask: load again every action file that changed, and rebuild the
+        selector's menu when anything did."""
+        try:
+            changed = refresh(self.catalog)
+        except Exception as e:  # noqa: BLE001 — the actions as they were are still good
+            log("actions", f"reloading failed ({type(e).__name__}: {e}); the menu is as it was")
+            return
+        if changed or self.selector is None:
+            if not self.catalog.names():
+                self.selector = None
+            elif self.selector is None:
+                self.selector = Selector(self.catalog, self.ask, self.cfg.model)
+            else:
+                self.selector.update(self.catalog)
+
+    async def places(self, task_id: str) -> tuple[str, set[str] | None]:
+        """The `SAVED PLACES: …` line, from one `vfg place list`, and the places' names (None
+        when the list could not be read)."""
         t0 = time.perf_counter()
         r = await self.vfg("place", "list", timeout=10)
         ms = int((time.perf_counter() - t0) * 1000)
         if r.code != 0:
             log("places", f"{task_id} vfg place list failed ({why(r)}), {ms} ms")
-            return "SAVED PLACES: unknown (the list could not be read)"
+            return "SAVED PLACES: unknown (the list could not be read)", None
         lines = [x.strip() for x in r.stdout.splitlines() if x.strip()]
         if not lines or lines == ["none"]:
             lines = []
         log("places", f"{task_id} {len(lines)} saved, {ms} ms")
-        return "SAVED PLACES: " + ("; ".join(lines) or "none")
+        return "SAVED PLACES: " + ("; ".join(lines) or "none"), places_named(lines)
 
     async def run(self, task_id: str) -> None:
         rec = self.state.tasks[task_id]
@@ -170,16 +205,21 @@ class Dispatcher:
         tid = rec["id"]
         if self.stopping:
             return self.hand(rec, 0, "not started: the dispatcher stopped")
+        if Selector.whole(rec["task"]):  # Fix …: new code, nothing to fetch for it
+            log("select", f"{tid} is a fix: the whole task is the orchestrator's")
+            return self.hand(rec, 0, "")
+        self.reload()
         if self.selector is None:
             return self.hand(rec, 0, "no actions are loaded")
-        if self.selector.whole(rec["task"]):  # Change to T<n>, Cancel T<n>: nothing to fetch for it
-            log("select", f"{tid} is earlier work: the whole task is the orchestrator's")
-            return self.hand(rec, 0, "")
-        places = await self.places(tid)
+        places, known = await self.places(tid)
+        copies = running.read(self.cfg.running_file)
+        lines = running.block(copies, self.catalog)
         if self.stopping:
             return self.hand(rec, 0, "not started: the dispatcher stopped")
+        # The actions as the menu has them, for this task: another task may reload them while it runs.
+        classes = {n: self.catalog.get(n) for n in self.catalog.names()}
         try:
-            answer = await self.selector.select(rec["task"], rec["context"], places)
+            answer = await self.selector.select(rec["task"], rec["context"], places, lines)
         except LlmError as e:
             log("select", f"{tid} FAILED: {e}")
             return self.hand(rec, 0, f"the complexity selector failed: {e}")
@@ -197,8 +237,9 @@ class Dispatcher:
         for i, pick in enumerate(rec["picks"]):
             if self.stopping:
                 return self.hand(rec, i, self._not_started(rec, i))
-            p = Pick(tid, i, pick["instruction"], rec["context"], places, list(reports), spent, refs)
-            result = await self.run_pick(self.catalog[pick["action"]], p)
+            p = Pick(tid, i, pick["instruction"], rec["context"], places, list(reports), spent, refs,
+                     known=known, copies=copies, running=lines, catalog=self.catalog)
+            result = await self.run_pick(pick["action"], classes[pick["action"]], p)
             if isinstance(result, HandOn):
                 return self.hand(rec, i, self._not_started(rec, i) if result.stopped else result.note)
             last = i == len(rec["picks"]) - 1 and not rec["orchestrator"]
@@ -218,23 +259,26 @@ class Dispatcher:
         # every pick is done or dropped; what is left is the orchestrator's part
         return self.hand(rec, len(rec["picks"]), "")
 
-    async def run_pick(self, cls, p: Pick) -> Done | Dropped | HandOn:
-        """The failure loop: plan, run; when Minecraft or the handler refuses, the planner
-        retries (at most `retries` times), hands on or drops. A timeout (it may have happened)
-        and an action that could not be run at all are handed on at once, with no planner
-        call. An answer that will not validate, or a failed call, is a hand-on."""
-        if p.refs is None and action_name(cls) == "command":
+    async def run_pick(self, name: str, cls, p: Pick) -> Done | Dropped | HandOn:
+        """The failure loop: plan, check, run; when Minecraft, the script or the values' check
+        refuses, the planner retries (at most `retries` times), hands on or drops. A timeout
+        (it may have happened) and an action that could not be run at all are handed on at
+        once, with no planner call. An answer that will not validate, or a failed call, is a
+        hand-on."""
+        fields = [k for k in command_fields(cls) if k in cls.takes]
+        if p.refs is None and fields:
             return HandOn(f"not done {strip_end(p.instruction)}: the command references are not loaded, "
                           "so no command can be checked")
         failure: str | None = None
-        last = None
+        last: dict[str, Any] | None = None
         tries = 0
         checked = Checked()
         took: list[str] = []  # the replies of the commands in p.already, for the report
         while True:
             final = failure is not None and tries > self.cfg.retries
             try:
-                planned = await self.planner.plan(cls, p, failure=failure, last=last, final=final, checked=checked)
+                planned = await self.planner.plan(name, cls, p, failure=failure, last=last, final=final,
+                                                  checked=checked)
             except LlmError as e:
                 log("plan", f"{p.task_id} #{p.index + 1} FAILED: {e}")
                 return HandOn(self._note(p, failure, f"the action planner failed: {e}"))
@@ -248,20 +292,27 @@ class Dispatcher:
                 return HandOn(self._note(p, failure, f"the action planner handed it on: {strip_end(planned.hand_on)}"))
             if self.stopping:
                 return HandOn("", stopped=True)
-            action = planned.action
-            if p.already and isinstance(getattr(action, "commands", None), list):
-                left = without_repeats(action.commands, p.already)
-                if len(left) < len(action.commands):
-                    log("plan", f"{p.task_id} #{p.index + 1} dropped {len(action.commands) - len(left)} command(s) "
-                                "that already ran")
-                if not left:  # the retry only repeated what already took effect
+            try:
+                values, notes = self.planner.values(name, cls, planned, p)
+            except ValueError as e:  # what vfg would refuse: back to the planner, as a refusal is
+                failure, last, tries = str(e), planned.action.model_dump(mode="json", exclude_none=True), tries + 1
+                log("plan", f"{p.task_id} #{p.index + 1} {name} refused before it ran: {failure[:300]}")
+                continue
+            if p.already:
+                for k in fields:
+                    if isinstance(values.get(k), list):
+                        left = without_repeats(values[k], p.already)
+                        if len(left) < len(values[k]):
+                            log("plan", f"{p.task_id} #{p.index + 1} dropped {len(values[k]) - len(left)} "
+                                        "command(s) that already ran")
+                        values[k] = left
+                if fields and not any(values.get(k) for k in fields):  # the retry only repeated what took effect
                     return Done(report(planned.say or p.instruction, "; ".join(took) or "already done"))
-                action = action.model_copy(update={"commands": left})
-            ran = await execute(action, p.task_id, self.vfg, self.cfg.action_timeout_s,
+            ran = await execute(name, cls, values, p.task_id, self.vfg, self.cfg.action_timeout_s,
                                 label=f" #{p.index + 1}")
             tries += 1
             if ran.kind == "ok":
-                return Done(report(planned.say or p.instruction, "; ".join([*took, ran.summary])))
+                return Done(report(planned.say or p.instruction, "; ".join([*took, told(ran, notes)])))
             if ran.kind == "refused" and (offline := offline_names(ran.facts)):
                 return Dropped(f"{' and '.join(offline)} not online")  # nothing can fix it: no planner call
             if ran.kind != "refused":  # timeout and partial may have happened; not_run no retry can fix
@@ -271,7 +322,7 @@ class Dispatcher:
             ran_now = [str(c) for c in ran.facts.get("ran") or []]
             p.already += ran_now
             took += [str(x) for x in (ran.facts.get("replies") or [])[:len(ran_now)]]
-            failure, last = ran.summary, action
+            failure, last = ran.summary, values
 
     @classmethod
     def _note(cls, p: Pick, failure: str | None, why_: str) -> str:

@@ -4,14 +4,20 @@ import random
 
 import mc
 from kit import aim, loop, world
+from actions._types import Field, Live, Values  # the values class: read on the PC only
 
-VALUES = {
-    "sky_radius": {"type": "number", "min": 0, "max": 128, "default": 14, "live": True},
-    "sky_height": {"type": "number", "min": 1, "max": 300, "default": 20, "live": True},
-    "sky_band": {"type": "number", "min": 0, "max": 100, "default": 0, "live": True},
-    "sky_count": {"type": "int", "min": 1, "max": 100, "default": 6, "live": True},
-    "sky_open": {"type": "bool", "default": True, "live": True},
-}
+
+class SkyAbove(Values):
+    sky_radius: Live[float] = Field(14, ge=0, le=128)
+    """how far out round each player or the place the spots are, in blocks"""
+    sky_height: Live[float] = Field(20, ge=1, le=300)
+    """how high over them, in blocks, never above the top of the world"""
+    sky_band: Live[float] = Field(0, ge=0, le=100)
+    """how much higher or lower than sky_height a spot may be, at random, in blocks (0: all at sky_height)"""
+    sky_count: Live[int] = Field(6, ge=1, le=100)
+    """how many spots round each player or the place, each time"""
+    sky_open: Live[bool] = True
+    """only spots in open air: none in a mountain, under a roof or in an unloaded chunk, so fewer may come; off: all"""
 
 
 def sky_above(at, v):

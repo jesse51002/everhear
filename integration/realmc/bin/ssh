@@ -1,6 +1,7 @@
 #!/bin/sh
 # ssh to realmc's stand-in box: toolkit/tests/fake_ssh runs the remote command here, on the
-# box's PATH (Python 3.9 as python3, then the fake sudo, systemctl and journalctl).
+# box's PATH (Amazon Linux's Python 3.9 as python3, then the fake sudo, systemctl and journalctl);
+# the box's Python 3.12 is <vfg>/python/bin/python3, as on the box.
 bin=$(dirname "$(readlink -f "$0")")
 realmc=$(dirname "$bin")
 repo=$(dirname "$(dirname "$realmc")")

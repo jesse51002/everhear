@@ -2,15 +2,17 @@
 sky_above, meteor_fall, projectile, under_feet, walk_steps and enters_chunk.
 
     integration/realmc/up pw && eval "$(integration/realmc/env pw)"
-    uv run --python 3.9 python scripts/_test/live_presets_world.py
+    uv run --no-project --python 3.12 --with pydantic python scripts/_test/live_presets_world.py
 
 It changes blocks, so it runs only against a realmc test server, never the box. What it builds
 is on the arena or at least 40 blocks above it, and is taken away again; the mobs it summons
-are killed and its forceloads let go. walk_steps and enters_chunk need a Carpet fake player
+are killed and its forceloads let go. Its values are checked as vfg action run checks a
+copy's (test_kit.values_meta). walk_steps and enters_chunk need a Carpet fake player
 (the server started with Carpet: integration/realmc/realmc.py carpet, then up --fresh);
 without one those tests are skipped and say so.
 """
 import importlib.util
+import json
 import os
 import re
 import signal
@@ -25,6 +27,7 @@ sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIB = os.path.join(os.path.dirname(HERE), "_lib")
 PRESETS = os.path.join(os.path.dirname(HERE), "_presets")
+sys.path.append(os.path.dirname(os.path.dirname(HERE)))  # the repo: a preset's values class imports actions._types
 REPO = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, LIB)
 
@@ -34,6 +37,7 @@ if not os.environ.get("REALMC_NAME") or "realmc" not in os.path.realpath(PROPS):
 
 import mc  # noqa: E402
 from kit import aim, area, loop, values, world  # noqa: E402
+from test_kit import copied, values_meta  # noqa: E402  (only the helpers: mc stays on the real server)
 
 signal.signal(signal.SIGINT, signal.default_int_handler)
 signal.signal(signal.SIGTERM, signal.SIG_DFL)
@@ -54,8 +58,9 @@ P = {n: load(n) for n in NAMES}
 TMP = tempfile.mkdtemp(prefix="vfg-live-presets-")
 
 
-def vals(name, **given):
-    return values(P[name].VALUES, argv=["%s=%s" % kv for kv in given.items()], run_dir=TMP, instance="t")
+def vals(*names, **given):
+    """The presets' values, their defaults then these, checked as vfg action run checks them."""
+    return values(meta=values_meta(*[P[n] for n in names], given=given), run_dir=TMP, instance="t")
 
 
 def find_floor():
@@ -133,9 +138,12 @@ class LiveReplaceBlocks(Live):
         self.assertTrue(block_is(X + 2, SKY, Z + 2, "glass"))
 
     def test_a_tag_26_3_dropped_is_refused_and_nothing_changes(self):
+        with self.assertRaises(ValueError):          # vfg refuses it before anything is sent
+            vals("replace_blocks", replace_rules="#minecraft:tall_flowers > air")
         area.fill((X, SKY, Z, X + 3, SKY, Z + 3), "sunflower")
-        n = P["replace_blocks"].replace_blocks((X, SKY, Z, X + 3, SKY, Z + 3), vals(
-            "replace_blocks", replace_rules="#minecraft:tall_flowers > air"))
+        given = dict(values_meta(P["replace_blocks"])["values"], replace_rules=["#minecraft:tall_flowers > air"])
+        n = P["replace_blocks"].replace_blocks((X, SKY, Z, X + 3, SKY, Z + 3), values(    # and the server, if it came
+            meta={"values": given, "live": []}, run_dir=TMP, instance="t"))
         self.assertEqual(n, 0)
         self.assertFalse(P["replace_blocks"]._replace_blocks_known["#minecraft:tall_flowers"])
 
@@ -167,8 +175,7 @@ class LiveReplaceBlocks(Live):
         area.fill((X + 4, SKY + 3, Z, X + 7, SKY + 3, Z + 7), "water")
         rules = ["grass_block dirt > netherrack", "#minecraft:base_stone_overworld > 70% netherrack 30% magma_block",
                  "#minecraft:leaves > air", "water > lava"]
-        v = values(P["replace_blocks"].VALUES, argv=['replace_rules=%s' % __import__("json").dumps(rules)],
-                   run_dir=TMP, instance="t")
+        v = vals("replace_blocks", replace_rules=rules)
         n = P["replace_blocks"].replace_blocks(world.Box(*box), v)
         self.assertEqual(n, 8 * 8 * 4)
         self.assertTrue(block_is(X, SKY + 2, Z, "netherrack") and block_is(X + 7, SKY + 1, Z + 7, "netherrack"))
@@ -332,16 +339,14 @@ class LiveShows(Live):
 
 PROBE = '''"""Probe: the world presets mid-way when it is stopped."""
 ASKS = []
-import os
 import mc
 from kit import values, loop, world
-V = {}
+COPIED = %r
 for name in ("shape_fill", "summon", "meteor_fall"):
     g = {"__name__": name}
-    exec(open(os.path.join(%r, name + ".py")).read(), g)
+    exec(COPIED[name], g)
     globals()[name] = g[name]
-    V.update(g["VALUES"])
-v = values(V)
+v = values()
 summon(world.Pos(%d.5, %d, %d.5), v)
 loop.background(meteor_fall, world.Pos(%d.5, %d, %d.5), v)
 loop.background(shape_fill, world.Pos(260.5, %d, 260.5), v, width=64, depth=64, height=30,
@@ -357,11 +362,15 @@ class LiveStop(unittest.TestCase):
         folder = os.path.join(TMP, "probe_world")
         os.makedirs(folder, exist_ok=True)
         with open(os.path.join(folder, "main.py"), "w") as f:
-            f.write(PROBE % (PRESETS, X, FLOOR + 1, Z, X, FLOOR + 1, Z, SKY))
+            copies = {n: copied(os.path.join(PRESETS, n + ".py")) for n in ("shape_fill", "summon", "meteor_fall")}
+            f.write(PROBE % (copies, X, FLOOR + 1, Z, X, FLOOR + 1, Z, SKY))
+        with open(os.path.join(TMP, "probe_world.json"), "w") as f:     # the meta file a copy gets
+            json.dump(values_meta(P["shape_fill"], P["summon"], P["meteor_fall"],
+                                  given={"meteor_seconds": 20, "summon_mob": "husk"}), f)
         env = dict(os.environ, PYTHONPATH=LIB, PYTHONDONTWRITEBYTECODE="1", VFG_INSTANCE="probe_world",
                    VFG_RUN_DIR=TMP, VFG_LIVE_POLL_S="0.5", VFG_MC_PROPERTIES=PROPS)
         py = os.environ.get("VFG_EC2_PYTHON") or sys.executable
-        proc = subprocess.Popen([py, "-u", "main.py", "meteor_seconds=20", "summon_mob=husk"], cwd=folder, env=env,
+        proc = subprocess.Popen([py, "-u", "main.py"], cwd=folder, env=env,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         try:
             deadline = time.time() + 30
@@ -445,8 +454,7 @@ class LivePlayers(Live):
 
     def test_ice_walk_freezes_each_step_and_none_in_the_air(self):
         self.spawn((X - 6.5, FLOOR + 1, Z + 0.5), facing=(-90, 0))      # facing east
-        v = values(dict(P["walk_steps"].VALUES, **dict(P["under_feet"].VALUES, **P["replace_blocks"].VALUES)),
-                   argv=["replace_rules=solid > packed_ice", "under_radius=1"], run_dir=TMP, instance="t")
+        v = vals("walk_steps", "under_feet", "replace_blocks", replace_rules=["solid > packed_ice"], under_radius=1)
         rb, uf = P["replace_blocks"].replace_blocks, P["under_feet"].under_feet
         try:
             steps, th = self.run_loop(P["walk_steps"].walk_steps("Steve", v), lambda s: rb(uf(s[1], v), v), 6)
@@ -476,9 +484,8 @@ class LivePlayers(Live):
 
     def test_chunk_changer_once_a_chunk(self):
         self.spawn((X + 3.5, FLOOR + 1, Z + 8.5), facing=(90, 0))        # facing west, over x=0
-        v = values(dict(P["enters_chunk"].VALUES, **P["replace_blocks"].VALUES),
-                   argv=["replace_rules=grass_block > moss_block", "enters_below=1", "enters_above=0"],
-                   run_dir=TMP, instance="t")
+        v = vals("enters_chunk", "replace_blocks", replace_rules=["grass_block > moss_block"], enters_below=1,
+                 enters_above=0)
         rb = P["replace_blocks"].replace_blocks
         try:
             got, th = self.run_loop(P["enters_chunk"].enters_chunk("Steve", v), lambda g: rb(g[1], v), 5)

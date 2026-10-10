@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # deploy.sh -- from the owner's PC, to the vfg-mc box over SSH (VFG_SSH_HOST in ~/.vfg/config).
 #
-#   deploy.sh provision [--restore]   the host and Minecraft: runs provision.sh on the box as root.
+#   deploy.sh provision [--restore]   the host, Python 3.12 in /opt/vfg/python (python.sh) and
+#                                     Minecraft: runs provision.sh on the box as root.
 #                                     --restore first sends mc-backup.tgz (and vfg-backup.tgz, if
 #                                     there is one) from VFG_BACKUP_DIR. A new world needs
 #                                     VFG_ACCEPT_EULA=true: you accept Minecraft's EULA
@@ -135,9 +136,9 @@ cmd_provision() {
     fi
   fi
 
-  log "sending provision.sh, minecraft.service, rcon.py, env.example"
+  log "sending provision.sh, python.sh, minecraft.service, rcon.py, env.example"
   remote 'rm -rf /tmp/vfg-provision && mkdir -m 700 /tmp/vfg-provision'
-  push --chmod=F644 "$HERE/provision.sh" "$HERE/systemd/minecraft.service" "$HERE/rcon.py" \
+  push --chmod=F644 "$HERE/provision.sh" "$HERE/python.sh" "$HERE/systemd/minecraft.service" "$HERE/rcon.py" \
     "$HERE/env.example" "$SSH_USER@$SSH_HOST:/tmp/vfg-provision/" \
     || die "could not send the provisioning files"
   local args=""
@@ -168,6 +169,8 @@ REMOTE
 cmd_deploy() {
   ssh_setup
   [[ -f $BRIDGE/vfg_feed.py && -d $BRIDGE/vfg_bridge ]] || die "run it from the repo: $BRIDGE"
+  remote 'test -x /opt/vfg/python/bin/python3' \
+    || die "the box has no /opt/vfg/python/bin/python3, which the units run on: deploy.sh provision first"
 
   log "sending vfg_feed.py to /opt/vfg/lib/"
   push --chmod=F644 "$BRIDGE/vfg_feed.py" "$SSH_USER@$SSH_HOST:/opt/vfg/lib/vfg_feed.py" \
@@ -189,7 +192,7 @@ rm -rf /tmp/vfg-units
 sudo systemctl daemon-reload
 sudo systemctl enable vfg-bridge vfg-jev
 cd /opt/vfg
-PYTHONPATH=/opt/vfg/lib:/opt/vfg/bridge python3 -m vfg_bridge --init-db
+PYTHONPATH=/opt/vfg/lib:/opt/vfg/bridge /opt/vfg/python/bin/python3 -m vfg_bridge --init-db
 sudo systemctl restart vfg-bridge
 if [ -f /opt/vfg/jev/jev_filter.py ]; then
   sudo systemctl restart vfg-jev

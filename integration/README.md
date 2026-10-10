@@ -21,8 +21,8 @@ integration/run.sh            # PASS or FAIL per check and per path; non-zero on
 integration/run.sh --keep     # keep the temp folder and its logs
 ```
 
-The box's side (bridge, Jev filter, the toolkit's remote programs) runs on Python 3.9, as Amazon
-Linux 2023 does: `run.sh` finds one with `uv python find 3.9`, else uses `python3` and says so.
+The box's side (bridge, Jev filter, the toolkit's remote programs) runs on Python 3.12, the box's
+`/opt/vfg/python`: `run.sh` finds one with `uv python find 3.12`, else uses `python3` and says so.
 Path 8 needs a JDK and the mod's compiled classes (`cd client-mod && ./gradlew build` first).
 
 ## The paths
@@ -44,7 +44,7 @@ Path 8 needs a JDK and the mod's compiled classes (`cd client-mod && ./gradlew b
 
 | Key | Used for |
 |---|---|
-| `VFG_EC2_PYTHON` | the Python for the box's side, instead of the 3.9 `uv` finds |
+| `VFG_EC2_PYTHON` | the Python for the box's side, instead of the 3.12 `uv` finds |
 | `VFG_JAVA` | the `java` for path 8; else `~/.local/share/jdk/*/bin/java`, else `java` on the PATH |
 
 ## Contracts
