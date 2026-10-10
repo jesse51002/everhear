@@ -167,14 +167,21 @@ else:
     result("%s restarted with %s, pid %d" % (v["copy"], shown, got["restarted"]), **got)
 ''',
     "stop": '''"""Stop: stops a running copy; everything it made goes."""
+import sys
+
 import instances
 from kit import result, values
 
 v = values()
-if instances.stop(v["copy"]):
-    result("stopped %s" % v["copy"], copy=v["copy"], stopped=True)
+try:
+    was = instances.stop(v["copy"])
+except instances.CopyError as e:
+    result(str(e), copy=v["copy"])
+    sys.exit(1)
+if was:
+    result("stopped %s" % v["copy"], copy=v["copy"], was_running=True)
 else:
-    result("%s was not running" % v["copy"], copy=v["copy"], stopped=False)
+    result("%s was not running" % v["copy"], copy=v["copy"], was_running=False)
 ''',
     "save_place": '''"""Save place: saves where a player stands, or x y z, under a name."""
 import sys

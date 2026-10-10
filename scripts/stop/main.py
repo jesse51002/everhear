@@ -32,7 +32,8 @@ left = mc.count("@e[tag=%s]" % tag)
 if left:
     mc.rcon("kill @e[tag=%s]" % tag)
 if not (was or known or left):
-    fail("nothing runs as %s" % copy, copy=copy)
+    # Its fact, as a stop that ran says it: vfg drops the copy from running.json on it.
+    fail("nothing runs as %s" % copy, copy=copy, was_running=False)
 summary = ("stopped %s" if was else "%s had already ended") % copy
 if left:
     summary += "; took away %d thing%s it left" % (left, "" if left == 1 else "s")

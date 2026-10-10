@@ -324,6 +324,29 @@ class TestEditStop(ActionCase):
         self.line(self.run_action("stop", "copy=beam_2"))
         self.assertEqual(self.running()["copies"], {})
 
+    def test_a_stop_that_failed_on_the_box_leaves_running_json_unless_nothing_runs(self):
+        self.line(self.run_action("beam"))
+        stop = os.path.join(self.box.repo, "scripts", "stop", "main.py")
+        said = '''"""Stop: answers as the stop script does when it did not stop the copy."""
+import sys
+
+from kit import result, values
+
+v = values()
+result(SAID % v["copy"], copy=v["copy"]FACTS)
+sys.exit(1)
+'''
+        standins.write(stop, said.replace("SAID", '"cannot stop %s: [Errno 1] Operation not permitted"')
+                       .replace("FACTS", ""))
+        r = self.box.vfg("script", "stop", "beam")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("Operation not permitted", r.stderr)
+        self.assertIn("beam", self.running()["copies"])      # it may run still: kept
+        standins.write(stop, said.replace("SAID", '"nothing runs as %s"').replace("FACTS", ", was_running=False"))
+        r = self.box.vfg("script", "stop", "beam")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertNotIn("beam", self.running()["copies"])   # the box says nothing runs as beam: gone
+
     def test_an_edit_of_a_copy_this_pc_does_not_know_asks_the_box(self):
         self.line(self.run_action("beam"))
         os.remove(os.path.join(self.box.vhome, "running.json"))

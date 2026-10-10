@@ -1493,10 +1493,13 @@ def run_edit(cfg, a, copy, given, task=None):
 
 
 def run_stop(cfg, a, copy, as_=None, task=None):
-    """The stop action: the copy ends and what carries its tag goes; it leaves running.json
-    once the stop has run, whatever it says (nothing may run under that name)."""
+    """The stop action: the copy ends and what carries its tag goes. It leaves running.json when
+    the stop ran, or when the box says nothing runs under that name (the stop script's fact
+    was_running false); a stop that failed otherwise (refused a permission) leaves it there, as
+    the copy may run still."""
     line = run_action(cfg, a, "stop", {"copy": copy}, as_, task)
-    note_copy(cfg, copy, None)
+    if line["ok"] or line["facts"].get("was_running") is False:
+        note_copy(cfg, copy, None)
     return line
 
 

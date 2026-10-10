@@ -854,6 +854,8 @@ class StopTests(BoxTest):
             r = b.run("stop", given)
             self.assertEqual(r.code, 1)
             self.assertTrue(r.summary.startswith(said), r.summary)
+            # Only "nothing runs as" says the copy is not running: vfg drops it from running.json.
+            self.assertEqual(r.facts.get("was_running", "unsaid"), False if given.get("copy") == "ghost" else "unsaid")
 
 
 class EditTests(BoxTest):
