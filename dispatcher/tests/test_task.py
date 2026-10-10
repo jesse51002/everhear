@@ -5,19 +5,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Literal
 
 import pytest
-from pydantic import Field, ValidationError
-
+from pydantic import ValidationError
+from vfg_actions import planner_model
 from vfg_llm import LlmError
 
-from conftest import CATALOG, Action, Harness, Teleport, bad, cmd, fail, ok, planned, select, tp
+from conftest import Harness, args_of, bad, catalog, cmd, fail, made, ok, planned, select, tp
 from dispatcher.action_planner import Final, final_type, planned_type
-
-
-def args_of(argv: list[str]) -> dict:
-    return json.loads(argv[argv.index("--args") + 1])
+from dispatcher.executor import GRACE_S
 
 
 # ---------------------------------------------------------------- done
@@ -160,37 +156,58 @@ async def test_a_selection_with_nothing_in_it_is_handed_whole(h):
     assert h.vfg.replies() == [(tid, "progress", "handed on to the orchestrator: do something odd")]
 
 
-@pytest.mark.parametrize("task", ["Change to T3: make it taller", "Cancel T3: no tower", "cancel t12"])
-async def test_earlier_work_is_handed_whole_with_no_model_call_and_no_places_fetch(h, task):
+@pytest.mark.parametrize("task", ["Fix the weather", "fix: the tower fell over", "  FIX T3's castle"])
+async def test_a_fix_is_handed_whole_with_no_model_call_and_no_places_fetch(h, task):
     tid = await h.run(task, "ctx")
     assert h.llm.calls == []
-    assert h.vfg.calls[0][:2] != ["place", "list"] and not [a for a in h.vfg.calls if a[:2] == ["place", "list"]]
+    assert not [a for a in h.vfg.calls if a[:2] == ["place", "list"]]
     [[line]] = h.vfg.hands()
     assert line == {"id": tid, "at": "2026-10-09T12:00:00.000Z", "task": task, "context": "ctx"}
 
 
-@pytest.mark.parametrize("task", ["Fix the weather", "Undo the rain", "Build Steve a tower", "Give Alex a building kit"])
-async def test_a_fix_an_undo_or_a_build_reaches_the_selector(h, task):
+@pytest.mark.parametrize("task", ["Change to T3: make it taller", "Cancel T3: no tower", "Undo the rain",
+                                  "Build Steve a tower", "Give Alex a building kit"])
+async def test_a_change_a_cancel_an_undo_or_a_build_reaches_the_selector(h, task):
     h.llm.add("Selection", select(orchestrator=task))
     await h.run(task, "ctx")
     assert [c.output for c in h.llm.calls] == ["Selection"]  # the parts and the prompt decide, not a regex
 
 
-def test_block_work_is_the_verb_build_or_a_block_change_never_a_building():
-    from dispatcher.selector import BLOCK_WORK
-    for yes in ("build a tower", "Steve builds a wall", "place blocks around Alex", "remove the blocks under him"):
-        assert BLOCK_WORK.search(yes), yes
-    for no in ("give Alex a building kit", "teleport Steve to the tallest building", "rebuild nothing"):
-        assert not BLOCK_WORK.search(no), no
+CASTLE = '''
+    from actions._types import Action, Field, Place
 
 
-async def test_a_selection_naming_a_script_not_in_scripts_is_handed_whole(h):
-    h.llm.add("Selection", select(("command", "give Alex bread"), ("run_script", "start the snow_storm script")))
-    tid = await h.run("bread, and a snow storm", "ctx")
-    assert [c.output for c in h.llm.calls] == ["Selection"]  # no planner call: nothing ran
-    [[line]] = h.vfg.hands()
-    assert line == {"id": tid, "at": "2026-10-09T12:00:00.000Z", "task": "bread, and a snow storm", "context": "ctx"}
-    assert h.vfg.actions() == []
+    class Castle(Action):
+        """Build a stone castle at a place."""
+
+        script = "castle"
+        runs = "once"
+        takes = ["at", "size"]
+        timeout_s = 90
+
+        at: Place = ""
+        """where: a saved place's name, x y z, or a player's name"""
+        size: int = Field(20, ge=10, le=60)
+        """how wide it is, in blocks"""
+'''
+
+
+async def test_a_build_an_action_does_goes_straight_to_the_game_at_a_saved_place(tmp_path):
+    cat = catalog()
+    made(cat, "castle", CASTLE)
+    h = Harness(tmp_path, cat=cat)
+    h.vfg.on("place", "list", answer=ok_lines("home 10 64 10 overworld (T2)"))
+    h.llm.add("Selection", select(("castle", "a castle at the saved place home")))
+    h.llm.add("Planned_castle", planned({"at": "Home", "size": 20}, say="a castle at home"))
+    h.vfg.on("action", "run", "castle", answer=ok("built a castle at home, 10 64 10", copy="castle", action="castle"))
+
+    tid = await h.run("build a castle at home")
+
+    assert h.vfg.hands() == []  # no regex hands a build on any more
+    [run] = h.vfg.actions()
+    assert args_of(run) == {"at": "home", "size": "20"}  # the saved place's name, checked
+    assert h.vfg.timeouts[h.vfg.calls.index(run)] == 90 + GRACE_S
+    assert h.vfg.replies(tid) == [(tid, "done", "a castle at home — built a castle at home, 10 64 10")]
 
 
 async def test_an_orchestrator_part_alone_hands_the_original_task(h):
@@ -325,23 +342,15 @@ async def test_a_handler_reporting_offline_players_drops_the_pick_at_once_withou
     assert h.vfg.hands() == []
 
 
-class SummonAround(Action):
-    """Summon a number of one mob round each player."""
-    action: Literal["summon_around"]
-    players: str = Field(description="round whom")
-    mob: str = Field(description="the mob")
-
-
-async def test_offline_players_alone_end_a_task_failed_naming_each_and_a_plain_refusal_still_goes_back(tmp_path):
-    h = Harness(tmp_path, catalog={**CATALOG, "summon_around": SummonAround})
+async def test_offline_players_alone_end_a_task_failed_naming_each_and_a_plain_refusal_still_goes_back(h):
     h.llm.add("Selection", select(("summon_around", "summon zombies round Bob and Eve")),
               select(("teleport", "teleport Alex to a village")))
-    h.llm.add("Planned_summon_around", planned({"action": "summon_around", "players": "@a", "mob": "zombie"},
-                                               say="zombies"))
+    h.llm.add("Planned_summon_around", planned({"players": "Bob,Eve", "mob": "zombie"}, say="zombies"))
     h.vfg.on("action", "run", "summon_around", answer=bad("Bob and Eve are not online", offline=["Bob", "Eve"]))
     tid = await h.run("zombies round Bob and Eve")
     assert h.vfg.replies(tid) == [(tid, "failed", "dropped: summon zombies round Bob and Eve — Bob and Eve not online")]
     assert [c.output for c in h.llm.calls] == ["Selection", "Planned_summon_around"]
+    assert args_of(h.vfg.actions()[0]) == {"players": "Bob,Eve", "mob": "zombie"}
 
     # a refusal without `offline` still goes back to the planner
     h.llm.add("Planned_teleport", planned(tp("Alex", "structure", "village"), say="village"),
@@ -391,7 +400,7 @@ async def test_a_last_pick_dropped_after_one_done_ends_done_naming_the_drop(h):
 # ---------------------------------------------------------------- refused answers
 
 async def test_an_answer_setting_more_than_one_of_action_hand_on_and_drop_is_refused(h):
-    Out = planned_type(Teleport)
+    Out = planned_type("teleport", planner_model(h.catalog.get("teleport")))
     with pytest.raises(ValidationError, match="exactly one of action, hand_on and drop"):
         Out.model_validate(planned(tp("Alex", "coords", "1 2"), drop="no", say="x"))
     with pytest.raises(ValidationError, match="exactly one"):
@@ -399,8 +408,8 @@ async def test_an_answer_setting_more_than_one_of_action_hand_on_and_drop_is_ref
     with pytest.raises(ValidationError, match="exactly one"):
         Out.model_validate(planned(say="nothing set"))
     with pytest.raises(ValidationError, match="exactly one of hand_on and drop"):
-        final_type(Teleport).model_validate({"hand_on": "a", "drop": "b", "say": "x"})
-    assert issubclass(final_type(Teleport), Final)
+        final_type("teleport").model_validate({"hand_on": "a", "drop": "b", "say": "x"})
+    assert issubclass(final_type("teleport"), Final)
 
     # through the flow: refused twice (the answer and its repair) is a hand-on, and nothing runs
     h.llm.add("Selection", select(("teleport", "teleport Alex to 1 2")))
@@ -431,7 +440,8 @@ async def test_a_command_draft_gets_the_reference_of_each_command_it_uses_and_is
     assert "## give\ngive <targets>" in approve_prompt and "execute subcommands: as at run" in approve_prompt
     assert "MINECRAFT COMMANDS" not in approve_prompt
     [run] = h.vfg.actions()
-    assert args_of(run) == {"commands": draft} and run[-2:] == ["--timeout", "20"]
+    assert args_of(run) == {"commands": draft} and run[-2:] == ["--task", tid]
+    assert h.vfg.timeouts[h.vfg.calls.index(run)] == 20 + GRACE_S  # VFG_DISPATCH_ACTION_TIMEOUT_S, and vfg's grace
     assert h.vfg.replies() == [(tid, "done", "bread and speed for everyone — Gave 3 [Bread] to Alex; "
                                              "Applied effect Speed to 2 targets")]
     assert len(h.llm.calls) == 3  # selector, draft, approve
@@ -597,15 +607,15 @@ async def test_the_drafting_model_never_sees_block_or_owner_commands(h):
               planned(cmd("give Alex minecraft:bread"), say="bread"))
     await h.run("bread")
     draft = h.llm.prompts("Planned_command")[0]
-    assert "\ngive — Gives an item to a player." in draft
-    assert "setblock" not in draft and "\nop — " not in draft
+    listed = draft.split("MINECRAFT COMMANDS (name — what it does):\n", 1)[1]
+    assert "\ngive — Gives an item to a player." in "\n" + listed
+    assert "setblock" not in listed and "\nop — " not in "\n" + listed
 
 
 def test_the_hidden_commands_come_from_actions_types():
-    from dispatcher import actions, config
-    hidden = actions.hidden_commands(config.REPO)
-    if not hidden:
-        pytest.skip("actions/_types.py has no BLOCK_COMMANDS yet")
+    from dispatcher import actions
+    catalog()  # actions/_types.py is loaded with the actions
+    hidden = actions.hidden_commands()
     assert {"setblock", "fill", "clone", "place", "fillbiome", "stop", "op", "ban", "whitelist", "kick"} <= hidden
     assert "give" not in hidden
 
@@ -623,8 +633,9 @@ async def test_a_saved_place_is_in_every_prompt_and_teleport_reaches_it(h):
     line = "SAVED PLACES: castle 197 68 251 overworld (T23); home -368 70 912 overworld (T41)"
     assert all(line in p for p in h.llm.prompts())
     [run] = h.vfg.actions()
+    assert run[:3] == ["action", "run", "teleport"] and run[-2:] == ["--task", "T1"]
     assert args_of(run) == {"player": "Alex", "to": "place", "target": "castle"}
-    assert run[-2:] == ["--timeout", "40"]  # the class's own timeout_s
+    assert h.vfg.timeouts[h.vfg.calls.index(run)] == 60 + GRACE_S  # the class's own timeout_s
     assert h.vfg.calls[0] == ["place", "list"]  # read once, when the task starts
     assert [a for a in h.vfg.calls if a[:2] == ["place", "list"]] == [["place", "list"]]
 
@@ -654,100 +665,339 @@ def ok_lines(*lines: str):
 
 # ---------------------------------------------------------------- prompts
 
-async def test_the_selector_sees_the_menu_and_the_planner_one_action(h):
+async def test_the_selector_sees_every_action_every_running_copy_and_the_saved_places(h):
+    h.running(galick_gun_2={"action": "railgun", "task": "T12",
+                            "values": {"player": "Alex", "cooldown": 0, "range": 100, "item": "Railgun"}})
+    h.vfg.on("place", "list", answer=ok_lines("castle 197 68 251 overworld (T23)"))
     h.llm.add("Selection", select(("teleport", "teleport Alex to a village")))
     h.llm.add("Planned_teleport", planned(tp("Alex", "structure", "village"), say="village"))
     await h.run("take me to a village", "Alex asked")
     sel = h.llm.calls[0]
     assert sel.system is None  # the rules and the menu open the one message, the task closes it
     rules, task = sel.prompt.split("\n\nTASK: ")
-    rules += "\n"
     # the menu: every action exactly once, in the catalog's order, as its name and its docstring's
-    # first line (selector.py may add to a line), and nothing more of any docstring
-    lines = ["\n- command: Run vanilla commands, in order: anything that takes effect at once — items, effects, "
-             "time, weather. Never places or removes blocks.",
-             "\n- teleport: Move a player, or everyone, to a biome, a structure, a saved place or coordinates, "
-             "landing on safe ground.",
-             "\n- run_script: Start one of the scripts in scripts/, by name, with its arguments."]
-    assert [rules.count(x) for x in lines] == [1, 1, 1]
-    menu = rules[rules.index(lines[0]) + 1:].splitlines()  # the menu closes the rules
-    assert [row.split(":", 1)[0] for row in menu] == ["- command", "- teleport", "- run_script"]
-    assert all(("\n" + row).startswith(x) for row, x in zip(menu, lines))
-    assert "Up to five commands" not in rules and "To another player" not in rules
-    assert "SAVED PLACES" not in rules and "TASK:" not in rules  # those are the task's, after them
-    assert "with its arguments. The only scripts: tnt_rain, zeus.\n" in rules  # the scripts there are, by name only
-    assert "To another player it is one tp" not in rules  # the menu is the first line only
-    assert task == "take me to a village\nCONTEXT: Alex asked\nSAVED PLACES: none\n"
+    # first line, and nothing more of any docstring; then every running copy
+    menu = rules[rules.index("Your actions:\n") + len("Your actions:\n"):].split("\nRUNNING NOW", 1)[0].splitlines()
+    assert [row.split(" — ", 1)[0] for row in menu] == ["- " + n for n in h.catalog.names()]
+    assert set(h.catalog.names()) >= {"command", "teleport", "summon_around", "save_place", "stop", "edit",
+                                      "railgun", "gatling_gun"}
+    assert "- teleport — Move a player, or everyone, to a biome, a structure, a saved place, coordinates, far " \
+           "away, their spawn point or where they last died, landing on safe ground." in menu
+    assert "To another player it is one `tp`" not in rules and "Up to five commands" not in rules
+    assert "run_script" not in rules and "stop_script" not in rules
+    assert rules.endswith("\nRUNNING NOW (each: the copy's name: its action, the values that differ from the "
+                          "action's defaults, the task that started it):\n"
+                          "- galick_gun_2: railgun, player=Alex cooldown=0, started by T12")
+    assert task == "take me to a village\nCONTEXT: Alex asked\nSAVED PLACES: castle 197 68 251 overworld (T23)\n"
+
     plan = h.llm.calls[1]
     assert plan.prompt.startswith("ACTION: teleport\nMove a player")
-    assert "To another player it is one tp, which command does." in plan.prompt
-    assert "- player (required): who moves; text matching" in plan.prompt
-    assert "- target: a biome or structure id, a saved place's name, or 'x z'; text; default \"\"" in plan.prompt
+    assert "To another player it is one `tp`, which the command action does" in plan.prompt
+    assert "\nIt runs once and reports what it did.\n" in plan.prompt
+    assert ("\nVALUES (fill each one; one the instruction does not give keeps its default):\n- player (player names "
+            "separated by commas, or @a, @r, @p; default \"@a\"): who moves") in plan.prompt
+    assert "- dimension (one of overworld, the_nether, the_end; default \"overworld\")" in plan.prompt
     assert "INSTRUCTION: teleport Alex to a village\nCONTEXT: Alex asked\n" in plan.prompt
-    assert "command" not in plan.prompt.split("OPTIONS:")[1].split("INSTRUCTION:")[0]
+    assert "RUNNING NOW" not in plan.prompt and "galick_gun" not in plan.prompt  # only stop and edit see the copies
     assert "\nTASK:" not in plan.prompt and "take me to" not in plan.prompt  # its instruction, not the task
     assert "Copy player names exactly." in plan.system
 
 
-async def test_run_script_sees_each_scripts_values_and_an_old_ones_usage(h):
-    h.llm.add("Selection", select(("run_script", "start zeus for Alex")))
-    h.llm.add("Planned_run_script", planned({"action": "run_script", "name": "zeus", "args": ["player=Alex"]}, say="zeus"))
-    h.vfg.on("script", "run", answer=ok_lines("started zeus (T1); stop: vfg script stop zeus"))
-    tid = await h.run("make my tridents call lightning")
-    prompt = h.llm.prompts("Planned_run_script")[0]
-    assert ("\nTHE SCRIPT THE INSTRUCTION NAMES (what it does, then every value it takes as key (type, default, "
-            "limits or options), set as key=value with the key exactly as listed; for one written the old way, "
-            "its usage and how it ends):\n- zeus: Zeus: every trident a player throws calls lightning where it "
-            "lands.\n  player (player, default @a)\n  strikes (int, default 1, 1..10)\n"
-            "\nOTHER SCRIPTS: tnt_rain\n\nINSTRUCTION:") in prompt
-    assert "Usage: tnt_rain" not in prompt and "Drops TNT" not in prompt
-    assert h.vfg.actions() == [["script", "run", "zeus", "player=Alex"]]
-    assert h.vfg.replies() == [(tid, "done", "zeus — started zeus (T1); stop: vfg script stop zeus")]
+async def test_with_nothing_running_the_menu_says_so(h):
+    h.llm.add("Selection", select())
+    await h.run("anything")
+    assert "\nRUNNING NOW: none\n\nTASK: anything\n" in h.llm.prompts("Selection")[0]
 
 
-async def test_run_script_names_with_spaces_and_an_old_scripts_usage_and_no_name_at_all(h):
-    from conftest import RunScript
+async def test_the_planner_sees_and_fills_only_the_values_the_action_takes(h):
+    h.llm.add("Selection", select(("gatling_gun", "give Steve a gatling gun that only hurts mobs")))
+    h.llm.add("Planned_gatling_gun", planned({"player": "Steve", "damage_amount": 30, "damage_what": "mobs"},
+                                             say="a gatling gun for Steve"))
+    h.vfg.on("action", "run", "gatling_gun", answer=ok("running as gatling_gun", copy="gatling_gun",
+                                                       action="gatling_gun", running=True))
+    tid = await h.run("give Steve a gatling gun for mobs")
+    prompt = h.llm.prompts("Planned_gatling_gun")[0]
+    values = prompt.split("VALUES (fill each one", 1)[1].split("\n\nINSTRUCTION:", 1)[0]
+    assert [x.split(" (", 1)[0] for x in values.splitlines()[1:]] == ["- player", "- damage_amount", "- damage_what"]
+    assert "cooldown" not in values and "particle" not in values  # fixed, or not taken: an edit reaches them
+    assert "It runs until stopped: it keeps going after it reports" in prompt
+    Out = next(o for o in h.llm.outputs if o.__name__ == "Planned_gatling_gun")
+    inner = Out.model_json_schema()["$defs"]["GatlingGun"]
+    assert list(inner["properties"]) == ["player", "damage_amount", "damage_what"]
+    assert inner["required"] == ["player", "damage_amount", "damage_what"]  # every value written
+    [run] = h.vfg.actions()
+    assert run == ["action", "run", "gatling_gun", "player=Steve", "damage_amount=30", "damage_what=mobs",
+                   "--task", tid]
+    assert h.vfg.replies(tid) == [(tid, "done", "a gatling gun for Steve — running as gatling_gun")]
 
-    h.llm.add("Selection", select(("run_script", "start tnt rain on Steve")))
-    h.llm.add("Planned_run_script",
-              planned({"action": "run_script", "name": "tnt_rain", "args": ["every_s=5"]}, say="tnt rain"))
-    h.vfg.on("script", "run", answer=ok_lines("started tnt_rain (T1)"))
-    await h.run("rain tnt on Steve")
-    [named] = h.llm.prompts("Planned_run_script")
-    assert ("its usage and how it ends):\n- tnt_rain: Drops TNT round players.\n  Usage: tnt_rain [every_s=20]\n"
-            "  Ends: when stopped\n\nOTHER SCRIPTS: zeus\n\nINSTRUCTION:") in named
-    assert "player (player" not in named and "Zeus: every trident" not in named
-    # no script named (the selector hands such a task on before the planner, but the planner
-    # holds on its own): what each does, one line each, and no value at all
-    unnamed = h.d.planner.describe(RunScript, "start the lightning thing for Alex")
-    assert unnamed.endswith("\nSCRIPTS (each: what it does):\n- zeus: Zeus: every trident a player throws calls "
-                            "lightning where it lands.\n- tnt_rain: Drops TNT round players.\n")
-    assert "THE SCRIPT THE INSTRUCTION NAMES" not in unnamed and "(player, default" not in unnamed
+
+async def test_a_number_out_of_range_is_clamped_and_the_report_says_so(h):
+    h.llm.add("Selection", select(("summon_around", "summon 500 zombies round Steve")))
+    h.llm.add("Planned_summon_around", planned({"players": "Steve", "mob": "zombie", "count": 500}, say="zombies"))
+    h.vfg.on("action", "run", "summon_around", answer=ok("summoned 100 zombies round Steve at 197 68 251"))
+    tid = await h.run("500 zombies round Steve")
+    assert args_of(h.vfg.actions()[0])["count"] == "100"  # clamped before it is sent: vfg has nothing to clamp
+    assert h.vfg.replies(tid) == [(tid, "done", "zombies — summoned 100 zombies round Steve at 197 68 251 "
+                                                "(count=500 is over its max, clamped to 100)")]
 
 
-async def test_stop_script_sees_the_scripts_too(tmp_path):
+async def test_an_until_stopped_copy_is_named_in_its_report(h):
+    h.llm.add("Selection", select(("railgun", "give Alex a railgun")))
+    h.llm.add("Planned_railgun", planned({"player": "Alex"}, say="a railgun for Alex"))
+    h.vfg.on("action", "run", "railgun", answer=ok("Alex has a railgun", copy="railgun_2", action="railgun",
+                                                   running=True))
+    tid = await h.run("a railgun for me too")
+    assert h.vfg.replies(tid) == [(tid, "done", "a railgun for Alex — Alex has a railgun (running as railgun_2)")]
 
-    from pydantic import Field
 
-    from conftest import CATALOG, Action
+async def test_a_once_action_past_its_timeout_is_done_still_running_and_never_run_again(h):
+    h.llm.add("Selection", select(("summon_around", "summon 100 zombies round Steve")))
+    h.llm.add("Planned_summon_around", planned({"players": "Steve", "mob": "zombie", "count": 100}, say="zombies"))
+    h.vfg.on("action", "run", "summon_around", answer=ok("still running as summon_around", copy="summon_around",
+                                                         action="summon_around", running=True))
+    tid = await h.run("100 zombies round Steve")
+    assert len(h.vfg.actions()) == 1 and h.vfg.hands() == []
+    assert h.vfg.replies(tid) == [(tid, "done", "zombies — still running as summon_around")]
 
-    class StopScript(Action):
-        """Stop a running script, by name."""
-        action: Literal["stop_script"]
-        name: Literal["zeus", "tnt_rain"] = Field(description="the script")
 
-        def vfg_argv(self, task: str) -> list[str]:
-            return ["script", "stop", self.name]
+async def test_a_value_the_check_refuses_goes_back_to_the_planner_before_anything_runs(tmp_path):
+    cat = catalog()
+    made(cat, "beam_up", BEAM_UP)
+    h = Harness(tmp_path, cat=cat)
+    h.vfg.on("place", "list", answer=ok_lines("home 1 64 2 overworld (T3)"))
+    h.llm.add("Selection", select(("beam_up", "beam Alex up to the castle")))
+    h.llm.add("Planned_beam_up", planned({"player": "Alex", "to": "the big stone castle"}, say="beaming Alex up"),
+              planned({"player": "Alex", "to": "home"}, say="beaming Alex home"))
+    tid = await h.run("beam me up to the castle")
+    retry = h.llm.prompts("Planned_beam_up")[1]
+    # a name that is no player's must be a saved place (one that could be a player's is EC2's to find)
+    assert ("IT FAILED: to=the big stone castle: 'the big stone castle' is not a saved place (saved: home), x y z, "
+            "or a player's name") in retry  # in the words the model wrote
+    assert [args_of(a) for a in h.vfg.actions()] == [{"player": "Alex", "to": "home"}]  # the refused one never ran
+    assert h.vfg.replies(tid)[-1] == (tid, "done", "beaming Alex home — done")
 
-    h = Harness(tmp_path, catalog={**CATALOG, "stop_script": StopScript})
-    h.llm.add("Selection", select(("stop_script", "stop zeus")))
-    h.llm.add("Planned_stop_script", planned({"action": "stop_script", "name": "zeus"}, say="stopping zeus"))
-    await h.run("stop the lightning")
-    prompt = h.llm.prompts("Planned_stop_script")[0]
-    assert ("\nSCRIPTS (each: what it does):\n- zeus: Zeus: every trident a player throws calls lightning where "
-            "it lands.\n- tnt_rain: Drops TNT round players.\n") in prompt
-    assert "player (player" not in prompt and "Usage:" not in prompt  # stopping takes no values
-    assert h.vfg.actions() == [] and ["script", "stop", "zeus"] in h.vfg.calls
+
+BEAM_UP = '''
+    from actions._types import Action, Place, Player
+
+
+    class BeamUp(Action):
+        """Beam a player up to a place in a column of light."""
+
+        script = "beam_up"
+        runs = "once"
+        takes = ["player", "to"]
+
+        player: Player = "Steve"
+        """who is beamed up"""
+        to: Place = ""
+        """where to: a saved place's name, x y z, or a player's name"""
+'''
+
+
+# ---------------------------------------------------------------- a new action, with no restart
+
+ZAP = '''
+    from actions._types import Action, Command, Field, Players
+
+
+    class Zap(Action):
+        """Zap a player with lightning, then run a command or two after it."""
+
+        script = "zap"
+        runs = "once"
+        takes = ["player", "then"]
+
+        player: Players = "@a"
+        """who is zapped"""
+        then: list[Command] = Field([], max_length=2)
+        """commands to run after the zap, no slash"""
+'''
+
+
+async def test_an_action_made_between_two_asks_is_on_the_menu_at_the_next_with_no_restart(tmp_path):
+    cat = catalog()
+    h = Harness(tmp_path, cat=cat)
+    h.llm.add("Selection", select(), select(("zap", "zap Steve")))
+    await h.run("zap Steve")  # nothing does it yet: the orchestrator's
+    first = h.llm.prompts("Selection")[0]
+    assert "\n- zap — " not in first
+
+    made(cat, "zap", ZAP)  # an implementer saves its action
+    h.llm.add("Planned_zap", planned({"player": "Steve", "then": ["say zapped"]}, say="zapping Steve"),
+              planned({"player": "Steve", "then": ["say zapped"]}, say="zapping Steve"))
+    h.vfg.on("action", "run", "zap", answer=ok("zapped Steve at 1 64 2", copy="zap", action="zap"))
+    tid = await h.run("zap Steve again")
+
+    second = h.llm.prompts("Selection")[1]
+    assert "\n- zap — Zap a player with lightning, then run a command or two after it.\n" in second
+    [run] = h.vfg.actions()
+    assert args_of(run) == {"player": "Steve", "then": ["say zapped"]}
+    assert h.vfg.replies(tid) == [(tid, "done", "zapping Steve — zapped Steve at 1 64 2")]
+
+    # changed: its new line is on the menu at the next ask; gone: it is off it
+    path = made(cat, "zap", ZAP.replace("Zap a player with lightning", "Strike a player with lightning"))
+    import os
+    os.utime(path, ns=(path.stat().st_mtime_ns + 10**9, path.stat().st_mtime_ns + 10**9))
+    h.llm.add("Selection", select())
+    await h.run("strike Steve")
+    assert "\n- zap — Strike a player with lightning" in h.llm.prompts("Selection")[2]
+    path.unlink()
+    h.llm.add("Selection", select())
+    await h.run("strike Steve")
+    assert "\n- zap — " not in h.llm.prompts("Selection")[3]
+
+
+async def test_the_command_steps_run_on_any_actions_command_field(tmp_path):
+    cat = catalog()
+    made(cat, "zap", ZAP)
+    h = Harness(tmp_path, cat=cat)
+    h.llm.add("Selection", select(("zap", "zap Steve and give him a cake")))
+    h.llm.add("Planned_zap", planned({"player": "Steve", "then": ["give Steve cake"]}, say="zap"),          # draft
+              planned({"player": "Steve", "then": ["give Steve minecraft:cake"]}, say="zap and a cake"))  # approve
+    tid = await h.run("zap Steve, then a cake")
+    draft, approve = h.llm.prompts("Planned_zap")
+    assert "MINECRAFT COMMANDS (name — what it does):\ngive — Gives an item to a player." in draft
+    assert "YOUR DRAFT:\n1. give Steve cake" in approve and "## give\ngive <targets>" in approve
+    assert h.refs.referenced == [({"give"}, set())]
+    assert args_of(h.vfg.actions()[0]) == {"player": "Steve", "then": ["give Steve minecraft:cake"]}
+    assert h.vfg.replies(tid)[0][1] == "done"
+
+
+async def test_an_empty_command_list_is_refused_and_asked_for_again(h):
+    h.llm.add("Selection", select(("command", "give Alex bread")))
+    h.llm.add("Planned_command", planned(cmd(), say="nothing"), planned(cmd("give Alex minecraft:bread"), say="bread"),
+              planned(cmd("give Alex minecraft:bread"), say="bread"))
+    await h.run("bread")
+    assert any("commands is empty" in c.prompt for c in h.llm.calls if c.prompt.startswith("REPAIR"))
+    assert args_of(h.vfg.actions()[0]) == {"commands": ["give Alex minecraft:bread"]}
+
+
+# ---------------------------------------------------------------- stop and edit
+
+async def test_stop_by_a_copys_name_needs_no_model_call(h):
+    h.running(galick_gun={"action": "railgun", "task": "T3", "values": {"player": "Steve"}},
+              galick_gun_2={"action": "railgun", "task": "T5", "values": {"player": "Alex"}})
+    h.llm.add("Selection", select(("stop", "stop galick_gun_2")))
+    h.vfg.on("action", "run", "stop", answer=ok("stopped galick_gun_2; removed 3 things tagged vfg_galick_gun_2",
+                                                copy="stop", action="stop"))
+    tid = await h.run("stop Alex's gun")
+    assert [c.output for c in h.llm.calls] == ["Selection"]
+    assert h.vfg.actions() == [["action", "run", "stop", "copy=galick_gun_2", "--task", tid]]
+    assert h.vfg.replies(tid) == [(tid, "done", "stopping galick_gun_2 — stopped galick_gun_2; removed 3 things "
+                                                "tagged vfg_galick_gun_2")]
+
+
+async def test_stop_with_no_copy_named_is_picked_from_every_copys_line(h):
+    h.running(galick_gun={"action": "railgun", "task": "T3", "values": {"player": "Steve"}},
+              galick_gun_2={"action": "railgun", "task": "T5", "values": {"player": "Alex"}})
+    h.llm.add("Selection", select(("stop", "stop Steve's railgun")))
+    h.llm.add("Planned_stop", planned({"copy": "galick_gun"}, say="stopping Steve's railgun"))
+    tid = await h.run("stop Steve's gun")
+    prompt = h.llm.prompts("Planned_stop")[0]
+    assert prompt.startswith("ACTION: stop\nStop a running copy")
+    assert "- galick_gun: railgun, player=Steve, started by T3\n- galick_gun_2: railgun, player=Alex, started by T5" \
+        in prompt
+    Out = next(o for o in h.llm.outputs if o.__name__ == "Planned_stop")
+    assert Out.model_json_schema()["$defs"]["Copy"]["properties"]["copy"]["enum"] == ["galick_gun", "galick_gun_2"]
+    assert h.vfg.actions() == [["action", "run", "stop", "copy=galick_gun", "--task", tid]]
+
+
+async def test_stop_or_edit_with_nothing_running_is_dropped(h):
+    h.llm.add("Selection", select(("stop", "stop the rain")), select(("edit", "make the rain heavier")))
+    tid = await h.run("stop the rain")
+    tid2 = await h.run("more rain")
+    assert [c.output for c in h.llm.calls] == ["Selection", "Selection"] and h.vfg.actions() == []
+    assert h.vfg.replies(tid) == [(tid, "failed", "dropped: stop the rain — nothing is running")]
+    assert h.vfg.replies(tid2) == [(tid2, "failed", "dropped: make the rain heavier — nothing is running")]
+
+
+async def test_an_edit_sees_the_named_copy_in_full_and_changes_only_what_it_sets(h):
+    h.running(galick_gun={"action": "railgun", "task": "T3", "values": {"player": "Steve", "cooldown": 2}},
+              galick_gun_2={"action": "railgun", "task": "T5",
+                            "values": {"player": "Alex", "cooldown": 2, "range": 100}})
+    h.llm.add("Selection", select(("edit", "set galick_gun_2's cooldown to 0")))
+    h.llm.add("Planned_edit", planned({"cooldown": 0}, say="no cooldown on Alex's railgun"))
+    h.vfg.on("action", "run", "edit", answer=ok("galick_gun_2: cooldown 0, live", copy="edit", action="edit"))
+    tid = await h.run("no cooldown on Alex's gun")
+
+    assert [c.output for c in h.llm.calls] == ["Selection", "Planned_edit"]  # the copy was named: one call
+    prompt = h.llm.prompts("Planned_edit")[0]
+    assert prompt.startswith("ACTION: edit\nChange values on a running copy")
+    assert "- galick_gun: railgun, player=Steve, started by T3" in prompt  # every copy's line
+    assert "THE COPY TO CHANGE: galick_gun_2, a copy of railgun, started by T5." in prompt
+    assert "railgun — Give a player a railgun" in prompt
+    assert "* cooldown (a number 0..60; live; now 0): seconds between shots" not in prompt
+    assert "* cooldown (a number 0..60; live; now 2): seconds between shots" in prompt  # its value now
+    assert "  particle (a particle id, such as flame; live; now \"end_rod\")" in prompt  # every value, not just takes
+    Out = next(o for o in h.llm.outputs if o.__name__ == "Planned_edit")
+    schema = Out.model_json_schema()
+    assert schema["required"] == ["action", "hand_on", "drop", "say"]
+    assert not schema["$defs"]["RailgunEdit"].get("required")  # a value left out is not changed
+    assert set(schema["$defs"]["RailgunEdit"]["properties"]) >= {"cooldown", "particle", "fire", "player"}
+    assert h.vfg.actions() == [["action", "run", "edit", "copy=galick_gun_2", "cooldown=0", "--task", tid]]
+    assert h.vfg.replies(tid) == [(tid, "done", "no cooldown on Alex's railgun — galick_gun_2: cooldown 0, live")]
+
+
+async def test_an_edit_with_several_copies_and_none_named_picks_the_copy_then_the_values(h):
+    h.running(galick_gun={"action": "railgun", "task": "T3", "values": {"player": "Steve"}},
+              rain={"action": "gatling_gun", "task": "T4", "values": {"player": "Alex"}})
+    h.llm.add("Selection", select(("edit", "make Alex's gun hurt only mobs")))
+    h.llm.add("Planned_edit_copy", planned({"copy": "rain"}, say="Alex's gun"))
+    h.llm.add("Planned_edit", planned({"damage_what": "mobs", "player": None}, say="Alex's gun hurts only mobs"))
+    tid = await h.run("Alex's gun: only mobs")
+    first, second = h.llm.prompts("Planned_edit_copy")[0], h.llm.prompts("Planned_edit")[0]
+    assert "- galick_gun: railgun, player=Steve" in first and "- rain: gatling_gun, player=Alex" in first
+    assert "THE COPY TO CHANGE" not in first
+    assert "THE COPY TO CHANGE: rain, a copy of gatling_gun, started by T4." in second
+    assert "  fire (one of click, hold; now \"hold\")" in second  # a fixed value an edit may still change
+    assert h.vfg.actions() == [["action", "run", "edit", "copy=rain", "damage_what=mobs", "--task", tid]]
+
+
+async def test_an_edit_with_one_copy_running_goes_straight_to_its_values(h):
+    h.running(railgun={"action": "railgun", "task": "T3", "values": {"player": "Steve"}})
+    h.llm.add("Selection", select(("edit", "make the railgun reach further")))
+    h.llm.add("Planned_edit", planned({"range": 1000}, say="a longer reach"))
+    h.vfg.on("action", "run", "edit", answer=ok("railgun: range 300, live"))
+    tid = await h.run("further!")
+    assert [c.output for c in h.llm.calls] == ["Selection", "Planned_edit"]
+    assert args_of(h.vfg.actions()[0]) == {"copy": "railgun", "range": "300"}
+    assert h.vfg.replies(tid) == [(tid, "done", "a longer reach — railgun: range 300, live "
+                                                "(range=1000 is over its max, clamped to 300)")]
+
+
+async def test_an_edit_that_sets_nothing_is_refused_and_a_change_no_value_covers_is_handed_on(h):
+    h.running(railgun={"action": "railgun", "task": "T3", "values": {"player": "Steve"}})
+    h.llm.add("Selection", select(("edit", "make the railgun shoot fireballs")))
+    h.llm.add("Planned_edit", planned({"range": None}, say="x"),  # nothing set: refused, asked again
+              planned(hand_on="make the railgun shoot fireballs", say="that is new code"))
+    await h.run("fireballs from the railgun")
+    assert any("no value is set" in c.prompt for c in h.llm.calls if c.prompt.startswith("REPAIR"))
+    assert h.vfg.actions() == []
+    [[line]] = h.vfg.hands()
+    assert "the action planner handed it on: make the railgun shoot fireballs" in line["context"]
+
+
+async def test_an_edit_vfg_refuses_goes_back_to_the_planner_with_the_same_copy(h):
+    h.running(railgun={"action": "railgun", "task": "T3", "values": {"player": "Steve"}})
+    h.llm.add("Selection", select(("edit", "give the railgun to Alex too")))
+    h.llm.add("Planned_edit", planned({"player": "Steve,Alex"}, say="Alex too"),
+              planned(drop="the railgun has stopped", say="gone"))
+    h.vfg.on("action", "run", "edit", answer=bad("railgun is not running", error="railgun is not running"))
+    tid = await h.run("Alex too")
+    retry = h.llm.prompts("Planned_edit")[1]
+    assert 'YOUR LAST ATTEMPT: {"copy": "railgun", "player": "Steve,Alex"}' in retry
+    assert "IT FAILED: railgun is not running" in retry and "THE COPY TO CHANGE: railgun" in retry
+    assert h.vfg.replies(tid) == [(tid, "failed", "dropped: give the railgun to Alex too — the railgun has stopped")]
+
+
+async def test_an_edit_of_a_copy_whose_action_is_gone_is_handed_on(h):
+    h.running(zap={"action": "zap", "task": "T3", "values": {"player": "Steve"}})
+    h.llm.add("Selection", select(("edit", "zap Alex too")))
+    await h.run("zap Alex too")
+    assert [c.output for c in h.llm.calls] == ["Selection"] and h.vfg.actions() == []
+    [[line]] = h.vfg.hands()
+    assert "the copy zap's action zap is not loaded" in line["context"]
 
 
 async def test_a_timeout_is_never_retried_and_is_handed_on_saying_it_may_have_happened(h):
@@ -768,11 +1018,11 @@ async def test_a_timeout_is_never_retried_and_is_handed_on_saying_it_may_have_ha
 
 
 @pytest.mark.parametrize("code,err", [
-    (2, "vfg: --args: player must be a name"),
+    (2, "vfg: teleport has no value speed"),
     (3, "vfg: mc.py is not deployed on EC2 — vfg up"),
     (4, "vfg: cannot reach EC2 (ec2-user@1.2.3.4): ssh exited 255"),
     (5, "vfg: Minecraft is not answering RCON"),
-    (1, "vfg: no actions/teleport/ in ~/vfg"),  # from vfg action run: cannot be run either
+    (1, "vfg: no actions/teleport.py in ~/vfg"),  # no JSON line: it cannot be run either
 ])
 async def test_an_action_that_cannot_be_run_at_all_is_handed_on_at_once_with_the_reason(h, code, err):
     h.llm.add("Selection", select(("command", "give Alex bread"), ("teleport", "teleport Alex to a village")))
@@ -791,20 +1041,6 @@ async def test_an_action_that_cannot_be_run_at_all_is_handed_on_at_once_with_the
     assert line["context"] == (f"Dispatcher: done bread — Gave 1 [Bread] to Alex; "
                                f"not done teleport Alex to a village: could not run it: {err}")
     assert h.vfg.replies()[-1] == (tid, "progress", "handed on to the orchestrator: teleport Alex to a village")
-
-
-async def test_a_refusal_from_a_command_with_no_json_goes_back_to_the_planner(h):
-    h.llm.add("Selection", select(("run_script", "start tnt rain")))
-    h.llm.add("Planned_run_script",
-              planned({"action": "run_script", "name": "tnt_rain", "args": ["every_s=0"]}, say="tnt rain"),
-              planned({"action": "run_script", "name": "tnt_rain", "args": ["every_s=5"]}, say="tnt rain every 5 s"))
-    h.vfg.on("script", "run", answer=[fail(1, "vfg: tnt_rain: every_s must be at least 1"),
-                                      ok_lines("started tnt_rain (T1)")])
-    tid = await h.run("rain tnt on us")
-    assert "IT FAILED: vfg: tnt_rain: every_s must be at least 1" in h.llm.prompts("Planned_run_script")[1]
-    assert h.vfg.actions() == [["script", "run", "tnt_rain", "every_s=0"], ["script", "run", "tnt_rain", "every_s=5"]]
-    assert h.vfg.replies() == [(tid, "done", "tnt rain every 5 s — started tnt_rain (T1)")]
-    assert h.vfg.hands() == []
 
 
 async def test_a_command_task_with_the_real_refs_from_the_saved_commands_json(tmp_path):
@@ -866,20 +1102,20 @@ def test_only_an_action_instruction_is_capped_at_160_characters():
         Selection.model_validate({"parts": [{"part": "speed", "to": "command", "instruction": "give Steve speed " * 12}]})
 
 
-async def test_a_duration_no_script_value_covers_is_handed_on_not_bent_into_another_value(h):
-    h.llm.add("Selection", select(("run_script", "start tnt_rain on Steve for 30 seconds")))
-    h.llm.add("Planned_run_script", planned(hand_on="run tnt_rain on Steve and stop it after 30 seconds",
-                                            say="tnt_rain has no duration: the orchestrator times it"))
-    tid = await h.run("start tnt_rain on Steve for 30 seconds")
-    call = next(c for c in h.llm.calls if c.output == "Planned_run_script")
-    assert ("Use a script's value only for what its name and type mean. When the instruction asks for something "
-            "no value covers, such as a duration the script has no value for, hand it on rather than bend another "
-            "value to fit.") in call.system
-    assert "INSTRUCTION: start tnt_rain on Steve for 30 seconds\n" in call.prompt  # the unit kept
-    assert h.vfg.actions() == []  # never `every_s=30`, a 30 s interval that never ends
+async def test_a_duration_no_value_covers_is_handed_on_not_bent_into_another_value(h):
+    h.llm.add("Selection", select(("railgun", "give Steve a railgun for 30 seconds")))
+    h.llm.add("Planned_railgun", planned(hand_on="give Steve a railgun and take it away after 30 seconds",
+                                         say="the railgun has no duration: the orchestrator times it"))
+    tid = await h.run("give Steve a railgun for 30 seconds")
+    call = next(c for c in h.llm.calls if c.output == "Planned_railgun")
+    assert ("Use a value only for what its name, type and description mean. When the instruction asks for "
+            "something no value covers, such as a duration the action has no value for, hand it on rather than "
+            "bend another value to fit.") in call.system
+    assert "INSTRUCTION: give Steve a railgun for 30 seconds\n" in call.prompt  # the unit kept
+    assert h.vfg.actions() == []  # never cooldown=30
     [[line]] = h.vfg.hands()
-    assert line["task"] == "start tnt_rain on Steve for 30 seconds"
-    assert "run tnt_rain on Steve and stop it after 30 seconds" in line["context"]
+    assert line["task"] == "give Steve a railgun for 30 seconds"
+    assert "take it away after 30 seconds" in line["context"]
     assert h.vfg.replies(tid)[-1][2].startswith("handed on to the orchestrator")
 
 

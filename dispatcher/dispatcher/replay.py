@@ -4,12 +4,11 @@
                                        [--eval <labels.jsonl>]
 
 Reads ~/.vfg/orch/inbox.jsonl (VFG_ORCH_DIR) READ-ONLY, sends each task through the
-selector with the loaded actions' menu, `SAVED PLACES: none` and the providers of
-VFG_DISPATCH_PROVIDERS, `--jobs` at a time, and
-prints each selection with its cost and ms as it comes back, then the totals: p50 and p90
-ms over every task and over the model calls alone, the cost, and the picks naming a script
-that is not in scripts/, both those that got through and those the selector caught and
-handed on whole. It acts on nothing: no vfg, no action, no reply.
+selector with the menu of every action (the library's and VFG_SERVER's made ones),
+`RUNNING NOW: none`, `SAVED PLACES: none` and the providers of VFG_DISPATCH_PROVIDERS,
+`--jobs` at a time, and prints each selection with its cost and ms as it comes back, then
+the totals: p50 and p90 ms over every task and over the model calls alone, and the cost. It
+acts on nothing: no vfg, no action, no reply.
 
 `--eval` scores every selection against a labels file, one JSON line per task:
 `{"id": "T7", "accept": ["command+orchestrator", "orchestrator"], "either": false}`. A
@@ -38,9 +37,10 @@ import vfg_llm
 from vfg_llm import LlmError
 
 from . import actions, config
-from .selector import Selector, describe, unknown_scripts
+from .selector import Selector, describe
 
 PLACES = "SAVED PLACES: none"
+RUNNING = "RUNNING NOW: none"
 WHOLE = "orchestrator"
 
 
@@ -120,27 +120,25 @@ def pct(times: list[int], q: float) -> int:
 # ------------------------------------------------------------------ the run
 
 async def replay(tasks: list[dict], selector: Selector, out=sys.stdout, *, labels: dict[str, dict] | None = None,
-                 scripts: set[str] | frozenset[str] = frozenset(), jobs: int = 8) -> dict:
+                 jobs: int = 8) -> dict:
     gate = asyncio.Semaphore(max(1, jobs))
     results: dict[str, dict] = {}
 
     async def one(t: dict) -> None:
         task = " ".join(t["task"].split())
         async with gate:
-            caught: list[str] = []
             try:
-                answer = await selector.select(t["task"], t["context"], PLACES, caught)
+                answer = await selector.select(t["task"], t["context"], PLACES, RUNNING)
             except LlmError as e:
-                r = {"failed": str(e), "route": WHOLE, "invented": [], "caught": [], "dropped": []}  # handed on whole
+                r = {"failed": str(e), "route": WHOLE, "dropped": []}  # handed on whole
                 head, body = f"{t['id']}  FAILED  {task[:100]}", f"    {e}"
             else:
                 label = (labels or {}).get(t["id"]) or {}
                 r = {"ms": answer.ms, "cost": answer.cost, "route": route_of(answer.value),
-                     "invented": unknown_scripts(answer.value, scripts), "caught": caught,
                      "dropped": dropped(answer.value, label.get("parts", []))}
                 head = f"{t['id']}  {answer.ms} ms  ${answer.cost:.6f}  {task[:100]}"
                 body = f"    {describe(answer.value)}"
-        marks = [f"INVENTED {x}" for x in r["invented"]] + [f"handed on whole for {x}" for x in r["caught"]]
+        marks = []
         label = (labels or {}).get(t["id"])
         if label:
             r["lost"] = lost(r["route"], label["accept"]) or bool(r["dropped"])
@@ -161,14 +159,11 @@ async def replay(tasks: list[dict], selector: Selector, out=sys.stdout, *, label
     called = [r["ms"] for r in ok if r["ms"] or r["cost"]]  # a task the selector answered without a model call costs 0 ms
     summary = {"tasks": len(tasks), "failed": len(results) - len(ok), "cost": sum(r["cost"] for r in ok),
                "median_ms": pct(times, 0.5), "p90_ms": pct(times, 0.9),
-               "calls": len(called), "calls_median_ms": pct(called, 0.5), "calls_p90_ms": pct(called, 0.9),
-               "invented": sum(len(r["invented"]) for r in results.values()),
-               "caught": sum(1 for r in results.values() if r["caught"])}
+               "calls": len(called), "calls_median_ms": pct(called, 0.5), "calls_p90_ms": pct(called, 0.9)}
     print(f"\n{summary['tasks']} tasks, {summary['failed']} failed; ${summary['cost']:.6f} in all; "
           f"p50 {summary['median_ms']} ms, p90 {summary['p90_ms']} ms; "
-          f"{summary['calls']} model calls: p50 {summary['calls_median_ms']} ms, p90 {summary['calls_p90_ms']} ms; "
-          f"{summary['invented']} pick(s) naming a script not in scripts/, "
-          f"{summary['caught']} task(s) handed on whole for one", file=out, flush=True)
+          f"{summary['calls']} model calls: p50 {summary['calls_median_ms']} ms, p90 {summary['calls_p90_ms']} ms",
+          file=out, flush=True)
     if labels is not None:
         scored = [i for i, r in results.items() if r.get("scored")]
         agree = [i for i in scored if results[i]["agree"]]
@@ -190,24 +185,23 @@ async def _main(args) -> int:
     inbox = cfg.orch_dir / "inbox.jsonl"
     only = {x.strip() for x in args.only.split(",") if x.strip()} if args.only else None
     tasks = read_tasks(inbox, args.limit, only)
-    catalog = actions.load(cfg.repo)
-    if not catalog:
+    catalog = actions.load(cfg.repo, cfg.server)
+    if not catalog.names():
         print("no actions loaded: nothing to select from", file=sys.stderr)
         return 1
     labels = read_labels(Path(args.eval).expanduser()) if args.eval else None
-    scripts = actions.scripts(cfg.repo)
 
     async def ask(prompt, output, *, system=None, model):
         return await vfg_llm.structured(prompt, output, system=system, model=model, reasoning=False,
                                         providers=list(cfg.providers) or None, timeout=cfg.model_timeout_s)
 
-    selector = Selector(catalog, ask, args.model or cfg.model, scripts=list(scripts))
+    selector = Selector(catalog, ask, args.model or cfg.model)
     print(f"{len(tasks)} tasks from {inbox}, model {args.model or cfg.model}, providers "
           f"{','.join(cfg.providers) or 'OpenRouter’s choice'}, {args.jobs} at a time\n", flush=True)
     async with httpx.AsyncClient(timeout=30) as http:
         vfg_llm.client = http
         try:
-            await replay(tasks, selector, labels=labels, scripts=frozenset(scripts), jobs=args.jobs)
+            await replay(tasks, selector, labels=labels, jobs=args.jobs)
         finally:
             vfg_llm.client = None
     return 0

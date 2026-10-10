@@ -1,53 +1,45 @@
 """The complexity selector: at most one structured() call per task.
 
-It sees the task, its context, the saved places and the menu (each action's name and
-its docstring's first line, and for run_script and stop_script the names of the scripts
-in scripts/) and nothing more. It answers the task's PARTS, every one, each routed to an
-action or to the orchestrator, so a part it leaves out is a part it never wrote rather
-than one that slipped between a pick and the orchestrator text. Code turns the parts into
-the Picked the dispatcher runs: the action parts as picks, in order, adjacent command
-parts merged into one pick (at most MERGE of them), and the orchestrator parts joined
-into its text. More than four picks, or no pick, is the whole task to the orchestrator.
+It sees the task, its context, the saved places and the menu: each action's name and its
+docstring's first line, library and made, then every running copy as one line (its name,
+its action, the values that differ, the task that started it), and nothing more. It answers
+the task's PARTS, every one, each routed to an action or to the orchestrator, so a part it
+leaves out is a part it never wrote rather than one that slipped between a pick and the
+orchestrator text. Code turns the parts into the Picked the dispatcher runs: the action
+parts as picks, in order, adjacent command parts merged into one pick (at most MERGE of
+them), and the orchestrator parts joined into its text. More than four picks, or no pick,
+is the whole task to the orchestrator.
+
+The menu is rebuilt when the catalog reloads an action (update()), so an action made a moment
+ago is on it at the next ask.
 
 Some rules are code, not the model's, because the replay and the end-to-end runs showed
 the model breaking them:
-- a task that opens with `Change to T7:` or `Cancel T7:` (the conversation's own forms for
-  earlier work), `Undo`, `Fix` or `Build` goes to the orchestrator whole, with no model call;
+- a task that opens with `Fix` (new code: earlier work that does not do what it should) goes
+  to the orchestrator whole, with no model call;
 - a part whose instruction is a placeholder ("nothing"), an action part with none, or a
   teleport to where the player already is, is refused, so structured() asks once more;
-- a selection that starts or stops a script not in scripts/ is handed on whole, and so is
-  one with picks and no orchestrator part for a task that builds or places, removes or
-  replaces blocks;
 - a pick that repeats an earlier one, the same action and the same instruction, is dropped.
+A change to a running copy (`Change to T7: …`), a cancel, an undo and a build are the
+selector's to route, to edit, stop or any action that does them.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 from vfg_llm import Answer
 
-from .actions import Catalog, menu_line, named_scripts
-from .config import log
+from .actions import Catalog, menu
 
 PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "selector.md"
 
-# The actions that take a script's name: their menu line lists the names, so the selector
-# never picks one for a script that does not exist.
-SCRIPT_ACTIONS = ("run_script", "stop_script")
-
-# Always the orchestrator's, whole: earlier work, in the two fixed forms conversation/CLAUDE.md
-# gives the conversation. Anything else ("Fix the weather", "undo the rain", "build a tower")
-# goes to the selector, whose parts and prompt decide.
-WHOLE_TASK = re.compile(r"^\W*(change\s+to\s+T\d+|cancel\s+T\d+)\b", re.IGNORECASE)
-
-# A task that changes blocks: with picks, it must also carry an orchestrator part. "build" the
-# verb, never "building" the noun ("a building kit").
-BLOCK_WORK = re.compile(r"\bbuilds?\b|\b(place|remove|replace|break|destroy)\b.*\bblocks?\b", re.IGNORECASE)
+# Always the orchestrator's, whole: a fix is new code. Anything else ("Change to T7: bigger",
+# "undo the rain", "build a castle at home") goes to the selector, whose parts and prompt decide.
+WHOLE_TASK = re.compile(r"^\W*fix\b", re.IGNORECASE)
 
 # An instruction that does nothing: refused.
 PLACEHOLDER = re.compile(r"^\W*(nothing( to do)?|none( needed)?|n/?a|no[ -]?op|skip|not needed|do nothing|"
@@ -148,57 +140,41 @@ def picked(selection) -> Picked:
     return Picked(picks=picks, orchestrator="; ".join(x for x in orchestrator if x))
 
 
-def menu(catalog: Catalog, scripts: Iterable[str] = ()) -> str:
-    """One line per action; run_script and stop_script also name every script there is."""
-    names = ", ".join(sorted(scripts)) or "none"
-    lines = []
-    for name, cls in catalog.items():
-        line = f"- {name}: {menu_line(cls)}"
-        if name in SCRIPT_ACTIONS:
-            line += f" The only scripts: {names}."
-        lines.append(line)
-    return "\n".join(lines)
-
-
 class Selector:
-    def __init__(self, catalog: Catalog, ask, model: str, prompt: Path = PROMPT, scripts: Iterable[str] = ()):
-        if not catalog:
-            raise ValueError("the selector needs at least one action")
+    def __init__(self, catalog: Catalog, ask, model: str, prompt: Path = PROMPT):
         self.ask = ask
         self.model = model
-        self.scripts = frozenset(scripts)
-        self.Selection = selection_type(list(catalog))
+        self.text = prompt.read_text(encoding="utf-8").rstrip("\n")
+        self.update(catalog)
+
+    def update(self, catalog: Catalog) -> None:
+        """The menu and the names `to` may take, from the catalog as it is now."""
+        names = catalog.names()
+        if not names:
+            raise ValueError("the selector needs at least one action")
+        self.Selection = selection_type(names)
         # The rules and the menu open the one user message, the task closes it. No system
         # prompt: in the replay, DeepSeek V4 Flash without reasoning followed the same rules
         # far less often from a system message.
-        self.rules = prompt.read_text(encoding="utf-8").rstrip("\n") + "\n" + menu(catalog, scripts) + "\n"
+        self.rules = self.text + "\n" + menu(catalog) + "\n"
 
     @staticmethod
     def whole(task: str) -> bool:
-        """The orchestrator's whole, with no model call: `Change to T<n>` and `Cancel T<n>`."""
+        """The orchestrator's whole, with no model call: a task that opens with `Fix`."""
         return bool(WHOLE_TASK.match(task))
 
     @staticmethod
     def prompt(task: str, context: str, places: str) -> str:
         return f"TASK: {task}\nCONTEXT: {context or '(none)'}\n{places}\n"
 
-    async def select(self, task: str, context: str, places: str, caught: list[str] | None = None):
+    async def select(self, task: str, context: str, places: str, running: str = "RUNNING NOW: none"):
         """An Answer whose value is a Picked; raises LlmError. No picks is the whole task
-        handed on. `caught`, when given, collects the picks of a script not in scripts/."""
+        handed on. `running` is the RUNNING NOW lines, which close the menu."""
         if WHOLE_TASK.match(task):
             return Answer[Picked](value=Picked(), cost=0.0, ms=0)
-        answer = await self.ask(self.rules + "\n" + self.prompt(task, context, places), self.Selection, model=self.model)
-        sel = picked(answer.value)
-        if bad := unknown_scripts(sel, self.scripts):
-            log("select", f"a script that is not in scripts/ ({'; '.join(bad)[:200]}): the whole task is handed on")
-            sel = Picked()
-            if caught is not None:
-                caught.extend(bad)
-        elif sel.picks and not sel.orchestrator and BLOCK_WORK.search(task):
-            log("select", "a task that builds or changes blocks, with picks and no orchestrator part: "
-                          "the whole task is handed on")
-            sel = Picked()
-        return Answer[Picked](value=sel, cost=answer.cost, ms=answer.ms)
+        answer = await self.ask(self.rules + running + "\n\n" + self.prompt(task, context, places), self.Selection,
+                                model=self.model)
+        return Answer[Picked](value=picked(answer.value), cost=answer.cost, ms=answer.ms)
 
 
 def distinct(picks: list) -> list:
@@ -211,14 +187,6 @@ def distinct(picks: list) -> list:
             seen.add(key)
             out.append(p)
     return out
-
-
-def unknown_scripts(selection, scripts: Iterable[str]) -> list[str]:
-    """The run_script and stop_script instructions that name no script in scripts/; a name
-    said with spaces, "tnt rain", counts as tnt_rain."""
-    names = list(scripts)
-    return [f"{p.action}: {p.instruction}" for p in selection.picks
-            if p.action in SCRIPT_ACTIONS and not named_scripts(p.instruction, names)]
 
 
 def describe(selection) -> str:

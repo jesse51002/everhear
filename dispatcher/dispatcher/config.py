@@ -22,6 +22,7 @@ DEFAULT_MODEL = "~deepseek/deepseek-v4-flash-latest"
 DEFAULT_PROVIDERS = ("parasail", "wafer", "phala", "together", "venice")
 # The repo this dispatcher/ is in: actions/ and scripts/ live beside it.
 REPO = Path(__file__).resolve().parents[2]
+SERVER = "main"
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,7 @@ class Config:
     dispatch_dir: Path              # VFG_DISPATCH_DIR, default ~/.vfg/dispatch
     orch_dir: Path                  # VFG_ORCH_DIR, default ~/.vfg/orch (replay reads its inbox)
     repo: Path                      # VFG_REPO, default this repo
+    server: str = SERVER            # VFG_SERVER: whose made/<server>/actions/ are on the menu too
     model: str = DEFAULT_MODEL      # VFG_DISPATCH_MODEL
     providers: tuple[str, ...] = DEFAULT_PROVIDERS  # VFG_DISPATCH_PROVIDERS, comma-separated; () is OpenRouter's choice
     retries: int = 1                # VFG_DISPATCH_RETRIES, per action
@@ -38,6 +40,7 @@ class Config:
     model_timeout_s: float = 10.0   # VFG_DISPATCH_MODEL_TIMEOUT_S: one structured() call, retries included
     stop_grace_s: float = 10.0      # how long a running action may finish on SIGTERM
     stale_minutes: int = 10         # VFG_ORCH_STALE_MINUTES: a task that waited longer is failed, never run
+    running_ttl_s: float = 30.0     # VFG_RUNNING_TTL_S: how often running.json is fetched again in the background; 0: never
 
     @property
     def inbox(self) -> Path:
@@ -50,6 +53,10 @@ class Config:
     @property
     def lock_file(self) -> Path:
         return self.dispatch_dir / "lock"
+
+    @property
+    def running_file(self) -> Path:
+        return self.home / "running.json"
 
 
 def load(env: dict[str, str] | None = None) -> Config:
@@ -90,6 +97,7 @@ def load(env: dict[str, str] | None = None) -> Config:
         dispatch_dir=path("VFG_DISPATCH_DIR", home / "dispatch"),
         orch_dir=path("VFG_ORCH_DIR", home / "orch"),
         repo=path("VFG_REPO", REPO),
+        server=get("VFG_SERVER", SERVER),
         model=get("VFG_DISPATCH_MODEL", DEFAULT_MODEL),
         providers=names("VFG_DISPATCH_PROVIDERS", DEFAULT_PROVIDERS),
         retries=number("VFG_DISPATCH_RETRIES", 1, int, 0),
@@ -97,6 +105,7 @@ def load(env: dict[str, str] | None = None) -> Config:
         action_timeout_s=number("VFG_DISPATCH_ACTION_TIMEOUT_S", 20.0, float, 1),
         model_timeout_s=number("VFG_DISPATCH_MODEL_TIMEOUT_S", 10.0, float, 1),
         stale_minutes=number("VFG_ORCH_STALE_MINUTES", 10, int, 1),
+        running_ttl_s=number("VFG_RUNNING_TTL_S", 30.0, float, 0),
     )
 
 

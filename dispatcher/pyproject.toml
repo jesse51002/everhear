@@ -25,3 +25,5 @@ package = false
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+# stop's and edit's field `copy` hides BaseModel.copy(), which nothing calls (dispatcher/actions.py)
+filterwarnings = ['ignore:Field name "copy" in:UserWarning']
