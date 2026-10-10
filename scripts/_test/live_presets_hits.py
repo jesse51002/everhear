@@ -27,6 +27,7 @@ SCRIPTS = os.path.dirname(HERE)
 REPO = os.path.dirname(SCRIPTS)
 LIB = os.path.join(SCRIPTS, "_lib")
 PRESETS = os.path.join(SCRIPTS, "_presets")
+sys.path.append(os.path.dirname(os.path.dirname(HERE)))  # the repo: a preset's values class imports actions._types
 sys.path[:0] = [LIB, PRESETS, os.path.join(REPO, "toolkit", "lib")]
 
 PROPS = os.environ.get("VFG_MC_PROPERTIES", "")

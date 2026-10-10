@@ -1,7 +1,7 @@
 [project]
 name = "vfg-lib"
 version = "0.1.0"
-description = "Python shared by every EverHear part: structured(), the one way to ask a model for a pydantic object."
+description = "Python shared by every EverHear part: structured(), the one way to ask a model for a pydantic object, and vfg_actions, the one loader of the actions."
 requires-python = ">=3.12"
 dependencies = [
     "httpx>=0.28.1",
@@ -19,7 +19,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-only-include = ["vfg_llm.py"]
+only-include = ["vfg_llm.py", "vfg_actions.py"]
 
 [tool.uv]
 # Dependents install this by path; rebuild it there when the code changes, not only this file.

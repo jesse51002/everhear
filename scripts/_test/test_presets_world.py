@@ -21,6 +21,7 @@ import unittest
 sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
 PRESETS = os.path.join(os.path.dirname(HERE), "_presets")
+sys.path.append(os.path.dirname(os.path.dirname(HERE)))  # the repo: a preset's values class imports actions._types
 sys.path.insert(0, HERE)
 
 from test_kit import KitCase, collect, start_script, TMP  # noqa: E402

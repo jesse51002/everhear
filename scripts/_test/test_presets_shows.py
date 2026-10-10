@@ -23,6 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = os.path.dirname(HERE)
 LIB = os.path.join(SCRIPTS, "_lib")
 PRESETS = os.path.join(SCRIPTS, "_presets")
+sys.path.append(os.path.dirname(os.path.dirname(HERE)))  # the repo: a preset's values class imports actions._types
 TOOLKIT_LIB = os.path.join(os.path.dirname(SCRIPTS), "toolkit", "lib")
 sys.path.insert(0, HERE)
 
