@@ -168,6 +168,7 @@ class Event:
     task: dict | None = None        # REPORT: the task's entry in tasks.json
     status: str = ""                # REPORT: done or failed, as the implementer said
     report: str = ""                # REPORT: the implementer's report, which never reaches the context
+    following: bool = False         # REPORT: a follow-up to the task already runs, so it stays open
 
     def show(self) -> str:
         if self.kind == "LINE":
@@ -179,9 +180,11 @@ class Event:
             return text
         if self.kind == "REPORT":
             t = self.task or {}
+            more = (f"\nA FOLLOW-UP to {t.get('id', '?')} is already under way, so the task stays open: say how "
+                    "this step went, never that it is all done." if self.following else "")
             return (f"REPORT: the implementer of {t.get('id', '?')} ended, {self.status}.\n"
                     f"{t.get('id', '?')} was for {t.get('player') or 'nobody'}, who said: {t.get('line', '')}\n"
-                    f"ITS BRIEF: {t.get('task', '')}\nITS REPORT:\n{self.report.strip()}")
+                    f"ITS BRIEF: {t.get('task', '')}\nITS REPORT:\n{self.report.strip()}{more}")
         return BATCH
 
 

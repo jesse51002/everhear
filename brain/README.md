@@ -19,15 +19,16 @@ apart each get a call at once.
 | Event | Comes from | The call |
 |---|---|---|
 | `LINE` | a `LINE` Jev classed `action_oriented`; or a `conversational` one Respond handed up | routes and does every part, and replies |
-| `REPORT` | an implementer ending (`Implementers`' `on_report`) | the player's chat line, one record for the context (`T183 done: …`), the task's status |
+| `REPORT` | an implementer ending (`Implementers`' `on_report`) | the player's chat line, one record for the context (`T183 done: …`), the task's status; when the call gives no record or no line, or fails, both are written in code from the task's brief, never the implementer's words; while a follow-up to the task already runs, the task stays open with the record as its result so far, and the call is told so |
 | `BATCH` | the timer: `VFG_BRAIN_BATCH_S` (60 s) with no read of any kind and something unread | usually nothing; acts where something clearly needs it |
 
 **Respond** ([`respond.py`](brain/respond.py)) takes a `conversational` line: a cheap model (Gemini
 3.8 Flash, low) on the same context that keeps up the banter and replies, or hands the line up to
 the brain when it asks for something to happen or Respond is unsure. A hand-up replaces its reply,
 so a player never gets two. Respond never acts on the game. A `context` line, a game event, a
-system notice and the brain's own rows are context only. A line said more than two minutes before
-it arrives is history: never acted on.
+system notice and the brain's own rows are context only. A line already in the feed when the brain
+read its context, said more than two minutes before that, is history: never acted on. A line that
+arrives on the watch is live, whatever its time (the box's clock may be a minute off the PC's).
 
 ## The shared context and the cache
 
@@ -65,24 +66,37 @@ among them), an instruction that does nothing, a teleport that moves nobody, a p
 gets ONE retry from the action planner ([`action_planner.py`](brain/action_planner.py)) on
 `VFG_PLAN_MODEL`, written with the reference of every command it used; its self-check is off
 unless `VFG_PLAN_CHECK=on`. Implementer parts start at once: a new one gets its own `T<n>`, a
-`tasks.json` entry and an `AI task` row; one naming a task goes to that task's implementer. The
+`tasks.json` entry and an `AI task` row; one naming a task goes to that task's implementer, which
+resumes its session (kept in `tasks.json` as soon as the implementer's CLI names it), or with no
+session saved starts anew on the task's brief and the follow-up. The
 reply is said at once when there are only implementer and talk parts, and after the actions
 otherwise; when an action failed or was dropped in code, a short line written in code goes out
-instead, so a reply never claims what did not happen.
+instead, so a reply never claims what did not happen. An error nobody expected never leaves a task
+open: the line's task, or the reported one, is closed (failed, or on the implementer's status)
+and the player gets a line written in code; the error is logged.
 
 ## Run it
 
 ```sh
 vfg brain start     # brain/run, detached: pid ~/.vfg/brain/brain.pid, log ~/.vfg/brain/brain.log
 vfg brain status    # running or not, and the open tasks
-vfg brain stop      # SIGTERM: in-flight calls finish for up to 10 s, implementers stopped, their tasks failed
+vfg brain stop      # SIGTERM to the brain alone: in-flight calls finish for up to 10 s, implementers stopped, their tasks failed
 ```
+
+While it stops, an implementer that ends closes its task on its own status, with a record written in
+code (`T7 done: <its brief>`, an `AI result` row) and no model call. `vfg brain stop` signals the
+brain's pid, not its process group, where the implementers' claude CLIs run: the brain interrupts
+them itself; the group gets SIGKILL only after 15 s.
 
 `run` syncs the dependencies from `uv.lock` and execs `python -m brain`. A start takes the lock,
 runs `vfg up`, sets the watchers (`join,leave,death,advancement,server`), Jev's lookout
 ([`prompts/lookout.md`](prompts/lookout.md)) and Jev's menu (every action's line, set again when
-an action changes), loads the context from `vfg context --json`, fails the tasks a crash left open,
-follows `vfg watch --after <last seq>`, and greets, unless nobody is online. **The first start on
+an action changes), loads the context from `vfg context --json` (tried again every 5 s while it
+fails), fails the tasks a crash left open, follows `vfg watch --after <seq>` from the feed's highest
+seq that read gave (`last_seq`, its last object: with no row in the last 6 h, the watch still never
+replays old rows as new), and greets, unless nobody is online. When the feed restarts while it runs
+(`vfg watch` says `feed restarted`, or gives a seq it had passed), it reads the context again and
+follows the new feed from the `last_seq` that gives. **The first start on
 a new server version fetches the command references** (about 95 s, in the background, into
 `~/.vfg/brain/refs/<version>/`); until they are in, a refused command is not retried.
 

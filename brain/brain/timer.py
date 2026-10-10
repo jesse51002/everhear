@@ -53,6 +53,11 @@ class Timer:
         while True:
             self.wake.clear()
             self.check()
+            if isinstance(self.firing, asyncio.Future) and not self.firing.done():
+                # a batch in flight: none fires before it ends, so wait on it, not on the clock,
+                # which past its minute would wake this every 50 ms until it ended
+                await asyncio.wait([self.firing])
+                continue
             due = self.due()
             delay = None if due is None else max(due - self.clock(), 0.05)
             with contextlib.suppress(TimeoutError):

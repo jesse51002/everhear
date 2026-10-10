@@ -5,6 +5,8 @@ import asyncio
 
 from vfg_llm import LlmError
 
+from brain import loop
+from brain.act import BROKE
 from brain.timer import Timer
 
 from conftest import cmd, decision, part, rows
@@ -47,12 +49,16 @@ async def test_respond_replies_or_hands_up_never_both(kit):
     assert [c["output"] for c in k.ask.calls] == ["Response", "Decision"]
 
 
-async def test_history_is_context_and_never_acted_on(kit):
-    k = kit(Decision=GIVE)
-    k.brain.feed("LINE#9 18:20:00 Steve voice action_oriented 0.9 - | give me a diamond pickaxe")
+async def test_history_is_the_old_feed_at_the_start_and_a_line_on_the_watch_is_live_whatever_its_time(kit):
+    k = kit(rows("LINE#9 18:20:00 Steve voice action_oriented 0.9 - | give me a diamond pickaxe"), Decision=GIVE)
+    k.brain.start = 9
+    assert k.brain.catch_up()[0].seq == 9                 # ten minutes old as the brain starts: history
     await k.settle()
     assert k.ask.calls == [] and k.vfg.of("context", "mark") == [["context", "mark", "9"]]
-    assert not k.ctx.unprocessed() and k.ctx.last_seq == 9
+    # the box's clock 90 s ahead of the PC's: a line said now reads as yesterday's 18:31:30, and is live
+    k.brain.feed("LINE#10 18:31:30 Steve voice action_oriented 0.9 - | give me a diamond pickaxe")
+    await k.settle()
+    assert len(k.ask.calls) == 1 and "LINE #10" in k.ask.calls[0]["prompt"].split("THE EVENT")[1]
 
 
 async def test_two_lines_at_once_neither_waits_for_the_other(kit):
@@ -89,6 +95,110 @@ async def test_a_report_closes_its_task_with_one_record_and_one_chat_line(kit):
     assert k.vfg.said() == [["Steve, your ice trail is on: just walk", "--task", "T1"]]
 
 
+async def test_a_report_while_a_follow_up_to_its_task_runs_keeps_the_task_open(kit):
+    k = kit(Decision=decision(reply="the trail's on; making it wider now", record="T1 ice trail on, wider next",
+                              status="done"))
+    tid = k.tasks.open("Steve", "make me an ice trail", "an ice trail behind Steve")
+    k.impl.busy = [tid]  # the follow-up queued behind this run has started
+    await k.brain.on_report(tid, "done", "Done: an ice trail follows Steve, running as ice_trail.")
+    await k.settle()
+    assert "A FOLLOW-UP to T1 is already under way" in k.ask.calls[0]["prompt"]
+    t = k.tasks.get("T1")
+    assert (t["status"], t["result"], t["closed_at"]) == ("open", "T1 ice trail on, wider next", None)
+    assert k.vfg.rows("result") == [("result T1", "T1 ice trail on, wider next")]
+    assert "an implementer is on it" in k.brain.open_tasks()
+
+
+async def test_a_report_while_the_brain_stops_closes_its_task_in_code(kit):
+    gate = asyncio.Event()
+
+    async def held(prompt):
+        await gate.wait()
+        return GIVE
+
+    k = kit(Decision=held)
+    tid = k.tasks.open("Steve", "build a castle", "a castle at spawn, 40 by 40")
+    k.brain.feed(ASK.format(seq=5))                       # a call in flight as the stop begins
+    stopping = asyncio.create_task(k.brain.stop(1.0))
+    await asyncio.sleep(0)
+    await k.brain.on_report(tid, "done", "Done: the castle is up at spawn, with a moat I added.")  # meanwhile
+    gate.set()
+    await stopping
+    await k.settle()
+    assert len(k.ask.calls) == 1                          # the line's call; the report's needs no model
+    t = k.tasks.get(tid)
+    assert (t["status"], t["result"]) == ("done", "T1 done: a castle at spawn, 40 by 40")
+    assert k.vfg.rows("result") == [("result T1", "T1 done: a castle at spawn, 40 by 40")]
+
+
+async def test_a_report_gets_a_record_and_a_chat_line_written_in_code_when_the_call_gives_none(kit):
+    k = kit(Decision=decision())                          # an answer with no record and no reply
+    trail = k.tasks.open("Steve", "make me an ice trail", "an ice trail behind Steve")
+    await k.brain.on_report(trail, "failed", "Failed: vfg script check said line 40 of scripts/ice/main.py …")
+    await k.settle()
+    k.ask.answers["Decision"] = LlmError("no answer")     # and a call that fails
+    beam = k.tasks.open("Alex", "an ice beam", "an ice beam for Alex")
+    await k.brain.on_report(beam, "done", "Done: ice_beam running as ice_beam_alex; I also cleaned up …")
+    await k.settle()
+    assert k.vfg.rows("result") == [("result T1", "T1 failed: an ice trail behind Steve"),
+                                    ("result T2", "T2 done: an ice beam for Alex")]  # never the implementer's words
+    assert [t["result"] for t in k.tasks.tasks.values()] == ["T1 failed: an ice trail behind Steve",
+                                                             "T2 done: an ice beam for Alex"]
+    assert k.vfg.said() == [["sorry, that one failed: an ice trail behind Steve", "--task", "T1"],
+                            ["done: an ice beam for Alex", "--task", "T2"]]
+
+
+async def test_an_unexpected_error_never_leaves_a_task_open_and_the_player_hears_so(kit):
+    async def broken(argv):
+        raise RuntimeError("the runner broke")
+
+    async def blind():
+        raise RuntimeError("no state")
+
+    k = kit(Decision=GIVE)
+    k.vfg.on("action", "run", answer=broken)
+    k.brain.feed(ASK.format(seq=5))                       # T1: its action's run raises
+    await k.settle()
+    trail = k.tasks.open("Steve", "make me an ice trail", "an ice trail behind Steve")
+    k.world.seen = blind                                  # T2's report: the world cannot be read
+    await k.brain.on_report(trail, "done", "Done: an ice trail follows Steve.")
+    await k.settle()
+    assert [(t["status"], t["result"]) for t in k.tasks.tasks.values()] == [
+        ("failed", "T1 failed: it broke (RuntimeError: the runner broke)"), ("done", "T2 done: an ice trail behind Steve")]
+    assert k.vfg.said() == [[BROKE, "--task", "T1"], ["done: an ice trail behind Steve", "--task", "T2"]]
+
+
+async def test_after_the_feed_restarts_the_context_is_read_again_and_the_new_feed_heard(kit, monkeypatch):
+    monkeypatch.setattr(loop, "WATCH_AGAIN_S", 0.001)
+    k = kit(rows("LINE#500 18:20:00 Alex voice context 0.9 - | on the old box", processed=True), Decision=GIVE)
+    k.brain.start = 500
+    fresh = rows("SYS#1 18:29:00 | a new box", "GAME#2 18:29:30 join Steve | Steve joined the game")
+
+    async def load():
+        return fresh, 2
+
+    k.brain.load, seen = load, []
+
+    async def watch(after: int):
+        seen.append(after)
+        if after == 500:
+            yield "SYS#0 18:29:40 | vfg watch: feed restarted — cursor reset"
+            yield "SYS#1 18:29:00 | a new box"
+        else:
+            yield ASK.format(seq=3)
+        await asyncio.Event().wait()
+
+    following = asyncio.create_task(k.brain.follow(watch))
+    for _ in range(200):
+        if k.vfg.said():
+            break
+        await asyncio.sleep(0.001)
+    following.cancel()
+    await k.settle()
+    assert seen == [500, 2] and [r.seq for r in k.brain.ctx.rows] == [1, 2, 3]
+    assert k.vfg.said() == [["there you go", "--task", "T1"]]
+
+
 class Finished:
     """A batch call that is over at once."""
 
@@ -111,3 +221,25 @@ async def test_the_batch_fires_after_a_quiet_minute_with_something_unread():
     assert not timer.check()
     now[0] += 1
     assert timer.check() and fired == [1090.0, 1200.0]
+
+
+async def test_while_a_batch_runs_past_its_minute_the_timer_waits_on_it_not_the_clock():
+    now, checked, fired = [1000.0], [], []
+    batch = asyncio.get_running_loop().create_future()
+    timer = Timer(60, lambda: checked.append(now[0]) or True, lambda: fired.append(now[0]) or batch,
+                  clock=lambda: now[0])
+    now[0] += 61
+    timer.start()
+    await asyncio.sleep(0)
+    assert fired == [1061.0]
+    now[0] += 61                      # the batch runs past its own minute, and rows keep arriving
+    n = len(checked)
+    for _ in range(5):
+        timer.arrived()
+        await asyncio.sleep(0)
+    assert len(checked) == n          # asleep on the batch: nothing woke it
+    batch.set_result(None)
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert fired == [1061.0, 1122.0]  # it ended: due long since, with something unread
+    await timer.stop()

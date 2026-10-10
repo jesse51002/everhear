@@ -420,9 +420,12 @@ class TestHistory(BoxCase):
 
 class TestContext(BoxCase):
     def rows(self, *args, **env):
+        """The rows; the last object, checked here, is the feed's highest seq."""
         r = self.vfg("context", "--json", *args, **env)
         self.assertOk(r)
-        return [json.loads(l) for l in r.stdout.splitlines()]
+        objs = [json.loads(l) for l in r.stdout.splitlines()]
+        self.assertEqual(objs[-1], {"last_seq": self.box.query("SELECT MAX(seq) FROM feed")[0][0]})
+        return objs[:-1]
 
     def test_the_rows_of_the_last_hours_oldest_first(self):
         old = iso(datetime.now(timezone.utc) - timedelta(hours=2))
@@ -438,9 +441,10 @@ class TestContext(BoxCase):
         self.assertRegex(rows[4]["line"], r"^AI#4 \d\d:\d\d:\d\d action T7 \| give Steve diamond_pickaxe — ok$")
         self.assertEqual([r["seq"] for r in self.rows(VFG_BRAIN_HISTORY_HOURS="1")], [1, 2, 3, 4])
         self.assertEqual([r["seq"] for r in self.rows("--since", "-8m")], [3, 4])
+        self.assertEqual(self.rows("--since", "2999-01-01"), [])   # none that recent: the last seq alone
         r = self.vfg("context", "--since", "-8m")
         self.assertEqual(r.stdout.splitlines(), [rows[3]["line"], rows[4]["line"]])
-        self.assertEqual(len(self.box.programs("read")), 4)
+        self.assertEqual(len(self.box.programs("read")), 5)
 
     def test_mark_sets_processed_at_once_in_one_call(self):
         r = self.vfg("context", "mark", "1", "2", "99")
@@ -593,8 +597,11 @@ class TestFeed(BoxCase):
 # ===================================================================== brain
 
 BRAIN = """#!/usr/bin/env bash
-# A stand-in for brain/run: up until SIGTERM, which it notes.
+# A stand-in for brain/run: up until SIGTERM, which it notes. Its child, in its process group as an
+# implementer's claude CLI is, notes a SIGTERM too, and ends once the brain has gone.
 trap 'echo "stopping" >> "$VFG_HOME/brain/order"; exit 0' TERM
+( trap 'echo "child signalled" >> "$VFG_HOME/brain/order"' TERM
+  while kill -0 $$ 2>/dev/null; do sleep 0.02; done ) &
 echo "fake brain $$ up"
 while true; do sleep 0.02; done
 """
@@ -659,7 +666,7 @@ class TestBrain(BoxCase):
         self.assertEqual(r.stdout, "brain  stopped pid %d\n" % pid)
         self.assertTrue(wait_for(lambda: not alive(pid)))
         with open(self.brain("order")) as f:
-            self.assertEqual(f.read(), "stopping\n")   # SIGTERM, which it saw
+            self.assertEqual(f.read(), "stopping\n")   # SIGTERM to the brain, which it saw; none to its child
         self.assertFalse(os.path.exists(self.brain("brain.pid")))
         self.assertOneLine(self.vfg("brain", "status"), 1)
 
@@ -1079,6 +1086,9 @@ class TestWatch(BoxCase):
         F["opening"](entries, 0, 100, None, parts)
         self.assertEqual((parts[0], len(parts)), (b"@skip 1 401 401", 101))  # far behind: the last 100
         parts = []
+        F["opening"](entries, 200, None, None, parts)
+        self.assertEqual(parts, [l for _, l in entries[200:]])             # code's (no limit): every one
+        parts = []
         F["opening"](entries, 600, 100, None, parts)
         self.assertEqual(parts[:2], [b"@reset", b"@skip 1 401 401"])       # a shorter feed: from the start
         parts = []
@@ -1118,7 +1128,7 @@ class TestWatch(BoxCase):
         self.assertRegex(w.read()[0], r"^SYS#0 \d\d:\d\d:\d\d \| vfg watch: held back 7 lines \(seq 6–12\), feed "
                                       r"too busy — vfg history --feed has them$")
         code = self.watcher(after=3)
-        self.assertEqual((code.persist, code.last, code.max_per_min), (False, 3, None))
+        self.assertEqual((code.persist, code.last, code.max_per_min, code.catchup), (False, 3, None, None))
         code.handle(self.lines(1, 400), False)
         self.assertEqual(seqs(code.read()), list(range(4, 401)))
         self.assertEqual(len(code.printed), 0)
