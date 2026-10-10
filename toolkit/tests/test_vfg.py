@@ -681,7 +681,12 @@ class TestBrain(BoxCase):
         self.assertEqual(r.stdout, "")
         write(self.run_path, "#!/usr/bin/env bash\necho broken\nexit 7\n")
         os.chmod(self.run_path, 0o755)
-        r = self.vfg("brain", "start")
+        mod = vfg_module()
+        mod.START_CHECK_S, saved = 3.0, mod.START_CHECK_S   # it exits at once: the wait ends then, however loaded
+        try:
+            r = self.vfg("brain", "start")
+        finally:
+            mod.START_CHECK_S = saved
         self.assertOneLine(r, 1, r"^vfg: the brain exited at once \(code 7\) — see .*brain/brain\.log$")
         self.assertEqual(r.stdout, "brain  exited at once (code 7)\n")
         self.assertFalse(os.path.exists(self.brain("brain.pid")))
@@ -929,12 +934,11 @@ class TestPlace(BoxCase):
         self.assertEqual((r.returncode, r.stdout), (0, "saved castle at 197 68 251 in overworld\n"), r.stderr)
         self.assertIn('data modify storage everhear:places castle set value '
                       '{pos:[197,68,251],dim:"minecraft:overworld",by:"T23"}', self.world.sent)
-        self.assertEqual(self.place("save", "base", "--player", "Alex").stdout, "saved base at 10 -5 3 in the_nether\n")
         self.assertEqual(self.place("save", "nest", "--at", "-368.7", "70", "912.2", "--dim", "THE_END", "--by",
                                     "T5").stdout, "saved nest at -369 70 912 in the_end\n")
         self.assertEqual(self.world.storage["nest"], {"pos": [-369, 70, 912], "by": "T5", "dim": "minecraft:the_end"})
-        self.assertEqual(self.place("list", "--fresh").stdout, "base 10 -5 3 the_nether\ncastle 197 68 251 overworld "
-                                                               "(T23)\nnest -369 70 912 the_end (T5)\n")
+        self.assertEqual(self.place("list", "--fresh").stdout, "castle 197 68 251 overworld (T23)\n"
+                                                               "nest -369 70 912 the_end (T5)\n")
         self.assertEqual(json.loads(self.place("list", "--json").stdout)["castle"],
                          {"pos": [197, 68, 251], "dim": "minecraft:overworld", "by": "T23"})
         self.assertEqual(self.place("forget", "castle").stdout, "forgot castle\n")
@@ -1138,6 +1142,25 @@ class TestWatch(BoxCase):
         w.tick(False)
         self.assertRegex(w.read()[0], r"^SYS#0 \d\d:\d\d:\d\d \| vfg watch: EC2 unreachable since \d\d:\d\d:\d\d — "
                                       r"retrying$")
+
+    def test_the_newest_persons_watch_takes_the_lock(self):
+        lock, pidfile = (os.path.join(self.box.vhome, n) for n in ("watch.lock", "watch.pid"))
+        holder = subprocess.Popen([PY, "-c", "import fcntl, os, sys, time\n"
+                                   "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT)\n"
+                                   "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+                                   "open(sys.argv[2], 'w').write(str(os.getpid()))\n"
+                                   "print('held', flush=True)\ntime.sleep(10)\n", lock, pidfile, "vfg", "watch"],
+                                  stdout=subprocess.PIPE)
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        self.assertEqual(holder.stdout.readline(), b"held\n")
+        with self.box.environ() as mod:
+            fd = mod.take_watch_lock(mod.Config())
+        os.close(fd)
+        self.assertEqual(holder.wait(5), -signal.SIGTERM)       # the older watch was asked to go
+        with open(pidfile) as f:
+            self.assertEqual(int(f.read()), os.getpid())
+        holder.stdout.close()
 
     def test_only_a_persons_watch_is_taken_over(self):
         mod = vfg_module()

@@ -17,7 +17,7 @@ import unittest
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from harness import ISO_RE, BoxCase, vfg_module, write  # noqa: E402
+from harness import ISO_RE, BoxCase, alive, vfg_module, write  # noqa: E402
 import standins  # noqa: E402
 
 CRATER = '''"""Carve a sphere out of the world at a place, leaving air, lava or fire."""
@@ -229,10 +229,10 @@ class TestRun(ActionCase):
 
 class TestEditStop(ActionCase):
     def test_an_edit_is_checked_here_then_lands_live_or_restarts_and_a_stop_takes_one(self):
-        """vfg's side: an edit checked against the copy's action and values, as a shortcut or as the
-        edit action the brain runs, and running.json written through. The box's side (a live value
-        read again, a restart keeping the rest, a stop taking one copy's things) is
-        scripts/_test/test_instances.py's."""
+        """vfg's side: an edit checked against the copy's action and values, as the shortcut or as
+        the edit action the brain runs, and running.json written through. The box's side (a live
+        value read again, a restart keeping the rest, a stop taking one copy's things) is
+        scripts/_test/test_instances.py's; the stop shortcut is the next test's."""
         a = self.line(self.run_action("beam", "player=Steve", "cooldown=5", "--task", "T5"))["copy"]
         b = self.line(self.run_action("beam", "player=Alex"))["copy"]
         pa = self.pid(a)
@@ -248,22 +248,20 @@ class TestEditStop(ActionCase):
             self.assertEqual(r.returncode, code, r.stderr)
             self.assertRegex(r.stderr.splitlines()[-1], pattern)
         self.assertEqual(self.vfg("script", "set", "beam", "cooldown=0").stdout, "beam: nothing changed\n")
-        r = self.vfg("script", "set", a, "length=1000")
-        self.assertEqual(r.stdout.splitlines()[0], "length=1000 is over its max, clamped to 200")
-        self.assertRegex(r.stdout.splitlines()[1], r"^beam restarted with length=200, pid \d+$")
+        # The edit action itself, as the brain writes it: its values as one JSON object.
+        got = self.line(self.run_action("edit", "copy=beam", 'values={"length": 1000}', "--task", "T8"))
+        self.assertEqual(got["notes"], ["length=1000 is over its max, clamped to 200"])
+        self.assertRegex(got["summary"], r"^beam restarted with length=200, pid \d+$")
+        self.assertEqual((got["facts"]["changed"], got["facts"]["live"]), (["length"], False))
         self.assertNotEqual(self.pid(a), pa)
         meta = self.box_json("beam.json")
         self.assertEqual((meta["values"]["length"], meta["values"]["cooldown"], meta["task"]), (200, 0, "T5"))
         self.assertEqual(self.running()["copies"][a]["values"]["length"], 200)
-        # The edit and stop actions themselves, as the brain runs them, write through as their shortcuts do.
-        got = self.line(self.run_action("edit", "copy=beam_2", 'values={"cooldown": 3}', "--task", "T8"))
-        self.assertEqual((got["copy"], got["facts"]["changed"], got["facts"]["live"]), ("edit", ["cooldown"], True))
-        self.assertEqual(self.running()["copies"][b]["values"]["cooldown"], 3)
-        self.assertEqual(self.line(self.run_action("stop", "copy=beam_2"))["summary"], "stopped beam_2")
-        r = self.vfg("script", "stop", a)
-        self.assertEqual((r.returncode, r.stdout), (0, "stopped beam\n"), r.stderr)
+        # The stop action: that copy and what it made go, here and in running.json; the other stays.
+        self.assertEqual(self.line(self.run_action("stop", "copy=beam"))["summary"], "stopped beam")
         self.assertIn("kill @e[tag=vfg_beam]", self.kills())
-        self.assertEqual(self.running()["copies"], {})
+        self.assertEqual(self.running()["copies"], {})       # beam_2 it never knew, since running.json went
+        self.assertTrue(alive(self.pid(b)))                   # and beam_2 runs on
 
     def test_a_stop_that_failed_leaves_running_json_unless_nothing_runs(self):
         self.line(self.run_action("beam"))

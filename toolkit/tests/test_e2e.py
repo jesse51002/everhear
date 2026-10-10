@@ -103,13 +103,7 @@ class TestEndToEnd(BoxCase):
         self.assertEqual(at(), 4)                                  # --after moves no cursor
         again = Watch(self.box)                                    # resumes from the cursor
         self.assertEqual(again.texts(1), ["while the person is away"])
-        newest = Watch(self.box)                                   # the newest person's watch wins
-        self.assertEqual(again.p.wait(5), 0)
-        self.box.post("GAME", "death Steve", "Steve fell")
-        self.assertEqual(newest.texts(1), ["Steve fell"])
-        self.assertEqual(brain.texts(1), ["Steve fell"])
-        self.assertEqual((newest.stop(), brain.stop()), (0, 0))
-
+        self.assertEqual((again.stop(), brain.stop()), (0, 0))
 
 if __name__ == "__main__":
     unittest.main()

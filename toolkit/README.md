@@ -211,7 +211,7 @@ on the PC; the router reads them through it too. A name is a script in one place
 ## Tests
 
 ```sh
-python3 -m unittest discover -s toolkit/tests      # from the repo's root; about 8 s
+python3 -m unittest discover -s toolkit/tests      # from the repo's root; about 7 s
 ```
 
 No EC2 and no network, and where `python3` has no pydantic the run starts itself again under
@@ -222,7 +222,7 @@ sends: the harness replaces `Ssh`'s one subprocess call and nothing else, and gi
 the box's environment, none of the PC's. A test class shares one `fake_rcon.py`, Minecraft's RCON
 in-process on localhost; a copy an action starts is a real process on the real kit, from the
 stand-in actions of `tests/standins.py`. vfg's own waits are short in the tests (the 2 s check
-0.2 s, `vfg brain start`'s 3 s check 0.1 s).
+0.2 s, `vfg brain start`'s 3 s check 0.1 s), and each part of a remote program is compiled once.
 
 - `test_vfg.py`: every command at its edge, with `fake_places_world.py` (26.3's recorded
   replies) for places, a fake `java` for the data generator and `tests/bin/`'s fake

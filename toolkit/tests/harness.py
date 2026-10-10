@@ -135,6 +135,28 @@ def program_args(data):
     return json.loads(ast.literal_eval(m.group(1))) if m else None
 
 
+_COMPILED = {}
+
+
+def compiled(text):
+    """compile(text) once per text."""
+    code = _COMPILED.get(text)
+    if code is None:
+        code = _COMPILED[text] = compile(text, "<stdin>", "exec")
+    return code
+
+
+def compile_once(source, filename, mode, *args, **kw):
+    """compile(), once per source, file name and mode."""
+    if args or kw:
+        return compile(source, filename, mode, *args, **kw)
+    key = (source, filename, mode)
+    code = _COMPILED.get(key)
+    if code is None:
+        code = _COMPILED[key] = compile(source, filename, mode)
+    return code
+
+
 def load_module(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
@@ -425,8 +447,21 @@ class Box(object):
         return code, out.getvalue(), err.getvalue()
 
     def run_program(self, data):
-        """A program vfg sends, run as /opt/vfg/python/bin/python3 -u - runs it."""
-        return self.run_here(lambda ns: exec(compile(data, "<stdin>", "exec"), ns), self.box_env())
+        """A program vfg sends, run as /opt/vfg/python/bin/python3 -u - runs it: common.py, ARGS,
+        then the libraries and the program. What comes before ARGS and what after are the same
+        from one call to the next, so each is compiled once (compiled())."""
+        text = data.decode("utf-8")
+        m = re.search(r"^ARGS = json\.loads\((.*)\)$", text, re.M)
+        if m is None:
+            return self.run_here(lambda ns: exec(compiled(text), ns), self.box_env())
+        args = json.loads(ast.literal_eval(m.group(1)))
+
+        def run(ns):
+            ns["compile"] = compile_once     # what _library compiles of each library: once too
+            exec(compiled(text[:m.start()]), ns)
+            ns["ARGS"] = args
+            exec(compiled(text[m.end():]), ns)
+        return self.run_here(run, self.box_env())
 
     def run_feed(self, cmd):
         """vfg feed post's command: `env VFG_DB=… VFG_FEED=… <python> <vfg_feed.py> post …`."""
