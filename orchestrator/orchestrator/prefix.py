@@ -1,9 +1,10 @@
 """The implementer's static system prompt: its rules (prompts/implementer.md), then `vfg prefix` —
-how a script and a preset are written, the kit in full, and the first line and VALUES of every
-library preset and example script. The provider's cache reuses a prompt's start only when it is
-the same bytes, so this is read once each time a session opens (a start, a restart, a rollover)
-and every implementer of that session gets exactly it; what changes during play (what this
-server's implementers made, the state of the server) goes in each brief instead (examples.py)."""
+how a script and a preset are written, the kit in full, and the library's presets and example
+scripts by first line. The provider's cache reuses a prompt's start only when it is the same bytes,
+so this is read once each time a session opens (a start, a restart, a rollover) and every
+implementer of that session gets exactly it; what changes during play goes in each brief instead
+(examples.py): what this server's implementers made, the state of the server, what runs, and every
+action, the library's too (actions.py), so an action made mid-game never changes this prefix."""
 import hashlib
 
 from . import vfg as vfg_module

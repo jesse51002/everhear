@@ -1,26 +1,35 @@
 """The EXAMPLES block: what an implementer starts with for its own job, added to its brief by the
 guard (brief.STEPS) so it never spends a turn looking. Its static part — its rules, the kit, the
-first line and VALUES of every library preset and script — is in its system prompt (prefix.py);
-this is the part that changes:
+first lines of the library's presets and scripts — is in its system prompt (prefix.py); this is
+the part that changes:
 
     EXAMPLES, picked for T7 by Jev in 0.3 s.
-    ice_beam runs this job: run it, or change its values. galick_gun is close.
+    ice_beam runs this job: run its action, ice_beam, with the values the job needs. galick_gun is close.
     Presets to copy: crater and replace_blocks. Already in a loaded script: beam_clash (in galick_gun).
-    Running: galick-alex (galick_gun, cooldown=0, T5), horror_mode (T2).
+    Running: galick_gun_2 (galick_gun, player=Alex, cooldown=0, T5), horror_mode (T2).
     Online: Steve 120 64 -40 overworld, Alex 98 70 -12 overworld. Night, clear.
     That is the server now, read for you by vfg state: act on it, with no vfg state or vfg script list first.
 
     Made on this server (made/main/), by first line:
       ice_trail (preset): Lay packed ice under a player's feet as they walk.
 
+    ACTIONS: every action, the library's (actions/) then this server's (made/main/actions/), whole, ...
+    …
+
     === scripts/ice_beam/main.py ===
     …
 
-Then, whole and never cut, with no limit on how many: every script the router loaded (those that
-run the job first), every preset it loaded, every script the brief names, and the script of every
-running instance the brief names, with that instance's values now. `vfg route` (route.py) and
-`vfg state --json` run at once; whatever fails, the block says what is missing and the brief still
-goes, never more than VFG_ROUTE_TIMEOUT_S and a second after the guard asked.
+The router picks scripts; the line saying which runs the job names the actions over them, from the
+actions cache. ACTIONS is every action whole, library and made, read from that cache as the
+implementer starts (actions.py), and "Running:" every copy in running.json, with the values that
+differ from its action's. Then, whole and never cut, with no limit on how many: every script the
+router loaded (those that run the job first), every preset it loaded, every script the brief
+names, and the script of every running copy the brief names, with that copy's values now.
+
+`vfg route` (route.py), `vfg state --json` and the actions cache are read at once; whatever fails,
+the block says what is missing and the brief still goes, never more than VFG_ROUTE_TIMEOUT_S and a
+second after the guard asked for the router and the state, and ACTIONS_TIMEOUT_S for the actions
+(a fresh cache is one file read; a rebuild after an action file changed loads that file).
 
 The runner turns it on with use(cfg, store); until then the step leaves a brief as it is."""
 import asyncio
@@ -32,6 +41,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import actions
 from . import route as routing
 from . import vfg as vfg_module
 from .config import Config, log
@@ -39,12 +49,15 @@ from .tasks import Store
 from .vfg import why
 
 # toolkit/lib/library.py of the repo this orchestrator is in: how vfg itself reads the library and
-# made/<server>/ (first lines, ASKS, VALUES), so a name or a first line here is the same as there.
+# made/<server>/ (names, first lines, files), so a name or a first line here is the same as there.
 TOOLKIT_LIB = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))),
                            "toolkit", "lib")
 
-# The whole step, past VFG_ROUTE_TIMEOUT_S: the implementer is never held up longer.
+# The whole step, past VFG_ROUTE_TIMEOUT_S: the implementer is never held up longer for the router
+# and the state.
 STEP_SLACK_S = 1.0
+# The actions cache, from the step's start: a rebuild after an action file changed loads it again.
+ACTIONS_TIMEOUT_S = 10.0
 
 
 @dataclass
@@ -155,41 +168,55 @@ async def route_picks(job: str, task: str | None, timeout_s: float) -> tuple[dic
         return None, str(e)
 
 
-def and_list(names: list[str]) -> str:
+async def read_actions(cfg: Config) -> tuple[dict | None, str | None]:
+    """The actions cache, (it, None), or (None, why not); read in a thread, since a rebuild imports files."""
+    try:
+        return await asyncio.to_thread(actions.cache, cfg.repo, cfg.server, cfg.home), None
+    except Exception as e:
+        log("examples", "the actions cache could not be read: %s: %s" % (type(e).__name__, e))
+        return None, ("%s: %s" % (type(e).__name__, e))[:200]
+
+
+async def warm(cfg: Config) -> None:
+    """Reads the actions cache once, building it if it is stale, and logs what is in it: the runner
+    calls it as it starts, so the first brief does not wait on a rebuild."""
+    data, failed = await read_actions(cfg)
+    if data is None:
+        log("examples", "actions: unavailable at start (%s); each brief tries again" % failed)
+        return
+    rows = actions.entries(data)
+    made = sum(1 for _, a in rows if a.get("source") != "library")
+    log("examples", "actions: %d in the cache (%d made on %s)%s" % (
+        len(rows), made, cfg.server, "; left out: %s" % ", ".join(sorted(data["errors"])) if data.get("errors") else ""))
+
+
+def and_list(names: list[str], word: str = "and") -> str:
     if len(names) <= 1:
         return "".join(names)
-    return "%s and %s" % (", ".join(names[:-1]), names[-1])
+    return "%s %s %s" % (", ".join(names[:-1]), word, names[-1])
 
 
 def _named(item: dict) -> str:
     return item["name"] + (" (made)" if item.get("source") == "made" else "")
 
 
-def _values(libmod, pairs: dict) -> str:
-    """`cooldown=0, player=Alex`, each value as vfg script run takes it."""
-    return ", ".join("%s=%s" % (k, libmod.argv_word(v)) for k, v in pairs.items())
-
-
-def instance_line(libmod, inst: dict) -> str:
-    """`galick-alex (galick_gun, cooldown=0, T5)`: the script when it is not the instance's name,
-    made when it is this server's, the values that differ from its defaults, its words, its task."""
-    bits = []
-    script = inst.get("script") or "?"
-    if script != inst.get("instance"):
-        bits.append(script)
-    if inst.get("source") == "made":
-        bits.append("made")
-    if inst.get("changed"):
-        bits.append(_values(libmod, inst["changed"]))
-    if inst.get("args"):
-        bits.append(" ".join(str(a) for a in inst["args"]))
-    if inst.get("task"):
-        bits.append(inst["task"])
-    return "%s (%s)" % (inst.get("instance"), ", ".join(bits)) if bits else str(inst.get("instance"))
-
-
-def _coord(c) -> str:
-    return str(int(c)) if isinstance(c, (int, float)) and float(c).is_integer() else str(c)
+def runs_line(runs: list[dict], acts: dict | None, server: str) -> str:
+    """`ice_beam runs this job: run its action, ice_beam, with the values the job needs.`"""
+    who = and_list([_named(s) for s in runs])
+    verb = "runs" if len(runs) == 1 else "run"
+    found: list[str] = []
+    for s in runs:
+        found += [a for a in actions.actions_of(acts, s["name"]) if a not in found]
+    if acts is None:
+        return "%s %s this job: run %s action with the values the job needs." % (
+            who, verb, "its" if len(runs) == 1 else "one's")
+    if not found:
+        return ("%s %s this job, but no action runs %s yet: write one in made/%s/actions/<name>.py, "
+                "vfg action check <name>, then run it." % (who, verb, "it" if len(runs) == 1 else "them", server))
+    whose = "its" if len(runs) == 1 else "their"
+    what = ("%s action, %s," % (whose, found[0]) if len(found) == 1 else
+            "one of %s actions, %s," % (whose, and_list(found, "or")))
+    return "%s %s this job: run %s with the values the job needs." % (who, verb, what)
 
 
 def world_line(state: dict) -> str:
@@ -205,6 +232,10 @@ def world_line(state: dict) -> str:
     return "Online: %s. %s, %s." % (", ".join(people) if people else "nobody", phase, weather)
 
 
+def _coord(c) -> str:
+    return str(int(c)) if isinstance(c, (int, float)) and float(c).is_integer() else str(c)
+
+
 # After the state: the implementer acts on it rather than asking again.
 NOW = "That is the server now, read for you by vfg state: act on it, with no vfg state or vfg script list first."
 
@@ -218,19 +249,37 @@ class Gathered:
     state: dict | None
     state_failed: str | None
     server: str
+    acts: dict | None = None  # the actions cache
+    acts_failed: str | None = None
+    copies: dict | None = None  # running.json's copies (else vfg state's), None when unknown
     made: list = field(default_factory=list)  # library Items made on this server
     named: list = field(default_factory=list)  # Items the brief names that the router did not load
-    changing: list = field(default_factory=list)  # (instance, its Item or None) the brief names
+    changing: list = field(default_factory=list)  # (copy name, its entry, its script's Item or None) the brief names
     files: list[str] = field(default_factory=list)  # repo-relative, in the order they go in
 
 
-def header(g: Gathered, libmod) -> list[str]:
+def changing_line(g: Gathered, name: str, copy: dict, item) -> str:
+    """`Your brief names galick-alex, a copy of galick_gun running for T5 with player=Alex: …`"""
+    diff = actions.changed(g.acts, copy)
+    action = copy.get("action") or copy.get("script") or "?"
+    where = "its script is below" if item is not None else "its script is not on this PC"
+    # Another task's: its code stays as it is while it runs (the guard refuses an edit).
+    mine = g.task and copy.get("task") == g.task
+    code = "" if mine else "; to change its code, copy it: vfg script new <new_name> --from %s" % (
+        copy.get("script") or action)
+    return "Your brief names %s, a copy of %s running%s with %s: vfg script set %s key=value changes it; %s%s." % (
+        name, action, " for " + copy["task"] if copy.get("task") else "",
+        actions.pairs(diff) if diff else "its action's values", name, where, code)
+
+
+def header(g: Gathered) -> list[str]:
     who = "for %s" % g.task if g.task else "for this job"
     lines = []
     p = g.picks
     if p is None:
         lines.append("EXAMPLES %s: nothing was picked, the router failed (%s). Every library script's and "
-                     "preset's first line is in your system prompt, and you can read any of them." % (who, g.route_failed))
+                     "preset's first line is in your system prompt, every action is under ACTIONS, and you can "
+                     "read any of them." % (who, g.route_failed))
     else:
         secs = "%.1f s" % ((p.get("ms") or 0) / 1000)
         if p.get("fallback"):
@@ -240,13 +289,12 @@ def header(g: Gathered, libmod) -> list[str]:
                          % (who, secs, len(p["unanswered"])))
         else:
             lines.append("EXAMPLES, picked %s by Jev in %s." % (who, secs))
-        runs = [_named(s) for s in p["scripts"] if s.get("verdict") == "runs_it"]
+        runs = [s for s in p["scripts"] if s.get("verdict") == "runs_it"]
         close = [_named(s) for s in p["scripts"] if s.get("verdict") == "close"]
         words = [_named(s) for s in p["scripts"] if s.get("verdict") not in ("runs_it", "close")]
         says = []
         if runs:
-            says.append("%s %s this job: run %s, or change %s values." % (
-                and_list(runs), "runs" if len(runs) == 1 else "run", "it" if len(runs) == 1 else "one", "its"))
+            says.append(runs_line(runs, g.acts, g.server))
         if close:
             says.append("%s %s close." % (and_list(close), "is" if len(close) == 1 else "are"))
         if words:
@@ -261,27 +309,22 @@ def header(g: Gathered, libmod) -> list[str]:
     if g.named:
         lines.append("Named in your brief, in full below: %s." % and_list([_named({"name": i.name, "source": i.source})
                                                                           for i in g.named]))
+    if g.copies is not None:
+        lines.append("Running: %s." % (", ".join(actions.copy_line(n, c, g.acts) for n, c in sorted(g.copies.items()))
+                                       if g.copies else "nothing"))
+        for name, copy, item in g.changing:
+            lines.append(changing_line(g, name, copy, item))
     if g.state is None:
         lines.append("Server state: unavailable (%s); vfg state shows who is online, where, and what runs." % g.state_failed)
         return lines
-    running = g.state.get("instances") or []
-    lines.append("Running: %s." % (", ".join(instance_line(libmod, i) for i in running) if running else "nothing"))
-    for inst, item in g.changing:
-        where = "its script is below" if item is not None else "its script is not on this PC"
-        # Another task's: its code stays as it is while it runs (the guard refuses an edit).
-        copy = ("" if g.task and inst.get("task") == g.task else
-                "; to change its code, copy it: vfg script new <new_name> --from %s" % inst.get("script"))
-        lines.append("Your brief names %s, running %s%s now with %s; %s%s." % (
-            inst.get("instance"), inst.get("script"), " for " + inst["task"] if inst.get("task") else "",
-            _values(libmod, inst.get("values") or {}) or "no values", where, copy))
     lines.append(world_line(g.state))
     lines.append(NOW)
     return lines
 
 
-def compose(g: Gathered, repo: str, libmod) -> str:
-    """The block's text: the header, this server's first lines, then every file whole."""
-    lines = header(g, libmod)
+def compose(g: Gathered, repo: str) -> str:
+    """The block's text: the header, this server's first lines, every action, then every file whole."""
+    lines = header(g)
     lines.append("")
     if g.made:
         lines.append("Made on this server (made/%s/), by first line:" % g.server)
@@ -292,7 +335,7 @@ def compose(g: Gathered, repo: str, libmod) -> str:
             lines.append("  %s (%s): %s" % (it.name, it.kind, first))
     else:
         lines.append("Made on this server (made/%s/): nothing yet." % g.server)
-    out = "\n".join(lines) + "\n"
+    out = "\n".join(lines) + "\n\n" + actions.section(g.acts, g.acts_failed, g.server, g.task)
     for rel in g.files:
         try:
             with open(os.path.join(repo, rel), "rb") as f:
@@ -310,6 +353,7 @@ async def build(cfg: Config, store: Store | None, job: str, description: str) ->
     t0 = time.monotonic()
     task = task_id_in(description) or task_id_in(job)
     budget = cfg.route_timeout_s + routing.SLACK_S
+    acts_job = asyncio.ensure_future(read_actions(cfg))
     jobs = {"route": asyncio.ensure_future(route_picks(job, task, cfg.route_timeout_s)),
             "state": asyncio.ensure_future(server_state(budget))}
     done, pending = await asyncio.wait(set(jobs.values()), timeout=cfg.route_timeout_s + STEP_SLACK_S)
@@ -318,12 +362,22 @@ async def build(cfg: Config, store: Store | None, job: str, description: str) ->
     late = "no answer within %s s" % ("%g" % (cfg.route_timeout_s + STEP_SLACK_S))
     picks, route_failed = jobs["route"].result() if jobs["route"] in done else (None, late)
     state, state_failed = jobs["state"].result() if jobs["state"] in done else (None, late)
+    if not acts_job.done():
+        await asyncio.wait({acts_job}, timeout=max(0.0, ACTIONS_TIMEOUT_S - (time.monotonic() - t0)))
+    if acts_job.done():
+        acts, acts_failed = acts_job.result()
+    else:
+        acts_job.cancel()
+        acts, acts_failed = None, "not read within %g s" % ACTIONS_TIMEOUT_S
 
-    lib_mod = library_module()
     lib = library(cfg.repo, cfg.server)
     scripts = lib.scripts()
+    # What runs: running.json, read after vfg state (which writes it through), else the state's own list.
+    copies = actions.read_running(cfg.home)
+    if copies is None and state is not None:
+        copies = actions.from_state(state.get("instances") or [])
     g = Gathered(task=task, picks=picks, route_failed=route_failed, state=state, state_failed=state_failed,
-                 server=cfg.server)
+                 server=cfg.server, acts=acts, acts_failed=acts_failed, copies=copies)
     g.made = [it for it in scripts + lib.presets() if it.source == "made"]
     seen: set[str] = set()
 
@@ -343,21 +397,24 @@ async def build(cfg: Config, store: Store | None, job: str, description: str) ->
     for name in names_in(said, list(by_name)):
         if add(by_name[name].rel):
             g.named.append(by_name[name])
-    for inst in (state or {}).get("instances") or []:
-        if not names_in(said, [n for n in (inst.get("instance"), inst.get("script")) if n]):
+    for name, copy in sorted((copies or {}).items()):
+        if not names_in(said, [n for n in (name, copy.get("action"), copy.get("script")) if n]):
             continue
-        item = lib.script(inst.get("script") or "")
-        g.changing.append((inst, item))
+        item = lib.script(copy.get("script") or "")
+        g.changing.append((name, copy, item))
         if item is not None:
             add(item.rel)
 
-    block = compose(g, cfg.repo, lib_mod)
+    block = compose(g, cfg.repo)
     ms = int((time.monotonic() - t0) * 1000)
     routing.record(store, task, description, {
         "route": routing.summary(picks, route_failed), "loaded": g.files,
-        "named": [it.name for it in g.named], "changing": [i.get("instance") for i, _ in g.changing],
-        "state": "ok" if state is not None else state_failed, "ms": ms, "characters": len(block)})
-    log("examples", "%s: %d files (%d named, %d running), %d made, state %s, %d characters in %d ms; %s" % (
+        "named": [it.name for it in g.named], "changing": [n for n, _, _ in g.changing],
+        "state": "ok" if state is not None else state_failed,
+        "actions": len((acts or {}).get("actions") or {}) if acts is not None else acts_failed,
+        "ms": ms, "characters": len(block)})
+    log("examples", "%s: %d files (%d named, %d running), %d made, %s actions, state %s, %d characters in %d ms; %s" % (
         task or "-", len(g.files), len(g.named), len(g.changing), len(g.made),
+        len((acts or {}).get("actions") or {}) if acts is not None else "no",
         "ok" if state is not None else "unavailable", len(block), ms, block.split("\n", 1)[0][:200]))
     return block

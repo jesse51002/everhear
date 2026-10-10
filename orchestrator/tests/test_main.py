@@ -92,6 +92,14 @@ def test_the_prompts_load():
     assert "SAVED PLACES" in prompts.orchestrator and "vfg place list" in prompts.orchestrator
     assert "vfg place save <name> --at <x> <y> <z> --by <task id>" in prompts.implementer
     assert "PLACE: " in prompts.implementer
+    # actions: implementers run them, make one for everything, and report the copy; the orchestrator never sees one
+    for words in ("vfg action run <action> key=value ... [as=<copy>] --task <task id>", "vfg script set <copy>",
+                  "vfg script new <name> --from", "vfg action check <name>", "made/%SERVER%/actions/<name>.py",
+                  "a Place for anything built", "COPY: <copy> (<action> key=value ...)", "vfg script run is gone"):
+        assert words in prompts.implementer, words
+    assert "SCRIPT:" not in prompts.implementer and "vfg script run --task" not in prompts.implementer
+    assert "copy" in prompts.orchestrator and "instance" not in prompts.orchestrator
+    assert not any(w in prompts.orchestrator for w in ("action", "run_script", "dispatcher", "vfg script run"))
 
 
 def test_a_dead_pids_lock_is_taken_over_and_released():
