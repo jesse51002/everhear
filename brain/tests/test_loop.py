@@ -5,6 +5,7 @@ import asyncio
 
 from vfg_llm import LlmError
 
+from brain import loop
 from brain.act import BROKE
 from brain.timer import Timer
 
@@ -165,6 +166,37 @@ async def test_an_unexpected_error_never_leaves_a_task_open_and_the_player_hears
     assert [(t["status"], t["result"]) for t in k.tasks.tasks.values()] == [
         ("failed", "T1 failed: it broke (RuntimeError: the runner broke)"), ("done", "T2 done: an ice trail behind Steve")]
     assert k.vfg.said() == [[BROKE, "--task", "T1"], ["done: an ice trail behind Steve", "--task", "T2"]]
+
+
+async def test_after_the_feed_restarts_the_context_is_read_again_and_the_new_feed_heard(kit, monkeypatch):
+    monkeypatch.setattr(loop, "WATCH_AGAIN_S", 0.001)
+    k = kit(rows("LINE#500 18:20:00 Alex voice context 0.9 - | on the old box", processed=True), Decision=GIVE)
+    k.brain.start = 500
+    fresh = rows("SYS#1 18:29:00 | a new box", "GAME#2 18:29:30 join Steve | Steve joined the game")
+
+    async def load():
+        return fresh, 2
+
+    k.brain.load, seen = load, []
+
+    async def watch(after: int):
+        seen.append(after)
+        if after == 500:
+            yield "SYS#0 18:29:40 | vfg watch: feed restarted — cursor reset"
+            yield "SYS#1 18:29:00 | a new box"
+        else:
+            yield ASK.format(seq=3)
+        await asyncio.Event().wait()
+
+    following = asyncio.create_task(k.brain.follow(watch))
+    for _ in range(200):
+        if k.vfg.said():
+            break
+        await asyncio.sleep(0.001)
+    following.cancel()
+    await k.settle()
+    assert seen == [500, 2] and [r.seq for r in k.brain.ctx.rows] == [1, 2, 3]
+    assert k.vfg.said() == [["there you go", "--task", "T1"]]
 
 
 class Finished:

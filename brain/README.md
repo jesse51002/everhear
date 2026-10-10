@@ -94,7 +94,9 @@ runs `vfg up`, sets the watchers (`join,leave,death,advancement,server`), Jev's 
 an action changes), loads the context from `vfg context --json` (tried again every 5 s while it
 fails), fails the tasks a crash left open, follows `vfg watch --after <seq>` from the feed's highest
 seq that read gave (`last_seq`, its last object: with no row in the last 6 h, the watch still never
-replays old rows as new), and greets, unless nobody is online. **The first start on
+replays old rows as new), and greets, unless nobody is online. When the feed restarts while it runs
+(`vfg watch` says `feed restarted`, or gives a seq it had passed), it reads the context again and
+follows the new feed from the `last_seq` that gives. **The first start on
 a new server version fetches the command references** (about 95 s, in the background, into
 `~/.vfg/brain/refs/<version>/`); until they are in, a refused command is not retried.
 

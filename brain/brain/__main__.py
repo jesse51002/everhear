@@ -218,7 +218,7 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
                 world=world, action_timeout_s=cfg.action_timeout_s)
     brain = Brain(ctx=ctx, call=call, respond=respond, acts=acts, world=world, tasks=tasks, implementers=impl,
                   later=later, catalog=catalog, refs=None if refs is LOAD else refs, batch_s=cfg.batch_s,
-                  start=start, model=cfg.model, respond_model=cfg.respond_model,
+                  start=start, load=lambda: load_context(vfg, cfg.history_hours), model=cfg.model, respond_model=cfg.respond_model,
                   menu=lambda text: later("jev", "menu", "set", text))
 
     for t in tasks.open_ones():  # their implementers went with the last run

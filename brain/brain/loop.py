@@ -10,7 +10,8 @@ A row from `vfg watch` goes into the context; then, by what it is:
 A LINE already in the feed when the context was read (at or below its highest seq then, `start`)
 and said more than HISTORY_S before that is history: context, marked processed, never acted on. A
 LINE that arrives on the watch is live whatever its HH:MM:SS: a box clock a minute off the PC's
-would otherwise make every line history.
+would otherwise make every line history. When the feed restarts (vfg watch says so, or gives a seq
+at or below the one it follows from), the context is read again and followed from its new start.
 
 Every live read takes in what no call has read yet, marks it processed (`vfg context mark`,
 nobody waiting) and pushes the batch timer back (timer.py). An implementer's report is a brain
@@ -21,8 +22,9 @@ included, nobody waiting.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import traceback
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
 from vfg_actions import menu_line
@@ -42,7 +44,8 @@ from .world import World
 HISTORY_S = 120  # a line older than this when it arrives is history
 MARK_CHUNK = 500  # seqs in one `vfg context mark`
 SORRY = "sorry, I lost that one — say it again?"
-WATCH_AGAIN_S = 2.0  # after `vfg watch` exits, before it is followed again
+WATCH_AGAIN_S = 2.0  # after `vfg watch` exits, or the feed restarted, before it is followed again
+RESTARTED = "feed restarted"  # in vfg watch's notice of a new feed.log
 
 
 def utc_now() -> datetime:
@@ -57,7 +60,8 @@ class Brain:
     def __init__(self, *, ctx: Context, call: Call, respond: Respond, acts: Acts, world: World, tasks: Tasks,
                  implementers, later: Later, catalog, refs=None, batch_s: float = 60.0,
                  model: str = "", respond_model: str = "", now: Callable[[], datetime] = utc_now,
-                 clock=None, menu: Callable[[str], object] | None = None, start: int = 0):
+                 clock=None, menu: Callable[[str], object] | None = None, start: int = 0,
+                 load: Callable[[], Awaitable[tuple[Context, int]]] | None = None):
         self.ctx = ctx
         self.start = start            # the feed's highest seq when the context was read: what is new is past it
         self.call = call
@@ -74,8 +78,10 @@ class Brain:
         self.menu = menu              # sets Jev's menu again when the actions change
         self.timer = Timer(batch_s, lambda: bool(self.ctx.unprocessed()), self.batch_now,
                            **({"clock": clock} if clock else {}))
+        self.load = load              # reads the context again, (ctx, start), after the feed restarted
         self.inflight: set[asyncio.Task] = set()
         self.stopping = False
+        self.restarted = False        # the watch said the feed restarted, or gave a seq it had passed
 
     # ------------------------------------------------------------- rows in
 
@@ -99,10 +105,15 @@ class Brain:
         row = parse(text, now=self.now())
         if row is None:
             return None
-        if row.seq == 0:  # vfg watch's own notices: EC2 unreachable, reconnected, lines skipped
+        if row.seq == 0:  # vfg watch's own notices: EC2 unreachable, reconnected, lines skipped, feed restarted
             log("watch", row.text)
+            self.restarted = self.restarted or RESTARTED in row.text
             return None
-        if row.seq <= self.position() or not self.ctx.add(row):  # not past where the watch follows from
+        if row.seq <= self.position():  # `vfg watch --after` gives none but after the feed restarted
+            log("watch", f"#{row.seq} is not past #{self.position()}: the feed restarted")
+            self.restarted = True
+            return None
+        if not self.ctx.add(row):
             return None
         self.timer.arrived()
         return self.route(row)
@@ -309,18 +320,43 @@ class Brain:
     # ------------------------------------------------------------- running and stopping
 
     async def follow(self, watch: Callable[[int], AsyncIterator[str]]) -> None:
-        """Feed every line of `vfg watch --after <position>`; follow again whenever it exits."""
+        """Feed every line of `vfg watch --after <position>`; follow again whenever it exits, and
+        when the feed restarted, from the context read again."""
         while not self.stopping:
-            async for text in watch(self.position()):
-                if self.stopping:
-                    return
-                try:
-                    self.feed(text)
-                except Exception as e:  # noqa: BLE001 — a line it cannot read never stops the watch
-                    log("error", f"feeding {text.strip()[:200]!r}: {type(e).__name__}: {e}")
-            if not self.stopping:
-                log("watch", f"vfg watch ended; following again in {WATCH_AGAIN_S:g} s from #{self.position()}")
+            self.restarted = False
+            async with contextlib.aclosing(watch(self.position())) as lines:
+                async for text in lines:
+                    if self.stopping:
+                        return
+                    try:
+                        self.feed(text)
+                    except Exception as e:  # noqa: BLE001 — a line it cannot read never stops the watch
+                        log("error", f"feeding {text.strip()[:200]!r}: {type(e).__name__}: {e}")
+                    if self.restarted:
+                        break
+            if self.stopping:
+                return
+            if self.restarted:
+                log("watch", f"the feed restarted: reading the context again in {WATCH_AGAIN_S:g} s")
                 await asyncio.sleep(WATCH_AGAIN_S)
+                await self.reread()
+                continue
+            log("watch", f"vfg watch ended; following again in {WATCH_AGAIN_S:g} s from #{self.position()}")
+            await asyncio.sleep(WATCH_AGAIN_S)
+
+    async def reread(self) -> None:
+        """After the feed restarted (a new feed.log, its seqs from 1 again): the context read
+        again, with the start seq it gives, and caught up as at a start, so the new feed's rows
+        are heard and none of it older than two minutes is acted on."""
+        if self.load is None:
+            log("watch", "nothing to read the context again with: following the new feed from its start")
+            self.ctx, self.start = Context(), 0
+            return
+        ctx, start = await self.load()
+        self.ctx, self.start = ctx, max(start, ctx.last_seq)
+        history = self.catch_up()
+        log("watch", f"the context read again: {len(ctx.rows)} rows, following from #{self.position()} "
+                     f"({len(history)} history marked read)")
 
     async def stop(self, grace_s: float, implementers_grace_s: float = 2.0) -> None:
         """Read nothing new; let the calls in flight finish for up to `grace_s` (a report that
