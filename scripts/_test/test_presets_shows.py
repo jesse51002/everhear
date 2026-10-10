@@ -8,6 +8,7 @@ their limits, and, copied into a script the way `vfg script new --preset` copies
 stopped with SIGTERM, nothing it made is left. The kit's harness (test_kit.KitCase) points
 mc at a fake whose world each test makes afresh.
 """
+import importlib.util
 import os
 import re
 import signal
@@ -33,13 +34,20 @@ from fake_world import World  # noqa: E402
 import mc  # noqa: E402
 from kit import fx, values, world  # noqa: E402
 
-sys.path.insert(0, PRESETS)
-import theme_music as theme_mod  # noqa: E402
-import charge_up as charge_mod  # noqa: E402
-import sneak as sneak_mod  # noqa: E402
-import projectile_lands as proj_mod  # noqa: E402
-import countdown as count_mod  # noqa: E402
-import on_death as death_mod  # noqa: E402
+
+def _load(name):
+    """A preset as a module from its file, left out of sys.modules: imported by its bare name,
+    inspect would take its file for that module's, and the class preset() reads from the same
+    file for an action run in this process (run_tests.py's) would lose its descriptions."""
+    spec = importlib.util.spec_from_file_location("preset_" + name, os.path.join(PRESETS, name + ".py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+theme_mod, charge_mod, sneak_mod, proj_mod, count_mod, death_mod = (
+    _load(n) for n in ("theme_music", "charge_up", "sneak", "projectile_lands", "countdown", "on_death"))
+
 sys.path.insert(0, TOOLKIT_LIB)
 import library  # noqa: E402
 

@@ -4,17 +4,12 @@ import json
 import time
 
 import mc
-from kit import values, loop
+from kit import values, result, loop
 
-VALUES = {
-    "player": {"type": "player", "default": "@r"},
-    "blade":  {"type": "str", "default": "Holy Zombie Slayer", "live": True},
-}
-
-v = values(VALUES)
+v = values()
 chosen = loop.who(v["player"])
 if not chosen:
-    mc.log("nobody to choose: %s is not online" % v["player"])
+    result("nobody was chosen: %s is not online" % v["player"], player=v["player"], chosen=None)
     raise SystemExit(0)
 P = chosen[0]
 
@@ -55,4 +50,6 @@ whisper("We will meet again... at the end.", "yellow")
 mc.rcon("execute at @e[tag=%s,limit=1] run particle flash{color:[1.0,1.0,1.0,1.0]} ~ ~4 ~ 0 0 0 0 1 force %s"
         % (mc.TAG, P))
 mc.rcon("kill @e[tag=%s]" % mc.TAG)
-mc.log("done")
+at = mc.pos(P)
+result("%s is the chosen one and has the %s" % (P, v["blade"]), player=P, blade=v["blade"],
+       at=at and "%.0f %.0f %.0f" % at)

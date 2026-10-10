@@ -2,33 +2,12 @@
 ASKS = ["can I make it a super saiyan", "super saiyan blue", "super saiyan blue aura",
         "click or crouch three times", "make super saiyan blue make you fly, because I feel like super saiyan should make you fly",
         "make sure there's no cooldowns", "can you make music for each of the attacks"]
-from kit import values, items, loop, aim, fx
+from kit import values, result, items, loop, aim, fx
 import threading
 import time
 import mc
 import math
 import random
-
-VALUES = {
-    "player":          {"type": "player", "default": "@a"},
-    "item":            {"type": "str", "default": "Super Saiyan"},
-    "level":           {"type": "enum", "of": ["1", "2", "3", "blue"], "default": "blue", "live": True},
-    "seconds":         {"type": "number", "min": 5, "max": 3600, "default": 60, "live": True},
-    "cooldown":        {"type": "number", "min": 0, "max": 600, "default": 0, "live": True},
-    "flight":          {"type": "bool", "default": True, "live": True},
-    "sneak_mode":      {"type": "enum", "of": ["while", "tap", "three_taps"], "default": "three_taps", "live": True},
-    "sneak_seconds":   {"type": "number", "min": 0.3, "max": 5, "default": 1.5, "live": True},
-    "sneak_item":      {"type": "str", "default": "", "live": True},
-    "charge_style":    {"type": "enum", "of": ["sphere", "orbs", "aura"], "default": "aura", "live": True},
-    "charge_seconds":  {"type": "number", "min": 0.2, "max": 15, "default": 1.5, "live": True},
-    "charge_particle": {"type": "particle", "default": "dust{color:[0.2,0.9,1.0],scale:1.4}", "live": True},
-    "charge_size":     {"type": "number", "min": 1, "max": 30, "default": 5, "live": True},
-    "charge_orbs":     {"type": "list", "of": "particle", "default": [], "live": True},
-    "theme_tune":      {"type": "enum", "of": ["galick_gun", "hollow_purple", "ice_beam", "spirit_bomb", "spirit_bomb_throw", "super_saiyan", "boss", "none"], "default": "super_saiyan", "live": True},
-    "theme_to":        {"type": "enum", "of": ["near", "everyone", "player"], "default": "near", "live": True},
-    "theme_reach":     {"type": "int", "min": 8, "max": 256, "default": 48, "live": True},
-    "theme_loop":      {"type": "bool", "default": False, "live": True},
-}
 
 # What each level gives, as effect amplifiers (0 is level I): speed, strength, jump boost.
 LEVELS = {"1": (0, 0, 0), "2": (1, 1, 0), "3": (2, 2, 1), "blue": (2, 1, 1)}
@@ -288,7 +267,7 @@ def _theme_music_again(at, v, tune, hear, key, gen, seconds):
             return
 
 
-v = values(VALUES)
+v = values()
 on, rest, lock = {}, {}, threading.Lock()   # players in the form (each its own thread); when each may again
 
 
@@ -358,5 +337,9 @@ def star():
 mc.on_stop(lambda: [power_down(p) for p in list(on)])
 if v["item"]:
     loop.background(star)       # the star's clicks, beside the crouches
+how = {"while": "crouch", "tap": "crouch", "three_taps": "crouch three times"}[v["sneak_mode"]]
+result("%s can go Super Saiyan %s: %s%s to power up or down" % (
+    v["player"], v["level"].title(), how, " or right-click the %s" % v["item"] if v["item"] else ""),
+    player=v["player"], level=v["level"], seconds=v["seconds"])
 for p in loop(sneak(v["player"], v)):
     toggle(p)
