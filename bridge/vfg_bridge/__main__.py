@@ -14,6 +14,7 @@ import sys
 import threading
 
 EX_CONFIG = 78  # systemd does not restart on it (RestartPreventExitStatus=78)
+HTTP_POLL_SECONDS = 0.05  # how soon the server sees a stop
 
 log = logging.getLogger("vfg_bridge")
 
@@ -70,7 +71,7 @@ def serve(cfg):
 
     tail_thread = threading.Thread(target=_guarded("console tail", lambda: tail.run(stop)),
                                    name="tail", daemon=True)
-    http_thread = threading.Thread(target=_guarded("http", httpd.serve_forever),
+    http_thread = threading.Thread(target=_guarded("http", lambda: httpd.serve_forever(HTTP_POLL_SECONDS)),
                                    name="http", daemon=True)
     tail_thread.start()
     http_thread.start()

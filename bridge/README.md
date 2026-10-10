@@ -39,8 +39,9 @@ refuses until it is there.
 cd bridge && python3 -m unittest discover -s tests
 ```
 
-No network and no EC2: a temporary database, feed and console log, a stub Jev filter, and
-`tests/fixtures/console-26.3.log`, real 26.3 console shapes with placeholder names.
+No network and no EC2, under a second: a temporary database, feed and console log, an injected
+clock and poll, and `tests/fixtures/console-26.3.log`, real 26.3 console shapes with placeholder
+names. One test runs the bridge as a process and stops it with SIGTERM.
 
 ## Settings
 
