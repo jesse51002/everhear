@@ -228,25 +228,25 @@ class Brain:
                 answer = await self.call.decide(event, self.ctx, seen, self.open_tasks(), [], self.refs)
             except LlmError as e:
                 log("brain", f"{tid} report FAILED: {e}")
-                self.result(tid, status, self.written(tid, status), following)
+                kept = self.result(tid, status, self.written(tid, status), following)
                 recorded = True
-                await self.acts.say(self.line_for(tid, status, following), tid)
+                await self.acts.say(self.line_for(tid, status, kept), tid)
                 return
             self.usage("brain", self.model, answer, tid)
             d = answer.value
             log("brain", f"{tid} report ({status}) -> {describe(d)}")
             final = d.status or status
-            self.result(tid, final, d.record.strip() or self.written(tid, final), following)
+            kept = self.result(tid, final, d.record.strip() or self.written(tid, final), following)
             recorded = True
             if d.parts:
                 await self.acts.run(d, player=task.get("player") or "", line=task.get("line") or "", seen=seen)
             else:  # every report gets its chat line: the call's, else one written here
-                await self.acts.say(d.reply.strip() or self.line_for(tid, final, following), tid)
+                await self.acts.say(d.reply.strip() or self.line_for(tid, final, kept), tid)
         except Exception:  # raised on, for the event's own log; the task never stays open for it
             if not recorded:
-                self.result(tid, status, self.written(tid, status), following)
+                kept = self.result(tid, status, self.written(tid, status), following)
                 recorded = True
-                await self.acts.say(self.line_for(tid, status, following), tid)
+                await self.acts.say(self.line_for(tid, status, kept), tid)
             raise
         finally:
             if not recorded:  # cancelled: the brain stopped while the call ran
@@ -258,15 +258,18 @@ class Brain:
         if callable(session):
             self.tasks.set_session(tid, session(tid))
 
-    def result(self, tid: str, status: str, record: str, following: bool) -> None:
+    def result(self, tid: str, status: str, record: str, following: bool) -> bool:
         """A report's record, an `AI result` row: the task closed with it, or kept open with it as
-        the result so far while a follow-up to it runs (one sent while the call ran included)."""
-        if following or tid in self.implementers.running():
+        the result so far while a follow-up to it runs (one sent while the call ran included).
+        True when kept open."""
+        kept = following or tid in self.implementers.running()
+        if kept:
             self.tasks.note(tid, record)
             log("task", f"{tid} stays open: a follow-up to it runs")
         else:
             self.tasks.close(tid, status, record)
         self.acts.post("result", tid, record)
+        return kept
 
     async def on_report(self, tid: str, status: str, text: str) -> None:
         """What the implementers call when one ends (their `on_report`): the report is a brain
