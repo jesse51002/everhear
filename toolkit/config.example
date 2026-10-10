@@ -84,6 +84,10 @@ VFG_DISPATCH_REASONING=
 VFG_DISPATCH_PLAN_MODEL=
 VFG_DISPATCH_PLAN_PROVIDERS=
 VFG_DISPATCH_PLAN_REASONING=
+# on: the planner sends each command draft back with Minecraft's reference before it runs,
+# one model call more per command; a failed command is retried with the reference either
+# way. Default: off
+VFG_DISPATCH_PLAN_CHECK=
 # How often a failed action is changed and run again before it is handed on or
 # dropped. Default: 1
 VFG_DISPATCH_RETRIES=

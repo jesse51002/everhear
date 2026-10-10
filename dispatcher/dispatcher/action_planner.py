@@ -15,6 +15,10 @@ It never sees the other actions, the task's other parts or the server.
    again, at most MAX_RECHECKS times; past that it is a failure (`Unchecked`).
 A retry after a failure is written with the references already sent in view, and is
 checked again only when it uses a new command.
+
+Steps 2 to 4 run only with `check` (VFG_DISPATCH_PLAN_CHECK=on). Off, the default since
+2026-10-10, the draft runs as written, a planner call sooner; a failure's retry is still
+written with the reference of every command the failed draft used.
 """
 
 from __future__ import annotations
@@ -157,8 +161,10 @@ def first_line(about: str) -> str:
 
 class Planner:
     def __init__(self, ask, model: str, refs, scripts: dict[str, str] | None = None, *,
-                 hidden: frozenset[str] = frozenset(), log=default_log, prompt: Path = PROMPT):
+                 hidden: frozenset[str] = frozenset(), log=default_log, prompt: Path = PROMPT,
+                 check: bool = False):
         self.ask = ask
+        self.check = check  # VFG_DISPATCH_PLAN_CHECK: the approve call before a command runs
         self.model = model
         self.refs = refs  # the latest; each task takes them as they are when it starts (Pick.refs)
         self.scripts = scripts or {}
@@ -253,6 +259,12 @@ class Planner:
             reference = p.refs.reference(checked.names, checked.subs) if checked.names else ""
             planned = await self._call("command retry", self.retry_prompt(cls, p, last, failure, False, reference),
                                        Out, p)
+        if not self.check:
+            if planned.action is not None:  # its references, for a retry should it fail
+                used, subs = p.refs.used(list(planned.action.commands))
+                checked.names |= set(used)
+                checked.subs |= set(subs)
+            return planned
         approvals = 0
         while planned.action is not None:
             used, subs = p.refs.used(list(planned.action.commands))

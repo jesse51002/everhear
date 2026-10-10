@@ -41,6 +41,7 @@ class Config:
     plan_model: str = DEFAULT_MODEL                       # VFG_DISPATCH_PLAN_MODEL
     plan_providers: tuple[str, ...] = DEFAULT_PROVIDERS   # VFG_DISPATCH_PLAN_PROVIDERS
     plan_reasoning: str = "off"                           # VFG_DISPATCH_PLAN_REASONING
+    plan_check: bool = False        # VFG_DISPATCH_PLAN_CHECK: on sends a command draft back with its reference
     stop_grace_s: float = 10.0      # how long a running action may finish on SIGTERM
     stale_minutes: int = 10         # VFG_ORCH_STALE_MINUTES: a task that waited longer is failed, never run
 
@@ -118,6 +119,7 @@ def load(env: dict[str, str] | None = None) -> Config:
         plan_model=get("VFG_DISPATCH_PLAN_MODEL", model),
         plan_providers=names("VFG_DISPATCH_PLAN_PROVIDERS", providers),
         plan_reasoning=get("VFG_DISPATCH_PLAN_REASONING", reasoning),
+        plan_check=get("VFG_DISPATCH_PLAN_CHECK", "off").lower() in ("on", "true", "yes", "1"),
         stale_minutes=number("VFG_ORCH_STALE_MINUTES", 10, int, 1),
     )
 

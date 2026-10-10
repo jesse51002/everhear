@@ -277,11 +277,12 @@ class FakeRefs:
 # ------------------------------------------------------------------ the harness
 
 class Harness:
-    def __init__(self, tmp: Path, *, catalog=None, refs="fake", retries: int = 1, window_s: float = 0.05):
+    def __init__(self, tmp: Path, *, catalog=None, refs="fake", retries: int = 1, window_s: float = 0.05,
+                 plan_check: bool = True):
         self.tmp = tmp
         self.cfg = Config(home=tmp / "vfg-home", dispatch_dir=tmp / "dispatch", orch_dir=tmp / "orch",
                           repo=tmp / "repo", retries=retries, window_s=window_s, action_timeout_s=20,
-                          stop_grace_s=0.5)
+                          stop_grace_s=0.5, plan_check=plan_check)
         self.cfg.dispatch_dir.mkdir(parents=True, exist_ok=True)
         self.llm = FakeLLM()
         self.vfg = FakeVfg()

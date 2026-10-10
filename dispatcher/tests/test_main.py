@@ -23,7 +23,7 @@ HERE = Path(__file__).resolve().parent.parent
 
 def config(tmp: Path, **kw) -> Config:
     cfg = Config(home=tmp / "vfg-home", dispatch_dir=tmp / "dispatch", orch_dir=tmp / "orch",
-                 repo=tmp / "repo", window_s=5, stop_grace_s=0.5)
+                 repo=tmp / "repo", window_s=5, stop_grace_s=0.5, plan_check=True)
     return replace(cfg, **kw)
 
 

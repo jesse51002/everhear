@@ -903,3 +903,29 @@ async def test_a_duration_no_script_value_covers_is_handed_on_not_bent_into_anot
 def test_the_selector_keeps_units_with_numbers():
     from dispatcher.selector import PROMPT
     assert 'Keep each number\'s unit with it: "for 30 seconds", never a bare "30".' in PROMPT.read_text()
+
+
+async def test_without_the_check_a_draft_runs_as_written(tmp_path):
+    h = Harness(tmp_path, plan_check=False)
+    h.llm.add("Selection", select(("command", "give Alex 64 cooked beef")))
+    h.llm.add("Planned_command", planned(cmd("give Alex minecraft:cooked_beef 64"), say="beef"))
+    h.vfg.on("action", "run", "command", answer=ok("Gave 64 [Cooked Beef] to Alex"))
+
+    tid = await h.run("give me 64 steak")
+
+    assert [c.output for c in h.llm.calls] == ["Selection", "Planned_command"]  # no approve call
+    assert h.vfg.replies() == [(tid, "done", "beef — Gave 64 [Cooked Beef] to Alex")]
+
+
+async def test_without_the_check_a_failed_drafts_retry_sees_its_reference(tmp_path):
+    h = Harness(tmp_path, plan_check=False)
+    h.llm.add("Selection", select(("command", "give Alex speed")))
+    h.llm.add("Planned_command", planned(cmd("effect give Alex speed"), say="speed"),
+              planned(cmd("effect give Alex minecraft:speed infinite 0"), say="speed"))
+    h.vfg.on("action", "run", "command", answer=[bad("Unknown effect 'speed'"), ok("Applied effect Speed to Alex")])
+
+    tid = await h.run("give me speed")
+
+    retry = h.llm.prompts("Planned_command")[1]
+    assert "## effect\neffect <targets> ...  (usage of effect)" in retry
+    assert h.vfg.replies()[-1] == (tid, "done", "speed — Applied effect Speed to Alex")

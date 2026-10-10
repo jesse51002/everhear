@@ -95,7 +95,7 @@ class Dispatcher:
         self.reply = reply
         self.batch = batch
         self.selector = Selector(catalog, ask, cfg.model, scripts=scripts or ()) if catalog else None
-        self.planner = Planner(plan_ask or ask, cfg.plan_model, refs, scripts, hidden=hidden)
+        self.planner = Planner(plan_ask or ask, cfg.plan_model, refs, scripts, hidden=hidden, check=cfg.plan_check)
         self.stopping = False
         self.running: dict[str, asyncio.Task] = {}
 

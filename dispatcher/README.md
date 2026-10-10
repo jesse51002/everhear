@@ -76,6 +76,7 @@ From the environment, then `~/.vfg/config`:
 | `VFG_DISPATCH_ACTION_TIMEOUT_S` | `20` s per action; a class may set its own (`teleport`: 60) |
 | `VFG_DISPATCH_MODEL_TIMEOUT_S` | `10` s per model call (selector, planner, replay), its retries included; past it the task, or that pick, is handed on |
 | `VFG_DISPATCH_PLAN_MODEL`, `VFG_DISPATCH_PLAN_PROVIDERS`, `VFG_DISPATCH_PLAN_REASONING` | the action planner's own; each defaults to the selector's (`VFG_DISPATCH_MODEL`, `_PROVIDERS`, `_REASONING`) |
+| `VFG_DISPATCH_PLAN_CHECK` | `off`: a command draft runs as written; `on` first sends it back with Minecraft's reference for every command it uses (one planner call more) |
 | `VFG_DISPATCH_REASONING` | `off`; or an effort, `low`, `medium` or `high`, for a model that cannot think without it (Sonnet 5.5 on OpenRouter) |
 | `VFG_ORCH_STALE_MINUTES` | `10`: a task that waited longer is failed as expired, never run |
 
