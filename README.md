@@ -9,57 +9,92 @@ The code still carries its working name, `vfg`, in commands, folders and setting
 
 ```mermaid
 flowchart TB
-  Mod["🎙️ client mod<br/>speech to text"]
-  Bridge["bridge"]
-  Jev["Jev filter"]
-  TypeSafe["TypeSafe API"]
-  Feed["🗄️ feed"]
-  Conv["conversation<br/>Claude Code"]
-  Disp["dispatcher<br/>actions"]
+  subgraph Player["🎮 EACH PLAYER'S PC"]
+    direction TB
+    Mod["🎙️ client mod<br/>speech to text"]
+  end
+
+  subgraph Box["☁️ THE EC2 BOX"]
+    direction TB
+    subgraph Listen["listening"]
+      Bridge["bridge"]
+      Jev["Jev filter"]
+      Feed["🗄️ feed"]
+      Bridge -->|"new lines"| Jev
+      Jev -->|"LINE"| Feed
+      Bridge -->|"GAME"| Feed
+    end
+    subgraph Game["the game"]
+      Run["scripts · action handlers"]
+      MC["Minecraft server"]
+      Places["🗄️ saved places<br/>everhear:places"]
+      Run -->|"RCON · one lock"| MC
+      MC -->|"command storage"| Places
+    end
+    Game -->|"console.log"| Listen
+  end
+
+  subgraph Owner["🖥️ THE OWNER'S PC"]
+    direction TB
+    subgraph Agents["agents"]
+      Conv["conversation<br/>Claude Code"]
+      Disp["dispatcher"]
+      Orch["orchestrator"]
+      Impl["implementers"]
+      Conv -->|"vfg orch send"| Disp
+      Disp -->|"vfg orch hand"| Orch
+      Orch -->|"Agent"| Impl
+    end
+    Vfg["🔒 vfg"]
+    subgraph Repo["this repo"]
+      Actions["actions/"]
+      Scripts["scripts/"]
+      Lib["lib/py · structured()"]
+    end
+    subgraph Home["~/.vfg"]
+      Cache["places cache"]
+      Refs["command references"]
+    end
+    Agents -->|"every call to the box"| Vfg
+    Agents -.->|"load actions · write scripts"| Repo
+    Agents -->|"dispatcher refs"| Home
+    Vfg -->|"vfg place"| Home
+  end
+
+  TypeSafe["TypeSafe"]
   OpenRouter["OpenRouter"]
-  Orch["orchestrator<br/>Agent SDK"]
-  Impl["implementers"]
-  Library["scripts/<br/>kit · presets · examples"]
-  Made["made/‹server›/"]
-  RCON["RCON"]
-  MC["Minecraft server"]
+  Claude["Claude"]
+  Wiki["minecraft.wiki"]
 
-  Mod -->|"POST /v1/lines"| Bridge
-  Bridge -->|"new lines"| Jev
-  Jev -->|"judge"| TypeSafe
-  Jev -->|"LINE"| Feed
-  Bridge -->|"GAME"| Feed
-  Feed -->|"vfg watch"| Conv
-  Conv -->|"vfg orch send"| Disp
-  Disp -->|"structured()"| OpenRouter
-  Disp -->|"vfg orch hand"| Orch
-  Disp -->|"vfg action run"| RCON
-  Orch -->|"vfg route"| TypeSafe
-  Orch -->|"Agent · EXAMPLES"| Impl
-  Library -.->|"prefix · picks"| Impl
-  Impl -.->|"vfg script new"| Made
-  Impl -->|"vfg cmd · script run · set"| RCON
-  Conv -->|"vfg say"| RCON
-  RCON --> MC
-  MC -->|"console.log"| Bridge
-  Disp -->|"ORCH · vfg orch reply"| Feed
-  Orch -->|"ORCH · vfg orch reply"| Feed
+  Player -->|"POST /v1/lines"| Box
+  Box -->|"feed · vfg watch"| Owner
+  Owner -->|"vfg over SSH"| Box
+  Box -->|"judge each line"| TypeSafe
+  Owner -->|"dispatcher · structured()"| OpenRouter
+  Owner -->|"Agent SDK · Claude Code"| Claude
+  Owner -->|"command pages, once"| Wiki
 
+  classDef default fill:#ffffff,stroke:#94a3b8,color:#1f2937;
   classDef client fill:#e3f0ff,stroke:#2f6fb0,color:#0b2942;
   classDef svc    fill:#e6f7ec,stroke:#2f8f53,color:#0b2b18;
   classDef ext    fill:#ffd9a8,stroke:#d2691e,color:#4a2c08;
   classDef tool   fill:#fdf6d8,stroke:#caab2f,color:#4a3d08;
   class Mod client;
-  class Bridge,Jev,Conv,Disp,Orch,Impl svc;
-  class Feed,TypeSafe,OpenRouter,RCON,MC ext;
-  class Library,Made tool;
+  class Bridge,Jev,Conv,Disp,Orch,Impl,Vfg svc;
+  class Feed,MC,Places,Cache,Refs,TypeSafe,OpenRouter,Claude,Wiki ext;
+  class Run,Actions,Scripts,Lib tool;
+  style Player fill:#eaf2ff,stroke:#2f6fb0,stroke-width:3px;
+  style Box fill:#f7fafc,stroke:#2f8f53,stroke-width:3px;
+  style Owner fill:#f7fafc,stroke:#2f8f53,stroke-width:3px;
+  style Listen fill:#e6f7ec,stroke:#2f8f53;
+  style Game fill:#fff2e0,stroke:#c9781f;
+  style Agents fill:#e6f7ec,stroke:#2f8f53;
+  style Repo fill:#fdf6d8,stroke:#caab2f;
+  style Home fill:#fff2e0,stroke:#c9781f;
+  style Vfg stroke-width:4px;
 ```
 
-*Legend: read top-down, from a player's voice to the game. Blue runs on each player's PC; green is
-Everhear's own services; orange is data, the game and third parties; yellow is the script library
-and the server's own folder. Solid arrows are live calls; dashed ones hand over files: the library
-goes into each implementer's context, and what it makes goes into `made/`. Every arrow joins two
-top-level boxes.*
+*Legend: read top-down, from a player's voice to the game. The three big boxes are the machines everything runs on; an arrow between two of them stands for every call that crosses, with the contract on its label. Blue runs on each player's PC; green is Everhear's own services; orange is data, the game and third parties; yellow is code and scripts the agents load or write. Solid arrows are live calls, the dashed one loads and writes files. An arrow only joins two boxes with the same parent. `vfg` is drawn on its own because every call from the owner's PC to the box goes through it.*
 
 - The **client mod** turns speech into text on the player's own PC (no audio leaves it) and posts
   each line to the **bridge** on the server's EC2 box. The bridge also tails the Minecraft console
@@ -78,6 +113,10 @@ top-level boxes.*
   from the library, change its values while it runs, or copy presets into a new script with
   `vfg script new` in `made/<server>/`. The library in `scripts/` is read-only during play.
 - Both report as `ORCH` lines in the feed, and the conversation tells the player.
+- **Saved places** live in the world itself, in the command storage `everhear:places`. Every agent reads and
+  saves them with `vfg place`, which keeps a 30-second copy in `~/.vfg/places.json`.
+- Before a command runs, the dispatcher checks it against the server's own command tree and the command's
+  minecraft.wiki page, both fetched once per server version into `~/.vfg/dispatch/refs/`.
 - Everything on the owner's PC reaches the box through one command, [`vfg`](toolkit/README.md).
 
 What each part takes in and puts out is in [docs/CONTRACTS.md](docs/CONTRACTS.md); code comments cite it as "Contracts §N".
