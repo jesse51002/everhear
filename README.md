@@ -43,20 +43,22 @@ flowchart TB
       Impl["implementers"]
       Conv -->|"vfg orch send"| Disp
       Disp -->|"vfg orch hand"| Orch
-      Orch -->|"Agent"| Impl
+      Orch -->|"Agent · EXAMPLES"| Impl
     end
     Vfg["🔒 vfg"]
     subgraph Repo["this repo"]
       Actions["actions/"]
-      Scripts["scripts/"]
+      Library["scripts/<br/>kit · presets · examples"]
+      Made["made/‹server›/"]
       Lib["lib/py · structured()"]
+      Library -.->|"vfg script new"| Made
     end
     subgraph Home["~/.vfg"]
       Cache["places cache"]
       Refs["command references"]
     end
     Agents -->|"every call to the box"| Vfg
-    Agents -.->|"load actions · write scripts"| Repo
+    Agents -.->|"load actions · the library · write made/"| Repo
     Agents -->|"dispatcher refs"| Home
     Vfg -->|"vfg place"| Home
   end
@@ -69,7 +71,7 @@ flowchart TB
   Player -->|"POST /v1/lines"| Box
   Box -->|"feed · vfg watch"| Owner
   Owner -->|"vfg over SSH"| Box
-  Box -->|"judge each line"| TypeSafe
+  Box -->|"judge each line · pick scripts"| TypeSafe
   Owner -->|"dispatcher · structured()"| OpenRouter
   Owner -->|"Agent SDK · Claude Code"| Claude
   Owner -->|"command pages, once"| Wiki
@@ -82,7 +84,7 @@ flowchart TB
   class Mod client;
   class Bridge,Jev,Conv,Disp,Orch,Impl,Vfg svc;
   class Feed,MC,Places,Cache,Refs,TypeSafe,OpenRouter,Claude,Wiki ext;
-  class Run,Actions,Scripts,Lib tool;
+  class Run,Actions,Library,Made,Lib tool;
   style Player fill:#eaf2ff,stroke:#2f6fb0,stroke-width:3px;
   style Box fill:#f7fafc,stroke:#2f8f53,stroke-width:3px;
   style Owner fill:#f7fafc,stroke:#2f8f53,stroke-width:3px;
