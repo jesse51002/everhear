@@ -15,12 +15,7 @@ from pathlib import Path
 
 from vfg_llm import _config as read_config_file  # the one KEY=value parser, shared with structured()
 
-DEFAULT_MODEL = "~deepseek/deepseek-v4-flash-latest"
-# The OpenRouter providers tried first for every model call, fastest first: in the replay of
-# the 2026-10-08 playtest these lost no work, while others serving the same model gave
-# actions the orchestrator's work. "none" leaves the choice to OpenRouter.
-DEFAULT_PROVIDERS = ("parasail", "wafer", "phala", "together", "venice")
-# The repo this dispatcher/ is in: actions/ and scripts/ live beside it.
+# The repo this brain/ is in: actions/ and scripts/ live beside it.
 REPO = Path(__file__).resolve().parents[2]
 SERVER = "main"
 
@@ -28,37 +23,42 @@ SERVER = "main"
 @dataclass(frozen=True)
 class Config:
     home: Path                      # VFG_HOME, default ~/.vfg
-    dispatch_dir: Path              # VFG_DISPATCH_DIR, default ~/.vfg/dispatch
-    orch_dir: Path                  # VFG_ORCH_DIR, default ~/.vfg/orch (replay reads its inbox)
+    brain_dir: Path                 # VFG_BRAIN_DIR, default ~/.vfg/brain: tasks.json, brain.log, lock, refs/
     repo: Path                      # VFG_REPO, default this repo
     server: str = SERVER            # VFG_SERVER: whose made/<server>/actions/ are on the menu too
-    model: str = DEFAULT_MODEL      # VFG_DISPATCH_MODEL
-    providers: tuple[str, ...] = DEFAULT_PROVIDERS  # VFG_DISPATCH_PROVIDERS, comma-separated; () is OpenRouter's choice
-    retries: int = 1                # VFG_DISPATCH_RETRIES, per action
-    window_s: float = 10.0          # VFG_DISPATCH_WINDOW_S
-    action_timeout_s: float = 20.0  # VFG_DISPATCH_ACTION_TIMEOUT_S
-    model_timeout_s: float = 10.0   # VFG_DISPATCH_MODEL_TIMEOUT_S: one structured() call, retries included
-    reasoning: str = "off"          # VFG_DISPATCH_REASONING: off, or an effort (low, medium, high)
-    stop_grace_s: float = 10.0      # how long a running action may finish on SIGTERM
-    stale_minutes: int = 10         # VFG_ORCH_STALE_MINUTES: a task that waited longer is failed, never run
-    running_ttl_s: float = 30.0     # VFG_RUNNING_TTL_S: how often running.json is fetched again in the background; 0: never
+    owner: str = ""                 # VFG_OWNER: the owner's Minecraft name, whose word wins
+    # The brain's one call: GPT-6.1 Sol, reasoning low (Prototype_Brain).
+    model: str = "openai/gpt-6.1-sol"          # VFG_BRAIN_MODEL
+    reasoning: str = "low"                     # VFG_BRAIN_REASONING: off, or an effort
+    providers: tuple[str, ...] = ()            # VFG_BRAIN_PROVIDERS, comma-separated, the brain's call only;
+                                               # (): OpenRouter's choice
+    # Respond, the brain's cheap mode, for conversational lines.
+    respond_model: str = "google/gemini-3.8-flash"  # VFG_RESPOND_MODEL
+    respond_reasoning: str = "low"                  # VFG_RESPOND_REASONING
+    # The action planner, kept only to retry a command Minecraft refused.
+    plan_model: str = "google/gemini-3.8-flash"     # VFG_PLAN_MODEL
+    plan_reasoning: str = "low"                     # VFG_PLAN_REASONING
+    plan_check: bool = False        # VFG_PLAN_CHECK: on checks a retried command against its references again
+    batch_s: float = 60.0           # VFG_BRAIN_BATCH_S: this long with no read and something unread: a batch call
+    checkpoint: int = 5             # VFG_BRAIN_CHECKPOINT: a cache mark every this many minute-blocks
+    history_hours: float = 6.0      # VFG_BRAIN_HISTORY_HOURS: how much of the feed the context starts with
+    timeout_s: float = 20.0         # VFG_BRAIN_TIMEOUT_S: one structured() call, its retries included
+    running_ttl_s: float = 30.0     # VFG_RUNNING_TTL_S: how often running.json is fetched again; 0: never
+    action_timeout_s: float = 20.0  # VFG_DISPATCH_ACTION_TIMEOUT_S: a once action's, unless its class says
+    stop_grace_s: float = 10.0      # how long in-flight calls and actions may finish on SIGTERM
 
-    @property
-    def effort(self) -> bool | str:
+    @staticmethod
+    def effort_of(reasoning: str) -> bool | str:
         """What structured() takes: False for off, else the effort."""
-        return False if self.reasoning in ("", "off") else self.reasoning
+        return False if reasoning in ("", "off") else reasoning
 
     @property
-    def inbox(self) -> Path:
-        return self.dispatch_dir / "inbox.jsonl"
-
-    @property
-    def state_file(self) -> Path:
-        return self.dispatch_dir / "state.json"
+    def tasks_file(self) -> Path:
+        return self.brain_dir / "tasks.json"
 
     @property
     def lock_file(self) -> Path:
-        return self.dispatch_dir / "lock"
+        return self.brain_dir / "lock"
 
     @property
     def running_file(self) -> Path:
@@ -86,11 +86,9 @@ def load(env: dict[str, str] | None = None) -> Config:
             return default
         return value
 
-    def names(key: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    def names(key: str) -> tuple[str, ...]:
         raw = get(key)
-        if not raw:
-            return default
-        if raw.lower() == "none":
+        if not raw or raw.lower() == "none":
             return ()
         return tuple(x.strip() for x in raw.split(",") if x.strip())
 
@@ -100,19 +98,24 @@ def load(env: dict[str, str] | None = None) -> Config:
 
     return Config(
         home=home,
-        dispatch_dir=path("VFG_DISPATCH_DIR", home / "dispatch"),
-        orch_dir=path("VFG_ORCH_DIR", home / "orch"),
+        brain_dir=path("VFG_BRAIN_DIR", home / "brain"),
         repo=path("VFG_REPO", REPO),
         server=get("VFG_SERVER", SERVER),
-        model=get("VFG_DISPATCH_MODEL", DEFAULT_MODEL),
-        providers=names("VFG_DISPATCH_PROVIDERS", DEFAULT_PROVIDERS),
-        retries=number("VFG_DISPATCH_RETRIES", 1, int, 0),
-        window_s=number("VFG_DISPATCH_WINDOW_S", 10.0, float, 0),
-        action_timeout_s=number("VFG_DISPATCH_ACTION_TIMEOUT_S", 20.0, float, 1),
-        model_timeout_s=number("VFG_DISPATCH_MODEL_TIMEOUT_S", 10.0, float, 1),
-        reasoning=get("VFG_DISPATCH_REASONING", "off"),
-        stale_minutes=number("VFG_ORCH_STALE_MINUTES", 10, int, 1),
+        owner=get("VFG_OWNER"),
+        model=get("VFG_BRAIN_MODEL", "openai/gpt-6.1-sol"),
+        reasoning=get("VFG_BRAIN_REASONING", "low"),
+        providers=names("VFG_BRAIN_PROVIDERS"),
+        respond_model=get("VFG_RESPOND_MODEL", "google/gemini-3.8-flash"),
+        respond_reasoning=get("VFG_RESPOND_REASONING", "low"),
+        plan_model=get("VFG_PLAN_MODEL", "google/gemini-3.8-flash"),
+        plan_reasoning=get("VFG_PLAN_REASONING", "low"),
+        plan_check=get("VFG_PLAN_CHECK", "off").lower() in ("on", "1", "true", "yes"),
+        batch_s=number("VFG_BRAIN_BATCH_S", 60.0, float, 1),
+        checkpoint=number("VFG_BRAIN_CHECKPOINT", 5, int, 1),
+        history_hours=number("VFG_BRAIN_HISTORY_HOURS", 6.0, float, 0),
+        timeout_s=number("VFG_BRAIN_TIMEOUT_S", 20.0, float, 1),
         running_ttl_s=number("VFG_RUNNING_TTL_S", 30.0, float, 0),
+        action_timeout_s=number("VFG_DISPATCH_ACTION_TIMEOUT_S", 20.0, float, 1),
     )
 
 
@@ -121,7 +124,7 @@ def now_iso() -> str:
 
 
 def log(area: str, *parts: object) -> None:
-    """One line on stdout: `<ISO UTC time> <area> <message>`. vfg orch start sends it to dispatcher.log."""
+    """One line on stdout: `<ISO UTC time> <area> <message>`. vfg brain start sends it to brain.log."""
     msg = " ".join(p if isinstance(p, str) else repr(p) for p in parts).replace("\n", " ")
     sys.stdout.write(f"{now_iso()} {area} {msg}\n")
     sys.stdout.flush()
