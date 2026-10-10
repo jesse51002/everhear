@@ -12,10 +12,12 @@
 #   {"vfg": "/opt/vfg", "mc": "/opt/mc", "op": "state"}
 #
 # `run` deploys, starts the copy (instances.Box.start) and waits: a once copy until it ends or
-# "wait" s pass, an until-stopped one until its first result() or "wait" s (the 2 s check). It
-# prints one JSON object: {"copy", "pid", "started", "running", "code", "result", "tail"}, "tail"
-# being the last lines it printed when it ended with an error. Before anything starts: Minecraft
-# not answering RCON is exit 5, the script not deployed 3, `as=` a running copy's name 1.
+# "wait" s pass, an until-stopped one until its first result() or "wait" s (the 2 s check),
+# counted from the op's start, so the deploy and the RCON check are inside it (at least 0.5 s
+# is left for the copy). It prints one JSON object: {"copy", "pid", "started", "running",
+# "code", "result", "tail"}, "tail" being the last lines it printed when it ended with an error.
+# Before anything starts: Minecraft not answering RCON is exit 5, the script not deployed 3,
+# `as=` a running copy's name 1.
 import base64
 import io
 import re
@@ -26,6 +28,7 @@ ROOT_RE = re.compile(r"^(scripts|made/[a-z0-9][a-z0-9_-]{0,47}/scripts)$")
 PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
 BASE = ARGS["vfg"]
 RUN = os.path.join(BASE, "run")
+RUN_MIN_WAIT = 0.5    # what a copy is waited for at least, whatever the deploy took
 
 
 def box(rcon=None):
@@ -150,6 +153,7 @@ def op_deploy():
 
 def op_run():
     """Deploy, start one copy of an action and wait for it, as the module comment says."""
+    began = time.time()
     for t in ARGS.get("tars") or []:
         deploy(t["tar"], t["root"])
     meta = {"action": ARGS["action"], "script": ARGS["script"], "source": ARGS.get("source") or "library",
@@ -168,7 +172,10 @@ def op_run():
         die(3, str(e))
     except instances.CopyError as e:
         die(1, str(e))
-    got = b.wait(name, proc, float(ARGS.get("wait") or instances.CHECK_S), on_result=bool(ARGS.get("on_result")))
+    # The caller's clock started before the deploy: a once copy past its timeout is answered
+    # as still running, not cut off by vfg's or the dispatcher's own timeout.
+    left = max(RUN_MIN_WAIT, float(ARGS.get("wait") or instances.CHECK_S) - (time.time() - began))
+    got = b.wait(name, proc, left, on_result=bool(ARGS.get("on_result")))
     got.update(copy=name, pid=pid, started=b.meta(name)["started"])
     if not got["running"] and got["code"]:
         got["tail"] = b.tail(name, 20)

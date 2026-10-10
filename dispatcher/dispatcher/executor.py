@@ -35,7 +35,10 @@ from .actions import word
 from .config import log
 from .vfg import Vfg, VfgResult, why
 
-GRACE_S = 5  # past the action's own timeout, which vfg keeps, so vfg's answer is the one seen
+# Past the action's own timeout, which vfg keeps (the box counts it from the op's start, the
+# deploy inside it), so vfg's answer is the one seen: what is outside it is vfg's own start
+# (uv, pydantic, the actions), the pack and the SSH call, a new connection to EC2 included.
+GRACE_S = 10
 NOT_RUN = (2, 3, 4, 5, 127)
 
 

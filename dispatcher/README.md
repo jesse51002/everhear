@@ -121,7 +121,7 @@ From the environment, then `~/.vfg/config`:
 | `VFG_DISPATCH_PROVIDERS` | `parasail,wafer,phala,together,venice`: OpenRouter providers tried first, in order, for every model call (the replay's: no lost work); `none` lets OpenRouter choose |
 | `VFG_DISPATCH_RETRIES` | `1` retry per failed action |
 | `VFG_DISPATCH_WINDOW_S` | `10` s before handed tasks go to the orchestrator together |
-| `VFG_DISPATCH_ACTION_TIMEOUT_S` | `20` s per once action, which `vfg action run` keeps; a class may set its own `timeout_s` (`teleport`: 60); the dispatcher waits 5 s past it |
+| `VFG_DISPATCH_ACTION_TIMEOUT_S` | `20` s per once action, which `vfg action run` keeps; a class may set its own `timeout_s` (`teleport`: 60); the dispatcher waits 10 s past it, for vfg's own start and the SSH call (EC2 counts the deploy inside the timeout) |
 | `VFG_DISPATCH_MODEL_TIMEOUT_S` | `10` s per model call (selector, planner, replay), its retries included; past it the task, or that pick, is handed on |
 | `VFG_DISPATCH_REASONING` | `off`; or an effort, `low`, `medium` or `high`, for a model that cannot think without it (Sonnet 5.5 on OpenRouter) |
 | `VFG_ORCH_STALE_MINUTES` | `10`: a task that waited longer is failed as expired, never run |

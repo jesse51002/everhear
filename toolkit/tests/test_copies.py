@@ -7,6 +7,7 @@ the one running the tests) with the real scripts/_lib and the stand-in actions o
 command, edit, stop and save_place as the dispatcher's will be, and beam (until stopped, with
 live values), ping and slow (once). vfg runs under uv, with pydantic, as it does on the PC.
 """
+import fcntl
 import json
 import os
 import re
@@ -166,6 +167,27 @@ class TestRun(ActionCase):
         # What it said before the timeout (a countdown started) is kept in the answer.
         got = self.line(self.run_action("ping", "nap=3", "early=true", VFG_DISPATCH_ACTION_TIMEOUT_S="1"))
         self.assertEqual(got["summary"], "hello: started; still running as %s" % got["copy"])
+
+    def test_a_once_actions_wait_on_the_box_counts_its_deploy(self):
+        # The op's clock starts before the deploy: one held up past the whole timeout (another
+        # deploy holds the lock) leaves the copy the 0.5 s it always gets, not the 2 s again.
+        os.makedirs(self.run_dir(), exist_ok=True)
+        fd = os.open(self.run_dir("deploy.lock"), os.O_RDWR | os.O_CREAT, 0o644)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            before = len(self.box.ssh_calls())
+            p = self.box.popen("action", "run", "ping", "nap=5", VFG_DISPATCH_ACTION_TIMEOUT_S="2")
+            self.assertTrue(wait_for(lambda: self.remote_calls(before), 30))
+            time.sleep(2.5)                                 # the op began, and waits for the lock
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        released = time.time()
+        out = p.communicate(timeout=30)[0].decode()
+        took = time.time() - released
+        got = json.loads(out)
+        self.assertEqual((got["ok"], got["running"], got["summary"]), (True, True, "still running as ping"))
+        self.assertLess(took, 1.6)
 
     def test_a_failed_script_is_not_ok_with_its_last_words(self):
         r = self.run_action("ping", "fail=true")

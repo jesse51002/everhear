@@ -759,6 +759,29 @@ async def test_a_once_action_past_its_timeout_is_done_still_running_and_never_ru
     assert h.vfg.replies(tid) == [(tid, "done", "zombies — still running as summon_around")]
 
 
+async def test_a_once_action_past_its_timeout_is_vfgs_still_running_not_the_dispatchers_timeout(h):
+    # vfg answers once the box has waited the action's timeout_s, counted from the op's start
+    # there (the deploy inside it); before that come vfg's own start, the pack and the SSH call,
+    # a new connection to EC2 included. The fake vfg takes that long: it answers when the
+    # dispatcher still waits for it, and is cut off (124) when it does not.
+    start_s = 6.0  # vfg under a cold uv, then a new SSH connection: more than the old 5 s grace
+
+    def timed(argv: list[str]):
+        given = h.vfg.timeouts[h.vfg.calls.index(argv)]
+        if 60 + start_s > given:
+            return fail(124, f"timed out after {given:g} s")
+        return ok("still running as summon_around", copy="summon_around", action="summon_around", running=True)
+
+    h.llm.add("Selection", select(("summon_around", "summon 100 zombies round Steve")))
+    h.llm.add("Planned_summon_around", planned({"players": "Steve", "mob": "zombie", "count": 100}, say="zombies"))
+    h.vfg.on("action", "run", "summon_around", answer=timed)
+    tid = await h.run("100 zombies round Steve")
+    [run] = h.vfg.actions()
+    assert h.vfg.timeouts[h.vfg.calls.index(run)] == 60 + GRACE_S  # summon_around's timeout_s, and the grace
+    assert h.vfg.replies(tid) == [(tid, "done", "zombies — still running as summon_around")]
+    assert h.vfg.hands() == []
+
+
 async def test_a_value_the_check_refuses_goes_back_to_the_planner_before_anything_runs(tmp_path):
     cat = catalog()
     made(cat, "beam_up", BEAM_UP)
