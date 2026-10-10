@@ -26,6 +26,7 @@ import struct
 import sys
 import threading
 import time
+import traceback
 from typing import Optional, Tuple
 
 # This script's folder name, from sys.argv[0]; the copy it runs as (VFG_INSTANCE or VFG_SCRIPT,
@@ -76,7 +77,7 @@ _conn = None
 _settings = None
 _next_id = [1]
 _stoppers = []      # (fn, at_exit), oldest first
-_failed = []        # an error nothing caught ended the script (sys.excepthook)
+_failed = []        # an error nothing caught ended the script (sys.excepthook): its last line
 _tagged = []        # a command named TAG (_TAG_IN)
 _stopping = threading.Event()
 _stop = {"thread": None, "deadline": 0.0, "conn": None}
@@ -526,8 +527,21 @@ def _on_signal(signum, frame) -> None:
 
 
 def _on_failure(kind, value, tb) -> None:
-    _failed.append(kind.__name__)
+    lines = traceback.format_exception_only(kind, value)
+    _failed.append(lines[-1].strip() if lines else kind.__name__)   # NameError: name 'x' is not defined
     _excepthook(kind, value, tb)
+
+
+def _write_error(text) -> None:
+    """A failure's last line, into run/<copy>.error: what vfg action run answers it failed with."""
+    path = os.path.join(os.environ.get("VFG_RUN_DIR") or "/opt/vfg/run", INSTANCE + ".error")
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text + "\n")
+        os.replace(tmp, path)
+    except OSError:
+        pass
 
 
 def _on_exit() -> None:
@@ -537,14 +551,16 @@ def _on_exit() -> None:
     name reaches it. What was only for the while is undone, by the cleanups registered to run at exit too (all
     but on_stop(fn, at_exit=False)): the shells a freeze put up melt, items lent come back, a
     boss's bar goes, a gamerule goes back, forceloads are released. A script that fails (an
-    error nothing caught, its traceback in the log) cleans up as a stopped one does, so nothing
-    of a broken run is left when it is fixed and run again. Only for a script (main.py), never
-    for a test that imports mc."""
+    error nothing caught, its traceback in the log) writes the traceback's last line to
+    run/<copy>.error and cleans up as a stopped one does, so nothing of a broken run is left when
+    it is fixed and run again. Only for a script (main.py), never for a test that imports mc."""
     if _stopping.is_set() or os.path.basename(sys.argv[0] or "") != "main.py":
         return
     _stop["thread"] = threading.get_ident()
     _stopping.set()
     log("failed, cleaning up as a stop does" if _failed else "ended by itself, cleaning up")
+    if _failed:
+        _write_error(_failed[-1])
     # What it set off last goes off first: TNT or a creeper with no fuse explodes on the next
     # tick, a bolt strikes, before a gamerule is put back or its chunk let go.
     time.sleep(EXIT_GRACE)

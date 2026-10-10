@@ -15,7 +15,8 @@
 # "wait" s pass, an until-stopped one until its first result() or "wait" s (the 2 s check),
 # counted from the op's start, so the deploy and the RCON check are inside it (at least 0.5 s
 # is left for the copy). It prints one JSON object: {"copy", "pid", "started", "running",
-# "code", "result", "tail"}, "tail" being the last lines it printed when it ended with an error.
+# "code", "result", "error", "tail"}; when it ended with an error, "error" is the last line of
+# the one it crashed on (<copy>.error, mc.py's) or null, and "tail" the last lines it printed.
 # Before anything starts: Minecraft not answering RCON is exit 5, the script not deployed 3,
 # `as=` a running copy's name 1.
 import base64
@@ -178,7 +179,7 @@ def op_run():
     got = b.wait(name, proc, left, on_result=bool(ARGS.get("on_result")))
     got.update(copy=name, pid=pid, started=b.meta(name)["started"])
     if not got["running"] and got["code"]:
-        got["tail"] = b.tail(name, 20)
+        got.update(error=b.error(name), tail=b.tail(name, 20))
     answer(got)
 
 

@@ -889,6 +889,22 @@ class EditTests(BoxTest):
             time.sleep(0.05)
         self.assertIn('"player": "Alex"', "".join(b.box.tail(name)))
 
+    def test_a_restart_that_crashes_says_what_it_crashed_on(self):
+        b = self.box(FakeWorld())
+        os.symlink(LIB, os.path.join(b.base, "scripts", "_lib"))
+        folder = os.path.join(b.base, "scripts", "picky")
+        os.makedirs(folder)
+        with open(os.path.join(folder, "main.py"), "w") as f:
+            f.write(NAP.replace("time.sleep(60)", 'import mc\nif meta["values"]["player"] == "Bob":\n'
+                                                   '    raise ValueError("Bob is not welcome")\ntime.sleep(60)'))
+        meta = {"action": "picky", "script": "picky", "source": "library", "values": {"player": "Alex"},
+                "live": [], "runs": "until_stopped", "task": "T4"}
+        name, pid, proc = b.box.start(meta)
+        b.procs.append(proc)
+        r = self.edit(b, name, {"player": "Bob"}, ["player"], False)
+        self.assertEqual((r.code, r.summary), (1, "restarted picky with player=Bob, but it exited with code 1: "
+                                                  "ValueError: Bob is not welcome"))
+
     def test_refusals(self):
         b = self.box(FakeWorld())
         r = self.edit(b, "nap", {"cooldown": 0}, ["cooldown"], True)

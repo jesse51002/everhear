@@ -23,6 +23,8 @@ A copy's files in run/ (VFG_RUN_DIR):
                         "started"}
     <copy>.values.json  live edits, {field: value}: the kit reads it again every VFG_LIVE_POLL_S
     <copy>.result.json  what kit.result() wrote last: {"summary", "facts", "at"}
+    <copy>.error        a crash's last line (NameError: name 'x' is not defined), which mc.py
+                        writes as it cleans up after an error nothing caught
 
 A copy's name is `as=` when the run gives one (refused while that copy runs), else the action's
 name, else the next free <action>_2, _3 ...; it is picked, and the copy started, under
@@ -174,6 +176,14 @@ class Box(object):
         got = read_json(self.path(name, ".result.json"))
         return got if isinstance(got, dict) and isinstance(got.get("summary"), str) else None
 
+    def error(self, name):
+        """The last line of the error a copy crashed on, as mc.py wrote it; None when it did not."""
+        try:
+            with open(self.path(name, ".error"), encoding="utf-8", errors="replace") as f:
+                return f.read().strip() or None
+        except OSError:
+            return None
+
     def folder(self, meta):
         """Where a copy's script is deployed: scripts/<script>, or made/<server>/scripts/<script>."""
         if meta.get("source") == "made":
@@ -242,7 +252,7 @@ class Box(object):
         """Name a copy and start it, detached: (name, pid, the Popen to wait on).
 
         `meta` holds action, script, source (and server for a made script), values, live,
-        runs and task; its copy's earlier files (live edits, result) go."""
+        runs and task; its copy's earlier files (live edits, result, error) go."""
         for k in ("action", "script"):
             if not NAME_RE.match(meta.get(k) or ""):
                 raise CopyError("%s is not a name: %r" % (k, meta.get(k)))
@@ -253,7 +263,7 @@ class Box(object):
             raise NotDeployed("%s is not deployed (no %s)" % (meta["script"], main_py))
         with self.lock():
             name = self.pick(meta["action"], as_)
-            for ext in (".values.json", ".result.json"):
+            for ext in (".values.json", ".result.json", ".error"):
                 remove(self.path(name, ext))
             meta = dict(meta, copy=name)
             pid, proc = self._spawn(meta)
@@ -405,7 +415,7 @@ class Box(object):
         with self.lock():
             # The name stays this copy's: no other run can take it between the stop and the start.
             self.stop(name)
-            for ext in (".values.json", ".result.json"):
+            for ext in (".values.json", ".result.json", ".error"):
                 remove(self.path(name, ext))
             meta["values"] = new
             for k in ("edits", "pid", "since"):

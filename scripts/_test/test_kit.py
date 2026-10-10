@@ -1066,6 +1066,9 @@ oops()
         self.assertIn("stop-only cleanup ran", out)
         self.assertEqual([e for e in self.world.entities if "vfg_broken" in e["tags"]], [])
         self.assertEqual(self.world.commands[-1], "kill @e[tag=vfg_broken]")
+        # The error's last line, for vfg action run's answer, beside the copy's other files.
+        with open(os.path.join(TMP, "broken.error")) as f:
+            self.assertEqual(f.read(), "NameError: name 'oops' is not defined\n")
 
     def test_ice_shells_still_melt_when_a_script_ends_by_itself(self):
         preset = copied(os.path.join(os.path.dirname(HERE), "_presets", "freeze.py"))

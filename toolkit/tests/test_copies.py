@@ -90,7 +90,7 @@ class TestRun(ActionCase):
         meta = self.box_json("ping.json")
         self.assertEqual({k: meta[k] for k in ("copy", "action", "script", "source", "values", "live", "runs", "task")},
                          {"copy": "ping", "action": "ping", "script": "ping", "source": "library",
-                          "values": {"say": "hi", "nap": 0, "fail": False, "early": False}, "live": [], "runs": "once", "task": "T3"})
+                          "values": {"say": "hi", "nap": 0, "fail": "", "early": False}, "live": [], "runs": "once", "task": "T3"})
         self.assertRegex(meta["started"], ISO_RE)
         self.assertEqual(self.box_json("ping.result.json")["summary"], "hi: 1 online")
         self.assertFalse(os.path.exists(self.run_dir("ping.pid")))
@@ -189,12 +189,31 @@ class TestRun(ActionCase):
         self.assertEqual((got["ok"], got["running"], got["summary"]), (True, True, "still running as ping"))
         self.assertLess(took, 1.6)
 
-    def test_a_failed_script_is_not_ok_with_its_last_words(self):
-        r = self.run_action("ping", "fail=true")
+    def test_a_failed_script_is_not_ok_with_what_it_failed_with(self):
+        # A script that refuses says why with result() and exits non-zero: its summary.
+        r = self.run_action("ping", "fail=refuse")
         got = self.line(r, 1)
         self.assertEqual((got["ok"], got["running"], got["copy"]), (False, False, "ping"))
-        self.assertRegex(got["error"], r"^ping exited with code 3: \d\d:\d\d:\d\d ping about to fail$")
+        self.assertEqual((got["error"], got["summary"]), ("ping exited with code 1: hello: refused", "hello: refused"))
         self.assertEqual(r.stderr.splitlines()[-1], "vfg: " + got["error"])
+        # A crash: the last line of the error, which mc.py wrote to <copy>.error as it cleaned up;
+        # it wins over a result() from before the crash.
+        for early in ("false", "true"):
+            got = self.line(self.run_action("ping", "fail=crash", "early=" + early), 1)
+            self.assertEqual(got["error"], "ping exited with code 1: NameError: name 'no_such_name_here' is not defined")
+        self.assertEqual(got["summary"], "hello: started")
+        with open(self.run_dir("ping.error")) as f:
+            self.assertEqual(f.read(), "NameError: name 'no_such_name_here' is not defined\n")
+        # The next run of the copy starts with none.
+        self.line(self.run_action("ping"))
+        self.assertFalse(os.path.exists(self.run_dir("ping.error")))
+        # Neither (a script without mc): the last line it printed, as it is.
+        standins.write(os.path.join(self.box.repo, "scripts", "plain", "main.py"),
+                       '"""Plain: prints, then exits 4."""\nimport sys\nprint("plain: the last words")\nsys.exit(4)\n')
+        standins.write(os.path.join(self.box.repo, "actions", "plain.py"),
+                       standins.ACTIONS["ping"].replace("class Ping", "class Plain").replace('"ping"', '"plain"'))
+        got = self.line(self.run_action("plain"), 1)
+        self.assertEqual(got["error"], "plain exited with code 4: plain: the last words")
 
     def test_values_are_checked_and_refused_before_anything_is_sent(self):
         with open(os.path.join(self.box.vhome, "places.json"), "w") as f:

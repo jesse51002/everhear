@@ -96,8 +96,9 @@ a copy started, waited for. It prints ONE JSON line, `{"ok", "copy", "action", "
 is waited for up to its `timeout_s`, else `VFG_DISPATCH_ACTION_TIMEOUT_S` (20 s), and answers
 with its script's `result()`; past it, `"running": true` and "still running as <copy>": it is
 never run again. An until-stopped action answers with its first `result()`, or "running as
-<copy>" after a 2 s check. A script that exits non-zero is `"ok": false`, its error its last
-words. `vfg cmd`, `vfg script set`, `vfg script stop` and `vfg place save` are shortcuts for
+<copy>" after a 2 s check. A script that exits non-zero is `"ok": false`, its error what it
+failed with: the error it crashed on (`run/<copy>.error`, which `mc.py` writes), else the
+`result()` it refused with, else the last line it printed. `vfg cmd`, `vfg script set`, `vfg script stop` and `vfg place save` are shortcuts for
 the `command`, `edit`, `stop` and `save_place` actions and print their summaries. `vfg action refs` runs the server jar's data generator in a
 temp folder under `/tmp` on EC2 (about 10 s; 300 s at most) and prints its
 `commands.json`, about 190 KB, with the version. `vfg place` keeps places in

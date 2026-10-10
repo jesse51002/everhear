@@ -97,7 +97,9 @@ class Beam(Action):
     report: bool = True
     """whether it says it is ready"""
 ''',
-    "ping": '''from pydantic import Field
+    "ping": '''from typing import Literal
+
+from pydantic import Field
 
 from actions._types import Action
 
@@ -113,8 +115,8 @@ class Ping(Action):
     """what it says first"""
     nap: float = Field(0, ge=0, le=30)
     """seconds it waits first"""
-    fail: bool = False
-    """whether it fails"""
+    fail: Literal["", "refuse", "crash"] = ""
+    """how it fails: a result() and exit 1, or an error nothing catches; "" for not at all"""
     early: bool = False
     """whether it says it started before its nap"""
 ''',
@@ -224,9 +226,12 @@ v = values()
 if v["early"]:
     result("%s: started" % v["say"])
 time.sleep(v["nap"])
-if v["fail"]:
-    mc.log("about to fail")
-    sys.exit(3)
+if v["fail"] == "refuse":
+    result("%s: refused" % v["say"], refused=True)
+    sys.exit(1)
+if v["fail"] == "crash":
+    mc.log("about to crash")
+    no_such_name_here
 online = mc.players()
 result("%s: %d online" % (v["say"], len(online)), online=online, task=mc.TASK, copy=mc.INSTANCE)
 ''',

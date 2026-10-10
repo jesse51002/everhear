@@ -56,9 +56,12 @@ if got["live"]:
     sys.exit(0)
 res = got.get("result") or {}
 if not got["running"] and got.get("code"):
+    # What it failed with, as vfg action run says it: the error it crashed on, else its
+    # result(), else the last line it printed.
     tail = [l for l in box.tail(copy, 20) if l.strip()]
-    fail("restarted %s with %s, but it exited with code %d%s" % (copy, said, got["code"],
-                                                                 ": " + tail[-1].strip() if tail else ""), **facts)
+    why = box.error(copy) or res.get("summary") or (tail[-1].strip() if tail else "")
+    fail("restarted %s with %s, but it exited with code %d%s" % (copy, said, got["code"], ": " + why if why else ""),
+         **facts)
 summary = "restarted %s with %s" % (copy, said)
 if res.get("summary"):
     summary += ": " + res["summary"]

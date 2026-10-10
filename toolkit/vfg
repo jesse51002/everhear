@@ -1366,7 +1366,7 @@ def checked_values(cfg, a, va, cls, given):
 
 def start_copy(cfg, a, name, cls, source, values, live, task, as_=None):
     """One SSH call: deploy the action's script and _lib, start a copy, wait as its runs says.
-    The box's answer: {"copy", "pid", "started", "running", "code", "result", "tail"}."""
+    The box's answer: {"copy", "pid", "started", "running", "code", "result", "error", "tail"}."""
     owner = cfg.get("VFG_OWNER")
     if owner and not PLAYER_RE.match(owner):
         raise Fail(3, "not configured: VFG_OWNER must be a Minecraft name")
@@ -1399,10 +1399,6 @@ def start_copy(cfg, a, name, cls, source, values, live, task, as_=None):
     return got
 
 
-# What mc.py logs as a copy cleans up, after its last words.
-CLEANUP_RE = re.compile(r" (ended by itself, cleaning up|failed, cleaning up as a stop does|cleaned up|stopped|stopping \(signal \d+\))$")
-
-
 def answer_of(name, got, notes):
     """The one JSON line vfg action run prints, from the box's answer."""
     copy = got["copy"]
@@ -1416,9 +1412,12 @@ def answer_of(name, got, notes):
         elif not line["summary"]:
             line["summary"] = "running as %s" % copy
     elif got.get("code"):
-        tail = [l for l in got.get("tail") or [] if l.strip() and not CLEANUP_RE.search(l)]
+        # What it failed with: the error it crashed on (mc.py's <copy>.error), else the result()
+        # a script that refused gave before its non-zero exit, else the last line it printed.
+        tail = [l for l in got.get("tail") or [] if l.strip()]
+        said = got.get("error") or res.get("summary") or (tail[-1].strip() if tail else "")
         line["ok"] = False
-        line["error"] = "%s exited with code %d%s" % (copy, got["code"], ": " + tail[-1].strip() if tail else "")
+        line["error"] = "%s exited with code %d%s" % (copy, got["code"], ": " + said if said else "")
     elif not line["summary"]:
         line["summary"] = "%s ran and ended" % copy
     return line
