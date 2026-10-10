@@ -3,7 +3,7 @@
 
 Python 3.9+, standard library only. Every remote action is one SSH call whose
 remote command is the constant `python3 -u -`, with remote/common.py, a line
-`ARGS = json.loads(...)`, any library it uses (remote/places.py) as a module of
+`ARGS = json.loads(...)`, any library it uses (scripts/_lib/places.py) as a module of
 its own, and one program from remote/ on its stdin, so nothing an agent typed
 ever meets a shell on either machine. The one exception is
 `vfg feed post`, whose remote command the contract fixes (with VFG_DB and
@@ -1935,7 +1935,7 @@ def cmd_action_run(cfg, a):
         raise Fail(1, "no actions/%s/ in %s" % (a.name, tilde(cfg.repo)))
     if os.path.isfile(handler):
         args = {"mode": "handler", "name": a.name, "task": a.task, "args": fields,
-                "handler": read_text(handler), "places": read_text(os.path.join(REMOTE, "places.py"))}
+                "handler": read_text(handler), "places": read_text(os.path.join(KIT_LIB, "places.py"))}
     elif a.name == "command":
         args = {"mode": "commands", "task": a.task, "commands": command_list(fields)}
     else:
@@ -1973,9 +1973,9 @@ def cmd_action(cfg, a):
 # VFG_PLACES_TTL_S, else fetches; save and forget write their entry through.
 
 def places_module():
-    """remote/places.py, for its line(): the same text the remote list prints."""
+    """scripts/_lib/places.py, for its line(): the same text the remote list prints."""
     import importlib.util
-    spec = importlib.util.spec_from_file_location("vfg_places", os.path.join(REMOTE, "places.py"))
+    spec = importlib.util.spec_from_file_location("vfg_places", os.path.join(KIT_LIB, "places.py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

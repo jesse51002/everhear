@@ -1,11 +1,11 @@
 # places.py: the saved places, kept in Minecraft's own command storage
 # `everhear:places`, one entry per name: {pos: [x, y, z], dim: "minecraft:overworld", by: "T23"}.
 #
-# Python 3.9, standard library only, and pure: every function takes `rcon`, a
+# Python 3.9+, standard library only, and pure: every function takes `rcon`, a
 # callable that runs one server command and returns Minecraft's reply as text.
-# In a handler that is `mc.rcon`; in the toolkit's place program, common.py's
-# RCON client. The same source is shipped to EC2 with every handler action
-# and registered as the module `places`.
+# Deployed with the kit: a script (`import places`) and the kit's place values pass
+# `mc.rcon`; vfg ships the same file with its place program, which passes common.py's
+# RCON client.
 #
 # The replies it reads, as Minecraft 26.3 prints them:
 #   Storage everhear:places has the following contents: {castle: {pos: [197, 68, 251], by: "T23", dim: "minecraft:overworld"}}
