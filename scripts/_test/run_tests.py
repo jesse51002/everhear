@@ -5,11 +5,10 @@
 They start fake_rcon.py on a free port with a temp server.properties, check
 _lib/mc.py, then run every script (every folder without a leading "_") the way
 EC2 does: `python3 -u main.py` in its own folder with PYTHONPATH=scripts/_lib.
-A seed (README.md beside main.py) runs with its Usage line's arguments (one ported to its
-action, as a copy of it, like an example below). An example
-(main.py with ASKS, no README.md) runs with its defaults and VFG_INSTANCE set: one with
-VALUES reads them; one ported to its action (v = values()) gets the meta file `vfg action
-run` would write for its first action with nothing given (lib/py/vfg_actions.py). It runs
+A seed (README.md beside main.py) runs with its Usage line's arguments, as a copy of its
+action like an example below. An example (main.py with ASKS, no README.md) runs with its
+defaults and VFG_INSTANCE set: it gets the meta file `vfg action run` would write for its
+first action with nothing given (lib/py/vfg_actions.py), which values() reads. It runs
 against fake_world with Steve and Alex online; Steve tries every item it gives him (a
 click, a 1.5 s hold) and crouches; then SIGTERM. It must send commands, raise nothing,
 exit 0 within 2 s of the stop, and leave nothing tagged vfg_<name>: no entity, bossbar,
@@ -280,7 +279,7 @@ def usage_args(line):
     return ["Steve" for _ in re.findall(r"<[^>]*>", rest)]
 
 
-def run_script(name):
+def run_seed(name):
     folder = os.path.join(SCRIPTS, name)
     res = {"name": name}
     with open(os.path.join(folder, "README.md"), encoding="utf-8") as f:
@@ -303,11 +302,10 @@ def run_script(name):
     fake = FakeRcon(password).start()
     out_path = os.path.join(TMP, name + ".out")
     env = script_env(properties(password, fake.port))
-    meta = action_meta(name, source)      # a seed ported to its action runs as a copy of it
-    if meta is not None:
-        env.update(VFG_INSTANCE=name, VFG_SCRIPT=name, VFG_RUN_DIR=tempfile.mkdtemp(dir=TMP))
-        with open(os.path.join(env["VFG_RUN_DIR"], name + ".json"), "w") as f:
-            json.dump(meta, f)
+    meta = action_meta(name)      # a seed runs as a copy of its action
+    env.update(VFG_INSTANCE=name, VFG_SCRIPT=name, VFG_RUN_DIR=tempfile.mkdtemp(dir=TMP))
+    with open(os.path.join(env["VFG_RUN_DIR"], name + ".json"), "w") as f:
+        json.dump(meta, f)
     try:
         with open(out_path, "wb") as out:
             start = time.time()
@@ -346,7 +344,7 @@ def run_script(name):
 
 
 def is_example(name):
-    """An example script: main.py with its VALUES at the top, no README.md beside it."""
+    """An example script: main.py with its ASKS at the top, no README.md beside it."""
     return not os.path.isfile(os.path.join(SCRIPTS, name, "README.md"))
 
 
@@ -398,23 +396,21 @@ def copy_meta(action, given, copy=None):
             "values": checked.values, "live": checked.live, "runs": cls.runs, "task": None, "started": None}
 
 
-def action_meta(name, source):
-    """For a script ported to its action (no VALUES): the meta file of a copy of its first
-    action (the one named as the script, else the first by name) run with nothing given, as
-    vfg action run writes it; None for a script that still has VALUES."""
-    if re.search(r"^VALUES\s*=", source, re.M):
-        return None
+def action_meta(name):
+    """The meta file of a copy of a script's first action (the one named as the script, else the
+    first by name) run with nothing given, as vfg action run writes it."""
     va, cat = catalog()
     over = sorted(n for n in cat.names() if cat.get(n).script == name)
     if not over:
         why = cat.errors().get(name)
-        raise AssertionError("%s has no VALUES and no action runs it%s" % (name, " (%s)" % why if why else ""))
+        raise AssertionError("no action runs %s%s" % (name, " (%s)" % why if why else ""))
     return copy_meta(name if name in over else over[0], {}, copy=name)
 
 
-def run_example(name, seconds=4.0, folder=None):
-    """An example started as on EC2, with its defaults (no arguments), against a fake world
-    with Steve and Alex online: it plays a little, then SIGTERM if it is still running."""
+def run_example(name, seconds=4.0, folder=None, meta=None):
+    """An example started as on EC2, as a copy of its action with nothing given (a library
+    script; else `meta`, the meta file's dict), against a fake world with Steve and Alex
+    online: it plays a little, then SIGTERM if it is still running."""
     folder = folder or os.path.join(SCRIPTS, name)
     res = {"name": name, "example": True}
     with open(os.path.join(folder, "main.py"), encoding="utf-8") as f:
@@ -435,11 +431,11 @@ def run_example(name, seconds=4.0, folder=None):
     env = script_env(properties(password, fake.port))
     env.update(VFG_INSTANCE=name, VFG_SCRIPT=name, VFG_RUN_DIR=tempfile.mkdtemp(dir=TMP), VFG_LIVE_POLL_S="0.5",
                VFG_PROTECTED=os.path.join(TMP, "no-protected.json"))
-    meta = action_meta(name, source) if os.path.dirname(folder) == SCRIPTS else None
-    if meta is not None:
-        with open(os.path.join(env["VFG_RUN_DIR"], name + ".json"), "w") as f:
-            json.dump(meta, f)
-    res["action"] = meta and meta["action"]
+    if meta is None:
+        meta = action_meta(name)
+    with open(os.path.join(env["VFG_RUN_DIR"], name + ".json"), "w") as f:
+        json.dump(meta, f)
+    res["action"] = meta.get("action")
     tag = "vfg_" + name
     try:
         with open(out_path, "wb") as out:
@@ -493,7 +489,7 @@ class ScriptTests(unittest.TestCase):
         for name in script_names():
             def go(n=name):
                 try:
-                    RESULTS[n] = run_example(n) if is_example(n) else run_script(n)
+                    RESULTS[n] = run_example(n) if is_example(n) else run_seed(n)
                 except Exception as e:  # reported by the test itself
                     RESULTS[n] = {"name": n, "error": repr(e)}
             t = threading.Thread(target=go)
@@ -558,13 +554,7 @@ DEMO = '''"""Demo Wand: a click fires a beam that hurts what it hits and leaves 
 ASKS = ["a demo wand"]
 from kit import values, items, aim, area, mobs, loop
 
-VALUES = {
-    "player":        {"type": "player", "default": "@a"},
-    "cooldown":      {"type": "number", "min": 0, "max": 60, "default": 0, "live": True},
-    "crater_radius": {"type": "int", "min": 2, "max": 16, "default": 3, "live": True},
-}
-
-v = values(VALUES)
+v = values()
 mobs.Boss("Demo Boss", "zombie", health=40).spawn(near="Steve")
 area.forceload((100, 0, 100, 130, 0, 130), wait=0)
 for p in loop(items.clicks(v["player"], "Demo Wand", cooldown=v["cooldown"])):
@@ -586,7 +576,8 @@ class ExampleHarnessTests(unittest.TestCase):
         os.makedirs(folder, exist_ok=True)
         with open(os.path.join(folder, "main.py"), "w") as f:
             f.write(DEMO % extra)
-        return run_example(name, folder=folder)
+        return run_example(name, folder=folder, meta={"values": {"player": "@a", "cooldown": 0, "crater_radius": 3},
+                                                     "live": ["cooldown", "crater_radius"]})
 
     def test_a_good_example_passes(self):
         res = self.demo("demo_wand")

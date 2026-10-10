@@ -10,7 +10,7 @@ import mc
 
 # --- preset: shape_fill (copied from _presets/shape_fill.py) ---
 _SHAPE_FILL_WAYS = {"south": (0, 1), "west": (-1, 0), "north": (0, -1), "east": (1, 0)}    # forward, as x and z
-# What a part reads when neither the call nor VALUES gives it: the defaults above.
+# What a part reads when neither the call nor v gives it: the values class's defaults.
 _SHAPE_FILL_DEFAULTS = {"kind": "box", "width": 9, "height": 5, "depth": 9, "offset": [0, 0, 0], "facing": "look",
                         "blocks": "stone_bricks", "hollow": False}
 _SHAPE_FILL_CELL = 2        # a mix picks one block per cube this wide
@@ -27,7 +27,7 @@ def shape_fill(at, v, **change):
     that are not loaded are forceloaded for the build and let go after. Protected boxes and
     the bedrock floor are never built in. change: values for this call only, without shape_:
     shape_fill(p, v, kind="wall", width=21, offset=[0, 0, 12]); a value neither the call nor
-    VALUES gives is the preset's default. Returns the world.Box it covered, with .facing the
+    v gives is the preset's default. Returns the world.Box it covered, with .facing the
     way it faced ("south"...: a sign on it faces the other way), or None when `at` cannot be
     read."""
     def val(key):

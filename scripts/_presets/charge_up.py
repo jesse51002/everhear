@@ -6,14 +6,6 @@ import time
 from kit import aim, fx, loop
 from actions._types import Field, Literal, Live, ParticleId, Values  # the values class: read on the PC only
 
-VALUES = {
-    "charge_style": {"type": "enum", "of": ["sphere", "orbs", "aura"], "default": "sphere", "live": True},
-    "charge_seconds": {"type": "number", "min": 0.2, "max": 15, "default": 3, "live": True},
-    "charge_particle": {"type": "particle", "default": "dust{color:[0.3,0.7,1.0],scale:2.5}", "live": True},
-    "charge_size": {"type": "number", "min": 1, "max": 30, "default": 6, "live": True},
-    "charge_orbs": {"type": "list", "of": "particle", "default": [], "live": True},
-}
-
 
 class ChargeUp(Values):
     charge_style: Live[Literal["sphere", "orbs", "aura"]] = "sphere"

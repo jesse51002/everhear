@@ -1,21 +1,23 @@
 """The ray examples against a real Minecraft 26.3 server with Carpet's fake players: railgun
-(and railgun as a gatling gun), lightning_staff, infinity_gauntlet, death_gaze,
-sniper_rifle, ice_staff, gravity_staff and wither_wand, each started with `vfg script run`
-as on the box.
+and its gatling_gun, lightning_staff, infinity_gauntlet, death_gaze, sniper_rifle,
+ice_staff, gravity_crush and gravity_lift (the gravity_staff script) and wither_wand, each
+started with `vfg action run` as on the box.
 
     integration/realmc/up e1 --fresh && eval "$(integration/realmc/env e1)"
-    uv run --python 3.9 python scripts/_test/live_examples_rays.py [-k railgun]
+    uv run --no-project --python 3.12 python scripts/_test/live_examples_rays.py [-k railgun]
 
-Each test spawns Steve (and Alex where it needs him) on the arena, gives the script a
-non-default value or two, makes Steve aim with rotate and Carpet's look, hold the item the
-script gave him and use it (or sneak), then checks the world over RCON: the targets'
-health, effects and positions, what was spared. One `vfg script set` on a live value is
-seen to take effect while it runs; `vfg script stop` then leaves nothing tagged
-vfg_<instance> (entities, tags on mobs, bossbars, forceloads, objectives) and takes the
-item back. Targets are husks (they do not burn at noon) with NoAI and a lot of health, so a
+Each test spawns Steve (and Alex where it needs him) on the arena, runs the action with a
+non-default value or two (its JSON line must say ok, running, as the copy it was named),
+makes Steve aim with rotate and Carpet's look, hold the item the action gave him and use it
+(or sneak), then checks the world over RCON: the targets' health, effects and positions,
+what was spared. One `vfg script set` on a live value is seen to take effect while it runs;
+`vfg script stop` then leaves nothing tagged vfg_<copy> (entities, tags on mobs, bossbars,
+forceloads, objectives), takes the item back, and the copy is gone from what the box says
+runs. Targets are husks (they do not burn at noon) with NoAI and a lot of health, so a
 hit is read as health lost. It runs only against a realmc test server, never the box;
 `up --fresh` puts the world back after.
 """
+import json
 import os
 import re
 import shutil
@@ -52,6 +54,18 @@ def vfg(*args, ok=True):
     if ok and p.returncode != 0:
         raise AssertionError("vfg %s exited %d: %s" % (" ".join(args), p.returncode, p.stdout))
     return p.stdout
+
+
+def json_line(out):
+    """The JSON line `vfg action run` (or `vfg script list --json`) printed, as a dict."""
+    lines = [l for l in out.splitlines() if l.startswith("{")]
+    assert lines, "no JSON line in: %s" % out
+    return json.loads(lines[-1])
+
+
+def runs_now():
+    """{copy: what the box says of it} for every copy running now, fetched from the server."""
+    return json_line(vfg("script", "list", "--json", "--fresh"))["copies"]
 
 
 _n = [0]
@@ -99,17 +113,16 @@ def has(player, item_id, slots="container.*"):
                            % (player, slots, item_id)).lower()
 
 
-def tags_left(instance):
-    """Every tag on any entity that starts with vfg_<instance>, and how many entities have
-    vfg_<instance> itself."""
+def tags_left(copy):
+    """Every tag on any entity that starts with vfg_<copy>, and how many entities have
+    vfg_<copy> itself."""
     out = cmd("execute as @e[x=-64,y=-64,z=-64,dx=128,dy=400,dz=128] run data get entity @s Tags")
-    tag = "vfg_" + instance
+    tag = "vfg_" + copy
     return sorted(set(t for t in re.findall(r'"([^"]+)"', out) if t == tag or t.startswith(tag + "_")))
 
 
 class Example(unittest.TestCase):
     """Starts each test on a clean arena with Steve at START, facing south, in survival."""
-    instance = None
 
     @classmethod
     def setUpClass(cls):
@@ -130,8 +143,8 @@ class Example(unittest.TestCase):
         self.started = []
 
     def tearDown(self):
-        for inst in self.started:
-            vfg("script", "stop", inst, ok=False)
+        for copy in self.started:
+            vfg("script", "stop", copy, ok=False)
         for name in ("Alex",):
             if name in P.online():
                 P.kill(name)
@@ -148,18 +161,21 @@ class Example(unittest.TestCase):
     def clear_arena_fire(self):
         cmd("fill %d %d %d %d %d %d air replace fire" % (X0 - 16, FLOOR + 1, Z0 - 16, X0 + 15, FLOOR + 3, Z0 + 15))
 
-    # -- the script
-    def run_script(self, script, *values, item=None, instance=None):
-        """vfg script run, then wait until Steve has its item (if it gives one) and holds it."""
-        instance = instance or script
-        args = ["script", "run", script] + (["as=" + instance] if instance != script else []) + list(values)
-        out = vfg(*args)
-        self.assertIn("running %s" % instance, out)
-        self.started.append(instance)
+    # -- the action
+    def run_action(self, action, *values, item=None, copy=None):
+        """vfg action run, its JSON line read (ok, running, as the copy asked for), then wait
+        until Steve has its item (its id, if it gives one) and holds it."""
+        copy = copy or action
+        args = ["action", "run", action] + (["as=" + copy] if copy != action else []) + list(values)
+        got = json_line(vfg(*args))
+        if got.get("copy"):
+            self.started.append(got["copy"])
+        self.assertTrue(got["ok"], got)
+        self.assertEqual((got["copy"], got["action"], got["running"]), (copy, action, True), got)
         if item:
-            self.assertTrue(wait_for(lambda: has("Steve", item), 8), "%s never gave Steve its item" % instance)
+            self.assertTrue(wait_for(lambda: has("Steve", item), 8), "%s never gave Steve its item" % copy)
             self.hold(item)
-        return instance
+        return copy
 
     def hold(self, item):
         """Select the hotbar slot that has the item."""
@@ -169,26 +185,29 @@ class Example(unittest.TestCase):
                 return slot
         self.fail("Steve has no %s in his hotbar" % item)
 
-    def set(self, instance, *values):
-        out = vfg("script", "set", instance, *values)
+    def set(self, copy, *values):
+        """vfg script set on live values: its summary is "<copy>: k=v …, live", no restart."""
+        out = vfg("script", "set", copy, *values)
         self.assertNotIn("restart", out.lower(), out)
+        self.assertTrue(out.rstrip().endswith(", live"), out)
         time.sleep(1.0)             # VFG_LIVE_POLL_S is 0.5: read again within a second
         return out
 
-    def stop_clean(self, instance, item=None):
-        """vfg script stop, then nothing it made is left."""
-        out = vfg("script", "stop", instance)
-        self.assertIn("stopped", out)
-        self.started.remove(instance)
+    def stop_clean(self, copy, item=None):
+        """vfg script stop, then nothing it made is left, and the box no longer runs it."""
+        out = vfg("script", "stop", copy)
+        self.assertIn("stopped %s" % copy, out)
+        self.started.remove(copy)
         time.sleep(0.5)
-        self.assertEqual(tags_left(instance), [], "tagged things left behind by %s" % instance)
-        self.assertNotIn("vfg:%s" % instance, cmd("bossbar list"))
+        self.assertEqual(tags_left(copy), [], "tagged things left behind by %s" % copy)
+        self.assertNotIn("vfg:%s" % copy, cmd("bossbar list"))
         self.assertEqual(cmd("forceload query"), self.forced, "a forceload was left behind")
         objectives = cmd("scoreboard objectives list")
-        self.assertNotRegex(objectives, r"\[vfg_%s(_[^\]]*)?\]" % re.escape(instance))
+        self.assertNotRegex(objectives, r"\[vfg_%s(_[^\]]*)?\]" % re.escape(copy))
         if item:
             self.assertFalse(has("Steve", item), "%s was not taken back" % item)
-        log = vfg("script", "logs", instance, ok=False)
+        self.assertNotIn(copy, runs_now(), "%s still runs after its stop" % copy)
+        log = vfg("script", "logs", copy, ok=False)
         self.assertNotIn("Traceback", log)
         self.assertNotIn("error in", log)
 
@@ -208,7 +227,7 @@ class Railgun(Example):
         far = target("husk", X0, Y0, Z0 + 2)
         aside = target("husk", X0 + 5, Y0, Z0 - 3)
         cmd("fill %d %d %d %d %d %d stone" % (X0 - 2, Y0, Z0 - 9, X0 + 2, Y0 + 3, Z0 - 9))
-        inst = self.run_script("railgun", "player=Steve", "cooldown=1", item="railgun")
+        inst = self.run_action("railgun", "player=Steve", "cooldown=1", item="railgun")
         P.look("Steve", 0, 0)
         self.use()
         self.assertEqual(health(near), 970.0)       # 30 magic: armour does not take any of it
@@ -225,11 +244,11 @@ class Railgun(Example):
         self.assertEqual((health(near), health(far)), (920.0, 920.0))
         self.stop_clean(inst, "railgun")
 
-    def test_railgun_as_a_gatling_gun_fires_while_held(self):
+    def test_the_gatling_gun_fires_while_held(self):
         husk = target("husk", X0, Y0, Z0 + 2)
-        inst = self.run_script("railgun", "player=Steve", "fire=hold", "item=Gatling Gun", "cooldown=0.1",
-                               "range=24", "particle=crit", "sound=entity.arrow.shoot", "damage_amount=10",
-                               "damage_type=player_attack", item="gatling_gun", instance="gatling")
+        # the railgun's variant: it fixes fire=hold, item, cooldown=0.1, range=24, particle and sound
+        inst = self.run_action("gatling_gun", "player=Steve", "damage_amount=10", "damage_type=player_attack",
+                               item="gatling_gun", copy="gatling")
         P.look("Steve", 0, 0)
         self.use(1.0)
         one = 1000.0 - health(husk)
@@ -242,7 +261,7 @@ class Railgun(Example):
         lost = 1000.0 - health(husk)
         self.assertGreaterEqual(lost, one * 4 - 0.5, "held 2 s: at least three more shots (a mob takes "
                                                      "one every 0.5 s whatever the rate)")
-        # live: out of range now
+        # live: out of range now (a value the action fixes, changed by an edit)
         self.set(inst, "range=10")
         before = health(husk)
         self.use(1.0)
@@ -253,7 +272,7 @@ class Railgun(Example):
 class LightningStaff(Example):
     def test_strikes_where_steve_looks_and_spares_who_it_is_told(self):
         husk = target("husk", X0, Y0, Z0)
-        inst = self.run_script("lightning_staff", "player=Steve", "lightning_count=3", "cooldown=1.5",
+        inst = self.run_action("lightning_staff", "player=Steve", "lightning_count=3", "cooldown=1.5",
                                item="lightning_staff")
         self.aim_at(X0, FLOOR + 0.9, Z0 + 2)
         P.use("Steve")
@@ -285,7 +304,7 @@ class InfinityGauntlet(Example):
     def test_kills_the_first_thing_only_within_its_range(self):
         near = target("husk", X0, Y0, Z0 - 6)
         far = target("husk", X0, Y0, Z0 + 1)
-        inst = self.run_script("infinity_gauntlet", "player=Steve", "range=10", item="infinity_gauntlet")
+        inst = self.run_action("infinity_gauntlet", "player=Steve", "range=10", item="infinity_gauntlet")
         P.look("Steve", 0, 0)
         self.use()
         self.assertIsNone(health(near), "the first in line is gone")
@@ -307,7 +326,7 @@ class DeathGaze(Example):
         husk = target("husk", X0, Y0, Z0)
         cmd("fill %d %d %d %d %d %d stone" % (X0 - 2, Y0, Z0 + 4, X0 + 2, Y0 + 3, Z0 + 4))
         hidden = target("husk", X0, Y0, Z0 + 7)
-        inst = self.run_script("death_gaze", "player=Steve", "range=40")
+        inst = self.run_action("death_gaze", "player=Steve", "range=40")
         P.look("Steve", 0, 0)
         time.sleep(1.0)
         self.assertEqual(health(husk), 1000.0, "standing, nothing happens")
@@ -330,7 +349,7 @@ class DeathGaze(Example):
 class SniperRifle(Example):
     def test_double_on_the_head_and_a_scope_while_sneaking(self):
         husk = target("husk", X0, Y0, Z0)
-        inst = self.run_script("sniper_rifle", "player=Steve", "damage_amount=100", item="super_sniper")
+        inst = self.run_action("sniper_rifle", "player=Steve", "damage_amount=100", item="super_sniper")
         self.aim_at(X0, Y0 + 0.9, Z0)               # its body
         self.use()
         body = 1000.0 - health(husk)
@@ -368,12 +387,13 @@ class IceStaff(Example):
         beside = target("husk", X0 + 4, Y0, Z0)
         out = target("husk", X0, Y0, Z0 + 9)
         villager = target("villager", X0 - 3, Y0, Z0, hp=20)
-        inst = self.run_script("ice_staff", "player=Steve", "damage_amount=100", "around_radius=6",
+        inst = self.run_action("ice_staff", "player=Steve", "damage_amount=100", "around_radius=6",
                                item="ice_staff")
         P.look("Steve", 4, 0)                       # a little off the husk: the cone locks onto it
         self.use()
-        self.assertEqual(health(locked), 900.0)
-        self.assertEqual(health(beside), 900.0)
+        # 100 each, and a frozen mob takes 1 more every 2 s (26.3's freezing, TicksFrozen >= 140)
+        self.assertIn(health(locked), (900.0, 899.0))
+        self.assertIn(health(beside), (900.0, 899.0))
         self.assertEqual(health(out), 1000.0)
         self.assertEqual(health(villager), 20.0)
         for sel in (locked, beside):
@@ -382,14 +402,17 @@ class IceStaff(Example):
         # live: a wider blast reaches the third
         self.set(inst, "around_radius=12")
         self.use(1.5)
-        self.assertEqual(health(out), 900.0)
+        self.assertIn(health(out), (900.0, 899.0))
         self.stop_clean(inst, "ice_staff")
 
 
 class GravityStaff(Example):
-    def test_crush_pins_a_flyer_to_the_ground_and_lift_throws_up(self):
+    """The gravity_staff script's two actions, each with its own staff: gravity_crush and
+    gravity_lift (each fixes mode and item)."""
+
+    def test_crush_pins_a_flyer_to_the_ground(self):
         flyer = target("husk", X0, Y0 + 4, Z0, extra=",NoGravity:1b")
-        inst = self.run_script("gravity_staff", "player=Steve", "around_radius=6", item="gravity_staff")
+        inst = self.run_action("gravity_crush", "player=Steve", "around_radius=6", item="gravity_crush_staff")
         self.aim_at(X0, FLOOR + 0.9, Z0)
         self.use(0.2)
         landed = wait_for(lambda: (where(flyer) or (0, 99, 0))[1] < Y0 + 0.5, 3)
@@ -397,10 +420,13 @@ class GravityStaff(Example):
         self.assertEqual(effects(flyer).get("slowness"), 9)
         time.sleep(1.0)
         self.assertLess(where(flyer)[1], Y0 + 0.5, "it got back up while pinned")
-        # live: lift
-        self.set(inst, "mode=lift", "push_strength=8")
-        time.sleep(4)                               # the first pin is over
-        ground = target("husk", X0 + 2, Y0, Z0 + 2, ai=True)
+        self.stop_clean(inst, "gravity_crush_staff")
+
+    def test_lift_throws_up(self):
+        inst = self.run_action("gravity_lift", "player=Steve", "around_radius=6", "push_strength=8",
+                               item="gravity_lift_staff")
+        self.aim_at(X0, FLOOR + 0.9, Z0)
+        ground = target("husk", X0 + 2, Y0, Z0 + 2, ai=True)     # summoned last: it walks
         y0 = where(ground)[1]
         P.use("Steve")
         top, end = y0, time.time() + 2
@@ -408,7 +434,7 @@ class GravityStaff(Example):
             top = max(top, (where(ground) or (0, y0, 0))[1])
             time.sleep(0.05)
         self.assertGreater(top - y0, 3, "lift threw nothing up")
-        self.stop_clean(inst, "gravity_staff")
+        self.stop_clean(inst, "gravity_lift_staff")
 
 
 class WitherWand(Example):
@@ -417,7 +443,7 @@ class WitherWand(Example):
         try:
             griefing = re.search(r"(true|false)", cmd("gamerule mob_griefing")).group(1)
             # NoAI, so they stay where they were summoned to be looked at (a wither flies off at once)
-            inst = self.run_script("wither_wand", "player=Steve", "summon_count=2", "summon_nbt=NoAI:1b",
+            inst = self.run_action("wither_wand", "player=Steve", "summon_count=2", "summon_nbt=NoAI:1b",
                                    item="wither_wand")
             self.aim_at(X0, FLOOR + 0.9, Z0 + 6)
             self.use(2.0)

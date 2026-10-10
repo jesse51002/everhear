@@ -6,17 +6,6 @@ import mc
 from kit import fx, loop, mobs
 from actions._types import Field, Live, MobId, Values  # the values class: read on the PC only
 
-VALUES = {
-    "horde_mobs":       {"type": "list", "of": "mob", "default": ["zombie"], "live": True},
-    "horde_per_player": {"type": "int", "min": 1, "max": 100, "default": 10, "live": True},
-    "horde_every":      {"type": "number", "min": 1, "max": 3600, "default": 30, "live": True},
-    "horde_cap":        {"type": "int", "min": 1, "max": 400, "default": 60, "live": True},
-    "horde_spread":     {"type": "int", "min": 4, "max": 100, "default": 12, "live": True},
-    "horde_waves":      {"type": "int", "min": 0, "max": 1000, "default": 0},
-    "horde_explode":    {"type": "bool", "default": False, "live": True},
-    "horde_announce":   {"type": "bool", "default": True, "live": True},
-}
-
 
 class HordeWave(Values):
     horde_mobs: Live[list[MobId]] = ["zombie"]

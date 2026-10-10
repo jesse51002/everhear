@@ -7,7 +7,7 @@
     python3 tests/live_box.py --quick             the real defaults (every agent on Haiku 5.5): two tasks, timed
 
 The box is integration/harness.py's Box (imported, read-only): the real bridge, Jev filter and
-feed writer on Python 3.9, the toolkit's fake_ssh, and a temp VFG_HOME whose config points into
+feed writer on the box's Python 3.12, the toolkit's fake_ssh, and a temp VFG_HOME whose config points into
 it. In place of the toolkit's bare fake RCON this runs tests/realistic_rcon.py on the box's RCON
 port, so an implementer can confirm what it did. `vfg orch start|stop` starts and stops the
 dispatcher alongside the runner; tasks go in with `vfg orch send`, as the conversation sends them,
@@ -73,7 +73,7 @@ def load_harness(path=HARNESS, name="vfg_integration_harness"):
 
 class Live:
     def __init__(self, H, model):
-        ec2 = subprocess.run([UV, "python", "find", "3.9"], stdout=subprocess.PIPE, universal_newlines=True).stdout.strip()
+        ec2 = subprocess.run([UV, "python", "find", "3.12"], stdout=subprocess.PIPE, universal_newlines=True).stdout.strip()
         self.root = tempfile.mkdtemp(prefix="vfg-orch-live-")
         self.box = H.Box(self.root, ec2)
         self.model = model
@@ -117,7 +117,7 @@ class Live:
             "VFG_HOME": b.vhome, "VFG_REPO": b.repo, "VFG_ORCH_DIR": self.orch_dir,
             "VFG_DISPATCH_DIR": self.dispatch_dir,
             "FAKE_UNITS": b.units,
-            # the box's python3 (3.9) first: fake_ssh runs the remote side with this PATH
+            # the box's python3 (3.12) first: fake_ssh runs the remote side with this PATH
             "PATH": os.pathsep.join([b.ec2bin, os.path.dirname(REAL_VFG), os.path.join(TOOLKIT, "tests", "bin"),
                                      os.environ.get("PATH", "")]),
         })
@@ -322,12 +322,12 @@ SHAPES = [
     ("vfg", "cmd", "data get entity Steve Pos"),
     ("vfg", "cmd", "give Steve minecraft:diamond 1"),
     ("vfg", "script", "deploy"),
-    ("vfg", "script", "run", "tnt_rain"),
+    ("vfg", "action", "run", "tnt_rain", "--task", "T1"),
     ("sleep", "3"),
     ("vfg", "script", "logs", "tnt_rain", "-n", "5"),
     ("vfg", "script", "list"),
     ("vfg", "script", "stop", "tnt_rain"),
-    ("vfg", "script", "run", "--wait", "gun_chests"),
+    ("vfg", "action", "run", "gun_chests", "--task", "T1"),
     ("vfg", "script", "logs", "gun_chests", "-n", "5"),
     ("vfg", "history", "--source", "ai", "--limit", "3"),
     ("vfg", "history", "--feed", "--limit", "3"),

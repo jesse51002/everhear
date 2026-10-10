@@ -68,7 +68,7 @@ class SpiritBomb(Action, preset("crater")):
     """seconds between throws"""
 ```
 
-- Line 1: `"""<Title>: what it does."""`. Line 2: `ASKS`, what players said, in their words, no names. Then imports (`kit`, `mc`, the standard library), then the copied presets under `# --- preset: <name> (copied from _presets/<name>.py) ---`, then the wiring. Its values are its action's fields (`actions/README.md`): no `VALUES`. A library script not yet ported still has its `VALUES` and `v = values(VALUES)`.
+- Line 1: `"""<Title>: what it does."""`. Line 2: `ASKS`, what players said, in their words, no names. Then imports (`kit`, `mc`, the standard library), then the copied presets under `# --- preset: <name> (copied from _presets/<name>.py) ---`, then the wiring. Its values are its action's fields (`actions/README.md`).
 - Python 3.12, standard library only. Never import from `_presets`; never edit `_lib`.
 - Everything summoned is tagged `TAG` (`vfg_<copy>`); a stop removes it and everything the kit made. A script that ends by itself leaves what it made (see Running).
 - `result(summary, **facts)` is the copy's answer, one line with the facts the conversation needs (who, where, how many): a script that ends by itself calls it as it ends; one that runs until stopped, once it is ready.
@@ -79,11 +79,6 @@ class SpiritBomb(Action, preset("crater")):
 """Carve a sphere out of the world at a place, leaving air, lava or fire."""
 from kit import area
 from actions._types import Field, Literal, Live, Values  # the values class: read on the PC only
-
-VALUES = {
-    "crater_radius": {"type": "int", "min": 2, "max": 64, "default": 8, "live": True},
-    "crater_leave":  {"type": "enum", "of": ["air", "lava", "fire"], "default": "air", "live": True},
-}
 
 
 class Crater(Values):
@@ -97,13 +92,13 @@ def crater(at, v):
     area.sphere(at, v["crater_radius"], block=v["crater_leave"], spare_protected=True)
 ```
 
-One-line docstring, saying what players ask for in their words (the router reads it); imports; `VALUES`; **its values class**, `class <CamelName>(Values)`, the same values with a description under each, which the action over every script that copies the preset inherits (`actions/README.md`), and which `vfg script new` never copies into a script; **one public function named like the file**, taking the values `v` last, with anything one call may change after it as keyword-only arguments (`def crater(at, v, *, path=())`, `push(hits, frm, v, way="up")`); private helpers `_<name>_...` below it. Every value name starts with the preset's name or a short form of it and `_`, so two presets in one script never ask for the same value.
+One-line docstring, saying what players ask for in their words (the router reads it); imports; **its values class**, `class <CamelName>(Values)`, the one definition of its values, each with its type, limits and a description under it, which the action over every script that copies the preset inherits (`actions/README.md`), and which `vfg script new` never copies into a script; **one public function named like the file**, taking the values `v` last, with anything one call may change after it as keyword-only arguments (`def crater(at, v, *, path=())`, `push(hits, frm, v, way="up")`); private helpers `_<name>_...` below it. Every value name starts with the preset's name or a short form of it and `_`, so two presets in one script never ask for the same value.
 
 ## Values
 
-`VALUES` entry keys: `type`, `default` (required), `min` and `max` (numbers), `of` (an enum's options; a list's options, or the type of its items), `live` (default false). Types: `int`, `number`, `bool`, `enum`, `str`, `player` (`@a`, `@r`, `@p`, or names separated by commas; `@p` is the owner when online, else the first player online, since a command from RCON has no place to be nearest to), `block`, `mob`, `item`, `particle`, `sound`, `list`.
+A value's type, limits and description are its field's, in the action or the preset's values class (`actions/README.md`); every value is checked on the PC, by `vfg action run` and by an edit, before anything reaches the box. `Players` is `@a`, `@r`, `@p`, or names separated by commas; `@p` is the owner when online, else the first player online, since a command from RCON has no place to be nearest to.
 
-`v = values()` gives the values `vfg action run` checked against the copy's action and sent (`/opt/vfg/run/<copy>.json`), and for a `Live` field what an edit wrote since into `/opt/vfg/run/<copy>.values.json`, read again at most every `VFG_LIVE_POLL_S` (0.5) s. Nothing is checked again on the box. Reading a name the action has no field for raises. A script not yet ported, `v = values(VALUES)`, gets each value as its default, then the copy's, then the live file's for a `live` value, each checked against its entry: a number out of range clamped and logged, a bad value logged and the one before kept, an id 26.3 refuses (`potion`, `#minecraft:tall_flowers`) refused. A live value passed to the kit as it is (`cooldown=v["cooldown"]`) stays live; read `v[...]` again on each pass for anything else. **A live value reaches the script when the script next reads it:** a cooldown at the next click, a tune's `theme_to` at the next tune (148 s later for the boss music), a radius at the next blast. The log says `live: key=value` only then, so a test (or a player told "done") waits for that use, not for the file.
+`v = values()` gives the values `vfg action run` checked against the copy's action and sent (`/opt/vfg/run/<copy>.json`), and for a `Live` field what an edit wrote since into `/opt/vfg/run/<copy>.values.json`, read again at most every `VFG_LIVE_POLL_S` (0.5) s. Nothing is checked again on the box. Reading a name the action has no field for raises. A live value passed to the kit as it is (`cooldown=v["cooldown"]`) stays live; read `v[...]` again on each pass for anything else. **A live value reaches the script when the script next reads it:** a cooldown at the next click, a tune's `theme_to` at the next tune (148 s later for the boss music), a radius at the next blast. The log says `live: key=value` only then, so a test (or a player told "done") waits for that use, not for the file.
 
 ## The kit
 
@@ -111,7 +106,7 @@ One-line docstring, saying what players ask for in their words (the router reads
 
 | Module | For |
 | --- | --- |
-| `values` | `values()`; `result(summary, **facts)`; `values.now(x)`; until every script is ported, `values(VALUES)`, `values.check(key, entry, raw)` |
+| `values` | `values()`; `result(summary, **facts)`; `values.now(x)` |
 | `loop` | `loop(source)` or `loop(every=s)`: the script's loop, waiting while nobody is online; `loop.who(player)`, `loop.online()`, `loop.background(fn, *args)`, `loop.wait(s)` |
 | `items` | a named carrot on a stick, given at start, kept or never: `items.clicks`, `items.holds`, `items.charged`, `items.sneaking`; `give`, `has`, `held`, `take`, `item`, `match`, `item_id`; `items.Stat` for a shared statistic |
 | `aim` | `aim.look(p, eyes="auto")` (from crouching eyes when they crouch), `aim.ray(p, length)` → `.end .path .hit_block .why .length .point(k)`, `aim.cast(start, dir, length)`, `aim.near_line(ray, radius, shooter=p, hostile=False)` and `aim.near(at, radius, shooter=p, hostile=False)` → `[Hit]` (`.t .pos .name .player .uuid`; a hit with a uuid, a projectile, is found again by it), `aim.mark(hits, tag)` (tags each once, the first mark of a tag in a process taking it off everyone first; act on `@e[tag=...]` in one command) and `aim.untag(tag)` after, `aim.run_on(hit, cmd)`, `aim.cells` |
@@ -168,6 +163,6 @@ uv run --no-project --python 3.12 --with pydantic python scripts/_test/test_kit.
 eval "$(integration/realmc/env kit)" && uv run --no-project --python 3.12 python scripts/_test/live_kit.py   # the kit on a real 26.3 server
 ```
 
-`run_tests.py` starts every example as on EC2 (a ported one as a copy of its first action with nothing given, one with `VALUES` with its defaults; `VFG_INSTANCE` its folder name) against a fake world with Steve and Alex online; Steve tries each item it gives him (a click, a 1.5 s hold) and crouches; then it is stopped. It must send commands, raise nothing, exit 0 within 2 s, and leave nothing tagged `vfg_<name>`: no entity, bossbar, forceload or objective (an example that ends by itself may leave the mobs it made, never a marker).
+`run_tests.py` starts every example as on EC2 (as a copy of its first action with nothing given; `VFG_INSTANCE` its folder name) against a fake world with Steve and Alex online; Steve tries each item it gives him (a click, a 1.5 s hold) and crouches; then it is stopped. It must send commands, raise nothing, exit 0 within 2 s, and leave nothing tagged `vfg_<name>`: no entity, bossbar, forceload or objective (an example that ends by itself may leave the mobs it made, never a marker).
 
 `_test/fake_rcon.py` is a fake RCON server; `_test/fake_world.py` is a small fake 26.3 world behind it (players, blocks, chunks, scoreboards, fills, bossbars, forceloads). The fake proves the plumbing; a real 26.3 server is the bar for "it works": `live_kit.py` runs only against a realmc test server, never the box.

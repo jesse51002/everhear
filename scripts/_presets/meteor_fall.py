@@ -6,21 +6,13 @@ import time
 
 import mc
 from kit import aim, fx, world
-from actions._types import Field, Live, Values  # the values class: read on the PC only
-
-VALUES = {
-    "meteor_size": {"type": "number", "min": 1, "max": 24, "default": 4, "live": True},
-    "meteor_blocks": {"type": "str", "default": "magma_block blackstone obsidian", "live": True},
-    "meteor_height": {"type": "int", "min": 10, "max": 300, "default": 60, "live": True},
-    "meteor_slant": {"type": "int", "min": 0, "max": 100, "default": 20, "live": True},
-    "meteor_seconds": {"type": "number", "min": 0.5, "max": 20, "default": 3, "live": True},
-}
+from actions._types import BlockMix, Field, Live, Values  # the values class: read on the PC only
 
 
 class MeteorFall(Values):
     meteor_size: Live[float] = Field(4, ge=1, le=24)
     """how big the meteor is, in blocks across"""
-    meteor_blocks: Live[str] = "magma_block blackstone obsidian"
+    meteor_blocks: Live[BlockMix] = "magma_block blackstone obsidian"
     """what it is made of: a block id or a mix, "70% magma_block 30% obsidian" (no %: counts 1)"""
     meteor_height: Live[int] = Field(60, ge=10, le=300)
     """how high over the ground it starts falling, in blocks"""

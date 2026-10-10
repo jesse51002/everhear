@@ -1,7 +1,7 @@
 """vfg_actions and actions/_types.py: the repo's actions load and pass their check, values are
 read and checked as the kit reads them, the planner's and the editor's models, the catalog's
-loading and reloading, and actions.json. No network and no server; the kit itself runs only in
-a subprocess, to compare its value checks with these."""
+loading and reloading, and actions.json. No network and no server; the presets' own readers of a
+mix and of rules run only in a subprocess, to compare with these."""
 
 import json
 import os
@@ -223,39 +223,32 @@ def test_check_edit_changes_values_on_a_copy(lib):
 
 # ------------------------------------------------------------------ the value types
 
-KIT_SAMPLES = {
-    "mob": ["zombie", "minecraft:zombie", "Zombie", "ender_dragon", "mod:thing", "potion", "minecraft:boat",
-            "chest_boat", "#minecraft:zombies", "two words", "", "zombie[x]", " cow "],
-    "block": ["stone", "minecraft:stone", "#minecraft:logs", "#minecraft:tall_flowers", "#mineable/sword",
-              "#minecraft:mineable/sword", "oak_stairs[facing=east]", "chest{Items:[]}", "Stone", "two words", "",
-              "minecraft:oak_log[axis=y]"],
-    "item": ["diamond_sword", "minecraft:diamond_sword[enchantments={sharpness:5}]", "#minecraft:logs",
-             "#minecraft:tall_flowers", "potion", "a b", "Diamond", ""],
-    "particle": ["flame", "dust{color:[1.0,0.0,0.0],scale:1.0}", "minecraft:end_rod", "a b", "#flame", "Flame"],
-    "sound": ["entity.wither.spawn", "minecraft:entity.arrow.shoot", "Entity.Wither.Spawn", "a b", "#x"],
-    "player": ["@a", "@r", "@p", "@e", "@A", "Steve", "Steve,Alex", " Steve , Alex ", "a b", "", "a" * 17],
+# What the kit's own check of a value took and gave, recorded when it went (a run's values are
+# checked on the PC now, and the kit reads them as they are): {kind: [(raw, what it gave, or None
+# for a refusal)]}. The PC's types take and refuse the same, minecraft: dropped.
+KIT_ANSWERS = {
+    "mob": [("zombie", "zombie"), ("minecraft:zombie", "minecraft:zombie"), ("Zombie", "zombie"),
+        ("ender_dragon", "ender_dragon"), ("mod:thing", "mod:thing"), ("potion", None), ("minecraft:boat", None),
+        ("chest_boat", None), ("#minecraft:zombies", None), ("two words", None), ("", None), ("zombie[x]", None),
+        (" cow ", "cow")],
+    "block": [("stone", "stone"), ("minecraft:stone", "minecraft:stone"), ("#minecraft:logs", "#minecraft:logs"),
+        ("#minecraft:tall_flowers", None), ("#mineable/sword", None), ("#minecraft:mineable/sword", None),
+        ("oak_stairs[facing=east]", "oak_stairs[facing=east]"), ("chest{Items:[]}", "chest{Items:[]}"),
+        ("Stone", None), ("two words", None), ("", None),
+        ("minecraft:oak_log[axis=y]", "minecraft:oak_log[axis=y]")],
+    "item": [("diamond_sword", "diamond_sword"),
+        ("minecraft:diamond_sword[enchantments={sharpness:5}]", "minecraft:diamond_sword[enchantments={sharpness:5}]"),
+        ("#minecraft:logs", "#minecraft:logs"), ("#minecraft:tall_flowers", None), ("potion", "potion"),
+        ("a b", None), ("Diamond", None), ("", None)],
+    "particle": [("flame", "flame"), ("dust{color:[1.0,0.0,0.0],scale:1.0}", "dust{color:[1.0,0.0,0.0],scale:1.0}"),
+        ("minecraft:end_rod", "minecraft:end_rod"), ("a b", None), ("#flame", None), ("Flame", None)],
+    "sound": [("entity.wither.spawn", "entity.wither.spawn"),
+        ("minecraft:entity.arrow.shoot", "minecraft:entity.arrow.shoot"),
+        ("Entity.Wither.Spawn", "entity.wither.spawn"), ("a b", None), ("#x", None)],
+    "player": [("@a", "@a"), ("@r", "@r"), ("@p", "@p"), ("@e", None), ("@A", None), ("Steve", "Steve"),
+        ("Steve,Alex", "Steve,Alex"), (" Steve , Alex ", "Steve,Alex"), ("a b", None), ("", None),
+        ("aaaaaaaaaaaaaaaaa", None)],
 }
-
-
-def kit_check(pairs: list) -> list:
-    """kit/values.py's check of each (kind, raw), run in a subprocess as a script would:
-    [ok, value] each."""
-    code = textwrap.dedent("""
-        import json, sys
-        from kit import values
-        out = []
-        for kind, raw in json.load(sys.stdin):
-            try:
-                out.append([True, values.check("k", {"type": kind, "default": ""}, raw)[0]])
-            except ValueError:
-                out.append([False, None])
-        print(json.dumps(out))
-    """)
-    env = {**os.environ, "PYTHONPATH": str(REPO / "scripts" / "_lib"), "VFG_INSTANCE": "t", "PYTHONDONTWRITEBYTECODE": "1"}
-    p = subprocess.run([sys.executable, "-c", code], input=json.dumps(pairs), env=env, capture_output=True,
-                       text=True, timeout=60)
-    assert p.returncode == 0, p.stderr
-    return json.loads(p.stdout)
 
 
 def drop_namespace(x: str) -> str:
@@ -264,32 +257,80 @@ def drop_namespace(x: str) -> str:
     return ("#" if tag else "") + (x[len("minecraft:"):] if x.startswith("minecraft:") else x)
 
 
-def test_the_id_and_player_types_take_and_refuse_what_the_kit_does():
+def test_the_id_and_player_types_take_and_refuse_what_the_kit_did():
     t = T()
     types = {"mob": t.MobId, "block": t.BlockId, "item": t.ItemId, "particle": t.ParticleId,
              "sound": t.SoundId, "player": t.Players}
-    pairs = [(kind, raw) for kind, raws in KIT_SAMPLES.items() for raw in raws]
-    ours = []
-    for kind, raw in pairs:
-        try:
-            ours.append([True, TypeAdapter(types[kind]).validate_python(raw)])
-        except ValidationError:
-            ours.append([False, None])
-    kit = kit_check(pairs)
-    for (kind, raw), (ok, value), (kit_ok, kit_value) in zip(pairs, ours, kit):
-        assert ok == kit_ok, (kind, raw, value, kit_value)
-        if ok:
-            assert value == drop_namespace(kit_value), (kind, raw)  # minecraft: dropped, as the spec says
-    # What we send passes the kit too, unchanged.
-    sent = [(kind, value) for (kind, _), (ok, value) in zip(pairs, ours) if ok]
-    assert all(ok and back == value for (_, value), (ok, back) in zip(sent, kit_check(sent)))
+    for kind, answers in KIT_ANSWERS.items():
+        adapter = TypeAdapter(types[kind])
+        for raw, kit in answers:
+            try:
+                ours = adapter.validate_python(raw)
+            except ValidationError:
+                ours = None
+            assert (ours is None) == (kit is None), (kind, raw, ours, kit)
+            if ours is not None:
+                assert ours == drop_namespace(kit), (kind, raw)  # minecraft: dropped, as the spec says
+                assert adapter.validate_python(ours) == ours      # and what is sent reads back the same
 
 
-def test_a_gone_id_says_what_to_use():
-    with pytest.raises(ValidationError, match="potion is gone in 26.3, use entity type: splash_potion"):
-        TypeAdapter(T().MobId).validate_python("minecraft:potion")
-    with pytest.raises(ValidationError, match="#tall_flowers is gone in 26.3"):
-        TypeAdapter(T().BlockId).validate_python("#tall_flowers")
+def kit_reads(mixes: list, rules: list) -> list:
+    """How the presets read mixes (shape_fill's) and rules (replace_blocks' joining), run in a
+    subprocess as a script would: [[[block, weight] ...] ..., [rule ...]]."""
+    code = textwrap.dedent("""
+        import json, sys
+        sys.path.insert(1, %r)
+        from _presets.shape_fill import _shape_fill_mix
+        from _presets.replace_blocks import _replace_blocks_texts
+        mixes, rules = json.load(sys.stdin)
+        print(json.dumps([[_shape_fill_mix(m) for m in mixes], _replace_blocks_texts(rules)]))
+    """ % str(REPO / "scripts"))
+    env = {**os.environ, "PYTHONPATH": "%s:%s" % (REPO / "scripts" / "_lib", REPO), "VFG_INSTANCE": "t",
+           "PYTHONDONTWRITEBYTECODE": "1"}
+    p = subprocess.run([sys.executable, "-c", code], input=json.dumps([mixes, rules]), env=env, capture_output=True,
+                       text=True, timeout=60)
+    assert p.returncode == 0, p.stderr
+    return json.loads(p.stdout)
+
+
+def test_a_block_mix_is_read_as_the_kit_reads_it_and_refused_where_it_builds_nothing():
+    mix = TypeAdapter(T().BlockMix)
+    good = ["stone_bricks", " 70% stone_bricks 30% cobblestone ", "70% stone, 30% minecraft:andesite",
+            "oak_stairs[facing=east] 2.5% glowstone", "air"]
+    kit_mixes, _ = kit_reads([g.strip() for g in good], [])
+    for raw, kit in zip(good, kit_mixes):
+        assert mix.validate_python(raw) == raw.strip()
+        assert [list(m) for m in T()._mix(raw.strip())] == kit
+    for bad, says in (("", "is not a block or a mix"), ("#logs", "not a #tag"), ("Stone", "Stone is not a block id"),
+                      ("70%", "is not a block or a mix"), ("0% stone", "add up to 0%"), ("stone {x", "is not a block")):
+        with pytest.raises(ValidationError, match=re.escape(says)):
+            mix.validate_python(bad)
+
+
+def test_replace_rules_join_as_the_kit_joins_them_and_each_is_a_rule():
+    rules = TypeAdapter(T().ReplaceRules)
+    pieces = ["stone > 70% netherrack", "30% magma_block", "solid water > packed_ice", "#minecraft:snow > keep"]
+    _, kit = kit_reads([], pieces)
+    assert rules.validate_python(pieces) == kit == [
+        "stone > 70% netherrack, 30% magma_block", "solid water > packed_ice", "#minecraft:snow > keep"]
+    for bad, says in ((["stone"], "is not a rule"), (["> lava"], "name the blocks to change"),
+                      (["stone > #logs"], "not a #tag"), (["50% stone > lava"], "a weight goes after >"),
+                      (["#minecraft:tall_flowers > air"], "gone in 26.3"), (["stone >"], "after > is")):
+        with pytest.raises(ValidationError, match=re.escape(says)):
+            rules.validate_python(bad)
+
+
+def test_an_item_name_and_an_item_id_that_may_be_empty():
+    name = TypeAdapter(T().ItemName)
+    assert name.validate_python("  Super   Sniper ") == "Super Sniper" and name.validate_python("") == ""
+    for bad in ("!!!", "x" * 65):
+        with pytest.raises(ValidationError):
+            name.validate_python(bad)
+    held = TypeAdapter(T().ItemIdOrEmpty)
+    assert held.validate_python("") == "" and held.validate_python("minecraft:diamond_sword") == "diamond_sword"
+    for bad in ("#swords", "diamond_sword[foo]", "Diamond Sword"):
+        with pytest.raises(ValidationError):
+            held.validate_python(bad)
 
 
 def test_player_takes_one_name():

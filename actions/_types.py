@@ -42,7 +42,8 @@ from pydantic.fields import FieldInfo
 REPO = Path(__file__).resolve().parent.parent
 
 __all__ = ["Action", "Values", "Live", "preset", "Field", "Literal", "Player", "Players", "MobId", "BlockId",
-           "ItemId", "ParticleId", "SoundId", "Place", "Command", "CopyName", "Any"]
+           "ItemId", "ItemIdOrEmpty", "ParticleId", "SoundId", "BlockMix", "ReplaceRules", "ItemName", "Place",
+           "Command", "CopyName", "Any"]
 
 
 # The command-safety rules: scripts/_lib/commands.py's, loaded by path, the one list of
@@ -204,6 +205,111 @@ def _place(v: object, info: ValidationInfo) -> object:
                      % (s, "saved: " + ", ".join(sorted(places)) if places else "none is saved"))
 
 
+# A weight ("70%") or a block with its [states] and {nbt}, between spaces and commas: how the
+# kit reads a mix of blocks (shape_fill's, meteor_fall's) and both sides of a replace rule.
+_MIX_WORD = re.compile(r"(\d+(?:\.\d+)?)%|([^\s,%\[{]+(?:\[[^\]]*\])?(?:\{[^}]*\})?)")
+_MIX_EXAMPLE = "70% stone_bricks 30% cobblestone"
+
+
+def _mix_words(text: str) -> list[tuple[str, str]] | None:
+    """The words of a mix or of one side of a rule: [(weight, "") or ("", block)]; None when
+    there is text the kit would skip over (it reads only these words)."""
+    if _MIX_WORD.sub(" ", text).replace(",", " ").strip():
+        return None
+    return _MIX_WORD.findall(text)
+
+
+def _mix(text: str, keep: bool = False, shown: str | None = None) -> list[tuple[str, float]]:
+    """[(block, weight)] from "70% stone_bricks, 30% cobblestone", as the kit reads a mix: a
+    block with no % weighs 1. Each a block id with no #tag (keep, too, in a rule's mix).
+    Raises ValueError, quoting `shown` (the text), for what the kit would refuse or build
+    nothing from."""
+    shown = text if shown is None else shown
+    what = 'a block or a mix like "%s"%s' % (_MIX_EXAMPLE, ", or keep" if keep else "")
+    words = _mix_words(text)
+    if words is None:
+        raise ValueError("%r: after > is %s" % (shown, what) if keep else "%r is not %s" % (shown, what))
+    mix, weight = [], None
+    for w, block in words:
+        if w:
+            weight = float(w)
+            continue
+        if not (keep and block == "keep"):
+            if block.startswith("#"):
+                raise ValueError("%r: a mix is blocks, not a #tag (%s)" % (shown, block))
+            if not re.match(ID_PATTERNS["block"], block):
+                raise ValueError("%r: %s is not a block id" % (shown, block))
+        mix.append((block, 1.0 if weight is None else weight))
+        weight = None
+    if not mix:
+        raise ValueError("%r: after > is %s" % (shown, what) if keep else "%r is not %s" % (shown, what))
+    if not sum(w for _, w in mix):
+        raise ValueError("%r: its weights add up to 0%%" % shown)
+    return mix
+
+
+def _block_mix(v: object) -> object:
+    """' 70% stone_bricks  30% cobblestone ' -> '70% stone_bricks  30% cobblestone', when the kit
+    reads it as blocks to build with."""
+    if not isinstance(v, str):
+        return v
+    _mix(v.strip())
+    return v.strip()
+
+
+def _replace_rule(v: object) -> object:
+    """One rule as replace_blocks reads it, "from ... > to": from, block ids, #tags or solid;
+    to, a block or a mix, where keep leaves the block as it was."""
+    if not isinstance(v, str):
+        return v
+    s = v.strip()
+    left, arrow, right = s.partition(">")
+    if not arrow:
+        raise ValueError('%r is not a rule: "from ... > to", such as "stone dirt > 70%% lava 30%% keep"' % s)
+    froms, words = [], _mix_words(left)
+    if words is None:
+        raise ValueError("%r: before > are block ids, #tags or solid" % s)
+    for w, block in words:
+        if w:
+            raise ValueError("%r: a weight goes after >, on what blocks become" % s)
+        if block != "solid":
+            if not re.match(ID_PATTERNS["block"], block):
+                raise ValueError("%r: %s is not a block id, a #tag or solid" % (s, block))
+            _id("block")(block)  # a tag 26.3 dropped
+        froms.append(block)
+    if not froms:
+        raise ValueError("%r: name the blocks to change before >: block ids, #tags or solid" % s)
+    _mix(right.strip(), keep=True, shown=s)
+    return s
+
+
+def _replace_rules(v: object) -> object:
+    """The rules as the kit reads them: a piece with no > belongs to the rule before it (a
+    command line splits "stone > 70% lava, 30% keep" at its comma)."""
+    if not isinstance(v, (list, tuple)) or not all(isinstance(t, str) for t in v):
+        return v
+    out: list[str] = []
+    for t in v:
+        if out and (">" not in t or ">" not in out[-1]):
+            out[-1] += ", " + t
+        else:
+            out.append(t)
+    return out
+
+
+def _item_name(v: object) -> object:
+    """The name of an item a script gave ("Spirit Bomb"), which the kit makes its id
+    (spirit_bomb); empty for none."""
+    if not isinstance(v, str):
+        return v
+    s = " ".join(v.split())
+    if s and not re.search(r"[A-Za-z0-9]", s):
+        raise ValueError("%r: an item's name has a letter or a digit in it" % s)
+    if len(s) > 64:
+        raise ValueError("an item's name is at most 64 letters, not %d" % len(s))
+    return s
+
+
 def clean_command(cmd: str) -> str:
     """Strip spaces and one leading slash; raise ValueError when it may not run."""
     if not isinstance(cmd, str):
@@ -236,9 +342,20 @@ Command = Annotated[str, Kind("command"), BeforeValidator(clean_command)]
 # A running copy's name (stop's and edit's `copy`); empty, the default, names none, and the
 # stop and edit scripts refuse it.
 CopyName = Annotated[str, Field(pattern=r"^(|%s)$" % COPY_PATTERN[1:-1])]
+# An item a mob holds or wears: one id, no #tag or [components]; empty for none.
+ItemIdOrEmpty = Annotated[str, Field(pattern=r"^(|%s)$" % _ID), Kind("item or empty"),
+                          BeforeValidator(_id("item"))]
+# A block or a mix of blocks to build with, "70% stone_bricks 30% cobblestone" (no %: counts 1).
+BlockMix = Annotated[str, Kind("block mix"), BeforeValidator(_block_mix)]
+# replace_blocks' rules, in order, each "from ... > to".
+_ReplaceRule = Annotated[str, Field(pattern=r"^[^>]+>[^>]+$"), Kind("replace rule"), BeforeValidator(_replace_rule)]
+ReplaceRules = Annotated[list[_ReplaceRule], Kind("replace rules"), BeforeValidator(_replace_rules)]
+# The name of an item a script gave ("Spirit Bomb"), as items.clicks and items.give take it; empty for none.
+ItemName = Annotated[str, Kind("item name"), BeforeValidator(_item_name)]
 
 # The functions inside those types: the only validators a field may carry.
-_OURS = frozenset(m.func for t in (Players, MobId, BlockId, ItemId, ParticleId, SoundId, Place, Command)
+_OURS = frozenset(m.func for t in (Players, MobId, BlockId, ItemId, ParticleId, SoundId, Place, Command,
+                                   ItemIdOrEmpty, BlockMix, _ReplaceRule, ReplaceRules, ItemName)
                   for m in t.__metadata__ if isinstance(m, BeforeValidator))
 
 
@@ -266,8 +383,9 @@ def unwrap(t: Any, meta: tuple | list = ()) -> tuple[Any, list]:
 
 
 def kind(t: Any, meta: tuple | list = ()) -> str:
-    """A field's type in one word: int, number, bool, str, enum, player, players, mob, block,
-    item, particle, sound, place, command, or "list of <kind>"; "?" for none of these."""
+    """A field's type in a word or two: int, number, bool, str, enum, player, players, mob,
+    block, item, item or empty, particle, sound, block mix, replace rules, item name, place,
+    command, or "list of <kind>"; "?" for none of these."""
     t, meta = unwrap(t, meta)
     for m in meta:
         if isinstance(m, Kind):
@@ -319,9 +437,10 @@ def is_live(meta: tuple | list) -> bool:
 
 def type_problem(t: Any, meta: tuple | list = ()) -> str | None:
     """None when a field's type is one of this file's: bool, int, float, str, Literal[...],
-    list[...] of these, Player, Players, MobId, BlockId, ItemId, ParticleId, SoundId, Place,
-    Command or CopyName, Live[...] of any, with Field() limits; or dict[str, Any], the values
-    an edit changes, checked against the copy's own action. Else what is not."""
+    list[...] of these, Player, Players, MobId, BlockId, ItemId, ItemIdOrEmpty, ParticleId,
+    SoundId, BlockMix, ReplaceRules, ItemName, Place, Command or CopyName, Live[...] of any,
+    with Field() limits; or dict[str, Any], the values an edit changes, checked against the
+    copy's own action. Else what is not."""
     while get_origin(t) is Annotated:
         args = get_args(t)
         t, meta = args[0], list(meta) + list(args[1:])
@@ -353,6 +472,14 @@ def _constraint(m: object) -> bool:
 
 
 def _name(t: Any) -> str:
+    """A type as it is written: Optional[int] whether spelled so or int | None (Python 3.14
+    names every union Union)."""
+    if get_origin(t) in (Union, types.UnionType):
+        args = get_args(t)
+        rest = [a for a in args if a is not type(None)]
+        if len(rest) == 1 and len(args) == 2:
+            return "Optional[%s]" % _name(rest[0])
+        return "Union[%s]" % ", ".join(_name(a) for a in args)
     return getattr(t, "__name__", None) or repr(t)
 
 

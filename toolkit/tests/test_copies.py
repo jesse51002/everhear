@@ -284,11 +284,104 @@ class TestEditStop(ActionCase):
         got = self.line(self.run_action("edit", "copy=beam", 'values={"colour": "blue"}'))
         self.assertEqual(self.box_json("beam.values.json"), {"cooldown": 3.0, "colour": "blue"})
 
+    def test_the_edit_and_stop_actions_write_through_as_their_shortcuts_do(self):
+        self.line(self.run_action("beam", "player=Steve"))
+        self.line(self.run_action("beam", "player=Alex"))
+        self.line(self.run_action("edit", "copy=beam", "cooldown=3", "--task", "T8"))
+        self.assertEqual(self.running()["copies"]["beam"]["values"]["cooldown"], 3)
+        got = self.line(self.run_action("stop", "copy=beam"))
+        self.assertEqual(got["summary"], "stopped beam")
+        self.assertEqual(sorted(self.running()["copies"]), ["beam_2"])
+        # A copy the box no longer runs leaves running.json too.
+        self.box.vfg("script", "list", "--fresh")
+        os.killpg(self.pid("beam_2"), signal.SIGKILL)
+        self.assertIn("beam_2", self.running()["copies"])
+        self.line(self.run_action("stop", "copy=beam_2"))
+        self.assertEqual(self.running()["copies"], {})
+
     def test_an_edit_of_a_copy_this_pc_does_not_know_asks_the_box(self):
         self.line(self.run_action("beam"))
         os.remove(os.path.join(self.box.vhome, "running.json"))
         r = self.box.vfg("script", "set", "beam", "cooldown=1")
         self.assertEqual(r.stdout, "beam: cooldown=1.0, live\n", r.stderr)
+
+
+MADE_BEAM = '''from pydantic import Field
+
+from actions._types import Action, Live, Players
+
+
+class GlowBeam(Action):
+    """A beam made on this server (a test's)."""
+
+    script = "beam"
+    runs = "until_stopped"
+    takes = ["player"]
+    fixed = {"colour": "blue"}
+
+    player: Players = "@a"
+    """who has it"""
+    length: int = Field(60, ge=5, le=200)
+    """how far it reaches, in blocks"""
+    cooldown: Live[float] = Field(10, ge=0, le=60)
+    """seconds between shots"""
+    colour: Live[str] = "red"
+    """its colour"""
+    report: bool = True
+    """whether it says it is ready"""
+'''
+
+
+class TestScriptSave(ActionCase):
+    def made(self, *p):
+        return os.path.join(self.box.repo, "made", "main", *p)
+
+    def read(self, *p):
+        with open(self.made(*p)) as f:
+            return f.read()
+
+    def fill_line(self, *p):
+        text = self.read(*p).replace("TODO: what it does, in players' words: its line on the menu.", "Steve's beam.")
+        with open(self.made(*p), "w") as f:
+            f.write(text)
+
+    def test_a_copys_values_become_a_variant_of_its_library_action(self):
+        self.line(self.run_action("beam", "player=Steve", "cooldown=2"))
+        r = self.box.vfg("script", "save", "beam", "beam_steve")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines()[0], "saved made/main/actions/beam_steve.py from beam (beam), "
+                                                   "with player=Steve cooldown=2 as its defaults")
+        self.assertIn("its line on the menu is still a TODO", r.stdout)
+        self.assertEqual(self.read("actions", "beam_steve.py"),
+                         'from actions.beam import Beam\n\n\nclass BeamSteve(Beam):\n'
+                         '    """TODO: what it does, in players\' words: its line on the menu."""\n\n'
+                         '    defaults = {"player": "Steve", "cooldown": 2.0}\n')
+        self.fill_line("actions", "beam_steve.py")
+        r = self.box.vfg("action", "check", "beam_steve")
+        self.assertEqual((r.returncode, r.stdout), (0, "ok: made/main/actions/beam_steve.py\n"), r.stderr)
+        got = self.line(self.run_action("beam_steve"))
+        self.assertEqual(self.box_json(got["copy"] + ".json")["values"]["player"], "Steve")
+        r = self.box.vfg("script", "save", "beam", "beam_steve")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("beam_steve is taken: made/main/actions/beam_steve.py", r.stderr)
+
+    def test_a_made_actions_copy_is_written_out_with_its_values_as_defaults(self):
+        os.makedirs(self.made("actions"))
+        with open(self.made("actions", "glow_beam.py"), "w") as f:
+            f.write(MADE_BEAM)
+        self.line(self.run_action("glow_beam", "cooldown=5"))
+        self.assertEqual(self.box.vfg("script", "set", "glow_beam", "colour=green").returncode, 0)
+        r = self.box.vfg("script", "save", "glow_beam", "green_beam")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        text = self.read("actions", "green_beam.py")
+        self.assertIn("class GreenBeam(Action):\n", text)
+        self.assertIn('    script = "beam"\n', text)
+        self.assertIn('    defaults = {"cooldown": 5.0, "colour": "green"}\n', text)
+        self.assertNotIn("fixed", text)                 # the colour it fixed is a default now
+        self.assertIn('    cooldown: Live[float] = Field(10, ge=0, le=60)\n    """seconds between shots"""\n', text)
+        self.fill_line("actions", "green_beam.py")
+        r = self.box.vfg("action", "check", "green_beam")
+        self.assertEqual((r.returncode, r.stdout), (0, "ok: made/main/actions/green_beam.py\n"), r.stderr)
 
 
 class TestRunning(ActionCase):

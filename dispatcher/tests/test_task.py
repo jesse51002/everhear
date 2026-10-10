@@ -173,40 +173,19 @@ async def test_a_change_a_cancel_an_undo_or_a_build_reaches_the_selector(h, task
     assert [c.output for c in h.llm.calls] == ["Selection"]  # the parts and the prompt decide, not a regex
 
 
-CASTLE = '''
-    from actions._types import Action, Field, Place
-
-
-    class Castle(Action):
-        """Build a stone castle at a place."""
-
-        script = "castle"
-        runs = "once"
-        takes = ["at", "size"]
-        timeout_s = 90
-
-        at: Place = ""
-        """where: a saved place's name, x y z, or a player's name"""
-        size: int = Field(20, ge=10, le=60)
-        """how wide it is, in blocks"""
-'''
-
-
 async def test_a_build_an_action_does_goes_straight_to_the_game_at_a_saved_place(tmp_path):
-    cat = catalog()
-    made(cat, "castle", CASTLE)
-    h = Harness(tmp_path, cat=cat)
+    h = Harness(tmp_path, cat=catalog())  # the library's castle action
     h.vfg.on("place", "list", answer=ok_lines("home 10 64 10 overworld (T2)"))
     h.llm.add("Selection", select(("castle", "a castle at the saved place home")))
-    h.llm.add("Planned_castle", planned({"at": "Home", "size": 20}, say="a castle at home"))
+    h.llm.add("Planned_castle", planned({"castle_at": "Home", "castle_size": 31}, say="a castle at home"))
     h.vfg.on("action", "run", "castle", answer=ok("built a castle at home, 10 64 10", copy="castle", action="castle"))
 
     tid = await h.run("build a castle at home")
 
     assert h.vfg.hands() == []  # no regex hands a build on any more
     [run] = h.vfg.actions()
-    assert args_of(run) == {"at": "home", "size": "20"}  # the saved place's name, checked
-    assert h.vfg.timeouts[h.vfg.calls.index(run)] == 90 + GRACE_S
+    assert args_of(run) == {"castle_at": "home", "castle_size": "31"}  # the saved place's name, checked
+    assert h.vfg.timeouts[h.vfg.calls.index(run)] == 120 + GRACE_S  # its timeout_s
     assert h.vfg.replies(tid) == [(tid, "done", "a castle at home — built a castle at home, 10 64 10")]
 
 
@@ -694,7 +673,7 @@ async def test_the_selector_sees_every_action_every_running_copy_and_the_saved_p
     assert plan.prompt.startswith("ACTION: teleport\nMove a player")
     assert "To another player it is one `tp`, which the command action does" in plan.prompt
     assert "\nIt runs once and reports what it did.\n" in plan.prompt
-    assert ("\nVALUES (fill each one; one the instruction does not give keeps its default):\n- player (player names "
+    assert ("\nFIELDS (fill each one; one the instruction does not give keeps its default):\n- player (player names "
             "separated by commas, or @a, @r, @p; default \"@a\"): who moves") in plan.prompt
     assert "- dimension (one of overworld, the_nether, the_end; default \"overworld\")" in plan.prompt
     assert "INSTRUCTION: teleport Alex to a village\nCONTEXT: Alex asked\n" in plan.prompt
@@ -717,7 +696,7 @@ async def test_the_planner_sees_and_fills_only_the_values_the_action_takes(h):
                                                        action="gatling_gun", running=True))
     tid = await h.run("give Steve a gatling gun for mobs")
     prompt = h.llm.prompts("Planned_gatling_gun")[0]
-    values = prompt.split("VALUES (fill each one", 1)[1].split("\n\nINSTRUCTION:", 1)[0]
+    values = prompt.split("FIELDS (fill each one", 1)[1].split("\n\nINSTRUCTION:", 1)[0]
     assert [x.split(" (", 1)[0] for x in values.splitlines()[1:]] == ["- player", "- damage_amount", "- damage_what"]
     assert "cooldown" not in values and "particle" not in values  # fixed, or not taken: an edit reaches them
     assert "It runs until stopped: it keeps going after it reports" in prompt

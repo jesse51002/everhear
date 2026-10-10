@@ -7,10 +7,10 @@ values class:
 Each preset is loaded from scripts/_presets/ as it is and run in this process against a
 fresh fake world (test_kit's KitCase, with a few more commands the hits presets send:
 effect, data modify and merge, tp, damage by someone who must be there, a tag added twice,
-and a volume selector). It sends the commands it should, its VALUES refuse values outside
-their limits, and a script that copies all eight leaves nothing behind after a stop.
+and a volume selector). It sends the commands it should, its values class clamps or refuses
+values outside its limits, and a script that copies all eight leaves nothing behind after a
+stop.
 """
-import ast
 import importlib.util
 import math
 import os
@@ -30,6 +30,7 @@ sys.path.append(os.path.dirname(os.path.dirname(HERE)))  # the repo: a preset's 
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(os.path.dirname(SCRIPTS), "toolkit", "lib"))
 
+import test_kit  # noqa: E402
 from test_kit import KitCase, start_script, TMP  # noqa: E402
 from fake_rcon import FakeRcon  # noqa: E402
 from fake_world import World, OVERWORLD, _split_opts, _token  # noqa: E402
@@ -52,24 +53,8 @@ P = {n: load(n) for n in NAMES}
 
 
 def vals(name, **given):
-    """A preset's values: its defaults, then these."""
-    return values(P[name].VALUES, argv=["%s=%s" % kv for kv in given.items()],
-                  run_dir=tempfile.mkdtemp(dir=TMP), instance="t")
-
-
-
-# A script with its VALUES, written the old way: these tests read the presets' values through
-# values(VALUES) (vfg script new now writes a script ported to its action, library.SKELETON).
-OLD_SKELETON = '''"""TODO <Title>: say what it does in one line."""
-ASKS = []
-from kit import values
-
-VALUES = {
-    "player": {"type": "player", "default": "@a"},
-}
-
-v = values(VALUES)
-'''
+    """A preset's values: its defaults, then these, checked as vfg action run checks them."""
+    return values(meta=test_kit.values_meta(P[name], given=given), run_dir=tempfile.mkdtemp(dir=TMP), instance="t")
 
 
 class HitsWorld(World):
@@ -157,33 +142,19 @@ class HitsCase(KitCase):
 # ---- values ------------------------------------------------------------------------------
 
 class ValuesTests(unittest.TestCase):
-    def test_every_preset_refuses_values_outside_its_limits(self):
+    def test_every_preset_clamps_or_refuses_values_outside_its_limits(self):
+        T = test_kit._vfg_actions()._types()
         for name in NAMES:
-            for key, entry in P[name].VALUES.items():
+            cls = test_kit.values_class(P[name])
+            for key, f in cls.model_fields.items():
                 self.assertTrue(library.prefixed(name, key), key)
-                values.check(key, entry, entry["default"])
-                self.assertTrue(entry.get("live"), "%s: a preset reads its values each call, so all are live" % key)
-                if entry["type"] in ("int", "number"):
-                    self.assertEqual(values.check(key, entry, entry["max"] + 1)[0], entry["max"], key)
-                    self.assertEqual(values.check(key, entry, entry["min"] - 1)[0], entry["min"], key)
-                    self.assertTrue(values.check(key, entry, entry["max"] + 1)[1], key)
-                    self.assertRaises(ValueError, values.check, key, entry, "lots")
-                elif entry["type"] == "enum":
-                    self.assertRaises(ValueError, values.check, key, entry, "nowhere")
-                elif entry["type"] == "bool":
-                    self.assertRaises(ValueError, values.check, key, entry, "maybe")
-                elif entry["type"] == "list":
-                    self.assertRaises(ValueError, values.check, key, entry, "not a name!")
-        self.assertNotIn("bedrock", str(P["freeze"].VALUES))
+                self.assertTrue(T.is_live(f.metadata), "%s: a preset reads its values each call, so all are live" % key)
+            test_kit.assert_checked_on_the_pc(self, P[name])
+        self.assertNotIn("bedrock", str(test_kit.values_meta(P["freeze"])["values"]))
 
-    def test_values_are_literals_and_the_checker_passes(self):
+    def test_the_checker_passes(self):
         for name in NAMES:
-            path = os.path.join(PRESETS, name + ".py")
-            with open(path) as f:
-                tree = ast.parse(f.read())
-            node = next(n for n in tree.body if isinstance(n, ast.Assign) and n.targets[0].id == "VALUES")
-            self.assertEqual(ast.literal_eval(node.value), P[name].VALUES)
-            self.assertEqual(library.check(library.parse(path, "preset")), [], name)
+            self.assertEqual(library.check(library.parse(os.path.join(PRESETS, name + ".py"), "preset")), [], name)
 
 
 # ---- the hits: around, lock_on, damage_hits ----------------------------------------------------
@@ -572,7 +543,7 @@ for n in loop(every=0.2):
 
 class ScriptTests(unittest.TestCase):
     def test_eight_presets_in_one_script_leave_nothing_after_a_stop(self):
-        text = OLD_SKELETON.replace("from kit import values", "from kit import values, aim, loop\nimport mc")
+        text = library.SKELETON.replace("from kit import result, values", "from kit import values, aim, loop\nimport mc")
         for name in NAMES:
             text = library.add_preset(text, library.parse(os.path.join(PRESETS, name + ".py"), "preset"), "main")[0]
         w = HitsWorld()
@@ -584,8 +555,9 @@ class ScriptTests(unittest.TestCase):
         try:
             run_dir = tempfile.mkdtemp(dir=TMP)
             with open(os.path.join(run_dir, "hitsprobe.values.json"), "w") as f:
-                f.write('{"freeze_shell": true, "freeze_seconds": 60}')       # live values, as vfg script set writes
-            proc = start_script("hitsprobe", text + WIRING, fake, password, run_dir=run_dir)
+                f.write('{"freeze_shell": true, "freeze_seconds": 60}')       # live values, as an edit writes
+            proc = start_script("hitsprobe", text + WIRING, fake, password, run_dir=run_dir,
+                                vals=test_kit.values_meta(*[P[n] for n in NAMES]))
             deadline = time.time() + 15
             while not any(c.startswith("fill") and "air replace" not in c and "ice keep" in c for c in w.commands) \
                     and time.time() < deadline:

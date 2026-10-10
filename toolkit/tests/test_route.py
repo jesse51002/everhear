@@ -24,11 +24,14 @@ KEY = "ts-test-key-0123456789abcdef"
 
 CRATER = '''"""Carve a sphere out of the world at a place, leaving air, lava or fire."""
 from kit import area
+from actions._types import Field, Literal, Live, Values
 
-VALUES = {
-    "crater_radius": {"type": "int", "min": 2, "max": 64, "default": 8, "live": True},
-    "crater_leave":  {"type": "enum", "of": ["air", "lava", "fire"], "default": "air", "live": True},
-}
+
+class Crater(Values):
+    crater_radius: Live[int] = Field(8, ge=2, le=64)
+    """how wide the crater is, in blocks"""
+    crater_leave: Live[Literal["air", "lava", "fire"]] = "air"
+    """what is left in it"""
 
 
 def crater(at, v):
@@ -36,9 +39,12 @@ def crater(at, v):
 '''
 
 FREEZE = '''"""Stop what was hit from moving, and wrap it in ice if asked."""
-VALUES = {
-    "freeze_seconds": {"type": "number", "min": 0, "max": 60, "default": 5},
-}
+from actions._types import Field, Values
+
+
+class Freeze(Values):
+    freeze_seconds: float = Field(5, ge=0, le=60)
+    """how long it stays frozen, in seconds"""
 
 
 def freeze(hits, v):
@@ -46,9 +52,12 @@ def freeze(hits, v):
 '''
 
 THEME = '''"""A theme tune for everyone or for one player, cancelled when a newer one starts."""
-VALUES = {
-    "theme_to": {"type": "player", "default": "@a"},
-}
+from actions._types import Players, Values
+
+
+class ThemeMusic(Values):
+    theme_to: Players = "@a"
+    """who hears it"""
 
 
 def theme_music(v):
@@ -56,9 +65,12 @@ def theme_music(v):
 '''
 
 CHARGE = '''"""A charge before what comes next: orbs at the hands, a sphere overhead or an aura."""
-VALUES = {
-    "charge_seconds": {"type": "number", "min": 0, "max": 10, "default": 2},
-}
+from actions._types import Field, Values
+
+
+class ChargeUp(Values):
+    charge_seconds: float = Field(2, ge=0, le=10)
+    """how long the charge takes, in seconds"""
 
 
 def charge_up(p, v):
@@ -69,13 +81,6 @@ GALICK = '''"""Galick Gun: hold to charge a beam, then fire it where you look; i
 ASKS = ["galick gun", "a purple beam"]
 from kit import values, loop
 
-VALUES = {
-    "player": {"type": "player", "default": "@a"},
-    "cooldown": {"type": "number", "min": 0, "max": 60, "default": 10, "live": True},
-    "crater_radius": {"type": "int", "min": 2, "max": 64, "default": 8, "live": True},
-    "theme_to": {"type": "player", "default": "@a"},
-}
-
 # --- preset: crater (copied from _presets/crater.py) ---
 def crater(at, v):
     pass
@@ -84,15 +89,11 @@ def crater(at, v):
 def theme_music(v):
     pass
 
-v = values(VALUES)
+v = values()
 '''
 
 ICE_BEAM = '''"""Ice Beam: a beam that freezes what it hits and lays ice along its path."""
 ASKS = ["ice beam", "freeze ray"]
-VALUES = {
-    "length": {"type": "int", "min": 1, "max": 300, "default": 60},
-    "freeze_seconds": {"type": "number", "min": 0, "max": 60, "default": 5},
-}
 
 # --- preset: freeze (copied from _presets/freeze.py) ---
 def freeze(hits, v):
@@ -101,10 +102,12 @@ def freeze(hits, v):
 
 SPIRIT = '''"""Spirit Bomb: charge a sphere overhead, then throw it where you look."""
 ASKS = ["spirit bomb", "genki dama"]
-VALUES = {
-    "charge": {"type": "number", "min": 1, "max": 10, "default": 3},
-}
 '''
+
+# What actions.json says of the actions over these scripts, as far as the cards read it.
+ACTIONS = {"actions": {
+    "galick_gun": {"script": "galick_gun", "source": "library",
+                   "fields": {"player": {}, "cooldown": {}, "crater_radius": {}, "theme_to": {}}}}}
 
 
 class RouteBox(Box):
@@ -191,22 +194,11 @@ class TestCards(RouteCase):
         self.assertEqual(g["asks"], ["galick gun", "a purple beam"])
         self.assertEqual(cards[("script", "spirit_bomb")]["source"], "made")
         self.assertEqual(cards[("preset", "charge_up")]["path"], "made/main/presets/charge_up.py")
-        # a seed script's first line is its README's
-        self.assertEqual(cards[("script", "hello")]["first"], "Says hello and exits.")
         # another server's folder is not read
         self.assertNotIn(("script", "spirit_bomb"),
                          {(c["kind"], c["name"]) for c in route.load_cards(self.box.repo, "other")})
 
     def test_a_scripts_values_are_its_actions_fields_and_a_presets_its_values_class(self):
-        self.box.write("scripts/_presets/crater.py", CRATER.replace('''from kit import area
-''', '''from kit import area
-from actions._types import Field, Live, Values
-
-
-class Crater(Values):
-    crater_radius: Live[int] = Field(8, ge=2, le=64)
-    """how wide the crater is, in blocks"""
-'''))
         actions = {"actions": {
             "galick_gun": {"script": "galick_gun", "source": "library",
                            "fields": {"player": {}, "damage_amount": {}, "crater_radius": {}}},
@@ -216,19 +208,21 @@ class Crater(Values):
         self.assertEqual(sorted(cards[("script", "galick_gun")]["values"]),
                          ["crater_radius", "damage_amount", "player", "range"])
         self.assertNotIn("nope", cards[("script", "spirit_bomb")]["values"])   # made: a library action is not its
-        self.assertEqual(list(cards[("preset", "crater")]["values"]), ["crater_radius"])
+        self.assertEqual(cards[("script", "ice_beam")]["values"], {})           # no action runs it
+        self.assertEqual(list(cards[("preset", "crater")]["values"]), ["crater_radius", "crater_leave"])
         self.assertIn("Its values: crater_radius, damage_amount, player, range.",
                       route.make_questions(list(cards.values()))["script_galick_gun"]["instructions"])
         lib = prefix.build(self.box.repo)
         lib = lib[lib.index("THE LIBRARY"):]
         self.assertIn("crater (preset)\n  Carve a sphere out of the world at a place, leaving air, lava or fire.\n"
                       "  crater_radius: Live[int] = Field(8, ge=2, le=64) — how wide the crater is, in blocks\n"
+                      "  crater_leave: Live[Literal[\"air\", \"lava\", \"fire\"]] = \"air\" — what is left in it\n"
                       "freeze (preset)", lib)
         self.assertIn("galick_gun (example script)\n  Galick Gun: hold to charge a beam, then fire it where you "
                       "look; it leaves a crater.\nhello (example script)", lib)   # a script: its first line only
 
     def test_one_choice_question_per_script_and_per_preset(self):
-        cards = route.load_cards(self.box.repo, "main")
+        cards = route.load_cards(self.box.repo, "main", ACTIONS)
         qs = route.make_questions(cards)
         self.assertEqual(len(qs), len(cards))
         g = qs["script_galick_gun"]
@@ -551,8 +545,8 @@ class TestPrefix(RouteCase):
         self.assertEqual(r1.stdout, r2.stdout)
         self.assertEqual(r1.stdout, prefix.build(self.box.repo))
         text = r1.stdout
-        self.box.write("made/main/scripts/brand_new/main.py", '"""Brand new: made a minute ago."""\nVALUES = {}\n')
-        self.box.write("made/main/presets/brand_preset.py", '"""A made preset."""\nVALUES = {}\n')
+        self.box.write("made/main/scripts/brand_new/main.py", '"""Brand new: made a minute ago."""\nASKS = []\n')
+        self.box.write("made/main/presets/brand_preset.py", '"""A made preset."""\n')
         self.assertEqual(self.box.vfg("prefix").stdout, text)
         self.assertNotIn("spirit_bomb", text)
         self.assertNotIn("charge_up", text)
@@ -565,12 +559,13 @@ class TestPrefix(RouteCase):
         self.assertIn("=== scripts/README.md ===\nThe scripts folder.\n", text)
         lib = text[text.index("THE LIBRARY"):]
         self.assertIn("crater (preset)\n  Carve a sphere out of the world at a place, leaving air, lava or fire.\n"
-                      "  crater_radius  int 2..64 = 8, live\n  crater_leave  enum air|lava|fire = \"air\", live\n",
+                      "  crater_radius: Live[int] = Field(8, ge=2, le=64) — how wide the crater is, in blocks\n"
+                      "  crater_leave: Live[Literal[\"air\", \"lava\", \"fire\"]] = \"air\" — what is left in it\n",
                       lib)
         names = [l.split(" (")[0] for l in lib.splitlines()[2:] if l and not l.startswith(" ")]
         self.assertEqual(names, ["crater", "freeze", "galick_gun", "hello", "ice_beam", "loop", "theme_music"])
         # a library change is a new prefix
-        self.box.write("scripts/_presets/crater.py", CRATER.replace("default\": 8", "default\": 9"))
+        self.box.write("scripts/_presets/crater.py", CRATER.replace("Field(8,", "Field(9,"))
         self.assertNotEqual(self.box.vfg("prefix").stdout, text)
 
 

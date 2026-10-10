@@ -6,13 +6,6 @@ import mc
 from kit import aim, world
 from actions._types import Field, Literal, Live, Values  # the values class: read on the PC only
 
-VALUES = {
-    "around_radius": {"type": "number", "min": 1, "max": 128, "default": 8, "live": True},
-    "around_what": {"type": "enum", "of": ["mobs", "hostile", "players", "everything", "projectiles"],
-                    "default": "mobs", "live": True},
-    "around_most": {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
-}
-
 
 class Around(Values):
     around_radius: Live[float] = Field(8, ge=1, le=128)

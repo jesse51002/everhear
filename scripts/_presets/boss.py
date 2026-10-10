@@ -5,28 +5,6 @@ import mc
 from kit import fx, loop, mobs, world
 from actions._types import Field, ItemId, Literal, Live, MobId, Values  # the values class: read on the PC only
 
-VALUES = {
-    "boss_name":         {"type": "str", "default": "Horde King"},
-    "boss_mob":          {"type": "mob", "default": "zombie"},
-    "boss_bodies":       {"type": "int", "min": 1, "max": 8, "default": 1},
-    "boss_health":       {"type": "int", "min": 1, "max": 1024, "default": 800},
-    "boss_scale":        {"type": "number", "min": 0.25, "max": 16, "default": 3},
-    "boss_attack":       {"type": "number", "min": 0, "max": 100, "default": 12},
-    "boss_gear":         {"type": "enum", "of": ["none", "leather", "golden", "iron", "diamond", "netherite"],
-                          "default": "netherite"},
-    "boss_bar":          {"type": "enum", "of": ["red", "blue", "green", "pink", "purple", "white", "yellow"],
-                          "default": "red"},
-    "boss_every":        {"type": "number", "min": 1, "max": 120, "default": 10, "live": True},
-    "boss_minion":       {"type": "mob", "default": "zombie", "live": True},
-    "boss_minions":      {"type": "int", "min": 0, "max": 20, "default": 3, "live": True},
-    "boss_phases":       {"type": "list", "of": "number", "default": [0.5, 0.25]},
-    "boss_reward":       {"type": "item", "default": "diamond", "live": True},
-    "boss_reward_count": {"type": "int", "min": 0, "max": 64, "default": 8, "live": True},
-    "boss_music":        {"type": "enum", "of": ["none", "pigstep", "otherside", "relic", "creator", "precipice"],
-                          "default": "none"},
-    "boss_griefing":     {"type": "bool", "default": True},
-}
-
 
 class Boss(Values):
     boss_name: str = "Horde King"

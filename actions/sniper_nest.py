@@ -1,4 +1,4 @@
-from actions._types import Action, Field, Literal, Live, Place, Players
+from actions._types import Action, BlockMix, Field, Literal, Live, Place, Players
 
 
 class SniperNest(Action):
@@ -22,5 +22,5 @@ class SniperNest(Action):
     """set each player's spawn on the lookout"""
     shape_facing: Live[Literal["look", "north", "east", "south", "west"]] = "look"
     """which way it faces, from the door in: look, the way the player looks (south at nest_at), or a compass direction"""
-    shape_blocks: Live[str] = "stone_bricks"
+    shape_blocks: Live[BlockMix] = "stone_bricks"
     """what the tower is made of: a block id or a mix, "70% stone_bricks 30% cobblestone" (no %: counts 1)"""

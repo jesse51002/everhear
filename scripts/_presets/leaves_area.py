@@ -5,14 +5,6 @@ import mc
 from kit import loop, world
 from actions._types import Field, Literal, Live, Players, Values  # the values class: read on the PC only
 
-VALUES = {
-    "leaves_area":      {"type": "enum", "of": ["radius", "box", "player"], "default": "radius"},
-    "leaves_radius":    {"type": "number", "min": 1, "max": 10000, "default": 40, "live": True},
-    "leaves_center":    {"type": "list", "of": "number", "default": [], "live": True},
-    "leaves_box":       {"type": "list", "of": "number", "default": [], "live": True},
-    "leaves_of_player": {"type": "player", "default": "@a", "live": True},
-}
-
 
 class LeavesArea(Values):
     leaves_area: Literal["radius", "box", "player"] = "radius"

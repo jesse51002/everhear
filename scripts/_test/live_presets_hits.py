@@ -2,15 +2,16 @@
 lock_on, lightning, explosion and crater, live.
 
     integration/realmc/up ph && eval "$(integration/realmc/env ph)"
-    uv run --python 3.9 python scripts/_test/live_presets_hits.py
+    uv run --no-project --python 3.12 --with pydantic python scripts/_test/live_presets_hits.py
 
 It changes blocks, so it runs only against a realmc test server (REALMC_NAME set, and
 VFG_MC_PROPERTIES inside that server's folder), never against the box. Everything happens
 in the sky over the arena (40 blocks above its floor, inside its forceloaded chunks) or 400
 blocks out for the crater that loads its own chunks, and is taken away again. The presets
-run in this process as the scripts that copy them would, and once more copied into one
-script by library.add_preset (what `vfg script new` does) and stopped with SIGTERM. The
-player parts need Carpet's fake players and are skipped without it.
+run in this process as the scripts that copy them would, with their values checked as vfg
+action run checks a copy's (test_kit.values_meta), and once more copied into one script by
+library.add_preset (what `vfg script new` does), started with the meta file a copy gets, and
+stopped with SIGTERM. The player parts need Carpet's fake players and are skipped without it.
 """
 import os
 import re
@@ -28,7 +29,7 @@ REPO = os.path.dirname(SCRIPTS)
 LIB = os.path.join(SCRIPTS, "_lib")
 PRESETS = os.path.join(SCRIPTS, "_presets")
 sys.path.append(os.path.dirname(os.path.dirname(HERE)))  # the repo: a preset's values class imports actions._types
-sys.path[:0] = [LIB, PRESETS, os.path.join(REPO, "toolkit", "lib")]
+sys.path[:0] = [LIB, PRESETS, os.path.join(REPO, "toolkit", "lib"), HERE]
 
 PROPS = os.environ.get("VFG_MC_PROPERTIES", "")
 if not os.environ.get("REALMC_NAME") or "realmc" not in os.path.realpath(PROPS):
@@ -40,6 +41,7 @@ os.environ["VFG_RUN_DIR"] = TMP
 import mc  # noqa: E402
 from kit import aim, area, values, world  # noqa: E402
 import library  # noqa: E402
+from test_kit import values_meta  # noqa: E402
 import around as around_preset  # noqa: E402
 import crater as crater_preset  # noqa: E402
 import damage_hits as damage_preset  # noqa: E402
@@ -69,8 +71,20 @@ TAG = "lh"                  # every test mob carries it
 
 
 def vals(preset, **given):
-    """A preset's values as a script would have them: its defaults, then these."""
-    return values(preset.VALUES, argv=["%s=%s" % kv for kv in given.items()], run_dir=TMP, instance="livehits")
+    """A preset's values as a script would have them: its defaults, then these, checked."""
+    return values(meta=values_meta(preset, given=given), run_dir=TMP, instance="livehits")
+
+
+def start(folder, name, presets, **given):
+    """A script started as the box starts a copy: its meta file holds every value of the presets'
+    classes, with player=@a and these given, checked as vfg action run checks them."""
+    meta = values_meta(*presets, given={k: v for k, v in given.items() if k != "player"})
+    meta["values"]["player"] = given.get("player", "@a")
+    with open(os.path.join(TMP, name + ".json"), "w") as f:
+        __import__("json").dump(meta, f)
+    env = dict(os.environ, PYTHONPATH=LIB, VFG_INSTANCE=name)
+    return subprocess.Popen([sys.executable, "-u", "main.py"], cwd=folder, env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
 
 def summon(kind, x, y, z, extra=""):
@@ -110,20 +124,6 @@ def leftover_tags():
     reply = mc.rcon("execute as @e[x=-32,y=%d,z=-32,dx=64,dy=40,dz=64] run data get entity @s Tags" % (SKY - 3))
     return sorted(set(t for t in re.findall(r'"([^"]+)"', reply) if t.startswith("vfg_livehits_")))
 
-
-
-# A script with its VALUES, written the old way: these tests read the presets' values through
-# values(VALUES) (vfg script new now writes a script ported to its action, library.SKELETON).
-OLD_SKELETON = '''"""TODO <Title>: say what it does in one line."""
-ASKS = []
-from kit import values
-
-VALUES = {
-    "player": {"type": "player", "default": "@a"},
-}
-
-v = values(VALUES)
-'''
 
 
 class Live(unittest.TestCase):
@@ -408,25 +408,25 @@ class LiveScript(Live):
     """All eight copied into one script, as `vfg script new` does, run as on EC2 and stopped."""
 
     def test_eight_presets_in_one_script_run_and_stop_clean(self):
-        text = OLD_SKELETON.replace("from kit import values", "from kit import values, aim, loop\nimport mc")
-        for name in ("damage_hits", "freeze", "push", "around", "lock_on", "lightning", "explosion", "crater"):
+        text = library.SKELETON.replace("from kit import result, values", "from kit import values, aim, loop\nimport mc")
+        names = ("damage_hits", "freeze", "push", "around", "lock_on", "lightning", "explosion", "crater")
+        fields = set(["player"])            # its action's: the presets' values and a player
+        for name in names:
             item = library.parse(os.path.join(PRESETS, name + ".py"), "preset")
-            text = library.add_preset(text, item, "main")[0]
+            text, keys, _imports = library.add_preset(text, item, "main")
+            fields.update(keys)
         folder = os.path.join(TMP, "hitsprobe")
         os.makedirs(folder)
         with open(os.path.join(folder, "main.py"), "w") as f:
             f.write(text + SCRIPT_WIRING)
-        self.assertEqual([p for p in library.check(library.parse(os.path.join(folder, "main.py"), "script"))
+        self.assertEqual([p for p in library.check(library.parse(os.path.join(folder, "main.py"), "script"), None, fields)
                           if "TODO" not in p and "ASKS" not in p], [])
         platform(-30, -30, 10, -10, "stone")
         eye(-27.5, SKY, -20.5)
         summon("husk", -20.5, SKY, -20.5)
         summon("husk", -10.5, SKY, -20.5)
-        env = dict(os.environ, PYTHONPATH=LIB, VFG_INSTANCE="hitsprobe")
-        args = ["freeze_shell=true", "freeze_seconds=60", "explosion_breaks=false", "crater_radius=3",
-                "lightning_count=2", "damage_amount=5"]
-        proc = subprocess.Popen([sys.executable, "-u", "main.py"] + args, cwd=folder, env=env,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        proc = start(folder, "hitsprobe", names, freeze_shell=True, freeze_seconds=60, explosion_breaks=False,
+                     crater_radius=3, lightning_count=2, damage_amount=5)
         out = b""
         deadline = time.time() + 30
         while b"ready" not in out and time.time() < deadline and proc.poll() is None:
@@ -553,7 +553,7 @@ class LiveStaff(Live):
     player looks, frozen in a shell and hurt, by Steve himself."""
 
     def test_a_click_locks_on_freezes_and_hurts(self):
-        text = OLD_SKELETON.replace("from kit import values", "from kit import values, items, loop\nimport mc")
+        text = library.SKELETON.replace("from kit import result, values", "from kit import values, items, loop\nimport mc")
         for name in ("lock_on", "freeze", "damage_hits"):
             text = library.add_preset(text, library.parse(os.path.join(PRESETS, name + ".py"), "preset"), "main")[0]
         folder = os.path.join(TMP, "icestaffprobe")
@@ -564,10 +564,8 @@ class LiveStaff(Live):
         husk = summon("husk", -12.5, SKY, -20.5)
         PLAYERS.spawn("Steve", at=(-27.5, SKY, -20.5), facing=(-90, 0))
         PLAYERS.clear("Steve")
-        env = dict(os.environ, PYTHONPATH=LIB, VFG_INSTANCE="icestaffprobe")
-        proc = subprocess.Popen([sys.executable, "-u", "main.py", "player=Steve", "freeze_shell=true",
-                                 "freeze_seconds=30", "damage_amount=8"], cwd=folder, env=env,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        proc = start(folder, "icestaffprobe", ("lock_on", "freeze", "damage_hits"), player="Steve",
+                     freeze_shell=True, freeze_seconds=30, damage_amount=8)
         try:
             deadline = time.time() + 10
             while "passed" not in mc.rcon('execute if items entity Steve container.* *[custom_data~{vfg_item:"ice_staff"}]').lower() \

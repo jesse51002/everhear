@@ -20,32 +20,34 @@ ICE_BEAM = '''"""Ice Beam: a beam from the eyes that freezes what it hits."""
 ASKS = ["ice beam", "freeze ray"]
 from kit import values, aim
 
-VALUES = {
-    "player": {"type": "player", "default": "@a"},
-    "freeze_seconds": {"type": "int", "min": 1, "max": 60, "default": 5, "live": True},
-}
-
-v = values(VALUES)
+v = values()
 '''
 GALICK = '''"""Galick Gun: charge, then a purple beam that leaves a crater."""
 ASKS = ["galick gun"]
-VALUES = {"player": {"type": "player", "default": "@a"}, "cooldown": {"type": "number", "min": 0, "max": 60, "default": 10, "live": True}}
 '''
 ZOO = '''"""Zoo: animals in pens round a player."""
 ASKS = ["a zoo"]
-VALUES = {"player": {"type": "player", "default": "@a"}}
 '''
 CRATER = '''"""Carve a sphere out of the world at a place, leaving air, lava or fire."""
 from kit import area
+from actions._types import Field, Live, Values
 
-VALUES = {"crater_radius": {"type": "int", "min": 2, "max": 64, "default": 8, "live": True}}
+
+class Crater(Values):
+    crater_radius: Live[int] = Field(8, ge=2, le=64)
+    """how wide the crater is, in blocks"""
 
 
 def crater(at, v):
     area.sphere(at, v["crater_radius"], block="air")
 '''
 REPLACE = '''"""Replace one kind of block with another in a box."""
-VALUES = {"replace_to": {"type": "block", "default": "ice"}}
+from actions._types import BlockId, Values
+
+
+class ReplaceBlocks(Values):
+    replace_to: BlockId = "ice"
+    """what the blocks become"""
 
 
 def replace_blocks(box, v):
@@ -53,10 +55,14 @@ def replace_blocks(box, v):
 '''
 GALICK_ICE = '''"""Galick Ice: the Galick Gun, laying ice where it hits."""
 ASKS = ["galick gun that freezes"]
-VALUES = {"player": {"type": "player", "default": "@a"}}
 '''
 ICE_TRAIL = '''"""Lay packed ice under a player's feet as they walk."""
-VALUES = {"ice_trail_block": {"type": "block", "default": "packed_ice"}}
+from actions._types import BlockId, Values
+
+
+class IceTrail(Values):
+    ice_trail_block: BlockId = "packed_ice"
+    """what it lays"""
 
 
 def ice_trail(p, v):
@@ -459,7 +465,7 @@ async def test_an_empty_server_folder_and_nobody_online():
 async def test_the_server_folder_is_vfg_server():
     b = Box(extra={"VFG_SERVER": "lobby"})
     os.makedirs(os.path.join(b.dir, "made", "lobby", "scripts", "moat"))
-    write(os.path.join(b.dir, "made", "lobby", "scripts", "moat", "main.py"), '"""Moat: water round a build."""\nVALUES = {}\n')
+    write(os.path.join(b.dir, "made", "lobby", "scripts", "moat", "main.py"), '"""Moat: water round a build."""\nASKS = ["a moat"]\n')
     block = await b.block()
     assert "Made on this server (made/lobby/), by first line:\n  moat (script): Moat: water round a build." in block
     assert "Made on this server (made/lobby/actions/): none yet." in block

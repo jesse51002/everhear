@@ -55,7 +55,7 @@ vfg script set railgun_2 cooldown=0            # the edit action: live in 0.5 s,
 vfg script stop railgun_2                      # the stop action: everything it made goes
 vfg script list                                # the running copies, from ~/.vfg/running.json; --json, --fresh
 vfg script logs railgun_2 -n 40                # --follow only under Monitor or by a person
-vfg script save railgun_2 rail_no_cooldown     # a script with VALUES: its values now as the defaults
+vfg script save railgun_2 rail_no_cooldown     # the copy's values kept as an action: made/<VFG_SERVER>/actions/
 vfg preset save galick_ice ice_path ice_trail  # a function lifted out into made/<VFG_SERVER>/presets/
 vfg made save                                  # made/<VFG_SERVER>/ into $VFG_MADE_ARCHIVE/<today>/
 vfg made restore 2026-10-09                    # and back
@@ -132,19 +132,25 @@ on the PC; the router reads them through it too. A name is a script in one place
   edit and stop through vfg writes it through; `vfg script list --fresh` (and `vfg state`)
   fetch it from the box, which drops a copy that ended by itself, keeping one written through
   after the fetch began. `vfg script list` reads it, fetching only when it never was.
-- **`new`** writes the script ported to its action (no `VALUES`; `v = values()`) and
-  `made/<VFG_SERVER>/actions/<name>.py`: a class inheriting the values class of every preset
-  the script holds that has one (`preset("name")`), with a field for every other value, from
-  the source script's action (descriptions, takes, runs, defaults, fixed) or its `VALUES`. Its
-  line on the menu, and any description it could not carry, are TODOs for the implementer.
-- **`check`** exits 1 with one line per problem: `VALUES` not a literal, a default outside
-  its limits, an unknown type, a value name twice, `v["key"]` read but not declared (in a
-  ported script, not a field of its actions), a preset's value or helper without its name in
-  front, a preset's value that starts with another preset's name, no first-line docstring,
-  no `ASKS`, an import from `_presets` or of what the box lacks; and for each action over a
-  script, its TODOs, an action the loader left out, a made script no action runs. An
-  old-style library script (a `README.md`, no `VALUES`) is checked for its README's first
-  line and its imports only.
+- **`new`** writes the script (`v = values()`) and `made/<VFG_SERVER>/actions/<name>.py`: a
+  class inheriting the values class of every preset the script holds (`preset("name")`), with
+  a field for every other value, from the source script's action (descriptions, takes, runs,
+  defaults, fixed); from nothing, a player. Its line on the menu is a TODO for the implementer.
+- **`save <copy> <new_name>`** keeps a running copy's values as an action of its own,
+  `made/<VFG_SERVER>/actions/<new_name>.py` over the same script, the values that differ from
+  its action's as its `defaults`: a variant of a library action, or a made action written out
+  (made actions do not import each other). Its line on the menu is a TODO.
+- **`preset save <script> <function> <name>`** lifts the function, the private helpers and
+  constants it uses and the imports they need into `made/<VFG_SERVER>/presets/<name>.py`, with
+  its values class: a field for each value it reads, renamed to the preset's prefix, written
+  as the script's action has it, description included (a TODO where there is none).
+- **`check`** exits 1 with one line per problem: `v["key"]` read but not a field of the
+  script's actions (or of the preset's values class), a script no action runs, a preset's
+  value or helper without its name in front, a preset's value that starts with another
+  preset's name, a preset's value with no description (or a TODO), a type that is not one of
+  `actions/_types.py`'s, a values class that does not load, no first-line docstring, no
+  `ASKS`, an import from `_presets` or of what the box lacks; and for each action over a
+  script, its TODOs and an action the loader left out.
 - **`state`** is one SSH call: `list`, each player's `Pos` and `Dimension`, `time query day`
   (26.3's day timeline) and `time query time` (the clock, for the day number), and the
   weather from an inline predicate, `{"type":"minecraft:weather_check","raining":true}`,
@@ -169,8 +175,8 @@ on the PC; the router reads them through it too. A name is a script in one place
 - **`vfg prefix`** prints the part of an implementer's system prompt that never changes
   between spawns, so the provider reads it from the cache: `scripts/README.md`, the kit in
   full (`_lib/mc.py`, every file in `_lib/kit/`), then every library preset and example
-  script by name: a preset's first line and values (its values class as written, else its
-  `VALUES`), a script's first line only, since the brief has every action in full. Nothing
+  script by name: a preset's first line and its values class as written, a script's first
+  line only, since the brief has every action in full. Nothing
   from `made/`, no date, no count. `vfg route` gives a script card the fields of the actions
   over it.
 - **`--cache-read N` and `--cache-write N`** on `vfg usage add` are the input tokens read from

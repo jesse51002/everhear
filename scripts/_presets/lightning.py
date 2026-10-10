@@ -6,14 +6,6 @@ import mc
 from kit import loop, world
 from actions._types import Field, Literal, Live, Player, Values  # the values class: read on the PC only
 
-VALUES = {
-    "lightning_count": {"type": "int", "min": 1, "max": 50, "default": 1, "live": True},
-    "lightning_spread": {"type": "number", "min": 0, "max": 32, "default": 3, "live": True},
-    "lightning_layout": {"type": "enum", "of": ["scatter", "ring"], "default": "scatter", "live": True},
-    "lightning_every": {"type": "number", "min": 0, "max": 5, "default": 0, "live": True},
-    "lightning_spare": {"type": "list", "of": "player", "default": [], "live": True},
-}
-
 
 class Lightning(Values):
     lightning_count: Live[int] = Field(1, ge=1, le=50)

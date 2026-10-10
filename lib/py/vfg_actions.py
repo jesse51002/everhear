@@ -455,12 +455,18 @@ KIND_WORDS = {
     "mob": "a mob id, such as zombie", "block": "a block id, such as stone or #logs",
     "item": "an item id, such as diamond_sword", "particle": "a particle id, such as flame",
     "sound": "a sound id, such as entity.wither.spawn", "command": "a server command, no slash",
+    "item or empty": "an item id, such as diamond_sword, or empty for none",
+    "block mix": "a block id or a mix, such as 70% stone_bricks 30% cobblestone",
+    "replace rules": 'rules in order, each "from > to", such as solid > 70% lava 30% keep',
+    "replace rule": 'a rule "from > to", such as solid > 70% lava 30% keep',
+    "item name": "the name of an item a script gave, such as Spirit Bomb, or empty for none",
 }
 LIST_WORDS = {
     "int": "whole numbers", "number": "numbers", "bool": "trues and falses", "str": "texts",
     "player": "player names", "players": "player names", "place": "places", "mob": "mob ids",
     "block": "block ids", "item": "item ids", "particle": "particle ids", "sound": "sound ids",
-    "command": "server commands",
+    "command": "server commands", "item or empty": "item ids", "block mix": "blocks or mixes",
+    "replace rule": "rules", "item name": "names of items a script gave, such as Spirit Bomb",
 }
 
 

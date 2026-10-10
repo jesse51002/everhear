@@ -3,13 +3,6 @@ import mc
 from kit import area, loop, world
 from actions._types import Field, Literal, Live, Values  # the values class: read on the PC only
 
-VALUES = {
-    "enters_dims": {"type": "list", "of": ["overworld", "the_nether", "the_end"],
-                    "default": ["overworld", "the_nether", "the_end"], "live": True},
-    "enters_below": {"type": "int", "min": 0, "max": 384, "default": 32, "live": True},
-    "enters_above": {"type": "int", "min": 0, "max": 384, "default": 40, "live": True},
-}
-
 
 class EntersChunk(Values):
     enters_dims: Live[list[Literal["overworld", "the_nether", "the_end"]]] = ["overworld", "the_nether", "the_end"]

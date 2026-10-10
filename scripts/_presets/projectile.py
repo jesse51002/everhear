@@ -7,14 +7,6 @@ import mc
 from kit import aim, fx, world
 from actions._types import BlockId, Field, Literal, Live, ParticleId, Values  # the values class: read on the PC only
 
-VALUES = {
-    "projectile_kind": {"type": "enum", "of": ["orb", "block"], "default": "orb", "live": True},
-    "projectile_size": {"type": "number", "min": 0.2, "max": 16, "default": 2, "live": True},
-    "projectile_speed": {"type": "number", "min": 2, "max": 200, "default": 30, "live": True},
-    "projectile_particle": {"type": "particle", "default": "end_rod", "live": True},
-    "projectile_block": {"type": "block", "default": "magma_block", "live": True},
-}
-
 
 class Projectile(Values):
     projectile_kind: Live[Literal["orb", "block"]] = "orb"

@@ -1,15 +1,17 @@
 """The ongoing presets, and the presets that watch players, on a real Minecraft 26.3 server.
 
     integration/realmc/up po && eval "$(integration/realmc/env po)"
-    uv run --python 3.9 python scripts/_test/live_presets_ongoing.py
+    uv run --no-project --python 3.12 --with pydantic python scripts/_test/live_presets_ongoing.py
 
 Each preset is wired into a minimal script (its own file with a line or two under it, as
-`vfg script new --preset` makes one) and run the way the box runs a script; then the world is
+`vfg script new --preset` makes one) and run the way the box runs a copy, its values checked
+into the meta file as vfg action run checks them (test_kit.values_meta); then the world is
 asked what it did, with RCON. It runs only against a realmc test server, never the box. The
 mobs and blocks it makes are taken away again. Without Carpet (fake players) the boss, the
 beam clash and the director's events run; with it, every preset, with Steve and Alex.
 """
 import importlib.util
+import json
 import os
 import re
 import signal
@@ -36,7 +38,7 @@ os.environ["VFG_INSTANCE"] = "lpresets"         # this process's own tag, for th
 
 import mc  # noqa: E402
 from kit import world  # noqa: E402
-from test_kit import copied  # noqa: E402  (only the helper: mc stays on the real server)
+from test_kit import copied, values_meta  # noqa: E402  (only the helpers: mc stays on the real server)
 import players as fake_players  # noqa: E402
 
 signal.signal(signal.SIGINT, signal.default_int_handler)
@@ -59,15 +61,19 @@ def script(preset, wiring):
     """A preset's file as a script holds it once copied in, with the wiring under it."""
     text = copied(os.path.join(PRESETS, preset + ".py"))
     return (text.replace("import mc\n", "import mc\nimport sys\nfrom kit import values, aim, loop, world\n", 1)
-            + "\n\nv = values(VALUES)\n" + wiring)
+            + "\n\nv = values()\n" + wiring)
 
 
 def start(preset, instance, wiring, *argv):
-    """Run it as the box does: python3 -u main.py key=value ..., VFG_INSTANCE=<instance>."""
+    """Run it as the box runs a copy: its key=value words checked into its meta file,
+    VFG_INSTANCE=<instance>; any other word after main.py, for the wiring."""
     folder = os.path.join(TMP, instance)
     os.makedirs(folder, exist_ok=True)
     with open(os.path.join(folder, "main.py"), "w") as f:
         f.write(script(preset, wiring))
+    with open(os.path.join(RUN, instance + ".json"), "w") as f:
+        json.dump(values_meta(preset, given=[a for a in argv if "=" in a]), f)
+    argv = [a for a in argv if "=" not in a]
     env = dict(os.environ, PYTHONPATH=LIB, VFG_INSTANCE=instance, VFG_RUN_DIR=RUN, PYTHONDONTWRITEBYTECODE="1",
                VFG_PROTECTED=os.path.join(TMP, "none.json"))
     return subprocess.Popen([sys.executable, "-u", "main.py"] + list(argv), cwd=folder, env=env,
@@ -245,7 +251,7 @@ class LiveDirectorEvents(Live):
                 % (X, SKY + 1, Z))
         self.p = "@e[tag=vfg_lpstandin,limit=1]"
         from kit import values
-        self.v = values(self.d.VALUES, argv=[], run_dir=RUN, instance="lpresets")
+        self.v = values(meta=values_meta(self.d), run_dir=RUN, instance="lpresets")
 
     def tearDown(self):
         mc.rcon("kill @e[tag=vfg_lpstandin]")
