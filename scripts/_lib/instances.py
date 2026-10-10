@@ -51,6 +51,9 @@ STOP_WAIT = 5.0       # SIGTERM, then SIGKILL after this many seconds
 # A copy runs on the Python this runs on: the box's 3.12, /opt/vfg/python/bin/python3.
 PYTHON = sys.executable or "python3"
 CHECK_S = 2.0         # an until-stopped copy is checked this long after its start
+# The box's secrets (/opt/vfg/.env, Contracts §11): a copy started by the bridge for a cast would
+# inherit them from its environment, and no script needs them.
+SECRETS = ("VFG_CLIENT_TOKEN", "TYPESAFE_API_KEY")
 
 
 class CopyError(Exception):
@@ -276,7 +279,7 @@ class Box(object):
         log = self.path(name, ".log")
         with open(log, "w", encoding="utf-8") as f:
             f.write("--- %s run %s (%s) ---\n" % (now_iso(), name, meta["action"]))
-        env = dict(os.environ)
+        env = dict((k, v) for k, v in os.environ.items() if k not in SECRETS)
         # VFG_SCRIPT marks the process as this copy's (pid()); mc.py names its tag vfg_<copy> from it.
         env["VFG_SCRIPT"] = name
         env["VFG_INSTANCE"] = name

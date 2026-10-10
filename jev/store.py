@@ -25,6 +25,7 @@ class Store:
         self.path = path
         self.conn = None
         self._said = None   # the last "not ready" reason logged, so it is logged once
+        self._dropped = False
 
     # -- opening ---------------------------------------------------------------
 
@@ -79,13 +80,21 @@ class Store:
             raise
         return counts
 
+    def _live(self):
+        """` AND dropped IS NULL` once `lines` has the bridge's `dropped` column (a line that
+        was only an incantation), so Jev never sees one; nothing on an older database."""
+        if not self._dropped:
+            cols = self.conn.execute("SELECT * FROM lines LIMIT 0").description
+            self._dropped = any(c[0] == "dropped" for c in cols)
+        return " AND dropped IS NULL" if self._dropped else ""
+
     # -- reading ---------------------------------------------------------------
 
     def unjudged(self, limit=32):
         """Lines to judge: no verdict yet and not the AI's own, oldest first."""
         return self.conn.execute(
-            "SELECT %s FROM lines WHERE jev_class IS NULL AND source != 'ai' "
-            "ORDER BY at, id LIMIT ?" % COLUMNS, (limit,)).fetchall()
+            "SELECT %s FROM lines WHERE jev_class IS NULL AND source != 'ai'%s "
+            "ORDER BY at, id LIMIT ?" % (COLUMNS, self._live()), (limit,)).fetchall()
 
     def ask_again(self, judged_since, limit=5):
         """Jev's own `not_useful` verdicts (a confidence, so not a blank line)
@@ -102,7 +111,8 @@ class Store:
         holes = ",".join("?" * len(exclude))
         skip = (" AND id NOT IN (%s)" % holes) if exclude else ""
         return self.conn.execute(
-            "SELECT %s FROM lines WHERE at >= ?%s ORDER BY at DESC, id DESC LIMIT ?" % (COLUMNS, skip),
+            "SELECT %s FROM lines WHERE at >= ?%s%s ORDER BY at DESC, id DESC LIMIT ?"
+            % (COLUMNS, skip, self._live()),
             [since] + exclude + [limit]).fetchall()
 
     def kept_unfed(self, since):
@@ -149,7 +159,7 @@ class Store:
         with no confidence. Answers how many."""
         return self._tx([(
             "UPDATE lines SET jev_class = 'context', jev_confidence = NULL, jev_judged_at = ? "
-            "WHERE jev_class IS NULL AND source != 'ai'", (judged_at,))])[0]
+            "WHERE jev_class IS NULL AND source != 'ai'" + self._live(), (judged_at,))])[0]
 
     def mark_fed(self, ids, fed_at):
         ids = list(ids)
