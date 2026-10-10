@@ -1,15 +1,15 @@
-"""python -m dispatcher: the lock, the signals, and one asyncio task per new task.
+"""python -m brain: start, run, stop.
 
-Start: take the lock; load the actions (library and VFG_SERVER's made ones), which each task
-reloads where a file changed; hand on whatever a crash left mid-run and a batch left waiting,
-and send the answers left unsent; follow the inbox at once, failing as expired any task that
-waited more than VFG_ORCH_STALE_MINUTES; fetch the running copies again every
-VFG_RUNNING_TTL_S in the background; and load the command references in the background
-(about 95 s the first time on a server version), trying again every 5 minutes if that fails.
-Until they are in, picks of an action with a Command field are handed on and every other
-action works.
-Stop (SIGTERM or SIGINT): read no new task, let a running action finish for up to 10 s,
-hand everything unfinished, save, exit 0.
+Start: take the lock; `vfg up`; `vfg watchers set join,leave,death,advancement,server`; Jev's
+lookout (prompts/lookout.md) and menu (every action's line, set again when the actions change);
+the actions, which each brain call reloads where a file changed; the command references in the
+background (about 95 s the first time on a server version), tried again every 5 minutes until
+they load; the context from `vfg context --json`, the last VFG_BRAIN_HISTORY_HOURS, what is
+older than two minutes and unread marked processed (history is never acted on), a line from the
+last two minutes still unread answered; the tasks a crash left open failed as interrupted; then
+`vfg watch --after <last seq>` followed for good; and the greeting, skipped when nobody is on.
+Stop (SIGTERM or SIGINT): read nothing new, let the calls in flight finish for up to 10 s, stop
+the implementers and fail their tasks as stopped, save, exit 0.
 """
 
 from __future__ import annotations
@@ -18,31 +18,38 @@ import asyncio
 import contextlib
 import fcntl
 import functools
+import json
 import logging
 import os
 import signal
 import sys
+from datetime import timedelta
+from pathlib import Path
 
 import httpx
 import vfg_llm
 
-from . import actions, config
-from .batch import Batch
-from .running import Refresher
+from . import actions, config, running
+from .act import Acts
+from .action_planner import Planner
+from .call import Call
 from .config import Config, log
-from .inbox import Inbox, State
-from .reply import Reply
-from .task import Dispatcher
+from .context import LIVE, Context, parse
+from .loop import Brain, iso, jev_menu, utc_now
+from .respond import Respond
+from .tasks import Tasks
+from .vfg import Later, follow
 from .vfg import vfg as run_vfg
+from .world import World
 
-POLL_S = 0.1          # how often the inbox is looked at
-# A stop lets running actions finish for up to 10 s, then tries these for a little longer.
-# Both are kept in state.json, so whatever is left is handed or sent at the next start; the
-# total stays under the 15 s vfg orch stop waits before SIGKILL.
-HAND_ON_STOP_S = 3    # `vfg orch hand`
-SEND_ON_STOP_S = 1.5  # `vfg orch reply`
-LOAD = object()       # serve(refs=LOAD): load them, as a real start does
-REFS_RETRY_S = 300    # a failed load of the references is tried again this often, until it works
+LOOKOUT = Path(__file__).resolve().parent.parent / "prompts" / "lookout.md"
+GREETING = "AI is on — say what you want into your mic, or type it in chat"
+WATCHERS = "join,leave,death,advancement,server"
+LOAD = object()      # serve(refs=LOAD): load them, as a real start does
+REFS_RETRY_S = 300   # a failed load of the references is tried again this often, until it works
+MARK_CHUNK = 500     # seqs in one `vfg context mark`
+IMPLEMENTERS_GRACE_S = 2.0
+DRAIN_S = 1.5        # for the rows and usage still being written, at the very end
 
 
 class _LogLines(logging.Handler):
@@ -57,113 +64,167 @@ class _LogLines(logging.Handler):
         log(self.area, record.getMessage())
 
 
-async def ask(prompt, output, *, system=None, model, providers=None, timeout: float = 10,
-              reasoning: bool | str = False):
-    """structured(), reasoning off unless VFG_DISPATCH_REASONING names an effort: speed first;
-    `providers` is the OpenRouter order. A call
-    past `timeout` is an LlmError, which the selector and the planner treat as a hand-on."""
-    return await vfg_llm.structured(prompt, output, system=system, model=model, reasoning=reasoning,
-                                    providers=providers, timeout=timeout)
+class NoImplementers:
+    """When brain/implementers cannot be loaded: an implementer part fails at once, said so."""
+
+    def __init__(self, on_report, why: str):
+        self.on_report, self.why = on_report, why
+
+    async def start(self, task_id: str, brief: str) -> None:
+        await self.on_report(task_id, "failed", f"Failed: no implementers here ({self.why}).")
+
+    async def follow_up(self, task_id: str, text: str, session: str | None = None) -> None:
+        await self.start(task_id, text)
+
+    def running(self) -> list[str]:
+        return []
+
+    async def close(self, grace_s: float) -> list[str]:
+        return []
 
 
-def asker(cfg: Config):
-    """`ask` with VFG_DISPATCH_PROVIDERS and VFG_DISPATCH_MODEL_TIMEOUT_S: what the selector
-    and the planner call."""
-    return functools.partial(ask, providers=list(cfg.providers) or None, timeout=cfg.model_timeout_s,
-                             reasoning=cfg.effort)
+def implementers(on_report):
+    try:
+        from .implementers.runner import ImplementerConfig, Implementers
+    except ImportError as e:
+        log("start", f"the implementers cannot be loaded ({e}): implementer parts fail at once")
+        return NoImplementers(on_report, str(e))
+    return Implementers(ImplementerConfig.load(), on_report)
+
+
+def asker(model: str, reasoning: str, timeout: float, providers: tuple[str, ...] = ()):
+    """structured() with one model's settings; a call past `timeout` is an LlmError."""
+    return functools.partial(vfg_llm.structured, model=model, reasoning=Config.effort_of(reasoning),
+                             providers=list(providers) or None, timeout=timeout)
 
 
 async def load_refs(cfg: Config, vfg, http):
+    from . import refs as refs_module
     try:
-        from . import refs as refs_module
-    except ImportError as e:
-        log("refs", f"refs.py cannot be imported ({e}); every command pick is handed on")
-        return None
-    try:
-        refs = await refs_module.load(cfg.dispatch_dir, vfg, http=http,
+        refs = await refs_module.load(cfg.brain_dir, vfg, http=http,
                                       log=lambda msg, *more: log("refs", str(msg).removeprefix("refs: "), *more))
     except Exception as e:  # noqa: BLE001 — run on without them rather than die
-        log("refs", f"FAILED to load ({type(e).__name__}: {e}); command picks are handed on until they load")
+        log("refs", f"FAILED to load ({type(e).__name__}: {e}); a refused command is not retried until they load")
         return None
     log("refs", f"server {refs.version}: {len(refs.names())} commands")
     return refs
 
 
-async def keep_loading_refs(cfg: Config, vfg, http, d: Dispatcher, every: float) -> None:
-    """In the background while tasks run: load the references, and when that fails try again
-    every `every` seconds until it works. Until then `command` picks are handed on; each task
-    takes the references there are when it starts."""
-    attempt = 1
-    d.planner.refs = await load_refs(cfg, vfg, http)
-    if d.planner.refs is None:
-        log("refs", f"trying again every {every:g} s")
-    while d.planner.refs is None:
+async def keep_loading_refs(cfg: Config, vfg, http, brain: Brain, planner: Planner, every: float) -> None:
+    """In the background while lines are answered: load the references, and when that fails
+    try again every `every` seconds until it works."""
+    while True:
+        refs = await load_refs(cfg, vfg, http)
+        if refs is not None:
+            brain.refs = planner.refs = refs
+            return
         await asyncio.sleep(every)
-        attempt += 1
-        log("refs", f"attempt {attempt}: loading the references again")
-        d.planner.refs = await load_refs(cfg, vfg, http)
-    log("refs", f"loaded at attempt {attempt}: command picks run again")
 
 
-async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, ask=None, catalog=None, refs=LOAD,
-                http: httpx.AsyncClient | None = None, poll_s: float = POLL_S,
-                refs_retry_s: float = REFS_RETRY_S) -> int:
-    cfg.dispatch_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    state = State.load(cfg.state_file, cfg.inbox)
-    reply = Reply(state, vfg)
-    batch = Batch(state, vfg, cfg.window_s)
+async def load_context(vfg, hours: float) -> Context:
+    """The feed since `hours` ago, from `vfg context --json`; empty when it cannot be read."""
+    since = f"-{int(hours)}h" if float(hours).is_integer() else f"-{max(1, round(hours * 60))}m"
+    r = await vfg("context", "--since", since, "--json", timeout=120)
+    ctx = Context()
+    if r.code != 0:
+        log("start", f"vfg context failed ({(r.stderr or r.stdout).strip()[-200:]}): starting with no context")
+        return ctx
+    for raw in r.stdout.splitlines():
+        try:
+            obj = json.loads(raw)
+            row = parse(str(obj["line"]), seq=int(obj["seq"]), at=str(obj["at"]),
+                        processed=obj.get("processed_at") is not None)
+        except (ValueError, KeyError, TypeError):
+            continue
+        if row is not None:
+            ctx.add(row)
+    return ctx
+
+
+def old_ids(cfg: Config, ctx: Context) -> str:
+    """Every text where a task id may already be in use: the context, running.json and the old
+    inboxes, so a new T<n> is never one of them."""
+    texts = [f"{r.task} {r.text}" for r in ctx.rows]
+    for path in (cfg.running_file, cfg.home / "orch" / "inbox.jsonl", cfg.home / "dispatch" / "inbox.jsonl"):
+        with contextlib.suppress(OSError):
+            texts.append(path.read_text(encoding="utf-8", errors="replace"))
+    return "\n".join(texts)
+
+
+async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, catalog=None, refs=LOAD,
+                ask=None, respond_ask=None, plan_ask=None, make_implementers=implementers,
+                http: httpx.AsyncClient | None = None) -> int:
+    cfg.brain_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    later = Later(vfg)
+    up = await vfg("up", timeout=600)
+    if up.code != 0:
+        log("start", f"vfg up failed ({(up.stderr or up.stdout).strip()[-300:]}); carrying on, vfg watch reconnects")
+    for args in (("watchers", "set", WATCHERS), ("lookout", "set", LOOKOUT.read_text(encoding="utf-8").strip())):
+        later(*args)
 
     catalog = actions.load(cfg.repo, cfg.server) if catalog is None else catalog
-    ask = asker(cfg) if ask is None else ask
-    d = Dispatcher(cfg, catalog=catalog, refs=None if refs is LOAD else refs, vfg=vfg, ask=ask, state=state,
-                   reply=reply, batch=batch, hidden=actions.hidden_commands())
-    batch.on_refused = d.refused
-    copies = Refresher(vfg, cfg.running_ttl_s)
+    later("jev", "menu", "set", jev_menu(catalog))
+    hidden = actions.hidden_commands()
+    copies = running.Refresher(vfg, cfg.running_ttl_s)
+    world = World(vfg, cfg.running_file, catalog, refresher=copies)
+    tasks = Tasks(cfg.tasks_file)
+    planner = Planner(plan_ask or asker(cfg.plan_model, cfg.plan_reasoning, cfg.timeout_s), cfg.plan_model,
+                      None if refs is LOAD else refs, hidden=hidden, check=cfg.plan_check)
+    call = Call(catalog, ask or asker(cfg.model, cfg.reasoning, cfg.timeout_s, cfg.providers), owner=cfg.owner,
+                hidden=hidden, checkpoint=cfg.checkpoint)
+    respond = Respond(catalog, respond_ask or asker(cfg.respond_model, cfg.respond_reasoning, cfg.timeout_s),
+                      owner=cfg.owner, checkpoint=cfg.checkpoint)
 
-    # What the last run left needs no references: it goes first, so a slow first fetch of
-    # the references never holds it back.
-    if state.tasks:
-        log("start", f"{len(state.tasks)} task(s) left mid-run: handing them on with what was done")
-        d.recover()
-    reply.start()
-    batch.start()
-    copies.start()
+    ctx = await load_context(vfg, cfg.history_hours)
+    tasks.at_least(old_ids(cfg, ctx))
 
-    # The first fetch for a server version takes about 95 s: tasks are read meanwhile, and
-    # every action but `command` works.
-    loading = None
+    async def on_report(tid: str, status: str, text: str) -> None:
+        await brain.on_report(tid, status, text)
+
+    impl = make_implementers(on_report)
+    acts = Acts(vfg=vfg, later=later, catalog=catalog, planner=planner, tasks=tasks, implementers=impl,
+                world=world, action_timeout_s=cfg.action_timeout_s)
+    brain = Brain(ctx=ctx, call=call, respond=respond, acts=acts, world=world, tasks=tasks, implementers=impl,
+                  later=later, catalog=catalog, refs=None if refs is LOAD else refs, batch_s=cfg.batch_s,
+                  model=cfg.model, respond_model=cfg.respond_model,
+                  menu=lambda text: later("jev", "menu", "set", text))
+
+    for t in tasks.open_ones():  # their implementers went with the last run
+        record = f"{t['id']} failed: interrupted, the brain restarted while it ran"
+        tasks.close(t["id"], "failed", record)
+        acts.post("result", t["id"], record)
+    history = ctx.take_before(iso(utc_now() - timedelta(minutes=2)))
+    for i in range(0, len(history), MARK_CHUNK):
+        later("context", "mark", *(str(r.seq) for r in history[i:i + MARK_CHUNK]), timeout=60)
+    for row in ctx.unprocessed():  # said in the last two minutes, and never read
+        if row.type == "LINE" and row.cls in LIVE:
+            brain.route(row)
+
+    background = [asyncio.create_task(brain.follow(watch), name="watch")]
     if refs is LOAD:
-        loading = asyncio.create_task(keep_loading_refs(cfg, vfg, http, d, refs_retry_s), name="refs")
+        background.append(asyncio.create_task(
+            keep_loading_refs(cfg, vfg, http, brain, planner, REFS_RETRY_S), name="refs"))
+    brain.timer.start()
+    copies.start()
+    greeting = await vfg("say", GREETING, timeout=30)
+    if greeting.code != 0 and "nobody" not in (greeting.stderr + greeting.stdout).lower():
+        log("start", f"the greeting failed: {(greeting.stderr or greeting.stdout).strip()[-200:]}")
+    log("start", f"pid {os.getpid()}; {len(ctx.rows)} rows of context to #{ctx.last_seq} "
+                 f"({len(history)} history marked read); {len(catalog.names())} actions; brain {cfg.model} "
+                 f"{cfg.reasoning}; respond {cfg.respond_model}; planner {cfg.plan_model}; batch after "
+                 f"{cfg.batch_s:g} s; owner {cfg.owner or '(not set)'}; server {cfg.server}")
 
-    inbox = Inbox(cfg.inbox, state, stale_minutes=cfg.stale_minutes, on_expired=d.expired)
-    log("start", f"pid {os.getpid()}; {cfg.inbox} from byte {state.offset}; model {cfg.model}; "
-                 f"window {cfg.window_s:g} s; retries {cfg.retries}; action timeout {cfg.action_timeout_s:g} s; "
-                 f"stale after {cfg.stale_minutes} min; server {cfg.server}; running copies every "
-                 f"{cfg.running_ttl_s:g} s")
-    while not stop.is_set():
-        try:
-            for line in inbox.poll():
-                d.start(line["id"])
-        except OSError as e:
-            log("inbox", f"cannot read {cfg.inbox}: {e}")
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(stop.wait(), poll_s)
-
-    log("stop", "stopping: no new task is read")
-    if loading and not loading.done():
-        loading.cancel()
+    await stop.wait()
+    log("stop", "stopping: nothing new is read")
+    for t in background:
+        t.cancel()
+    await asyncio.gather(*background, return_exceptions=True)
+    await brain.stop(cfg.stop_grace_s, IMPLEMENTERS_GRACE_S)
     await copies.stop()
-    await d.stop(cfg.stop_grace_s)
-    handed = await batch.flush(HAND_ON_STOP_S)
-    sent = await reply.drain(SEND_ON_STOP_S)
-    await reply.stop()
-    state.save()
-    left = []
-    if not handed:
-        left.append(f"{len(state.batch)} line(s) to hand")
-    if not sent:
-        left.append(f"{len(state.outbox)} answer(s) to send")
-    log("stop", "stopped" + (f"; left for the next start: {', '.join(left)}" if left else ""))
+    await world.close()
+    await later.drain(DRAIN_S)
+    tasks.save()
+    log("stop", "stopped")
     return 0
 
 
@@ -178,9 +239,9 @@ async def _main(cfg: Config) -> int:
             return await serve(cfg, stop, http=http)
         finally:
             vfg_llm.client = None
-            # vfg orch stop signals the whole group, and uv run forwards its own SIGTERM too: a
-            # second one landing while asyncio.run closes the loop's self-pipe prints a traceback.
-            # The stop is under way, so later ones are ignored.
+            # vfg brain stop signals the whole group: a second signal landing while asyncio.run
+            # closes the loop's self-pipe prints a traceback. The stop is under way, so later
+            # ones are ignored.
             for sig in (signal.SIGTERM, signal.SIGINT):
                 loop.remove_signal_handler(sig)
                 signal.signal(sig, signal.SIG_IGN)
@@ -192,12 +253,12 @@ def main() -> int:
         logger.addHandler(_LogLines(area))
         logger.propagate = False
     cfg = config.load()
-    cfg.dispatch_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    cfg.brain_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd = os.open(cfg.lock_file, os.O_RDWR | os.O_CREAT, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        log("start", f"another dispatcher holds {cfg.lock_file}; exiting")
+        log("start", f"another brain holds {cfg.lock_file}; exiting")
         return 1
     try:
         return asyncio.run(_main(cfg))

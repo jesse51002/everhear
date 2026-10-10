@@ -28,7 +28,7 @@ class ApiCase(Box):
 
     def start_server(self, database):
         self.server = api.make_server("127.0.0.1", 0, database, self.token)
-        thread = threading.Thread(target=self.server.serve_forever, args=(0.05,), daemon=True)
+        thread = threading.Thread(target=self.server.serve_forever, args=(0.002,), daemon=True)
         thread.start()
 
         def stop():
@@ -260,7 +260,7 @@ class TestBusy(ApiCase):
     def test_503_while_another_connection_holds_the_database(self):
         self.server.shutdown()
         self.server.server_close()
-        quick = dbmod.DB(self.db_path, busy_timeout_ms=200)
+        quick = dbmod.DB(self.db_path, busy_timeout_ms=20)
         self.addCleanup(quick.close)
         self.start_server(quick)
         holder = sqlite3.connect(self.db_path, isolation_level=None)

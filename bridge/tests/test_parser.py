@@ -2,14 +2,17 @@
 
 import datetime as _dt
 import gzip
+import io
 import json
 import os
 import shutil
+import sys
 import unittest
+from unittest import mock
 
 from vfg_bridge import console, timeutil
 
-from helpers import FIXTURES, UTC, Box, at, run
+from helpers import FIXTURES, UTC, Box, at
 
 LOG = os.path.join(FIXTURES, "console-26.3.log")
 EXPECTED = os.path.join(FIXTURES, "console-26.3.expected.json")
@@ -145,26 +148,28 @@ class TestLiveRunShapes(unittest.TestCase):
 
 
 class TestParseCommand(Box):
+    def parse(self, path):
+        from vfg_bridge import __main__ as entry
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(sys, "stdout", out), mock.patch.object(sys, "stderr", err):
+            code = entry.main(["--parse", path])
+        return code, out.getvalue()
+
     def test_parse_prints_json_and_touches_nothing(self):
-        result = run(["-m", "vfg_bridge", "--parse", LOG])
-        self.assertEqual(result.returncode, 0, result.stderr)
-        got = [json.loads(line) for line in result.stdout.splitlines()]
+        code, out = self.parse(LOG)
+        self.assertEqual(code, 0)
         with open(EXPECTED, encoding="utf-8") as f:
-            self.assertEqual(got, json.load(f))
+            self.assertEqual([json.loads(line) for line in out.splitlines()], json.load(f))
         self.assertEqual(os.listdir(self.tmp), [])
 
     def test_parse_reads_gzip(self):
         gz = os.path.join(self.tmp, "2026-10-07-1.log.gz")
         with open(LOG, "rb") as src, gzip.open(gz, "wb") as dst:
             shutil.copyfileobj(src, dst)
-        plain = run(["-m", "vfg_bridge", "--parse", LOG])
-        zipped = run(["-m", "vfg_bridge", "--parse", gz])
-        self.assertEqual(zipped.returncode, 0, zipped.stderr)
-        self.assertEqual(zipped.stdout, plain.stdout)
+        self.assertEqual(self.parse(gz), self.parse(LOG))
 
     def test_parse_missing_file_fails(self):
-        result = run(["-m", "vfg_bridge", "--parse", os.path.join(self.tmp, "nope.log")])
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(self.parse(os.path.join(self.tmp, "nope.log"))[0], 1)
 
 
 class TestConsoleAt(unittest.TestCase):

@@ -1,24 +1,19 @@
-"""What the runner adds to an implementer's brief as it starts. The guard calls rewrite() once for
-every Agent call it allows, and hands the result to the CLI as the call's new prompt. Each step
-takes the brief and the Agent tool's input and returns the brief to use; adding a step is one line
-in STEPS."""
+"""The brief an implementer starts with: the brain's brief, then a line naming its task, the server's
+saved places read fresh, and the EXAMPLES block (examples.py). The places and the block are read at
+once; whichever fails is logged and left out, and the brief still goes."""
+import asyncio
 import re
-from typing import Awaitable, Callable
 
-from . import vfg as vfg_module
-from .config import log
-from .examples import examples
-from .vfg import VfgResult, why
-
-# (the brief so far, the Agent tool's input) -> the brief to use
-BriefStep = Callable[[str, dict], Awaitable[str]]
+from . import examples
+from .config import ImplementerConfig, log
+from .vfg import VfgResult, VfgRunner, why
 
 # `vfg place list` gets this long; the implementer starts either way.
-PLACES_TIMEOUT_MS = 10_000
+PLACES_TIMEOUT_S = 10.0
 
 
-# When this vfg has no `place` command (it comes with the dispatcher's work), the brief says so, so
-# an implementer told to save a place does not try.
+# When this vfg has no `place` command, the brief says so, so an implementer told to save a place
+# does not try.
 PLACES_OFF = "SAVED PLACES: off (this vfg has no place command): save no place, whatever the brief says; PLACE none."
 
 
@@ -38,30 +33,29 @@ def places_line(r: VfgResult) -> str:
     return "SAVED PLACES: " + "; ".join(lines)
 
 
-async def saved_places(brief: str, tool_input: dict) -> str:
+async def saved_places(run: VfgRunner) -> str:
     """The server's named places, read fresh, so "the castle" in a brief has coordinates."""
-    line = places_line(await vfg_module.vfg(["place", "list"], PLACES_TIMEOUT_MS))
+    line = places_line(await run("place", "list", timeout=PLACES_TIMEOUT_S))
     log("brief", line[:300])
-    return "%s\n\n%s" % (brief.rstrip(), line)
+    return line
 
 
-# saved_places, then the EXAMPLES block (examples.py): the scripts and presets for this job in full,
-# this server's first lines and the state of the server.
-STEPS: list[BriefStep] = [saved_places, examples]
+def task_line(task: str) -> str:
+    return "YOUR TASK: %s. Every vfg action run you send takes --task %s, and a vfg place save --by %s." % (
+        task, task, task)
 
 
-async def rewrite(brief: str, tool_input: dict) -> str:
-    """Runs STEPS in order. A step that raises, or returns no text, is logged and skipped,
-    leaving the brief as it was."""
-    for step in STEPS:
-        name = getattr(step, "__name__", repr(step))
-        try:
-            out = await step(brief, tool_input)
-        except Exception as e:
-            log("brief", "%s failed, skipped: %s" % (name, e))
-            continue
-        if not isinstance(out, str):
-            log("brief", "%s gave no text, skipped" % name)
-            continue
-        brief = out
-    return brief
+async def compose(brief: str, task: str, cfg: ImplementerConfig, run: VfgRunner) -> str:
+    """The brain's brief, the task line and the saved places, then the EXAMPLES block for the brief."""
+    places, block = await asyncio.gather(saved_places(run), examples.build(cfg, brief, task, run),
+                                         return_exceptions=True)
+    head = task_line(task)
+    if isinstance(places, BaseException):
+        log("brief", "%s: the saved places failed, left out: %s" % (task, places))
+    else:
+        head += "\n" + places
+    out = "%s\n\n%s" % (brief.rstrip(), head)
+    if isinstance(block, BaseException):
+        log("brief", "%s: the EXAMPLES block failed, left out: %s" % (task, block))
+        return out
+    return "%s\n\n%s" % (out, block)

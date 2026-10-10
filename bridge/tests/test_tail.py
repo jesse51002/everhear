@@ -1,14 +1,12 @@
 """The console tail and the watchers: rows, GAME lines, watch.json, offsets, rotation, dates."""
 
-import datetime as _dt
 import json
 import os
 import threading
-import time
 import unittest
 
 import vfg_feed
-from vfg_bridge import console, timeutil, watch as watchmod
+from vfg_bridge import console, watch as watchmod
 
 from helpers import Box, FakeClock, at as at_
 
@@ -17,10 +15,6 @@ NOW = "2026-10-07T18:30:00.250Z"
 
 def line(hms, message, thread="Server thread", level="INFO"):
     return "[%s] [%s/%s]: %s" % (hms, thread, level, message)
-
-
-def now_line(message, **kw):
-    return line(timeutil.utcnow().strftime("%H:%M:%S"), message, **kw)
 
 
 class TailCase(Box):
@@ -42,17 +36,6 @@ class TailCase(Box):
         self.addCleanup(tail.close)
         return tail
 
-    def run_tail(self, tail):
-        stop = threading.Event()
-        thread = threading.Thread(target=tail.run, args=(stop,), daemon=True)
-        thread.start()
-
-        def finish():
-            stop.set()
-            thread.join(5)
-        self.addCleanup(finish)
-        return finish
-
     def chats(self):
         return self.query("SELECT player_name, source, text FROM lines ORDER BY at, id")
 
@@ -65,13 +48,23 @@ class TailCase(Box):
     def sys_lines(self):
         return [ln for ln in self.feed_lines() if ln.startswith("SYS#")]
 
-    def wait_for(self, predicate, seconds):
-        deadline = time.monotonic() + seconds
-        while time.monotonic() < deadline:
-            if predicate():
-                return True
-            time.sleep(0.05)
-        return predicate()
+
+class Ticks:
+    """A stop event for Tail.run that never sleeps: its n-th wait runs the n-th step,
+    and it is set once the last step has had a poll after it."""
+
+    def __init__(self, *steps):
+        self.steps = steps
+        self.waits = []
+
+    def is_set(self):
+        return len(self.waits) > len(self.steps)
+
+    def wait(self, seconds):
+        self.waits.append(seconds)
+        if len(self.waits) <= len(self.steps):
+            self.steps[len(self.waits) - 1]()
+        return self.is_set()
 
 
 class TestRows(TailCase):
@@ -107,13 +100,17 @@ class TestRows(TailCase):
                          " jev_class, jev_confidence, jev_judged_at, fed_at FROM lines LIMIT 1")[0]
         self.assertEqual(row, (None,) * 9)
 
-    def test_appended_lines_are_rows_within_a_second(self):
+    def test_the_thread_polls_every_200_ms_and_saves_the_offset_on_the_way_out(self):
         self.console("")
-        tail = self.make_tail(clock=timeutil.utcnow, start=False, watch_every=1, save_every=1)
-        self.run_tail(tail)
-        time.sleep(0.3)
-        self.console(now_line("<Steve> quick"), now_line("Steve joined the game"))
-        self.assertTrue(self.wait_for(lambda: len(self.chats()) == 1 and len(self.events()) == 1, 1.0))
+        tail = self.make_tail(start=False)
+        stop = Ticks(lambda: self.console(line("18:29:59", "<Steve> quick"),
+                                          line("18:29:59", "Steve joined the game")))
+        tail.run(stop)
+        self.assertEqual(stop.waits, [0.2, 0.2])
+        self.assertEqual((len(self.chats()), len(self.events())), (1, 1))
+        with open(os.path.join(self.state_dir, "console.offset"), encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["offset"], os.path.getsize(self.console_path))
+        self.assertIsNone(tail.fd)
 
     def test_first_run_starts_at_the_end(self):
         self.console(line("18:20:00", "<Steve> old history"))
@@ -229,20 +226,22 @@ class TestWatchers(TailCase):
             self.assertEqual(json.load(f), {"events": ["join", "leave", "death", "advancement", "server"],
                                             "players": [], "contains": []})
 
-    def test_replacing_watch_json_takes_effect_within_two_seconds(self):
+    def test_replacing_watch_json_takes_effect_within_a_second(self):
+        now = [100.0]
         self.console("")
-        tail = self.make_tail(clock=timeutil.utcnow, start=False, watch_every=1, save_every=1)
-        self.run_tail(tail)
-        time.sleep(0.3)
+        tail = self.make_tail(watch_every=1.0, monotonic=lambda: now[0])
+        tail.poll_once()
         self.write_watch('{"events": ["leave"], "players": [], "contains": []}')
-        started = time.monotonic()
-        self.assertTrue(self.wait_for(lambda: self.watch.current.events == ("leave",), 2.0))
-        self.assertLess(time.monotonic() - started, 2.0)
-        self.console(now_line("Steve joined the game"), now_line("Steve left the game"))
-        self.assertTrue(self.wait_for(lambda: len(self.events()) == 2, 1.0))
-        time.sleep(0.3)
-        self.assertEqual([g.split(" ", 2)[2] for g in self.game()],
-                         ["leave Steve | Steve left the game"])
+        now[0] += 0.9
+        tail.poll_once()
+        self.assertEqual(self.watch.current.events, watchmod.KINDS)
+        now[0] += 0.1
+        tail.poll_once()
+        self.assertEqual(self.watch.current.events, ("leave",))
+        self.console(line("18:29:58", "Steve joined the game"), line("18:29:59", "Steve left the game"))
+        tail.poll_once()
+        self.assertEqual(len(self.events()), 2)
+        self.assertEqual(self.game(), ["GAME#1 18:29:59 leave Steve | Steve left the game"])
 
     def test_bad_json_writes_one_sys_line_and_keeps_the_old_watchers(self):
         self.write_watch('{"events": ["death"]}')

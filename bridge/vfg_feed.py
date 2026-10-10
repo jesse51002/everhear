@@ -30,7 +30,7 @@ __all__ = [
     "parse_time", "format_time", "utcnow", "clean_text", "clean_fields",
 ]
 
-TYPES = ("LINE", "GAME", "ORCH", "SYS")
+TYPES = ("LINE", "GAME", "AI", "SYS")
 
 DEFAULT_DB = "/opt/vfg/vfg.db"
 DEFAULT_FEED = "/opt/vfg/feed.log"
@@ -42,11 +42,13 @@ BUSY_TIMEOUT_MS = 10000
 
 UTC = _dt.timezone.utc
 
-# Section 7's field grammar, per type.
-GAME_RE = re.compile(r"^(join|leave|death|advancement|server|raw) ([A-Za-z0-9_]{1,16}|-)$")
-ORCH_RE = re.compile(r"^T\d+ (progress|done|failed)$")
+# Section 7's field grammar, per type.  GAME takes any kind: the bridge's, and
+# what else posts one.
+GAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31} ([A-Za-z0-9_]{1,16}|-)$")
+AI_RE = re.compile(r"^(say|action|task|result|note) (T\d+|-)$")
 LINE_RE = re.compile(
-    r"^[A-Za-z0-9_]{1,16} (voice|chat) (direct_ask|context) (\d\.\d\d|-) (-?\d+dB|-)( was=not_useful)?$"
+    r"^[A-Za-z0-9_]{1,16} (voice|chat) (action_oriented|conversational|context) (\d\.\d\d|-) (-?\d+dB|-)"
+    r"( was=not_relevant)?$"
 )
 
 # An incoming time: what a Java Instant prints (0-9 fraction digits), or any offset.
@@ -54,7 +56,7 @@ TIME_RE = re.compile(
     r"^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(?:\.(\d{1,9}))?(Z|[+-]\d\d:\d\d)$"
 )
 
-_SEQ_RE = re.compile(rb"^(?:LINE|GAME|ORCH|SYS)#(\d+) ")
+_SEQ_RE = re.compile(rb"^[A-Z]+#(\d+) ")  # any type, a retired one too
 # C0, DEL, C1, and the two Unicode line separators.
 _CONTROL_RE = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 _SPACES_RE = re.compile(" {2,}")
@@ -146,9 +148,9 @@ def _check(type_, fields):
     if type_ == "GAME":
         if not GAME_RE.fullmatch(fields):
             raise ValueError("GAME fields must match %s, got %r" % (GAME_RE.pattern, fields))
-    elif type_ == "ORCH":
-        if not ORCH_RE.fullmatch(fields):
-            raise ValueError("ORCH fields must match %s, got %r" % (ORCH_RE.pattern, fields))
+    elif type_ == "AI":
+        if not AI_RE.fullmatch(fields):
+            raise ValueError("AI fields must match %s, got %r" % (AI_RE.pattern, fields))
     elif type_ == "SYS":
         if fields:
             raise ValueError("SYS takes no fields, got %r" % (fields,))

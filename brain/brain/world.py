@@ -1,0 +1,188 @@
+"""The world as a call sees it: every online player's place and items by slot, the time and the
+weather (one `vfg state --json --items`), the running copies (running.json, kept fresh by
+running.Refresher), the saved places (`vfg place list`) and the incantations (`vfg incantation
+list --json`).
+
+A live brain call wants the world as it is now, so it fetches the state, unless a snapshot
+younger than STATE_FRESH_S is there to share; past STATE_WAIT_S it goes on with the last good
+one, and the fetch finishes for the next call. Respond takes the last snapshot without waiting:
+banter needs no fresh position. The incantations change rarely and are fetched at most every
+INCANTATIONS_TTL_S; until `vfg incantation` exists they are "none".
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from . import running
+from .config import log
+from .listing import readable
+from .vfg import Vfg, why
+
+STATE_FRESH_S = 2.0
+STATE_WAIT_S = 3.0
+STATE_TIMEOUT_S = 15.0
+INCANTATIONS_TTL_S = 30.0
+
+
+@dataclass
+class Seen:
+    """What one call is shown of the world."""
+    players: str = "PLAYERS ONLINE: unknown"
+    clock: str = "TIME: unknown. WEATHER: unknown."
+    running: str = "RUNNING NOW: none"
+    places: str = "SAVED PLACES: unknown"
+    incantations: str = "INCANTATIONS: none"
+    copies: dict[str, dict] = field(default_factory=dict)
+    known: set[str] | None = None  # the saved places' names; None when the list could not be read
+
+    def show(self) -> str:
+        parts = ("THE WORLD NOW:", self.players, self.clock, self.running, self.places, self.incantations)
+        return "\n".join(x for x in parts if x)
+
+
+def players(world: dict[str, Any] | None, items: bool = True) -> str:
+    """PLAYERS ONLINE, each with where they are and, with `items`, their items by slot."""
+    if not isinstance(world, dict):
+        return "PLAYERS ONLINE: unknown (the server's state could not be read)"
+    if world.get("rcon"):
+        return f"PLAYERS ONLINE: unknown (Minecraft did not answer: {world['rcon']})"
+    rows = []
+    for p in world.get("online") or []:
+        where = " ".join(str(c) for c in p["pos"]) if p.get("pos") else "?"
+        row = f"- {p.get('name')} at {where} in {p.get('dimension') or '?'}"
+        if items:
+            row += ": " + (readable([str(x) for x in p.get("items") or []]) or "items unknown")
+        rows.append(row)
+    return "PLAYERS ONLINE:\n" + ("\n".join(rows) or "nobody")
+
+
+def clock(world: dict[str, Any] | None) -> str:
+    if not isinstance(world, dict) or world.get("rcon"):
+        return "TIME: unknown. WEATHER: unknown."
+    t = world.get("time") or {}
+    day = f", day {t['day']}" if isinstance(t.get("day"), int) else ""
+    now = f"{t.get('phase') or '?'} ({t.get('daytime', '?')}{day})"
+    return f"TIME: {now}. WEATHER: {world.get('weather') or 'unknown'}."
+
+
+def incantation_lines(data: Any) -> str:
+    """`vfg incantation list --json` as one line each: the phrase, whose, and what it fires."""
+    items = data.get("incantations", data) if isinstance(data, dict) else data
+    if isinstance(items, dict):
+        items = [{"phrase": k, **(v if isinstance(v, dict) else {"action": v})} for k, v in items.items()]
+    rows = []
+    for x in items if isinstance(items, list) else []:
+        if not isinstance(x, dict):
+            rows.append(f"- {x}")
+            continue
+        values = x.get("values") if isinstance(x.get("values"), dict) else {}
+        said = " ".join(f"{k}={json.dumps(v) if isinstance(v, (list, dict)) else v}" for k, v in values.items())
+        rows.append(f"- \"{x.get('phrase', '?')}\" for {x.get('player') or '?'}: {x.get('action') or '?'}"
+                    + (f" {said}" if said else ""))
+    if not rows:
+        return "INCANTATIONS: none"
+    return "INCANTATIONS (a phrase a player says that fires an action at once, without you):\n" + "\n".join(rows)
+
+
+class World:
+    def __init__(self, vfg: Vfg, running_file: Path, catalog, *, refresher: running.Refresher | None = None,
+                 clock=time.monotonic):
+        self.vfg = vfg
+        self.running_file = running_file
+        self.catalog = catalog
+        self.refresher = refresher
+        self.clock = clock
+        self.state: dict[str, Any] | None = None   # the last good `vfg state --json --items`
+        self.state_at = float("-inf")
+        self.fetching: asyncio.Task | None = None
+        self.incantations = "INCANTATIONS: none"
+        self.incantations_at = float("-inf")
+        self.later: set[asyncio.Task] = set()
+
+    async def fresh_state(self, wait: float = STATE_WAIT_S) -> dict[str, Any] | None:
+        """The state now: a snapshot younger than STATE_FRESH_S, else a fetch, waited for up to
+        `wait` s; past it (or with `wait` 0) the last good one, while the fetch goes on."""
+        if self.state is not None and self.clock() - self.state_at < STATE_FRESH_S:
+            return self.state
+        if self.fetching is None or self.fetching.done():
+            self.fetching = asyncio.create_task(self._fetch_state(), name="state")
+        if wait > 0:
+            try:
+                await asyncio.wait_for(asyncio.shield(self.fetching), wait)
+            except TimeoutError:
+                log("world", f"vfg state took over {wait:g} s: the last state there is")
+        return self.state
+
+    async def _fetch_state(self) -> None:
+        t0 = time.perf_counter()
+        r = await self.vfg("state", "--json", "--items", timeout=STATE_TIMEOUT_S)
+        try:
+            got = json.loads(r.stdout) if r.code in (0, 5) else None
+        except ValueError:
+            got = None
+        if not isinstance(got, dict):
+            log("world", f"vfg state failed ({why(r)}), {int((time.perf_counter() - t0) * 1000)} ms")
+            return
+        self.state, self.state_at = got, self.clock()
+
+    async def places(self) -> tuple[str, set[str] | None]:
+        """The `SAVED PLACES: …` line, from `vfg place list` (vfg answers from its 30 s cache), and
+        the places' names (None when the list could not be read)."""
+        r = await self.vfg("place", "list", timeout=10)
+        if r.code != 0:
+            log("world", f"vfg place list failed ({why(r)})")
+            return "SAVED PLACES: unknown (the list could not be read)", None
+        lines = [x.strip() for x in r.stdout.splitlines() if x.strip() and x.strip() != "none"]
+        return "SAVED PLACES: " + ("; ".join(lines) or "none"), {x.split()[0] for x in lines}
+
+    async def fetch_incantations(self) -> str:
+        if self.clock() - self.incantations_at < INCANTATIONS_TTL_S:
+            return self.incantations
+        self.incantations_at = self.clock()
+        r = await self.vfg("incantation", "list", "--json", timeout=10)
+        try:
+            self.incantations = incantation_lines(json.loads(r.stdout)) if r.code == 0 else "INCANTATIONS: none"
+        except ValueError:
+            self.incantations = "INCANTATIONS: none"
+        return self.incantations
+
+    def copies(self) -> dict[str, dict]:
+        return running.read(self.running_file)
+
+    async def seen(self, *, wait: float = STATE_WAIT_S, items: bool = True) -> Seen:
+        """The world for one call: the state, the places and the incantations at once."""
+        state, (places, known), incantations = await asyncio.gather(
+            self.fresh_state(wait), self.places(), self.fetch_incantations())
+        copies = self.copies()
+        return Seen(players=players(state, items), clock=clock(state), running=running.block(copies, self.catalog),
+                    places=places, incantations=incantations, copies=copies, known=known)
+
+    async def glance(self) -> Seen:
+        """For Respond: the last state, never waited for (one is fetched for the next call), with
+        no items, the running copies and the incantations as last fetched; no places."""
+        state = await self.fresh_state(wait=0)
+        copies = self.copies()
+        return Seen(players=players(state, items=False), clock=clock(state),
+                    running=running.block(copies, self.catalog), places="", incantations=self.incantations,
+                    copies=copies)
+
+    def refetch_running(self) -> None:
+        """After a run, an edit or a stop: fetch the running copies again, in the background."""
+        if self.refresher is not None:
+            t = asyncio.create_task(self.refresher.fetch(), name="running refetch")
+            self.later.add(t)
+            t.add_done_callback(self.later.discard)
+
+    async def close(self) -> None:
+        for t in [self.fetching, *self.later]:
+            if t is not None and not t.done():
+                t.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await t

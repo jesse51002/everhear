@@ -25,14 +25,14 @@ import re
 import sqlite3
 import sys
 
-TYPES = ("LINE", "GAME", "ORCH", "SYS")
+TYPES = ("LINE", "GAME", "AI", "SYS")
 TEXT_MAX = 500
 UTC = dt.timezone.utc
 
-LINE_RE = re.compile(
-    r"^[A-Za-z0-9_]{1,16} (voice|chat) (direct_ask|context) (\d\.\d\d|-) (-?\d+dB|-)( was=not_useful)?$")
-GAME_RE = re.compile(r"^(join|leave|death|advancement|server|raw) ([A-Za-z0-9_]{1,16}|-)$")
-ORCH_RE = re.compile(r"^T\d+ (progress|done|failed)$")
+LINE_RE = re.compile(r"^[A-Za-z0-9_]{1,16} (voice|chat) (action_oriented|conversational|context) "
+                     r"(\d\.\d\d|-) (-?\d+dB|-)( was=not_relevant)?$")
+GAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31} ([A-Za-z0-9_]{1,16}|-)$")
+AI_RE = re.compile(r"^(say|action|task|result|note) (T\d+|-)$")
 TIME_RE = re.compile(r"^(\d{4}-\d\d-\d\d)T(\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(Z|[+-]\d\d:\d\d)$")
 _SEQ = re.compile(r"^[A-Z]+#(\d+) ")
 _CONTROL = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")
@@ -79,7 +79,7 @@ def _prepare(entry):
     if kind not in TYPES:
         raise ValueError("unknown feed type %r" % (kind,))
     fields = clean_fields(fields)
-    rule = {"LINE": LINE_RE, "GAME": GAME_RE, "ORCH": ORCH_RE}.get(kind)
+    rule = {"LINE": LINE_RE, "GAME": GAME_RE, "AI": AI_RE}.get(kind)
     if rule is not None and not rule.match(fields):
         raise ValueError("%s fields %r do not match §7" % (kind, fields))
     if kind == "SYS" and fields:

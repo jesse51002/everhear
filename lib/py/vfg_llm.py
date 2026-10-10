@@ -9,6 +9,11 @@ Anything else is an LlmError, whose message never carries the key. Reasoning is
 off unless asked for: speed comes first. `providers` names OpenRouter providers to try
 first, in that order, falling back to the rest; without it OpenRouter chooses.
 
+What goes before the prompt can be cached: `cached` is a fixed opening, or several blocks
+(the brain's opening, then its conversation a minute-block at a time), each marked for the
+prompt cache or not. A model that bills cache writes, GPT-6.1 Sol among them, caches nothing
+unless a block is marked, and caches up to the last mark it finds again.
+
 The key: OPEN_ROUTER_API from the environment; else the file VFG_OPENROUTER_KEY
 names (environment, then ~/.vfg/config; default ~/.vfg/openrouter.key), which holds
 the key alone.
@@ -19,6 +24,7 @@ import contextlib
 import logging
 import os
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Generic, TypeVar
 
@@ -29,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 RETRY_WAIT = 1.0  # seconds
+MAX_MARKS = 4     # cache_control marks one request may carry (Anthropic's limit; OpenRouter passes it on)
 
 # Sent through instead of a fresh client per call: a long-running caller sets it to
 # keep one connection pool warm, and the tests set it to a MockTransport client.
@@ -41,6 +48,11 @@ class Answer(BaseModel, Generic[T]):
     value: T
     cost: float  # dollars: OpenRouter's usage.cost, summed over every attempt
     ms: int
+    # OpenRouter's usage, summed over every attempt: the prompt, the part of it read from the
+    # cache (cached / prompt is the cache rate), and the answer
+    prompt_tokens: int = 0
+    cached_tokens: int = 0
+    completion_tokens: int = 0
 
 
 class LlmError(Exception):
@@ -74,15 +86,20 @@ async def structured(
     reasoning: bool | str = False,
     timeout: float = 30,
     providers: list[str] | None = None,
+    cached: str | Sequence[tuple[str, bool]] | None = None,
 ) -> Answer[T]:
     """Ask `model` for an `output`. `timeout` bounds the whole call, retries included.
     `reasoning=True` leaves the model's own default, which may be to think first; a string
     ("low", "medium", "high") asks for that effort, for a model that cannot turn it off.
     `providers`: OpenRouter provider slugs to try first, in order ("parasail", "wafer"),
-    falling back to the others; None leaves the choice to OpenRouter."""
+    falling back to the others; None leaves the choice to OpenRouter.
+    `cached`: what the user message holds before `prompt`: one fixed opening, marked for the
+    prompt cache (cache_control), or blocks as (text, marked), at most MAX_MARKS marked. A
+    cached 9K-token opening cost $0.0015 a Sol call instead of $0.023, and a conversation
+    marked every five minute-blocks kept 98% of a batch call's prompt cached."""
     key = _key()
     messages = [{"role": "system", "content": system}] if system else []
-    messages.append({"role": "user", "content": prompt})
+    messages.append({"role": "user", "content": user_content(prompt, cached)})
     schema = output.model_json_schema()
     if model.startswith("openai/"):
         schema = strict_schema(schema)
@@ -94,6 +111,7 @@ async def structured(
             "json_schema": {"name": output.__name__, "schema": schema},
         },
         "provider": {"require_parameters": True},
+        "usage": {"include": True},
     }
     if providers:
         body["provider"] = {"order": list(providers), "allow_fallbacks": True, "require_parameters": True}
@@ -101,12 +119,16 @@ async def structured(
         body["reasoning"] = {"effort": reasoning}
     elif not reasoning:
         body["reasoning"] = {"enabled": False}
-    t0, cost = time.perf_counter(), 0.0
+    t0, cost, tokens = time.perf_counter(), 0.0, [0, 0, 0]
     try:
         async with asyncio.timeout(timeout), _session() as http:
             for attempt in (1, 2):
                 got = await _post(http, body, key, timeout)
-                cost += float((got.get("usage") or {}).get("cost") or 0)
+                usage = got.get("usage") or {}
+                cost += float(usage.get("cost") or 0)
+                tokens[0] += int(usage.get("prompt_tokens") or 0)
+                tokens[1] += int((usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
+                tokens[2] += int(usage.get("completion_tokens") or 0)
                 text = _content(got)
                 try:
                     value = output.model_validate_json(text)
@@ -126,7 +148,24 @@ async def structured(
                 ]
     except TimeoutError:
         raise LlmError(f"no answer from {model} within {timeout:g} s") from None
-    return Answer[output](value=value, cost=cost, ms=int((time.perf_counter() - t0) * 1000))
+    return Answer[output](value=value, cost=cost, ms=int((time.perf_counter() - t0) * 1000),
+                          prompt_tokens=tokens[0], cached_tokens=tokens[1], completion_tokens=tokens[2])
+
+
+def user_content(prompt: str, cached: str | Sequence[tuple[str, bool]] | None) -> str | list[dict]:
+    """The user message's content: the prompt alone, or one text part per block, then the prompt.
+    Each block keeps a part of its own, marked or not, so the text is the same from one call to
+    the next wherever the marks move."""
+    if not cached:
+        return prompt
+    blocks = [(cached, True)] if isinstance(cached, str) else list(cached)
+    if sum(1 for _, marked in blocks if marked) > MAX_MARKS:
+        raise ValueError(f"at most {MAX_MARKS} cached blocks may be marked")
+    parts = []
+    for text, marked in blocks:
+        if text:
+            parts.append({"type": "text", "text": text, **({"cache_control": {"type": "ephemeral"}} if marked else {})})
+    return parts + [{"type": "text", "text": prompt}]
 
 
 def _session():

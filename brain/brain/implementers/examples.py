@@ -1,5 +1,5 @@
 """The EXAMPLES block: what an implementer starts with for its own job, added to its brief by the
-guard (brief.STEPS) so it never spends a turn looking. Its static part — its rules, the kit, the
+runner (brief.compose) so it never spends a turn looking. Its static part — its rules, the kit, the
 first lines of the library's presets and scripts — is in its system prompt (prefix.py); this is
 the part that changes:
 
@@ -28,10 +28,9 @@ names, and the script of every running copy the brief names, with that copy's va
 
 `vfg route` (route.py), `vfg state --json` and the actions cache are read at once; whatever fails,
 the block says what is missing and the brief still goes, never more than VFG_ROUTE_TIMEOUT_S and a
-second after the guard asked for the router and the state, and ACTIONS_TIMEOUT_S for the actions
-(a fresh cache is one file read; a rebuild after an action file changed loads that file).
-
-The runner turns it on with use(cfg, store); until then the step leaves a brief as it is."""
+second after the runner asked for the router and the state, and ACTIONS_TIMEOUT_S for the actions
+(a fresh cache is one file read; a rebuild after an action file changed loads that file). The
+picks go into the brain's log, never into its tasks.json, which the brain alone writes."""
 import asyncio
 import importlib.util
 import json
@@ -43,52 +42,18 @@ from typing import Any
 
 from . import actions
 from . import route as routing
-from . import vfg as vfg_module
-from .config import Config, log
-from .tasks import Store
-from .vfg import why
+from .config import ROOT, ImplementerConfig, log
+from .vfg import VfgRunner, why
 
-# toolkit/lib/library.py of the repo this orchestrator is in: how vfg itself reads the library and
+# toolkit/lib/library.py of the repo this brain/ is in: how vfg itself reads the library and
 # made/<server>/ (names, first lines, files), so a name or a first line here is the same as there.
-TOOLKIT_LIB = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))),
-                           "toolkit", "lib")
+TOOLKIT_LIB = os.path.join(ROOT, "toolkit", "lib")
 
 # The whole step, past VFG_ROUTE_TIMEOUT_S: the implementer is never held up longer for the router
 # and the state.
 STEP_SLACK_S = 1.0
 # The actions cache, from the step's start: a rebuild after an action file changed loads it again.
 ACTIONS_TIMEOUT_S = 10.0
-
-
-@dataclass
-class Setup:
-    cfg: Config
-    store: Store | None
-
-
-_setup: Setup | None = None
-
-
-def use(cfg: Config, store: Store | None) -> None:
-    """Turns the step on: the runner's config (repo, server, route timeout) and its task store."""
-    global _setup
-    _setup = Setup(cfg, store)
-
-
-def reset() -> None:
-    """Turns it off again (tests)."""
-    global _setup
-    _setup = None
-
-
-async def examples(brief: str, tool_input: dict) -> str:
-    """The BriefStep: the brief, then the EXAMPLES block for its job."""
-    s = _setup
-    if s is None:
-        return brief
-    job = tool_input.get("prompt") if isinstance(tool_input.get("prompt"), str) else brief
-    block = await build(s.cfg, s.store, job, str(tool_input.get("description") or ""))
-    return "%s\n\n%s" % (brief.rstrip(), block)
 
 
 # ------------------------------------------------------------------ the library, read as vfg does
@@ -140,18 +105,12 @@ def names_in(text: str, names: list[str]) -> list[str]:
     return out
 
 
-def task_id_in(text: str) -> str | None:
-    """The task id at the head of an implementer's description or brief ("T7 castle at spawn")."""
-    m = re.match(r"\s*(T\d+)\b", text or "", re.ASCII)
-    return m.group(1) if m else None
-
-
 # ------------------------------------------------------------------ the pieces
 
-async def server_state(timeout_s: float) -> tuple[dict | None, str | None]:
+async def server_state(timeout_s: float, run: VfgRunner) -> tuple[dict | None, str | None]:
     """`vfg state --json`: (the state, None), or (None, why not). Exit 5 is Minecraft not answering,
     with the rest of the state still printed."""
-    r = await vfg_module.vfg(["state", "--json"], timeout_s * 1000)
+    r = await run("state", "--json", timeout=timeout_s)
     try:
         data = json.loads(r.stdout) if r.stdout.strip() else None
     except ValueError:
@@ -161,33 +120,20 @@ async def server_state(timeout_s: float) -> tuple[dict | None, str | None]:
     return None, why(r)
 
 
-async def route_picks(job: str, task: str | None, timeout_s: float) -> tuple[dict | None, str | None]:
+async def route_picks(job: str, task: str | None, timeout_s: float, run: VfgRunner) -> tuple[dict | None, str | None]:
     try:
-        return await routing.run(job, task, timeout_s), None
+        return await routing.run(job, task, timeout_s, run), None
     except routing.RouteFailed as e:
         return None, str(e)
 
 
-async def read_actions(cfg: Config) -> tuple[dict | None, str | None]:
+async def read_actions(cfg: ImplementerConfig) -> tuple[dict | None, str | None]:
     """The actions cache, (it, None), or (None, why not); read in a thread, since a rebuild imports files."""
     try:
         return await asyncio.to_thread(actions.cache, cfg.repo, cfg.server, cfg.home), None
     except Exception as e:
         log("examples", "the actions cache could not be read: %s: %s" % (type(e).__name__, e))
         return None, ("%s: %s" % (type(e).__name__, e))[:200]
-
-
-async def warm(cfg: Config) -> None:
-    """Reads the actions cache once, building it if it is stale, and logs what is in it: the runner
-    calls it as it starts, so the first brief does not wait on a rebuild."""
-    data, failed = await read_actions(cfg)
-    if data is None:
-        log("examples", "actions: unavailable at start (%s); each brief tries again" % failed)
-        return
-    rows = actions.entries(data)
-    made = sum(1 for _, a in rows if a.get("source") != "library")
-    log("examples", "actions: %d in the cache (%d made on %s)%s" % (
-        len(rows), made, cfg.server, "; left out: %s" % ", ".join(sorted(data["errors"])) if data.get("errors") else ""))
 
 
 def and_list(names: list[str], word: str = "and") -> str:
@@ -352,14 +298,13 @@ def compose(g: Gathered, repo: str) -> str:
 
 # ------------------------------------------------------------------ the block
 
-async def build(cfg: Config, store: Store | None, job: str, description: str) -> str:
-    """The EXAMPLES block for one implementer's job; its picks go into the task's record."""
+async def build(cfg: ImplementerConfig, job: str, task: str | None, run: VfgRunner) -> str:
+    """The EXAMPLES block for one implementer's job, the brain's brief; its picks go into the log."""
     t0 = time.monotonic()
-    task = task_id_in(description) or task_id_in(job)
     budget = cfg.route_timeout_s + routing.SLACK_S
     acts_job = asyncio.ensure_future(read_actions(cfg))
-    jobs = {"route": asyncio.ensure_future(route_picks(job, task, cfg.route_timeout_s)),
-            "state": asyncio.ensure_future(server_state(budget))}
+    jobs = {"route": asyncio.ensure_future(route_picks(job, task, cfg.route_timeout_s, run)),
+            "state": asyncio.ensure_future(server_state(budget, run))}
     done, pending = await asyncio.wait(set(jobs.values()), timeout=cfg.route_timeout_s + STEP_SLACK_S)
     for p in pending:
         p.cancel()
@@ -396,13 +341,12 @@ async def build(cfg: Config, store: Store | None, job: str, description: str) ->
         add(s.get("path"))
     for p in (picks or {}).get("presets") or []:
         add(p.get("path"))
-    said = job + "\n" + description
     by_name = {it.name: it for it in scripts}
-    for name in names_in(said, list(by_name)):
+    for name in names_in(job, list(by_name)):
         if add(by_name[name].rel):
             g.named.append(by_name[name])
     for name, copy in sorted((copies or {}).items()):
-        if not names_in(said, [n for n in (name, copy.get("action"), copy.get("script")) if n]):
+        if not names_in(job, [n for n in (name, copy.get("action"), copy.get("script")) if n]):
             continue
         item = lib.script(copy.get("script") or "")
         g.changing.append((name, copy, item))
@@ -411,12 +355,9 @@ async def build(cfg: Config, store: Store | None, job: str, description: str) ->
 
     block = compose(g, cfg.repo)
     ms = int((time.monotonic() - t0) * 1000)
-    routing.record(store, task, description, {
-        "route": routing.summary(picks, route_failed), "loaded": g.files,
-        "named": [it.name for it in g.named], "changing": [n for n, _, _ in g.changing],
-        "state": "ok" if state is not None else state_failed,
-        "actions": len((acts or {}).get("actions") or {}) if acts is not None else acts_failed,
-        "ms": ms, "characters": len(block)})
+    log("route", "%s picks %s, loaded %s" % (
+        task or "-", json.dumps(routing.summary(picks, route_failed), ensure_ascii=False, separators=(",", ":")),
+        ", ".join(g.files) or "nothing"))
     log("examples", "%s: %d files (%d named, %d running), %d made, %s actions, state %s, %d characters in %d ms; %s" % (
         task or "-", len(g.files), len(g.named), len(g.changing), len(g.made),
         len((acts or {}).get("actions") or {}) if acts is not None else "no",
