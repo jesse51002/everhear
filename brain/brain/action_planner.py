@@ -17,6 +17,11 @@ with Minecraft's own reference in between:
 A retry after a failure is written with the references already sent in view, and is
 checked again only when it uses a new command.
 
+Steps 2 to 4 run only with `check` (VFG_PLAN_CHECK=on). Off, the default, the draft runs as
+written, a planner call sooner. In the brain the planner only retries a command Minecraft
+refused, and that retry is still written with the reference of every command the refused one
+used.
+
 `stop` and `edit` act on a running copy, and also see every running copy's line. The copy is
 the one the instruction names, when it names exactly one; for `edit`, the only one running,
 when one is; else the planner picks it from the lines. A stop whose copy is named needs no
@@ -61,7 +66,7 @@ class Planned(BaseModel, Generic[A]):
         None, description="the exact action to run, its values chosen; null when you hand it on or drop it"
     )
     hand_on: str = Field(
-        "", description="only when this action cannot do the instruction: what the orchestrator should do instead"
+        "", description="only when this action cannot do the instruction: what an implementer should do instead"
     )
     drop: str = Field(
         "", description="only when it is not needed or nothing can fix it: why, in words a player understands"
@@ -91,7 +96,7 @@ class Planned(BaseModel, Generic[A]):
 
 class Final(BaseModel):
     """After the last retry: only a hand-on or a drop is left."""
-    hand_on: str = Field("", description="what the orchestrator should do instead")
+    hand_on: str = Field("", description="what an implementer should do instead")
     drop: str = Field("", description="why it is dropped, in words a player understands")
     say: str = Field(description="one sentence for the conversation: what happened to this action, for whom")
 
@@ -221,9 +226,10 @@ class Checked:
 
 class Planner:
     def __init__(self, ask, model: str, refs, *, hidden: frozenset[str] = frozenset(), log=default_log,
-                 prompt: Path = PROMPT):
+                 prompt: Path = PROMPT, check: bool = False):
         self.ask = ask
         self.model = model
+        self.check = check  # VFG_PLAN_CHECK: the approve call before a drafted command runs
         self.refs = refs  # the latest; each task takes them as they are when it starts (Pick.refs)
         self.hidden = hidden  # left out of the command list: block and owner commands
         self.log = log
@@ -312,13 +318,15 @@ class Planner:
         Out = planned_type(name, planner_model(cls), needs=fields)
         head = view(name, cls)
         if p.refs is None:
-            return Final(hand_on=p.instruction, say=f"the orchestrator will do this: {p.instruction}")
+            return Final(hand_on=p.instruction, say=f"an implementer would do this: {p.instruction}")
         if failure is None:
             planned = await self._call(f"{name} draft", self.draft_prompt(head, p), Out, p)
         else:
             reference = p.refs.reference(checked.names, checked.subs) if checked.names else ""
             planned = await self._call(f"{name} retry", self.retry_prompt(head, p, last, failure, False, reference),
                                        Out, p)
+        if not self.check:
+            return planned
         approvals = 0
         while planned.action is not None:
             commands = commands_in(planned.action.model_dump(mode="json"), fields)
@@ -372,7 +380,7 @@ class Planner:
         copy_cls = p.catalog.get(action) if p.catalog is not None else None
         if copy_cls is None:
             return Final(hand_on=f"{p.instruction} (the copy {p.copy}'s action {action or '?'} is not loaded)",
-                         say=f"the orchestrator will change {p.copy}")
+                         say=f"an implementer would change {p.copy}")
         head = self.edit_head(cls, p, copy_cls)
         if final:
             return await self._call("edit last", self.retry_prompt(head, p, last, failure or "", True),
