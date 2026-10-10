@@ -173,40 +173,19 @@ async def test_a_change_a_cancel_an_undo_or_a_build_reaches_the_selector(h, task
     assert [c.output for c in h.llm.calls] == ["Selection"]  # the parts and the prompt decide, not a regex
 
 
-CASTLE = '''
-    from actions._types import Action, Field, Place
-
-
-    class Castle(Action):
-        """Build a stone castle at a place."""
-
-        script = "castle"
-        runs = "once"
-        takes = ["at", "size"]
-        timeout_s = 90
-
-        at: Place = ""
-        """where: a saved place's name, x y z, or a player's name"""
-        size: int = Field(20, ge=10, le=60)
-        """how wide it is, in blocks"""
-'''
-
-
 async def test_a_build_an_action_does_goes_straight_to_the_game_at_a_saved_place(tmp_path):
-    cat = catalog()
-    made(cat, "castle", CASTLE)
-    h = Harness(tmp_path, cat=cat)
+    h = Harness(tmp_path, cat=catalog())  # the library's castle action
     h.vfg.on("place", "list", answer=ok_lines("home 10 64 10 overworld (T2)"))
     h.llm.add("Selection", select(("castle", "a castle at the saved place home")))
-    h.llm.add("Planned_castle", planned({"at": "Home", "size": 20}, say="a castle at home"))
+    h.llm.add("Planned_castle", planned({"castle_at": "Home", "castle_size": 31}, say="a castle at home"))
     h.vfg.on("action", "run", "castle", answer=ok("built a castle at home, 10 64 10", copy="castle", action="castle"))
 
     tid = await h.run("build a castle at home")
 
     assert h.vfg.hands() == []  # no regex hands a build on any more
     [run] = h.vfg.actions()
-    assert args_of(run) == {"at": "home", "size": "20"}  # the saved place's name, checked
-    assert h.vfg.timeouts[h.vfg.calls.index(run)] == 90 + GRACE_S
+    assert args_of(run) == {"castle_at": "home", "castle_size": "31"}  # the saved place's name, checked
+    assert h.vfg.timeouts[h.vfg.calls.index(run)] == 120 + GRACE_S  # its timeout_s
     assert h.vfg.replies(tid) == [(tid, "done", "a castle at home — built a castle at home, 10 64 10")]
 
 
