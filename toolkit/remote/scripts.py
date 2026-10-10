@@ -14,8 +14,8 @@
 # `run` deploys, starts the copy (instances.Box.start) and waits: a once copy until it ends or
 # "wait" s pass, an until-stopped one until its first result() or "wait" s (the 2 s check). It
 # prints one JSON object: {"copy", "pid", "started", "running", "code", "result", "tail"}, "tail"
-# being the last lines it printed when it ended with an error. Minecraft not answering RCON is
-# exit 5, before anything starts.
+# being the last lines it printed when it ended with an error. Before anything starts: Minecraft
+# not answering RCON is exit 5, the script not deployed 3, `as=` a running copy's name 1.
 import base64
 import io
 import re
@@ -33,8 +33,27 @@ def box(rcon=None):
                          poll=ARGS.get("poll") or 0.5, rcon=rcon)
 
 
+def on_disk(folder):
+    """{path from the folder: (exec bit, bytes)} of what is deployed there; no caches."""
+    got = {}
+    for dirpath, dirnames, filenames in os.walk(folder):
+        dirnames[:] = [d for d in dirnames if d != "__pycache__" and not d.startswith(".")]
+        for fn in filenames:
+            if fn.endswith(".pyc") or fn.startswith("."):
+                continue
+            path = os.path.join(dirpath, fn)
+            try:
+                with open(path, "rb") as f:
+                    got[os.path.relpath(path, folder)] = (bool(os.stat(path).st_mode & 0o111), f.read())
+            except OSError:
+                return None
+    return got
+
+
 def deploy(b64, root="scripts"):
-    """Unpack a tar.gz into <root>/.incoming-<pid>/, then swap each folder in."""
+    """Unpack a tar.gz into <root>/.incoming-<pid>/, then swap each folder in, one deploy at
+    a time. A folder the box has already, file for file, is left as it is: a copy starting
+    meanwhile never finds its _lib half swapped."""
     if not ROOT_RE.match(root):
         die(1, "deploy refused: %r is not a scripts folder" % root)
     dest_root = os.path.join(BASE, *root.split("/"))
@@ -45,7 +64,7 @@ def deploy(b64, root="scripts"):
         members = tf.getmembers()
     except Exception as e:
         die(1, "deploy refused: not a readable tar (%s)" % e)
-    tops = []
+    tops, files = [], {}
     for m in members:
         name = m.name
         parts = name.split("/")
@@ -58,31 +77,36 @@ def deploy(b64, root="scripts"):
             die(1, "deploy refused: %r is not a script name" % top)
         if top not in tops:
             tops.append(top)
-    incoming = os.path.join(dest_root, ".incoming-%d" % os.getpid())
-    shutil.rmtree(incoming, ignore_errors=True)
-    os.makedirs(incoming)
-    try:
-        for m in members:
-            dest = os.path.join(incoming, *[p for p in m.name.split("/") if p])
-            if m.isdir():
-                os.makedirs(dest, exist_ok=True)
-                continue
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            src = tf.extractfile(m)
-            with open(dest, "wb") as f:
-                shutil.copyfileobj(src, f)
-            os.chmod(dest, 0o755 if m.mode & 0o111 else 0o644)
-        for top in tops:
-            new = os.path.join(incoming, top)
-            cur = os.path.join(dest_root, top)
-            old = os.path.join(dest_root, ".old-%s-%d" % (top, os.getpid()))
-            if os.path.lexists(cur):
-                os.rename(cur, old)
-            os.rename(new, cur)
-            if os.path.lexists(old):
-                shutil.rmtree(old, ignore_errors=True)
-    finally:
+        if m.isfile():
+            files.setdefault(top, {})["/".join(parts[1:])] = (bool(m.mode & 0o111), tf.extractfile(m).read())
+    with instances._Flock(os.path.join(RUN, "deploy.lock")):
+        swap = [t for t in tops if on_disk(os.path.join(dest_root, t)) != files.get(t, {})]
+        incoming = os.path.join(dest_root, ".incoming-%d" % os.getpid())
         shutil.rmtree(incoming, ignore_errors=True)
+        os.makedirs(incoming)
+        try:
+            for m in members:
+                if m.name.split("/")[0] not in swap:
+                    continue
+                dest = os.path.join(incoming, *[p for p in m.name.split("/") if p])
+                if m.isdir():
+                    os.makedirs(dest, exist_ok=True)
+                    continue
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(dest, "wb") as f:
+                    f.write(files[m.name.split("/")[0]]["/".join(m.name.split("/")[1:])][1])
+                os.chmod(dest, 0o755 if m.mode & 0o111 else 0o644)
+            for top in swap:
+                new = os.path.join(incoming, top)
+                cur = os.path.join(dest_root, top)
+                old = os.path.join(dest_root, ".old-%s-%d" % (top, os.getpid()))
+                if os.path.lexists(cur):
+                    os.rename(cur, old)
+                os.rename(new, cur)
+                if os.path.lexists(old):
+                    shutil.rmtree(old, ignore_errors=True)
+        finally:
+            shutil.rmtree(incoming, ignore_errors=True)
     return sorted(tops, key=lambda t: (t != "_lib", t))
 
 
@@ -140,6 +164,8 @@ def op_run():
     b = box()
     try:
         name, pid, proc = b.start(meta, ARGS.get("as"))
+    except instances.NotDeployed as e:
+        die(3, str(e))
     except instances.CopyError as e:
         die(1, str(e))
     got = b.wait(name, proc, float(ARGS.get("wait") or instances.CHECK_S), on_result=bool(ARGS.get("on_result")))

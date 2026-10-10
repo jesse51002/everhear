@@ -196,6 +196,25 @@ class TestRun(ActionCase):
                                                 "length=1000 is over its max, clamped to 200"])
         self.assertEqual(self.box_json("beam.json")["values"]["length"], 200)
 
+    def test_a_call_out_of_time_is_124_with_its_json_line(self):
+        r = self.box.vfg("--timeout", "1", "action", "run", "ping", FAKE_SSH_DELAY="4")
+        self.assertEqual(r.returncode, 124, r.stderr)
+        got = json.loads(r.stdout)
+        self.assertEqual((got["ok"], got["action"]), (False, "ping"))
+        self.assertRegex(got["error"], r"^timed out: ping did not answer within 1 s; it may still have happened$")
+
+    def test_an_unchanged_lib_is_not_swapped_and_runs_at_once_share_it(self):
+        self.line(self.run_action("ping"))
+        lib = os.path.join(self.box.rvfg, "scripts", "_lib")
+        ino = os.stat(lib).st_ino
+        self.line(self.run_action("ping"))
+        self.assertEqual(os.stat(lib).st_ino, ino)          # the same folder: nothing swapped
+        with open(os.path.join(self.box.repo, "scripts", "_lib", "kit", "extra.py"), "w") as f:
+            f.write("# changed\n")
+        self.line(self.run_action("ping"))
+        self.assertNotEqual(os.stat(lib).st_ino, ino)       # a change is deployed whole
+        self.assertTrue(os.path.isfile(os.path.join(lib, "kit", "extra.py")))
+
     def test_minecraft_down_and_ec2_unreachable(self):
         self.box.stop_rcon()
         r = self.run_action("ping")
@@ -340,7 +359,7 @@ class TestShortcuts(ActionCase):
         r = self.box.vfg("cmd", "bogus")
         self.assertEqual(r.returncode, 1)
         self.assertIn("Unknown or incomplete command", r.stdout)
-        self.assertRegex(r.stderr.splitlines()[-1], r"^vfg: command exited with code 1")
+        self.assertEqual(r.stderr.splitlines()[-1], "vfg: minecraft rejected the command")
         r = self.box.vfg("cmd", "tp", "@a", self.box.home)
         self.assertEqual(r.returncode, 2)
         self.assertIn("your shell expanded a ~", r.stderr)

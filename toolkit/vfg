@@ -71,7 +71,7 @@ class Fail(Exception):
 
 
 class TimedOut(Fail):
-    """EC2 did not answer in time: exit 4."""
+    """EC2 did not answer in time: exit 4 (vfg action run makes it 124)."""
 
 
 # ------------------------------------------------------------------ helpers
@@ -327,11 +327,6 @@ def _library(name, source):
     return mod
 
 '''
-
-
-# What remote/action.py imports, as the old folder actions (actions/<name>/handler.py) ran it.
-# vfg no longer runs it; its tests do, until those actions are scripts and it goes with them.
-ACTION_LIBS = ("commands.py",)
 
 
 def lib_source(lib):
@@ -1387,8 +1382,12 @@ def start_copy(cfg, a, name, cls, source, values, live, task, as_=None):
             "tars": tars_for(cfg, home, [script]), "owner": owner, "poll": live_poll(cfg),
             "wait": wait, "on_result": runs != "once"}
     timeout = a.timeout if getattr(a, "timeout", None) is not None else wait + 30
-    rc, o, e = Ssh(cfg).call(program("scripts.py", dict(args, vfg=cfg.rvfg, mc=cfg.rmc), SCRIPTS_LIBS),
-                             timeout, keep_master=True)
+    try:
+        rc, o, e = Ssh(cfg).call(program("scripts.py", dict(args, vfg=cfg.rvfg, mc=cfg.rmc), SCRIPTS_LIBS),
+                                 timeout, keep_master=True)
+    except TimedOut:
+        raise Fail(124, "timed out: %s did not answer within %s s; it may still have happened"
+                   % (name, fmt_s(timeout)))
     if rc != 0:
         finish(rc, o, e)
     lines = o.decode("utf-8", "replace").rstrip("\n").split("\n")
@@ -2981,7 +2980,8 @@ class Parser(argparse.ArgumentParser):
 def build_parser():
     p = Parser(prog="vfg", description="The one command every agent uses to reach the EC2 box. "
                "Exit 0 done, 1 refused or failed, 2 bad arguments, 3 not configured, "
-               "4 EC2 unreachable or no answer in time, 5 Minecraft not answering RCON.")
+               "4 EC2 unreachable or no answer in time, 5 Minecraft not answering RCON, "
+               "124 vfg action run's call out of time (it may still have happened).")
     p.add_argument("--version", action="version", version="vfg " + VERSION)
     p.add_argument("--timeout", type=float, metavar="S",
                    help="seconds to wait for EC2 (default 30; vfg up 120, usage add 15, action refs 300)")

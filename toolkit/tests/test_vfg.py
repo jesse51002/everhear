@@ -2564,11 +2564,20 @@ class TestRealLibrary(unittest.TestCase):
         cls.L = load_library_module()
         cls.lib = cls.L.Library(REPO, "test-never-made")
 
-    def test_every_library_script_and_preset_passes_check(self):
-        problems = []
-        for it in self.lib.scripts() + self.lib.presets():
-            problems.extend(self.L.check(it, self.lib))
-        self.assertEqual(problems, [])
+    def test_every_library_script_preset_and_action_passes_check(self):
+        """vfg script check on the repo itself: a ported script's values read from its actions'
+        fields. An action whose script is not written yet is the only problem allowed."""
+        env = {k: v for k, v in os.environ.items() if not k.startswith("VFG_")}
+        env.update(VFG_REPO=REPO, VFG_HOME=tempfile.mkdtemp(prefix="vfg-check-home-"), PYTHONDONTWRITEBYTECODE="1")
+        r = subprocess.run([PY, VFG, "script", "check"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True, env=env, timeout=300)
+        waiting = re.compile(r"^(\w+)\.py: left out: script \1: there is no scripts/\1/main\.py$")
+        problems = [l for l in r.stdout.splitlines() if not (waiting.match(l) and not os.path.isdir(
+            os.path.join(REPO, "scripts", waiting.match(l).group(1))))]
+        if r.returncode == 0:
+            self.assertTrue(r.stdout.startswith("ok: "), r.stdout)
+        else:
+            self.assertEqual(problems, [], r.stderr)
 
     def test_new_from_any_example_with_any_preset_passes_check(self):
         L, lib = self.L, self.lib

@@ -54,6 +54,10 @@ class CopyError(Exception):
     """A start, stop or edit refused; the message is one line."""
 
 
+class NotDeployed(CopyError):
+    """The copy's script is not on the box."""
+
+
 def now_iso(t=None):
     d = datetime.fromtimestamp(time.time() if t is None else t, timezone.utc)
     return d.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (d.microsecond // 1000)
@@ -239,7 +243,7 @@ class Box(object):
             raise CopyError("source is library or made, not %r" % meta.get("source"))
         main_py = os.path.join(self.folder(meta), "main.py")
         if not os.path.isfile(main_py):
-            raise CopyError("%s is not deployed (no %s)" % (meta["script"], main_py))
+            raise NotDeployed("%s is not deployed (no %s)" % (meta["script"], main_py))
         with self.lock():
             name = self.pick(meta["action"], as_)
             for ext in (".values.json", ".result.json"):
