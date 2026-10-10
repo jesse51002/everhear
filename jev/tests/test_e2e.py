@@ -49,7 +49,7 @@ class TestTheProcess(WithJev):
         env = {k: v for k, v in os.environ.items() if k != "TYPESAFE_API_KEY" and not k.startswith("VFG_")}
         env.update(NO_PROXY)
         env.update({"VFG_DB": db, "VFG_LIB": FAKE_LIB, "FAKE_FEED_LOG": feed, "VFG_JEV_URL": self.server.url,
-                    "VFG_LOOKOUT": os.path.join(self.dir, "lookout.md"),
+                    "VFG_LOOKOUT": os.path.join(self.dir, "lookout.md"), "VFG_MENU": os.path.join(self.dir, "menu.md"),
                     "VFG_ENV_FILE": os.path.join(self.dir, "no.env"), "TYPESAFE_API_KEY": KEY})
         now = time.time()
         lines.add(now, "Steve", "voice", "build me a castle", peak=-8.2)
@@ -77,9 +77,10 @@ class TestTheProcess(WithJev):
         self.assertEqual([l.split(" ", 2)[2] for l in fed()], [
             "Steve voice action_oriented 0.90 -8dB | build me a castle",
             "Alex chat context 0.70 - | that cave by spawn"])
-        rows = {r[0]: r[1:] for r in conn.execute("SELECT text, jev_class, jev_confidence, fed_at IS NOT NULL FROM lines")}
-        self.assertEqual(rows, {"build me a castle": ("action_oriented", 0.9, 1), "Where should it go?": (None, None, 0),
-                                "lol": ("not_relevant", 0.8, 0), "that cave by spawn": ("context", 0.7, 1)})
+        rows = {r[0]: r[1:] for r in conn.execute(
+            "SELECT text, jev_class, jev_confidence, fed_at IS NOT NULL FROM lines")}
+        self.assertEqual(rows, {"build me a castle": ("action_oriented", 0.9, 1), "lol": ("not_relevant", 0.8, 0),
+                                "Where should it go?": (None, None, 0), "that cave by spawn": ("context", 0.7, 1)})
         usage = conn.execute("SELECT component, output_tokens, input_tokens, cost_usd FROM usage").fetchall()
         self.assertEqual(len(usage), 3)
         for component, out_tokens, tokens, cost in usage:
@@ -92,7 +93,7 @@ class TestTheProcess(WithJev):
 class TestByHand(WithJev):
     def judge(self, text, raw=False):
         cfg = Config(jev_url=self.server.url, lookout=os.path.join(self.dir, "lookout.md"),
-                     db=os.path.join(self.dir, "vfg.db"))
+                     menu=os.path.join(self.dir, "menu.md"), db=os.path.join(self.dir, "vfg.db"))
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = judge_once(cfg, KEY, text, raw=raw)

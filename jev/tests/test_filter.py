@@ -94,8 +94,8 @@ class Base(unittest.TestCase):
         self.feed = FeedSpy(log)
         self.jev = FakeJev()
         self.clock = FakeClock()
-        self.cfg = Config(db=self.db, lookout=os.path.join(d, "lookout.md"), batch_seconds=self.batch_seconds,
-                          state_tokens=8000)
+        self.cfg = Config(db=self.db, lookout=os.path.join(d, "lookout.md"), menu=os.path.join(d, "menu.md"),
+                          batch_seconds=self.batch_seconds, state_tokens=8000)
         self.f = self.new_filter()
 
     def new_filter(self):
@@ -382,6 +382,33 @@ class TestJudging(Base):
         self.assertEqual(self.lines.usage(), [])
 
 
+class TestState(Base):
+    def test_the_menu_after_the_lookout_and_the_brains_records_in_the_history(self):
+        with open(self.cfg.menu, "w") as f:
+            f.write("give — gives a player items\nweather — sets the weather\n")
+        for at, line in ((T0 - 4 * 3600, "AI#1 14:22:31 action - | command: weather rain — ok"),   # too old
+                         (T0 - 30, "AI#2 18:22:01 say - | (to Steve) there you go"),   # in lines already
+                         (T0 - 29, "AI#3 18:22:02 action - | command: give Steve diamond_pickaxe — ok"),
+                         (T0 - 20, "AI#4 18:22:11 task T183 | T183: an ice trail behind Steve"),
+                         (T0 - 10, "AI#5 18:22:21 result T183 | T183 done: ice trail running as ice_trail"),
+                         (T0 - 5, "AI#6 18:22:26 note - | Steve likes ice"),
+                         (T0 - 3, "LINE#7 18:22:28 Steve voice action_oriented 0.90 - | a pickaxe")):
+            self.conn.execute("INSERT INTO feed (at, line) VALUES (?, ?)", (_iso(at), line))
+        self.lines.add(T0 - 25, "Steve", "voice", "thanks", jev_class="conversational", jev_confidence=0.85,
+                       jev_judged_at=_iso(T0 - 25), fed_at=_iso(T0 - 25))
+        self.lines.add(T0, "Steve", "voice", "make it longer")
+        self.step()
+        state = self.jev.calls[0][0]
+        self.assertEqual(list(state), ["rules", "look_out_for", "actions", "history"])
+        self.assertEqual(state["actions"], "give — gives a player items\nweather — sets the weather")
+        self.assertEqual(state["history"].split("\n")[1:], [
+            "18:22:02 AI (action): command: give Steve diamond_pickaxe — ok",
+            "18:22:06 Steve (voice): thanks",
+            "18:22:11 AI (task): T183: an ice trail behind Steve",
+            "18:22:21 AI (result): T183 done: ice trail running as ice_trail",
+            "[1] 18:22:31 Steve (voice): make it longer"])
+
+
 class TestAiLines(Base):
     def test_never_judged_never_asked_never_fed_never_passed_but_in_history(self):
         ai = self.lines.add(T0, "AI", "ai", "Which colour should the tower be?")
@@ -638,7 +665,7 @@ class TestNoDatabaseYet(unittest.TestCase):
         store = Store(path)
         self.addCleanup(store.close)
         f = Filter(store, FakeJev(), FeedSpy(os.path.join(d, "feed.log")), FakeClock(),
-                   Config(db=path, lookout=os.path.join(d, "lookout.md")))
+                   Config(db=path, lookout=os.path.join(d, "lookout.md"), menu=os.path.join(d, "menu.md")))
         with self.assertLogs("vfg-jev", "WARNING") as logs:
             self.assertEqual(f.step(), 2.0)
             self.assertEqual(f.step(), 2.0)

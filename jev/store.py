@@ -12,12 +12,15 @@ than made empty.
 """
 import logging
 import os
+import re
 import sqlite3
 import urllib.parse
 
 log = logging.getLogger("vfg-jev")
 
 COLUMNS = "id, at, player_name, source, text, peak_dbfs, jev_class, jev_confidence, jev_judged_at, fed_at"
+RECORDS = ("action", "task", "result")   # the brain's AI rows that go into Jev's history
+_AI_ROW = re.compile(r"^AI#\d+ \d\d:\d\d:\d\d (\S+) \S+ \| (.*)$", re.S)
 
 
 class Store:
@@ -104,6 +107,22 @@ class Store:
         return self.conn.execute(
             "SELECT %s FROM lines WHERE at >= ?%s ORDER BY at DESC, id DESC LIMIT ?" % (COLUMNS, skip),
             [since] + exclude + [limit]).fetchall()
+
+    def ai_records(self, since, scan=2000):
+        """The brain's own records said since `since` — the feed's `AI` rows of
+        kind action, task and result, among its last `scan` rows — as history
+        rows whose `source` is the kind, newest first. A `say` is left out:
+        `vfg say` keeps it in `lines` too."""
+        rows = self.conn.execute(
+            "SELECT seq, at, line FROM (SELECT seq, at, line FROM feed ORDER BY seq DESC LIMIT ?) "
+            "WHERE line LIKE 'AI#%' AND at >= ? ORDER BY at DESC, seq DESC", (scan, since)).fetchall()
+        records = []
+        for seq, at, line in rows:
+            m = _AI_ROW.match(line)
+            if m and m.group(1) in RECORDS:
+                records.append({"id": "AI#%d" % seq, "at": at, "player_name": "AI", "source": m.group(1),
+                                "text": m.group(2), "peak_dbfs": None})
+        return records
 
     def kept_unfed(self, since):
         """Kept lines not yet fed, said since `since`, oldest first."""

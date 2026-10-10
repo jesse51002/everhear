@@ -28,7 +28,7 @@ if HERE not in sys.path:
 from filter import Config, Filter                   # noqa: E402
 from jev_api import Jev, JevDown, JevRefused          # noqa: E402
 from jev_clock import SystemClock, iso                # noqa: E402
-from prompt import Lookout, build_state, questions    # noqa: E402
+from prompt import Lookout, Menu, build_state, questions   # noqa: E402
 from store import Store                               # noqa: E402
 
 KEY_NAME = "TYPESAFE_API_KEY"
@@ -65,13 +65,14 @@ def setup_logging():
 
 def judge_once(cfg, key, text, raw=False):
     """`--judge`: one text as a chat line from `tester` said now, the current
-    lookout, no history, nothing asked again. Prints, writes nothing. With
+    lookout and menu, no history, nothing asked again. Prints, writes nothing. With
     `raw`, also prints the response body exactly as Jev sent it — the way to
     check, on the first live run, the answer's shape this code assumes."""
     jev = Jev(key, url=cfg.jev_url, model=cfg.model, timeout=cfg.timeout)
     row = {"id": "judge", "at": iso(time.time()), "player_name": "tester", "source": "chat",
            "text": text, "peak_dbfs": None}
-    state, _ = build_state(Lookout(cfg.lookout).text(), [row], [], cfg.state_tokens)
+    state, _ = build_state(Lookout(cfg.lookout).text(), [row], [], cfg.state_tokens,
+                           menu=Menu(cfg.menu).text())
     try:
         result = jev.ask(state, questions([row]))
     except (JevDown, JevRefused) as e:

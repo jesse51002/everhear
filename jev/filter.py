@@ -18,7 +18,7 @@ import sqlite3
 
 from jev_clock import iso, parse_iso
 from jev_api import ENDPOINT, MODEL, JevDown, JevRefused
-from prompt import KEPT, Lookout, build_state, questions
+from prompt import KEPT, Lookout, Menu, build_state, questions
 
 log = logging.getLogger("vfg-jev")
 
@@ -45,6 +45,7 @@ class Config:
     DEFAULTS = {
         "db": ("VFG_DB", "/opt/vfg/vfg.db", str),
         "lookout": ("VFG_LOOKOUT", "/opt/vfg/lookout.md", str),
+        "menu": ("VFG_MENU", "/opt/vfg/menu.md", str),
         "lib": ("VFG_LIB", "/opt/vfg/lib", str),
         "env_file": ("VFG_ENV_FILE", "/opt/vfg/.env", str),
         "batch_seconds": ("VFG_BATCH_SECONDS", 5.0, float),
@@ -119,6 +120,8 @@ class Filter:
         self.clock = clock
         self.cfg = cfg
         self.lookout = Lookout(cfg.lookout)
+        self.menu = Menu(cfg.menu)
+        self._menu_cut = None        # the menu last said not to fit, so it is said once
         self.open = False            # failing open
         self.failing_since = None    # when the first failing call after a success began
         self.last_probe = None
@@ -174,9 +177,15 @@ class Filter:
         return None
 
     def _ask(self, asked, began, share=1.0):
-        others = self.store.history(iso(began - self.cfg.history_hours * 3600),
-                                    exclude=[r["id"] for r in asked])
-        state, _ = build_state(self.lookout.text(), asked, others, self.cfg.state_tokens, share)
+        since = iso(began - self.cfg.history_hours * 3600)
+        # the lines said and the brain's records of what it did, newest first
+        others = sorted(list(self.store.history(since, exclude=[r["id"] for r in asked]))
+                        + self.store.ai_records(since), key=lambda r: (r["at"], r["id"]), reverse=True)
+        menu = self.menu.text()
+        state, _ = build_state(self.lookout.text(), asked, others, self.cfg.state_tokens, share, menu)
+        if menu and state.get("actions") != menu and menu != self._menu_cut:
+            self._menu_cut = menu
+            log.warning("menu %s is over half the state's room; Jev sees its first lines", self.cfg.menu)
         return self.jev.ask(state, questions(asked))
 
     def _judge_one(self, row):
