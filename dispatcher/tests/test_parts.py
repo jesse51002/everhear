@@ -509,6 +509,49 @@ async def test_replay_scores_routes_and_lost_work_against_labels():
     assert "route agreement 5/7 (71.4%), 3 lost, 1 either, 0 unlabelled; every part named in 1/2 multi-part task(s)" in text
 
 
+async def test_replay_scores_each_part_of_a_label_in_the_selectors_shape(tmp_path):
+    from dispatcher.replay import read_labels
+
+    def label(tid, *parts, accept):
+        ps = [{"part": k, "to": to, "instruction": k, "key": k, "also": list(also)} for k, to, *also in parts]
+        return {"id": tid, "task": tid, "accept": accept, "either": False,
+                "parts": [p["key"] for p in ps] if len(ps) > 1 else [], "label": {"parts": ps}}
+
+    rows = [{"relabelled": "for the actions menu"},  # the header: skipped
+            label("T1", ("speed", "command"), ("castle", "castle", "orchestrator"),
+                  accept=["castle,command", "command+orchestrator", "orchestrator"]),
+            label("T2", ("speed", "command"), ("frost", "orchestrator"), accept=["command+orchestrator", "orchestrator"]),
+            label("T3", ("tnt", "tnt_rain"), accept=["tnt_rain"]),
+            label("T4", ("speed", "command"), ("rocket", "command"), accept=["command"]),
+            label("T5", ("tower", "orchestrator"), accept=["orchestrator"])]
+    path = tmp_path / "labels.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    labels = read_labels(path)
+    assert sorted(labels) == ["T1", "T2", "T3", "T4", "T5"] and labels["T1"]["first"] == "castle,command"
+
+    answers = {
+        "T1": select(("command", "give Alex speed"), ("castle", "a castle at home")),        # every part agrees
+        "T2": select(("command", "give Alex speed"), ("railgun", "give Alex a frost bow")),   # frost: only an action
+        "T3": select(("meteor", "drop a meteor on Alex")),                                    # one part, elsewhere
+        "T4": select(("command", "give Alex speed")),                                         # rocket: nowhere
+        "T5": select(),                                                                        # handed on whole
+    }
+    tasks = [{"id": i, "task": i, "context": ""} for i in answers]
+    llm = FakeLLM(Selection=[lambda prompt: next(v for k, v in answers.items() if f"TASK: {k}\n" in prompt)] * 5)
+    out, record = io.StringIO(), io.StringIO()
+    summary = await replay(tasks, Selector(catalog(), llm, "m"), out, labels=labels, jobs=2, record=record)
+    assert {k: summary[k] for k in ("agree", "exact", "lost", "parts", "parts_agree", "parts_lost", "covered")} == \
+        {"agree": 3, "exact": 3, "lost": 2, "parts": 8, "parts_agree": 5, "parts_lost": 2, "covered": 2}
+    text = out.getvalue()
+    assert "[PART frost went to railgun, expected orchestrator]" in text
+    assert "[PART tnt went to meteor, expected tnt_rain]" in text and "[PART rocket went to nothing, expected command]" in text
+    assert "exact (the label's own route) 3/5 (60.0%); part by part 5/8 (62.5%), 2 part(s) lost" in text
+    got = {r["id"]: r for r in map(json.loads, record.getvalue().splitlines())}
+    assert sorted(got) == ["T1", "T2", "T3", "T4", "T5"] and got["T2"]["lost"] and not got["T3"]["lost"]
+    assert got["T1"]["picks"] == [{"action": "command", "instruction": "give Alex speed"},
+                                  {"action": "castle", "instruction": "a castle at home"}]
+
+
 # ---------------------------------------------------------------- vfg
 
 async def test_vfg_runs_the_binary_with_an_argv_and_no_shell_and_times_out_with_124(tmp_path, monkeypatch):

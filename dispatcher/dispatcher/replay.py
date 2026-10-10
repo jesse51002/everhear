@@ -1,7 +1,7 @@
 """Replay: the playtest's tasks through the complexity selector alone, to judge a model or a prompt.
 
     uv run python -m dispatcher.replay [--model <id>] [--limit <n>] [--only T3,T9] [--jobs 8]
-                                       [--eval <labels.jsonl>]
+                                       [--eval <labels.jsonl>] [--out <results.jsonl>]
 
 Reads ~/.vfg/orch/inbox.jsonl (VFG_ORCH_DIR) READ-ONLY, sends each task through the
 selector with the menu of every action (the library's and VFG_SERVER's made ones),
@@ -11,15 +11,25 @@ the totals: p50 and p90 ms over every task and over the model calls alone, and t
 acts on nothing: no vfg, no action, no reply.
 
 `--eval` scores every selection against a labels file, one JSON line per task:
-`{"id": "T7", "accept": ["command+orchestrator", "orchestrator"], "either": false}`. A
-route is `orchestrator` for the whole task, or the picked actions' names, sorted and joined
-by `,`, with `+orchestrator` when there is also an orchestrator part. A task marked
-`either` is not scored for agreement. Work is LOST when every accepted route has an
+`{"id": "T7", "accept": ["command+orchestrator", "orchestrator"], "either": false}`, and
+replays only the tasks it labels. A line with no `id` (a header saying what the file is) is
+skipped. A route is `orchestrator` for the whole task, or the picked actions' names, sorted
+and joined by `,`, with `+orchestrator` when there is also an orchestrator part. A task
+marked `either` is not scored for agreement. Work is LOST when every accepted route has an
 orchestrator part and the selection has picks and none: that part was left out, or given to
 an action that cannot do it. A multi-part task may also list its parts, one regex each,
 `"parts": ["speed", "golden apple"]`: a part is DROPPED, and the task's work lost, when its
 words are in no pick's instruction and not in the orchestrator text of a selection that
 has picks.
+
+A label may also give its parts in the selector's own shape, as `python -m dispatcher.label`
+writes them: `"label": {"parts": [{"part", "to", "instruction", "key", "also"}]}`. Each part
+is then scored on its own: it went where the picks whose instruction matches its `key` went,
+and to the orchestrator when the orchestrator text matches it (a one-part label: wherever the
+selection went; no picks: the orchestrator). It AGREES when that is its `to` or one of its
+`also`, and is LOST when it went nowhere, or when only the orchestrator can do it and it went
+only to actions. The first route in `accept` is the label's own: a task whose route is that
+one agrees exactly. `--out` writes each task's result as one JSON line.
 """
 
 from __future__ import annotations
@@ -37,7 +47,7 @@ import vfg_llm
 from vfg_llm import LlmError
 
 from . import actions, config
-from .selector import Selector, describe
+from .selector import Picked, Selector, describe
 
 PLACES = "SAVED PLACES: none"
 RUNNING = "RUNNING NOW: none"
@@ -71,8 +81,13 @@ def read_labels(path: Path) -> dict[str, dict]:
         for raw in f:
             if raw.strip():
                 obj = json.loads(raw)
+                if "id" not in obj:
+                    continue  # the header: what the file is
                 labels[obj["id"]] = {"accept": {norm(r) for r in obj["accept"]}, "either": bool(obj.get("either")),
-                                     "parts": list(obj.get("parts") or [])}
+                                     "parts": list(obj.get("parts") or []),
+                                     "first": norm(obj["accept"][0]) if obj["accept"] else None,
+                                     "label": [{"key": p["key"], "to": p["to"], "also": list(p.get("also") or [])}
+                                               for p in (obj.get("label") or {}).get("parts", [])]}
     return labels
 
 
@@ -109,6 +124,31 @@ def dropped(selection, parts: list[str]) -> list[str]:
     return [rx for rx in parts if not re.search(rx, said, re.IGNORECASE)]
 
 
+def placed(selection, part: dict, alone: bool) -> set[str]:
+    """Where a labelled part went: the actions of the picks whose instruction matches its key,
+    and the orchestrator when its text does. The whole task handed on: the orchestrator. A
+    part that is the label's only one: wherever the selection went."""
+    if not selection.picks:
+        return {WHOLE}
+    orch = selection.orchestrator.strip()
+    if alone:
+        return {p.action for p in selection.picks} | ({WHOLE} if orch else set())
+    rx = re.compile(part["key"], re.IGNORECASE)
+    return {p.action for p in selection.picks if rx.search(p.instruction)} | \
+        ({WHOLE} if orch and rx.search(orch) else set())
+
+
+def score_parts(selection, label: list[dict]) -> list[dict]:
+    """Each labelled part: where it went, whether that agrees, whether it is lost."""
+    out = []
+    for part in label:
+        went = placed(selection, part, len(label) == 1)
+        ok = {part["to"], *part["also"]}
+        out.append({"key": part["key"], "to": part["to"], "went": sorted(went), "agree": bool(went & ok),
+                    "lost": not went or (ok == {WHOLE} and WHOLE not in went)})
+    return out
+
+
 def pct(times: list[int], q: float) -> int:
     """The q-th percentile, nearest rank."""
     if not times:
@@ -120,7 +160,7 @@ def pct(times: list[int], q: float) -> int:
 # ------------------------------------------------------------------ the run
 
 async def replay(tasks: list[dict], selector: Selector, out=sys.stdout, *, labels: dict[str, dict] | None = None,
-                 jobs: int = 8) -> dict:
+                 jobs: int = 8, record=None) -> dict:
     gate = asyncio.Semaphore(max(1, jobs))
     results: dict[str, dict] = {}
 
@@ -135,21 +175,33 @@ async def replay(tasks: list[dict], selector: Selector, out=sys.stdout, *, label
             else:
                 label = (labels or {}).get(t["id"]) or {}
                 r = {"ms": answer.ms, "cost": answer.cost, "route": route_of(answer.value),
-                     "dropped": dropped(answer.value, label.get("parts", []))}
+                     "dropped": dropped(answer.value, label.get("parts", [])),
+                     "picks": [p.model_dump() for p in answer.value.picks], "orchestrator": answer.value.orchestrator}
+                if label.get("label"):
+                    r["parts"] = score_parts(answer.value, label["label"])
                 head = f"{t['id']}  {answer.ms} ms  ${answer.cost:.6f}  {task[:100]}"
                 body = f"    {describe(answer.value)}"
         marks = []
         label = (labels or {}).get(t["id"])
         if label:
-            r["lost"] = lost(r["route"], label["accept"]) or bool(r["dropped"])
+            if "parts" not in r and label.get("label"):  # failed: handed on whole
+                r["parts"] = score_parts(Picked(), label["label"])
+            r["lost"] = lost(r["route"], label["accept"]) or bool(r["dropped"]) or \
+                any(p["lost"] for p in r.get("parts", []))
             marks += [f"DROPPED {x}" for x in r["dropped"]]
+            marks += [f"PART {p['key']} went to {','.join(p['went']) or 'nothing'}, expected {p['to']}"
+                      for p in r.get("parts", []) if not p["agree"]]
             r["agree"] = r["route"] in label["accept"]
+            r["exact"] = r["route"] == label.get("first")
             r["scored"] = not label["either"]
             if r["lost"]:
                 marks.append("LOST")
             if r["scored"] and not r["agree"]:
                 marks.append(f"MISROUTE {r['route']}, expected {' or '.join(sorted(label['accept']))}")
         results[t["id"]] = r
+        if record is not None:
+            record.write(json.dumps({"id": t["id"], "task": t["task"], **r}, ensure_ascii=False) + "\n")
+            record.flush()
         print(head + "".join(f"  [{m}]" for m in marks) + "\n" + body, file=out, flush=True)
 
     await asyncio.gather(*(one(t) for t in tasks))
@@ -177,6 +229,16 @@ async def replay(tasks: list[dict], selector: Selector, out=sys.stdout, *, label
               f"{len(results) - len(scored) - summary['unlabelled']} either, {summary['unlabelled']} unlabelled; "
               f"every part named in {summary['covered']}/{summary['multipart']} multi-part task(s)",
               file=out, flush=True)
+        parted = [i for i in scored if "parts" in results[i]]
+        if parted:
+            ps = [p for i in parted for p in results[i]["parts"]]
+            summary.update(exact=sum(1 for i in parted if results[i]["exact"]), parted=len(parted), parts=len(ps),
+                           parts_agree=sum(1 for p in ps if p["agree"]),
+                           parts_lost=sum(1 for r in results.values() for p in r.get("parts", []) if p["lost"]))
+            print(f"exact (the label's own route) {summary['exact']}/{len(parted)} "
+                  f"({100 * summary['exact'] / len(parted):.1f}%); part by part {summary['parts_agree']}/"
+                  f"{len(ps)} ({100 * summary['parts_agree'] / len(ps):.1f}%), {summary['parts_lost']} part(s) lost",
+                  file=out, flush=True)
     return summary
 
 
@@ -184,12 +246,14 @@ async def _main(args) -> int:
     cfg = config.load()
     inbox = cfg.orch_dir / "inbox.jsonl"
     only = {x.strip() for x in args.only.split(",") if x.strip()} if args.only else None
+    labels = read_labels(Path(args.eval).expanduser()) if args.eval else None
+    if labels is not None:
+        only = (only & set(labels)) if only else set(labels)  # only the tasks it labels
     tasks = read_tasks(inbox, args.limit, only)
     catalog = actions.load(cfg.repo, cfg.server)
     if not catalog.names():
         print("no actions loaded: nothing to select from", file=sys.stderr)
         return 1
-    labels = read_labels(Path(args.eval).expanduser()) if args.eval else None
 
     async def ask(prompt, output, *, system=None, model):
         return await vfg_llm.structured(prompt, output, system=system, model=model, reasoning=cfg.effort,
@@ -198,12 +262,15 @@ async def _main(args) -> int:
     selector = Selector(catalog, ask, args.model or cfg.model)
     print(f"{len(tasks)} tasks from {inbox}, model {args.model or cfg.model}, providers "
           f"{','.join(cfg.providers) or 'OpenRouter’s choice'}, {args.jobs} at a time\n", flush=True)
+    record = open(Path(args.out).expanduser(), "w", encoding="utf-8") if args.out else None
     async with httpx.AsyncClient(timeout=30) as http:
         vfg_llm.client = http
         try:
-            await replay(tasks, selector, labels=labels, jobs=args.jobs)
+            await replay(tasks, selector, labels=labels, jobs=args.jobs, record=record)
         finally:
             vfg_llm.client = None
+            if record is not None:
+                record.close()
     return 0
 
 
@@ -213,7 +280,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--limit", type=int, help="only the first n tasks")
     p.add_argument("--only", help="only these task ids, comma-separated: T3,T9")
     p.add_argument("--jobs", type=int, default=8, help="how many calls at a time (default 8)")
-    p.add_argument("--eval", help="a labels file to score against, one JSON line per task")
+    p.add_argument("--eval", help="a labels file to score against, one JSON line per task; only its tasks are replayed")
+    p.add_argument("--out", help="write each task's selection and score here, one JSON line per task")
     return asyncio.run(_main(p.parse_args(argv)))
 
 
