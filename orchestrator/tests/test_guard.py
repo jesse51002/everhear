@@ -219,7 +219,7 @@ TABLE = [
     ("ls /etc", bash("ls /etc"), DENY.outside_bash),
     ("ls up and out", bash("ls ../.."), DENY.outside_bash),
     ("ls out through made", bash("ls made/../../"), DENY.outside_bash),
-    ("ls a glob outside", bash("ls /e*"), DENY.outside_bash),
+    ("ls a glob outside", bash("ls /e*"), DENY.wild),
     ("grep -rn in the library", bash("grep -rn crater scripts/_presets"), None),
     ("grep -r with no path is the repository", bash("grep -r crater"), None),
     ("grep -e twice", bash("grep -e root -e crater scripts/README.md"), None),
@@ -233,6 +233,29 @@ TABLE = [
     ("tail outside", bash("tail -n 20 /var/log/messages"), DENY.outside_bash),
     ("tail -f", bash("tail -f made/main/scripts/x/main.py"), DENY.tail_follow),
     ("tail -F piped", bash("vfg script logs x -n 5 | tail -F"), DENY.tail_follow),
+    # what bash expands and the guard does not follow: ~name, braces, globs (outside quotes)
+    ("head ~user", bash("head ~jm/.ssh/id_ed25519"), DENY.wild),
+    ("ls ~+ (the working directory)", bash("ls ~+/.."), DENY.wild),
+    ("ls ~- (the last one)", bash("ls ~-"), DENY.wild),
+    ("tail a=~user", bash("tail -n 5 a=~jm"), DENY.wild),
+    ("grep -r a brace out", bash("grep -r . {/var/home/jm/.vfg,x}"), DENY.wild),
+    ("ls a sequence brace", bash("ls /{u..w}ar"), DENY.wild),
+    ("grep -rn a brace in the repository", bash("grep -rn crater {scripts,made}"), DENY.wild),
+    ("echo a glob out", bash("echo ~jm/.ssh/*"), DENY.wild),
+    ("echo a glob in the repository", bash("echo made/main/scripts/*"), DENY.wild),
+    ("ls ? and [ ]", bash("ls /?tc /[e]tc"), DENY.wild),
+    ("ls a glob in the repository", bash("ls made/*/scripts"), DENY.wild),
+    ("grep an unquoted pattern", bash("grep -n def.* scripts/README.md"), DENY.wild),
+    ("a glob into a piped grep", bash("vfg state | grep /var/home/jm/.vfg/c*"), DENY.wild),
+    ("py_compile a glob", bash("python3 -m py_compile ~jm/x.py"), DENY.wild),
+    ("sleep a glob", bash("sleep /root/*"), DENY.wild),
+    ("NAME=value before ls ~user", bash("FOO=1 ls ~jm"), DENY.wild),
+    ("a quoted pattern", bash("grep -n 'def .*' scripts/README.md"), None),
+    ('a double-quoted pattern', bash('grep -n "a*b{c,d}" made/main/scripts/x/main.py'), None),
+    ("an escaped star is a file name", bash("head -n 5 made/main/scripts/x\\*"), None),
+    ("a quoted ~name is a name in the repository", bash("ls '~jm'"), None),
+    ("echo quoted", bash("echo '~jm/.ssh/*' \"{a,b}\""), None),
+    ("ls ~/ is followed, and outside", bash("ls ~/.ssh"), DENY.outside_bash),
     # where the rest point
     ("py_compile outside the repository", bash("python3 -m py_compile ~/.vfg/config"), DENY.outside_bash),
     ("py_compile a made script", bash("python3 -m py_compile made/main/scripts/x/main.py"), None),
@@ -364,6 +387,11 @@ def test_split_shell_keeps_redirections_and_pipes():
     assert e.words == ["vfg", "cmd", "say a > b"] and e.redirects == [Redirect("2", ">", "/dev/null")]
     [f] = split_shell("echo '2'>x")  # a quoted number is a word, not an fd
     assert f.words == ["echo", "2"] and f.redirects == [Redirect("", ">", "x")] and not f.redirects[0].harmless()
+    [w] = split_shell("ls 'a*' b\\* c* ~ ~/x ~jm x~ {a,b} '{a,b}' {a} a=~ ? [x] \"~jm\" ~'jm'")
+    assert w.words[1:] == ["a*", "b*", "c*", "~", "~/x", "~jm", "x~", "{a,b}", "{a,b}", "{a}", "a=~", "?", "[x]",
+                           "~jm", "~jm"]
+    assert w.wild == [False, False, False, True, False, False, True, True, True, False, False, True, True, True,
+                      False, True]
     [g, h] = split_shell("vfg state && vfg script list || echo no")[1:]
     assert not g.piped and not h.piped
     assert [x.grouped for x in split_shell("vfg script run x & vfg state")] == [True, False]
@@ -374,7 +402,7 @@ def test_every_refusal_of_an_implementers_bash_is_one_line_saying_what_to_send()
                 "FOO=1 vfg state", "cd x", "cat x", "find .", "rm x", "ps", "python3 -c 1", "grep x", "grep -f a b",
                 "tail -f x", "mkdir x", "vfg say hi", "vfg script set x", "vfg --x cmd y", "vfg script logs x --follow",
                 "vfg script new x --library", "(vfg state)", "vfg cmd 'op Steve'", "vfg cmd $(echo hi)",
-                "vfg cmd 'difficulty hard'"]
+                "vfg cmd 'difficulty hard'", "head ~jm/.ssh/x", "grep -r . {/a,b}", "echo ~jm/.ssh/*"]
     for command in commands:
         reason = check_bash(command, REPO)
         assert reason and "\n" not in reason, command

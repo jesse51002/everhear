@@ -274,14 +274,22 @@ def near(at, radius, shooter="", spare=(), with_players=True, hostile=False, wit
     return hits
 
 
+_cleared = set()    # tag names mark has taken off everyone once in this process
+
+
 def mark(hits, tag, spare=(), hostile=False):
     """Tag each hit once, where it was (a player by name, one found by its uuid exactly, a
     mob as the nearest within 1.5 blocks that a hit may touch; hostile=True: a monster), so one
     command can then act on all of them at once (execute as @e[tag=<tag>] run damage @s ...)
-    and a mob listed twice is hurt once. The tag is first taken off anyone who still carries
-    it (a player killed while tagged keeps it, and would never be tagged "newly" again); take
-    it off after with untag(tag). Returns how many were newly tagged."""
-    untag(tag)
+    and a mob listed twice is hurt once. Take the tag off after with untag(tag). The first time
+    this process marks with a tag, it is first taken off anyone who still carries it: an
+    earlier run stopped between its mark and its untag leaves it on them, and a player who
+    carries it would never be tagged "newly", so never hurt. After that the untag every mark
+    is followed by has left it on nobody, so a tag used again costs no command more. Returns
+    how many were newly tagged."""
+    if tag not in _cleared:
+        untag(tag)
+        _cleared.add(tag)
     n = 0
     for h in hits:
         if h.player:
