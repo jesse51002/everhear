@@ -316,11 +316,15 @@ class World:
         # Two publishes, as two sessions: a new IP, a new token and a newer jar the second time.
         self.token1 = "test-token-" + secrets.token_urlsafe(18)
         self.token2 = "test-token-" + secrets.token_urlsafe(18)
-        self.jar1 = self.make_jar("vfg-client-0.1.0.jar", age=100)
-        self.pub1 = self.publish(self.token1)
-        self.set_host(ADDR2)
-        self.jar2 = self.make_jar("vfg-client-0.1.1.jar", age=10)
-        self.pub2 = self.publish(self.token2)
+        try:
+            self.jar1 = self.make_jar("vfg-client-0.1.0.jar", age=100)
+            self.pub1 = self.publish(self.token1)
+            self.set_host(ADDR2)
+            self.jar2 = self.make_jar("vfg-client-0.1.1.jar", age=10)
+            self.pub2 = self.publish(self.token2)
+        except BaseException:
+            self.close()
+            raise
 
     def make_jar(self, name, age):
         p = self.libs / name
@@ -460,7 +464,7 @@ class ConcurrentSuite(unittest.TestSuite):
             return r.events
 
         tests = list(cases(self))
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=max(4, 2 * (os.cpu_count() or 2)))
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=max(4, os.cpu_count() or 4))
         try:
             outcomes = list(pool.map(one, tests))
         finally:
@@ -1021,9 +1025,12 @@ class PsCases(InstallerCases, unittest.TestCase):
 
     def env(self, home, **extra):
         w = world()
+        # XDG_CACHE_HOME: one cache for every pwsh here, so each starts from the JIT profile the
+        # earlier ones left (about 0.1 s a start); a fresh home would have none.
         e = {"PATH": "/usr/bin:/bin", "HOME": str(home), "APPDATA": str(home / "AppData" / "Roaming"),
              "TMPDIR": str(w.tmp), "LANG": "C.UTF-8", "POWERSHELL_TELEMETRY_OPTOUT": "1",
-             "POWERSHELL_UPDATECHECK": "Off", "DOTNET_CLI_TELEMETRY_OPTOUT": "1"}
+             "POWERSHELL_UPDATECHECK": "Off", "DOTNET_CLI_TELEMETRY_OPTOUT": "1",
+             "XDG_CACHE_HOME": str(w.tmp / "pwsh-cache")}
         e.update(extra)
         return e
 
