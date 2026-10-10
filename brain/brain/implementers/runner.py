@@ -7,6 +7,7 @@ brain's with the task, the saved places and the EXAMPLES block (brief.py), and t
     implementers = Implementers(ImplementerConfig.load(), on_report)
     await implementers.start("T7", brief)            # at once; later on_report("T7", "done", report)
     await implementers.follow_up("T7", "bigger")     # resumes T7's session: another on_report
+    # on_session("T7", session), when given, as soon as the CLI names the session
     stopped = await implementers.close(5)            # the ids still running; the brain fails them
 
 Its last message is its report, which goes to on_report with "failed" for an error, its turns used
@@ -38,6 +39,8 @@ __all__ = ["Implementers", "ImplementerConfig", "Report"]
 
 # (task id, "done" or "failed", the report)
 Report = Callable[[str, str, str], Awaitable[None]]
+# (task id, the implementer's session id): the brain keeps it, so a follow-up after a restart resumes it
+Session = Callable[[str, str], None]
 # ClaudeAgentOptions -> a client: connect(), query(prompt), receive_response(), interrupt(), disconnect().
 ClientFactory = Callable[[ClaudeAgentOptions], Any]
 
@@ -199,11 +202,13 @@ class _Task:
 
 
 class Implementers:
-    def __init__(self, cfg: ImplementerConfig, on_report: Report, *, client_factory: ClientFactory | None = None,
-                 vfg: VfgRunner | None = None):
-        """`client_factory` makes the SDK client (tests pass a fake); `vfg` runs vfg, as vfg.vfg does."""
+    def __init__(self, cfg: ImplementerConfig, on_report: Report, *, on_session: Session | None = None,
+                 client_factory: ClientFactory | None = None, vfg: VfgRunner | None = None):
+        """`on_session` is told a task's session as soon as the CLI gives it; `client_factory` makes
+        the SDK client (tests pass a fake); `vfg` runs vfg, as vfg.vfg does."""
         self.cfg = cfg
         self.on_report = on_report
+        self.on_session = on_session
         self.client_factory = client_factory or sdk_client
         self.vfg = vfg or vfg_runner
         with open(cfg.prompt, encoding="utf-8") as f:
@@ -231,16 +236,17 @@ class Implementers:
         t.jobs.append(("start", brief))
         self._kick(t)
 
-    async def follow_up(self, task_id: str, text: str, session: str | None = None) -> None:
+    async def follow_up(self, task_id: str, text: str, session: str | None = None, brief: str = "") -> None:
         """To the task's implementer, behind whatever it is running: its session resumed with the
-        text, ending in another on_report. `session` resumes a task this process did not start
-        (the brain's tasks.json keeps it); with no session at all, a new implementer starts on the
-        task's brief and the text."""
+        text, ending in another on_report. `session` and `brief` are for a task this process did
+        not start (the brain's tasks.json keeps them): its session resumed; with no session at
+        all, a new implementer starts on the task's brief and the text."""
         t = self._tasks.get(task_id)
         if t is None:
-            t = self._tasks[task_id] = _Task(task_id, self._guard(task_id), session=session)
-        elif session and not t.session:
-            t.session = session
+            t = self._tasks[task_id] = _Task(task_id, self._guard(task_id), brief=brief, session=session)
+        else:
+            t.session = t.session or session
+            t.brief = t.brief or brief
         t.jobs.append(("follow_up", text))
         self._kick(t)
 
@@ -369,8 +375,7 @@ class Implementers:
         """Notes one message: the session id, what it does, how it ended. Returns why to stop it."""
         if isinstance(msg, SystemMessage) and msg.subtype == "init":
             data = msg.data or {}
-            if data.get("session_id"):
-                t.session = data["session_id"]
+            self._keep_session(t, data.get("session_id"))
             log("implementer", "%s init: session %s, model %s, permission mode %s" % (
                 t.id, t.session, data.get("model"), data.get("permissionMode")))
             src = data.get("apiKeySource")
@@ -383,13 +388,25 @@ class Implementers:
                 elif isinstance(b, TextBlock) and b.text.strip():
                     log("implementer", "%s says: %s" % (t.id, re.sub(r"\s+", " ", b.text.strip())[:300]))
         elif isinstance(msg, ResultMessage):
-            t.session = msg.session_id or t.session
+            self._keep_session(t, msg.session_id)
             log("implementer", "%s %s (%s, %s turns, %d s)" % (
                 t.id, "error" if msg.is_error else "ended", msg.subtype, msg.num_turns, (msg.duration_ms or 0) // 1000))
             for d in msg.permission_denials or []:
                 if isinstance(d, dict):
                     log("denied", "%s %s %s" % (t.id, d.get("tool_name"), short(d.get("tool_input"))))
         return None
+
+    def _keep_session(self, t: _Task, session: str | None) -> None:
+        """The session the CLI named, kept here and given to on_session at once: a run the brain's
+        stop or a crash cuts short is still resumed by its follow-up."""
+        if not session or session == t.session:
+            return
+        t.session = session
+        if self.on_session is not None:
+            try:
+                self.on_session(t.id, session)
+            except Exception:
+                log("implementer", "%s: on_session broke: %s" % (t.id, traceback.format_exc()))
 
     async def _system(self) -> str:
         async with self._prefix_lock:

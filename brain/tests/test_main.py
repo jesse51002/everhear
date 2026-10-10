@@ -40,7 +40,7 @@ async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fail
     ask = FakeAsk(Decision=decision(part("command", "give a diamond pickaxe", cmd("give Steve diamond_pickaxe")),
                                     reply="there you go"))
     run = asyncio.create_task(serve(cfg, stop, vfg=vfg, watch=watch, catalog=catalog(), refs=FakeRefs(), ask=ask,
-                                    make_implementers=lambda on_report: impl))
+                                    make_implementers=lambda on_report, on_session: impl))
     for _ in range(200):
         if len([s for s in vfg.said() if s[0] == "there you go"]) == 2:
             break
@@ -81,5 +81,5 @@ async def test_with_no_rows_that_recent_it_follows_from_the_feeds_last_seq_and_a
 
     ask = FakeAsk(Decision=decision(reply="never"))
     assert await serve(cfg, stop, vfg=vfg, watch=watch, catalog=catalog(), refs=FakeRefs(), ask=ask,
-                       make_implementers=lambda on_report: FakeImplementers()) == 0
+                       make_implementers=lambda *_: FakeImplementers()) == 0
     assert len(vfg.of("context", "--since")) == 3 and seen_after == [902] and ask.calls == []

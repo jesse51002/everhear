@@ -155,11 +155,13 @@ class Acts:
         brief = p.instruction.strip()
         follow = p.task.strip()
         if follow and self.tasks.get(follow) is not None:
-            session = self.tasks.get(follow).get("session")
+            known = self.tasks.get(follow)
             self.tasks.reopen(follow)
             self.post("task", follow, f"{follow} follow-up: {short(brief, BRIEF_SHORT)}")
-            # its session, when the implementer gave one: a follow-up after a restart resumes it
-            await self.implementers.follow_up(follow, brief, **({"session": session} if session else {}))
+            # its session, when the implementer gave one, and its brief: a follow-up after a restart
+            # resumes the session, or starts a new implementer on the brief and the follow-up
+            await self.implementers.follow_up(follow, brief, session=known.get("session") or None,
+                                              brief=str(known.get("task") or ""))
             log("task", f"{follow} follow-up: {short(brief, 300)}")
             return follow
         if follow:

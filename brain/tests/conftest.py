@@ -212,8 +212,8 @@ class FakeImplementers:
         self.started.append((task_id, brief))
         self.busy.append(task_id)
 
-    async def follow_up(self, task_id: str, text: str) -> None:
-        self.followed.append((task_id, text))
+    async def follow_up(self, task_id: str, text: str, session: str | None = None, brief: str = "") -> None:
+        self.followed.append((task_id, text, brief))
 
     def running(self) -> list[str]:
         return list(self.busy)

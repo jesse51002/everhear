@@ -65,7 +65,9 @@ among them), an instruction that does nothing, a teleport that moves nobody, a p
 gets ONE retry from the action planner ([`action_planner.py`](brain/action_planner.py)) on
 `VFG_PLAN_MODEL`, written with the reference of every command it used; its self-check is off
 unless `VFG_PLAN_CHECK=on`. Implementer parts start at once: a new one gets its own `T<n>`, a
-`tasks.json` entry and an `AI task` row; one naming a task goes to that task's implementer. The
+`tasks.json` entry and an `AI task` row; one naming a task goes to that task's implementer, which
+resumes its session (kept in `tasks.json` as soon as the implementer's CLI names it), or with no
+session saved starts anew on the task's brief and the follow-up. The
 reply is said at once when there are only implementer and talk parts, and after the actions
 otherwise; when an action failed or was dropped in code, a short line written in code goes out
 instead, so a reply never claims what did not happen.

@@ -205,9 +205,7 @@ class Brain:
         follow-up to the task already runs (`following`), the task stays open with the result so
         far, and the call is told, so its reply never says it is all done."""
         task = self.tasks.get(tid) or {"id": tid, "player": "", "line": "", "task": ""}
-        session = getattr(self.implementers, "session", None)
-        if callable(session):
-            self.tasks.set_session(tid, session(tid))
+        self.keep_session(tid)
         self.reload()
         seen = await self.world.seen()
         event = Event("REPORT", task=task, status=status, report=text, following=following)
@@ -230,6 +228,12 @@ class Brain:
             await self.acts.run(d, player=task.get("player") or "", line=task.get("line") or "", seen=seen)
         elif d.reply.strip():
             await self.acts.say(d.reply, tid)
+
+    def keep_session(self, tid: str) -> None:
+        """The task's implementer session into tasks.json, in case on_session missed it."""
+        session = getattr(self.implementers, "session", None)
+        if callable(session):
+            self.tasks.set_session(tid, session(tid))
 
     def result(self, tid: str, status: str, record: str, following: bool) -> None:
         """A report's record, an `AI result` row: the task closed with it, or kept open with it as
@@ -307,6 +311,7 @@ class Brain:
         with contextlib.suppress(Exception):
             stopped = await self.implementers.close(implementers_grace_s)
             for tid in stopped:
+                self.keep_session(tid)  # a follow-up after the restart resumes it
                 self.tasks.close(tid, "failed", f"{tid} failed: stopped, the brain stopped while it ran")
                 self.acts.post("result", tid, f"{tid} failed: stopped, the brain stopped while it ran")
             if stopped:

@@ -43,12 +43,16 @@ class Run:
                            .on("place", "list", answer=ok("castle 1 2 3\n")))
         self.reports: list[tuple[str, str, str]] = []
         self.running: list[list[str]] = []  # running() as each report arrives
+        self.sessions: list[tuple[str, str, int]] = []  # (task, session, how many reports had come)
 
         async def on_report(task, status, text):
             self.reports.append((task, status, text))
             self.running.append(self.imps.running())
 
-        self.imps = Implementers(cfg, on_report, client_factory=self.clients, vfg=self.vfg)
+        def on_session(task, session):
+            self.sessions.append((task, session, len(self.reports)))
+
+        self.imps = Implementers(cfg, on_report, on_session=on_session, client_factory=self.clients, vfg=self.vfg)
 
     async def settle(self):
         """Until every run, and every usage row after it, is done."""
@@ -170,6 +174,17 @@ async def test_a_follow_up_with_no_session_here_resumes_the_one_given_else_start
     resumed, crashed, anew = r.clients.made
     assert resumed.options.resume == "s9" and resumed.prompt == follow_up_prompt("T9", "make it bigger")
     assert anew.options.resume is None and anew.prompt.startswith(BRIEF + "\n\nFOLLOW-UP: try again\n\nYOUR TASK: T3.")
+
+
+async def test_a_follow_up_with_no_session_anywhere_starts_on_its_brief_and_the_session_is_kept_at_once(cfg):
+    r = Run(cfg)
+    r.clients.add(init("s5"), result("Done: wider.", session="s5"))
+    # a task from before a restart whose session never reached tasks.json: its brief comes from there
+    await r.imps.follow_up("T5", "make it wider", brief=BRIEF)
+    await r.settle()
+    [c] = r.clients.made
+    assert c.options.resume is None and c.prompt.startswith(BRIEF + "\n\nFOLLOW-UP: make it wider\n\nYOUR TASK: T5.")
+    assert r.sessions == [("T5", "s5", 0)]  # at the CLI's init, before any report
 
 
 async def test_close_interrupts_what_runs_drops_what_waits_and_reports_nothing(cfg):

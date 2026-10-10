@@ -71,7 +71,7 @@ async def test_implementers_start_and_follow_up_and_the_reply_goes_out_at_once(k
     await k.acts.run(d, player="Steve", line="meteor staff, and widen Alex's trail", seen=SEEN)
     await k.settle()
     assert k.impl.started == [("T2", "a meteor staff for Steve that rains meteors where he looks")]
-    assert k.impl.followed == [("T1", "make the trail twice as wide")]
+    assert k.impl.followed == [("T1", "make the trail twice as wide", "an ice trail behind Alex")]  # and its brief
     assert k.vfg.said() == [["on it: staff coming, trail getting wider", "--task", "T2"]]
     assert sorted(k.vfg.rows("task")) == [("task T1", "T1 follow-up: make the trail twice as wide"),
                                           ("task T2", "T2: a meteor staff for Steve that rains meteors where he looks")]

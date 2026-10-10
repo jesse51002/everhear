@@ -75,7 +75,7 @@ class NoImplementers:
     async def start(self, task_id: str, brief: str) -> None:
         await self.on_report(task_id, "failed", f"Failed: no implementers here ({self.why}).")
 
-    async def follow_up(self, task_id: str, text: str, session: str | None = None) -> None:
+    async def follow_up(self, task_id: str, text: str, session: str | None = None, brief: str = "") -> None:
         await self.start(task_id, text)
 
     def running(self) -> list[str]:
@@ -85,13 +85,13 @@ class NoImplementers:
         return []
 
 
-def implementers(on_report):
+def implementers(on_report, on_session=None):
     try:
         from .implementers.runner import ImplementerConfig, Implementers
     except ImportError as e:
         log("start", f"the implementers cannot be loaded ({e}): implementer parts fail at once")
         return NoImplementers(on_report, str(e))
-    return Implementers(ImplementerConfig.load(), on_report)
+    return Implementers(ImplementerConfig.load(), on_report, on_session=on_session)
 
 
 def asker(model: str, reasoning: str, timeout: float, providers: tuple[str, ...] = ()):
@@ -213,7 +213,7 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
     async def on_report(tid: str, status: str, text: str) -> None:
         await brain.on_report(tid, status, text)
 
-    impl = make_implementers(on_report)
+    impl = make_implementers(on_report, tasks.set_session)  # a session is kept as soon as the CLI names it
     acts = Acts(vfg=vfg, later=later, catalog=catalog, planner=planner, tasks=tasks, implementers=impl,
                 world=world, action_timeout_s=cfg.action_timeout_s)
     brain = Brain(ctx=ctx, call=call, respond=respond, acts=acts, world=world, tasks=tasks, implementers=impl,
