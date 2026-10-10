@@ -3,6 +3,7 @@
 #    "handler": "<actions/<name>/handler.py source>", "places": "<remote/places.py source>",
 #    "mc": "/opt/mc", "vfg": "/opt/vfg"}
 #   {"mode": "commands", "task": "T7", "commands": ["give ...", ...], "mc": "/opt/mc", "vfg": "/opt/vfg"}
+# Shipped ahead of it as modules: remote/commands.py (`commands`, the command-safety rules).
 #
 # It prints exactly ONE line on stdout, {"ok": true|false, "summary": "...", ...}, and exits 0
 # whenever the action ran, even when ok is false. It exits non-zero (common.py's die) only when
@@ -12,22 +13,24 @@
 # registers the places source as the module `places`, execs the handler source as the module
 # `handler` and calls handler.run(args), args being the fields plus "task". While it runs,
 # stdout is stderr: mc.log() and print() never reach the JSON line. An exception is
-# {"ok": false, "summary": "handler error: <Type>: <message>"}.
+# {"ok": false, "summary": "handler error: <Type>: <message>"}, with "partial": true when the
+# handler had already sent a command, since it may have acted; a handler's own result may say
+# "partial": true too (summon_around, when Minecraft refused after some were summoned).
 #
 # Commands mode runs the commands in order through RCON, refusing the owner's commands and
 # anything that places or removes blocks before it sends any, and stops at the first reply
-# Minecraft marks as an error: {"ok", "summary": replies joined with "; ", "replies", "failed"}.
+# Minecraft marks as an error: {"ok", "summary": replies joined with "; ", "replies", "failed",
+# "ran": the commands before it, which took effect}. A retry must not send those again. When
+# RCON drops mid-list the command it was sending may or may not have run: "partial": true,
+# and nobody should retry it blind.
 # An empty reply is "(no reply)" in replies. A failing `execute as|at ... run ...`, or one aimed
 # at an offline player, also replies nothing, so an `execute` without a reply is said plainly
 # in the summary as maybe not done; ok stays true, since nobody can tell.
 import traceback
 import types
 
-# The owner's commands: the same words as scripts/_lib/mc.py's REFUSED and actions/_types.py.
-REFUSED = frozenset(["stop", "op", "deop", "ban", "ban-ip", "pardon", "pardon-ip",
-                     "whitelist", "kick", "save-off"])
-BLOCK_COMMANDS = frozenset(["setblock", "fill", "clone", "place", "fillbiome"])
-RCON_MAX = 1400
+# REFUSED, BLOCK_COMMANDS, RCON_MAX and command_problem() are remote/commands.py's, which
+# toolkit/vfg ships ahead of this file as the module `commands`.
 
 # The start of every reply Minecraft 26.3 sends instead of doing what was asked: the
 # failure messages of its own language file. A parse error also carries <--[HERE]
@@ -73,26 +76,6 @@ def mc_error(out):
     return out.startswith(ERROR_STARTS) or any(p in out for p in ERROR_PARTS)
 
 
-def command_problem(cmd):
-    """Why a command may not run, or None: its first word and the word after every `run`."""
-    if any(c in cmd for c in "\r\n\x00"):
-        return "a command is one line"
-    n = len(cmd.encode("utf-8"))
-    if n > RCON_MAX:
-        return "the command is %d bytes; RCON takes at most %d" % (n, RCON_MAX)
-    words = cmd.split()
-    checks = words[:1] + [words[i + 1] for i, w in enumerate(words[:-1]) if w.lower() == "run"]
-    for w in checks:
-        w = w.lstrip("/").lower()
-        if w.startswith("minecraft:"):
-            w = w[len("minecraft:"):]
-        if w in BLOCK_COMMANDS:
-            return "%s places or removes blocks" % w
-        if w in REFUSED:
-            return "%s is the server owner's to do" % w
-    return None
-
-
 NO_REPLY = "(no reply)"
 
 
@@ -121,7 +104,7 @@ def run_commands():
         c = c.strip()
         if c.startswith("/"):
             c = c[1:].lstrip()
-        why = "empty command" if not c else command_problem(c)
+        why = "empty command" if not c else commands.command_problem(c)
         if why:
             emit({"ok": False, "summary": "refused: %s: %s" % (why, c[:200]), "replies": [], "failed": c})
             return
@@ -130,14 +113,14 @@ def run_commands():
         r = Rcon(ARGS["mc"])
     except RconDown as e:
         die(5, str(e))
-    replies, failed, said = [], None, []
+    replies, failed, said, ran, partial = [], None, [], [], False
     try:
         for c in clean:
             try:
                 out = r.command(c)
             except RconDown as e:
-                failed = c
-                said.append("%s, before '%s' ran" % (e, c))
+                failed, partial = c, True
+                said.append("%s while '%s' was sent: it may or may not have happened" % (e, c))
                 break
             if out.strip():
                 replies.append(out)
@@ -148,9 +131,13 @@ def run_commands():
             if mc_error(out):
                 failed = c
                 break
+            ran.append(c)
     finally:
         r.close()
-    emit({"ok": failed is None, "summary": "; ".join(said), "replies": replies, "failed": failed})
+    result = {"ok": failed is None, "summary": "; ".join(said), "replies": replies, "failed": failed, "ran": ran}
+    if partial:
+        result["partial"] = True
+    emit(result)
 
 
 def load_module(name, source, filename):
@@ -181,8 +168,17 @@ def run_handler():
     args["task"] = ARGS.get("task") or ""
     real_stdout = sys.stdout
     sys.stdout = sys.stderr
+    sent = []
     try:
         try:
+            import mc
+            real_rcon = mc.rcon
+
+            def counted(cmd, *more, **kw):  # every command the handler sends: did it act before failing?
+                sent.append(cmd)
+                return real_rcon(cmd, *more, **kw)
+
+            mc.rcon = counted
             load_module("places", ARGS["places"], "places.py")
             handler = load_module("handler", ARGS["handler"], "actions/%s/handler.py" % name)
             result = handler.run(args)
@@ -193,6 +189,9 @@ def run_handler():
         except (Exception, SystemExit) as e:
             traceback.print_exc()
             result = {"ok": False, "summary": one_line("handler error: %s: %s" % (type(e).__name__, e))}
+            if sent:
+                result["partial"] = True
+                result["summary"] += "; it had sent %d command(s), so it may have partly happened" % len(sent)
     finally:
         sys.stdout = real_stdout
     emit(result)

@@ -351,6 +351,28 @@ def test_summon_spread_that_fails_is_tried_closer(serve):
     assert [c.split()[7] for c in sent(w, "spreadplayers")] == ["2", "0"]
 
 
+def test_summon_refused_after_some_stand_is_partial(serve):
+    w = FakeWorld()
+    w.add("Steve", (0.5, 64.0, 0.5))
+    real = w.respond
+    calls = {"n": 0}
+
+    def refuses_the_second_batch(cmd):
+        if " run summon " in cmd or cmd.startswith("summon "):
+            calls["n"] += 1
+            if calls["n"] > 10:
+                return "Unable to summon entity"
+        return real(cmd)
+
+    s = serve(w)
+    s.rcon.responder = refuses_the_second_batch
+    r = s.handler("summon_around", {"count": 20, "radius": 16, "scale": 1.0, "name": "", "glowing": False,
+                                     "players": "Steve", "mob": "cow"}, task="T7")
+    assert r.code == 0, r.stderr
+    assert r.out["ok"] is False and r.out["partial"] is True and r.out["summoned"] == 10
+    assert "then Minecraft said: Unable to summon entity" in r.out["summary"]
+
+
 def test_summon_refusals(serve):
     w = FakeWorld(peaceful=True)
     w.add("Alex", (0.5, 64.0, 0.5))

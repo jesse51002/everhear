@@ -219,6 +219,7 @@ class Config(object):
         "VFG_WATCH_CATCHUP": "100",
         "VFG_WATCH_MAX_PER_MIN": "120",
         "VFG_SSH": "ssh",
+        "VFG_PLACES_TTL_S": "30",
     }
     PATHS = ("VFG_SSH_KEY", "VFG_REPO", "VFG_SSH")
 
@@ -311,6 +312,10 @@ def _library(name, source):
     return mod
 
 '''
+
+
+# What remote/action.py imports: the command-safety rules, one copy for EC2 and the PC.
+ACTION_LIBS = ("commands.py",)
 
 
 def program(name, args, libs=()):
@@ -1296,7 +1301,7 @@ def cmd_action_run(cfg, a):
         raise Fail(1, "actions/%s/ has no handler.py, and only command runs without one" % a.name)
     args.update(vfg=cfg.rvfg, mc=cfg.rmc)
     try:
-        rc, o, e = Ssh(cfg).call(program("action.py", args), timeout, keep_master=True)
+        rc, o, e = Ssh(cfg).call(program("action.py", args, ACTION_LIBS), timeout, keep_master=True)
     except TimedOut:
         raise Fail(124, "timed out: %s did not finish within %s s" % (a.name, fmt_s(timeout)))
     if rc == 0 and result_line(o) is None:
@@ -1320,13 +1325,113 @@ def cmd_action(cfg, a):
 
 # ----------------------------------------------------------------- places
 
+# The saved places, cached on this PC for everyone who asks (the dispatcher, the
+# orchestrator's brief hook, implementers, the conversation): $VFG_HOME/places.json,
+# {"fetched_at": <epoch s>, "places": {name: {"pos", "dim", "by"}}}, mode 600, written
+# atomically under places.lock. `vfg place list` answers from it while it is younger than
+# VFG_PLACES_TTL_S, else fetches; save and forget write their entry through.
+
+def places_module():
+    """remote/places.py, for its line(): the same text the remote list prints."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("vfg_places", os.path.join(REMOTE, "places.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def places_cache_path(cfg):
+    return os.path.join(cfg.home, "places.json")
+
+
+def read_places_cache(cfg):
+    """(places, age in seconds), or None when there is no readable cache."""
+    try:
+        with open(places_cache_path(cfg), encoding="utf-8") as f:
+            data = json.load(f)
+        found, at = data["places"], float(data["fetched_at"])
+        if not isinstance(found, dict):
+            return None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return found, time.time() - at
+
+
+def write_places_cache(cfg, found, fetched_at):
+    os.makedirs(cfg.home, mode=0o700, exist_ok=True)
+    atomic_write(places_cache_path(cfg), json.dumps({"fetched_at": fetched_at, "places": found},
+                                                    sort_keys=True, ensure_ascii=False) + "\n")
+
+
+def places_ttl(cfg):
+    try:
+        return max(0.0, float(cfg.get("VFG_PLACES_TTL_S")))
+    except ValueError:
+        raise Fail(3, "not configured: VFG_PLACES_TTL_S must be a number of seconds")
+
+
+def show_places(found, as_json):
+    if as_json:
+        out(json.dumps(found, sort_keys=True, ensure_ascii=False))
+    elif not found:
+        out("none")
+    else:
+        line = places_module().line
+        out("\n".join(line(name, found[name]) for name in sorted(found)))
+
+
+def cmd_place_list(cfg, a):
+    ttl = places_ttl(cfg)
+    cached = read_places_cache(cfg)
+    if cached is not None and not a.fresh and 0 <= cached[1] < ttl:
+        show_places(cached[0], a.json)
+        return 0
+    try:
+        rc, o, e = remote(cfg, a, "place.py", {"op": "list", "json": True}, 30, libs=["places.py"])
+        if rc != 0:
+            finish(rc, b"", e)  # raises Fail with the remote's one line
+        found = json.loads(o.decode("utf-8"))
+        if not isinstance(found, dict):
+            raise Fail(1, "the place list is not a JSON object")
+    except Fail as f:
+        if cached is None:
+            raise
+        warn("saved places from %d s ago: %s" % (max(0, round(cached[1])), f.msg))
+        show_places(cached[0], a.json)
+        return 0
+    with flocked(os.path.join(cfg.home, "places.lock")):
+        write_places_cache(cfg, found, time.time())
+    show_places(found, a.json)
+    return 0
+
+
+def update_places_cache(cfg, name, entry):
+    """Write one place through to the cache (entry None: forgotten), keeping its age. No
+    cache, nothing to update: a list of one would pass for the whole list."""
+    with flocked(os.path.join(cfg.home, "places.lock")):
+        cached = read_places_cache(cfg)
+        if cached is None:
+            return
+        found = dict(cached[0])
+        if entry is None:
+            found.pop(name, None)
+        else:
+            found[name] = entry
+        write_places_cache(cfg, found, time.time() - cached[1])
+
+
+SAVED_RE = re.compile(r"^saved (\S+) at (-?\d+) (-?\d+) (-?\d+) in (\S+)$")
+
+
 def cmd_place(cfg, a):
     if a.op == "list":
-        return finish(*remote(cfg, a, "place.py", {"op": "list", "json": a.json}, 30, libs=["places.py"]))
+        return cmd_place_list(cfg, a)
     if not PLACE_RE.match(a.name):
         raise Fail(2, "%s is not a place name (a-z, 0-9 and _, at most 32)" % a.name)
     if a.op == "forget":
-        return finish(*remote(cfg, a, "place.py", {"op": "forget", "name": a.name}, 30, libs=["places.py"]))
+        rc = finish(*remote(cfg, a, "place.py", {"op": "forget", "name": a.name}, 30, libs=["places.py"]))
+        update_places_cache(cfg, a.name, None)
+        return rc
     if a.player is not None and not PLAYER_RE.match(a.player):
         raise Fail(2, "--player must be a player name (letters, digits, _; at most 16)")
     if a.at is not None and not all(COORD_RE.match(v) for v in a.at):
@@ -1337,7 +1442,14 @@ def cmd_place(cfg, a):
     if a.by is not None and not TASK_RE.match(a.by):
         raise Fail(2, "--by is a task id, like T7")
     args = {"op": "save", "name": a.name, "player": a.player, "at": a.at, "dim": dim, "by": a.by or ""}
-    return finish(*remote(cfg, a, "place.py", args, 30, libs=["places.py"]))
+    rc, o, e = remote(cfg, a, "place.py", args, 30, libs=["places.py"])
+    code = finish(rc, o, e)
+    m = SAVED_RE.match(o.decode("utf-8", "replace").strip())
+    if m:  # the server confirmed: write it through
+        d = m.group(5)
+        update_places_cache(cfg, m.group(1), {"pos": [int(m.group(2)), int(m.group(3)), int(m.group(4))],
+                                              "dim": d if ":" in d else "minecraft:" + d, "by": a.by or ""})
+    return code
 
 
 # ------------------------------------------------------------------ watch
@@ -1787,8 +1899,10 @@ def build_parser():
     g.add_argument("--at", nargs=3, metavar=("X", "Y", "Z"), help="these coordinates, as whole blocks")
     w.add_argument("--dim", metavar="D", help="with --at: overworld (default), the_nether or the_end")
     w.add_argument("--by", metavar="T<n>", help="the task that saved it")
-    w = ps.add_parser("list", help="one line per place: name x y z dim (task); or none")
+    w = ps.add_parser("list", help="one line per place: name x y z dim (task); or none. From the "
+                      "cache in $VFG_HOME/places.json while it is younger than VFG_PLACES_TTL_S")
     w.add_argument("--json", action="store_true", help="every place as one JSON object")
+    w.add_argument("--fresh", action="store_true", help="fetch from the server, whatever the cache's age")
     w = ps.add_parser("forget", help="remove a place; exit 1 if there was none")
     w.add_argument("name")
 

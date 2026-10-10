@@ -64,8 +64,13 @@ async def test_crash_recovery_hands_in_flight_tasks_with_what_was_done_and_a_wai
     stop.set()
     assert await running == 0
 
-    [hand] = vfg.hands()  # both in one write
-    assert [x["id"] for x in hand] == ["T3", "T5"]
+    # T3 had nothing left to say: handed at once. T5 waits until its replies are out, so the
+    # conversation hears "handed on" before the orchestrator can answer.
+    assert [[x["id"] for x in hand] for hand in vfg.hands()] == [["T3"], ["T5"]]
+    last_t5_reply = max(i for i, a in enumerate(vfg.calls) if a[:3] == ["orch", "reply", "T5"])
+    t5_hand = next(i for i, a in enumerate(vfg.calls) if a[:2] == ["orch", "hand"] and '"T5"' in a[2])
+    assert last_t5_reply < t5_hand
+    hand = [x for h in vfg.hands() for x in h]
     assert hand[1]["task"] == "teleport Alex to a village"
     assert hand[1]["context"] == (
         "ctx\n\nDispatcher: done bread — Gave 1 [Bread] to Alex; interrupted teleport Alex to a village: "
@@ -111,8 +116,8 @@ async def test_sigterm_lets_a_running_action_finish_then_hands_everything_unfini
     assert await asyncio.wait_for(running, 5) == 0
 
     assert [a[2] for a in vfg.actions()] == ["teleport", "teleport"]  # the bread and the desert never started
-    [hand] = vfg.hands()
-    by_id = {x["id"]: x for x in hand}
+    by_id = {x["id"]: x for hand in vfg.hands() for x in hand}
+    assert sorted(by_id) == ["T1", "T2"] and len([x for h in vfg.hands() for x in h]) == 2
     assert by_id["T1"]["task"] == "give Alex bread; then teleport Alex to a desert"
     assert by_id["T1"]["context"] == ("Dispatcher: done to a village — teleported Alex to a village at 1 70 2; "
                                       "not started: give Alex bread; teleport Alex to a desert (the dispatcher stopped)")

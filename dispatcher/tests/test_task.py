@@ -160,13 +160,28 @@ async def test_a_selection_with_nothing_in_it_is_handed_whole(h):
     assert h.vfg.replies() == [(tid, "progress", "handed on to the orchestrator: do something odd")]
 
 
-@pytest.mark.parametrize("task", ["Change to T3: make it taller", "Cancel T3: no tower", "Undo T3",
-                                  "Fix the fire sword for Steve", "Build Steve a tower"])
-async def test_earlier_work_a_fix_and_a_build_are_handed_whole_with_no_model_call(h, task):
+@pytest.mark.parametrize("task", ["Change to T3: make it taller", "Cancel T3: no tower", "cancel t12"])
+async def test_earlier_work_is_handed_whole_with_no_model_call_and_no_places_fetch(h, task):
     tid = await h.run(task, "ctx")
     assert h.llm.calls == []
+    assert h.vfg.calls[0][:2] != ["place", "list"] and not [a for a in h.vfg.calls if a[:2] == ["place", "list"]]
     [[line]] = h.vfg.hands()
     assert line == {"id": tid, "at": "2026-10-09T12:00:00.000Z", "task": task, "context": "ctx"}
+
+
+@pytest.mark.parametrize("task", ["Fix the weather", "Undo the rain", "Build Steve a tower", "Give Alex a building kit"])
+async def test_a_fix_an_undo_or_a_build_reaches_the_selector(h, task):
+    h.llm.add("Selection", select(orchestrator=task))
+    await h.run(task, "ctx")
+    assert [c.output for c in h.llm.calls] == ["Selection"]  # the parts and the prompt decide, not a regex
+
+
+def test_block_work_is_the_verb_build_or_a_block_change_never_a_building():
+    from dispatcher.selector import BLOCK_WORK
+    for yes in ("build a tower", "Steve builds a wall", "place blocks around Alex", "remove the blocks under him"):
+        assert BLOCK_WORK.search(yes), yes
+    for no in ("give Alex a building kit", "teleport Steve to the tallest building", "rebuild nothing"):
+        assert not BLOCK_WORK.search(no), no
 
 
 async def test_a_selection_naming_a_script_not_in_scripts_is_handed_whole(h):
@@ -477,6 +492,82 @@ async def test_a_minecraft_error_goes_back_to_the_action_planner(h):
     assert h.vfg.replies() == [(tid, "done", "64 steak for Alex — Gave 64 [Cooked Beef] to Alex")]
 
 
+async def test_a_command_retry_never_repeats_the_commands_that_already_took_effect(h):
+    h.llm.add("Selection", select(("command", "give Alex 64 rockets and Speed II")))
+    h.llm.add("Planned_command",
+              planned(cmd("give Alex minecraft:firework_rocket 64", "effect give Alex speed infinite 1"), say="rockets"),
+              planned(cmd("give Alex minecraft:firework_rocket 64", "effect give Alex speed infinite 1"), say="rockets"),
+              # the retry repeats the give: the code drops it
+              planned(cmd("give Alex minecraft:firework_rocket 64", "effect give Alex minecraft:speed infinite 1"),
+                      say="rockets and Speed II for Alex"))
+    h.vfg.on("action", "run", "command", answer=[
+        bad("Gave 64 [Firework Rocket] to Alex; Unknown effect 'speed'",
+            replies=["Gave 64 [Firework Rocket] to Alex", "Unknown effect 'speed'"],
+            failed="effect give Alex speed infinite 1", ran=["give Alex minecraft:firework_rocket 64"]),
+        ok("Applied effect Speed to Alex", replies=["Applied effect Speed to Alex"], failed=None,
+           ran=["effect give Alex minecraft:speed infinite 1"])])
+
+    tid = await h.run("64 rockets and speed two")
+
+    retry = h.llm.prompts("Planned_command")[2]
+    assert ("THESE ALREADY RAN AND TOOK EFFECT:\n1. give Alex minecraft:firework_rocket 64\n"
+            "Do NOT repeat them; write only what is still to do.") in retry
+    assert [args_of(a)["commands"] for a in h.vfg.actions()] == [
+        ["give Alex minecraft:firework_rocket 64", "effect give Alex speed infinite 1"],
+        ["effect give Alex minecraft:speed infinite 1"]]  # the rockets went once
+    assert h.vfg.replies() == [(tid, "done", "rockets and Speed II for Alex — Gave 64 [Firework Rocket] to Alex; "
+                                             "Applied effect Speed to Alex")]
+
+
+async def test_a_retry_that_only_repeats_what_took_effect_runs_nothing(h):
+    h.llm.add("Selection", select(("command", "give Alex rockets")))
+    h.llm.add("Planned_command",
+              planned(cmd("give Alex minecraft:firework_rocket 64", "say hi"), say="rockets"),
+              planned(cmd("give Alex minecraft:firework_rocket 64", "say hi"), say="rockets"),
+              planned(cmd("give Alex minecraft:firework_rocket 64"), say="rockets for Alex"))
+    h.vfg.on("action", "run", "command", answer=bad(
+        "Gave 64 [Firework Rocket] to Alex; Unknown or incomplete command",
+        replies=["Gave 64 [Firework Rocket] to Alex", "Unknown or incomplete command"], failed="say hi",
+        ran=["give Alex minecraft:firework_rocket 64"]))
+    tid = await h.run("rockets")
+    assert len(h.vfg.actions()) == 1
+    assert h.vfg.replies() == [(tid, "done", "rockets for Alex — Gave 64 [Firework Rocket] to Alex")]
+
+
+async def test_a_partial_run_is_never_retried_and_its_hand_on_names_what_ran(h):
+    h.llm.add("Selection", select(("command", "give Alex rockets and make it day")))
+    h.llm.add("Planned_command", planned(cmd("give Alex minecraft:firework_rocket 64", "time set day"), say="x"),
+              planned(cmd("give Alex minecraft:firework_rocket 64", "time set day"), say="x"))
+    h.vfg.on("action", "run", "command", answer=bad(
+        "Gave 64 [Firework Rocket] to Alex; RCON dropped while 'time set day' was sent: it may or may not have happened",
+        replies=["Gave 64 [Firework Rocket] to Alex"], failed="time set day",
+        ran=["give Alex minecraft:firework_rocket 64"], partial=True))
+
+    tid = await h.run("rockets and day")
+
+    assert len(h.vfg.actions()) == 1
+    assert [c.output for c in h.llm.calls] == ["Selection", "Planned_command", "Planned_command"]  # no retry call
+    [[line]] = h.vfg.hands()
+    assert line["context"].startswith("Dispatcher: give Alex rockets and make it day: it may have partly happened (")
+    assert "; these ran and took effect: give Alex minecraft:firework_rocket 64 — check before redoing it" in line["context"]
+
+
+async def test_a_hand_on_after_a_refusal_names_the_commands_that_took_effect(tmp_path):
+    h = Harness(tmp_path, retries=0)
+    h.llm.add("Selection", select(("command", "give Alex rockets and a trident of storms")))
+    h.llm.add("Planned_command", planned(cmd("give Alex minecraft:firework_rocket 64", "give Alex storm_trident"), say="x"),
+              planned(cmd("give Alex minecraft:firework_rocket 64", "give Alex storm_trident"), say="x"))
+    h.llm.add("Final_command", {"hand_on": "make Alex a trident of storms", "say": "handing on"})
+    h.vfg.on("action", "run", "command", answer=bad(
+        "Gave 64 [Firework Rocket] to Alex; Unknown item 'minecraft:storm_trident'",
+        replies=["Gave 64 [Firework Rocket] to Alex", "Unknown item 'minecraft:storm_trident'"],
+        failed="give Alex storm_trident", ran=["give Alex minecraft:firework_rocket 64"]))
+    await h.run("rockets and a storm trident")
+    [[line]] = h.vfg.hands()
+    assert line["context"].endswith("these already ran and took effect, do not redo them: "
+                                    "give Alex minecraft:firework_rocket 64")
+
+
 async def test_a_command_refused_by_its_validator_is_handed_on(h):
     h.llm.add("Selection", select(("command", "put a stone block under Alex")))
     h.llm.add("Planned_command", planned(cmd("setblock ~ ~-1 ~ stone"), say="a block"),
@@ -731,3 +822,16 @@ def test_the_selector_prompt_never_adds_a_level_amount_or_duration():
     text = PROMPT.read_text()
     assert "Copy levels, amounts and durations only when the task says them; never add one." in text
     assert "Speed II" not in text  # its own examples once taught it to turn "speed" into Speed II
+
+
+def test_only_an_action_instruction_is_capped_at_160_characters():
+    from dispatcher.selector import selection_type
+    Selection = selection_type(["command", "teleport"])
+    long_task = "build a castle with four towers, a moat, a drawbridge and banners on every tower " * 7  # ~560
+    long_part = "the castle with four towers and a moat and a drawbridge and banners on each tower, " * 3  # ~250
+    ok = Selection.model_validate({"parts": [
+        {"part": long_part, "to": "orchestrator", "instruction": long_task},
+        {"part": "speed", "to": "command", "instruction": "give Steve speed"}]})
+    assert len(ok.parts[0].instruction) > 500 and len(ok.parts[0].part) > 200
+    with pytest.raises(ValidationError, match="at most 160"):
+        Selection.model_validate({"parts": [{"part": "speed", "to": "command", "instruction": "give Steve speed " * 12}]})

@@ -130,7 +130,7 @@ SYS#816 18:25:00 | jev unavailable — passing every line as context
 | `vfg usage add --component <c> --model <m> --in N --out N [--cost X] [--ref T7]` | Writes a `usage` row; queues it locally when EC2 is down. `--ref` is at most 64 characters |
 | `vfg action run <name> --args '<json>' --task <T7> [--timeout S]` | Runs one action on EC2 and prints one JSON line (§14) |
 | `vfg action refs [--version]` | The server's version, from `server.jar`; or, without `--version`, `{"version", "commands"}`, the data generator's `commands.json` (300 s at most) |
-| `vfg place save <name> (--player <p> \| --at <x> <y> <z> [--dim <d>]) [--by <T7>]` / `list [--json]` / `forget <name>` | Saves, lists or forgets a named place (§14): `saved castle at 197 68 251 in overworld`; one `castle 197 68 251 overworld (T23)` per place, or `none`; `forgot castle`, exit 1 when there was none |
+| `vfg place save <name> (--player <p> \| --at <x> <y> <z> [--dim <d>]) [--by <T7>]` / `list [--json] [--fresh]` / `forget <name>` | Saves, lists or forgets a named place (§14): `saved castle at 197 68 251 in overworld`; one `castle 197 68 251 overworld (T23)` per place, or `none`; `forgot castle`, exit 1 when there was none. `list` answers from `$VFG_HOME/places.json` while it is younger than `VFG_PLACES_TTL_S` (30 s), else fetches; `--fresh` always fetches; save and forget write through; a failed fetch with any cache prints it, warns, exits 0 |
 
 Small additions a part may rely on: `vfg watch --tail N` (for a person at a terminal), `vfg script list`, `--wait [S]` (default 30 s) and `--no-deploy` on `vfg script run`, and `--feed` and `--source ai` on `vfg history`.
 

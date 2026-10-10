@@ -44,19 +44,27 @@ def load_places():
     return mod
 
 
+def toolkit():
+    """toolkit/vfg as a module, for its program(): what `vfg action run` sends."""
+    import importlib.machinery
+    loader = importlib.machinery.SourceFileLoader("vfg_toolkit_for_actions", str(REPO / "toolkit" / "vfg"))
+    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(mod)
+    return mod
+
+
 def action_namespace() -> dict:
-    """common.py + action.py's functions, loaded without running it."""
+    """common.py + remote/commands.py + action.py's functions, loaded without running it."""
     ns = {"__name__": "action_under_test"}
-    source = (REMOTE / "common.py").read_text() + "\nARGS = {}\n" + (REMOTE / "action.py").read_text()
+    source = program({}).decode("utf-8")
     exec(compile(source, "action.py", "exec"), ns)
     return ns
 
 
 def program(args: dict) -> bytes:
-    """What toolkit/vfg's program("action.py", args) sends: common.py, ARGS, action.py."""
-    common = (REMOTE / "common.py").read_text()
-    body = (REMOTE / "action.py").read_text()
-    return (common + "\nARGS = json.loads(" + repr(json.dumps(args)) + ")\n\n" + body).encode("utf-8")
+    """Exactly what toolkit/vfg's `vfg action run` sends: common.py, ARGS, the libraries, action.py."""
+    vfg = toolkit()
+    return vfg.program("action.py", args, vfg.ACTION_LIBS)
 
 
 @dataclass

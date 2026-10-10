@@ -7,6 +7,8 @@ It runs `vfg <action.vfg_argv(task)>` and says which of four things happened (`R
   exit 1 from a command that prints no JSON (`vfg place save`, `vfg script run/stop`), with
   its error text. Only this goes back to the action planner, which may change it and retry.
 - "timeout": exit 124. It may still have finished on EC2, so it is never retried.
+- "partial": the result says `partial`: RCON dropped mid-list, or a handler failed after it
+  may have acted. Never retried either; the summary names what ran.
 - "not_run": it could not be run at all: exit 2 bad arguments, 3 mc.py not deployed, 4 SSH
   down, 5 RCON down, exit 1 from `vfg action run` (unknown action, no handler, a command too
   long), or vfg itself missing. A retry cannot fix it.
@@ -27,7 +29,7 @@ from .vfg import Vfg, VfgResult, why
 GRACE_S = 5  # past vfg's own --timeout, so its clean exit 124 is the one seen
 
 
-Kind = Literal["ok", "refused", "timeout", "not_run"]
+Kind = Literal["ok", "refused", "timeout", "not_run", "partial"]
 
 
 @dataclass
@@ -70,6 +72,11 @@ def read(r: VfgResult, *, action_run: bool = True, timeout: float | None = None)
         ok = bool(line.get("ok"))
         summary = str(line.get("summary") or "").strip() or ("done" if ok else "failed, with no reason given")
         facts = {k: v for k, v in line.items() if k not in ("ok", "summary")}
+        if not ok and line.get("partial"):
+            ran = [str(c) for c in line.get("ran") or []]
+            took = f"; these ran and took effect: {'; '.join(ran)}" if ran else ""
+            return Ran(False, f"it may have partly happened ({summary}){took} — check before redoing it",
+                       facts, "partial")
         return Ran(ok, summary, facts, "ok" if ok else "refused")
     if r.code == 124:
         took = f"after {timeout:g} s" if timeout else f"({why(r)})"

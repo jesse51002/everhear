@@ -115,8 +115,11 @@ def summon_around(args):
         summary += "; then Minecraft said: %s" % " ".join(error.split())
     if missing:
         summary += "; %s %s not online" % (" and ".join(missing), "is" if len(missing) == 1 else "are")
-    return {"ok": error is None, "summary": summary, "mob": mob, "summoned": total, "standing": standing,
-            "rounds": rounds, "tag": tag}
+    result = {"ok": error is None, "summary": summary, "mob": mob, "summoned": total, "standing": standing,
+              "rounds": rounds, "tag": tag}
+    if error:  # some stand already: a retry would summon them again
+        result["partial"] = True
+    return result
 
 
 def nbt_parts(tag, batch_tag, name, glowing, scale):

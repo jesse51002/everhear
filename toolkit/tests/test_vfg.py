@@ -1450,7 +1450,8 @@ class TestAction(Case):
         self.assertEqual(self.result(r), {"ok": True, "replies": ["Set the time to 1000",
                                                                   "There are 1 of a max of 20 players online: Steve"],
                                           "summary": "Set the time to 1000; There are 1 of a max of 20 players "
-                                                     "online: Steve", "failed": None})
+                                                     "online: Steve", "failed": None,
+                                          "ran": ["time set day", "list"]})  # what took effect, for a retry
         self.assertEqual(self.box.rcon_commands(), ["time set day", "list"])
 
     def test_command_stops_at_minecraft_error_and_still_exits_0(self):
@@ -1720,6 +1721,82 @@ class TestPlace(World):
             self.assertOneLine(self.place(*args), 2)
         self.assertEqual(self.world.sent, [])
         self.assertEqual(self.box.ssh_calls(), [])
+
+    # ---- the places cache: $VFG_HOME/places.json
+
+    def cache(self):
+        with open(os.path.join(self.box.vhome, "places.json")) as f:
+            return json.load(f)
+
+    def age_cache(self, seconds):
+        data = self.cache()
+        data["fetched_at"] -= seconds
+        with open(os.path.join(self.box.vhome, "places.json"), "w") as f:
+            json.dump(data, f)
+
+    def lists(self):
+        return [c for c in self.world.sent if c == "data get storage everhear:places"]
+
+    def test_two_lists_inside_the_ttl_make_one_ssh_call(self):
+        self.world.save_place("castle", [197, 68, 251], by="T23")
+        first = self.place("list")
+        calls = len(self.box.ssh_calls())
+        second = self.place("list")
+        self.assertEqual((first.stdout, second.stdout), ("castle 197 68 251 overworld (T23)\n",) * 2)
+        self.assertEqual(len(self.box.ssh_calls()), calls)  # the second answered from the cache
+        self.assertEqual(len(self.lists()), 1)
+        self.assertEqual(json.loads(self.place("list", "--json").stdout),
+                         {"castle": {"pos": [197, 68, 251], "dim": "minecraft:overworld", "by": "T23"}})
+        self.assertEqual(os.stat(os.path.join(self.box.vhome, "places.json")).st_mode & 0o777, 0o600)
+
+    def test_a_list_past_the_ttl_fetches(self):
+        self.place("list")
+        self.world.save_place("zoo", [1, 2, 3])  # saved by someone else, straight on the server
+        self.age_cache(31)
+        self.assertEqual(self.place("list").stdout, "zoo 1 2 3 overworld\n")
+        self.assertEqual(len(self.lists()), 2)
+        self.assertEqual(self.place("list", VFG_PLACES_TTL_S="0").stdout, "zoo 1 2 3 overworld\n")
+        self.assertEqual(len(self.lists()), 3)
+
+    def test_fresh_fetches_whatever_the_age(self):
+        self.place("list")
+        self.world.save_place("zoo", [1, 2, 3])
+        self.assertEqual(self.place("list").stdout, "none\n")  # cached
+        self.assertEqual(self.place("list", "--fresh").stdout, "zoo 1 2 3 overworld\n")
+        self.assertEqual(self.place("list").stdout, "zoo 1 2 3 overworld\n")  # and the cache is rewritten
+
+    def test_save_and_forget_write_through_to_the_cache_keeping_its_age(self):
+        self.world.save_place("old", [5, 6, 7])
+        self.place("list")
+        self.age_cache(10)
+        at = self.cache()["fetched_at"]
+        self.assertOk(self.place("save", "castle", "--player", "Steve", "--by", "T23"))
+        self.assertOk(self.place("save", "nest", "--at", "1", "2", "3", "--dim", "the_end"))
+        self.assertEqual(self.cache()["places"], {
+            "old": {"pos": [5, 6, 7], "dim": "minecraft:overworld", "by": ""},
+            "castle": {"pos": [197, 68, 251], "dim": "minecraft:overworld", "by": "T23"},
+            "nest": {"pos": [1, 2, 3], "dim": "minecraft:the_end", "by": ""}})
+        self.assertAlmostEqual(self.cache()["fetched_at"], at, delta=1)
+        self.assertOk(self.place("forget", "old"))
+        self.assertEqual(sorted(self.cache()["places"]), ["castle", "nest"])
+        self.assertEqual(self.place("list").stdout, "castle 197 68 251 overworld (T23)\nnest 1 2 3 the_end\n")
+        self.assertEqual(len(self.lists()), 1)  # all of it from the cache
+
+    def test_a_failed_fetch_serves_the_stale_cache_and_exits_0(self):
+        self.world.save_place("castle", [197, 68, 251], by="T23")
+        self.place("list")
+        self.age_cache(600)
+        self.box.write_props(self.box.password, enable=False)
+        r = self.place("list")
+        self.assertOk(r)
+        self.assertEqual(r.stdout, "castle 197 68 251 overworld (T23)\n")
+        self.assertRegex(r.stderr, r"^vfg: saved places from 60\d s ago: .*minecraft is not running")
+        self.assertEqual(json.loads(self.place("list", "--json", "--fresh").stdout)["castle"]["by"], "T23")
+
+    def test_no_cache_and_a_failed_fetch_exits_non_zero(self):
+        self.box.write_props(self.box.password, enable=False)
+        self.assertOneLine(self.place("list"), 5, "minecraft is not running")
+        self.assertFalse(os.path.exists(os.path.join(self.box.vhome, "places.json")))
 
     def test_rcon_down_exits_5(self):
         self.box.write_props(self.box.password, enable=False)

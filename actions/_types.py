@@ -6,6 +6,7 @@ handlers there run under Python 3.9 without pydantic and get plain dicts.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import re
 from pathlib import Path
@@ -15,17 +16,22 @@ from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Fie
 
 REPO = Path(__file__).resolve().parent.parent
 
-# Server commands that are the owner's to run. scripts/_lib/mc.py (REFUSED),
-# toolkit/remote/action.py and the orchestrator's guard refuse the same words;
-# a test keeps this list equal to mc.py's.
-REFUSED = frozenset(["stop", "op", "deop", "ban", "ban-ip", "pardon", "pardon-ip",
-                     "whitelist", "kick", "save-off"])
+# The command-safety rules: toolkit/remote/commands.py's, loaded by path, the very file
+# toolkit/vfg ships to EC2, so the PC and EC2 refuse the same words. scripts/_lib/mc.py and
+# the orchestrator's guard keep their own REFUSED; a test keeps every list equal.
+def _load_commands():
+    path = REPO / "toolkit" / "remote" / "commands.py"
+    spec = importlib.util.spec_from_file_location("vfg_remote_commands", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
-# Commands that place or remove blocks: building is the orchestrator's.
-BLOCK_COMMANDS = frozenset(["setblock", "fill", "clone", "place", "fillbiome"])
 
-# What one RCON packet carries, in bytes of UTF-8.
-RCON_MAX = 1400
+_commands = _load_commands()
+REFUSED = _commands.REFUSED                  # the owner's commands
+BLOCK_COMMANDS = _commands.BLOCK_COMMANDS    # commands that place or remove blocks
+RCON_MAX = _commands.RCON_MAX                # what one RCON packet carries, in bytes of UTF-8
+command_problem = _commands.command_problem  # why a command may not run, for the planner, or None
 
 PLAYER_PATTERN = r"^[A-Za-z0-9_]{1,16}$"
 PLAYER_OR_ALL_PATTERN = r"^([A-Za-z0-9_]{1,16}|@a)$"
@@ -87,29 +93,6 @@ if SCRIPT_NAMES:
     ScriptName = Literal[SCRIPT_NAMES]  # type: ignore[valid-type]
 else:  # no scripts at all: nothing validates
     ScriptName = Annotated[str, Field(pattern=r"^(?!)$")]  # type: ignore[misc]
-
-
-def command_problem(cmd: str) -> str | None:
-    """Why a command may not run, in words for the action planner, or None.
-
-    Looks at its first word and at the word after every `run`, so
-    `execute as @a at @s run fill ...` and `return run setblock ...` are caught."""
-    if any(c in cmd for c in "\r\n\x00"):
-        return "a command is one line"
-    n = len(cmd.encode("utf-8"))
-    if n > RCON_MAX:
-        return "the command is %d bytes; RCON takes at most %d" % (n, RCON_MAX)
-    words = cmd.split()
-    checks = words[:1] + [words[i + 1] for i, w in enumerate(words[:-1]) if w.lower() == "run"]
-    for w in checks:
-        w = w.lstrip("/").lower()
-        if w.startswith("minecraft:"):
-            w = w[len("minecraft:"):]
-        if w in BLOCK_COMMANDS:
-            return "%s places or removes blocks, and building is the orchestrator's: hand it on" % w
-        if w in REFUSED:
-            return "%s is the server owner's to do, never an action's" % w
-    return None
 
 
 def clean_command(cmd: str) -> str:

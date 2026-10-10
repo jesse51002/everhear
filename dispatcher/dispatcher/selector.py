@@ -40,12 +40,14 @@ PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "selector.md"
 # never picks one for a script that does not exist.
 SCRIPT_ACTIONS = ("run_script", "stop_script")
 
-# Always the orchestrator's, whole: earlier work, in the forms conversation/CLAUDE.md gives
-# the conversation, an undo, a fix and a build.
-WHOLE_TASK = re.compile(r"^\W*(change\s+to\s+T\d+|cancel\s+T\d+|undo|fix|build)\b", re.IGNORECASE)
+# Always the orchestrator's, whole: earlier work, in the two fixed forms conversation/CLAUDE.md
+# gives the conversation. Anything else ("Fix the weather", "undo the rain", "build a tower")
+# goes to the selector, whose parts and prompt decide.
+WHOLE_TASK = re.compile(r"^\W*(change\s+to\s+T\d+|cancel\s+T\d+)\b", re.IGNORECASE)
 
-# A task that changes blocks: with picks, it must also carry an orchestrator part.
-BLOCK_WORK = re.compile(r"\bbuild(s|ing)?\b|\b(place|remove|replace|break|destroy)\b.*\bblocks?\b", re.IGNORECASE)
+# A task that changes blocks: with picks, it must also carry an orchestrator part. "build" the
+# verb, never "building" the noun ("a building kit").
+BLOCK_WORK = re.compile(r"\bbuilds?\b|\b(place|remove|replace|break|destroy)\b.*\bblocks?\b", re.IGNORECASE)
 
 # An instruction that does nothing: refused.
 PLACEHOLDER = re.compile(r"^\W*(nothing( to do)?|none( needed)?|n/?a|no[ -]?op|skip|not needed|do nothing|"
@@ -60,9 +62,12 @@ MAX_PICKS = 4
 # At most this many adjacent command parts become one command pick (it runs five commands).
 MERGE = 3
 
-# One short sentence. The action planner writes the commands; a long instruction is a
-# slow answer and usually a command written out.
+# An action part's instruction: one short sentence. The action planner writes the commands;
+# a long one is a slow answer and usually a command written out. An orchestrator part may be
+# long (it is the task the orchestrator does), and so may the part's own words.
 INSTRUCTION_MAX = 160
+ORCHESTRATOR_MAX = 1500
+PART_MAX = 300
 
 
 class Pick(BaseModel):
@@ -83,11 +88,11 @@ def selection_type(names: list[str]) -> type[BaseModel]:
     To = Literal[tuple(names) + ("orchestrator",)]  # type: ignore[valid-type]
 
     class Part(BaseModel):
-        part: str = Field(min_length=1, max_length=100,
+        part: str = Field(min_length=1, max_length=PART_MAX,
                           description="the words of the task this part covers, short, as the task says them")
         to: To = Field(description="the action that does this part completely, right now, or orchestrator")  # type: ignore[valid-type]
         instruction: str = Field(
-            "", max_length=INSTRUCTION_MAX,
+            "", max_length=ORCHESTRATOR_MAX,
             description="for an action: one short sentence in plain words, the player names and amounts "
                         "exactly as the task says them, never a command; for the orchestrator: the part "
                         "as a short task, or empty when every part is the orchestrator's",
@@ -98,6 +103,9 @@ def selection_type(names: list[str]) -> type[BaseModel]:
             said = self.instruction.strip()
             if self.to != "orchestrator" and not said:
                 raise ValueError(f"the {self.to} part {self.part!r} has no instruction")
+            if self.to != "orchestrator" and len(said) > INSTRUCTION_MAX:
+                raise ValueError(f"the {self.to} instruction is {len(said)} characters: an action's is one short "
+                                 f"sentence of at most {INSTRUCTION_MAX}, never a command written out")
             if said and PLACEHOLDER.match(said):
                 raise ValueError(f"the instruction {self.instruction!r} does nothing: leave the part out")
             if self.to == "teleport" and NO_MOVE.search(said):
@@ -164,6 +172,11 @@ class Selector:
         # prompt: in the replay, DeepSeek V4 Flash without reasoning followed the same rules
         # far less often from a system message.
         self.rules = prompt.read_text(encoding="utf-8").rstrip("\n") + "\n" + menu(catalog, scripts) + "\n"
+
+    @staticmethod
+    def whole(task: str) -> bool:
+        """The orchestrator's whole, with no model call: `Change to T<n>` and `Cancel T<n>`."""
+        return bool(WHOLE_TASK.match(task))
 
     @staticmethod
     def prompt(task: str, context: str, places: str) -> str:

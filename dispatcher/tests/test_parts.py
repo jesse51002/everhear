@@ -149,6 +149,11 @@ def test_the_executor_says_which_kind_of_outcome_each_exit_is():
         for action_run in (True, False):
             assert read(VfgResult(code, "", err + "\n"), action_run=action_run) == \
                 Ran(False, f"could not run it: {err}", kind="not_run")
+    partial = read(VfgResult(0, '{"ok": false, "summary": "handler error: ValueError: x", "partial": true, '
+                                '"ran": ["time set day"]}\n', ""))
+    assert partial.kind == "partial" and partial.summary == (
+        "it may have partly happened (handler error: ValueError: x); these ran and took effect: time set day "
+        "— check before redoing it")
     assert read(VfgResult(124, "", "vfg: timed out: give did not finish within 20 s\n"), timeout=20) == \
         Ran(False, "timed out after 20 s; it may or may not have happened — check before redoing it", kind="timeout")
 
@@ -525,3 +530,33 @@ def test_replay_passes_the_model_timeout_to_every_structured_call(tmp_path, monk
     monkeypatch.setattr(vfg_llm, "structured", fake_structured)
     assert replay_module.main(["--limit", "1"]) == 0
     assert seen and all(kw["timeout"] == 3.0 and kw["reasoning"] is False for kw in seen)
+
+
+async def test_a_line_is_handed_only_once_its_tasks_replies_are_out(tmp_path):
+    """The conversation hears "handed on" before the orchestrator can answer: a failing reply holds its line."""
+    state, vfg = State(tmp_path / "state.json"), FakeVfg()
+    vfg.on("orch", "reply", answer=[fail(1, "ssh: connection reset"), fail(1, "ssh: connection reset"),
+                                    VfgResult(0, "7\n", "")])
+    reply = Reply(state, vfg, retry_s=(0.1,))
+    batch = Batch(state, vfg, window_s=0.02, retry_s=(0.01,), held_s=0.02)
+    batch.add(line("T1"))
+    reply.send("T1", "progress", "handed on to the orchestrator: build a castle")
+    batch.add(line("T2"))  # nothing to say for T2: it does not wait for T1
+    state.save()
+    while state.batch:
+        await asyncio.sleep(0.01)
+    hands = [i for i, a in enumerate(vfg.calls) if a[:2] == ["orch", "hand"]]
+    sent = max(i for i, a in enumerate(vfg.calls) if a[:2] == ["orch", "reply"])
+    assert [[x["id"] for x in h] for h in vfg.hands()] == [["T2"], ["T1"]]
+    assert hands[0] < sent < hands[1]  # T1 went only after its reply got through, on the third try
+    assert len(vfg.replies("T1")) == 3
+
+
+async def test_a_held_line_never_keeps_a_stop_past_its_deadline(tmp_path):
+    state, vfg = State(tmp_path / "state.json"), FakeVfg()
+    state.outbox.append({"id": "T1", "status": "progress", "text": "never sent"})
+    batch = Batch(state, vfg, window_s=10, held_s=0.05)
+    batch.add(line("T1"))
+    t0 = time.monotonic()
+    assert await batch.flush(0.2) is False
+    assert time.monotonic() - t0 < 0.5 and vfg.hands() == [] and [x["id"] for x in state.batch] == ["T1"]

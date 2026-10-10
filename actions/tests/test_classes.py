@@ -135,18 +135,30 @@ def test_script_names_reads_only_folders_with_main(tmp_path):
     assert script_names(tmp_path / "missing") == ()
 
 
-def test_refused_words_match_mc_py_and_action_py():
-    tree = ast.parse((REPO / "scripts/_lib/mc.py").read_text())
-    mc_refused = None
-    for node in ast.walk(tree):
+def refused_in(path: str) -> set[str]:
+    """The REFUSED = frozenset([...]) of a Python file, read without importing it."""
+    for node in ast.walk(ast.parse((REPO / path).read_text())):
         if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "REFUSED" for t in node.targets):
-            mc_refused = set(ast.literal_eval(node.value.args[0]))
-    assert mc_refused and set(_types.REFUSED) == mc_refused
+            return set(ast.literal_eval(node.value.args[0]))
+    raise AssertionError("no REFUSED in " + path)
+
+
+def test_the_command_rules_are_one_module_and_every_refused_list_matches_it():
+    commands = _types._commands  # toolkit/remote/commands.py, loaded by path
+    assert Path(commands.__file__) == REPO / "toolkit" / "remote" / "commands.py"
+    assert (_types.REFUSED, _types.BLOCK_COMMANDS, _types.RCON_MAX, _types.command_problem) == \
+        (commands.REFUSED, commands.BLOCK_COMMANDS, commands.RCON_MAX, commands.command_problem)
+    assert set(commands.REFUSED) == refused_in("toolkit/remote/commands.py") == refused_in("scripts/_lib/mc.py")
+    if (REPO / "orchestrator/orchestrator/guard.py").exists():
+        assert set(commands.REFUSED) == refused_in("orchestrator/orchestrator/guard.py")
+    assert set(commands.BLOCK_COMMANDS) == {"setblock", "fill", "clone", "place", "fillbiome"}
+    assert commands.RCON_MAX == RCON_MAX == 1400
+    # EC2 gets the same file: vfg ships it ahead of action.py, which keeps no copy of its own
     ns = action_namespace()
-    assert set(ns["REFUSED"]) == mc_refused
-    assert set(ns["BLOCK_COMMANDS"]) == set(_types.BLOCK_COMMANDS) == {"setblock", "fill", "clone", "place",
-                                                                         "fillbiome"}
-    assert ns["RCON_MAX"] == RCON_MAX == 1400
+    assert ns["commands"].command_problem("fill ~ ~ ~ ~ ~ ~ air") == commands.command_problem("fill ~ ~ ~ ~ ~ ~ air")
+    assert "REFUSED" not in ns and "command_problem" not in ns
+    source = (REPO / "toolkit/remote/action.py").read_text()
+    assert "frozenset(" not in source and "RCON_MAX =" not in source
 
 
 # ------------------------------------------------------------------ command

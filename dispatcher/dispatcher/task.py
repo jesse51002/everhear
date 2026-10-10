@@ -72,6 +72,14 @@ def offline_names(facts: dict[str, Any]) -> list[str]:
     return [str(n) for n in names if str(n).strip()] if isinstance(names, list) else []
 
 
+def without_repeats(commands: list[str], already: list[str]) -> list[str]:
+    """A retry's commands without the leading ones that already ran and took effect."""
+    left = list(commands)
+    while left and left[0] in already:
+        left.pop(0)
+    return left
+
+
 def strip_end(text: str) -> str:
     return text.strip().rstrip(".").strip()
 
@@ -164,6 +172,9 @@ class Dispatcher:
             return self.hand(rec, 0, "not started: the dispatcher stopped")
         if self.selector is None:
             return self.hand(rec, 0, "no actions are loaded")
+        if self.selector.whole(rec["task"]):  # Change to T<n>, Cancel T<n>: nothing to fetch for it
+            log("select", f"{tid} is earlier work: the whole task is the orchestrator's")
+            return self.hand(rec, 0, "")
         places = await self.places(tid)
         if self.stopping:
             return self.hand(rec, 0, "not started: the dispatcher stopped")
@@ -219,6 +230,7 @@ class Dispatcher:
         last = None
         tries = 0
         checked = Checked()
+        took: list[str] = []  # the replies of the commands in p.already, for the report
         while True:
             final = failure is not None and tries > self.cfg.retries
             try:
@@ -236,24 +248,42 @@ class Dispatcher:
                 return HandOn(self._note(p, failure, f"the action planner handed it on: {strip_end(planned.hand_on)}"))
             if self.stopping:
                 return HandOn("", stopped=True)
-            ran = await execute(planned.action, p.task_id, self.vfg, self.cfg.action_timeout_s,
+            action = planned.action
+            if p.already and isinstance(getattr(action, "commands", None), list):
+                left = without_repeats(action.commands, p.already)
+                if len(left) < len(action.commands):
+                    log("plan", f"{p.task_id} #{p.index + 1} dropped {len(action.commands) - len(left)} command(s) "
+                                "that already ran")
+                if not left:  # the retry only repeated what already took effect
+                    return Done(report(planned.say or p.instruction, "; ".join(took) or "already done"))
+                action = action.model_copy(update={"commands": left})
+            ran = await execute(action, p.task_id, self.vfg, self.cfg.action_timeout_s,
                                 label=f" #{p.index + 1}")
             tries += 1
             if ran.kind == "ok":
-                return Done(report(planned.say or p.instruction, ran.summary))
+                return Done(report(planned.say or p.instruction, "; ".join([*took, ran.summary])))
             if ran.kind == "refused" and (offline := offline_names(ran.facts)):
                 return Dropped(f"{' and '.join(offline)} not online")  # nothing can fix it: no planner call
-            if ran.kind != "refused":  # a timeout may have happened; not_run no retry can fix
-                return HandOn(f"not done {strip_end(p.instruction)}: {ran.summary}" if ran.kind == "not_run"
-                              else f"{strip_end(p.instruction)}: {ran.summary}")
-            failure, last = ran.summary, planned.action
+            if ran.kind != "refused":  # timeout and partial may have happened; not_run no retry can fix
+                note = (f"not done {strip_end(p.instruction)}: {ran.summary}" if ran.kind == "not_run"
+                        else f"{strip_end(p.instruction)}: {ran.summary}")
+                return HandOn(note + self._already(p))
+            ran_now = [str(c) for c in ran.facts.get("ran") or []]
+            p.already += ran_now
+            took += [str(x) for x in (ran.facts.get("replies") or [])[:len(ran_now)]]
+            failure, last = ran.summary, action
 
-    @staticmethod
-    def _note(p: Pick, failure: str | None, why_: str) -> str:
+    @classmethod
+    def _note(cls, p: Pick, failure: str | None, why_: str) -> str:
         what = strip_end(p.instruction)
         if failure:
-            return f"failed {what} because {strip_end(failure)} ({why_})"
-        return f"not done {what}: {why_}"
+            return f"failed {what} because {strip_end(failure)} ({why_})" + cls._already(p)
+        return f"not done {what}: {why_}" + cls._already(p)
+
+    @staticmethod
+    def _already(p: Pick) -> str:
+        """For a hand-on note: the commands of this pick that already took effect, not to redo."""
+        return f"; these already ran and took effect, do not redo them: {'; '.join(p.already)}" if p.already else ""
 
     # ------------------------------------------------------------- endings
 

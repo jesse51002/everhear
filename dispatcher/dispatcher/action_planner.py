@@ -139,6 +139,7 @@ class Pick:
     reports: list[str]          # the task's earlier actions' reports
     spent: Spent = field(default_factory=Spent)
     refs: Any = None            # the references there were when the task started; None: none yet
+    already: list[str] = field(default_factory=list)  # commands of this pick that ran and took effect
 
 
 @dataclass
@@ -190,6 +191,9 @@ class Planner:
     def retry_prompt(self, cls, p: Pick, last: BaseModel | None, failure: str, final: bool,
                      reference: str = "") -> str:
         text = f"{self.base(cls, p)}\nYOUR LAST ATTEMPT: {attempt(last)}\nIT FAILED: {failure}\n"
+        if p.already:
+            text += (f"\nTHESE ALREADY RAN AND TOOK EFFECT:\n{numbered(p.already)}\n"
+                     "Do NOT repeat them; write only what is still to do.\n")
         if reference:
             text += f"\nREFERENCES (each command's syntax on this server, then the wiki's Java Edition notes):\n{reference}\n"
         if final:

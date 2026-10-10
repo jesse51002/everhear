@@ -25,7 +25,7 @@ def test_commands_run_in_order_and_report_the_replies(serve):
                                 "Gave 64 [Golden Apple] to Alex; Set the weather to rain",
                      "replies": ["Set minecraft:overworld to time marker minecraft:day",
                                  "Gave 64 [Golden Apple] to Alex", "Set the weather to rain"],
-                     "failed": None}
+                     "failed": None, "ran": ["time set day", "give Alex minecraft:golden_apple 64", "weather rain"]}
     assert s.world.sent == ["time set day", "give Alex minecraft:golden_apple 64", "weather rain"]
 
 
@@ -35,15 +35,34 @@ def test_a_minecraft_error_stops_the_list(serve):
     assert r.code == 0
     assert r.out["ok"] is False
     assert r.out["failed"] == "give @a minecraft:nonsense"
+    assert r.out["ran"] == ["time set day"]  # took effect: a retry must not send it again
+    assert "partial" not in r.out  # Minecraft refused it: nothing of it happened
     assert r.out["summary"].startswith("Set minecraft:overworld to time marker minecraft:day; Unknown item ")
     assert "weather rain" not in s.world.sent
+
+
+def test_rcon_dropping_mid_list_is_partial(serve):
+    s = serve(world())
+
+    def drops_on_weather(cmd):
+        if cmd.startswith("weather"):
+            raise OSError("the connection drops")  # the fake server closes it, as a crash would
+        return s.world.respond(cmd)
+
+    s.rcon.responder = drops_on_weather
+    r = s.commands(["time set day", "weather rain", "give Alex minecraft:diamond 1"])
+    assert r.code == 0, r.stderr
+    assert r.out["ok"] is False and r.out["partial"] is True
+    assert r.out["ran"] == ["time set day"] and r.out["failed"] == "weather rain"
+    assert "'weather rain' was sent: it may or may not have happened" in r.out["summary"]
+    assert "give Alex minecraft:diamond 1" not in s.world.sent
 
 
 def test_an_offline_player_stops_the_list(serve):
     s = serve(world())
     r = s.commands(["give Steve minecraft:diamond 1", "time set night"])
     assert r.out == {"ok": False, "summary": "No player was found", "replies": ["No player was found"],
-                     "failed": "give Steve minecraft:diamond 1"}
+                     "failed": "give Steve minecraft:diamond 1", "ran": []}
     assert s.world.sent == ["give Steve minecraft:diamond 1"]
 
 
@@ -65,7 +84,7 @@ def test_an_execute_without_a_reply_may_not_have_happened(serve):
                                 "`execute at Steve run summon minecraft:zombie ~ ~ ~` gave no reply, "
                                 "so it may not have happened",
                      "replies": ["Set minecraft:overworld to time marker minecraft:day", "(no reply)"],
-                     "failed": None}
+                     "failed": None, "ran": ["time set day", "execute at Steve run summon minecraft:zombie ~ ~ ~"]}
 
 
 def test_when_every_reply_is_empty_the_summary_is_only_the_notes(serve):
@@ -154,8 +173,22 @@ def test_a_handler_exception_is_ok_false(serve):
     s = serve(world())
     r = handler_run(s, "def run(args):\n    print('chatty')\n    raise KeyError('x')\n")
     assert r.code == 0
-    assert r.out == {"ok": False, "summary": "handler error: KeyError: 'x'"}
+    assert r.out == {"ok": False, "summary": "handler error: KeyError: 'x'"}  # it sent nothing: no partial
     assert "Traceback" in r.stderr and "chatty" in r.stderr
+
+
+def test_a_handler_raising_after_it_sent_a_command_is_partial(serve):
+    s = serve(world())
+    source = ("from mc import rcon\n"
+              "def run(args):\n"
+              "    rcon('time set night')\n"
+              "    raise ValueError('half way')\n")
+    r = handler_run(s, source)
+    assert r.code == 0
+    assert r.out == {"ok": False, "partial": True,
+                     "summary": "handler error: ValueError: half way; it had sent 1 command(s), "
+                                "so it may have partly happened"}
+    assert s.world.sent == ["time set night"]
 
 
 @pytest.mark.parametrize("source,starts", [

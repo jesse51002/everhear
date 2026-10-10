@@ -51,7 +51,7 @@ vfg action refs --version                      # the server's version, from serv
 vfg action refs                                # {"version", "commands"}: the data generator's command tree
 vfg place save castle --player Steve --by T7   # saved castle at 197 68 251 in overworld
 vfg place save home --at -368 70 912           # --dim the_nether or the_end; overworld by default
-vfg place list                                 # castle 197 68 251 overworld (T7), one per line, or none; --json
+vfg place list                                 # castle 197 68 251 overworld (T7), one per line, or none; --json, --fresh
 vfg place forget castle                        # forgot castle; exit 1 if there was none
 vfg usage add --component conversation --model sonnet --in 10 --out 5 --cost 0.001 --ref ab12cd34
 ```
@@ -80,6 +80,11 @@ and otherwise as above. `vfg action refs` runs the server jar's data generator i
 temp folder under `/tmp` on EC2 (about 10 s; 300 s at most) and prints its
 `commands.json`, about 190 KB, with the version. `vfg place` keeps places in
 Minecraft's command storage `everhear:places`, through the same `remote/places.py`.
+`vfg place list` answers from a cache, `$VFG_HOME/places.json` (mode 600), while it is
+younger than `VFG_PLACES_TTL_S` (30 s), else asks the server and rewrites it; `--fresh`
+always asks. `vfg place save` and `forget` write their entry through as the server confirms
+it, keeping the cache's age. When the server cannot be asked and a cache exists, however
+old, `list` prints it, warns `saved places from <age> s ago: <why>` and exits 0.
 
 ## Tests
 

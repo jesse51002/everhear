@@ -53,6 +53,9 @@ VFG_WATCH_CATCHUP=
 VFG_WATCH_MAX_PER_MIN=
 # The ssh binary. Default: ssh
 VFG_SSH=
+# Seconds vfg place list answers from its cache, $VFG_HOME/places.json, before it asks the
+# server again; vfg place save and forget update the cache as they go. Default: 30
+VFG_PLACES_TTL_S=
 
 # --- The dispatcher ---
 # The file holding your OpenRouter API key alone, mode 600; lib/py's structured()
