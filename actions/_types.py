@@ -353,6 +353,14 @@ def _constraint(m: object) -> bool:
 
 
 def _name(t: Any) -> str:
+    """A type as it is written: Optional[int] whether spelled so or int | None (Python 3.14
+    names every union Union)."""
+    if get_origin(t) in (Union, types.UnionType):
+        args = get_args(t)
+        rest = [a for a in args if a is not type(None)]
+        if len(rest) == 1 and len(args) == 2:
+            return "Optional[%s]" % _name(rest[0])
+        return "Union[%s]" % ", ".join(_name(a) for a in args)
     return getattr(t, "__name__", None) or repr(t)
 
 

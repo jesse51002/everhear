@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script --quiet
 # /// script
-# requires-python = ">=3.12"
+# requires-python = ">=3.12,<3.13"
 # dependencies = ["pydantic>=2.14"]
 # ///
 """vfg: the one command every agent on the owner's PC uses to reach the EC2 box.
