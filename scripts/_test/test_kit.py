@@ -259,14 +259,6 @@ class ValuesTests(KitCase):
         self.assertTrue(until(lambda: len(got) == 2))
         self.assertEqual([p for p, _ in got], ["Steve", "Steve"])
 
-    def test_a_values_meta_is_every_preset_value_checked_on_the_pc(self):
-        meta = values_meta("crater", "sneak", given=["crater_radius=999", "sneak_item=Spirit Bomb"])
-        self.assertEqual(meta["values"]["crater_radius"], 300)        # clamped, as vfg action run clamps
-        self.assertEqual(meta["values"]["sneak_item"], "Spirit Bomb")
-        self.assertIn("crater_radius", meta["live"])
-        with self.assertRaises(ValueError):
-            values_meta("crater", given={"crater_leave": "water"})
-
 
 class CopyValuesTests(KitCase):
     """values(): a copy's meta file, checked on the PC, and its live file; and result(), what

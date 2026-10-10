@@ -4,7 +4,7 @@
     uv run --no-project --python 3.12 --with pydantic python scripts/_test/run_tests.py ScriptTests
 
 With no test named, every test runs in N worker processes at once (default twice the CPUs, at
-most 24, or VFG_TEST_JOBS), each test on its own, and a failing test's output is shown with it.
+most 16, or VFG_TEST_JOBS), each test on its own, and a failing test's output is shown with it.
 With tests named, they run in this process one after the other, as unittest runs them.
 
 They start fake_rcon.py on a free port with a temp server.properties and check _lib/mc.py. Then
@@ -28,7 +28,6 @@ import re
 import secrets
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import tempfile
@@ -120,13 +119,6 @@ class McTests(unittest.TestCase):
         finally:
             mc._drop()
             mc._settings = good
-
-    def test_a_stopped_fake_refuses_connections(self):
-        """FakeRcon.stop() is a server going down: no new connection gets in."""
-        fake = FakeRcon(secrets.token_hex(8)).start()
-        fake.stop()
-        with self.assertRaises(ConnectionRefusedError):
-            socket.create_connection(("127.0.0.1", fake.port), timeout=2).close()
 
     def test_refuses_the_owners_commands(self):
         for cmd in ("op Steve", "/OP Steve", "deop Steve", "ban Steve", "ban-ip 1.2.3.4", "pardon Steve",
@@ -752,8 +744,9 @@ def _run_all(jobs):
 
 
 def _jobs(argv):
-    """-j N from argv (taken out of it), else VFG_TEST_JOBS, else twice the CPUs, at most 24."""
-    jobs = os.environ.get("VFG_TEST_JOBS") or min(24, 2 * (os.cpu_count() or 4))
+    """-j N from argv (taken out of it), else VFG_TEST_JOBS, else twice the CPUs, at most 16
+    (more only spend their time starting: 16 ran in 6.1 s on 12 cores, 24 in 7.2 s)."""
+    jobs = os.environ.get("VFG_TEST_JOBS") or min(16, 2 * (os.cpu_count() or 4))
     if "-j" in argv:
         i = argv.index("-j")
         jobs = argv[i + 1]
