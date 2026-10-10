@@ -7,7 +7,6 @@ tests' own: beam (until stopped, live values), ping and slow (once).
 Each action is a class over the repo's own actions/_types.py, as the library's are; each script
 uses the kit as a library script does: values(), result(), and instances.py for edit and stop.
 """
-import ast
 import os
 import shutil
 
@@ -41,8 +40,8 @@ class Edit(Action):
 
     copy: str = ""
     """the running copy"""
-    values: dict = {}
-    """the values to change, checked against the copy's action"""
+    values: list[str] = []
+    """the values to change (dict[str, Any] in the real one; vfg sends the checked dict as it is)"""
 ''',
     "stop": '''from actions._types import Action
 
@@ -155,7 +154,7 @@ from kit import result, values
 
 v = values()
 try:
-    got = instances.here(rcon=mc.rcon).edit(v["copy"], v["values"])
+    got = instances.edit(v["copy"], v["values"], v["changed"], v["live_only"])
 except instances.CopyError as e:
     result(str(e))
     sys.exit(1)
@@ -167,11 +166,10 @@ else:
 ''',
     "stop": '''"""Stop: stops a running copy; everything it made goes."""
 import instances
-import mc
 from kit import result, values
 
 v = values()
-if instances.here(rcon=mc.rcon).stop(v["copy"]):
+if instances.stop(v["copy"]):
     result("stopped %s" % v["copy"], copy=v["copy"], stopped=True)
 else:
     result("%s was not running" % v["copy"], copy=v["copy"], stopped=False)
@@ -224,20 +222,6 @@ result("%s: %d online" % (v["say"], len(online)), online=online, task=mc.TASK, c
 }
 
 
-def types_source():
-    """The repo's actions/_types.py, or, before it has Live, the stand-in loader's own."""
-    real = os.path.join(REPO, "actions", "_types.py")
-    with open(real, encoding="utf-8") as f:
-        text = f.read()
-    if "Live" in text:
-        return text
-    with open(os.path.join(REPO, "lib", "py", "vfg_actions.py"), encoding="utf-8") as f:
-        for node in ast.parse(f.read()).body:
-            if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "STANDIN_TYPES":
-                return ast.literal_eval(node.value)
-    raise RuntimeError("no actions/_types.py with Live, and no stand-in")
-
-
 def write(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -245,12 +229,13 @@ def write(path, text):
 
 
 def install(repo, names=None):
-    """The real scripts/_lib (mc, the kit, instances, places, commands) and the stand-ins."""
+    """The real scripts/_lib (mc, the kit, instances, places, commands), the real
+    actions/_types.py, and the stand-ins."""
     lib = os.path.join(repo, "scripts", "_lib")
     shutil.rmtree(lib, ignore_errors=True)
     shutil.copytree(REAL_LIB, lib, ignore=shutil.ignore_patterns("__pycache__"))
     write(os.path.join(repo, "actions", "__init__.py"), "")
-    write(os.path.join(repo, "actions", "_types.py"), types_source())
+    shutil.copy(os.path.join(REPO, "actions", "_types.py"), os.path.join(repo, "actions", "_types.py"))
     for name, text in ACTIONS.items():
         if names is None or name in names:
             write(os.path.join(repo, "actions", name + ".py"), text)

@@ -295,12 +295,14 @@ class PlaceTests(KitCase):
         self.world.add_player("builder", (5.5, 70.0, 5.5))
         self.world.storage["builder"] = {"pos": [9, 9, 9], "dim": "minecraft:overworld", "by": ""}
         self.assertEqual(tuple(world.place("builder")), (9.0, 9.0, 9.0))
+        self.assertEqual(tuple(world.place("Builder")), (9.0, 9.0, 9.0))   # a saved name, lowercased
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
+            self.assertIsNone(world.place(""))                              # not given: quietly none
+            self.assertEqual(out.getvalue(), "")
             self.assertIsNone(world.place("Nobody"))
             self.assertIsNone(world.place("gone_place"))
             self.assertIsNone(world.place("1 2 three"))
-            self.assertIsNone(world.place(""))
         self.assertIn("no saved place and no player online by that name", out.getvalue())
 
 

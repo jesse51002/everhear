@@ -4,6 +4,8 @@ Python 3.9+, standard library only. Deployed with the kit, so the `stop` and `ed
 `import instances`; vfg ships the same file with its scripts program (toolkit/remote/scripts.py),
 so `vfg action run`, `vfg script list --fresh` and `vfg state` use this code too.
 
+    instances.stop(copy)                   # the stop script
+    instances.edit(copy, values, changed, live_only)   # the edit script, with what the edit action got
     box = instances.here()                 # in a script: the box it runs on, from its environment
     box = instances.Box("/opt/vfg", "/opt/mc", owner="Steve", poll=0.5, rcon=rcon)
 
@@ -348,32 +350,44 @@ class Box(object):
                 pass
         return True
 
-    def edit(self, name, values, action=None, wait=CHECK_S):
-        """Change values on a running copy; they were checked on the PC.
+    def edit(self, name, values, changed=None, live_only=None, wait=CHECK_S):
+        """Change values on a running copy; they were checked on the PC (check_edit, against
+        the copy's action and its values then).
 
-        When every one is live they go into its live file and it reads them within
-        VFG_LIVE_POLL_S; otherwise it restarts under its name with every other value kept, the
-        live edits included. `action`, when given, is the action the PC checked them against:
-        a copy that now runs another is not touched.
+        `values` is the full new set and `changed` the fields that change, as the edit
+        action gets them; or, with changed None, `values` holds only the fields to change.
+        When every changed field is live (live_only; a field the copy's meta does not list as
+        live never is), they go into its live file and it reads them within VFG_LIVE_POLL_S;
+        otherwise it restarts under its name with the new set, live edits folded in.
         {"copy", "action", "live": bool, "changed": [...], "values": all of them now,
          "restarted": the new pid or None, "running", "code", "result"}"""
-        if not isinstance(values, dict) or not values:
+        if not isinstance(values, dict):
+            raise CopyError("the values are a dict, not %r" % (values,))
+        if changed is None:
+            changed = list(values)
+        changed = [k for k in changed if k in values]
+        if not changed:
             raise CopyError("nothing to change")
         if not self.pid(name):
             raise CopyError("%s is not running" % name)
         meta = self.meta(name)
-        if action and meta["action"] != action:
-            raise CopyError("%s now runs %s, not %s: its values were not changed" % (name, meta["action"], action))
-        out = {"copy": name, "action": meta["action"], "changed": sorted(values), "restarted": None,
+        stranger = [k for k in changed if meta["values"] and k not in meta["values"]]
+        if stranger:
+            raise CopyError("%s runs %s, which has no %s: it was not changed (it may have been started "
+                            "again as another action)" % (name, meta["action"], ", ".join(stranger)))
+        live = all(k in meta["live"] for k in changed)
+        if live_only is not None:
+            live = live and bool(live_only)
+        out = {"copy": name, "action": meta["action"], "changed": changed, "restarted": None,
                "running": True, "code": None, "result": None}
-        if all(k in meta["live"] for k in values):
+        if live:
             cur = self.live(name)
-            cur.update(values)
+            cur.update(dict((k, values[k]) for k in changed))
             write_json(self.path(name, ".values.json"), cur)
             out.update(live=True, values=self.copy(name)["values"])
             return out
         new = self.copy(name)["values"]
-        new.update(values)
+        new.update(values if len(values) > len(changed) else dict((k, values[k]) for k in changed))
         with self.lock():
             # The name stays this copy's: no other run can take it between the stop and the start.
             self.stop(name)
@@ -400,6 +414,21 @@ class _Flock(object):
     def __exit__(self, *exc):
         fcntl.flock(self.fd, fcntl.LOCK_UN)
         os.close(self.fd)
+
+
+def stop(copy):
+    """The stop script's: stop a running copy on this box, and everything it made. True when
+    it was running."""
+    import mc
+    return here(rcon=mc.rcon).stop(copy)
+
+
+def edit(copy, values, changed, live_only):
+    """The edit script's: change a running copy's values as the edit action got them (`values`
+    the full new set, `changed` the fields that change, `live_only` whether each is live).
+    Box.edit's answer; CopyError when it was not changed."""
+    import mc
+    return here(rcon=mc.rcon).edit(copy, values, changed, live_only)
 
 
 def here(rcon=None):

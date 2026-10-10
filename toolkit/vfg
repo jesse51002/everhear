@@ -1275,9 +1275,13 @@ def actions_lib():
     """lib/py/vfg_actions.py, the one loader of the actions, imported on first use."""
     if LIB_PY not in sys.path:
         sys.path.insert(0, LIB_PY)
+    import logging
     import warnings
-    # An action's field may be named as a BaseModel attribute (edit's and stop's `copy`).
+    # An action's field may be named as a BaseModel attribute (edit's and stop's `copy`); and an
+    # action left out is said by the command that cares (vfg action list, check), not logged.
     warnings.filterwarnings("ignore", message=r'Field name ".*" in ".*" shadows an attribute in parent')
+    logging.getLogger("vfg_actions").addHandler(logging.NullHandler())
+    logging.getLogger("vfg_actions").propagate = False
     try:
         import vfg_actions
     except ImportError as e:
@@ -1329,9 +1333,14 @@ def script_home(cfg, source, script):
 
 
 def with_places(cfg, a, check):
-    """check(places) with the saved places from the cache; one that fails where there is no
-    cache, or one older than VFG_PLACES_TTL_S, is tried once more on places fetched now, for a
-    place saved since. A ValueError is the check's refusal: exit 2."""
+    """check(places): first with none, which checks everything but whether a saved place
+    exists; then with the saved places from the cache, and, when that fails on no cache or one
+    older than VFG_PLACES_TTL_S, once more with places fetched now, for a place saved since. A
+    ValueError is the check's refusal: exit 2."""
+    try:
+        check(None)
+    except ValueError as e:
+        raise Fail(2, str(e))
     cached = read_places_cache(cfg)
     try:
         return check(cached[0] if cached is not None else {})
@@ -1349,9 +1358,10 @@ def with_places(cfg, a, check):
         raise Fail(2, str(e))
 
 
-def checked_values(cfg, a, va, cls, given, allow_fixed=False):
-    """vfg_actions.check_values, with the saved places."""
-    return with_places(cfg, a, lambda places: va.check_values(cls, given, places=places, allow_fixed=allow_fixed))
+def checked_values(cfg, a, va, cls, given):
+    """vfg_actions.check_values, with the saved places: an unknown key, a fixed one or a value
+    its field refuses is exit 2."""
+    return with_places(cfg, a, lambda places: va.check_values(cls, given, places=places))
 
 
 def start_copy(cfg, a, name, cls, source, values, live, task, as_=None):
@@ -1410,22 +1420,18 @@ def answer_of(name, got, notes):
     return line
 
 
-def run_action(cfg, a, name, given, as_=None, task=None, allow_fixed=False):
+def run_action(cfg, a, name, given, as_=None, task=None, extra=None):
     """Check the values here, run the action on EC2, write the copy through to running.json:
-    the JSON line's dict. Fail for anything that stopped it before it ran."""
+    the JSON line's dict. Fail for anything that stopped it before it ran. `extra` goes into
+    the copy's values as it is, checked already (an edit's values, against its copy's action)."""
     va, cat, cls = action_class(cfg, name)
-    unknown = sorted(k for k in given if k not in cls.model_fields)
-    if unknown:
-        raise Fail(2, "%s has no value %s: its values are %s" % (name, ", ".join(unknown),
-                                                                 ", ".join(cls.model_fields)))
-    fixed = sorted(k for k in given if k in (getattr(cls, "fixed", None) or {}))
-    if fixed and not allow_fixed:
-        raise Fail(2, "%s fixes %s: run another action, or edit the copy once it runs" % (name, ", ".join(fixed)))
-    checked = checked_values(cfg, a, va, cls, given, allow_fixed=allow_fixed)
-    got = start_copy(cfg, a, name, cls, cat.source(name), checked.values, list(checked.live), task, as_)
+    checked = checked_values(cfg, a, va, cls, given)
+    values = dict(checked.values)
+    values.update(extra or {})
+    got = start_copy(cfg, a, name, cls, cat.source(name), values, list(checked.live), task, as_)
     line = answer_of(name, got, checked.notes)
     if got["running"]:
-        note_copy(cfg, got["copy"], {"action": name, "script": cls.script, "values": checked.values,
+        note_copy(cfg, got["copy"], {"action": name, "script": cls.script, "values": values,
                                      "live": list(checked.live), "task": task, "started": got.get("started"),
                                      "runs": got["runs"]})
     else:
@@ -1454,8 +1460,9 @@ def edit_words(given):
 
 
 def run_edit(cfg, a, copy, given, task=None):
-    """The edit action: the values checked here against the action the copy runs, then the
-    `edit` action runs with {"copy", "values": the ones that change}."""
+    """The edit action: the values checked here (check_edit) against the action the copy runs
+    and its values now, from running.json; then the `edit` action runs, its script getting
+    {"copy", "values": the full new set, "changed", "live_only"}."""
     if not COPY_RE.match(copy) and not NAME_RE.match(copy):
         raise Fail(2, "%s is not a copy's name" % copy)
     if not given:
@@ -1471,8 +1478,8 @@ def run_edit(cfg, a, copy, given, task=None):
         return {"ok": True, "copy": copy, "action": "edit", "running": True,
                 "summary": "%s: nothing changed" % copy, "facts": {"copy": copy, "changed": []},
                 "notes": list(ed.notes)}
-    line = run_action(cfg, a, "edit", {"copy": copy, "values": dict((k, ed.values[k]) for k in ed.changed)},
-                      task=task)
+    line = run_action(cfg, a, "edit", {"copy": copy}, task=task,
+                      extra={"values": ed.values, "changed": list(ed.changed), "live_only": bool(ed.live_only)})
     line["notes"] = list(ed.notes) + line["notes"]
     if line["ok"]:
         entry = dict(entry, values=ed.values)
@@ -1564,7 +1571,7 @@ def cmd_action_run(cfg, a):
 def cmd_action_list(cfg, a):
     va, cat = catalog(cfg)
     if a.json:
-        out(json.dumps(va.cache(cfg.repo, server_name(cfg), cfg.home), ensure_ascii=False))
+        out(json.dumps(va.cache(cfg.repo, server_name(cfg), cfg.home, catalog=cat), ensure_ascii=False))
         return 0
     lines = []
     for name in cat.names():
@@ -1576,23 +1583,12 @@ def cmd_action_list(cfg, a):
     return 0
 
 
-def action_problems(cfg, va, cat, name):
-    """vfg_actions.check_action's problems, and a script that is not where the action says."""
-    cls = cat.get(name)
-    problems = list(va.check_action(name, cls))
-    script = getattr(cls, "script", None)
-    if isinstance(script, str) and NAME_RE.match(script):
-        try:
-            script_home(cfg, cat.source(name), script)
-        except Fail as f:
-            problems.append(f.msg)
-    return problems
-
-
 def action_rel(cfg, cat, name):
-    if cat.source(name) == "made":
-        return "made/%s/actions/%s.py" % (server_name(cfg), name)
-    return "actions/%s.py" % name
+    """An action's file, from the repo: actions/railgun.py, made/main/actions/tnt_crouch.py."""
+    try:
+        return os.path.relpath(str(cat.file(name)), cfg.repo)
+    except KeyError:
+        return "%s.py" % name
 
 
 def cmd_action_check(cfg, a):
@@ -1601,9 +1597,9 @@ def cmd_action_check(cfg, a):
         why = cat.errors().get(a.name)
         if why:
             out("%s: %s" % (a.name, why))
-            raise Fail(1, "%s does not load" % a.name)
+            raise Fail(1, "%s is left out: it does not load or does not pass" % a.name)
         raise Fail(1, "no action %s in actions/ or made/%s/actions/" % (a.name, server_name(cfg)))
-    problems = action_problems(cfg, va, cat, a.name)
+    problems = va.check_action(a.name, cat.get(a.name))
     if problems:
         out("\n".join("%s: %s" % (action_rel(cfg, cat, a.name), p) for p in problems))
         raise Fail(1, "%d problem%s in %s" % (len(problems), "" if len(problems) == 1 else "s", a.name))
@@ -1690,7 +1686,7 @@ def baselines(cfg):
     fixed, from the actions cache; {} when the cache cannot be had."""
     try:
         va, cat = catalog(cfg)
-        acts = va.cache(cfg.repo, server_name(cfg), cfg.home).get("actions") or {}
+        acts = va.cache(cfg.repo, server_name(cfg), cfg.home, catalog=cat).get("actions") or {}
     except Fail:
         return {}
     out_ = {}
@@ -2031,7 +2027,7 @@ def touches(fields, values):
     """Who a copy acts on: what its Player and Players fields name (a selector as it is)."""
     out_ = []
     for k, f in (fields or {}).items():
-        if "Player" not in str((f or {}).get("type") or ""):
+        if "player" not in str((f or {}).get("type") or "").lower():
             continue
         v = (values or {}).get(k)
         if isinstance(v, str):

@@ -149,13 +149,13 @@ _COORDS = re.compile(r"^(%s)\s+(%s)\s+(%s)(?:\s+([a-z0-9_.:/-]+))?$" % (_NUM, _N
 
 
 def place(value):
-    """Where a Place value is now, as a Pos that knows its dimension; None (logged) when it is
-    nowhere: a saved place that is gone, a player who is offline.
+    """Where a Place value is now, as a Pos that knows its dimension; None when it is empty
+    (not given), or nowhere (logged): a saved place that is gone, a player who is offline.
 
-    A Place is what an action's Place field holds, checked on the PC: a saved place's name
-    (Minecraft's storage everhear:places, read through places.py), `x y z` with an optional
-    dimension (`100 64 -20 the_nether`), or a player's name (where they stand now). A name
-    that is both is the saved place. A Pos, or three numbers, is itself."""
+    A Place is what an action's Place field holds, checked on the PC: `x y z` with an optional
+    dimension (`100 64 -20 the_nether`), a saved place's name (Minecraft's storage
+    everhear:places, read through places.py, the name lowercased), or a player's name (where
+    they stand now), tried in that order. A Pos, or three numbers, is itself."""
     if isinstance(value, Pos):
         return value
     if isinstance(value, (list, tuple)) and len(value) in (3, 4):
@@ -164,6 +164,8 @@ def place(value):
         except (TypeError, ValueError):
             pass
     text = " ".join(str(value or "").split())
+    if not text:
+        return None
     m = _COORDS.match(text)
     if m:
         try:
@@ -171,10 +173,11 @@ def place(value):
         except ValueError as e:
             mc.log("place %r: %s" % (text, e))
             return None
-    if _PLACE_NAME.match(text):
+    name = re.sub(r"[\s-]+", "_", text.lower())
+    if _PLACE_NAME.match(name):
         import places
         try:
-            saved = places.get(mc.rcon, text)
+            saved = places.get(mc.rcon, name)
         except (places.PlaceError, ValueError) as e:
             mc.log("place %r: %s" % (text, e))
             saved = None

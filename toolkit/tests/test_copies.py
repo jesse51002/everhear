@@ -176,8 +176,8 @@ class TestRun(ActionCase):
             json.dump({"fetched_at": time.time(), "places": {}}, f)   # fresh: nothing to fetch
         before = len(self.box.ssh_calls())
         for args, pattern in ((["nosuch"], r"^no action nosuch in actions/ or made/main/actions/"),
-                              (["beam", "nope=1"], r"^beam has no value nope: its values are player, length"),
-                              (["beam", "colour=blue"], r"^beam fixes colour: "),
+                              (["beam", "nope=1"], r"^beam has no value nope; its values: player, length"),
+                              (["beam", "colour=blue"], r"^beam: colour is fixed at red$"),
                               (["beam", "length=far"], r"length"),
                               (["beam", "length=1", "length=2"], r"^length is given twice$"),
                               (["beam", "as=Bad-Name"], r"^as=Bad-Name is not a copy name"),
@@ -358,10 +358,18 @@ class TestShortcuts(ActionCase):
         standins.write(os.path.join(self.box.repo, "made", "main", "actions", "zap.py"),
                        standins.ACTIONS["ping"].replace("class Ping", "class Zap")
                        .replace('script = "ping"', 'script = "zap"').replace('takes = ["say"]', 'takes = ["sya"]'))
-        r = self.box.vfg("action", "check", "zap")
+        r = self.box.vfg("action", "check", "zap")       # left out of the catalog: why, from the loader
         self.assertEqual(r.returncode, 1)
-        self.assertIn("made/main/actions/zap.py: takes sya, which it has no field for\n", r.stdout)
-        self.assertIn("made/main/actions/zap.py: its script zap is in neither scripts/ nor made/main/scripts/\n", r.stdout)
+        self.assertEqual(r.stdout, "zap: script zap: there is no made/main/scripts/zap/main.py or "
+                                   "scripts/zap/main.py; takes names sya, which is not one of its fields\n")
+        r = self.box.vfg("action", "list")
+        self.assertNotIn("zap", r.stdout)
+        self.assertIn("vfg: zap did not load, left out: script zap", r.stderr)
+        standins.write(os.path.join(self.box.repo, "made", "main", "scripts", "zap", "main.py"), "# zap\n")
+        standins.write(os.path.join(self.box.repo, "made", "main", "actions", "zap.py"),
+                       standins.ACTIONS["ping"].replace("class Ping", "class Zap").replace('script = "ping"', 'script = "zap"'))
+        r = self.box.vfg("action", "check", "zap")
+        self.assertEqual((r.returncode, r.stdout), (0, "ok: made/main/actions/zap.py\n"), r.stderr)
         self.assertIn("zap — Ask who is online, once (a test's stand-in). (made)", self.box.vfg("action", "list").stdout)
         self.assertEqual(self.box.vfg("action", "check", "nosuch").returncode, 1)
 
