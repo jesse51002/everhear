@@ -307,8 +307,6 @@ class World:
         self.key.write_text("not a key\n")
         self.config = self.owner_home / ".vfg/config"
         self.config.write_text("# test config\nVFG_SSH_HOST=%s\nVFG_SSH_KEY=%s\n" % (ADDR1, self.key))
-        self.aws_log = self.tmp / "aws.log"
-        self.ssh_log = self.tmp / "ssh.log"
 
         # Two publishes, as two sessions: a new IP, a new token and a newer jar the second time.
         self.token1 = "test-token-" + secrets.token_urlsafe(18)
@@ -334,8 +332,7 @@ class World:
         env = {
             "PATH": "%s:/usr/bin:/bin" % self.stubs, "HOME": str(self.owner_home), "LANG": "C.UTF-8",
             "TMPDIR": str(self.tmp), "XDG_CACHE_HOME": str(self.tmp / "cache"),
-            "FAKE_S3_ROOT": str(self.www / "s3"), "FAKE_S3_URL": self.base + "/s3",
-            "FAKE_AWS_LOG": str(self.aws_log), "FAKE_SSH_LOG": str(self.ssh_log), "FAKE_TOKEN_LINE": token_line,
+            "FAKE_S3_ROOT": str(self.www / "s3"), "FAKE_S3_URL": self.base + "/s3", "FAKE_TOKEN_LINE": token_line,
             "VFG_CLIENT_JAR_DIR": str(self.libs), "VFG_FABRIC_META_URL": self.base + "/meta",
             "VFG_FABRIC_API_URL": self.base + "/cdn/" + urllib.parse.quote(FABRIC_API_NAME),
             "VFG_FABRIC_API_SHA512": self.fabric_sha512,
@@ -344,12 +341,16 @@ class World:
         return env
 
     def publish(self, token, token_line=None, expect_ok=True, **extra):
-        aws_before = self.aws_log.read_text() if self.aws_log.exists() else ""
-        r = subprocess.run([str(INSTALLER / "publish.sh")], env=self.publish_env(token_line or token, **extra),
-                           capture_output=True, text=True, timeout=120)
-        aws_calls = [json.loads(l) for l in self.aws_log.read_text()[len(aws_before):].splitlines()] \
-            if self.aws_log.exists() else []
-        pub = {"rc": r.returncode, "stdout": r.stdout, "stderr": r.stderr, "aws": aws_calls, "token": token}
+        # Each publish logs its own aws and ssh calls, so publishes can run side by side.
+        logs = self.tmp / ("logs-%s" % secrets.token_hex(4))
+        logs.mkdir()
+        env = self.publish_env(token_line or token, FAKE_AWS_LOG=str(logs / "aws"), FAKE_SSH_LOG=str(logs / "ssh"))
+        env.update(extra)
+        r = subprocess.run([str(INSTALLER / "publish.sh")], env=env, capture_output=True, text=True, timeout=120)
+        read = lambda p: p.read_text() if p.exists() else ""
+        pub = {"rc": r.returncode, "stdout": r.stdout, "stderr": r.stderr, "token": token,
+               "aws_log": read(logs / "aws"), "ssh_log": read(logs / "ssh")}
+        pub["aws"] = [json.loads(l) for l in pub["aws_log"].splitlines()]
         if expect_ok:
             assert r.returncode == 0, "publish failed:\n" + r.stderr
             lines = r.stdout.splitlines()
@@ -366,6 +367,22 @@ class World:
                 (pub["dir"] / name).write_bytes(urllib.request.urlopen(url).read())
             pub["links"] = links
         return pub
+
+    def breakable(self, pub):
+        """pub's installers, downloading from their own copy of its files, which a test may break
+        without touching anyone else's: (that pub, the folder its files are served from)."""
+        url = urllib.parse.urlsplit(pub["links"]["vfg-install.sh"])
+        src = self.www / urllib.parse.unquote(url.path).lstrip("/").rsplit("/", 1)[0]
+        copy = src.with_name("%s-%s" % (src.name, secrets.token_hex(3)))
+        shutil.copytree(src / "files", copy / "files")
+        old, new = ("/%s/files/" % src.name).encode(), ("/%s/files/" % copy.name).encode()
+        d = self.tmp / ("pub-%s" % secrets.token_hex(4))
+        d.mkdir()
+        for name in ("vfg-install.sh", "vfg-install.ps1", "vfg-install.cmd"):
+            raw = (pub["dir"] / name).read_bytes()
+            assert old in raw, name
+            (d / name).write_bytes(raw.replace(old, new))
+        return dict(pub, dir=d), copy / "files"
 
     def home(self, name):
         h = self.tmp / "homes" / (name + "-" + secrets.token_hex(3))
@@ -407,7 +424,7 @@ class PublishTest(unittest.TestCase):
     def test_token_never_printed_or_logged(self):
         w = world()
         for p in (w.pub1, w.pub2):
-            for text in (p["stdout"], p["stderr"], w.aws_log.read_text(), w.ssh_log.read_text()):
+            for text in (p["stdout"], p["stderr"], p["aws_log"], p["ssh_log"]):
                 self.assertNotIn(p["token"], text)
             # ...but it is in the installers, which is the point.
             for name in ("vfg-install.sh", "vfg-install.ps1", "vfg-install.cmd"):
@@ -415,12 +432,14 @@ class PublishTest(unittest.TestCase):
             self.assertNotIn(p["token"], p["page"])
 
     def test_ssh_uses_the_deploy_scripts_options(self):
-        calls = [json.loads(l) for l in world().ssh_log.read_text().splitlines()]
-        self.assertTrue(calls)
-        for argv in calls:
-            self.assertIn("BatchMode=yes", argv)
-            self.assertTrue({"ec2-user@" + ADDR1, "ec2-user@" + ADDR2} & set(argv), argv)
-            self.assertIn("/opt/vfg/.env", argv[-1])
+        w = world()
+        for p, addr in ((w.pub1, ADDR1), (w.pub2, ADDR2)):
+            calls = [json.loads(l) for l in p["ssh_log"].splitlines()]
+            self.assertTrue(calls)
+            for argv in calls:
+                self.assertIn("BatchMode=yes", argv)
+                self.assertIn("ec2-user@" + addr, argv)
+                self.assertIn("/opt/vfg/.env", argv[-1])
 
     def test_bucket_made_once_private_and_remembered(self):
         w = world()
@@ -502,18 +521,19 @@ class PublishTest(unittest.TestCase):
 
     def test_newest_jar_wins_and_sources_jars_are_skipped(self):
         w = world()
-        src = w.libs / "vfg-client-0.1.1-sources.jar"
-        src.write_bytes(b"PK sources")
-        try:
-            p = w.publish(w.token2)
-            self.assertIn("VFG_JAR_NAME=vfg-client-0.1.1.jar\n", (p["dir"] / "vfg-install.sh").read_text())
-        finally:
-            src.unlink()
+        libs = w.tmp / ("libs-%s" % secrets.token_hex(3))
+        libs.mkdir()
+        for jar in (w.jar1, w.jar2):
+            shutil.copy2(jar, libs / jar.name)
+        (libs / "vfg-client-0.1.1-sources.jar").write_bytes(b"PK sources")  # the newest of all
+        p = w.publish(w.token2, VFG_CLIENT_JAR_DIR=str(libs))
+        self.assertIn("VFG_JAR_NAME=vfg-client-0.1.1.jar\n", (p["dir"] / "vfg-install.sh").read_text())
 
     def test_bad_fabric_api_checksum_uploads_nothing(self):
         w = world()
-        shutil.rmtree(w.tmp / "cache", ignore_errors=True)
-        p = w.publish(w.token2, expect_ok=False, VFG_FABRIC_API_SHA512="0" * 128)
+        # An empty cache of its own, so it downloads Fabric API afresh.
+        cache = w.tmp / ("cache-%s" % secrets.token_hex(3))
+        p = w.publish(w.token2, expect_ok=False, VFG_FABRIC_API_SHA512="0" * 128, XDG_CACHE_HOME=str(cache))
         self.assertNotEqual(p["rc"], 0)
         self.assertIn("does not match Modrinth's sha512", p["stderr"])
         self.assertFalse([c for c in p["aws"] if c[:2] == ["s3", "cp"]])
@@ -793,15 +813,10 @@ class InstallerCases:
         w = world()
         home = w.home("tamper")
         game = self.make_game(self.game_dirs(home)[0])
-        url = urllib.parse.urlsplit(w.pub2["links"]["vfg-install.sh"])
-        prefix_dir = w.www / urllib.parse.unquote(url.path).lstrip("/").rsplit("/", 1)[0]
-        jar = prefix_dir / "files" / w.jar2.name
-        good = jar.read_bytes()
-        jar.write_bytes(good + b"evil")
-        try:
-            r = self.run_installer(w.pub2, home)
-        finally:
-            jar.write_bytes(good)
+        pub, files = w.breakable(w.pub2)
+        jar = files / w.jar2.name
+        jar.write_bytes(jar.read_bytes() + b"evil")
+        r = self.run_installer(pub, home)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("failed its checksum", r.stdout + r.stderr)
         self.assertFalse((game / "instances").exists())
@@ -812,15 +827,10 @@ class InstallerCases:
         w = world()
         home = w.home("expired")
         game = self.make_game(self.game_dirs(home)[0])
-        url = urllib.parse.urlsplit(w.pub2["links"]["vfg-install.sh"])
-        prefix_dir = w.www / urllib.parse.unquote(url.path).lstrip("/").rsplit("/", 1)[0]
-        f = prefix_dir / "files" / FABRIC_API_NAME
-        hidden = f.with_name("hidden")
-        f.rename(hidden)
-        try:
-            r = self.run_installer(w.pub2, home)
-        finally:
-            hidden.rename(f)
+        pub, files = w.breakable(w.pub2)
+        (files / FABRIC_API_NAME).unlink()  # what S3 answers for an expired link: an error, no file
+        r = self.run_installer(pub, home)
+        self.assertNotEqual(r.returncode, 0)
         self.assertIn("ask the server owner for today's link", r.stdout + r.stderr)
         self.assertFalse((game / "instances").exists())
 
