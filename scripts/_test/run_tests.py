@@ -371,27 +371,45 @@ _CATALOG = []
 _CATALOG_LOCK = threading.Lock()
 
 
+def catalog():
+    """(vfg_actions, its Catalog of the actions), loaded once."""
+    with _CATALOG_LOCK:   # the scripts run in threads: the actions load once
+        if not _CATALOG:
+            sys.path.insert(0, os.path.join(os.path.dirname(SCRIPTS), "lib", "py"))
+            # A preset a test file imported as a plain module (test_presets_shows: projectile_lands,
+            # sneak...) is what inspect finds for its file, and pydantic on 3.12 then misses the
+            # descriptions of the catalog's own copy of its values class: forget those files.
+            import inspect
+            presets = os.path.join(SCRIPTS, "_presets")
+            for f in [f for f in inspect.modulesbyfile if f.startswith(presets)]:
+                del inspect.modulesbyfile[f]
+            import vfg_actions
+            _CATALOG.append((vfg_actions, vfg_actions.Catalog(os.path.dirname(SCRIPTS), None)))
+        return _CATALOG[0]
+
+
+def copy_meta(action, given, copy=None):
+    """The meta file vfg action run writes for a copy of an action run with these values."""
+    va, cat = catalog()
+    cls = cat.get(action)
+    with _CATALOG_LOCK:
+        checked = va.check_values(cls, given)
+    return {"copy": copy or action, "action": action, "script": cls.script, "source": "library",
+            "values": checked.values, "live": checked.live, "runs": cls.runs, "task": None, "started": None}
+
+
 def action_meta(name, source):
     """For a script ported to its action (no VALUES): the meta file of a copy of its first
     action (the one named as the script, else the first by name) run with nothing given, as
     vfg action run writes it; None for a script that still has VALUES."""
     if re.search(r"^VALUES\s*=", source, re.M):
         return None
-    with _CATALOG_LOCK:   # the scripts run in threads: the actions load once
-        if not _CATALOG:
-            sys.path.insert(0, os.path.join(os.path.dirname(SCRIPTS), "lib", "py"))
-            import vfg_actions
-            _CATALOG.append((vfg_actions, vfg_actions.Catalog(os.path.dirname(SCRIPTS), None)))
-        va, cat = _CATALOG[0]
-        meta_of = va.check_values
+    va, cat = catalog()
     over = sorted(n for n in cat.names() if cat.get(n).script == name)
     if not over:
-        raise AssertionError("%s has no VALUES and no action runs it" % name)
-    action = name if name in over else over[0]
-    with _CATALOG_LOCK:
-        checked = meta_of(cat.get(action), {})
-    return {"copy": name, "action": action, "script": name, "source": "library", "values": checked.values,
-            "live": checked.live, "runs": cat.get(action).runs, "task": None, "started": None}
+        why = cat.errors().get(name)
+        raise AssertionError("%s has no VALUES and no action runs it%s" % (name, " (%s)" % why if why else ""))
+    return copy_meta(name if name in over else over[0], {}, copy=name)
 
 
 def run_example(name, seconds=4.0, folder=None):
