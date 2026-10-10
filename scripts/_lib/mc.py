@@ -55,10 +55,9 @@ OWNER = os.environ.get("VFG_OWNER", "").strip()
 if not re.match(r"^[A-Za-z0-9_]{1,16}$", OWNER):
     OWNER = ""
 
-# Server commands that are the owner's to run, never a script's. The orchestrator's
-# guard refuses the same words.
-REFUSED = frozenset(["stop", "op", "deop", "ban", "ban-ip", "pardon", "pardon-ip",
-                     "whitelist", "kick", "save-off"])
+# Server commands that are the owner's to run, never a script's: the one list, commands.py
+# beside this file, which the actions, vfg, the dispatcher and the orchestrator's guard import too.
+from commands import REFUSED  # noqa: E402
 
 _lock = threading.RLock()
 _local = threading.local()

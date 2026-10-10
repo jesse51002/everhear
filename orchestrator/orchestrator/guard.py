@@ -13,8 +13,19 @@ from .config import log
 from .examples import server_state
 from .reply import REPLY_TOOL
 
-# Server commands that are the owner's to run. scripts/_lib/mc.py refuses the same words.
-REFUSED = frozenset(["stop", "op", "deop", "ban", "ban-ip", "pardon", "pardon-ip", "whitelist", "kick", "save-off"])
+
+def _commands():
+    """scripts/_lib/commands.py, loaded by path: it is deployed with the kit, not a package."""
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts", "_lib", "commands.py")
+    spec = importlib.util.spec_from_file_location("vfg_commands", os.path.normpath(path))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# Server commands that are the owner's to run: the one list, which mc.py, vfg and the actions use too.
+REFUSED = _commands().REFUSED
 
 # Server-wide settings an implementer may not change (scripts/_lib/mc.py does not refuse them:
 # seeded games use the world border).

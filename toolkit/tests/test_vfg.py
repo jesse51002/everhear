@@ -519,6 +519,66 @@ class TestBasics(Case):
         self.assertRegex(lines[1], r'^\d{4}-\d\d-\d\dT[\d:.]+Z \["cmd", "list"\] exit=0 \d+ms$')
 
 
+class TestOneRefusedList(unittest.TestCase):
+    """scripts/_lib/commands.py is the one list of refused server commands: mc.py imports it,
+    vfg ships it with each program, the orchestrator's guard loads it, and no other file
+    writes the words out again."""
+    COMMANDS = os.path.join(REPO, "scripts", "_lib", "commands.py")
+
+    def commands(self):
+        spec = importlib.util.spec_from_file_location("one_list_commands", self.COMMANDS)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_mc_imports_it(self):
+        code = "import mc, commands; print(mc.REFUSED is commands.REFUSED, commands.__file__)"
+        env = dict(os.environ, PYTHONPATH=os.path.join(REPO, "scripts", "_lib"), PYTHONDONTWRITEBYTECODE="1")
+        out = subprocess.run([PY, "-c", code], env=env, stdout=subprocess.PIPE, universal_newlines=True,
+                             cwd=TESTS).stdout.split()
+        self.assertEqual(out, ["True", self.COMMANDS])
+
+    def test_vfg_ships_it(self):
+        mod = vfg_module("vfgmod_one_list")
+        with open(self.COMMANDS, encoding="utf-8") as f:
+            self.assertIn(repr(f.read()), mod.program("rcon.py", {}, ["commands.py"]).decode())
+
+    def test_the_guard_loads_it(self):
+        import ast
+        path = os.path.join(REPO, "orchestrator", "orchestrator", "guard.py")
+        if not os.path.isfile(path):
+            self.skipTest("no orchestrator/ beside the toolkit")
+        with open(path, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        fn = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_commands"]
+        assigned = [ast.unparse(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                    and any(getattr(t, "id", "") == "REFUSED" for t in n.targets)]
+        self.assertEqual(assigned, ["_commands().REFUSED"])
+        ns = {"os": os, "__file__": path}
+        exec(compile(ast.Module(body=fn, type_ignores=[]), path, "exec"), ns)
+        got = ns["_commands"]()
+        self.assertEqual(os.path.realpath(got.__file__), os.path.realpath(self.COMMANDS))
+        self.assertEqual(got.REFUSED, self.commands().REFUSED)
+
+    def test_no_other_file_writes_the_words_out(self):
+        words = re.compile(r"frozenset\(\[[^\]]*\"deop\"")
+        found = []
+        for top in ("scripts", "toolkit", "orchestrator", "dispatcher", "actions", "lib", "jev", "integration"):
+            for dirpath, dirnames, filenames in os.walk(os.path.join(REPO, top)):
+                dirnames[:] = [d for d in dirnames if not d.startswith(".") and d != "__pycache__"]
+                for fn in filenames:
+                    if fn.endswith(".py") or "." not in fn:
+                        path = os.path.join(dirpath, fn)
+                        try:
+                            with open(path, encoding="utf-8") as f:
+                                text = f.read()
+                        except (OSError, UnicodeDecodeError):
+                            continue
+                        if words.search(text):
+                            found.append(os.path.relpath(path, REPO))
+        self.assertEqual(found, ["scripts/_lib/commands.py"])
+
+
 # ======================================================================= cmd
 
 class TestCmd(Case):

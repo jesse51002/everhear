@@ -33,6 +33,7 @@ from datetime import datetime, timedelta, timezone
 VERSION = "0.1.0"
 HERE = os.path.dirname(os.path.realpath(__file__))
 REMOTE = os.path.join(HERE, "remote")
+KIT_LIB = os.path.join(os.path.dirname(HERE), "scripts", "_lib")
 REMOTE_CMD = "python3 -u -"
 
 KINDS = ["join", "leave", "death", "advancement", "server"]
@@ -316,12 +317,19 @@ def _library(name, source):
 '''
 
 
-# What remote/action.py imports: the command-safety rules, one copy for EC2 and the PC.
+# What remote/action.py imports: the command-safety rules, scripts/_lib/commands.py, the one
+# list of refused commands, the same file the kit deploys and the PC's checks import.
 ACTION_LIBS = ("commands.py",)
 
 
+def lib_source(lib):
+    """A library a program ships with: scripts/_lib/<lib> (deployed with the kit too), else remote/<lib>."""
+    path = os.path.join(KIT_LIB, lib)
+    return read_text(path if os.path.isfile(path) else os.path.join(REMOTE, lib))
+
+
 def program(name, args, libs=()):
-    """remote/common.py, then ARGS, then each of `libs` from remote/ as a module
+    """remote/common.py, then ARGS, then each of `libs` (lib_source) as a module
     (places.py becomes `places`), then the program: what goes on stdin."""
     text = read_text(os.path.join(REMOTE, "common.py"))
     text += "\nARGS = json.loads(" + repr(json.dumps(args)) + ")\n"
@@ -329,7 +337,7 @@ def program(name, args, libs=()):
         text += LIBRARY
         for lib in libs:
             mod = os.path.splitext(lib)[0]
-            text += "%s = _library(%r, %r)\n" % (mod, mod, read_text(os.path.join(REMOTE, lib)))
+            text += "%s = _library(%r, %r)\n" % (mod, mod, lib_source(lib))
     return (text + "\n" + read_text(os.path.join(REMOTE, name))).encode("utf-8")
 
 
