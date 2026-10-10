@@ -311,7 +311,8 @@ class Implementers:
         for row in rows:  # after the report: the player's answer waits on nothing
             self._spawn(self._usage_row(row))
 
-    async def _query(self, t: _Task, options: ClaudeAgentOptions, prompt: str) -> tuple[ResultMessage | None, str | None]:
+    async def _query(self, t: _Task, options: ClaudeAgentOptions,
+                     prompt: str) -> tuple[ResultMessage | None, str | None]:
         """One SDK query to its result: (the result, None), or (None or the result, why it failed)."""
         client = self.client_factory(options)
         t.client = client

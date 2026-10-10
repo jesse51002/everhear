@@ -122,7 +122,8 @@ class Clients:
         return self
 
     def __call__(self, options) -> FakeClient:
-        messages, gate, raises, deaf = self.scripts.popleft() if self.scripts else ((init(), result()), None, None, False)
+        script = self.scripts.popleft() if self.scripts else ((init(), result()), None, None, False)
+        messages, gate, raises, deaf = script
         c = FakeClient(options, messages, gate, raises, deaf)
         self.made.append(c)
         return c

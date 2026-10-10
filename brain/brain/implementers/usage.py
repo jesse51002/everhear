@@ -41,7 +41,8 @@ def rows(snapshot: dict[str, Totals], model_usage: dict[str, dict] | None,
             continue
         now = totals_of(u)
         prev = snapshot.get(model) or ZERO
-        fell = any(now[k] < prev[k] for k in ("in", "out", "cacheRead", "cacheWrite")) or now["cost"] < prev["cost"] - 1e-9
+        fell = (any(now[k] < prev[k] for k in ("in", "out", "cacheRead", "cacheWrite"))
+                or now["cost"] < prev["cost"] - 1e-9)
         base = ZERO if fell else prev
         nxt[model] = now
         row = {"component": "implementer", "model": model, "ref": ref,

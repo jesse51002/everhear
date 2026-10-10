@@ -32,7 +32,8 @@ class Run:
 
     def __init__(self, cfg, vfg=None):
         self.clients = Clients()
-        self.vfg = vfg or FakeVfg().on("prefix", answer=ok("THE KIT\n")).on("place", "list", answer=ok("castle 1 2 3\n"))
+        self.vfg = vfg or (FakeVfg().on("prefix", answer=ok("THE KIT\n"))
+                           .on("place", "list", answer=ok("castle 1 2 3\n")))
         self.reports: list[tuple[str, str, str]] = []
 
         async def on_report(task, status, text):
