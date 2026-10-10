@@ -19,7 +19,8 @@ flowchart TB
   OpenRouter["OpenRouter"]
   Orch["orchestrator<br/>Agent SDK"]
   Impl["implementers"]
-  Scripts["scripts/"]
+  Library["scripts/<br/>kit · presets · examples"]
+  Made["made/‹server›/"]
   RCON["RCON"]
   MC["Minecraft server"]
 
@@ -33,9 +34,11 @@ flowchart TB
   Disp -->|"structured()"| OpenRouter
   Disp -->|"vfg orch hand"| Orch
   Disp -->|"vfg action run"| RCON
-  Orch -->|"Agent"| Impl
-  Impl -.->|"write"| Scripts
-  Impl -->|"vfg cmd · vfg script run"| RCON
+  Orch -->|"vfg route"| TypeSafe
+  Orch -->|"Agent · EXAMPLES"| Impl
+  Library -.->|"prefix · picks"| Impl
+  Impl -.->|"vfg script new"| Made
+  Impl -->|"vfg cmd · script run · set"| RCON
   Conv -->|"vfg say"| RCON
   RCON --> MC
   MC -->|"console.log"| Bridge
@@ -49,12 +52,13 @@ flowchart TB
   class Mod client;
   class Bridge,Jev,Conv,Disp,Orch,Impl svc;
   class Feed,TypeSafe,OpenRouter,RCON,MC ext;
-  class Scripts tool;
+  class Library,Made tool;
 ```
 
 *Legend: read top-down, from a player's voice to the game. Blue runs on each player's PC; green is
-Everhear's own services; orange is data, the game and third parties; yellow is the scripts
-implementers write. Solid arrows are live calls, the dashed one writes files. Every arrow joins two
+Everhear's own services; orange is data, the game and third parties; yellow is the script library
+and the server's own folder. Solid arrows are live calls; dashed ones hand over files: the library
+goes into each implementer's context, and what it makes goes into `made/`. Every arrow joins two
 top-level boxes.*
 
 - The **client mod** turns speech into text on the player's own PC (no audio leaves it) and posts
@@ -68,8 +72,11 @@ top-level boxes.*
 - The **dispatcher** gets every task first. It does simple asks at once as **actions** (items,
   effects, teleports, saved places), choosing them with a fast OpenRouter model, and hands the rest
   to the **orchestrator** with `vfg orch hand`.
-- The **orchestrator** briefs **implementers** (subagents) for every task it is handed. They act
-  through RCON and write reusable Python scripts into `scripts/`, which run on the box.
+- The **orchestrator** briefs **implementers** (subagents) for every task it is handed, and runs
+  no command itself. Each brief goes out with the scripts and presets Jev picks for the job
+  (`vfg route`), whole, and the server's state. Implementers act through RCON: they run a script
+  from the library, change its values while it runs, or copy presets into a new script with
+  `vfg script new` in `made/<server>/`. The library in `scripts/` is read-only during play.
 - Both report as `ORCH` lines in the feed, and the conversation tells the player.
 - Everything on the owner's PC reaches the box through one command, [`vfg`](toolkit/README.md).
 
@@ -88,9 +95,10 @@ What each part takes in and puts out is in [docs/CONTRACTS.md](docs/CONTRACTS.md
 | [`dispatcher/`](dispatcher/README.md) | every task's first stop: does simple asks at once as actions, in seconds, and hands the rest to the orchestrator |
 | [`actions/`](actions/README.md) | what the dispatcher can run on the server: one pydantic class per folder, a handler where commands cannot do the job |
 | [`orchestrator/`](orchestrator/README.md) | the Agent SDK runner, its [prompts](orchestrator/prompts/) and its guard |
-| [`scripts/`](scripts/README.md) | the action store: scripts implementers find, copy and run; it ships with 16 seed games |
+| [`scripts/`](scripts/README.md) | the script library: the kit every script imports, presets copied into scripts, and example scripts implementers run or copy |
+| `made/` | what implementers make during play, one folder per server (`VFG_SERVER`); gitignored |
 | [`lib/py/`](lib/py/vfg_llm.py) | `structured()`: the one OpenRouter call every part makes for a validated pydantic answer |
-| [`integration/`](integration/README.md) | the bridge, Jev filter and toolkit run together on one PC, no EC2 |
+| [`integration/`](integration/README.md) | the bridge, Jev filter and toolkit run together on one PC, no EC2; [`realmc/`](integration/realmc/README.md) runs real 26.3 servers with fake players, [`replay/`](integration/replay/README.md) replays a playtest's tasks |
 
 ## Requirements
 
@@ -182,10 +190,13 @@ Rough guidance from list prices; check the current ones for your region and plan
     Those are the owner's to type, and `scripts/_lib/mc.py` refuses the same words in every script.
   - for implementers, server-wide settings: `setworldspawn`, `defaultgamemode`, `difficulty` and
     `worldborder`;
-  - any shell command other than `vfg cmd`, `vfg script deploy|run|stop|logs|list`, `vfg history`,
-    `python3 -m py_compile` and `sleep`, and any `$( )`, backtick, variable or redirection in one;
-  - reading or searching outside the repo, writing outside `scripts/`, and any edit to
-    `scripts/_lib/`.
+  - for the orchestrator itself, every command but `vfg script list` and `vfg place list`: it
+    briefs implementers and runs nothing;
+  - for implementers, any shell command but `vfg`'s own, `python3 -m py_compile`, `sleep`, `echo`,
+    and `ls`, `grep`, `head` and `tail` on files in the repo; `vfg` may be piped into `head`,
+    `tail` or `grep`; no `$( )`, backtick, variable, loop or redirection into a file;
+  - reading or searching outside the repo; writing anywhere but `made/<server>/`, so the library
+    never changes during play; and editing a made script another task's instance is running.
 - **The box:** RCON answers on loopback only, SSH only from the owner's IP; the game (25565) and the
   bridge (8787) are open. The client token in the installer only lets someone post speech lines.
 
