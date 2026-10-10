@@ -6,18 +6,6 @@ import mc
 from kit import aim
 from actions._types import Field, Literal, Live, Player, Values  # the values class: read on the PC only
 
-VALUES = {
-    "damage_amount": {"type": "number", "min": 0, "max": 100000, "default": 20, "live": True},
-    "damage_type": {"type": "enum", "of": ["player_attack", "magic", "lightning_bolt", "explosion", "freeze",
-                                           "on_fire", "sonic_boom", "arrow", "wither", "generic"],
-                    "default": "player_attack", "live": True},
-    "damage_kill": {"type": "bool", "default": False, "live": True},
-    "damage_what": {"type": "enum", "of": ["all", "mobs", "hostile", "players"], "default": "all", "live": True},
-    "damage_most": {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
-    "damage_head": {"type": "number", "min": 1, "max": 10, "default": 1, "live": True},
-    "damage_spare": {"type": "list", "of": "player", "default": [], "live": True},
-}
-
 
 class DamageHits(Values):
     damage_amount: Live[float] = Field(20, ge=0, le=100000)

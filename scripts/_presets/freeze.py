@@ -8,14 +8,6 @@ import mc
 from kit import aim, area, loop, world
 from actions._types import Field, Literal, Live, Values  # the values class: read on the PC only
 
-VALUES = {
-    "freeze_seconds": {"type": "number", "min": 1, "max": 120, "default": 5, "live": True},
-    "freeze_shell": {"type": "bool", "default": False, "live": True},
-    "freeze_block": {"type": "enum", "of": ["ice", "packed_ice", "blue_ice", "snow_block"],
-                     "default": "ice", "live": True},
-    "freeze_blindness": {"type": "bool", "default": False, "live": True},
-}
-
 
 class Freeze(Values):
     freeze_seconds: Live[float] = Field(5, ge=1, le=120)

@@ -6,13 +6,6 @@ import mc
 from kit import items, loop, world
 from actions._types import Field, ItemName, Literal, Live, Values  # the values class: read on the PC only
 
-VALUES = {
-    "projectile_lands_kind": {"type": "enum", "of": ["both", "arrow", "trident"], "default": "both", "live": True},
-    "projectile_lands_named": {"type": "list", "of": "str", "default": [], "live": True},
-    "projectile_lands_cooldown": {"type": "number", "min": 0, "max": 60, "default": 0, "live": True},
-    "projectile_lands_remove": {"type": "bool", "default": False, "live": True},
-}
-
 
 class ProjectileLands(Values):
     projectile_lands_kind: Live[Literal["both", "arrow", "trident"]] = "both"

@@ -8,18 +8,6 @@ import mc
 from kit import aim, loop, world
 from actions._types import Field, Live, Values  # the values class: read on the PC only
 
-VALUES = {
-    "director_events":   {"type": "list", "of": "str", "default": ["sound", "shadow", "mob", "message", "dark"],
-                          "live": True},
-    "director_weights":  {"type": "list", "of": "number", "default": [4, 1, 1, 2, 1], "live": True},
-    "director_min_s":    {"type": "number", "min": 1, "max": 3600, "default": 25, "live": True},
-    "director_max_s":    {"type": "number", "min": 1, "max": 3600, "default": 60, "live": True},
-    "director_messages": {"type": "list", "of": "str", "live": True,
-                          "default": ["i see you", "turn around", "you are not alone", "why are you still here",
-                                      "behind you"]},
-    "director_each":     {"type": "bool", "default": True, "live": True},
-}
-
 
 class Director(Values):
     director_events: Live[list[str]] = ["sound", "shadow", "mob", "message", "dark"]

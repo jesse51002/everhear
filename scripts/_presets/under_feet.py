@@ -5,12 +5,6 @@ import mc
 from kit import world
 from actions._types import Field, Live, Values  # the values class: read on the PC only
 
-VALUES = {
-    "under_radius": {"type": "int", "min": 0, "max": 32, "default": 2, "live": True},
-    "under_depth": {"type": "int", "min": 1, "max": 64, "default": 1, "live": True},
-    "under_above": {"type": "int", "min": 0, "max": 64, "default": 0, "live": True},
-}
-
 
 class UnderFeet(Values):
     under_radius: Live[int] = Field(2, ge=0, le=32)

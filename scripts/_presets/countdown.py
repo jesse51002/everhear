@@ -7,12 +7,6 @@ import mc
 from kit import fx, loop
 from actions._types import Field, Live, Players, Values  # the values class: read on the PC only
 
-VALUES = {
-    "countdown_seconds": {"type": "int", "min": 1, "max": 3600, "default": 10},
-    "countdown_text": {"type": "str", "default": "Detonation", "live": True},
-    "countdown_to": {"type": "player", "default": "@a", "live": True},
-}
-
 
 class Countdown(Values):
     countdown_seconds: int = Field(10, ge=1, le=3600)

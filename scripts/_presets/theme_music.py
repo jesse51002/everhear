@@ -2,15 +2,6 @@
 from kit import fx, loop
 from actions._types import Field, Literal, Live, Values  # the values class: read on the PC only
 
-VALUES = {
-    "theme_tune": {"type": "enum", "of": ["galick_gun", "hollow_purple", "ice_beam", "spirit_bomb",
-                                          "spirit_bomb_throw", "super_saiyan", "boss", "none"],
-                   "default": "galick_gun", "live": True},
-    "theme_to": {"type": "enum", "of": ["near", "everyone", "player"], "default": "near", "live": True},
-    "theme_reach": {"type": "int", "min": 8, "max": 256, "default": 48, "live": True},
-    "theme_loop": {"type": "bool", "default": False, "live": True},
-}
-
 
 class ThemeMusic(Values):
     theme_tune: Live[Literal["galick_gun", "hollow_purple", "ice_beam", "spirit_bomb", "spirit_bomb_throw",

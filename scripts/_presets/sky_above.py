@@ -6,14 +6,6 @@ import mc
 from kit import aim, loop, world
 from actions._types import Field, Live, Values  # the values class: read on the PC only
 
-VALUES = {
-    "sky_radius": {"type": "number", "min": 0, "max": 128, "default": 14, "live": True},
-    "sky_height": {"type": "number", "min": 1, "max": 300, "default": 20, "live": True},
-    "sky_band": {"type": "number", "min": 0, "max": 100, "default": 0, "live": True},
-    "sky_count": {"type": "int", "min": 1, "max": 100, "default": 6, "live": True},
-    "sky_open": {"type": "bool", "default": True, "live": True},
-}
-
 
 class SkyAbove(Values):
     sky_radius: Live[float] = Field(14, ge=0, le=128)

@@ -6,15 +6,6 @@ import mc
 from kit import exclude, world
 from actions._types import Field, Literal, Live, Player, Values  # the values class: read on the PC only
 
-VALUES = {
-    "explosion_power": {"type": "number", "min": 0, "max": 16, "default": 4, "live": True},
-    "explosion_layout": {"type": "enum", "of": ["one", "plus", "ring", "rings"], "default": "one", "live": True},
-    "explosion_spread": {"type": "number", "min": 1, "max": 32, "default": 4, "live": True},
-    "explosion_breaks": {"type": "bool", "default": True, "live": True},
-    "explosion_keep": {"type": "number", "min": 0, "max": 32, "default": 0, "live": True},
-    "explosion_spare": {"type": "list", "of": "player", "default": [], "live": True},
-}
-
 
 class Explosion(Values):
     explosion_power: Live[float] = Field(4, ge=0, le=16)

@@ -6,14 +6,6 @@ import mc
 from kit import area, world
 from actions._types import Field, Live, ReplaceRules, Values  # the values class: read on the PC only
 
-VALUES = {
-    "replace_rules": {"type": "list", "of": "str", "live": True,
-                      "default": ["#minecraft:snow > white_wool light_gray_wool white_concrete quartz_block"]},
-    "replace_rate": {"type": "int", "min": 1, "max": 100, "default": 100, "live": True},
-    "replace_cell": {"type": "int", "min": 1, "max": 16, "default": 4, "live": True},
-    "replace_radius": {"type": "int", "min": 0, "max": 128, "default": 4, "live": True},
-}
-
 
 class ReplaceBlocks(Values):
     replace_rules: Live[ReplaceRules] = ["#minecraft:snow > white_wool light_gray_wool white_concrete quartz_block"]

@@ -10,16 +10,6 @@ import mc
 from kit import fx, items, loop, world
 from actions._types import Field, Live, ParticleId, Values  # the values class: read on the PC only
 
-VALUES = {
-    "beam_clash_power":    {"type": "number", "min": 1, "max": 1000, "default": 10, "live": True},
-    "beam_clash_gap":      {"type": "number", "min": 0.5, "max": 16, "default": 4, "live": True},
-    "beam_clash_window":   {"type": "number", "min": 0, "max": 10, "default": 1.5, "live": True},
-    "beam_clash_aimed":    {"type": "bool", "default": True, "live": True},
-    "beam_clash_seconds":  {"type": "number", "min": 1, "max": 30, "default": 6, "live": True},
-    "beam_clash_blast":    {"type": "int", "min": 0, "max": 8, "default": 4, "live": True},
-    "beam_clash_particle": {"type": "particle", "default": "dust{color:[0.6,0.1,0.9],scale:2.0}", "live": True},
-}
-
 
 class BeamClash(Values):
     beam_clash_power: Live[float] = Field(10, ge=1, le=1000)

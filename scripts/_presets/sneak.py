@@ -5,12 +5,6 @@ import mc
 from kit import items, loop
 from actions._types import Field, ItemName, Literal, Live, Values  # the values class: read on the PC only
 
-VALUES = {
-    "sneak_mode": {"type": "enum", "of": ["while", "tap", "three_taps"], "default": "while", "live": True},
-    "sneak_seconds": {"type": "number", "min": 0.3, "max": 5, "default": 1.5, "live": True},
-    "sneak_item": {"type": "str", "default": "", "live": True},
-}
-
 
 class Sneak(Values):
     sneak_mode: Live[Literal["while", "tap", "three_taps"]] = "while"

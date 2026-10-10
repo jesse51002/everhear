@@ -6,11 +6,6 @@ import mc
 from kit import aim, world
 from actions._types import Field, Literal, Live, Values  # the values class: read on the PC only
 
-VALUES = {
-    "push_way": {"type": "enum", "of": ["away", "toward", "up"], "default": "away", "live": True},
-    "push_strength": {"type": "number", "min": 0.5, "max": 40, "default": 6, "live": True},
-}
-
 
 class Push(Values):
     push_way: Live[Literal["away", "toward", "up"]] = "away"

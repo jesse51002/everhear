@@ -6,14 +6,6 @@ import mc
 from kit import area, world
 from actions._types import Field, Literal, Live, Values  # the values class: read on the PC only
 
-VALUES = {
-    "crater_radius": {"type": "int", "min": 0, "max": 300, "default": 8, "live": True},
-    "crater_tunnel": {"type": "int", "min": 0, "max": 8, "default": 0, "live": True},
-    "crater_leave": {"type": "enum", "of": ["air", "lava", "fire"], "default": "air", "live": True},
-    "crater_spare_protected": {"type": "bool", "default": True, "live": True},
-    "crater_load": {"type": "bool", "default": True, "live": True},
-}
-
 
 class Crater(Values):
     crater_radius: Live[int] = Field(8, ge=0, le=300)

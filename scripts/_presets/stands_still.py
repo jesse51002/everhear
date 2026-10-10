@@ -6,12 +6,6 @@ import mc
 from kit import fx, loop, world
 from actions._types import Field, Live, Values  # the values class: read on the PC only
 
-VALUES = {
-    "stands_radius":  {"type": "number", "min": 0.5, "max": 64, "default": 4, "live": True},
-    "stands_seconds": {"type": "number", "min": 1, "max": 3600, "default": 15, "live": True},
-    "stands_warning": {"type": "str", "default": "Move!", "live": True},
-}
-
 
 class StandsStill(Values):
     stands_radius: Live[float] = Field(4, ge=0.5, le=64)

@@ -6,10 +6,6 @@ import mc
 from kit import items, loop, world
 from actions._types import Literal, Live, Values  # the values class: read on the PC only
 
-VALUES = {
-    "on_death_event": {"type": "enum", "of": ["death", "kill", "both"], "default": "death", "live": True},
-}
-
 
 class OnDeath(Values):
     on_death_event: Live[Literal["death", "kill", "both"]] = "death"
