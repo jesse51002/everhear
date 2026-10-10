@@ -33,8 +33,9 @@ Deploy from the repo's root on the owner's PC: `jev/deploy.sh`. It streams this 
 cd jev && python3 -m unittest discover -s tests
 ```
 
-No network: `tests/fake_jev.py` stands in for Jev's API and `tests/fake_lib/` for the bridge's feed
-writer. `test_e2e.py` runs `jev_filter.py` as a process against them.
+No network, under a second: `tests/fake_jev.py` stands in for Jev's API and `tests/fake_lib/` for
+the bridge's feed writer. Every rule runs on a fake clock in `test_filter.py`; `test_e2e.py` runs
+`jev_filter.py` once as a process against the stand-ins and stops it with SIGTERM.
 
 ## Settings
 

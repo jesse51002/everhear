@@ -126,7 +126,7 @@ def serve(port=0, hang_seconds=5.0):
     srv.lock = threading.Lock()
     srv.hang_seconds = hang_seconds
     srv.url = "http://127.0.0.1:%d/v1/systemone" % srv.server_address[1]
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    threading.Thread(target=srv.serve_forever, args=(0.005,), daemon=True).start()   # a quick shutdown()
     return srv
 
 

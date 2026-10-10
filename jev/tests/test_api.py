@@ -24,7 +24,7 @@ def row(n, text, player="Steve", source="voice", at=T0):
 class ApiTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.server = fake_jev.serve(hang_seconds=1.5)
+        cls.server = fake_jev.serve(hang_seconds=0.2)
 
     @classmethod
     def tearDownClass(cls):
@@ -85,7 +85,7 @@ class ApiTest(unittest.TestCase):
             self.jev.ask({"t": "s"}, qs)
         self.server.mode = "hang"
         with self.assertRaises(JevDown):
-            self.jev.ask({"t": "s"}, qs)
+            Jev(KEY, url=self.server.url, timeout=0.02).ask({"t": "s"}, qs)
 
     def test_refused(self):
         self.server.mode = "refuse"
