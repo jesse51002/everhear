@@ -18,6 +18,8 @@ import time
 import unittest
 
 sys.dont_write_bytecode = True
+# A script that ends by itself cleans up at once, not after mc's 0.4 s grace for a last blast.
+os.environ.setdefault("VFG_EXIT_GRACE_S", "0")
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = os.path.dirname(HERE)
 LIB = os.path.join(SCRIPTS, "_lib")
