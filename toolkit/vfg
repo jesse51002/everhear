@@ -2649,7 +2649,7 @@ def cmd_route(cfg, a):
     budget = setting(cfg, "VFG_ROUTE_TIMEOUT_S", 3.0, 0.1, 60)
     load = setting(cfg, "VFG_ROUTE_LOAD", 0.3, 0.0, 1.0)
     route = lib_module("route")
-    cards = route.load_cards(cfg.repo, server_name(cfg))
+    cards = route.load_cards(cfg.repo, server_name(cfg), actions_cache(cfg))
     result = route.route(cards, brief, a.task, task, context,
                          lambda st, qs, b: jev_ask(cfg, st, qs, b), load, budget, t0)
     out(json.dumps(result, ensure_ascii=False))

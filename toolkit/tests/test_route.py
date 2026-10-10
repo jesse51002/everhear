@@ -197,6 +197,36 @@ class TestCards(RouteCase):
         self.assertNotIn(("script", "spirit_bomb"),
                          {(c["kind"], c["name"]) for c in route.load_cards(self.box.repo, "other")})
 
+    def test_a_scripts_values_are_its_actions_fields_and_a_presets_its_values_class(self):
+        self.box.write("scripts/_presets/crater.py", CRATER.replace('''from kit import area
+''', '''from kit import area
+from actions._types import Field, Live, Values
+
+
+class Crater(Values):
+    crater_radius: Live[int] = Field(8, ge=2, le=64)
+    """how wide the crater is, in blocks"""
+'''))
+        actions = {"actions": {
+            "galick_gun": {"script": "galick_gun", "source": "library",
+                           "fields": {"player": {}, "damage_amount": {}, "crater_radius": {}}},
+            "galick_sniper": {"script": "galick_gun", "source": "library", "fields": {"range": {}}},
+            "spirit_bomb": {"script": "spirit_bomb", "source": "library", "fields": {"nope": {}}}}}
+        cards = {(c["kind"], c["name"]): c for c in route.load_cards(self.box.repo, "main", actions)}
+        self.assertEqual(sorted(cards[("script", "galick_gun")]["values"]),
+                         ["crater_radius", "damage_amount", "player", "range"])
+        self.assertNotIn("nope", cards[("script", "spirit_bomb")]["values"])   # made: a library action is not its
+        self.assertEqual(list(cards[("preset", "crater")]["values"]), ["crater_radius"])
+        self.assertIn("Its values: crater_radius, damage_amount, player, range.",
+                      route.make_questions(list(cards.values()))["script_galick_gun"]["instructions"])
+        lib = prefix.build(self.box.repo)
+        lib = lib[lib.index("THE LIBRARY"):]
+        self.assertIn("crater (preset)\n  Carve a sphere out of the world at a place, leaving air, lava or fire.\n"
+                      "  crater_radius: Live[int] = Field(8, ge=2, le=64) — how wide the crater is, in blocks\n"
+                      "freeze (preset)", lib)
+        self.assertIn("galick_gun (example script)\n  Galick Gun: hold to charge a beam, then fire it where you "
+                      "look; it leaves a crater.\nhello (example script)", lib)   # a script: its first line only
+
     def test_one_choice_question_per_script_and_per_preset(self):
         cards = route.load_cards(self.box.repo, "main")
         qs = route.make_questions(cards)

@@ -54,24 +54,35 @@ SOURCES = {"library": "ours", "made": "made on this server"}
 
 # ------------------------------------------------------------------- the cards
 
-def load_cards(repo, server):
+def load_cards(repo, server, actions=None):
     """Every example script and preset, the library's then this server's, by name.
 
     Each card: name, kind ("script" or "preset"), source ("library" or "made"),
-    path (from the repo), first (its first line), asks, values (its VALUES) and,
-    for a script, presets (the names of the presets copied into it). A seed
-    script's first line is its README's. With no server, the library's only.
-    A name in both places (never meant to happen) keeps the library's."""
+    path (from the repo), first (its first line), asks, values and, for a script,
+    presets (the names of the presets copied into it). A script's values are the
+    fields of the actions over it, from `actions` (actions.json, as vfg_actions.cache
+    builds it), else its VALUES; a preset's, the fields of its values class, else its
+    VALUES. A seed script's first line is its README's. With no server, the library's
+    only. A name in both places (never meant to happen) keeps the library's."""
     lib = library.Library(repo, server or "main")
+    over = {}
+    for info in ((actions or {}).get("actions") or {}).values():
+        if isinstance(info, dict) and isinstance(info.get("fields"), dict):
+            key = (info.get("script"), info.get("source"))
+            over.setdefault(key, {}).update(info["fields"])
     seen, cards = set(), []
     for it in lib.scripts() + lib.presets():
         if (it.kind, it.name) in seen or not it.text or (not server and it.source != "library"):
             continue
         seen.add((it.kind, it.name))
+        values = it.values if isinstance(it.values, dict) else {}
+        if it.kind == "script" and (it.name, it.source) in over:
+            values = over[(it.name, it.source)]
+        elif it.kind == "preset" and library.values_class_fields(it) is not None:
+            values = dict((k, None) for k in library.values_class_fields(it))
         cards.append({"name": it.name, "kind": it.kind, "source": it.source, "path": it.rel,
                       "first": it.first_line or "", "asks": [a for a in it.asks or [] if isinstance(a, str)],
-                      "values": it.values if isinstance(it.values, dict) else {},
-                      "presets": list(it.holds) if it.kind == "script" else []})
+                      "values": values, "presets": list(it.holds) if it.kind == "script" else []})
     return cards
 
 
