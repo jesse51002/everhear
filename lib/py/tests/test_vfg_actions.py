@@ -574,6 +574,126 @@ def test_a_variant_may_take_back_a_fixed_value_as_its_own_default(repo):
     assert check_values(slow, {"cooldown": 3}).values["cooldown"] == 3
 
 
+SOFT = '''
+    from actions.gatling_gun import GatlingGun
+
+
+    class SoftGatlingGun(GatlingGun):
+        """Give a player a soft gatling gun."""
+
+        defaults = {"damage_amount": 2}
+        descriptions = {"damage_amount": "how soft each shot is, in half-hearts"}
+'''
+
+
+def test_descriptions_give_an_inherited_field_its_words_and_keep_its_type_and_limits(repo, tmp_path):
+    write(repo / "actions" / "soft_gatling_gun.py", SOFT)
+    write(repo / "actions" / "softer_gatling_gun.py", '''
+        from actions.soft_gatling_gun import SoftGatlingGun
+
+
+        class SofterGatlingGun(SoftGatlingGun):
+            """Give a player a softer gatling gun."""
+
+            descriptions = {"damage_what": "who the soft shots hit"}
+    ''')
+    cat = Catalog(repo, None)
+    rail, soft, softer = cat.get("railgun"), cat.get("soft_gatling_gun"), cat.get("softer_gatling_gun")
+    assert cat.errors() == {} and check_action("soft_gatling_gun", soft) == [] == check_action("softer_gatling_gun", softer)
+    damage = T().preset("damage_hits").model_fields["damage_amount"]
+    f = soft.model_fields["damage_amount"]
+    assert f.description == "how soft each shot is, in half-hearts" and f.default == 2
+    assert T().same_type(f, damage) and T().limits(f.annotation, f.metadata) == (0, 100000) and "damage_amount" in A.live_fields(soft)
+    assert rail.model_fields["damage_amount"].description == damage.description  # the parent keeps its words
+    # A variant's descriptions merge over its parent's.
+    assert softer.descriptions == {"damage_amount": "how soft each shot is, in half-hearts",
+                                   "damage_what": "who the soft shots hit"}
+    assert softer.model_fields["damage_amount"].description == f.description and softer().damage_amount == 2
+    # Shown wherever a description is: describe, the planner's schema, actions.json.
+    assert "* damage_amount (a number 0..100000; live; default 2): how soft each shot is, in half-hearts" \
+        in describe("soft_gatling_gun", soft).splitlines()
+    assert planner_model(soft).model_json_schema()["properties"]["damage_amount"]["description"] == f.description
+    data = cache(repo, "main", tmp_path / "home")["actions"]
+    assert data["softer_gatling_gun"]["fields"]["damage_what"]["description"] == "who the soft shots hit"
+    assert data["soft_gatling_gun"]["descriptions"] == {"damage_amount": "how soft each shot is, in half-hearts"}
+    assert data["railgun"]["descriptions"] == {}
+
+
+def test_a_field_written_again_changes_its_type_or_limits_with_its_own_words(repo):
+    write(repo / "actions" / "soft_gatling_gun.py", SOFT)
+    write(repo / "actions" / "big_gatling_gun.py", '''
+        from actions._types import Field, Live
+        from actions.soft_gatling_gun import SoftGatlingGun
+
+
+        class BigGatlingGun(SoftGatlingGun):
+            """Give a player a gatling gun that can hurt more."""
+
+            damage_amount: Live[float] = Field(30, ge=0, le=200000)
+            """damage to each thing hit, in half-hearts, up to twice what a gun may"""
+    ''')
+    cat = Catalog(repo, None)
+    big = cat.get("big_gatling_gun")
+    assert cat.errors() == {} and check_action("big_gatling_gun", big) == []
+    f = big.model_fields["damage_amount"]
+    assert T().limits(f.annotation, f.metadata) == (0, 200000)
+    assert f.description == "damage to each thing hit, in half-hearts, up to twice what a gun may"  # not its parent's words
+    assert "damage_amount" not in big.descriptions
+
+
+def test_check_action_refuses_bad_descriptions_and_a_field_written_again_as_it_came(repo):
+    write(repo / "actions" / "worded.py", '''
+        from actions._types import Field, Live
+        from actions.railgun import Railgun
+
+
+        class Worded(Railgun):
+            """Give a player a worded railgun."""
+
+            descriptions = {"ghost": "no such field", "range": "  ", "cooldown": 5, "noise": "loud"}
+
+            noise: Live[int] = Field(0, ge=0, le=10)
+            """how loud"""
+    ''')
+    write(repo / "actions" / "again.py", '''
+        from actions._types import Action, Field, Live, Players, preset
+
+
+        class Again(Action, preset("damage_hits")):
+            """Give a player a gun again."""
+
+            script = "railgun"
+            runs = "until_stopped"
+
+            player: Players = "@a"
+            """who"""
+            damage_amount: Live[float] = Field(100, ge=0, le=100000)
+            """damage to each thing hit, in half-hearts, 100 unless told"""
+    ''')
+    write(repo / "actions" / "again_gatling_gun.py", '''
+        from actions._types import Field, Live
+        from actions.gatling_gun import GatlingGun
+
+
+        class AgainGatlingGun(GatlingGun):
+            """Give a player a gatling gun again."""
+
+            cooldown: Live[float] = Field(0.1, ge=0, le=60)
+            """seconds between shots, a tenth unless told"""
+    ''')
+    cat = Catalog(repo, None)
+    why = cat.errors()
+    assert set(why) == {"worded", "again", "again_gatling_gun"} and cat.names() == ["gatling_gun", "railgun"]
+    for says in ("descriptions names ghost, which is not one of its fields",
+                 "descriptions gives range no words", "descriptions gives cooldown no words",
+                 "descriptions names noise, which it writes itself"):
+        assert says in why["worded"], says
+    assert "range has no description" not in why["worded"]  # it keeps the words it inherits
+    assert why["again"] == ("damage_amount is written again with DamageHits's type and limits: drop the field and "
+                            "give its default in defaults, its words in descriptions")
+    assert why["again_gatling_gun"].startswith("cooldown is written again with GatlingGun's type and limits")
+
+
 # ------------------------------------------------------------------ made actions and reloading
 
 def test_made_actions_load_beside_the_library_and_may_subclass_it(repo):
