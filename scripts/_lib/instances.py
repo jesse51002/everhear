@@ -392,9 +392,12 @@ class Box(object):
         out = {"copy": name, "action": meta["action"], "changed": changed, "restarted": None,
                "running": True, "code": None, "result": None}
         if live:
-            cur = self.live(name)
-            cur.update(dict((k, values[k]) for k in changed))
-            write_json(self.path(name, ".values.json"), cur)
+            # Read, change and write the live file under the copies lock: two edits at once
+            # both land, neither writing over the other.
+            with self.lock():
+                cur = self.live(name)
+                cur.update(dict((k, values[k]) for k in changed))
+                write_json(self.path(name, ".values.json"), cur)
             out.update(live=True, values=self.copy(name)["values"])
             return out
         new = self.copy(name)["values"]

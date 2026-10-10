@@ -9,6 +9,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -98,6 +99,27 @@ class InstancesTests(unittest.TestCase):
         # A field the copy's meta does not list as live is never written live.
         got = self.box.edit(name, {"length": 4}, None, True)
         self.assertFalse(got["live"])
+
+    def test_two_live_edits_at_once_both_land(self):
+        name, pid, proc = self.start(cooldown=2, colour="red")
+        meta = self.box.meta(name)
+        meta["live"] = ["cooldown", "colour"]
+        instances.write_json(self.box.path(name, ".json"), meta)
+        write = instances.write_json
+
+        def slow_write(path, data):   # each edit holds its read a while before it writes
+            time.sleep(0.2)
+            write(path, data)
+
+        instances.write_json = slow_write
+        self.addCleanup(setattr, instances, "write_json", write)
+        edits = [({"cooldown": 0}, ["cooldown"]), ({"colour": "blue"}, ["colour"])]
+        threads = [threading.Thread(target=self.box.edit, args=(name, vals, changed, True)) for vals, changed in edits]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+        self.assertEqual(self.box.live(name), {"cooldown": 0, "colour": "blue"})
 
     def test_a_stop_ends_only_that_copy(self):
         a, pa, _ = self.start()
