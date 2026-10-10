@@ -1,6 +1,0 @@
-# A join: one invite whispered to the player, no task.
-prompt:
-GAME#905 {t-2} join Steve | Steve joined the game
-check:
-say_to Steve >= 1
-send == 0

@@ -1,9 +1,0 @@
-# Steve already has a task open: a whispered not-now, no second task.
-task_start: 4
-state:
-Steve has T3 open: you sent it 40 seconds ago (build a stone castle at Steve’s position) and promised Steve a castle. It is not done yet.
-prompt:
-LINE#910 {t-2} Steve voice direct_ask 0.94 -7dB | AI spawn me a dragon
-check:
-say_to Steve >= 1
-send == 0

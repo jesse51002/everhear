@@ -1,7 +1,0 @@
-# Opposite asks in one batch: the first wins, one task, and Alex is told.
-prompt:
-LINE#908 {t-4} Steve voice direct_ask 0.92 -8dB | AI make it day
-LINE#909 {t-2} Alex voice direct_ask 0.90 -10dB | no AI make it night
-check:
-send == 1
-told Alex

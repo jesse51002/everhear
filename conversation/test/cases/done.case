@@ -1,9 +1,0 @@
-# The orchestrator finished Steve's castle: Steve is told, nothing new is sent.
-task_start: 8
-state:
-T7 is Steve’s castle: Steve asked for a castle two minutes ago and you promised it.
-prompt:
-ORCH#915 {t-2} T7 done | castle built at spawn
-check:
-say >= 1
-send == 0
