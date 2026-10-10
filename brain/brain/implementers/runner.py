@@ -277,8 +277,9 @@ class Implementers:
                     await self._run(t, kind, text)
                 except Exception as e:
                     log("implementer", "%s broke: %s" % (t.id, traceback.format_exc()))
-                    await self._report(t.id, "failed", "Failed: the implementer could not run: %s: %s."
-                                       % (type(e).__name__, e))
+                    if not self._closing:
+                        await self._report(t.id, "failed", "Failed: the implementer could not run: %s: %s."
+                                           % (type(e).__name__, e))
         finally:
             t.worker = None
 
