@@ -1,25 +1,10 @@
 """Boom Bow: a player's arrows explode where they land or hit, from one blast to a ring of them with a mushroom cloud."""
 ASKS = ["arrows that explode where they hit", "an explosive bow", "make it explode on the target it hits"]
-from kit import values, items, loop, world, exclude
+from kit import values, result, items, loop, world, exclude
 import re
 import time
 import mc
 import math
-
-VALUES = {
-    "player":                    {"type": "player", "default": "@a"},
-    "projectile_lands_kind":     {"type": "enum", "of": ["both", "arrow", "trident"], "default": "arrow", "live": True},
-    "projectile_lands_named":    {"type": "list", "of": "str", "default": [], "live": True},
-    "projectile_lands_cooldown": {"type": "number", "min": 0, "max": 60, "default": 0, "live": True},
-    "projectile_lands_remove":   {"type": "bool", "default": True, "live": True},
-    "explosion_power":           {"type": "number", "min": 0, "max": 16, "default": 8, "live": True},
-    "explosion_layout":          {"type": "enum", "of": ["one", "plus", "ring", "rings"], "default": "one", "live": True},
-    "explosion_spread":          {"type": "number", "min": 1, "max": 32, "default": 8, "live": True},
-    "explosion_breaks":          {"type": "bool", "default": True, "live": True},
-    "explosion_keep":            {"type": "number", "min": 0, "max": 32, "default": 0, "live": True},
-    "explosion_spare":           {"type": "list", "of": "player", "default": [], "live": True},
-    "cloud":                     {"type": "bool", "default": False, "live": True},
-}
 
 
 # --- preset: projectile_lands (copied from _presets/projectile_lands.py) ---
@@ -230,8 +215,10 @@ def _explosion_blast(pre, p, power, spare):
             mc.rcon(here + "%s run damage @s %.1f minecraft:explosion at %.2f %.2f %.2f" % (frag, amount, x, y, z))
 
 
-v = values(VALUES)
-mc.log("arrows of", v["player"], "explode, power", v["explosion_power"])
+v = values()
+result("%s's %s explode where they land, power %g" % (v["player"], {"arrow": "arrows", "trident": "tridents"}.get(
+    v["projectile_lands_kind"], "arrows and tridents"), v["explosion_power"]),
+       player=v["player"], power=v["explosion_power"], layout=v["explosion_layout"])
 for at, p, weapon in loop(projectile_lands(v["player"], v)):
     n = explosion(at, p, v)
     if n and v["cloud"]:
