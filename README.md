@@ -181,9 +181,11 @@ bridge/deploy/deploy.sh provision          # or: bridge/deploy/deploy.sh provisi
 bridge/deploy/deploy.sh
 jev/deploy.sh
 
-# 5. The secrets, typed at a hidden prompt (once: --restore keeps them).
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # a client token to paste
-bridge/deploy/set-secret.sh VFG_CLIENT_TOKEN
+# 5. The secrets. Once: put TYPESAFE_API_KEY=... in ~/.vfg/box.env (mode 600; VFG_BOX_ENV can
+#    name another .env). Step 3 then sends it to every new box and makes the client token there;
+#    after you change the file, send it again:
+bridge/deploy/deploy.sh env
+# Without that file, type each one at a hidden prompt instead (--restore keeps them):
 bridge/deploy/set-secret.sh TYPESAFE_API_KEY
 
 # 6. Build the mod and publish the installer link; send the link it prints to your players.
