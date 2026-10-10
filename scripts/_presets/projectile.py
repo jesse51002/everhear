@@ -5,6 +5,7 @@ import time
 
 import mc
 from kit import aim, fx, world
+from actions._types import BlockId, Field, Literal, Live, ParticleId, Values  # the values class: read on the PC only
 
 VALUES = {
     "projectile_kind": {"type": "enum", "of": ["orb", "block"], "default": "orb", "live": True},
@@ -13,6 +14,20 @@ VALUES = {
     "projectile_particle": {"type": "particle", "default": "end_rod", "live": True},
     "projectile_block": {"type": "block", "default": "magma_block", "live": True},
 }
+
+
+class Projectile(Values):
+    projectile_kind: Live[Literal["orb", "block"]] = "orb"
+    """orb: a ball of projectile_particle; block: a block of projectile_block trailing projectile_particle"""
+    projectile_size: Live[float] = Field(2, ge=0.2, le=16)
+    """how big it is, in blocks across"""
+    projectile_speed: Live[float] = Field(30, ge=2, le=200)
+    """how fast it flies, in blocks a second"""
+    projectile_particle: Live[ParticleId] = "end_rod"
+    """the orb's particle, or the block's trail; dust{color:[r,g,b],scale:2} for a colour, r, g and b from 0 to 1"""
+    projectile_block: Live[BlockId] = "magma_block"
+    """the block that flies, its id only; does nothing for an orb"""
+
 
 _projectile_n = [0]
 

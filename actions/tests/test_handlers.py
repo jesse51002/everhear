@@ -1,5 +1,9 @@
 """The teleport and summon_around handlers, run as EC2 runs them (through remote/action.py
-on python3 -) against the fake RCON server answering as a FakeWorld."""
+on python3 -) against the fake RCON server answering as a FakeWorld.
+
+The handlers are gone: teleport and summon_around are actions over scripts now
+(actions/teleport.py, actions/summon_around.py), and these cases are ported to the scripts'
+tests. Until then this file is skipped; the handlers are in git at 4cc7e5d."""
 from __future__ import annotations
 
 import math
@@ -7,7 +11,11 @@ import re
 
 import pytest
 
-from conftest import FakeWorld
+from conftest import REPO, FakeWorld
+
+if not (REPO / "actions" / "teleport" / "handler.py").exists():
+    pytest.skip("the teleport and summon_around handlers are gone: their cases move to the scripts' tests",
+                allow_module_level=True)
 
 OW, NETHER = "minecraft:overworld", "minecraft:the_nether"
 

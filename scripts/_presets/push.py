@@ -4,11 +4,19 @@ import random
 
 import mc
 from kit import aim, world
+from actions._types import Field, Literal, Live, Values  # the values class: read on the PC only
 
 VALUES = {
     "push_way": {"type": "enum", "of": ["away", "toward", "up"], "default": "away", "live": True},
     "push_strength": {"type": "number", "min": 0.5, "max": 40, "default": 6, "live": True},
 }
+
+
+class Push(Values):
+    push_way: Live[Literal["away", "toward", "up"]] = "away"
+    """which way: away from where the push comes from, toward it (never past it), or up into the air"""
+    push_strength: Live[float] = Field(6, ge=0.5, le=40)
+    """about how far it moves each one, in blocks: a mob is thrown, a player moved there at once, or floated up"""
 
 
 def push(hits, frm, v, *, way=None):

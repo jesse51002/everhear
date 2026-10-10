@@ -24,7 +24,7 @@ PRESETS = os.path.join(os.path.dirname(HERE), "_presets")
 sys.path.append(os.path.dirname(os.path.dirname(HERE)))  # the repo: a preset's values class imports actions._types
 sys.path.insert(0, HERE)
 
-from test_kit import KitCase, collect, start_script, TMP  # noqa: E402
+from test_kit import KitCase, collect, copied, start_script, TMP  # noqa: E402
 from fake_rcon import FakeRcon  # noqa: E402
 from fake_world import World  # noqa: E402
 import secrets  # noqa: E402
@@ -368,13 +368,13 @@ class WorldShowTests(KitCase):
 
 PROBE = '''"""Probe: the world presets mid-way when it is stopped."""
 ASKS = []
-import os
 import mc
 from kit import values, loop
+COPIED = %r
 V = {}
 for name in ("shape_fill", "summon", "meteor_fall"):
     g = {"__name__": name}
-    exec(open(os.path.join(%r, name + ".py")).read(), g)
+    exec(COPIED[name], g)
     globals()[name] = g[name]
     V.update(g["VALUES"])
 v = values(V)
@@ -396,7 +396,8 @@ class WorldStopTests(unittest.TestCase):
         password = secrets.token_hex(8)
         fake = FakeRcon(password, responder=w.respond).start()
         try:
-            proc = start_script("probe_world", PROBE % PRESETS, fake, password)
+            copies = {n: copied(os.path.join(PRESETS, n + ".py")) for n in ("shape_fill", "summon", "meteor_fall")}
+            proc = start_script("probe_world", PROBE % (copies,), fake, password)
             deadline = time.time() + 8
             while not (w.forced and [e for e in w.entities if e["type"] == "block_display"]) \
                     and time.time() < deadline:

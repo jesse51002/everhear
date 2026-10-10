@@ -35,6 +35,7 @@ if not os.environ.get("REALMC_NAME") or "realmc" not in os.path.realpath(PROPS):
 
 import mc  # noqa: E402
 from kit import aim, area, loop, values, world  # noqa: E402
+from test_kit import copied  # noqa: E402  (only the helper: mc stays on the real server)
 
 signal.signal(signal.SIGINT, signal.default_int_handler)
 signal.signal(signal.SIGTERM, signal.SIG_DFL)
@@ -333,13 +334,13 @@ class LiveShows(Live):
 
 PROBE = '''"""Probe: the world presets mid-way when it is stopped."""
 ASKS = []
-import os
 import mc
 from kit import values, loop, world
+COPIED = %r
 V = {}
 for name in ("shape_fill", "summon", "meteor_fall"):
     g = {"__name__": name}
-    exec(open(os.path.join(%r, name + ".py")).read(), g)
+    exec(COPIED[name], g)
     globals()[name] = g[name]
     V.update(g["VALUES"])
 v = values(V)
@@ -358,7 +359,8 @@ class LiveStop(unittest.TestCase):
         folder = os.path.join(TMP, "probe_world")
         os.makedirs(folder, exist_ok=True)
         with open(os.path.join(folder, "main.py"), "w") as f:
-            f.write(PROBE % (PRESETS, X, FLOOR + 1, Z, X, FLOOR + 1, Z, SKY))
+            copies = {n: copied(os.path.join(PRESETS, n + ".py")) for n in ("shape_fill", "summon", "meteor_fall")}
+            f.write(PROBE % (copies, X, FLOOR + 1, Z, X, FLOOR + 1, Z, SKY))
         env = dict(os.environ, PYTHONPATH=LIB, PYTHONDONTWRITEBYTECODE="1", VFG_INSTANCE="probe_world",
                    VFG_RUN_DIR=TMP, VFG_LIVE_POLL_S="0.5", VFG_MC_PROPERTIES=PROPS)
         py = os.environ.get("VFG_EC2_PYTHON") or sys.executable

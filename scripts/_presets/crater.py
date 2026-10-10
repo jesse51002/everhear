@@ -4,6 +4,7 @@ import threading
 
 import mc
 from kit import area, world
+from actions._types import Field, Literal, Live, Values  # the values class: read on the PC only
 
 VALUES = {
     "crater_radius": {"type": "int", "min": 0, "max": 300, "default": 8, "live": True},
@@ -12,6 +13,19 @@ VALUES = {
     "crater_spare_protected": {"type": "bool", "default": True, "live": True},
     "crater_load": {"type": "bool", "default": True, "live": True},
 }
+
+
+class Crater(Values):
+    crater_radius: Live[int] = Field(8, ge=0, le=300)
+    """how big the hole is, a ball this many blocks round the place (0: no hole and no tunnel)"""
+    crater_tunnel: Live[int] = Field(0, ge=0, le=8)
+    """a tunnel along a beam's path, carved this many blocks each way round it (0: none)"""
+    crater_leave: Live[Literal["air", "lava", "fire"]] = "air"
+    """what is left in the hole: air; lava, a pool in its lowest third; fire, burning on its floor"""
+    crater_spare_protected: Live[bool] = True
+    """leave the protected areas whole; the bedrock floor is never carved"""
+    crater_load: Live[bool] = True
+    """load the chunks it reaches first, so the whole hole is carved (up to a radius of about 120); off: only what is loaded"""
 
 
 def crater(at, v, *, path=()):

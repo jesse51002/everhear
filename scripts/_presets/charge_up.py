@@ -4,6 +4,7 @@ import random
 import time
 
 from kit import aim, fx, loop
+from actions._types import Field, Literal, Live, ParticleId, Values  # the values class: read on the PC only
 
 VALUES = {
     "charge_style": {"type": "enum", "of": ["sphere", "orbs", "aura"], "default": "sphere", "live": True},
@@ -12,6 +13,19 @@ VALUES = {
     "charge_size": {"type": "number", "min": 1, "max": 30, "default": 6, "live": True},
     "charge_orbs": {"type": "list", "of": "particle", "default": [], "live": True},
 }
+
+
+class ChargeUp(Values):
+    charge_style: Live[Literal["sphere", "orbs", "aura"]] = "sphere"
+    """how it looks: sphere, light growing overhead (Spirit Bomb); orbs, two meeting ahead (Hollow Purple); aura, a glow round the body"""
+    charge_seconds: Live[float] = Field(3, ge=0.2, le=15)
+    """how long it charges before the power fires, in seconds"""
+    charge_particle: Live[ParticleId] = "dust{color:[0.3,0.7,1.0],scale:2.5}"
+    """the particle it is drawn with; dust{color:[r,g,b],scale:2} for a colour, r, g and b from 0 to 1"""
+    charge_size: Live[float] = Field(6, ge=1, le=30)
+    """how big it gets: the sphere's radius, or how far apart the orbs start, in blocks; an aura of 30 reaches 3 blocks out"""
+    charge_orbs: Live[list[ParticleId]] = []
+    """for orbs: the right orb's particle and the left's, meeting in charge_particle; []: both charge_particle"""
 
 
 def charge_up(player, v):

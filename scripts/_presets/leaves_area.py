@@ -3,6 +3,7 @@ import math
 
 import mc
 from kit import loop, world
+from actions._types import Field, Literal, Live, Players, Values  # the values class: read on the PC only
 
 VALUES = {
     "leaves_area":      {"type": "enum", "of": ["radius", "box", "player"], "default": "radius"},
@@ -11,6 +12,19 @@ VALUES = {
     "leaves_box":       {"type": "list", "of": "number", "default": [], "live": True},
     "leaves_of_player": {"type": "player", "default": "@a", "live": True},
 }
+
+
+class LeavesArea(Values):
+    leaves_area: Literal["radius", "box", "player"] = "radius"
+    """where players must stay: radius, within leaves_radius of leaves_center; box, in leaves_box; player, near leaves_of_player"""
+    leaves_radius: Live[float] = Field(40, ge=1, le=10000)
+    """how far a player may go, in blocks across the ground: from leaves_center, or for player from the nearest of leaves_of_player"""
+    leaves_center: Live[list[float]] = []
+    """for radius: the middle, as x, y, z; [] for where the first player stood when it started"""
+    leaves_box: Live[list[float]] = []
+    """for box: two opposite corners, as x1, y1, z1, x2, y2, z2; fewer than six numbers keep nobody in"""
+    leaves_of_player: Live[Players] = "@a"
+    """for player: who the others must stay near, as names separated by commas or @a"""
 
 
 def leaves_area(player, v):

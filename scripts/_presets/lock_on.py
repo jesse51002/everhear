@@ -2,12 +2,22 @@
 import math
 
 from kit import aim
+from actions._types import Field, Live, Values  # the values class: read on the PC only
 
 VALUES = {
     "lock_range": {"type": "int", "min": 4, "max": 500, "default": 100, "live": True},
     "lock_cone": {"type": "number", "min": 1, "max": 45, "default": 6, "live": True},
     "lock_players": {"type": "bool", "default": False, "live": True},
 }
+
+
+class LockOn(Values):
+    lock_range: Live[int] = Field(100, ge=4, le=500)
+    """how far it looks for a target, in blocks, never past the first solid block"""
+    lock_cone: Live[float] = Field(6, ge=1, le=45)
+    """how far off where the player looks a target may be, in degrees: 6 is narrow, 45 wide"""
+    lock_players: Live[bool] = False
+    """players can be locked onto too; off: mobs only"""
 
 
 def lock_on(player, v):
