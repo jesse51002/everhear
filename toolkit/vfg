@@ -2943,7 +2943,7 @@ class Watcher(object):
         self.kill()
         why = [l for l in err_tail.decode("utf-8", "replace").splitlines() if l.strip()]
         if why and (not self.persist or sys.stderr.isatty()):
-            # For a person only: under Monitor the SYS#0 notices say it.
+            # For a person at a terminal, or a --tail or --after watch: elsewhere the SYS#0 notices say it.
             sys.stderr.write("vfg watch: ssh: %s\n" % why[-1].strip())
             sys.stderr.flush()
         if connected:

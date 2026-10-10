@@ -23,7 +23,7 @@ repo reads, with its default. Nothing is deployed to EC2 for vfg itself: the pro
 
 ```sh
 vfg up                                         # units started if down; RCON answering
-vfg watch                                      # the feed from the cursor, then follow (under Monitor)
+vfg watch                                      # the feed from the cursor, then follow; one at a time, the newest wins
 vfg watch --tail 20                            # for a person at a terminal
 vfg watch --after 812                          # for the brain: from seq 813 on; no cursor, no lock, no valve
 vfg say 'on it — castle at spawn'              # tellraw @a with the aqua [AI] prefix, stored as an ai line, fed as AI say
@@ -56,7 +56,7 @@ vfg script deploy                              # or: vfg script deploy castle
 vfg script set railgun_2 cooldown=0            # the edit action: live in 0.5 s, any other value restarts it
 vfg script stop railgun_2                      # the stop action: everything it made goes
 vfg script list                                # the running copies, from ~/.vfg/running.json; --json, --fresh
-vfg script logs railgun_2 -n 40                # --follow only under Monitor or by a person
+vfg script logs railgun_2 -n 40                # --follow only for a person or code that reads it as it comes
 vfg script save railgun_2 rail_no_cooldown     # the copy's values kept as an action: made/<VFG_SERVER>/actions/
 vfg preset save galick_ice ice_path ice_trail  # a function lifted out into made/<VFG_SERVER>/presets/
 vfg made save                                  # made/<VFG_SERVER>/ into a new $VFG_MADE_ARCHIVE/2026-10-10-142301/
