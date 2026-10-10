@@ -31,12 +31,12 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(os.path.dirname(SCRIPTS), "toolkit", "lib"))
 
 import test_kit  # noqa: E402
-from test_kit import KitCase, start_script, TMP  # noqa: E402
+from test_kit import KitCase, start_script, until, TMP  # noqa: E402
 from fake_rcon import FakeRcon  # noqa: E402
 from fake_world import World, OVERWORLD, _split_opts, _token  # noqa: E402
 import library  # noqa: E402
 import mc  # noqa: E402
-from kit import aim, values, world  # noqa: E402
+from kit import aim, loop, values, world  # noqa: E402
 
 NAMES = ["damage_hits", "freeze", "push", "around", "lock_on", "lightning", "explosion", "crater"]
 
@@ -320,6 +320,7 @@ class FreezeTests(HitsCase):
 
     def test_a_shell_into_air_only_that_melts(self):
         self.mob("zombie", 10.5, z=0.5)
+        self.clock(loop, rate=10)                       # the second until it melts, a tenth
         hits = P["around"].around("Steve", vals("around", around_radius=12))
         P["freeze"].freeze(hits, vals("freeze", freeze_seconds=1, freeze_shell=True, freeze_block="packed_ice"))
         made = [(b, blk, mode) for _, b, blk, mode in self.world.fills]
@@ -330,10 +331,9 @@ class FreezeTests(HitsCase):
         self.assertEqual(len(cells), 3 * 4 * 3 - 2)
         self.assertNotIn((10, 64, 0), cells)
         self.assertNotIn((10, 65, 0), cells)
-        time.sleep(1.6)
-        melted = [c for c in self.world.commands if c.endswith("air replace packed_ice")]
-        self.assertEqual(len(melted), 6)
-        self.assertEqual(P["freeze"]._FREEZE_SHELLS, [])
+        melted = lambda: [c for c in self.world.commands if c.endswith("air replace packed_ice")]
+        self.assertTrue(until(lambda: len(melted()) == 6 and not P["freeze"]._FREEZE_SHELLS, 3), melted())
+        self.assertEqual(len(melted()), 6)
 
 
 class FreezeBlindnessTests(HitsCase):
@@ -409,10 +409,11 @@ class LightningTests(HitsCase):
                             for c in self.sent("summon lightning_bolt")))
 
     def test_one_by_one_and_scattered_within_the_spread(self):
-        t = time.time()
+        clock = self.clock(loop, rate=10)
+        t = clock.time()
         P["lightning"].lightning("Steve", "", vals("lightning", lightning_count=3, lightning_spread=4,
                                                    lightning_every=0.3))
-        self.assertGreaterEqual(time.time() - t, 0.55)
+        self.assertGreaterEqual(clock.time() - t, 0.55)                 # a wait between each
         for e in self.world.entities:
             self.assertLessEqual(math.hypot(e["pos"][0] - 0.5, e["pos"][2] - 0.5), 4.01)
 
