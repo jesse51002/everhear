@@ -1,6 +1,6 @@
-"""The PreToolUse hook on every tool. It denies with a reason the model can act on, one line
-saying what to send instead, so the next call runs; and otherwise returns {} so the allow rules
-(permission mode "dontAsk") decide."""
+"""The PreToolUse hook on every tool an implementer calls. It denies with a reason the model can act
+on, one line saying what to send instead, so the next call runs; and otherwise returns {} so the
+allow rules (permission mode "dontAsk", runner.rules) decide."""
 import json
 import os
 import re
@@ -9,10 +9,9 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from . import actions
-from . import brief as briefing  # guard.brief() is the log helper below
-from .config import log
+from .config import ROOT, log
 from .examples import server_state
-from .reply import REPLY_TOOL
+from .vfg import VfgRunner
 
 
 _COMMANDS = []
@@ -24,8 +23,8 @@ def refused() -> frozenset:
     package), on first use."""
     if not _COMMANDS:
         import importlib.util
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts", "_lib", "commands.py")
-        spec = importlib.util.spec_from_file_location("vfg_commands", os.path.normpath(path))
+        path = os.path.join(ROOT, "scripts", "_lib", "commands.py")
+        spec = importlib.util.spec_from_file_location("vfg_commands", path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         _COMMANDS.append(mod)
@@ -35,12 +34,8 @@ def refused() -> frozenset:
 # seeded games use the world border).
 SERVER_WIDE = frozenset(["setworldspawn", "defaultgamemode", "difficulty", "worldborder"])
 
-# The main thread orchestrates: these, and Bash for `vfg place list` or `vfg script list` alone.
-MAIN_THREAD_TOOLS = frozenset(["Agent", "TaskStop", "Read", "Glob", "Grep", REPLY_TOOL])
-
 
 class DENY:
-    main_thread = "You orchestrate: give this to an implementer."
     owner = "That is the server owner's to do; report it."
 
     @staticmethod
@@ -74,10 +69,6 @@ class DENY:
 
     library_flag = "--library is for coding sessions: leave it out, and vfg script new writes into this server's folder."
     expansion = "Write the server command literally inside single quotes: no $( ), backticks or variables in a vfg cmd."
-    agent_type = 'Use subagent_type "implementer": it is the only agent you have.'
-    foreground = ("Implementers run in the background: leave run_in_background out, end your turn, and you are "
-                  "woken when it reports.")
-    overrides = "Leave model, mode and isolation out: the implementer definition sets them."
     # An implementer's Bash: each says what to send instead, in one line.
     shape = ("Refused: that program does not run here. These do: vfg action|cmd|script|preset save|state|place|history ..., "
              "python3 -m py_compile <file>, sleep N, echo, and ls, grep, head, tail on files in the repository; "
@@ -134,7 +125,6 @@ class DENY:
     follow = "vfg script logs --follow never ends: use vfg script logs <copy> -n 40, and sleep between looks."
     outside = "Only the repository can be searched: give a path inside it, or none."
     read_outside = "Only files in the repository can be read."
-    no_agents = "There are no implementers: do the task yourself with Bash, Read, Write, Edit, Glob and Grep."
     background = "Run commands in the foreground: scripts already run detached on the server (vfg action run)."
 
 
@@ -164,33 +154,18 @@ VFG_USAGE = {
 
 @dataclass
 class GuardContext:
+    """One implementer's: the runner keeps it with the task, so a follow-up keeps what it made."""
     repo: str
-    max_implementers: int
-    implementer_model: str
-    # True for the runner: the main thread only orchestrates. False for the permission probe, whose
-    # main thread is the implementer, held to the implementer's rules.
-    main_thread_rule: bool
-    open_task_ids: Callable[[], list[str]]
-    # Implementers running plus those allowed and not yet started.
-    active_implementers: Callable[[], int]
-    # An Agent call was allowed: count it until its task_started arrives.
-    on_agent_allowed: Callable[[str, str], None]
     # VFG_SERVER: implementers write only in made/<server>/.
     server: str = "main"
-    # The task an implementer works on, by its agent id (the session's records), or None.
-    task_of: Callable[[str | None], str | None] = lambda agent_id: None
+    # The task the implementer works on.
+    task: str | None = None
     # The copies running now (running.json, else `vfg state --json`), each with its script and task,
     # or None when that cannot be told; no callable, no check (running_copies is the runner's).
     running: Callable[[], Awaitable[list[dict] | None]] | None = None
-    # By agent id ("" for the probe): the scripts in made/<server>/scripts/ that implementer made
-    # itself, or was let change once; its own to change while it works.
-    own: dict[str, set[str]] = field(default_factory=dict)
-
-
-def task_id_of(description) -> str | None:
-    """The task id at the head of an implementer's description ("T7 castle at spawn")."""
-    m = re.match(r"\s*(T\d+)\b", "" if description is None else str(description), re.ASCII)
-    return m.group(1) if m else None
+    # The scripts in made/<server>/scripts/ this implementer made itself, or was let change once;
+    # its own to change while it works.
+    own: set[str] = field(default_factory=set)
 
 
 def command_word_in(cmd: str, words_set: frozenset) -> str | None:
@@ -377,7 +352,7 @@ def split_shell(line: str) -> list[ShellCommand]:
 
 
 def allowed_form(words: list[str]) -> bool:
-    """One of the commands the allow rules let an implementer run (session.py `rules`)."""
+    """One of the commands the allow rules let an implementer run (runner.py `rules`)."""
     a, b, c = (words + [None, None, None])[:3]
     if a == "sleep":
         return len(words) >= 2
@@ -634,51 +609,11 @@ def check_bash(command: str, repo: str | None = None, server: str = "main") -> s
     return None
 
 
-# What the main thread may run: the saved places, and what runs (to keep work from colliding).
-MAIN_THREAD_COMMANDS = (["vfg", "place", "list"], ["vfg", "script", "list"])
-
-
-def place_list_only(inp: dict) -> bool:
-    """Is this Bash call exactly `vfg place list` or `vfg script list`, the commands the main thread may run?"""
-    cmds = split_shell(str(inp.get("command") or ""))
-    return (inp.get("run_in_background") is not True and len(cmds) == 1 and cmds[0].words in MAIN_THREAD_COMMANDS
-            and not cmds[0].expands and not cmds[0].redirects)
-
-
 def decide(call: dict, g: GuardContext) -> str | None:
     """The guard's decision for one tool call: a reason to deny it, or None to let the rules decide."""
     name = call.get("tool_name")
     inp = call.get("tool_input") or {}
-    main_thread = not call.get("agent_id")
-    if (main_thread and g.main_thread_rule and name not in MAIN_THREAD_TOOLS
-            and not (name == "Bash" and place_list_only(inp))):
-        return DENY.main_thread
-    # Bash and file rules as for an implementer: implementers themselves, and the permission probe
-    # (the main-thread rule off).
-    implementer = not main_thread or not g.main_thread_rule
-
-    if name in ("Agent", "Task"):
-        if implementer:
-            return DENY.no_agents  # an implementer (or the probe): nobody to brief
-        if inp.get("subagent_type") != "implementer":
-            return DENY.agent_type
-        tid = task_id_of(inp.get("description"))
-        open_ids = g.open_task_ids()
-        if not tid or tid not in open_ids:
-            if open_ids:
-                return ('Start the description with the id of an open task, like "%s castle at spawn". Open now: %s.'
-                        % (open_ids[0], ", ".join(open_ids)))
-            return "No task is open, so there is nothing to start an implementer for."
-        if inp.get("run_in_background") is False:
-            return DENY.foreground
-        if ((inp.get("mode") and inp.get("mode") != "dontAsk") or inp.get("isolation")
-                or (inp.get("model") and inp.get("model") != g.implementer_model)):
-            return DENY.overrides
-        if g.active_implementers() >= g.max_implementers:
-            return "%d implementers are running; wait for a report." % g.max_implementers
-        return None
-
-    if name == "Bash" and implementer:
+    if name == "Bash":
         if inp.get("run_in_background") is True:
             return DENY.background
         command = inp.get("command")
@@ -691,7 +626,7 @@ def decide(call: dict, g: GuardContext) -> str | None:
         return DENY.read_outside
 
     # An implementer writes in this server's folder and nowhere else: never in the library.
-    if name in ("Write", "Edit") and implementer and inp.get("file_path"):
+    if name in ("Write", "Edit") and inp.get("file_path"):
         path = str(inp["file_path"])
         if within(os.path.join(g.repo, "made", g.server), path, g.repo):
             return None
@@ -711,7 +646,7 @@ STATE_TIMEOUT_S = 5.0
 STATE_CACHE_S = 3.0
 
 
-def running_copies(home: str | None = None) -> Callable[[], Awaitable[list[dict] | None]]:
+def running_copies(home: str | None, run: VfgRunner) -> Callable[[], Awaitable[list[dict] | None]]:
     """GuardContext.running for the runner: the copies in `home`/running.json, which vfg writes
     through on every run, edit and stop; else those `vfg state --json` lists; None when neither
     can tell (the guard then lets the edit through)."""
@@ -723,7 +658,7 @@ def running_copies(home: str | None = None) -> Callable[[], Awaitable[list[dict]
             return [{**c, "instance": name, "copy": name} for name, c in copies.items()]
         if kept["instances"] is not None and time.monotonic() - kept["at"] < STATE_CACHE_S:
             return kept["instances"]
-        state, failed = await server_state(STATE_TIMEOUT_S)
+        state, failed = await server_state(STATE_TIMEOUT_S, run)
         if state is None:
             log("guard", "what runs is unknown, the edit goes through: %s" % failed)
             return None
@@ -768,7 +703,7 @@ def note_made(call: dict, g: GuardContext) -> None:
     for cmd in split_shell(command):
         name = new_script_name(cmd.words)
         if name and not os.path.exists(os.path.join(g.repo, "made", g.server, "scripts", name)):
-            g.own.setdefault(call.get("agent_id") or "", set()).add(name)
+            g.own.add(name)
 
 
 async def check_running(call: dict, g: GuardContext) -> str | None:
@@ -777,13 +712,10 @@ async def check_running(call: dict, g: GuardContext) -> str | None:
     if g.running is None or call.get("tool_name") not in ("Write", "Edit"):
         return None
     name = made_script(str((call.get("tool_input") or {}).get("file_path") or ""), g)
-    if name is None:
-        return None
-    mine = g.own.setdefault(call.get("agent_id") or "", set())
-    if name in mine:
+    if name is None or name in g.own:
         return None
     if not os.path.exists(os.path.join(g.repo, "made", g.server, "scripts", name)):
-        mine.add(name)  # a script being made: nothing runs it
+        g.own.add(name)  # a script being made: nothing runs it
         return None
     try:
         instances = await g.running()
@@ -792,11 +724,10 @@ async def check_running(call: dict, g: GuardContext) -> str | None:
         return None
     if instances is None:
         return None
-    task = g.task_of(call.get("agent_id"))
-    others = [i for i in instances if i.get("script") == name and (task is None or i.get("task") != task)]
+    others = [i for i in instances if i.get("script") == name and (g.task is None or i.get("task") != g.task)]
     if others:
         return DENY.running(name, others[0], g.server)
-    mine.add(name)
+    g.own.add(name)
     return None
 
 
@@ -805,56 +736,28 @@ HookCallback = Callable[[dict, str | None, Any], Awaitable[dict]]
 
 def make_guard(g: GuardContext) -> HookCallback:
     seen_effort: set[str] = set()
+    who = "implementer %s" % (g.task or "-")
 
     async def hook(inp: dict, tool_use_id: str | None, context: Any) -> dict:
         if inp.get("hook_event_name") != "PreToolUse":
             return {}
-        # The effort a turn actually runs at, after any downgrade for its model: logged once per agent.
+        # The effort a turn actually runs at, after any downgrade for its model: logged once.
         effort = inp.get("effort")
         level = effort.get("level") if isinstance(effort, dict) else None
-        agent_id = inp.get("agent_id")
-        who = "implementer %s" % agent_id[:8] if agent_id else "orchestrator"
-        if level and "%s %s" % (who, level) not in seen_effort:
-            seen_effort.add("%s %s" % (who, level))
+        if level and level not in seen_effort:
+            seen_effort.add(level)
             log("effort", "%s runs at %s" % (who, level))
-        call = {
-            "tool_name": inp.get("tool_name"),
-            "tool_input": inp.get("tool_input"),
-            "agent_id": agent_id,
-            "tool_use_id": inp.get("tool_use_id") if inp.get("tool_use_id") is not None else tool_use_id,
-        }
-        implementer = bool(agent_id) or not g.main_thread_rule
-        reason = decide(call, g) or (await check_running(call, g) if implementer else None)
+        call = {"tool_name": inp.get("tool_name"), "tool_input": inp.get("tool_input")}
+        reason = decide(call, g) or await check_running(call, g)
         if reason:
             log("guard", "denied %s %s: %s (%s)" % (who, call["tool_name"], reason, brief(call["tool_input"])))
             return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                            "permissionDecisionReason": reason}}
-        if implementer and call["tool_name"] == "Bash":
+        if call["tool_name"] == "Bash":
             note_made(call, g)
-        if call["tool_name"] in ("Agent", "Task"):
-            tool_input = call["tool_input"] or {}
-            g.on_agent_allowed(task_id_of(tool_input.get("description")), call["tool_use_id"] or "")
-            return await _rewritten(tool_input)
         return {}
 
     return hook
-
-
-async def _rewritten(tool_input: dict) -> dict:
-    """The brief as briefing.rewrite() makes it, as the call's updatedInput. With no permissionDecision
-    the CLI runs the call with the new input and the allow rules still decide; nothing here can
-    stop the call."""
-    prompt = tool_input.get("prompt")
-    if not isinstance(prompt, str):
-        return {}
-    try:
-        new = await briefing.rewrite(prompt, tool_input)
-    except Exception as e:
-        log("brief", "rewrite failed, the brief goes as it was: %s" % e)
-        return {}
-    if new == prompt:
-        return {}
-    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": {**tool_input, "prompt": new}}}
 
 
 def realish(p: str) -> str:
