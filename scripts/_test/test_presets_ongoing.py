@@ -126,7 +126,8 @@ class OngoingBossTests(OngoingCase):
         body[1]["health"] = 20.0
         self.assertTrue(until(lambda: ("phase", 1) in seen))      # 40 of 100 is
         self.assertTrue(until(lambda: ("ability", 1) in seen))
-        body[0]["health"] = body[1]["health"] = 0.0
+        with self.world.lock:                                    # both at once: no look sees one dead
+            body[0]["health"] = body[1]["health"] = 0.0
         th.join(8)
         self.assertEqual(out, [True])
         self.assertEqual(len(self.sent("summon item")), 1)        # the death check fired once
