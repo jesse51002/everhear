@@ -231,6 +231,7 @@ class ThemeMusicTests(ShowCase):
     def tearDown(self):
         for key in list(fx._tunes):
             fx.stop_melody(key)
+        time.sleep(0.1)                      # a note already on its way lands in this test's world
         ShowCase.tearDown(self)
 
     def sounds(self):
