@@ -129,19 +129,22 @@ python3 installer/tests/test_installer.py
 ```
 
 No network, no AWS, no SSH: a local web server stands in for S3, Fabric's meta server and
-Modrinth, and stand-in `aws`, `ssh`, `pgrep` and `uname` go first on `PATH`. The PowerShell
-cases need `pwsh` (PowerShell 7): the Linux tarball from PowerShell's GitHub releases, unpacked
-under `~/.local/opt/powershell-<version>/`, is found by itself; without it they are skipped.
+Modrinth, and stand-in `aws`, `ssh`, `pgrep`, `uname` and `sleep` go first on `PATH` (the
+PowerShell cases get a `Get-Process` and a `Start-Sleep` the same way), so no test waits on a
+clock. The cases run side by side, each with its own home folder; the whole suite takes about
+5 s. The PowerShell cases need `pwsh` (PowerShell 7): the Linux tarball from PowerShell's
+GitHub releases, unpacked under `~/.local/opt/powershell-<version>/`, is found by itself;
+without it they are skipped.
 
 Covered: publish (one bucket, made once and remembered, nothing public; one random prefix per
-publish; content types; 7-day presigning; the page linking the presigned installers; newest
-jar; a bad Fabric API checksum uploads nothing; the token never printed or logged); and for the
-bash installer (python3 and perl helpers, Linux, Flatpak, both Linux folders, macOS layout) and
-the PowerShell installer (as `irm | iex` and through the `.cmd` wrapper's own command line): a
-fresh install, both launcher-profile files, a config with a mic set, a broken config, a re-run
-next session (new address, token and jar; a player's servers, mic and profile tweaks kept), a
-re-run with the same link, a missing game folder, a running launcher, a tampered download, an
-expired link and a broken launcher list.
+publish; content types; 7-day presigning; the page linking the presigned installers; newest jar;
+a bad Fabric API checksum uploads nothing; the token never printed or logged); and for the bash
+installer (each case with python3 in the Linux layout and with perl in the macOS one; the
+Flatpak folder and both Linux folders) and the PowerShell installer (as `irm | iex` and through
+the `.cmd` wrapper's own command line): a fresh install, both launcher-profile files, a config
+with a mic set, a broken config, a re-run next session (new address, token and jar; a player's
+servers, mic and profile tweaks kept), a re-run with the same link, a missing game folder, a
+running launcher, a tampered download, an expired link and a broken launcher list.
 
 Not covered here: Windows PowerShell 5.1 itself (the script avoids everything 5.1 lacks, and
 `cmd.exe`'s own parsing of the wrapper), a real Mac, and real S3.
