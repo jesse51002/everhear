@@ -2,6 +2,13 @@
 """The replay, live: the run's tasks of 2026-10-08 sent again, one every 30 s, to the real runner,
 against a real 26.3 server on this PC with three players always online. The spec's last "Test".
 
+GONE WITH THE ORCHESTRATOR: it does not run on this branch. The brain (Prototype_Brain) replaced
+the conversation agent and the orchestrator this replay drives: `orchestrator/run`, `vfg orch
+send`, its inbox and its runner are gone. The live task replay needs rewriting for the brain: each
+task said as a LINE the brain answers, against realmc, with the implementers the brain starts and
+their reports. Until then the replay is lines.py and classes.py beside this file: the playtest's
+own lines through the brain's real calls, offline. What follows is this script as it was.
+
     python3 integration/replay/run.py [--every 30] [--only T1,T7 | --from T40] [--limit N]
                                       [--out DIR] [--cap 20] [--name replay] [--server replay]
     python3 integration/replay/measure.py DIR
