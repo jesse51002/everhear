@@ -26,8 +26,9 @@ apart each get a call at once.
 3.8 Flash, low) on the same context that keeps up the banter and replies, or hands the line up to
 the brain when it asks for something to happen or Respond is unsure. A hand-up replaces its reply,
 so a player never gets two. Respond never acts on the game. A `context` line, a game event, a
-system notice and the brain's own rows are context only. A line said more than two minutes before
-it arrives is history: never acted on.
+system notice and the brain's own rows are context only. A line already in the feed when the brain
+read its context, said more than two minutes before that, is history: never acted on. A line that
+arrives on the watch is live, whatever its time (the box's clock may be a minute off the PC's).
 
 ## The shared context and the cache
 

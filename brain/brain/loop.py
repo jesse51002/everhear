@@ -7,7 +7,10 @@ A row from `vfg watch` goes into the context; then, by what it is:
   up to the brain, which then runs it as an action_oriented one, with what Respond read;
 - anything else (context lines, game events, system notices, the brain's own AI rows): context
   only, for the next read.
-A LINE said more than HISTORY_S ago is history: it is context, marked processed, never acted on.
+A LINE already in the feed when the context was read (at or below its highest seq then, `start`)
+and said more than HISTORY_S before that is history: context, marked processed, never acted on. A
+LINE that arrives on the watch is live whatever its HH:MM:SS: a box clock a minute off the PC's
+would otherwise make every line history.
 
 Every live read takes in what no call has read yet, marks it processed (`vfg context mark`,
 nobody waiting) and pushes the batch timer back (timer.py). An implementer's report is a brain
@@ -108,7 +111,7 @@ class Brain:
     def route(self, row: Row) -> asyncio.Task | None:
         if self.stopping or row.type != "LINE" or row.cls not in LIVE or row.processed:
             return None
-        if row.at < iso(self.now() - timedelta(seconds=HISTORY_S)):
+        if row.seq <= self.start and row.at < iso(self.now() - timedelta(seconds=HISTORY_S)):
             row.processed = True
             self.later("context", "mark", str(row.seq))
             log("line", f"#{row.seq} {row.who} from {row.hms} is history, not acted on: {row.text[:120]!r}")

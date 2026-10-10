@@ -47,12 +47,16 @@ async def test_respond_replies_or_hands_up_never_both(kit):
     assert [c["output"] for c in k.ask.calls] == ["Response", "Decision"]
 
 
-async def test_history_is_context_and_never_acted_on(kit):
-    k = kit(Decision=GIVE)
-    k.brain.feed("LINE#9 18:20:00 Steve voice action_oriented 0.9 - | give me a diamond pickaxe")
+async def test_history_is_the_old_feed_at_the_start_and_a_line_on_the_watch_is_live_whatever_its_time(kit):
+    k = kit(rows("LINE#9 18:20:00 Steve voice action_oriented 0.9 - | give me a diamond pickaxe"), Decision=GIVE)
+    k.brain.start = 9
+    assert k.brain.catch_up()[0].seq == 9                 # ten minutes old as the brain starts: history
     await k.settle()
     assert k.ask.calls == [] and k.vfg.of("context", "mark") == [["context", "mark", "9"]]
-    assert not k.ctx.unprocessed() and k.ctx.last_seq == 9
+    # the box's clock 90 s ahead of the PC's: a line said now reads as yesterday's 18:31:30, and is live
+    k.brain.feed("LINE#10 18:31:30 Steve voice action_oriented 0.9 - | give me a diamond pickaxe")
+    await k.settle()
+    assert len(k.ask.calls) == 1 and "LINE #10" in k.ask.calls[0]["prompt"].split("THE EVENT")[1]
 
 
 async def test_two_lines_at_once_neither_waits_for_the_other(kit):
