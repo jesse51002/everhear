@@ -1,7 +1,10 @@
 # vfg toolkit
 
-The one command every agent on the owner's PC uses to reach the EC2 box. Python 3.9+,
-standard library only.
+The one command every agent on the owner's PC uses to reach the EC2 box. It runs under `uv`
+(its first lines say so, PEP 723) on Python 3.12 with pydantic, which the actions need; a
+command that does not load them starts as fast as before. Run as `python3 vfg` where pydantic
+is missing, it starts itself again under `uv`. On the box, every program runs on the box's
+Python 3.12, `/opt/vfg/python/bin/python3`.
 
 ## Install
 
@@ -12,8 +15,9 @@ toolkit/install.sh        # from the repo's root
 It links `~/.local/bin/vfg` to `toolkit/vfg`, makes `~/.vfg` (mode 700) and copies
 `config.example` to `~/.vfg/config` if there is none. Fill `VFG_OWNER`, `VFG_SSH_HOST`
 and `VFG_SSH_KEY` there, then run `vfg up`. `config.example` lists every setting the
-repo reads, with its default. Nothing is deployed to EC2: the programs in `remote/`
-travel with each call. `VFG_REPO` defaults to the repo `toolkit/` is in.
+repo reads, with its default. Nothing is deployed to EC2 for vfg itself: the programs in
+`remote/` travel with each call, with the libraries they use from `scripts/_lib/`
+(`instances.py`, `places.py`). `VFG_REPO` defaults to the repo `toolkit/` is in.
 
 ## One example per command
 
@@ -23,7 +27,7 @@ vfg watch                                      # the feed from the cursor, then 
 vfg watch --tail 20                            # for a person at a terminal
 vfg say 'on it — castle at spawn'              # tellraw @a with the aqua [AI] prefix, stored as an ai line
 vfg say 'your base is ready' --to Steve        # a whisper, stored as "(to Steve) …"
-vfg cmd 'tp @a ~ ~10 ~'                        # one RCON command; single-quote ~ and JSON
+vfg cmd 'tp @a ~ ~10 ~'                        # the command action, one command; single-quote ~ and JSON
 vfg history --since -10m --player Steve        # lines; also --class, --source, --until, --limit
 vfg history --events --since -30m              # game events
 vfg history --feed --limit 20                  # the feed's stored lines
@@ -38,27 +42,29 @@ vfg orch hand '[{"id": "T7", "at": "…", "task": "build a castle", "context": "
 vfg orch reply T7 done 'castle built at spawn'
 vfg orch stop                                  # the dispatcher first (it hands on what it holds), then the runner
 vfg feed post SYS '' 'smoke'                   # low level; prints the seq
-vfg script new galick_ice --from galick_gun --preset replace_blocks   # into made/<VFG_SERVER>/scripts/
+vfg action run railgun player=Steve --task T5  # one JSON line; the copy is "railgun"
+vfg action run railgun player=Alex cooldown=0 --task T6   # a second copy, "railgun_2"
+vfg action run railgun player=Alex as=alex_gun # a copy named as given (refused while one runs)
+vfg action run edit copy=railgun_2 cooldown=5  # what vfg script set runs
+vfg action list                                # every action, ours and the server's: name — its line; --json
+vfg action check tnt_crouch                    # what is wrong with it, or ok
+vfg script new galick_ice --from galick_gun --preset replace_blocks   # the script and its action, made/<VFG_SERVER>/
 vfg script check                               # everything; or: vfg script check galick_ice crater
 vfg script deploy                              # or: vfg script deploy castle
-vfg script run spirit_bomb player=Steve        # values checked here first; deploys it and _lib first
-vfg script run galick_gun player=Alex cooldown=0 as=galick-alex --task T5   # a second instance
-vfg script run hello --wait                    # waits up to 30 s for it to end; --wait 10 or --wait=10
-vfg script run zeus player=Steve               # every script takes key=value, checked against its VALUES
-vfg script set galick-alex cooldown=0          # live: read again within 0.5 s; any other value restarts it
-vfg script save galick-alex galick_no_cooldown # its values now as the defaults, into made/<VFG_SERVER>/
-vfg script logs galick-alex -n 40              # --follow only under Monitor or by a person
-vfg script list                                # every instance, its script, task and changed values
-vfg script stop galick-alex
+vfg script set railgun_2 cooldown=0            # the edit action: live in 0.5 s, any other value restarts it
+vfg script stop railgun_2                      # the stop action: everything it made goes
+vfg script list                                # the running copies, from ~/.vfg/running.json; --json, --fresh
+vfg script logs railgun_2 -n 40                # --follow only under Monitor or by a person
+vfg script save railgun_2 rail_no_cooldown     # a script with VALUES: its values now as the defaults
 vfg preset save galick_ice ice_path ice_trail  # a function lifted out into made/<VFG_SERVER>/presets/
+vfg made save                                  # made/<VFG_SERVER>/ into $VFG_MADE_ARCHIVE/<today>/
+vfg made restore 2026-10-09                    # and back
 vfg state                                      # who is online and where, time, weather, what runs; --json
 vfg route --task T7 < brief.txt                # the examples and presets for that brief, picked by Jev; JSON
 vfg prefix                                     # the implementer's static system prompt, the same bytes each time
-vfg action run command --args '{"commands": ["time set day"]}' --task T7   # one JSON line {ok, summary, …}
-vfg action run teleport --args '{"player": "Steve", "to": "place", "target": "castle"}' --task T7 --timeout 40
 vfg action refs --version                      # the server's version, from server.jar: 26.3
 vfg action refs                                # {"version", "commands"}: the data generator's command tree
-vfg place save castle --player Steve --by T7   # saved castle at 197 68 251 in overworld
+vfg place save castle --player Steve --by T7   # the save_place action: saved castle at 197 68 251 in overworld
 vfg place save home --at -368 70 912           # --dim the_nether or the_end; overworld by default
 vfg place list                                 # castle 197 68 251 overworld (T7), one per line, or none; --json, --fresh
 vfg place forget castle                        # forgot castle; exit 1 if there was none
@@ -80,55 +86,71 @@ gives the orchestrator with `vfg orch hand`: every line in one write to
 task. `vfg orch start`, `stop` and `status` run both processes: the dispatcher's log is
 `dispatcher.log` beside its inbox, and `stop` waits for it before stopping the runner.
 
-`vfg action run <name>` runs `actions/<name>/handler.py` on EC2 through
-`remote/action.py`, as a module with `remote/places.py` beside it and
-`/opt/vfg/scripts/_lib` (`vfg script deploy`) on its path; `command` has no handler
-and runs its commands over RCON, each checked as `vfg cmd` checks one. It prints one
-JSON line, `{"ok": …, "summary": …}` and the action's facts, and exits 0 whenever the
-action ran, even when `ok` is false; it exits 124 when `--timeout` (30 s) runs out,
-and otherwise as above. `vfg action refs` runs the server jar's data generator in a
+`vfg action run <action> key=value … [as=<copy>] [--task T7]` loads the actions
+(`lib/py/vfg_actions.py`, the one loader), checks the values against the action's class (an
+unknown or fixed key, or a value its field refuses, exits 2; a number out of range is clamped
+and a note says so; a saved place against the places cache, fetched again only when a place
+check fails on a stale one), then makes one SSH call: `_lib` and the action's script deployed,
+a copy started, waited for. It prints ONE JSON line, `{"ok", "copy", "action", "running",
+"summary", "facts", "notes", "error"?}`, whatever happens, and exits 0 when ok. A once action
+is waited for up to its `timeout_s`, else `VFG_DISPATCH_ACTION_TIMEOUT_S` (20 s), and answers
+with its script's `result()`; past it, `"running": true` and "still running as <copy>": it is
+never run again. An until-stopped action answers with its first `result()`, or "running as
+<copy>" after a 2 s check. A script that exits non-zero is `"ok": false`, its error its last
+words. `vfg cmd`, `vfg script set`, `vfg script stop` and `vfg place save` are shortcuts for
+the `command`, `edit`, `stop` and `save_place` actions and print their summaries. `vfg action refs` runs the server jar's data generator in a
 temp folder under `/tmp` on EC2 (about 10 s; 300 s at most) and prints its
 `commands.json`, about 190 KB, with the version. `vfg place` keeps places in
-Minecraft's command storage `everhear:places`, through the same `remote/places.py`.
+Minecraft's command storage `everhear:places`, through `scripts/_lib/places.py`.
 `vfg place list` answers from a cache, `$VFG_HOME/places.json` (mode 600), while it is
 younger than `VFG_PLACES_TTL_S` (30 s), else asks the server and rewrites it; `--fresh`
 always asks. `vfg place save` and `forget` write their entry through as the server confirms
 it, keeping the cache's age. When the server cannot be asked and a cache exists, however
 old, `list` prints it, warns `saved places from <age> s ago: <why>` and exits 0.
 
-## Scripts, values and instances
+## Actions, copies and the scripts
 
 `lib/library.py` reads the library (`scripts/<name>/main.py`, `scripts/_presets/<name>.py`)
-and this server's folder (`made/<VFG_SERVER>/scripts/` and `presets/`, gitignored) on the PC;
-the router reads them through it too. A name is a script in one place only: `new`, `save`
-and `preset save` refuse one that is taken in either.
+and this server's folder (`made/<VFG_SERVER>/scripts/`, `presets/` and `actions/`, gitignored)
+on the PC; the router reads them through it too. A name is a script in one place only: `new`,
+`save` and `preset save` refuse one that is taken in either, and `new` one an action has.
 
-- **Values are checked on the PC before anything is sent**: an unknown key, a bad enum or
-  a word that is not `key=value` exits 2; a number out of range is clamped and the output
-  says so. A script written the old way (a `README.md` beside it and no `VALUES`) is
-  handed its words as they are.
-- **An instance** is one run: the script's name, or `as=<instance>`, each with its own tag
-  `vfg_<instance>`. On the box, `/opt/vfg/run/<instance>.json` says what was started
-  (script, source, the command's values, task, started) and `<instance>.values.json` holds
-  what `set` changed while it runs; `kit.values` reads it again every `VFG_LIVE_POLL_S`.
-- **`set`** writes values marked `live` into that file; any other value stops the instance
-  and starts it again with its other values and the file kept. **`save`** writes the
-  command's values and the live ones as the new script's defaults.
+- **A copy** is one run of an action, named on the box under `run/copies.lock`: `as=` when
+  given, else the action's name, else the next free `<action>_2`, `_3` …. Its files in
+  `/opt/vfg/run/`: `<copy>.pid`, `<copy>.log`, `<copy>.json` (its action, script, every value
+  as checked, the Live fields, runs, task, started), `<copy>.values.json` (live edits, read
+  again by the kit every `VFG_LIVE_POLL_S`) and `<copy>.result.json` (what `result()` wrote
+  last). Everything it makes carries the tag `vfg_<copy>`, which a stop and its own end
+  remove. `scripts/_lib/instances.py` starts, stops and edits copies, for vfg and for the
+  `stop` and `edit` scripts.
+- **An edit** is checked here against the copy's own action and its values in
+  `running.json`; the `edit` script gets the full new set, what changed and whether every
+  change is live. Live: written to the copy's live file. Otherwise: the copy restarts under
+  its name with every other value kept.
+- **`~/.vfg/running.json`**, `{"fetched_at", "copies": {copy: {"action", "script", "values",
+  "live", "task", "started", "runs"}}}`, written atomically under `running.lock`: every run,
+  edit and stop through vfg writes it through; `vfg script list --fresh` (and `vfg state`)
+  fetch it from the box, which drops a copy that ended by itself, keeping one written through
+  after the fetch began. `vfg script list` reads it, fetching only when it never was.
+- **`new`** writes the script ported to its action (no `VALUES`; `v = values()`) and
+  `made/<VFG_SERVER>/actions/<name>.py`: a class inheriting the values class of every preset
+  the script holds that has one (`preset("name")`), with a field for every other value, from
+  the source script's action (descriptions, takes, runs, defaults, fixed) or its `VALUES`. Its
+  line on the menu, and any description it could not carry, are TODOs for the implementer.
 - **`check`** exits 1 with one line per problem: `VALUES` not a literal, a default outside
-  its limits, an unknown type, a value name twice, `v["key"]` read but not declared, a
-  preset's value or helper without its name in front, a preset's value that starts with
-  another preset's name (the two in one script would ask for one value), no first-line
-  docstring, no `ASKS`, an import from `_presets` or of what the box lacks, syntax Python 3.9
-  cannot read. An old-style library script (a `README.md`, no `VALUES`) is checked for its
-  README's first line and its imports only.
-- **`set`** on an instance this PC started is one SSH call: `run` keeps what it started in
-  `~/.vfg/instances.json`, and the box checks the instance still runs that script before it
-  changes anything; otherwise it asks the box first, a second call.
+  its limits, an unknown type, a value name twice, `v["key"]` read but not declared (in a
+  ported script, not a field of its actions), a preset's value or helper without its name in
+  front, a preset's value that starts with another preset's name, no first-line docstring,
+  no `ASKS`, an import from `_presets` or of what the box lacks; and for each action over a
+  script, its TODOs, an action the loader left out, a made script no action runs. An
+  old-style library script (a `README.md`, no `VALUES`) is checked for its README's first
+  line and its imports only.
 - **`state`** is one SSH call: `list`, each player's `Pos` and `Dimension`, `time query day`
   (26.3's day timeline) and `time query time` (the clock, for the day number), and the
   weather from an inline predicate, `{"type":"minecraft:weather_check","raining":true}`,
   which follows `weather …` within a few seconds, as the rain players see fades in. Then
-  every running instance and who it touches (its `player` values).
+  every running copy (`"instances"` in `--json`, each with its `copy` and `action`), the
+  values that differ from its action's and who it touches (its Player and Players values).
 
 ## The router and the implementer's prompt
 
@@ -146,8 +168,11 @@ and `preset save` refuse one that is taken in either.
   jev --ref T7`, in the background.
 - **`vfg prefix`** prints the part of an implementer's system prompt that never changes
   between spawns, so the provider reads it from the cache: `scripts/README.md`, the kit in
-  full (`_lib/mc.py`, every file in `_lib/kit/`), then the first line and `VALUES` of every
-  library preset and example script, by name. Nothing from `made/`, no date, no count.
+  full (`_lib/mc.py`, every file in `_lib/kit/`), then every library preset and example
+  script by name: a preset's first line and values (its values class as written, else its
+  `VALUES`), a script's first line only, since the brief has every action in full. Nothing
+  from `made/`, no date, no count. `vfg route` gives a script card the fields of the actions
+  over it.
 - **`--cache-read N` and `--cache-write N`** on `vfg usage add` are the input tokens read from
   and written to the prompt cache, in two columns of `usage` that the bridge adds on start;
   until it has, the row goes in without them and one line on stderr says so.
@@ -155,17 +180,18 @@ and `preset save` refuse one that is taken in either.
 ## Tests
 
 ```sh
-python3 -m unittest discover -s toolkit/tests
-uv run --python 3.9 --no-project python -m unittest discover -s toolkit/tests
+python3 -m unittest discover -s toolkit/tests      # vfg itself starts again under uv
 ```
 
 No EC2 and no network: `tests/fake_ssh` runs the remote command locally,
 `fake_rcon.py` speaks RCON on localhost, `fake_vfg_feed.py` stands in for the
 bridge's writer (and `TestRealFeedWriter` uses `../bridge/vfg_feed.py` when it is
-there), and `tests/bin/` holds fake `systemctl`, `sudo` and `journalctl`. The place
-tests, and a run of the real `teleport` handler, answer RCON with
+there), and `tests/bin/` holds fake `systemctl`, `sudo` and `journalctl`; the fake box's
+Python is the one running the tests. `test_copies.py` runs actions as copies on the real
+kit, with the stand-in `command`, `edit`, `stop` and `save_place` actions and scripts of
+`tests/standins.py` and a few of its own. The place tests answer RCON with
 `../scripts/_test/fake_places_world.py`, a small world speaking Minecraft 26.3's recorded
-replies; a fake `java` stands in for the data generator. The script tests use a stand-in
+replies; a fake `java` stands in for the data generator. The library tests use a stand-in
 kit with `values()` only; `TestRealLibrary` reads the repo's own examples and presets,
 when there are any, and copies every preset into every example. Two environment knobs
 exist for the tests only: `VFG_WATCH_SILENCE_S` (35) and `VFG_WATCH_UNREACHABLE_S` (60).
