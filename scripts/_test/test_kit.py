@@ -132,6 +132,24 @@ def looked(world, *words, times=2, seconds=5.0, also=()):
     return until(lambda: all(n >= w for n, w in zip(counts(), want)), seconds)
 
 
+class Clock(object):
+    """A clock for the modules a test gives it (in place of their `time`): the real one, `rate`
+    times as fast, plus whatever advance() skipped. A test skips what the code times with
+    time.time() (a timer, a window, a cooldown) instead of sleeping through it."""
+
+    def __init__(self, rate=1.0):
+        self.rate, self.t0, self.skipped = float(rate), time.time(), 0.0
+
+    def time(self):
+        return self.t0 + (time.time() - self.t0) * self.rate + self.skipped
+
+    def sleep(self, s):
+        time.sleep(max(0.0, s) / self.rate)
+
+    def advance(self, s):
+        self.skipped += s
+
+
 class KitCase(unittest.TestCase):
     """mc talks to a fake whose world is self.world, made new for each test."""
 
@@ -177,6 +195,14 @@ class KitCase(unittest.TestCase):
 
     def looked(self, *words, times=2, seconds=5.0, also=()):
         return looked(self.world, *words, times=times, seconds=seconds, also=also)
+
+    def clock(self, *modules, rate=1.0):
+        """A Clock in place of these modules' `time` (a preset's, the kit's), for this test."""
+        c = Clock(rate)
+        for m in modules:
+            self.addCleanup(setattr, m, "time", m.time)
+            m.time = c
+        return c
 
 
 RUNNING = []
