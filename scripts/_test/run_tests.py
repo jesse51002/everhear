@@ -279,7 +279,7 @@ def usage_args(line):
     return ["Steve" for _ in re.findall(r"<[^>]*>", rest)]
 
 
-def run_script(name):
+def run_seed(name):
     folder = os.path.join(SCRIPTS, name)
     res = {"name": name}
     with open(os.path.join(folder, "README.md"), encoding="utf-8") as f:
@@ -489,7 +489,7 @@ class ScriptTests(unittest.TestCase):
         for name in script_names():
             def go(n=name):
                 try:
-                    RESULTS[n] = run_example(n) if is_example(n) else run_script(n)
+                    RESULTS[n] = run_example(n) if is_example(n) else run_seed(n)
                 except Exception as e:  # reported by the test itself
                     RESULTS[n] = {"name": n, "error": repr(e)}
             t = threading.Thread(target=go)
