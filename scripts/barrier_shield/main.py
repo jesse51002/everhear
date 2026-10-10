@@ -1,21 +1,11 @@
 """Barrier Shield: a bubble of light round a player, or round a place, that throws back every mob that comes inside it."""
 ASKS = ["make a barrier around me", "a barrier that pushes things away", "like an infinity barrier",
         "give my sniper nest a barrier that protects it from all harm"]
-from kit import values, aim, exclude, fx, loop, world
+from kit import values, result, aim, exclude, fx, loop, world
 import math
 import re
 import mc
 import random
-
-VALUES = {
-    "player":        {"type": "player", "default": "@a", "live": True},
-    "at":            {"type": "list", "of": "number", "default": [], "live": True},
-    "around_radius": {"type": "number", "min": 1, "max": 128, "default": 5, "live": True},
-    "around_what":   {"type": "enum", "of": ["mobs", "hostile", "players", "everything", "projectiles"], "default": "mobs", "live": True},
-    "around_most":   {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
-    "push_way":      {"type": "enum", "of": ["away", "toward", "up"], "default": "away", "live": True},
-    "push_strength": {"type": "number", "min": 0.5, "max": 40, "default": 4, "live": True},
-}
 
 
 # --- preset: around (copied from _presets/around.py) ---
@@ -157,10 +147,29 @@ def ring(c, r, turn):
         fx.particle("soul_fire_flame", c.moved(0.5 * r * math.cos(a), 4.5, 0.5 * r * math.sin(a)))
 
 
-v = values(VALUES)
+v = values()
+# Round each player the player value names, or round one place: at, a saved place, x y z or a
+# player (where they stand as it starts), found again whenever an edit changes it. A player's
+# own bubble never throws them.
+where = str(v["at"])
+spot = world.place(where) if where else None
+what = {"hostile": "hostile mobs", "everything": "mobs and players"}.get(v["around_what"], v["around_what"])
+if where and spot is None:
+    result("no barrier: %s is not a saved place nor a player online" % where, at=where)
+    raise SystemExit(0)
+if not where:
+    whom = v["player"]
+elif re.match(r"^-?\d", where):                                 # x y z
+    whom = "%d %d %d" % spot.block()
+else:                                                           # a saved place, or a player
+    whom = "%s (%d %d %d)" % ((where,) + spot.block())
+result("barrier round %s: it throws back %s within %g blocks" % (whom, what, v["around_radius"]),
+       player=v["player"], at=where or None, radius=v["around_radius"])
 for n in loop(every=0.2):
-    # Round each player the player value names, or round one place (x y z, in the overworld).
-    centres = [world.Pos(v["at"][0], v["at"][1], v["at"][2])] if len(v["at"]) >= 3 else loop.who(v["player"])
+    if v["at"] != where:
+        where = str(v["at"])
+        spot = world.place(where) if where else None
+    centres = ([spot] if spot is not None else []) if where else loop.who(v["player"])
     for c in centres:
         push(around(c, v), c, v)                # a player's own bubble never throws them
         if n % 3 == 0:

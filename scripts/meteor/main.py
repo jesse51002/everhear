@@ -217,8 +217,8 @@ while any(t.is_alive() for t in falls) and loop.wait(0.2):
     pass
 mc.log("done: %d meteor(s)" % len(falls))
 if landed:
-    result("%d meteor%s fell on %s, size %g: %s" % (len(landed), "" if len(landed) == 1 else "s", ", ".join(who),
-                                                     v["meteor_size"], "; ".join(landed)),
+    result("%d meteor%s fell on %s, size %g%s" % (len(landed), "" if len(landed) == 1 else "s", ", ".join(who),
+                                                   v["meteor_size"], ": " + "; ".join(landed) if len(landed) <= 3 else ""),
            players=who, meteors=len(landed), at=landed)
 else:
     result("no meteor fell: %s" % ("no open sky over %s" % ", ".join(who) if who else
