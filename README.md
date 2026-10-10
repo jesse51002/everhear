@@ -25,7 +25,7 @@ flowchart TB
       Bridge -->|"GAME"| Feed
     end
     subgraph Game["the game"]
-      Run["scripts · action handlers"]
+      Run["running copies<br/>scripts · kit"]
       MC["Minecraft server"]
       Places["🗄️ saved places<br/>everhear:places"]
       Run -->|"RCON · one lock"| MC
@@ -54,13 +54,13 @@ flowchart TB
       Library -.->|"vfg script new"| Made
     end
     subgraph Home["~/.vfg"]
-      Cache["places cache"]
+      Cache["places · running copies · actions"]
       Refs["command references"]
     end
     Agents -->|"every call to the box"| Vfg
     Agents -.->|"load actions · the library · write made/"| Repo
     Agents -->|"dispatcher refs"| Home
-    Vfg -->|"vfg place"| Home
+    Vfg -->|"writes through"| Home
   end
 
   TypeSafe["TypeSafe"]
@@ -106,14 +106,16 @@ flowchart TB
   events.
 - The **conversation** is a Claude Code session on the owner's PC that follows the feed over SSH
   (`vfg watch`). It answers in chat at once, stays quiet, or sends the work on with `vfg orch send`.
-- The **dispatcher** gets every task first. It does simple asks at once as **actions** (items,
-  effects, teleports, saved places), choosing them with a fast OpenRouter model, and hands the rest
-  to the **orchestrator** with `vfg orch hand`.
+- The **dispatcher** gets every task first. It does at once what an **action** does (an item, an
+  effect, a teleport, a saved place, a castle, a weapon: one action over each script, and every one
+  implementers make), changes or stops a running copy, choosing with a fast OpenRouter model, and
+  hands the rest to the **orchestrator** with `vfg orch hand`.
 - The **orchestrator** briefs **implementers** (subagents) for every task it is handed, and runs
   no command itself. Each brief goes out with the scripts and presets Jev picks for the job
-  (`vfg route`), whole, and the server's state. Implementers act through RCON: they run a script
-  from the library, change its values while it runs, or copy presets into a new script with
-  `vfg script new` in `made/<server>/`. The library in `scripts/` is read-only during play.
+  (`vfg route`), whole, every action, and the server's state. Implementers act through actions
+  (`vfg action run`): they run one, change a running copy's values, or copy presets into a new
+  script and its action with `vfg script new` in `made/<server>/`. The library in `scripts/` and
+  `actions/` is read-only during play.
 - Both report as `ORCH` lines in the feed, and the conversation tells the player.
 - **Saved places** live in the world itself, in the command storage `everhear:places`. Every agent reads and
   saves them with `vfg place`, which keeps a 30-second copy in `~/.vfg/places.json`.
@@ -134,11 +136,11 @@ What each part takes in and puts out is in [docs/CONTRACTS.md](docs/CONTRACTS.md
 | [`toolkit/`](toolkit/README.md) | `vfg`, and [`config.example`](toolkit/config.example), every setting with its default |
 | [`conversation/`](conversation/README.md) | the Claude Code session: [`CLAUDE.md`](conversation/CLAUDE.md) is its whole brief, `start` runs it |
 | [`dispatcher/`](dispatcher/README.md) | every task's first stop: does simple asks at once as actions, in seconds, and hands the rest to the orchestrator |
-| [`actions/`](actions/README.md) | what the dispatcher can run on the server: one pydantic class per folder, a handler where commands cannot do the job |
+| [`actions/`](actions/README.md) | what anything can run on the server: one pydantic class per file, naming the script it runs and the values it takes; no code |
 | [`orchestrator/`](orchestrator/README.md) | the Agent SDK runner, its [prompts](orchestrator/prompts/) and its guard |
-| [`scripts/`](scripts/README.md) | the script library: the kit every script imports, presets copied into scripts, and example scripts implementers run or copy |
+| [`scripts/`](scripts/README.md) | the script library: the kit every script imports, presets copied into scripts, and the scripts the actions run, which implementers copy |
 | `made/` | what implementers make during play, one folder per server (`VFG_SERVER`); gitignored |
-| [`lib/py/`](lib/py/vfg_llm.py) | `structured()`: the one OpenRouter call every part makes for a validated pydantic answer |
+| [`lib/py/`](lib/py/vfg_llm.py) | `structured()`, the one OpenRouter call every part makes for a validated pydantic answer; [`vfg_actions`](lib/py/vfg_actions.py), the one loader of the actions |
 | [`integration/`](integration/README.md) | the bridge, Jev filter and toolkit run together on one PC, no EC2; [`realmc/`](integration/realmc/README.md) runs real 26.3 servers with fake players, [`replay/`](integration/replay/README.md) replays a playtest's tasks |
 
 ## Requirements
@@ -149,7 +151,7 @@ What each part takes in and puts out is in [docs/CONTRACTS.md](docs/CONTRACTS.md
 - A TypeSafe API key, for Jev.
 - An [OpenRouter](https://openrouter.ai) API key, for the dispatcher.
 - Minecraft Java 26.3 with Fabric, for every player (the installer sets Fabric up).
-- Python 3.9 or newer, bash, ssh, rsync and curl on the owner's PC.
+- bash, ssh, rsync and curl on the owner's PC; `uv` runs everything there on Python 3.12, as on the box.
 - JDK 25 to build the mod (Gradle downloads one if there is none).
 
 ## Quick start
@@ -230,7 +232,8 @@ Rough guidance from list prices; check the current ones for your region and plan
   [`orchestrator/orchestrator/session.py`](orchestrator/orchestrator/session.py)) refuse:
   - `stop`, `op`, `deop`, `ban`, `ban-ip`, `pardon`, `pardon-ip`, `whitelist`, `kick` and `save-off`
     in any `vfg cmd`, as the first word or after any `run`, however the command is chained.
-    Those are the owner's to type, and `scripts/_lib/mc.py` refuses the same words in every script.
+    Those are the owner's to type: one list, in `scripts/_lib/commands.py`, which `mc.py` (every
+    script), `vfg`, the dispatcher and the guard all refuse.
   - for implementers, server-wide settings: `setworldspawn`, `defaultgamemode`, `difficulty` and
     `worldborder`;
   - for the orchestrator itself, every command but `vfg script list` and `vfg place list`: it
@@ -239,7 +242,7 @@ Rough guidance from list prices; check the current ones for your region and plan
     and `ls`, `grep`, `head` and `tail` on files in the repo; `vfg` may be piped into `head`,
     `tail` or `grep`; no `$( )`, backtick, variable, loop or redirection into a file;
   - reading or searching outside the repo; writing anywhere but `made/<server>/`, so the library
-    never changes during play; and editing a made script another task's instance is running.
+    never changes during play; and editing a made script a copy started by another task is running.
 - **The box:** RCON answers on loopback only, SSH only from the owner's IP; the game (25565) and the
   bridge (8787) are open. The client token in the installer only lets someone post speech lines.
 

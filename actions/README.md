@@ -31,7 +31,7 @@ class Railgun(Action, preset("damage_hits")):
 - **`script`**: the folder under `scripts/` (a made action: `made/<server>/scripts/` or `scripts/`). **`runs`**: `"once"` for a script that ends by itself, whose `result()` is the answer (a castle, a meteor), or `"until_stopped"` (a weapon, a rain, a rule). **`timeout_s`**: for a once action slower than `VFG_DISPATCH_ACTION_TIMEOUT_S`.
 - **`takes`**: the fields the planner fills, usually two to six, the target first. Every other field keeps its default, and an edit can still change it.
 - **The presets the script copied** (its `# --- preset: <name>` lines) are inherited, `preset("<name>")` each, so a preset's value is written once, in `scripts/_presets/<name>.py`'s `class <CamelName>(Values)`. **`defaults`** gives an inherited field this action's own default (`damage_amount` is 20 in the preset, 30 here); the fields the action declares are the script's own values.
-- **A field per value the script reads**, named as the script reads it: a type from `_types.py`, the default, limits as `Field(ge=, le=)`, and the string under it as its description, in players' words. **`Live[T]`** for a value the script reads again while it runs (its VALUES said `"live": True`): an edit to it lands within half a second; an edit to any other restarts the copy.
+- **A field per value the script reads**, named as the script reads it: a type from `_types.py`, the default, limits as `Field(ge=, le=)`, and the string under it as its description, in players' words. **`Live[T]`** for a value the script reads again while it runs: an edit to it lands within half a second; an edit to any other restarts the copy.
 - **`fixed`**: values this action sets, which nobody fills; a run that gives one is refused, an edit may still change it.
 
 ## A variant
@@ -73,7 +73,7 @@ class GatlingGun(Railgun):
 
 ## A preset's values
 
-Beside the preset's function in `scripts/_presets/<name>.py`, with a description under every field, written from what the function does; it keeps its `VALUES` until the kit's `values()` reads the checked values instead:
+Beside the preset's function in `scripts/_presets/<name>.py`, the one definition of its values, with a description under every field, written from what the function does:
 
 ```python
 from actions._types import Field, Literal, Live, Player, Values  # the values class: read on the PC only
@@ -84,7 +84,7 @@ class DamageHits(Values):
     """damage to each thing hit, in half-hearts (a player has 20); does nothing while damage_kill is on"""
 ```
 
-`preset()` runs only that class (and the file's imports from `actions`, `pydantic` and `typing`), never the rest of the file, which imports `mc` and the kit; `vfg script new --preset` copies the function and never the class.
+`preset()` runs only that class (and the file's imports from `actions`, `pydantic` and `typing`), never the rest of the file, which imports `mc` and the kit; `vfg script new --preset` copies the function and never the class, and `vfg preset save` writes one for a function it lifts out of a made script.
 
 ## Check and test
 
@@ -92,11 +92,11 @@ class DamageHits(Values):
 
 ```sh
 uv run --no-project --with pytest --with pydantic pytest actions/tests
-cd lib/py && uv run pytest
+cd lib/py && uv run --group dev python -m pytest
 ```
 
-[`tests/test_values_parity.py`](tests/test_values_parity.py) holds every action over a library script to the values the script took before it was ported (`tests/fixtures/values_before.json`, from each script's `VALUES`): the same names, defaults (after `defaults`, before `fixed`), limits, kinds and live-ness. A script with no action yet is skipped and named in one log line; so is a preset with no values class (`preset_values_before.json`). A field the spec adds to a script (horde_boss's `at`) goes in its `ADDED`.
+[`tests/test_values_parity.py`](tests/test_values_parity.py) is the record of the port: it holds every action over a library script, and every preset's class, to the values the file took before (`tests/fixtures/values_before.json` and `preset_values_before.json`, read from each file's literal values dict before they were removed): the same names, defaults (after `defaults`, before `fixed`), limits, kinds and live-ness. A field the spec adds to a script (horde_boss's `at`) goes in its `ADDED`.
 
 ## The core actions
 
-`command`, `teleport`, `summon_around` and `save_place` are the dispatcher's first actions, each now a class over a script of its own name; `stop` and `edit` end and change a running copy, by its name (`CopyName`): `edit`'s `values` are the values to change, checked against the copy's own action. `run_script` and `stop_script` are gone: a script runs only through an action. Their tests: [`tests/test_core_actions.py`](tests/test_core_actions.py).
+`command`, `teleport`, `summon_around` and `save_place` are the dispatcher's first actions, each a class over a script of its own name; `stop` and `edit` end and change a running copy, by its name (`CopyName`): `edit`'s `values` are the values to change, checked against the copy's own action. A script runs only through an action. Their tests: [`tests/test_core_actions.py`](tests/test_core_actions.py).

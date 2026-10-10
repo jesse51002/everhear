@@ -12,7 +12,7 @@ world, ports and stand-in, so builders testing at the same time never share one.
 integration/realmc/up                    # the server "main"; prepares everything on first use
 eval "$(integration/realmc/env)"         # this shell's vfg (and `import mc`) now reach it
 vfg cmd 'time query day'                 # → Timeline minecraft:day is at 6000 tick(s)
-vfg script run tnt_rain                  # deployed to its stand-in, run there on Python 3.12
+vfg action run tnt_rain                  # its script deployed to the stand-in, run there on Python 3.12
 integration/realmc/down                  # stops its scripts (their cleanup runs), then the server
 ```
 
