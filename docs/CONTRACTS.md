@@ -14,7 +14,9 @@ _The contract the parts were built to (draft, 2026-10-07; the dispatcher, §14, 
 
 Every timestamp is ISO-8601 UTC with milliseconds (`2026-10-07T18:22:31.412Z`). Every id is a ULID unless stated.
 
-**The units** start the server jar in `/opt/mc` (`minecraft`), `/usr/bin/python3 -m vfg_bridge` (`vfg-bridge`) and `/usr/bin/python3 -u /opt/vfg/jev/jev_filter.py` (`vfg-jev`).
+**The units** start the server jar in `/opt/mc` (`minecraft`), `/opt/vfg/python/bin/python3 -m vfg_bridge` (`vfg-bridge`) and `/opt/vfg/python/bin/python3 -u /opt/vfg/jev/jev_filter.py` (`vfg-jev`).
+
+**Python on the box** is 3.12, the PC's version: uv, installed into `/opt/vfg/uv/` as a step of the box's setup (`deploy.sh provision` runs `bridge/deploy/python.sh`), installs CPython 3.12 there, and `/opt/vfg/python` links to it. `/opt/vfg/python/bin/python3` runs the units, the scripts and every `vfg` remote program; Amazon Linux's own `python3` (3.9) is left to the host's tools.
 
 **The code** is one repo, a folder per part: `client-mod/`, `bridge/`, `jev/`, `toolkit/`, `dispatcher/`, `actions/`, `lib/py/` (`structured()`, every model call that wants a structure back), `orchestrator/`, `conversation/`, `scripts/`. What runs on EC2 is deployed to `/opt/vfg/`, except an action's handler, which `vfg action run` sends with each call.
 

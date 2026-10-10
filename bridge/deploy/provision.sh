@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# provision.sh [--restore] [--accept-eula] -- on the vfg-mc box, as root: the host and Minecraft.
+# provision.sh [--restore] [--accept-eula] -- on the vfg-mc box, as root: the host, Python 3.12
+# for vfg (python.sh) and Minecraft.
 #
 # Idempotent: run again, it changes nothing that is already right. deploy.sh provision copies it
-# beside minecraft.service, rcon.py and env.example in /tmp/vfg-provision/ and runs it with sudo.
+# beside python.sh, minecraft.service, rcon.py and env.example in /tmp/vfg-provision/ and runs it
+# with sudo.
 # With --restore, and only when /opt/mc/world does not exist, it extracts /tmp/mc-backup.tgz
 # (and /tmp/vfg-backup.tgz if it was sent) into /opt. It never prints the RCON password.
 # --accept-eula writes eula=true for a server that has no eula.txt yet: deploy.sh passes it when
@@ -30,7 +32,7 @@ for arg in "$@"; do
   esac
 done
 [[ $(id -u) -eq 0 ]] || die "run it as root (deploy.sh provision does)"
-for f in minecraft.service rcon.py env.example; do
+for f in python.sh minecraft.service rcon.py env.example; do
   [[ -f $HERE/$f ]] || die "$f is missing beside provision.sh"
 done
 
@@ -53,7 +55,10 @@ timedatectl set-timezone UTC
 install -d -o "$OWNER" -g "$OWNER" -m 755 "$MC" "$VFG" \
   "$VFG/lib" "$VFG/bridge" "$VFG/jev" "$VFG/scripts" "$VFG/run" "$VFG/state"
 
-# 3. Restore, never over an existing world.
+# 3. Python 3.12 in /opt/vfg, by uv: what the scripts, vfg's remote programs and the units run on.
+bash "$HERE/python.sh" "$VFG"
+
+# 4. Restore, never over an existing world.
 if (( RESTORE )); then
   if [[ -e $MC/world ]]; then
     log "restore: $MC/world exists; leaving it alone"
@@ -70,7 +75,7 @@ if (( RESTORE )); then
   fi
 fi
 
-# 4. The server jar: Mojang's, checked against its sha1. It unpacks libraries/ and versions/ itself.
+# 5. The server jar: Mojang's, checked against its sha1. It unpacks libraries/ and versions/ itself.
 if [[ ! -f $MC/server.jar ]]; then
   log "downloading the $MC_VERSION server jar"
   python3 - "$MANIFEST" "$MC_VERSION" "$MC/server.jar" <<'PY'
@@ -97,14 +102,14 @@ PY
   chown "$OWNER:$OWNER" "$MC/server.jar"
 fi
 
-# 5. The EULA: kept from a restored world, or written when the owner accepted it (VFG_ACCEPT_EULA).
+# 6. The EULA: kept from a restored world, or written when the owner accepted it (VFG_ACCEPT_EULA).
 if [[ ! -f $MC/eula.txt ]]; then
   (( ACCEPT_EULA )) || die "Minecraft's EULA (https://aka.ms/MinecraftEULA) is not accepted: read it, then set VFG_ACCEPT_EULA=true in ~/.vfg/config and run deploy.sh provision again"
   echo "eula=true" > "$MC/eula.txt"
   chown "$OWNER:$OWNER" "$MC/eula.txt"
 fi
 
-# 6. server.properties: our keys replaced or added, every other line alone; the password kept or made.
+# 7. server.properties: our keys replaced or added, every other line alone; the password kept or made.
 props_result=$(python3 - "$MC/server.properties" <<'PY'
 import os, secrets, sys
 
@@ -154,7 +159,7 @@ chmod 600 "$MC/server.properties"
 log "server.properties: $props_result"
 [[ $props_result == changed ]] && RESTART_MC=1
 
-# 7. rcon.py (reads the password from the server.properties beside it), and console.log.
+# 8. rcon.py (reads the password from the server.properties beside it), and console.log.
 if [[ ! -f $MC/rcon.py ]]; then
   install -m 644 -o "$OWNER" -g "$OWNER" "$HERE/rcon.py" "$MC/rcon.py"
 fi
@@ -163,7 +168,7 @@ if [[ ! -f $MC/console.log ]]; then
 fi
 chown "$OWNER:$OWNER" "$MC/console.log"
 
-# 8. /opt/vfg/.env, from env.example: names, no values.
+# 9. /opt/vfg/.env, from env.example: names, no values.
 if [[ ! -f $VFG/.env ]]; then
   install -m 600 -o "$OWNER" -g "$OWNER" "$HERE/env.example" "$VFG/.env"
 fi
@@ -174,7 +179,7 @@ if [[ -n ${empty// /} ]]; then
   log "fill in $VFG/.env: ${empty% }"
 fi
 
-# 9. RCON stays local: vanilla binds it on every interface.
+# 10. RCON stays local: vanilla binds it on every interface.
 install -d -m 755 /etc/nftables
 nft_new=$(mktemp)
 cat > "$nft_new" <<'NFT'
@@ -200,7 +205,7 @@ systemctl enable --now nftables
 nft -f /etc/nftables/vfg.nft
 nft list table inet vfg > /dev/null || die "the nftables rule did not load"
 
-# 10. The heap: memory in whole GiB (rounded up: an m7i.xlarge reports a little under 16) minus 4.
+# 11. The heap: memory in whole GiB (rounded up: an m7i.xlarge reports a little under 16) minus 4.
 mem_kib=$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)
 heap=$(( (mem_kib + 1048575) / 1048576 - 4 ))
 (( heap >= 2 )) || heap=2
@@ -213,7 +218,7 @@ if install_if_changed "$heap_new" /etc/systemd/system/minecraft.service.d/heap.c
 fi
 rm -f "$heap_new"
 
-# 11. The unit.
+# 12. The unit.
 if install_if_changed "$HERE/minecraft.service" /etc/systemd/system/minecraft.service 644; then
   log "installed minecraft.service"
   RESTART_MC=1
@@ -235,7 +240,7 @@ else
   STARTED=1
 fi
 
-# 12. Once RCON is up, stop admin commands being echoed into the console. The world keeps the rule.
+# 13. Once RCON is up, stop admin commands being echoed into the console. The world keeps the rule.
 if (( STARTED )); then
   log "waiting up to 5 minutes for RCON"
   ready=0
