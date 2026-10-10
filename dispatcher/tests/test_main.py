@@ -14,7 +14,7 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from conftest import CATALOG, FakeLLM, FakeRefs, FakeVfg, cmd, fail, ok, planned, select, tp
+from conftest import FakeLLM, FakeRefs, FakeVfg, catalog, cmd, fail, ok, planned, select, tp
 from dispatcher.__main__ import serve
 from dispatcher.config import Config, now_iso
 
@@ -57,7 +57,7 @@ async def test_crash_recovery_hands_in_flight_tasks_with_what_was_done_and_a_wai
     }))
     vfg, stop = FakeVfg(), asyncio.Event()
     t0 = time.monotonic()
-    running = asyncio.create_task(serve(cfg, stop, vfg=vfg, ask=FakeLLM(), catalog=CATALOG, refs=FakeRefs(),
+    running = asyncio.create_task(serve(cfg, stop, vfg=vfg, ask=FakeLLM(), catalog=catalog(), refs=FakeRefs(),
                                         poll_s=0.01))
     await until(lambda: vfg.hands() and len(vfg.replies()) == 2)
     assert time.monotonic() - t0 < 1
@@ -103,14 +103,14 @@ async def test_sigterm_lets_a_running_action_finish_then_hands_everything_unfini
 
     async def teleport(argv):
         started["n"] += 1
-        if "Steve" in argv[4]:
+        if "player=Steve" in argv:
             await asyncio.sleep(60)  # longer than the grace: cancelled
         await asyncio.sleep(0.2)     # shorter: finishes
         return ok("teleported Alex to a village at 1 70 2")
 
     vfg = FakeVfg().on("action", "run", "teleport", answer=teleport)
     stop = asyncio.Event()
-    running = asyncio.create_task(serve(cfg, stop, vfg=vfg, ask=llm, catalog=CATALOG, refs=FakeRefs(), poll_s=0.01))
+    running = asyncio.create_task(serve(cfg, stop, vfg=vfg, ask=llm, catalog=catalog(), refs=FakeRefs(), poll_s=0.01))
     await until(lambda: started["n"] == 2)
     stop.set()  # what SIGTERM does
     assert await asyncio.wait_for(running, 5) == 0
@@ -139,7 +139,7 @@ async def test_a_stop_while_vfg_orch_hand_fails_keeps_the_batch_for_the_next_sta
     vfg = FakeVfg().on("orch", "hand", answer=fail(1, "locked"))
     llm = FakeLLM(Selection=[select(orchestrator="build a castle")])
     stop = asyncio.Event()
-    running = asyncio.create_task(serve(cfg, stop, vfg=vfg, ask=llm, catalog=CATALOG, refs=FakeRefs(), poll_s=0.01))
+    running = asyncio.create_task(serve(cfg, stop, vfg=vfg, ask=llm, catalog=catalog(), refs=FakeRefs(), poll_s=0.01))
     await until(lambda: vfg.replies())
     stop.set()
     assert await asyncio.wait_for(running, 5) == 0
@@ -157,7 +157,7 @@ async def test_a_task_that_waited_too_long_is_failed_as_expired_and_never_run(tm
                          + task_line("T2", "build a castle"))
     llm = FakeLLM(Selection=[select(orchestrator="build a castle")])  # one answer: T2's alone
     vfg, stop = FakeVfg(), asyncio.Event()
-    running = asyncio.create_task(serve(cfg, stop, vfg=vfg, ask=llm, catalog=CATALOG, refs=FakeRefs(), poll_s=0.01))
+    running = asyncio.create_task(serve(cfg, stop, vfg=vfg, ask=llm, catalog=catalog(), refs=FakeRefs(), poll_s=0.01))
     await until(lambda: vfg.hands() and len(vfg.replies()) == 2)
     stop.set()
     assert await running == 0
@@ -196,14 +196,14 @@ async def test_tasks_run_while_the_refs_load_with_command_handed_on_until_they_a
     leave_village = asyncio.Event()
 
     async def teleport(argv):
-        if argv[-3] == "T3":  # the task that is running when the refs arrive
+        if argv[-1] == "T3":  # the task that is running when the refs arrive
             in_village.set()
             await leave_village.wait()
         return ok("teleported Alex to a village at 1 70 2")
 
     vfg = FakeVfg().on("action", "run", "teleport", answer=teleport)
     stop = asyncio.Event()
-    running = asyncio.create_task(serve(cfg, stop, vfg=vfg, ask=llm, catalog=CATALOG, poll_s=0.01))
+    running = asyncio.create_task(serve(cfg, stop, vfg=vfg, ask=llm, catalog=catalog(), poll_s=0.01))
 
     def send(*lines):
         with open(cfg.inbox, "a") as f:
@@ -249,7 +249,7 @@ async def test_a_failed_refs_load_is_retried_in_the_background_until_command_com
     llm = FakeLLM(Selection=[select(("command", "give Alex bread"))],
                   Planned_command=[planned(cmd("give Alex minecraft:bread"), say="bread")] * 2)
     stop = asyncio.Event()
-    running = asyncio.create_task(serve(cfg, stop, vfg=vfg, ask=llm, catalog=CATALOG, poll_s=0.01,
+    running = asyncio.create_task(serve(cfg, stop, vfg=vfg, ask=llm, catalog=catalog(), poll_s=0.01,
                                         refs_retry_s=0.05))
     refs_calls = lambda: [a for a in vfg.calls if a[:2] == ["action", "refs"]]  # noqa: E731
     await until(lambda: len(refs_calls()) == 3)
@@ -293,7 +293,7 @@ async def test_a_hung_model_call_is_cut_at_the_model_timeout_and_handed_on(tmp_p
     async with httpx.AsyncClient(transport=httpx.MockTransport(openrouter)) as http:
         monkeypatch.setattr(vfg_llm, "client", http)
         t0 = time.monotonic()
-        running = asyncio.create_task(serve(cfg, stop, vfg=vfg, catalog=CATALOG, refs=FakeRefs(), poll_s=0.01))
+        running = asyncio.create_task(serve(cfg, stop, vfg=vfg, catalog=catalog(), refs=FakeRefs(), poll_s=0.01))
         await until(lambda: vfg.hands(), timeout=5)
         took = time.monotonic() - t0
         stop.set()
@@ -303,6 +303,42 @@ async def test_a_hung_model_call_is_cut_at_the_model_timeout_and_handed_on(tmp_p
     assert line["task"] == "take me to a village"
     assert "the action planner failed: no answer from" in line["context"] and "within 0.5 s" in line["context"]
     assert vfg.actions() == []
+
+
+async def test_the_background_fetch_drops_a_copy_that_ended_from_the_next_asks_menu(tmp_path):
+    from dispatcher.vfg import VfgResult
+
+    cfg = config(tmp_path, window_s=0.01, running_ttl_s=0.05)
+    cfg.dispatch_dir.mkdir(parents=True)
+    cfg.home.mkdir(parents=True, exist_ok=True)
+
+    def copies(**c):
+        cfg.running_file.write_text(json.dumps({"fetched_at": time.time(), "copies": c}))
+
+    gun = {"action": "railgun", "task": "T3", "values": {"player": "Steve"}}
+    copies(galick_gun=gun, rain={"action": "zap", "task": "T4", "values": {}})
+    fetched = asyncio.Event()
+
+    def fresh(argv):  # what vfg does: EC2 says rain ended by itself
+        assert argv == ["script", "list", "--json", "--fresh"]
+        copies(galick_gun=gun)
+        fetched.set()
+        return VfgResult(0, "{}\n", "")
+
+    vfg = FakeVfg().on("script", "list", answer=fresh)
+    llm = FakeLLM(Selection=[select()])
+    stop = asyncio.Event()
+    running = asyncio.create_task(serve(cfg, stop, vfg=vfg, ask=llm, catalog=catalog(), refs=FakeRefs(),
+                                        poll_s=0.01))
+    await until(fetched.is_set)
+    with open(cfg.inbox, "a") as f:
+        f.write(task_line("T5", "stop the rain"))
+    await until(lambda: vfg.hands())
+    await until(lambda: len([a for a in vfg.calls if a[:2] == ["script", "list"]]) >= 2)  # every VFG_RUNNING_TTL_S
+    stop.set()
+    assert await running == 0
+    prompt = llm.prompts("Selection")[0]
+    assert "- galick_gun: railgun, player=Steve, started by T3" in prompt and "- rain:" not in prompt
 
 
 # ---------------------------------------------------------------- the real process

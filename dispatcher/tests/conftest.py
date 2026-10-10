@@ -1,32 +1,81 @@
 """Fakes for every test: no model, no network, no real vfg, no real ~/.vfg.
 
+- REPO_COPY: the repo's actions/ (the real _types.py, the six core actions, railgun and
+  gatling_gun, its presets) beside a stub main.py for every script, so the catalog loads them
+  whether or not their scripts are written yet. catalog() loads it, with a made/<server>/
+  folder of its own for each call, so a test may add made actions.
 - FakeLLM stands in for structured(): scripted answers per output class name
   ("Selection", "Planned_command", "Final_teleport", …), validated against the class as
   structured() does, with one repair from the next answer when the first does not validate.
-- FakeVfg stands in for the vfg runner: it records every argv and answers by prefix.
-- FakeRefs stands in for refs.Refs (§8).
-- Test-local action classes, shaped like actions/_types.py's.
+- FakeVfg stands in for the vfg runner: it records every argv and answers by prefix;
+  `vfg action run` answers with its one JSON line (Contracts §8).
+- FakeRefs stands in for refs.Refs.
 """
 
 from __future__ import annotations
 
 import asyncio
+import atexit
+import itertools
 import json
+import shutil
+import tempfile
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Any
 
 import pytest
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import ValidationError
 
 from vfg_llm import Answer, LlmError
 
+from dispatcher.actions import Catalog
 from dispatcher.batch import Batch
-from dispatcher.config import Config
+from dispatcher.config import REPO, Config
 from dispatcher.inbox import State, new_task
 from dispatcher.reply import Reply
 from dispatcher.task import Dispatcher
 from dispatcher.vfg import VfgResult
+
+CORE = ("command", "teleport", "summon_around", "save_place", "stop", "edit")
+
+
+def _repo_copy() -> Path:
+    root = Path(tempfile.mkdtemp(prefix="vfg-dispatcher-repo-"))
+    atexit.register(shutil.rmtree, root, True)
+    (root / "actions").mkdir()
+    (root / "actions" / "__init__.py").write_text("")
+    (root / "actions" / "_types.py").symlink_to(REPO / "actions" / "_types.py")
+    for p in (REPO / "actions").glob("*.py"):
+        if not p.name.startswith("_"):
+            shutil.copy(p, root / "actions")
+    (root / "scripts").mkdir()
+    (root / "scripts" / "_presets").symlink_to(REPO / "scripts" / "_presets")
+    for name in {*CORE, *(p.name for p in (REPO / "scripts").iterdir() if not p.name.startswith((".", "_")))}:
+        (root / "scripts" / name).mkdir(exist_ok=True)
+        (root / "scripts" / name / "main.py").write_text('"""a stub"""\n')
+    return root
+
+
+REPO_COPY = _repo_copy()
+_servers = itertools.count(1)
+
+
+def catalog() -> Catalog:
+    """The library's actions, and a made/<server>/ of its own (empty until a test writes one)."""
+    return Catalog(REPO_COPY, "test%d" % next(_servers))
+
+
+def made(cat: Catalog, name: str, source: str) -> Path:
+    """Write made/<server>/actions/<name>.py for this catalog's server (and its script's stub)."""
+    path = REPO_COPY / "made" / cat.server / "actions" / (name + ".py")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(textwrap.dedent(source).lstrip("\n"))
+    script = REPO_COPY / "made" / cat.server / "scripts" / name / "main.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text('"""a stub"""\n')
+    return path
 
 
 @pytest.fixture(autouse=True)
@@ -36,64 +85,12 @@ def _no_real_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     for key in ("VFG_DISPATCH_DIR", "VFG_ORCH_DIR", "VFG_REPO", "OPEN_ROUTER_API", "VFG_OPENROUTER_KEY",
                 "VFG_DISPATCH_MODEL", "VFG_DISPATCH_RETRIES", "VFG_DISPATCH_WINDOW_S",
-                "VFG_DISPATCH_ACTION_TIMEOUT_S"):
+                "VFG_DISPATCH_ACTION_TIMEOUT_S", "VFG_SERVER", "VFG_RUNNING_TTL_S"):
         monkeypatch.delenv(key, raising=False)
 
 
-# ------------------------------------------------------------------ actions
-
 BLOCKS = {"setblock", "fill", "clone", "place", "fillbiome"}
 OWNER = {"stop", "op", "deop", "ban", "whitelist", "kick"}
-
-
-class Action(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    def vfg_argv(self, task: str) -> list[str]:
-        args = json.dumps(self.model_dump(mode="json", exclude={"action"}))
-        return ["action", "run", self.action, "--args", args, "--task", task]
-
-
-class Command(Action):
-    """Run vanilla commands, in order: anything that takes effect at once — items, effects, time, weather. Never places or removes blocks.
-
-    Up to five commands, run in the order written."""
-    action: Literal["command"]
-    commands: list[str] = Field(min_length=1, max_length=5, description="the commands, in the order they run")
-
-    @field_validator("commands")
-    @classmethod
-    def _no_blocks(cls, value: list[str]) -> list[str]:
-        for c in value:
-            words = c.lstrip("/").split()
-            heads = [words[0]] + [words[i + 1] for i, w in enumerate(words[:-1]) if w == "run"]
-            if BLOCKS & set(heads):
-                raise ValueError(f"{c!r} places or removes blocks; building is the orchestrator's")
-        return [c.lstrip("/") for c in value]
-
-
-class Teleport(Action):
-    """Move a player, or everyone, to a biome, a structure, a saved place or coordinates, landing on safe ground.
-
-    To another player it is one tp, which command does."""
-    action: Literal["teleport"]
-    player: str = Field(pattern=r"^([A-Za-z0-9_]{1,16}|@a)$", description="who moves")
-    to: Literal["biome", "structure", "place", "coords"] = Field(description="what kind of target")
-    target: str = Field("", description="a biome or structure id, a saved place's name, or 'x z'")
-    timeout_s: ClassVar[int] = 40
-
-
-class RunScript(Action):
-    """Start one of the scripts in scripts/, by name, with its arguments."""
-    action: Literal["run_script"]
-    name: Literal["zeus", "tnt_rain"] = Field(description="the script")
-    args: list[str] = Field(default_factory=list, description="its arguments")
-
-    def vfg_argv(self, task: str) -> list[str]:
-        return ["script", "run", self.name, *self.args]
-
-
-CATALOG = {"command": Command, "teleport": Teleport, "run_script": RunScript}
 
 
 # ------------------------------------------------------------------ the model
@@ -112,6 +109,7 @@ class FakeLLM:
     def __init__(self, **script: list[Any]):
         self.script = {k: list(v) for k, v in script.items()}
         self.calls: list[Call] = []
+        self.outputs: list[type] = []
 
     def add(self, name: str, *answers: Any) -> FakeLLM:
         self.script.setdefault(name, []).extend(answers)
@@ -137,6 +135,7 @@ class FakeLLM:
         await asyncio.sleep(0)  # a real call yields to the loop
         name = output.__name__
         self.calls.append(Call(name, prompt, system))
+        self.outputs.append(output)
         answer = await self._next(name, prompt)
         try:
             value = output.model_validate(answer)
@@ -151,12 +150,22 @@ class FakeLLM:
 
 # ------------------------------------------------------------------ vfg
 
-def ok(summary: str = "done", **facts) -> VfgResult:
-    return VfgResult(0, json.dumps({"ok": True, "summary": summary, **facts}) + "\n", "")
+def line(ok: bool, summary: str, *, copy: str = "", action: str = "", running: bool = False, notes=(),
+         error: str | None = None, **facts) -> str:
+    """vfg action run's one JSON line."""
+    out = {"ok": ok, "copy": copy, "action": action, "running": running, "summary": summary, "facts": facts,
+           "notes": list(notes)}
+    if error is not None:
+        out["error"] = error
+    return json.dumps(out) + "\n"
 
 
-def bad(summary: str, **facts) -> VfgResult:
-    return VfgResult(0, json.dumps({"ok": False, "summary": summary, **facts}) + "\n", "")
+def ok(summary: str = "done", **kw) -> VfgResult:
+    return VfgResult(0, line(True, summary, **kw), "")
+
+
+def bad(summary: str, code: int = 1, **kw) -> VfgResult:
+    return VfgResult(code, line(False, summary, **kw), "")
 
 
 def fail(code: int = 1, stderr: str = "ssh: connect to host failed") -> VfgResult:
@@ -170,6 +179,7 @@ class FakeVfg:
 
     def __init__(self):
         self.calls: list[list[str]] = []
+        self.timeouts: list[float] = []  # each call's, in the order of calls
         self.rules: list[tuple[tuple[str, ...], Any]] = []
         self.events: list[tuple[str, list[str]]] = []  # ("start"|"end", argv)
 
@@ -180,6 +190,7 @@ class FakeVfg:
     async def __call__(self, *args: str, timeout: float = 30) -> VfgResult:
         argv = list(args)
         self.calls.append(argv)
+        self.timeouts.append(timeout)
         self.events.append(("start", argv))
         await asyncio.sleep(0)
         try:
@@ -204,7 +215,7 @@ class FakeVfg:
         if argv[:2] == ["orch", "reply"]:
             return VfgResult(0, "17\n", "")
         if argv[:2] == ["action", "run"]:
-            return ok()
+            return ok(copy=argv[2], action=argv[2])
         return VfgResult(0, "", "")
 
     def replies(self, task: str | None = None) -> list[tuple[str, str, str]]:
@@ -215,7 +226,16 @@ class FakeVfg:
         return [json.loads(a[2]) for a in self.calls if a[:2] == ["orch", "hand"]]
 
     def actions(self) -> list[list[str]]:
-        return [a for a in self.calls if a[:2] in (["action", "run"], ["script", "run"], ["place", "save"])]
+        return [a for a in self.calls if a[:2] == ["action", "run"]]
+
+
+def args_of(argv: list[str]) -> dict[str, Any]:
+    """`vfg action run <name> k=v … --task T1`'s values: a list or a dict read back from JSON."""
+    out: dict[str, Any] = {}
+    for a in argv[3:argv.index("--task")]:
+        key, _, value = a.partition("=")
+        out[key] = json.loads(value) if value[:1] in ("[", "{") else value
+    return out
 
 
 # ------------------------------------------------------------------ refs
@@ -277,11 +297,13 @@ class FakeRefs:
 # ------------------------------------------------------------------ the harness
 
 class Harness:
-    def __init__(self, tmp: Path, *, catalog=None, refs="fake", retries: int = 1, window_s: float = 0.05):
+    def __init__(self, tmp: Path, *, cat: Catalog | None = None, refs="fake", retries: int = 1,
+                 window_s: float = 0.05):
         self.tmp = tmp
+        self.catalog = catalog() if cat is None else cat
         self.cfg = Config(home=tmp / "vfg-home", dispatch_dir=tmp / "dispatch", orch_dir=tmp / "orch",
-                          repo=tmp / "repo", retries=retries, window_s=window_s, action_timeout_s=20,
-                          stop_grace_s=0.5)
+                          repo=REPO_COPY, server=self.catalog.server, retries=retries, window_s=window_s,
+                          action_timeout_s=20, stop_grace_s=0.5)
         self.cfg.dispatch_dir.mkdir(parents=True, exist_ok=True)
         self.llm = FakeLLM()
         self.vfg = FakeVfg()
@@ -289,15 +311,17 @@ class Harness:
         self.state = State(self.cfg.state_file)
         self.reply = Reply(self.state, self.vfg, retry_s=(0.01,))
         self.batch = Batch(self.state, self.vfg, window_s, retry_s=(0.01,))
-        self.d = Dispatcher(self.cfg, catalog=CATALOG if catalog is None else catalog, refs=self.refs,
-                            vfg=self.vfg, ask=self.llm, state=self.state, reply=self.reply, batch=self.batch,
-                            scripts={"zeus": "Zeus: every trident a player throws calls lightning where it lands.\n"
-                                             "  player (player, default @a)\n  strikes (int, default 1, 1..10)",
-                                     "tnt_rain": "Drops TNT round players.\n  Usage: tnt_rain [every_s=20]\n"
-                                                 "  Ends: when stopped"},
-                            hidden=frozenset(BLOCKS | OWNER))
+        self.d = Dispatcher(self.cfg, catalog=self.catalog, refs=self.refs, vfg=self.vfg, ask=self.llm,
+                            state=self.state, reply=self.reply, batch=self.batch, hidden=frozenset(BLOCKS | OWNER))
         self.batch.on_refused = self.d.refused
         self.n = 0
+
+    def running(self, **copies: dict) -> None:
+        """Write running.json as vfg keeps it: {copy: {"action", "values", "task", …}}."""
+        self.cfg.home.mkdir(parents=True, exist_ok=True)
+        full = {name: {"script": info.get("action"), "live": [], "started": 1760000000, "runs": "until_stopped",
+                       **info} for name, info in copies.items()}
+        self.cfg.running_file.write_text(json.dumps({"fetched_at": 1760000000, "copies": full}))
 
     def submit(self, task: str, context: str = "") -> str:
         self.n += 1
@@ -341,8 +365,8 @@ def planned(action: dict | None = None, *, say: str = "", hand_on: str = "", dro
 
 
 def cmd(*commands: str) -> dict:
-    return {"action": "command", "commands": list(commands)}
+    return {"commands": list(commands)}
 
 
 def tp(player: str, to: str, target: str = "") -> dict:
-    return {"action": "teleport", "player": player, "to": to, "target": target}
+    return {"player": player, "to": to, "target": target}

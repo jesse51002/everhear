@@ -1,10 +1,13 @@
 """python -m dispatcher: the lock, the signals, and one asyncio task per new task.
 
-Start: take the lock; hand on whatever a crash left mid-run and a batch left waiting, and
-send the answers left unsent; follow the inbox at once, failing as expired any task that
-waited more than VFG_ORCH_STALE_MINUTES; and load the command references in the background
+Start: take the lock; load the actions (library and VFG_SERVER's made ones), which each task
+reloads where a file changed; hand on whatever a crash left mid-run and a batch left waiting,
+and send the answers left unsent; follow the inbox at once, failing as expired any task that
+waited more than VFG_ORCH_STALE_MINUTES; fetch the running copies again every
+VFG_RUNNING_TTL_S in the background; and load the command references in the background
 (about 95 s the first time on a server version), trying again every 5 minutes if that fails.
-Until they are in, `command` picks are handed on and every other action works.
+Until they are in, picks of an action with a Command field are handed on and every other
+action works.
 Stop (SIGTERM or SIGINT): read no new task, let a running action finish for up to 10 s,
 hand everything unfinished, save, exit 0.
 """
@@ -25,6 +28,7 @@ import vfg_llm
 
 from . import actions, config
 from .batch import Batch
+from .running import Refresher
 from .config import Config, log
 from .inbox import Inbox, State
 from .reply import Reply
@@ -42,10 +46,15 @@ REFS_RETRY_S = 300    # a failed load of the references is tried again this ofte
 
 
 class _LogLines(logging.Handler):
-    """structured()'s own warnings (a repaired answer, a retried call) as log lines: `<time> llm <message>`."""
+    """structured()'s own warnings (a repaired answer, a retried call) as log lines, `<time> llm
+    <message>`, and vfg_actions' (an action left out), `<time> actions <message>`."""
+
+    def __init__(self, area: str):
+        super().__init__()
+        self.area = area
 
     def emit(self, record: logging.LogRecord) -> None:
-        log("llm", record.getMessage())
+        log(self.area, record.getMessage())
 
 
 async def ask(prompt, output, *, system=None, model, providers=None, timeout: float = 10):
@@ -101,12 +110,12 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, ask=None, cata
     reply = Reply(state, vfg)
     batch = Batch(state, vfg, cfg.window_s)
 
-    catalog = actions.load(cfg.repo) if catalog is None else catalog
+    catalog = actions.load(cfg.repo, cfg.server) if catalog is None else catalog
     ask = asker(cfg) if ask is None else ask
     d = Dispatcher(cfg, catalog=catalog, refs=None if refs is LOAD else refs, vfg=vfg, ask=ask, state=state,
-                   reply=reply, batch=batch, scripts=actions.scripts(cfg.repo),
-                   hidden=actions.hidden_commands(cfg.repo))
+                   reply=reply, batch=batch, hidden=actions.hidden_commands())
     batch.on_refused = d.refused
+    copies = Refresher(vfg, cfg.running_ttl_s)
 
     # What the last run left needs no references: it goes first, so a slow first fetch of
     # the references never holds it back.
@@ -115,6 +124,7 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, ask=None, cata
         d.recover()
     reply.start()
     batch.start()
+    copies.start()
 
     # The first fetch for a server version takes about 95 s: tasks are read meanwhile, and
     # every action but `command` works.
@@ -125,7 +135,8 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, ask=None, cata
     inbox = Inbox(cfg.inbox, state, stale_minutes=cfg.stale_minutes, on_expired=d.expired)
     log("start", f"pid {os.getpid()}; {cfg.inbox} from byte {state.offset}; model {cfg.model}; "
                  f"window {cfg.window_s:g} s; retries {cfg.retries}; action timeout {cfg.action_timeout_s:g} s; "
-                 f"stale after {cfg.stale_minutes} min")
+                 f"stale after {cfg.stale_minutes} min; server {cfg.server}; running copies every "
+                 f"{cfg.running_ttl_s:g} s")
     while not stop.is_set():
         try:
             for line in inbox.poll():
@@ -138,6 +149,7 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, ask=None, cata
     log("stop", "stopping: no new task is read")
     if loading and not loading.done():
         loading.cancel()
+    await copies.stop()
     await d.stop(cfg.stop_grace_s)
     handed = await batch.flush(HAND_ON_STOP_S)
     sent = await reply.drain(SEND_ON_STOP_S)
@@ -172,9 +184,10 @@ async def _main(cfg: Config) -> int:
 
 
 def main() -> int:
-    llm_log = logging.getLogger(vfg_llm.__name__)
-    llm_log.addHandler(_LogLines())
-    llm_log.propagate = False
+    for name, area in ((vfg_llm.__name__, "llm"), ("vfg_actions", "actions")):
+        logger = logging.getLogger(name)
+        logger.addHandler(_LogLines(area))
+        logger.propagate = False
     cfg = config.load()
     cfg.dispatch_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd = os.open(cfg.lock_file, os.O_RDWR | os.O_CREAT, 0o600)
