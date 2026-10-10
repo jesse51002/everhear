@@ -217,6 +217,8 @@ class Box:
                     "server-port=25565\n" % (self.rcon_port, self.rcon_password))
         open(self.console_log, "a").close()
         os.symlink(self.ec2_py, os.path.join(self.ec2bin, "python3"))
+        os.makedirs(j("opt", "vfg", "python", "bin"), exist_ok=True)
+        os.symlink(self.ec2_py, j("opt", "vfg", "python", "bin", "python3"))  # the box's 3.12, as python.sh lays it out
         with open(os.path.join(self.pcbin, "vfg"), "w") as f:
             f.write("#!/bin/sh\nexec '%s' '%s' \"$@\"\n" % (PC_PY, VFG))
         os.chmod(os.path.join(self.pcbin, "vfg"), 0o755)

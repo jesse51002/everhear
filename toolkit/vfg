@@ -9,7 +9,8 @@ Run by uv (the lines above) on Python 3.12 with pydantic, which the actions need
 loader, lib/py/vfg_actions.py, is imported only by the commands that use the actions, so the
 others start as fast as before. Run as `python3 vfg` where pydantic is missing, it starts
 itself again under uv. Every remote action is one SSH call whose
-remote command is the constant `python3 -u -`, with remote/common.py, a line
+remote command is the box's Python 3.12, `/opt/vfg/python/bin/python3 -u -` (VFG_REMOTE_VFG's
+python/bin/python3), with remote/common.py, a line
 `ARGS = json.loads(...)`, any library it uses (scripts/_lib/places.py) as a module of
 its own, and one program from remote/ on its stdin, so nothing an agent typed
 ever meets a shell on either machine. The one exception is
@@ -41,7 +42,6 @@ VERSION = "0.1.0"
 HERE = os.path.dirname(os.path.realpath(__file__))
 REMOTE = os.path.join(HERE, "remote")
 KIT_LIB = os.path.join(os.path.dirname(HERE), "scripts", "_lib")
-REMOTE_CMD = "python3 -u -"
 
 KINDS = ["join", "leave", "death", "advancement", "server"]
 TYPES = ["LINE", "GAME", "ORCH", "SYS"]
@@ -305,6 +305,11 @@ class Config(object):
 
 # ---------------------------------------------------------------------- ssh
 
+def box_python(cfg):
+    """The box's Python 3.12: /opt/vfg/python/bin/python3, under VFG_REMOTE_VFG."""
+    return cfg.rvfg + "/python/bin/python3"
+
+
 def read_text(path):
     with open(path, encoding="utf-8") as f:
         return f.read()
@@ -350,6 +355,9 @@ class Ssh(object):
         self.host = cfg.get("VFG_SSH_HOST")
         self.dest = "%s@%s" % (cfg.get("VFG_SSH_USER"), self.host)
         self.sockdir = os.path.join(cfg.home, "ssh")
+        # The box's Python 3.12, which uv put in /opt/vfg/python (bridge/deploy/python.sh), reading
+        # the program from stdin.
+        self.remote_cmd = shlex.quote(box_python(cfg)) + " -u -"
 
     def base(self):
         return [self.cfg.get("VFG_SSH"), "-T", "-i", self.cfg.get("VFG_SSH_KEY"),
@@ -361,7 +369,8 @@ class Ssh(object):
     def ctl(self):
         return ["-o", "ControlPath=" + os.path.join(self.sockdir, "%C")]
 
-    def argv(self, remote_cmd=REMOTE_CMD, direct=False):
+    def argv(self, remote_cmd=None, direct=False):
+        remote_cmd = remote_cmd or self.remote_cmd
         if direct:
             return self.base() + ["-o", "ControlPath=none", self.dest, remote_cmd]
         return self.base() + self.ctl() + ["-o", "ControlMaster=no", self.dest, remote_cmd]
@@ -436,7 +445,7 @@ class Ssh(object):
             raise
         return p.returncode, o or b"", e or b""
 
-    def call(self, data, timeout, remote_cmd=REMOTE_CMD, stream=False, keep_master=False):
+    def call(self, data, timeout, remote_cmd=None, stream=False, keep_master=False):
         """One SSH call: (exit code, stdout, stderr). SSH failures raise.
 
         A timeout closes the shared master, taken for a dead link; with keep_master
@@ -692,7 +701,7 @@ def feed_post(cfg, a, typ, fields, text):
     # VFG_FEED (default /opt/vfg), so they are set here; `env` keeps them
     # assignments however shlex quotes them.
     cmd = shlex.join(["env", "VFG_DB=" + cfg.rvfg + "/vfg.db", "VFG_FEED=" + cfg.rvfg + "/feed.log",
-                      "python3", cfg.rvfg + "/lib/vfg_feed.py", "post", typ, fields, text])
+                      box_python(cfg), cfg.rvfg + "/lib/vfg_feed.py", "post", typ, fields, text])
     timeout = a.timeout if a.timeout is not None else 30
     return Ssh(cfg).call(b"", timeout, remote_cmd=cmd)
 
@@ -1266,6 +1275,9 @@ def actions_lib():
     """lib/py/vfg_actions.py, the one loader of the actions, imported on first use."""
     if LIB_PY not in sys.path:
         sys.path.insert(0, LIB_PY)
+    import warnings
+    # An action's field may be named as a BaseModel attribute (edit's and stop's `copy`).
+    warnings.filterwarnings("ignore", message=r'Field name ".*" in ".*" shadows an attribute in parent')
     try:
         import vfg_actions
     except ImportError as e:
@@ -1316,33 +1328,30 @@ def script_home(cfg, source, script):
     raise Fail(1, "its script %s is in neither scripts/ nor made/%s/scripts/" % (script, server_name(cfg)))
 
 
-def places_for_check(cfg, a, fresh=False):
-    """The saved places a Place value is checked against: the cache, fetched when there is none."""
+def with_places(cfg, a, check):
+    """check(places) with the saved places from the cache; one that fails where there is no
+    cache, or one older than VFG_PLACES_TTL_S, is tried once more on places fetched now, for a
+    place saved since. A ValueError is the check's refusal: exit 2."""
     cached = read_places_cache(cfg)
-    if cached is not None and not fresh:
-        return cached[0], cached[1]
     try:
-        return fetch_places(cfg, a), 0.0
+        return check(cached[0] if cached is not None else {})
+    except ValueError as e:
+        if cached is not None and cached[1] < places_ttl(cfg):
+            raise Fail(2, str(e))
+        why = e
+    try:
+        fresh = fetch_places(cfg, a)
     except Fail:
-        if cached is not None:
-            return cached[0], cached[1]
-        return {}, None
+        raise Fail(2, str(why))
+    try:
+        return check(fresh)
+    except ValueError as e:
+        raise Fail(2, str(e))
 
 
 def checked_values(cfg, a, va, cls, given, allow_fixed=False):
-    """vfg_actions.check_values with the saved places; a check that fails on a cache older than
-    VFG_PLACES_TTL_S is tried once more on a fresh one, for a place saved since."""
-    places, age = places_for_check(cfg, a)
-    try:
-        return va.check_values(cls, given, places=places, allow_fixed=allow_fixed)
-    except ValueError as e:
-        if age is None or age < places_ttl(cfg):
-            raise Fail(2, str(e))
-    places, _ = places_for_check(cfg, a, fresh=True)
-    try:
-        return va.check_values(cls, given, places=places, allow_fixed=allow_fixed)
-    except ValueError as e:
-        raise Fail(2, str(e))
+    """vfg_actions.check_values, with the saved places."""
+    return with_places(cfg, a, lambda places: va.check_values(cls, given, places=places, allow_fixed=allow_fixed))
 
 
 def start_copy(cfg, a, name, cls, source, values, live, task, as_=None):
@@ -1362,8 +1371,9 @@ def start_copy(cfg, a, name, cls, source, values, live, task, as_=None):
             "values": values, "live": live, "runs": runs, "task": task, "as": as_,
             "tars": tars_for(cfg, home, [script]), "owner": owner, "poll": live_poll(cfg),
             "wait": wait, "on_result": runs != "once"}
+    timeout = a.timeout if getattr(a, "timeout", None) is not None else wait + 30
     rc, o, e = Ssh(cfg).call(program("scripts.py", dict(args, vfg=cfg.rvfg, mc=cfg.rmc), SCRIPTS_LIBS),
-                             wait + 30, keep_master=True)
+                             timeout, keep_master=True)
     if rc != 0:
         finish(rc, o, e)
     lines = o.decode("utf-8", "replace").rstrip("\n").split("\n")
@@ -1373,6 +1383,10 @@ def start_copy(cfg, a, name, cls, source, values, live, task, as_=None):
         raise Fail(1, "scripts.py answered something that is not JSON")
     got["runs"] = runs
     return got
+
+
+# What mc.py logs as a copy cleans up, after its last words.
+CLEANUP_RE = re.compile(r" (ended by itself, cleaning up|stopped|stopping \(signal \d+\))$")
 
 
 def answer_of(name, got, notes):
@@ -1388,7 +1402,7 @@ def answer_of(name, got, notes):
         elif not line["summary"]:
             line["summary"] = "running as %s" % copy
     elif got.get("code"):
-        tail = [l for l in got.get("tail") or [] if l.strip()]
+        tail = [l for l in got.get("tail") or [] if l.strip() and not CLEANUP_RE.search(l)]
         line["ok"] = False
         line["error"] = "%s exited with code %d%s" % (copy, got["code"], ": " + tail[-1].strip() if tail else "")
     elif not line["summary"]:
@@ -1448,11 +1462,11 @@ def run_edit(cfg, a, copy, given, task=None):
         raise Fail(2, "nothing to change: %s key=value …" % copy)
     entry = known_copy(cfg, a, copy)
     va, cat, cls = action_class(cfg, entry["action"])
-    places, _ = places_for_check(cfg, a)
     try:
-        ed = va.check_edit(cls, entry.get("values") or {}, given, places=places)
-    except ValueError as e:
-        raise Fail(2, "%s (%s): %s" % (copy, entry["action"], e))
+        ed = with_places(cfg, a, lambda places: va.check_edit(cls, entry.get("values") or {}, given,
+                                                              places=places))
+    except Fail as f:
+        raise Fail(f.code, "%s (%s): %s" % (copy, entry["action"], f.msg))
     if not ed.changed:
         return {"ok": True, "copy": copy, "action": "edit", "running": True,
                 "summary": "%s: nothing changed" % copy, "facts": {"copy": copy, "changed": []},
@@ -1472,7 +1486,12 @@ def known_copy(cfg, a, copy):
     entry = (got or {}).get("copies", {}).get(copy)
     if isinstance(entry, dict) and entry.get("action"):
         return entry
-    info = remote_json(cfg, a, {"op": "info", "copy": copy})
+    try:
+        info = remote_json(cfg, a, {"op": "info", "copy": copy})
+    except Fail as f:
+        if f.code != 1:
+            raise
+        info = {}
     if not info.get("pid"):
         note_copy(cfg, copy, None)
         raise Fail(1, "%s is not running — vfg script list" % copy)
@@ -1620,7 +1639,7 @@ def read_running(cfg):
 def write_running(cfg, copies, fetched_at):
     cfg.ensure_home()
     atomic_write(running_path(cfg), json.dumps({"fetched_at": fetched_at, "copies": copies},
-                                               sort_keys=True, ensure_ascii=False) + "\n")
+                                               ensure_ascii=False) + "\n")
 
 
 def note_copy(cfg, copy, entry):
@@ -1717,7 +1736,7 @@ def cmd_script_list(cfg, a):
         fetch_running(cfg, a)
         data = read_running(cfg) or {"fetched_at": time.time(), "copies": {}}
     if a.json:
-        out(json.dumps(data, sort_keys=True, ensure_ascii=False))
+        out(json.dumps(data, ensure_ascii=False))
         return 0
     base = baselines(cfg)
     copies = data["copies"]
@@ -2908,7 +2927,7 @@ def build_parser():
     s = sub.add_parser("feed", help="low-level append to the feed")
     fs = s.add_subparsers(dest="op", metavar="post")
     fs.required = True
-    w = fs.add_parser("post", help="python3 /opt/vfg/lib/vfg_feed.py post over SSH; prints the seq")
+    w = fs.add_parser("post", help="/opt/vfg/lib/vfg_feed.py post, on the box's Python, over SSH; prints the seq")
     w.add_argument("type", metavar="TYPE", help="LINE, GAME, ORCH or SYS")
     w.add_argument("fields", help="the fields; empty for SYS")
     w.add_argument("text")

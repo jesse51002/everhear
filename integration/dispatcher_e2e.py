@@ -254,6 +254,8 @@ class Box:
         # python3 is the box's 3.9, for fake_ssh's remote side; vfg is this repo's, on the same
         # Python, with that PATH again in front (uv run puts the dispatcher's venv first).
         os.symlink(self.py39, os.path.join(self.bin, "python3"))
+        os.makedirs(os.path.join(self.rvfg, "python", "bin"), exist_ok=True)
+        os.symlink(self.py39, os.path.join(self.rvfg, "python", "bin", "python3"))  # the box's Python, at the box's path
         with open(os.path.join(self.bin, "vfg"), "w") as f:
             f.write("#!/bin/sh\nPATH='%s':\"$PATH\"; export PATH\nexec '%s' '%s' \"$@\"\n"
                     % (self.bin, self.py39, VFG))

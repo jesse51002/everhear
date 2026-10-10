@@ -34,6 +34,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 
@@ -42,6 +43,8 @@ COPY_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,47}$")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 SOURCES = ("library", "made")
 STOP_WAIT = 5.0       # SIGTERM, then SIGKILL after this many seconds
+# A copy runs on the Python this runs on: the box's 3.12, /opt/vfg/python/bin/python3.
+PYTHON = sys.executable or "python3"
 CHECK_S = 2.0         # an until-stopped copy is checked this long after its start
 
 
@@ -273,7 +276,7 @@ class Box(object):
         try:
             # No shell, and no start_new_session: the child is then not a group leader, so
             # `setsid` keeps its pid, which becomes the copy's (and its process group's).
-            proc = subprocess.Popen(["setsid", "nohup", "python3", "-u", os.path.join(folder, "main.py")],
+            proc = subprocess.Popen(["setsid", "nohup", PYTHON, "-u", os.path.join(folder, "main.py")],
                                     cwd=folder, stdin=subprocess.DEVNULL, stdout=logf,
                                     stderr=subprocess.STDOUT, env=env, close_fds=True)
         finally:

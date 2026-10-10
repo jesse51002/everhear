@@ -13,8 +13,9 @@
 #
 # `run` deploys, starts the copy (instances.Box.start) and waits: a once copy until it ends or
 # "wait" s pass, an until-stopped one until its first result() or "wait" s (the 2 s check). It
-# prints one JSON object: {"copy", "pid", "running", "code", "result", "tail"}, "tail" being the
-# last lines it printed when it ended with an error.
+# prints one JSON object: {"copy", "pid", "started", "running", "code", "result", "tail"}, "tail"
+# being the last lines it printed when it ended with an error. Minecraft not answering RCON is
+# exit 5, before anything starts.
 import base64
 import io
 import re
@@ -132,13 +133,17 @@ def op_run():
             "runs": ARGS.get("runs") or "until_stopped", "task": ARGS.get("task")}
     if meta["source"] == "made":
         meta["server"] = ARGS["server"]
+    try:
+        Rcon(ARGS["mc"]).close()  # a copy with Minecraft down would only log its failures
+    except RconDown as e:
+        die(5, str(e))
     b = box()
     try:
         name, pid, proc = b.start(meta, ARGS.get("as"))
     except instances.CopyError as e:
         die(1, str(e))
     got = b.wait(name, proc, float(ARGS.get("wait") or instances.CHECK_S), on_result=bool(ARGS.get("on_result")))
-    got.update(copy=name, pid=pid)
+    got.update(copy=name, pid=pid, started=b.meta(name)["started"])
     if not got["running"] and got["code"]:
         got["tail"] = b.tail(name, 20)
     answer(got)

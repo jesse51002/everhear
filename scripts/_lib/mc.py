@@ -1,6 +1,7 @@
 """Shared helpers for every script in the scripts folder.
 
-On EC2 a script runs as one copy of an action: `python3 -u <folder>/main.py`, in its own
+On EC2 a script runs as one copy of an action: `/opt/vfg/python/bin/python3 -u <folder>/main.py`
+(the box's Python 3.12), in its own
 folder, with PYTHONPATH=/opt/vfg/scripts/_lib and VFG_SCRIPT=<copy> (instances.py starts it;
 its values are in the copy's meta file, which kit.values reads). It imports the kit
 (_lib/kit), and this for whatever the kit does not do:

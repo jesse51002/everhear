@@ -147,6 +147,8 @@ class Box(object):
             os.makedirs(d, exist_ok=True)
         os.chmod(self.vhome, 0o700)
         os.symlink(PY, os.path.join(self.bin, "python3"))
+        os.makedirs(os.path.join(self.rvfg, "python", "bin"))
+        os.symlink(PY, os.path.join(self.rvfg, "python", "bin", "python3"))  # the box's 3.12
         self.key = j("key")
         with open(self.key, "w") as f:
             f.write("not a key\n")
