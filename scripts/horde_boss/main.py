@@ -1,29 +1,9 @@
 """Horde King: a giant zombie boss in netherite near a player, with a red bar, minions every 10 s, rage as it weakens, and loot where it falls."""
 ASKS = ["make sure to add a boss fight at the end", "spawn a boss near the players",
         "a custom giant named boss with lots of health"]
-from kit import values, fx, loop, mobs, world
+from kit import values, result, fx, loop, mobs, world
 import time
 import mc
-
-VALUES = {
-    "player":            {"type": "player", "default": "@a"},
-    "boss_name":         {"type": "str", "default": "Horde King"},
-    "boss_mob":          {"type": "mob", "default": "zombie"},
-    "boss_bodies":       {"type": "int", "min": 1, "max": 8, "default": 1},
-    "boss_health":       {"type": "int", "min": 1, "max": 1024, "default": 800},
-    "boss_scale":        {"type": "number", "min": 0.25, "max": 16, "default": 3},
-    "boss_attack":       {"type": "number", "min": 0, "max": 100, "default": 12},
-    "boss_gear":         {"type": "enum", "of": ["none", "leather", "golden", "iron", "diamond", "netherite"], "default": "netherite"},
-    "boss_bar":          {"type": "enum", "of": ["red", "blue", "green", "pink", "purple", "white", "yellow"], "default": "red"},
-    "boss_every":        {"type": "number", "min": 1, "max": 120, "default": 10, "live": True},
-    "boss_minion":       {"type": "mob", "default": "zombie", "live": True},
-    "boss_minions":      {"type": "int", "min": 0, "max": 20, "default": 3, "live": True},
-    "boss_phases":       {"type": "list", "of": "number", "default": [0.5, 0.25]},
-    "boss_reward":       {"type": "item", "default": "diamond", "live": True},
-    "boss_reward_count": {"type": "int", "min": 0, "max": 64, "default": 8, "live": True},
-    "boss_music":        {"type": "enum", "of": ["none", "pigstep", "otherside", "relic", "creator", "precipice"], "default": "none"},
-    "boss_griefing":     {"type": "bool", "default": True},
-}
 
 
 # --- preset: boss (copied from _presets/boss.py) ---
@@ -139,5 +119,22 @@ def _boss_enrage(b, v):
     fx.actionbar("@a", "%s is enraged" % v["boss_name"], "red")
 
 
-v = values(VALUES)
-boss(v["player"], v)            # near the first of them online; ends when it is dead
+def spot(where):
+    """Where the boss rises, in words: near the first of a player value online, or at a place."""
+    if isinstance(where, str):
+        return "near %s" % (loop.who(where) or [where])[0]
+    return "at %d %d %d%s" % (where[0], where[1], where[2], " in " + where.dim.split(":")[-1] if where.dim else "")
+
+
+v = values()
+where = world.place(v["at"]) if v["at"] else v["player"]    # a player value: near the first of them online
+if where is None:
+    result("no %s: %s is not a place now" % (v["boss_name"], v["at"]), boss=v["boss_name"], at=v["at"])
+else:
+    said = spot(where)
+    facts = {"boss": v["boss_name"], "where": said, "health": v["boss_health"] * v["boss_bodies"]}
+    result("%s rises %s, with %d health" % (v["boss_name"], said, facts["health"]), **facts)
+    if boss(where, v):                                        # ends when it is dead
+        result("%s, who rose %s, is dead" % (v["boss_name"], said), dead=True, **facts)
+    elif not mc.stopping():
+        result("no room for %s %s" % (v["boss_name"], said), **facts)

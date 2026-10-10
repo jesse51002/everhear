@@ -1,22 +1,11 @@
 """Anti-Camp: a player who stays within a few blocks of one spot too long is warned, then TNT falls on them."""
 ASKS = ["punish anyone who camps", "TNT on anyone who stands still too long", "no hiding in one spot"]
-from kit import values, fx, loop, world
+from kit import values, result, fx, loop, world
 import json
 import math
 import random
 import time
 import mc
-
-VALUES = {
-    "player":         {"type": "player", "default": "@a"},
-    "stands_radius":  {"type": "number", "min": 0.5, "max": 64, "default": 4, "live": True},
-    "stands_seconds": {"type": "number", "min": 6, "max": 3600, "default": 15, "live": True},
-    "stands_warning": {"type": "str", "default": "MOVE. The Demon Lord sees you hiding...", "live": True},
-    "tnt":            {"type": "int", "min": 1, "max": 30, "default": 7, "live": True},
-    "height":         {"type": "int", "min": 2, "max": 60, "default": 12, "live": True},
-    "fuse":           {"type": "number", "min": 0.5, "max": 10, "default": 2, "live": True},
-    "mock":           {"type": "bool", "default": True, "live": True},
-}
 
 
 # --- preset: stands_still (copied from _presets/stands_still.py) ---
@@ -42,11 +31,13 @@ def stands_still(player, v):
                 fx.actionbar(p, "%s %d" % (v["stands_warning"], math.ceil(left)), "red")
 
 
-v = values(VALUES)
+v = values()
 # Where the TNT falls round the camper: a plus and two corners, then at random.
 SPOTS = [(0, 0), (2, 0), (-2, 0), (0, 2), (0, -2), (2, 2), (-2, -2)]
 
-mc.log("campers get TNT after", v["stands_seconds"], "s")
+result("%d TNT fall on anyone of %s who stays within %g blocks for %g s"
+       % (v["tnt"], v["player"], v["stands_radius"], v["stands_seconds"]), player=v["player"],
+       stands_seconds=v["stands_seconds"], stands_radius=v["stands_radius"], tnt=v["tnt"])
 for p in loop(stands_still(v["player"], v)):
     if v["mock"]:
         mc.rcon("tellraw @a " + json.dumps([{"text": "[Demon Lord] ", "color": "dark_red", "bold": True},

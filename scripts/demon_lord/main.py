@@ -12,13 +12,7 @@ import threading
 import time
 
 from mc import rcon, players, pos, spawn, score, count, on_stop, log, TAG
-from kit import values
-
-VALUES = {
-    "round":   {"type": "int", "min": 1, "max": 1000, "default": 1},
-    "level":   {"type": "number", "min": 0, "max": 1000, "default": 0},
-    "break_s": {"type": "number", "min": 0, "max": 600, "default": 60, "live": True},
-}
+from kit import values, result
 
 PROP = TAG + "_prop"     # markers, labels, Gregor: tagged TAG and PROP, never counted as mobs
 LABEL = TAG + "_label"
@@ -516,12 +510,12 @@ def cleanup():
     rcon("scoreboard objectives remove " + DEATHS)
 
 
-v = values(VALUES)
+v = values()
 ROUND = v["round"]
 lvl = float(v["level"] or ROUND)     # level 0: start at the round's own difficulty
 on_stop(cleanup)
 rcon("scoreboard objectives add %s deathCount" % DEATHS)
-log("starting at round", ROUND, "level", lvl)
+result("the Demon Lord begins at round %d, level %g" % (ROUND, lvl), round=ROUND, level=lvl)
 while True:
     while not players():
         time.sleep(30)
