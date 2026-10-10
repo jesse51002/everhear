@@ -376,13 +376,6 @@ def catalog():
     with _CATALOG_LOCK:   # the scripts run in threads: the actions load once
         if not _CATALOG:
             sys.path.insert(0, os.path.join(os.path.dirname(SCRIPTS), "lib", "py"))
-            # A preset a test file imported as a plain module (test_presets_shows: projectile_lands,
-            # sneak...) is what inspect finds for its file, and pydantic on 3.12 then misses the
-            # descriptions of the catalog's own copy of its values class: forget those files.
-            import inspect
-            presets = os.path.join(SCRIPTS, "_presets")
-            for f in [f for f in inspect.modulesbyfile if f.startswith(presets)]:
-                del inspect.modulesbyfile[f]
             import vfg_actions
             _CATALOG.append((vfg_actions, vfg_actions.Catalog(os.path.dirname(SCRIPTS), None)))
         return _CATALOG[0]

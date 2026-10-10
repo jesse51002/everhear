@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import inspect
 import json
 import math
+import os
 import re
 import sys
 import types
@@ -584,6 +586,11 @@ def _preset_class(path: Path, name: str) -> type[Values]:
             keep.append(node)
     made = path.parent.name != "_presets"
     modname = "vfg_made__%s__preset__%s" % (path.parents[1].name, name) if made else "vfg_preset__" + name
+    # Pydantic (3.12) reads attribute docstrings from the source of the frame that made the
+    # class, through the module inspect maps this file to: make that this module, not a plain
+    # import of the preset (a script test) nor a copy a test purged.
+    for f in {os.path.normcase(os.path.abspath(path)), os.path.realpath(path)}:
+        inspect.modulesbyfile[f] = modname
     mod = types.ModuleType(modname)
     mod.__file__ = str(path)
     sys.modules[modname] = mod
