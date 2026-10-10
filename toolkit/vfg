@@ -1492,6 +1492,14 @@ def run_edit(cfg, a, copy, given, task=None):
     return line
 
 
+def run_stop(cfg, a, copy, as_=None, task=None):
+    """The stop action: the copy ends and what carries its tag goes; it leaves running.json
+    once the stop has run, whatever it says (nothing may run under that name)."""
+    line = run_action(cfg, a, "stop", {"copy": copy}, as_, task)
+    note_copy(cfg, copy, None)
+    return line
+
+
 def known_copy(cfg, a, copy):
     """What this PC knows of a running copy (running.json), else what the box says of it."""
     got = read_running(cfg)
@@ -1553,16 +1561,24 @@ def action_words(words):
     return name, given, as_, task
 
 
+def run_named(cfg, a, name, given, as_=None, task=None):
+    """Any action, as vfg action run and its shortcuts run it: edit through run_edit and stop
+    through run_stop, which write the copy they name through to running.json; the rest
+    through run_action."""
+    if name == "edit":
+        copy, changes = edit_words(given)
+        return run_edit(cfg, a, copy, changes, task)
+    if name == "stop" and set(given) == {"copy"} and isinstance(given["copy"], str):
+        return run_stop(cfg, a, given["copy"], as_, task)
+    return run_action(cfg, a, name, given, as_, task)
+
+
 def cmd_action_run(cfg, a):
     """vfg action run: ONE JSON line, whatever happens; exit 0 when ok."""
     name, task = None, None
     try:
         name, given, as_, task = action_words(list(a.rest))
-        if name == "edit":
-            copy, changes = edit_words(given)
-            line = run_edit(cfg, a, copy, changes, task)
-        else:
-            line = run_action(cfg, a, name, given, as_, task)
+        line = run_named(cfg, a, name, given, as_, task)
     except Fail as f:
         out(json.dumps({"ok": False, "copy": "", "action": name or "", "running": False, "summary": "",
                         "facts": {}, "notes": [], "error": f.msg or "failed"}, ensure_ascii=False))
@@ -1756,7 +1772,7 @@ def cmd_script_set(cfg, a):
         if k in given:
             raise Fail(2, "%s is given twice" % k)
         given[k] = v
-    line = run_edit(cfg, a, a.copy, given)
+    line = run_named(cfg, a, "edit", {"copy": a.copy, "values": given})
     for note in line["notes"]:
         out(note)
     if not line["ok"]:
@@ -1769,8 +1785,7 @@ def cmd_script_stop(cfg, a):
     """vfg script stop <copy>: the stop action."""
     if not NAME_RE.match(a.name):
         raise Fail(2, "%s is not a copy's name" % a.name)
-    line = run_action(cfg, a, "stop", {"copy": a.name})
-    note_copy(cfg, a.name, None)
+    line = run_named(cfg, a, "stop", {"copy": a.name})
     if not line["ok"]:
         raise Fail(1, line.get("error") or "the stop failed")
     out(line["summary"])

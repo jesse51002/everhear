@@ -284,6 +284,21 @@ class TestEditStop(ActionCase):
         got = self.line(self.run_action("edit", "copy=beam", 'values={"colour": "blue"}'))
         self.assertEqual(self.box_json("beam.values.json"), {"cooldown": 3.0, "colour": "blue"})
 
+    def test_the_edit_and_stop_actions_write_through_as_their_shortcuts_do(self):
+        self.line(self.run_action("beam", "player=Steve"))
+        self.line(self.run_action("beam", "player=Alex"))
+        self.line(self.run_action("edit", "copy=beam", "cooldown=3", "--task", "T8"))
+        self.assertEqual(self.running()["copies"]["beam"]["values"]["cooldown"], 3)
+        got = self.line(self.run_action("stop", "copy=beam"))
+        self.assertEqual(got["summary"], "stopped beam")
+        self.assertEqual(sorted(self.running()["copies"]), ["beam_2"])
+        # A copy the box no longer runs leaves running.json too.
+        self.box.vfg("script", "list", "--fresh")
+        os.killpg(self.pid("beam_2"), signal.SIGKILL)
+        self.assertIn("beam_2", self.running()["copies"])
+        self.line(self.run_action("stop", "copy=beam_2"))
+        self.assertEqual(self.running()["copies"], {})
+
     def test_an_edit_of_a_copy_this_pc_does_not_know_asks_the_box(self):
         self.line(self.run_action("beam"))
         os.remove(os.path.join(self.box.vhome, "running.json"))
