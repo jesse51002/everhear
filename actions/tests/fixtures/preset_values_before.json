@@ -96,6 +96,12 @@
   "horde_explode": {"type": "bool", "default": false, "min": null, "max": null, "of": null, "live": true},
   "horde_announce": {"type": "bool", "default": true, "min": null, "max": null, "of": null, "live": true}
  },
+ "land_safely": {
+  "land_cushion": {"type": "int", "default": 5, "min": 0, "max": 60, "of": null, "live": false},
+  "land_ring": {"type": "int", "default": 8, "min": 1, "max": 64, "of": null, "live": false},
+  "land_tries": {"type": "int", "default": 4, "min": 1, "max": 8, "of": null, "live": false},
+  "land_spawn_after": {"type": "int", "default": 1000, "min": 0, "max": 60000000, "of": null, "live": false}
+ },
  "leaves_area": {
   "leaves_area": {"type": "enum", "default": "radius", "min": null, "max": null, "of": ["radius", "box", "player"], "live": false},
   "leaves_radius": {"type": "number", "default": 40, "min": 1, "max": 10000, "of": null, "live": true},

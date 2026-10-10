@@ -254,9 +254,10 @@ def dest(at, label, phrase, exact=False, top=False, show_xz=True):
 
 
 def locate(kind, target, dim, player, start):
-    """The nearest biome or structure from the player's spot (in `dim`, scaled to it). A
-    structure id Minecraft does not know, such as village, is tried once as its tag,
-    #minecraft:village, before it fails."""
+    """The nearest biome or structure from the player's spot (in `dim`, scaled to it, at their
+    height). A structure id Minecraft does not know, such as village, is tried once as its tag,
+    #minecraft:village, before it fails. A biome is found at its nearest edge, so the landing
+    is moved into it (inside)."""
     tag = target.startswith("#")
     ident = target.lstrip("#").lower()
     if ident.startswith("minecraft:"):
@@ -265,7 +266,8 @@ def locate(kind, target, dim, player, start):
         raise Failed("%r is not a %s id" % (target, kind))
     full = ("#" if tag else "") + "minecraft:" + ident
     cx, cz = scaled(start, dim)
-    ask = "execute in %s positioned %d 0 %d run locate %s %%s" % (dim, cx, cz, kind)
+    cy = max(world.limits(dim)[0], min(world.limits(dim)[1], int(math.floor(start[1]))))
+    ask = "execute in %s positioned %d %d %d run locate %s %%s" % (dim, cx, cy, cz, kind)
     out = mc.rcon(ask % full)
     if kind == "structure" and not tag and out.startswith("There is no structure"):
         again = mc.rcon(ask % ("#" + full))
@@ -275,13 +277,33 @@ def locate(kind, target, dim, player, start):
     m = LOCATED.match(out)
     if m:
         label = describe(m.group(2) or m.group(1))
-        return dest(world.Pos(int(m.group(3)), 0, int(m.group(5)), dim), label, "to %s at" % label, top=True)
+        x, z = int(m.group(3)), int(m.group(5))
+        if kind == "biome":
+            x, z = inside(full, dim, (cx, cy, cz), x, z)
+        return dest(world.Pos(x, 0, z, dim), label, "to %s at" % label, top=True)
     words = describe(full)
     if out.startswith("Could not find"):
         raise Failed("no %s within reach of %s%s" % (words[words.index(" ") + 1:], player, in_dim(dim)))
     if out.startswith("There is no") or out.startswith("Can't find") or "<--[HERE]" in out:
         raise Failed("Minecraft has no %s called %s" % (kind, full))
     raise Failed("locate %s %s failed: %s" % (kind, full, out or "no answer from Minecraft"))
+
+
+def inside(biome, dim, frm, x, z):
+    """x z moved up to 48 blocks further into a biome locate found there, at its edge nearest
+    `frm` (x y z, where it looked from), 16 at a time while the biome goes on at that height:
+    a landing within a ring of the edge itself is often outside it."""
+    d = math.hypot(x - frm[0], z - frm[2])
+    if d < 1:
+        return x, z
+    at = (x, z)
+    for k in (16, 32, 48):
+        nx, nz = int(round(x + (x - frm[0]) * k / d)), int(round(z + (z - frm[2]) * k / d))
+        if not mc.rcon("execute in %s positioned %d %d %d if biome ~ ~ ~ %s" % (dim, nx, frm[1], nz, biome)) \
+                .startswith("Test passed"):
+            break
+        at = (nx, nz)
+    return at
 
 
 def describe(ident):
@@ -353,6 +375,28 @@ def in_dim(dim):
 
 # ------------------------------------------------------------------ the move
 
+def into_biome(player, target, landed, land):
+    """After a landing near a biome locate found: when the ground they stand on is not in it
+    (locate looks at one height, and the chunks round the spot it gave were not loaded to look
+    further in), look again from where they stand, now loaded, and land once more. The landing
+    they end on."""
+    pos = landed["pos"]
+    full = ("#" if target.startswith("#") else "") + "minecraft:" + target.lstrip("#").lower().split(":")[-1]
+    here = "execute in %s positioned %.3f %.3f %.3f " % ((pos.dim or world.OVERWORLD,) + tuple(pos))
+    if mc.rcon(here + "if biome ~ ~ ~ " + full).startswith("Test passed"):
+        return landed
+    try:
+        d = locate("biome", target, pos.dim or world.OVERWORLD, player, pos)
+    except Failed as e:
+        mc.log("landed outside %s, and looking again: %s" % (full, e))
+        return landed
+    again = land_safely(player, d["at"], dict(land, land_cushion=0), top=True, others=landed["moved"][1:])
+    if again is None:
+        mc.log("landed outside %s, and could not land again in it" % full)
+        return landed
+    return again
+
+
 def teleport(v):
     who = v["player"]
     dim = DIMS[v["dimension"]]
@@ -366,12 +410,19 @@ def teleport(v):
     start = world.Pos(start[0], start[1], start[2], world.dim_of(first))
     group = len(names) > 1 or who == "@a"
     d = resolve(v["to"], v["target"].strip(), dim, first, start, "%s's" % first if group else "their")
-    land = dict(LAND, land_spawn_after=0) if v["to"] == "spawn_point" else LAND
+    biome = v["to"] == "biome"
+    land = dict(LAND, land_spawn_after=0) if v["to"] in ("spawn_point", "biome") else LAND
+    starts = dict((p, _land_safely_where(p)) for p in names) if biome else {}
     landed = land_safely(first, d["at"], land, exact=d["exact"], top=d["top"], others=names[1:])
     if landed is None:
         at = "" if d["at"] is None or not d["show_xz"] else " at %d %d" % (d["at"][0], d["at"][2])
         raise Failed("no safe spot within %d rings of %s%s; %s is still where they were"
                      % (land["land_tries"], d["label"], at, first))
+    if biome:
+        # Where they end, not where they first landed, is where a long move sets the spawn point.
+        landed = into_biome(first, v["target"].strip(), landed, land)
+        landed["spawn_set"] = [p for p in landed["moved"]
+                               if _land_safely_spawn(p, starts.get(p), landed["pos"], LAND)]
     moved = landed["moved"]
     if who == "@a":
         who_text = "everyone (%s)" % ", ".join(moved)

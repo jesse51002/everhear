@@ -5,6 +5,13 @@ import mc
 from kit import world
 from actions._types import Field, Values  # the values class: read on the PC only
 
+VALUES = {
+    "land_cushion": {"type": "int", "min": 0, "max": 60, "default": 5},
+    "land_ring": {"type": "int", "min": 1, "max": 64, "default": 8},
+    "land_tries": {"type": "int", "min": 1, "max": 8, "default": 4},
+    "land_spawn_after": {"type": "int", "min": 0, "max": 60000000, "default": 1000},
+}
+
 
 class LandSafely(Values):
     land_cushion: int = Field(5, ge=0, le=60)

@@ -305,12 +305,13 @@ class TeleportTests(BoxTest):
         w = one_player()
         w.located[("biome", "minecraft:snowy_taiga")] = (-368, 64, 912)
         w.landings = [(-368, 70, 912)]
+        w.biomes[(-368, 912)] = "minecraft:snowy_taiga"
         r = self.tp(w, player="Steve", to="biome", target="snowy_taiga")
         self.assertEqual(r.code, 0)
         self.assertEqual(r.summary, "teleported Steve to a snowy taiga at -368 70 912")
         self.assertEqual((r.facts["pos"], r.facts["ring"], r.facts["dim"], r.facts["players"]),
                          ([-368, 70, 912], 8, OW, ["Steve"]))
-        self.assertEqual(sent(w, "locate"), ["execute in minecraft:overworld positioned 10 0 -4 run locate biome "
+        self.assertEqual(sent(w, "locate"), ["execute in minecraft:overworld positioned 10 64 -4 run locate biome "
                                              "minecraft:snowy_taiga"])
         self.assertEqual(sent(w, "effect"), ["effect give Steve minecraft:resistance 5 4 true",
                                              "effect give Steve minecraft:slow_falling 5 0 true"])
@@ -320,6 +321,38 @@ class TeleportTests(BoxTest):
         self.assertLess(w.sent.index("effect give Steve minecraft:slow_falling 5 0 true"),
                         w.sent.index(sent(w, "spreadplayers")[0]))
         self.assertFalse(sent(w, "spawnpoint"))   # 991 blocks: under 1,000
+
+    def test_a_biome_found_at_its_edge_is_landed_in_further_on(self):
+        """locate finds a biome's nearest edge: the landing moves up to 48 blocks further in, 16
+        at a time, while `execute if biome` still says it is there."""
+        w = one_player()
+        w.located[("biome", "minecraft:snowy_taiga")] = (-368, 64, 912)
+        d = math.hypot(-368 - 10, 912 + 4)
+        steps = [(int(round(-368 + (-368 - 10) * k / d)), int(round(912 + (912 + 4) * k / d))) for k in (16, 32, 48)]
+        for x, z in steps[:2]:
+            w.biomes[(x, z)] = "minecraft:snowy_taiga"   # and not at 48
+        r = self.tp(w, player="Steve", to="biome", target="snowy_taiga")
+        self.assertEqual(r.code, 0, r.out)
+        self.assertEqual(sent(w, "spreadplayers"), ["execute in minecraft:overworld run spreadplayers %d %d 0 8 under "
+                                                    "320 false Steve" % steps[1]])
+        # Three steps further in (the third is not in it), then where he landed: in it.
+        self.assertEqual(len([c for c in w.sent if " if biome " in c]), 4)
+
+    def test_a_landing_outside_the_biome_lands_again_from_there(self):
+        """locate looks at one height and the chunks round its spot are not loaded to look
+        further in: when they land outside the biome, it is looked for again from where they
+        stand, and they land once more, with no second cushion; the spawn point is set once,
+        where they end."""
+        w = one_player()
+        w.located[("biome", "minecraft:snowy_taiga")] = (-1368, 64, 912)
+        w.landings = [(-1368, 64, 912), (-1360, 70, 920)]
+        r = self.tp(w, player="Steve", to="biome", target="snowy_taiga")
+        self.assertEqual(r.code, 0, r.out)
+        self.assertEqual(r.summary, "teleported Steve to a snowy taiga at -1360 70 920; spawn point set there")
+        self.assertEqual(len(sent(w, "locate")), 2)
+        self.assertEqual(len(sent(w, "spreadplayers")), 2)
+        self.assertEqual(len(sent(w, "effect")), 2)
+        self.assertEqual(sent(w, "spawnpoint"), ["execute in minecraft:overworld run spawnpoint Steve -1360 70 920"])
 
     def test_a_tagged_structure(self):
         w = one_player()
@@ -369,6 +402,7 @@ class TeleportTests(BoxTest):
         w = one_player()
         w.located[("biome", "minecraft:cherry_grove")] = (812, 70, -340)
         w.landings = [(812, 63, -340), (820, 71, -330)]
+        w.biomes[(820, -330)] = "minecraft:cherry_grove"
         w.block(OW, 812, 62, -340, "minecraft:water")
         r = self.tp(w, player="Steve", to="biome", target="cherry_grove")
         self.assertEqual((r.code, r.facts["ring"]), (0, 16))
@@ -460,6 +494,7 @@ class TeleportTests(BoxTest):
         w = one_player("Sam", Steve=(0.5, 70.0, 0.5), Alex=(30.5, 65.0, 30.5))
         w.located[("biome", "minecraft:snowy_taiga")] = (-1408, 64, 1408)
         w.landings = [(-1408, 68, 1410)]
+        w.biomes[(-1408, 1410)] = "minecraft:snowy_taiga"
         r = self.tp(w, player="@a", to="biome", target="snowy_taiga")
         self.assertEqual(r.code, 0, r.out)
         self.assertEqual(r.summary, "teleported everyone (Sam, Steve, Alex) to a snowy taiga at -1408 68 1410; "
@@ -515,8 +550,9 @@ class TeleportTests(BoxTest):
         w = FakeWorld()
         w.add("Steve", (800.5, 64.0, -1600.5))
         w.located[("biome", "minecraft:crimson_forest")] = (288, 1, 288)
+        w.biomes[(288, 288)] = "minecraft:crimson_forest"
         r = self.tp(w, player="Steve", to="biome", target="crimson_forest", dimension="the_nether")
-        self.assertEqual(sent(w, "locate"), ["execute in minecraft:the_nether positioned 100 0 -201 run locate biome "
+        self.assertEqual(sent(w, "locate"), ["execute in minecraft:the_nether positioned 100 64 -201 run locate biome "
                                              "minecraft:crimson_forest"])
         self.assertIn("under 120", sent(w, "spreadplayers")[0])
         self.assertEqual(r.summary, "teleported Steve to a crimson forest at 288 64 288 in the nether")

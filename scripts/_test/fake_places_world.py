@@ -6,11 +6,13 @@
 
 It knows what the core scripts (command, teleport, summon_around, save_place, stop) and the
 places module ask: `list`, a player's Pos, Dimension, respawn and LastDeathLocation, `locate`
-(answers set in `world.located`), `spreadplayers` (landings scripted in `world.landings`, else the centre at y 64),
-`execute in <dim> positioned <x y z> (if|unless) block ~ ~[-1|1] ~ ...` (blocks set in
-`world.blocks`, else grass under and air above; the tags #campfires and #replaceable), `effect`, `tp`, `spawnpoint`, `summon`, tags and counts,
-the command storage, and a few plain commands (time, weather, give, kill, difficulty).
-Anything else is "Unknown or incomplete command", as Minecraft says it. Python 3.9.
+(answers set in `world.located`), `spreadplayers` (landings scripted in `world.landings`, else
+the centre at y 64), `execute in <dim> positioned <x y z> (if|unless) block ~ ~[-1|1] ~ ...`
+(blocks set in `world.blocks`, else grass under and air above; the tags #campfires and
+#replaceable) and `if biome ~ ~ ~ <id>` (`world.biomes`), `effect`, `tp`, `spawnpoint`,
+`summon`, tags and counts, the command storage, and a few plain commands (time, weather, give,
+kill, difficulty). Anything else is "Unknown or incomplete command", as Minecraft says it.
+Python 3.9.
 
 Every command is kept in `world.sent`.
 """
@@ -73,6 +75,7 @@ class FakeWorld(object):
         self.located = {}          # (kind, "minecraft:x" or "#minecraft:x") -> (x, y, z[, found id]) | "missing" | "invalid"
         self.landings = []         # scripted spreadplayers results for players: (x, y, z) or "fail"
         self.blocks = {}           # (dim, x, y, z) -> block id
+        self.biomes = {}           # (x, z) -> the biome `execute if biome` finds there, else none
         self.storage = {}          # place name -> {"pos": [...], "by": str, "dim": str}
         self.entities = []         # summoned: {"type", "tags": set, "pos", "dim", "name"}
         self.spread_fail = 0       # how many entity spreadplayers fail before one works
@@ -109,6 +112,9 @@ class FakeWorld(object):
             return self._respond(c[4:], dim, at, full)
         if c.startswith("unless block ") or c.startswith("if block "):
             return self.ground_check(c, dim, at)
+        if c.startswith("if biome ~ ~ ~ ") and at is not None:
+            found = self.biomes.get((int(math.floor(at[0])), int(math.floor(at[2]))))
+            return R.TEST_PASSED if found == c.split()[-1] else R.TEST_FAILED
         if c.startswith("execute "):
             return self._execute(c, full)
         if c == "list":
