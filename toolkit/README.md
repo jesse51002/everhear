@@ -161,6 +161,46 @@ on the PC; the router reads them through it too. A name is a script in one place
   every running copy (`"instances"` in `--json`, each with its `copy` and `action`), the
   values that differ from its action's and who it touches (its Player and Players values).
 
+## Incantations
+
+```sh
+vfg action run incantation_create player=Steve phrase='fire ball' action=command \
+    values='{"commands": ["effect give Steve speed 10 2"]}' cooldown_s=5 --task T7
+vfg action run incantation_edit player=Steve phrase='fire ball' cooldown_s=10   # or values='{…}', aliases='fireball,fire bowl'
+vfg action run incantation_remove player=Steve phrase='fire ball'
+vfg incantation list                        # Steve: "fire ball" → command {…} cooldown 5s; aliases fireball, fire bowl
+vfg incantation list --player Steve --json  # what Steve can cast, his own and @a's: [{player, phrase, action, values, cooldown_s, aliases}]
+```
+
+An incantation is a phrase of two words or more that fires an action the moment its player
+says it, with no model on the path (Specs/2026-10-10-Prototype_Voice_Triggers). The box keeps
+them in `/opt/vfg/incantations.json` (`scripts/_lib/incantations.py`'s store), which the bridge
+reads as players cast. The three actions change it through one script, `scripts/incantations/`,
+once vfg has checked everything here (`run_incantation`):
+
+- **Create** makes one entry per named player, `@a` as one, its phrase normalised. It refuses
+  binding `edit`, `stop` or an `incantation_*` action. The bound action's values are checked as
+  a run of it checks them (a clamp is a note, a place against the cache); every player field
+  left out or empty is a caster field, checked with a stand-in name, stored empty and filled
+  by the bridge with whoever casts. The aliases are the code's (the phrase joined, compound
+  words split) and one `structured()` call's, 12 at most: `VFG_INCANT_ALIAS_MODEL`, by default
+  the dispatcher's planner's model and providers, reasoning off, 8 s at most (about 1 s and
+  $0.00005); `off` skips it, and a failure is a note. Its prompt is `INCANT_ALIAS_PROMPT` in
+  `vfg`. One SSH call reads the store and the bound script's stamps: the bind warnings (a
+  short phrase; one that sounds like, or starts like, another of the player's) and a replaced
+  one are notes, and the bound script and `_lib` are deployed when their stamps say so, as a
+  run would.
+- **Edit** finds each player's entry by its player and phrase and changes what is given: the
+  values, checked against its action over the stored ones (a player field set empty becomes a
+  caster's, one given a name stops being one); the cooldown; the aliases, normalised, capped
+  and bind-checked again.
+- **Remove** removes each player's entry; one nobody had is `"ok": false`.
+- **`vfg incantation list`** answers from `$VFG_HOME/incantations.json`, `{"fetched_at",
+  "version", "incantations": [entries]}`, while it is younger than `VFG_INCANT_TTL_S` (30 s),
+  else fetches the store (`remote/incantations.py`, one SSH call); `--fresh` always fetches,
+  and a failed fetch with any cache prints it and warns. Every incantation run writes through.
+  Values show as they differ from the action's own, caster fields as `player=<caster>`.
+
 ## The router and the implementer's prompt
 
 - **`vfg route --task T7 [--ref R] < brief`** reads the implementer's brief on stdin, and the
