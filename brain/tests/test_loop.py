@@ -221,3 +221,25 @@ async def test_the_batch_fires_after_a_quiet_minute_with_something_unread():
     assert not timer.check()
     now[0] += 1
     assert timer.check() and fired == [1090.0, 1200.0]
+
+
+async def test_while_a_batch_runs_past_its_minute_the_timer_waits_on_it_not_the_clock():
+    now, checked, fired = [1000.0], [], []
+    batch = asyncio.get_running_loop().create_future()
+    timer = Timer(60, lambda: checked.append(now[0]) or True, lambda: fired.append(now[0]) or batch,
+                  clock=lambda: now[0])
+    now[0] += 61
+    timer.start()
+    await asyncio.sleep(0)
+    assert fired == [1061.0]
+    now[0] += 61                      # the batch runs past its own minute, and rows keep arriving
+    n = len(checked)
+    for _ in range(5):
+        timer.arrived()
+        await asyncio.sleep(0)
+    assert len(checked) == n          # asleep on the batch: nothing woke it
+    batch.set_result(None)
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert fired == [1061.0, 1122.0]  # it ended: due long since, with something unread
+    await timer.stop()
