@@ -29,7 +29,7 @@ from fake_rcon import FakeRcon  # noqa: E402
 from fake_world import World  # noqa: E402
 import secrets  # noqa: E402
 import mc  # noqa: E402
-from kit import values, world, area  # noqa: E402
+from kit import area, loop, values, world  # noqa: E402
 
 NAMES = ["replace_blocks", "shape_fill", "summon", "sky_above", "meteor_fall", "projectile",
          "under_feet", "walk_steps", "enters_chunk"]
@@ -179,17 +179,19 @@ class WorldUnderFeetTests(KitCase):
 
 class WorldWalkStepsTests(KitCase):
     def test_a_step_each_block_walked_and_once_on_arrival(self):
+        t = self.clock(world)                    # skipped ahead: the kit reads a dimension at most every 2 s
         got, _ = collect(P["walk_steps"].walk_steps("@a", vals("walk_steps")), 5)
-        time.sleep(0.4)
+        look = lambda: self.looked("if entity @s[nbt={OnGround:1b}] run data get entity @s Pos")
+        look()
         steve = self.world.players["Steve"]
-        steve["pos"][0] += 0.5
-        time.sleep(0.4)
-        steve["pos"][0] += 0.7
-        time.sleep(0.4)
-        steve["pos"][1] += 1.0
-        time.sleep(0.4)
+        for move in (lambda: steve["pos"].__setitem__(0, steve["pos"][0] + 0.5),     # half a block: no step
+                     lambda: steve["pos"].__setitem__(0, steve["pos"][0] + 0.7),     # a block on: a step
+                     lambda: steve["pos"].__setitem__(1, steve["pos"][1] + 1.0)):    # a block up: a step
+            move()
+            look()
         steve["dim"] = NETHER
-        time.sleep(2.3)                 # the kit reads a player's dimension at most every 2 s
+        t.advance(2.1)
+        look()
         at = [x for (p, x), _ in got]
         self.assertEqual([p for (p, _), _ in got], ["Steve"] * 4)
         self.assertEqual([round(a[0], 1) for a in at], [10.5, 11.7, 11.7, 11.7])
@@ -199,17 +201,17 @@ class WorldWalkStepsTests(KitCase):
 
 class WorldEntersChunkTests(KitCase):
     def test_each_chunk_once_per_dimension(self):
+        t = self.clock(loop, world, rate=10)     # its passes (every 0.5 s) ten times as fast
         got, _ = collect(P["enters_chunk"].enters_chunk("@a", vals("enters_chunk", enters_dims="overworld")), 4)
+        look = lambda: self.looked("data get entity Steve Pos")
         steve = self.world.players["Steve"]
-        time.sleep(0.7)
-        steve["pos"][0] = 14.5          # the same chunk
-        time.sleep(0.7)
-        steve["pos"][0] = 17.5          # the next one
-        time.sleep(0.7)
-        steve["pos"][0] = 3.5           # back
-        time.sleep(0.7)
-        steve["dim"] = NETHER           # not in enters_dims
-        time.sleep(0.7)
+        look()
+        for x in (14.5, 17.5, 3.5):              # the same chunk, the next one, back
+            steve["pos"][0] = x
+            look()
+        steve["dim"] = NETHER                    # not in enters_dims
+        t.advance(2.1)
+        look()
         boxes = [b for (_, b), _ in got]
         self.assertEqual([tuple(b) for b in boxes], [(0, 32, -16, 15, 104, -1), (16, 32, -16, 31, 104, -1)])
         self.assertEqual([b.dim for b in boxes], [None, None])
