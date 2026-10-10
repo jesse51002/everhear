@@ -8,7 +8,6 @@ class Nuke(Action, preset("countdown"), preset("crater")):
     runs = "once"
     takes = ["player", "countdown_seconds", "crater_radius", "nuke_at"]
     defaults = {"countdown_seconds": 600, "countdown_text": "☢ Nuke", "crater_load": False}
-    timeout_s = 900
 
     player: Players = "@a"
     """whose spot it falls on, where the first one named stands as it starts: a name, several separated by commas, or @a"""

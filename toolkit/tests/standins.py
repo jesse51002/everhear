@@ -115,6 +115,8 @@ class Ping(Action):
     """seconds it waits first"""
     fail: bool = False
     """whether it fails"""
+    early: bool = False
+    """whether it says it started before its nap"""
 ''',
     "slow": '''from actions.ping import Ping
 
@@ -212,6 +214,8 @@ import mc
 from kit import result, values
 
 v = values()
+if v["early"]:
+    result("%s: started" % v["say"])
 time.sleep(v["nap"])
 if v["fail"]:
     mc.log("about to fail")

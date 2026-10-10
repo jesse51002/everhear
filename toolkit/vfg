@@ -1411,8 +1411,8 @@ def answer_of(name, got, notes):
     line = {"ok": True, "copy": copy, "action": name, "running": bool(got["running"]),
             "summary": res.get("summary") or "", "facts": facts, "notes": list(notes)}
     if got["running"]:
-        if got["runs"] == "once":
-            line["summary"] = "still running as %s" % copy
+        if got["runs"] == "once":  # what it said so far (a countdown started), and that it goes on
+            line["summary"] = "; ".join(x for x in (line["summary"], "still running as %s" % copy) if x)
         elif not line["summary"]:
             line["summary"] = "running as %s" % copy
     elif got.get("code"):

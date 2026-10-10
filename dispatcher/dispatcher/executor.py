@@ -9,7 +9,7 @@ JSON), which prints ONE JSON line (Contracts §8):
 
 and says which of five things happened (`Ran.kind`):
 - "ok": it ran. A once action answers with its script's result(); one past its timeout with
-  "still running as <copy>", `running` true, and it is never run again; an until-stopped one
+  what it said so far and "still running as <copy>", `running` true, and it is never run again; an until-stopped one
   once it is ready. vfg's notes (a value clamped) are added to the summary.
 - "refused": it ran and Minecraft or the script said no: `ok` false. Only this goes back to
   the action planner, which may change it and retry. A script that found a player offline

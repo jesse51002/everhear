@@ -89,7 +89,7 @@ class TestRun(ActionCase):
         meta = self.box_json("ping.json")
         self.assertEqual({k: meta[k] for k in ("copy", "action", "script", "source", "values", "live", "runs", "task")},
                          {"copy": "ping", "action": "ping", "script": "ping", "source": "library",
-                          "values": {"say": "hi", "nap": 0, "fail": False}, "live": [], "runs": "once", "task": "T3"})
+                          "values": {"say": "hi", "nap": 0, "fail": False, "early": False}, "live": [], "runs": "once", "task": "T3"})
         self.assertRegex(meta["started"], ISO_RE)
         self.assertEqual(self.box_json("ping.result.json")["summary"], "hi: 1 online")
         self.assertFalse(os.path.exists(self.run_dir("ping.pid")))
@@ -163,6 +163,9 @@ class TestRun(ActionCase):
         # The dispatcher's default for the rest.
         got = self.line(self.run_action("ping", "nap=3", VFG_DISPATCH_ACTION_TIMEOUT_S="1"))
         self.assertEqual(got["summary"], "still running as ping")
+        # What it said before the timeout (a countdown started) is kept in the answer.
+        got = self.line(self.run_action("ping", "nap=3", "early=true", VFG_DISPATCH_ACTION_TIMEOUT_S="1"))
+        self.assertEqual(got["summary"], "hello: started; still running as %s" % got["copy"])
 
     def test_a_failed_script_is_not_ok_with_its_last_words(self):
         r = self.run_action("ping", "fail=true")
