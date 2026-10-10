@@ -2,18 +2,22 @@
 server, run the way a player's ask runs them.
 
     integration/realmc/up es --fresh && eval "$(integration/realmc/env es)"
-    uv run --python 3.9 python scripts/_test/live_examples_seeds.py [-k zeus]
+    uv run --no-project --python 3.12 python scripts/_test/live_examples_seeds.py [-k zeus]
 
-Each script is started with `vfg script run` (deployed to the server's stand-in and run there
-on Python 3.9, as on the box) twice: once with its defaults, and once as a second instance
-(as=<name>-b) with values that are not; Carpet's fake player Steve does what sets it off (stands
-still, throws a trident, shoots, dies, mines a block); the world is then asked over RCON whether
-it did what the seed did; one live value is changed with `vfg script set` and the change is
-seen; and after `vfg script stop`, or after the script ended by itself, nothing tagged
-vfg_<instance> is left: no entity, no objective of its own, no bossbar, no forceload. It runs
-only against a realmc test server with Carpet, never the box. Explosions and lightning go off
-at sites of their own away from the arena; `up --fresh` puts the world back after.
+Each script's action is run with `vfg action run` (its script deployed to the server's stand-in
+and run there on Python 3.12, as on the box) twice: once with its defaults, and once as a second
+copy (as=<action>_b) with values that are not; its one JSON line says the copy is running (an
+until-stopped action) or has ended (a once action, whose run waits for it; one watched while it
+runs is started in the background, and its answer read when it ends or is stopped). Carpet's
+fake player Steve does what sets it off (stands still, throws a trident, shoots, dies, mines a
+block); the world is then asked over RCON whether it did what the seed did; one live value is
+changed with `vfg script set` and the change is seen; and after `vfg script stop`, or after the
+copy ended by itself, nothing tagged vfg_<copy> is left: no entity, no objective of its own, no
+bossbar, no forceload. Whether a copy runs is asked of the server (`vfg script list --json
+--fresh`). It runs only against a realmc test server with Carpet, never the box. Explosions and
+lightning go off at sites of their own away from the arena; `up --fresh` puts the world back after.
 """
+import json
 import math
 import os
 import re
@@ -60,6 +64,14 @@ def vfg(*args, timeout=60):
     if r.returncode != 0:
         raise AssertionError("vfg %s: exit %d\n%s" % (" ".join(args), r.returncode, out))
     return out
+
+
+def jline(out):
+    """The JSON line in vfg's output (anything it warned of comes before it)."""
+    lines = [l for l in out.splitlines() if l.startswith("{")]
+    if not lines:
+        raise AssertionError("no JSON line from vfg:\n" + out)
+    return json.loads(lines[-1])
 
 
 def until(test, seconds=10.0, every=0.2):
@@ -110,22 +122,23 @@ def attr(selector, name):
     return number(rc("attribute %s minecraft:%s base get" % (selector, name)))
 
 
-def running(instance):
-    return re.search(r"^%s running" % re.escape(instance), vfg("script", "list"), re.M) is not None
+def running(copy):
+    """Whether a copy runs now, as the server says (not this PC's cache)."""
+    return copy in jline(vfg("script", "list", "--json", "--fresh"))["copies"]
 
 
-def logs(instance):
-    """The instance's log since it was last started."""
-    out = vfg("script", "logs", instance, "-n", "400")
+def logs(copy):
+    """The copy's log since it was last started."""
+    out = vfg("script", "logs", copy, "-n", "400")
     return out.rsplit("\n--- ", 1)[-1]
 
 
-def logged(instance, pattern, seconds=10.0):
-    """The last match of a pattern in the instance's log, waiting for it."""
+def logged(copy, pattern, seconds=10.0):
+    """The last match of a pattern in the copy's log, waiting for it."""
     found = []
 
     def look():
-        found[:] = re.findall(pattern, logs(instance))
+        found[:] = re.findall(pattern, logs(copy))
         return bool(found)
     until(look, seconds, 0.5)
     return found[-1] if found else None
@@ -138,12 +151,12 @@ def objectives():
     return re.findall(r"\[([^\]]+)\]", rc("scoreboard objectives list"))
 
 
-def left(instance, own_tags=(), shared=()):
-    """What an instance left behind: entities tagged vfg_<instance> (with the kit's "vfg" tag,
-    or one of its own tags on the world's mobs), its objectives (and the seed's shared ones),
-    and forceloads that were not there before."""
+def left(copy, own_tags=(), shared=()):
+    """What a copy left behind: entities tagged vfg_<copy> (with the kit's "vfg" tag, or one
+    of its own tags on the world's mobs), its objectives (and the seed's shared ones), and
+    forceloads that were not there before."""
     out = []
-    tag = "vfg_" + instance
+    tag = "vfg_" + copy
     for t in (tag,) + tuple("%s_%s" % (tag, s) for s in own_tags):
         if count("@e[tag=%s]" % t):
             out.append("entity tagged " + t)
@@ -203,6 +216,7 @@ def die(at, back):
 class Seeds(unittest.TestCase):
     def setUp(self):
         self.started = []
+        self.waiting = {}            # copy: the `vfg action run` started in the background
 
     def tearDown(self):
         for inst in self.started:
@@ -211,29 +225,73 @@ class Seeds(unittest.TestCase):
                     vfg("script", "stop", inst)
             except AssertionError:
                 pass
+        for proc in self.waiting.values():
+            try:
+                proc.communicate(timeout=15)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
 
-    def run_(self, name, *values, instance=None, ends=False):
-        """Start an instance; with ends, wait (up to 60 s) for it to end by itself."""
-        args = [name] + (["as=" + instance] if instance else []) + list(values)
-        out = vfg("script", "run", *((["--wait", "60"] if ends else []) + args), timeout=120)
-        inst = instance or name
+    def run_(self, name, *values, copy=None, ends=False):
+        """Run a copy of an action and check its JSON line: an until-stopped one answers once
+        it is ready, still running; with ends (a once action) the run waits for it to end by
+        itself, up to the action's timeout_s. The copy's name."""
+        args = [name] + list(values) + (["as=" + copy] if copy else [])
+        line = jline(vfg("action", "run", *args, timeout=700 if ends else 120))
+        inst = copy or name
         self.started.append(inst)
-        if not ends:
-            self.assertIn("running %s" % inst, out)
+        self.assertTrue(line["ok"], line)
+        self.assertEqual((line["copy"], line["action"]), (inst, name), line)
+        self.assertEqual(line["running"], not ends, line)
         return inst
 
+    def start(self, name, *values, copy=None):
+        """Start a copy of a once action in the background, to watch it while it runs: its
+        name, once the server has it running. ended() or stop() reads its run's answer."""
+        args = ["vfg", "action", "run", name] + list(values) + (["as=" + copy] if copy else [])
+        inst = copy or name
+        proc = self.waiting[inst] = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.started.append(inst)
+        got = until(lambda: proc.poll() is not None or running(inst), 30, 0.5)
+        if proc.poll() is not None:
+            self.fail("%s did not run, or ended at once:\n%s" % (inst, self.waiting.pop(inst).communicate()[0].decode()))
+        self.assertTrue(got, "%s did not start within 30 s" % inst)
+        return inst
+
+    def answer(self, inst, seconds):
+        """The JSON line of a run start() began, within some seconds: ok, and the copy ended."""
+        proc = self.waiting.pop(inst)
+        try:
+            out = proc.communicate(timeout=seconds)[0].decode()
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            self.fail("%s did not end within %d s" % (inst, seconds))
+        line = jline(out)
+        self.assertTrue(line["ok"], line)
+        self.assertEqual(line["copy"], inst, line)
+        self.assertFalse(line["running"], line)
+        return line
+
     def set_(self, inst, *values):
+        """The edit, every value live: "<copy>: k=v …, live", after any notes."""
         out = vfg("script", "set", inst, *values)
-        self.assertIn("live", out)
+        said = out.strip().split("\n")[-1]
+        self.assertTrue(said.startswith(inst + ": ") and said.endswith(", live"), out)
         return out
 
     def stop(self, inst, own_tags=(), shared=()):
-        vfg("script", "stop", inst)
+        out = vfg("script", "stop", inst)
+        self.assertTrue(re.search(r"^stopped %s(;|$)" % re.escape(inst), out, re.M), out)
+        if inst in self.waiting:
+            self.answer(inst, 30)                                 # a once copy's run answers as it ends
         self.assertFalse(running(inst))
         self.assertTrue(until(lambda: not left(inst, own_tags, shared), 5), left(inst, own_tags, shared))
         self.assertNotIn("Traceback", logs(inst))
 
     def ended(self, inst, seconds):
+        if inst in self.waiting:
+            self.answer(inst, seconds + 15)
         self.assertTrue(until(lambda: not running(inst), seconds, 0.5), "%s did not end by itself" % inst)
         self.assertNotIn("Traceback", logs(inst))
 
@@ -245,7 +303,7 @@ class Seeds(unittest.TestCase):
         inst = self.run_("attribute_guard")
         self.assertTrue(until(lambda: attr("Steve", "scale") == 1.0, 8), "scale was not put back")
         self.stop(inst)
-        inst = self.run_("attribute_guard", "every=2", instance="attribute_guard-b")
+        inst = self.run_("attribute_guard", "every=2", copy="attribute_guard_b")
         rc("attribute Steve minecraft:movement_speed base set 0.3")
         self.assertTrue(until(lambda: abs(attr("Steve", "movement_speed") - 0.1) < 1e-6, 4))
         self.set_(inst, "every=1")
@@ -257,20 +315,20 @@ class Seeds(unittest.TestCase):
     def test_02_chosen_one(self):
         steve()
         rc("clear Steve")
-        inst = self.run_("chosen_one")
+        inst = self.start("chosen_one")
         self.assertTrue(until(lambda: count("@e[type=mannequin,tag=vfg_chosen_one]") == 1, 6), "no Radiant One")
         self.ended(inst, 30)
         self.assertEqual(items('netherite_sword[item_name="Holy Zombie Slayer"]'), 1)
         self.assertEqual(left(inst), [])
-        inst = self.run_("chosen_one", "player=Steve", "blade=Excalibur", instance="chosen_one-b")
+        inst = self.start("chosen_one", "player=Steve", "blade=Excalibur", copy="chosen_one_b")
         time.sleep(3)
         self.set_(inst, "blade=Doombringer")                  # live: the name given is the one now
         self.ended(inst, 30)
         self.assertEqual(items('netherite_sword[item_name="Doombringer"]'), 1)
         self.assertEqual(items('netherite_sword[item_name="Excalibur"]'), 0)
         self.assertEqual(left(inst), [])
-        inst = self.run_("chosen_one", "player=Steve", instance="chosen_one-c")
-        self.assertTrue(until(lambda: count("@e[type=mannequin,tag=vfg_chosen_one-c]") == 1, 6))
+        inst = self.start("chosen_one", "player=Steve", copy="chosen_one_c")
+        self.assertTrue(until(lambda: count("@e[type=mannequin,tag=vfg_chosen_one_c]") == 1, 6))
         self.stop(inst)                                       # stopped mid-cinematic: the giant goes
 
     def test_03_demon_lord(self):
@@ -284,10 +342,10 @@ class Seeds(unittest.TestCase):
         self.stop(inst, shared=("vfg_dl_deaths",))
         self.assertIn("59999968", rc("worldborder get"))
         steve()
-        inst = self.run_("demon_lord", "round=12", "break_s=30", instance="demon_lord-b")
+        inst = self.run_("demon_lord", "round=12", "break_s=30", copy="demon_lord_b")
         self.assertTrue(until(lambda: "No bossbar" not in rc("bossbar get vfg:demon_lord max"), 70, 1),
                         "round 12 brought no boss")
-        self.assertTrue(until(lambda: count("@e[type=ravager,tag=vfg_demon_lord-b]") == 1, 5), "no Ravager Warlord")
+        self.assertTrue(until(lambda: count("@e[type=ravager,tag=vfg_demon_lord_b]") == 1, 5), "no Ravager Warlord")
         self.assertNotIn("59999968", rc("worldborder get"))     # the arena's border is up
         self.set_(inst, "break_s=5")
         self.stop(inst, shared=("vfg_dl_deaths",))
@@ -304,8 +362,8 @@ class Seeds(unittest.TestCase):
         rc("clear Steve")
         rc("give Steve bread 20")
         inst = self.run_("god_visits", "director_min_s=10", "director_max_s=10.5", "stay_s=4",
-                         "director_weights=1,0", "gifts=diamond 5", instance="god_visits-b")
-        self.assertTrue(until(lambda: count("@e[type=mannequin,tag=vfg_god_visits-b]") == 1, 16), "no god came")
+                         "director_weights=1,0", "gifts=diamond 5", copy="god_visits_b")
+        self.assertTrue(until(lambda: count("@e[type=mannequin,tag=vfg_god_visits_b]") == 1, 16), "no god came")
         self.assertTrue(until(lambda: items("diamond") == 5, 3), "no gift")
         self.set_(inst, "director_weights=0,1", "take_items=bread")
         self.assertTrue(until(lambda: items("bread") == 12, 20), "the god took no bread")
@@ -320,7 +378,7 @@ class Seeds(unittest.TestCase):
         self.stop(inst)
         self.assertFalse(passes("execute if block 8 %d 8 skeleton_skull" % Y))
         steve(safe=False)
-        inst = self.run_("grave_marks", "seconds=8", instance="grave_marks-b")
+        inst = self.run_("grave_marks", "seconds=8", copy="grave_marks_b")
         die((8.5, Y, 8.5), (X - 5, Y, Z - 5))
         self.assertTrue(until(lambda: passes("execute if block 8 %d 8 skeleton_skull" % Y), 6))
         self.assertTrue(until(lambda: not passes("execute if block 8 %d 8 skeleton_skull" % Y), 12),
@@ -352,7 +410,7 @@ class Seeds(unittest.TestCase):
             self.assertTrue(39 <= far <= 162, far)
             rc("kill %s" % label)
         self.assertEqual(left(inst), [])
-        inst = self.run_("gun_chests", "per_player=2", "nearest=20", "farthest=30", instance="gun_chests-b", ends=True)
+        inst = self.run_("gun_chests", "per_player=2", "nearest=20", "farthest=30", copy="gun_chests_b", ends=True)
         self.ended(inst, 30)
         self.assertEqual(count("@e[tag=vfg_gun_chest,x=%d,y=%d,z=%d,distance=..40]" % (x, y, z)), 2)
         self.assertEqual(left(inst), [])
@@ -365,8 +423,8 @@ class Seeds(unittest.TestCase):
         self.assertTrue(running(inst))
         self.stop(inst)
         inst = self.run_("herobrine", "director_min_s=1", "director_max_s=1.5", "director_events=shadow",
-                         "director_weights=1", instance="herobrine-b")
-        self.assertTrue(until(lambda: count("@e[type=armor_stand,tag=vfg_herobrine-b]") >= 1, 6), "no Herobrine")
+                         "director_weights=1", copy="herobrine_b")
+        self.assertTrue(until(lambda: count("@e[type=armor_stand,tag=vfg_herobrine_b]") >= 1, 6), "no Herobrine")
         for dx, dz in ((3, 3), (-3, 3), (3, -3)):
             rc("setblock %d %d %d torch" % (X + dx, Y, Z + dz))
         self.set_(inst, "director_events=torches")
@@ -389,7 +447,7 @@ class Seeds(unittest.TestCase):
             time.sleep(1)
         self.assertTrue(logged(inst, r"Steve kill streak 3", 4), logs(inst))
         self.stop(inst)
-        inst = self.run_("kill_fx", "streak_s=20", "volume=0.5", instance="kill_fx-b")
+        inst = self.run_("kill_fx", "streak_s=20", "volume=0.5", copy="kill_fx_b")
         time.sleep(1.5)
         kill()
         time.sleep(1)
@@ -401,8 +459,8 @@ class Seeds(unittest.TestCase):
         time.sleep(0.3)
         PLAYERS.attack("Steve")                                   # a hit: dealt goes up
         rc("damage Steve 2 minecraft:generic")                    # a hurt: taken goes up
-        self.assertTrue(until(lambda: mc.score("Steve", "vfg_kill_fx-b_dealt") > 0, 3))
-        self.assertTrue(until(lambda: mc.score("Steve", "vfg_kill_fx-b_taken") > 0, 3))
+        self.assertTrue(until(lambda: mc.score("Steve", "vfg_kill_fx_b_dealt") > 0, 3))
+        self.assertTrue(until(lambda: mc.score("Steve", "vfg_kill_fx_b_taken") > 0, 3))
         rc("kill @e[tag=lxseeds_pig]")
         self.set_(inst, "streak_s=1")
         time.sleep(1)
@@ -428,7 +486,7 @@ class Seeds(unittest.TestCase):
         self.assertTrue(logged(inst, r"Steve got (.+)", 4), "breaking it gave nothing")
         self.stop(inst, shared=("vfg_lucky",))
         rc("clear Steve")
-        inst = self.run_("lucky_blocks", "give=1", instance="lucky_blocks-b")
+        inst = self.run_("lucky_blocks", "give=1", copy="lucky_blocks_b")
         self.assertTrue(until(lambda: items('sponge[item_name="Lucky Block"]') == 1, 5))
         self.stop(inst, shared=("vfg_lucky",))
 
@@ -440,7 +498,7 @@ class Seeds(unittest.TestCase):
         self.assertTrue(until(lambda: "invisibility" in rc("data get entity @e[tag=lxseeds_c1,limit=1] active_effects"), 3))
         self.stop(inst, own_tags=("fuse",))
         self.assertEqual(number(rc("data get entity @e[tag=lxseeds_c1,limit=1] Fuse")), 30)
-        inst = self.run_("sneaky_creepers", "fuse=5", instance="sneaky_creepers-b")
+        inst = self.run_("sneaky_creepers", "fuse=5", copy="sneaky_creepers_b")
         self.assertTrue(until(lambda: number(rc("data get entity @e[tag=lxseeds_c1,limit=1] Fuse")) == 100, 4))
         self.set_(inst, "fuse=4")
         time.sleep(1)
@@ -462,7 +520,7 @@ class Seeds(unittest.TestCase):
         self.assertEqual(attr(near, "follow_range"), 16)
         self.stop(inst, own_tags=("w",), shared=("vfg_wd_sneak", "vfg_wd_sprint"))
         self.assertTrue(abs(attr(far, "movement_speed") - 0.23) < 1e-3, "speed not reset")
-        inst = self.run_("walking_dead", "walk_speed=0.1", "friends=0", instance="walking_dead-b")
+        inst = self.run_("walking_dead", "walk_speed=0.1", "friends=0", copy="walking_dead_b")
         self.assertTrue(until(lambda: abs((attr(far, "movement_speed") or 0) - 0.1) < 1e-3, 4))
         self.set_(inst, "walk_range=20")
         self.assertTrue(until(lambda: attr(near, "follow_range") == 20, 4))
@@ -476,12 +534,12 @@ class Seeds(unittest.TestCase):
         inst = self.run_("zoo")
         self.assertTrue(until(lambda: count("@e[tag=vfg_zoo_horde]") >= 20, 6), "no animals came")
         self.stop(inst, own_tags=("horde",))
-        inst = self.run_("zoo", "horde_cap=10", instance="zoo-b")
-        self.assertTrue(until(lambda: count("@e[tag=vfg_zoo-b_horde]") == 10, 6))
+        inst = self.run_("zoo", "horde_cap=10", copy="zoo_b")
+        self.assertTrue(until(lambda: count("@e[tag=vfg_zoo_b_horde]") == 10, 6))
         time.sleep(2.5)
-        self.assertEqual(count("@e[tag=vfg_zoo-b_horde]"), 10, "over the cap")
+        self.assertEqual(count("@e[tag=vfg_zoo_b_horde]"), 10, "over the cap")
         self.set_(inst, "horde_cap=25")
-        self.assertTrue(until(lambda: count("@e[tag=vfg_zoo-b_horde]") == 25, 6))
+        self.assertTrue(until(lambda: count("@e[tag=vfg_zoo_b_horde]") == 25, 6))
         self.stop(inst, own_tags=("horde",))
 
     # ---- at sites of their own -------------------------------------------------------------------
@@ -493,13 +551,13 @@ class Seeds(unittest.TestCase):
         self.assertEqual(most(lambda: count("@e[type=tnt,tag=vfg_anti_camp]"), 1), 7)
         self.stop(inst)
         steve(SITES["anti_camp"])
-        inst = self.run_("anti_camp", "stands_seconds=6", "tnt=3", instance="anti_camp-b")
-        self.assertTrue(until(lambda: count("@e[type=tnt,tag=vfg_anti_camp-b]") >= 1, 10, 0.1))
-        self.assertEqual(most(lambda: count("@e[type=tnt,tag=vfg_anti_camp-b]"), 1), 3)
+        inst = self.run_("anti_camp", "stands_seconds=6", "tnt=3", copy="anti_camp_b")
+        self.assertTrue(until(lambda: count("@e[type=tnt,tag=vfg_anti_camp_b]") >= 1, 10, 0.1))
+        self.assertEqual(most(lambda: count("@e[type=tnt,tag=vfg_anti_camp_b]"), 1), 3)
         self.set_(inst, "tnt=5")
         time.sleep(3)                                              # the volley before goes off
-        self.assertTrue(until(lambda: count("@e[type=tnt,tag=vfg_anti_camp-b]") >= 1, 10, 0.1))
-        self.assertEqual(most(lambda: count("@e[type=tnt,tag=vfg_anti_camp-b]"), 1), 5)
+        self.assertTrue(until(lambda: count("@e[type=tnt,tag=vfg_anti_camp_b]") >= 1, 10, 0.1))
+        self.assertEqual(most(lambda: count("@e[type=tnt,tag=vfg_anti_camp_b]"), 1), 5)
         self.stop(inst)
 
     def shoot(self, item, yaw, pitch):
@@ -524,7 +582,7 @@ class Seeds(unittest.TestCase):
         self.assertTrue(passes("execute if block %d %d %d air" % (x, y - 1, z)), "no crater under it")
         self.stop(inst, own_tags=("seen",))
         steve(SITES["boom_bow"])
-        inst = self.run_("boom_bow", "explosion_power=3", "cloud=true", instance="boom_bow-b")
+        inst = self.run_("boom_bow", "explosion_power=3", "cloud=true", copy="boom_bow_b")
         time.sleep(1)
         self.shoot("bow", 90, 10)
         self.assertTrue(logged(inst, r"1 blast\(s\) where Steve's arrow", 8))
@@ -532,7 +590,7 @@ class Seeds(unittest.TestCase):
         time.sleep(1)
         self.shoot("bow", 180, 10)
         self.assertTrue(logged(inst, r"5 blast\(s\) where Steve's arrow", 8), "the plus did not go off")
-        self.assertEqual(count("@e[type=arrow,tag=vfg_boom_bow-b_seen,nbt={inGround:1b}]"), 0, "a landed arrow stayed")
+        self.assertEqual(count("@e[type=arrow,tag=vfg_boom_bow_b_seen,nbt={inGround:1b}]"), 0, "a landed arrow stayed")
         self.stop(inst, own_tags=("seen",))
 
     def test_15_tnt_rain(self):
@@ -543,9 +601,9 @@ class Seeds(unittest.TestCase):
         self.assertTrue(dropped and 1 <= int(dropped) <= 10, dropped)
         self.stop(inst)
         steve(SITES["tnt_rain"])
-        inst = self.run_("tnt_rain", "every=5", "sky_count=3", "fuse=6", "sky_open=false", instance="tnt_rain-b")
-        self.assertTrue(until(lambda: count("@e[type=tnt,tag=vfg_tnt_rain-b]") >= 1, 4, 0.1))
-        self.assertEqual(most(lambda: count("@e[type=tnt,tag=vfg_tnt_rain-b]"), 1), 3)
+        inst = self.run_("tnt_rain", "every=5", "sky_count=3", "fuse=6", "sky_open=false", copy="tnt_rain_b")
+        self.assertTrue(until(lambda: count("@e[type=tnt,tag=vfg_tnt_rain_b]") >= 1, 4, 0.1))
+        self.assertEqual(most(lambda: count("@e[type=tnt,tag=vfg_tnt_rain_b]"), 1), 3)
         self.set_(inst, "sky_count=6")
         self.assertTrue(logged(inst, r"live: sky_count=6", 8))
         self.assertTrue(logged(inst, r"dropped 6 TNT", 3), logs(inst))
@@ -560,10 +618,10 @@ class Seeds(unittest.TestCase):
         self.assertTrue(logged(inst, r"lightning x1 where Steve's trident came down", 3))
         self.stop(inst, own_tags=("seen",))
         steve(SITES["zeus"])
-        inst = self.run_("zeus", "lightning_count=3", "lightning_layout=ring", "lightning_spread=3", instance="zeus-b")
+        inst = self.run_("zeus", "lightning_count=3", "lightning_layout=ring", "lightning_spread=3", copy="zeus_b")
         time.sleep(1)
         self.shoot("trident", 0, -25)
-        self.assertEqual(most(lambda: count("@e[type=lightning_bolt,tag=vfg_zeus-b]"), 4), 3)
+        self.assertEqual(most(lambda: count("@e[type=lightning_bolt,tag=vfg_zeus_b]"), 4), 3)
         self.set_(inst, "lightning_count=2")
         time.sleep(1)
         self.shoot("trident", 90, -25)
@@ -588,7 +646,7 @@ class Seeds(unittest.TestCase):
         finally:
             rc("forceload remove %d %d" % (px, pz))
         self.assertEqual(left(inst), [])
-        inst = self.run_("mountains", "seed=7", "corner=-260,-60", instance="mountains-b")
+        inst = self.start("mountains", "seed=7", "corner=-260 64 -60", copy="mountains_b")
         self.assertTrue(logged(inst, r"terrain column 10/100", 30), logs(inst))
         self.stop(inst)                                          # stopped part-built: its forceloads go
 
@@ -596,8 +654,8 @@ class Seeds(unittest.TestCase):
         steve()
         # On ground west of the arena, with a seed of its own each time (a run with the same
         # seed over the same ground finds every spot it picks already planted).
-        inst = self.run_("mountain_trees", "n=20", "seed=%d" % (time.time() % 100000), "corner=-220,40",
-                         instance="mountain_trees-b", ends=True)
+        inst = self.run_("mountain_trees", "n=20", "seed=%d" % (time.time() % 100000), "corner=-220 64 40",
+                         copy="mountain_trees_b", ends=True)
         self.ended(inst, 120)
         placed = logged(inst, r"trees placed (\d+) tries \d+", 1)
         self.assertTrue(placed and 1 <= int(placed) <= 20, logs(inst))     # n caps it; tries are n x 8

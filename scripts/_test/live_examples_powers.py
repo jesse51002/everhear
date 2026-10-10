@@ -2,17 +2,20 @@
 hollow_purple, spirit_bomb, ice_beam, super_saiyan, meteor_staff and boom_trident.
 
     integration/realmc/up e2 --fresh && eval "$(integration/realmc/env e2)"
-    uv run --python 3.9 python scripts/_test/live_examples_powers.py [-k galick]
+    uv run --no-project --python 3.12 python scripts/_test/live_examples_powers.py [-k galick]
 
-Each example is started as the box starts it, with `vfg script run` (deployed to the realmc
-stand-in, run there on Python 3.9), with a few values that are not its defaults. Steve and Alex
+Each example is started as the box starts it, with `vfg action run` (its script deployed to
+the realmc stand-in, run there on Python 3.12), as a copy the test names (as=gg_steve), with
+a few values that are not its defaults; its JSON line must say ok and running. Steve and Alex
 hold its item and use it, sneak or throw as a person does; then the world is asked with RCON
 what it did: the item given, health of the husks it aimed at (and of a villager and a tamed
 wolf, which must be spared), blocks carved or frozen, effects given. One live value is changed
 with `vfg script set` and seen to take effect, and after `vfg script stop` nothing tagged
-vfg_<instance> is left: no entity, no forceload, no item it gave. Big ones run small. It runs
-only against a realmc test server, never the box; `up e2 --fresh` puts the world back after.
+vfg_<copy> is left: no entity, no forceload, no item it gave, and the box no longer runs it.
+Big ones run small. It runs only against a realmc test server, never the box; `up e2 --fresh`
+puts the world back after.
 """
+import json
 import os
 import re
 import signal
@@ -59,8 +62,16 @@ def vfg(*args):
     return out
 
 
-def logs(instance, n=80):
-    return vfg("script", "logs", instance, "-n", str(n))
+def json_line(out):
+    """The JSON line `vfg action run` (or `vfg action list --json`, `vfg script list --json`)
+    printed, as a dict."""
+    lines = [l for l in out.splitlines() if l.startswith("{")]
+    assert lines, "no JSON line in: %s" % out
+    return json.loads(lines[-1])
+
+
+def logs(copy, n=80):
+    return vfg("script", "logs", copy, "-n", str(n))
 
 
 def until(test, seconds=10.0, every=0.2):
@@ -133,18 +144,18 @@ def gravity(p):
     return float(cmd("attribute %s minecraft:gravity get" % p).split(" is ")[-1])
 
 
-def display(instance):
-    """The block a display of an instance shows, or ""."""
-    return cmd("execute as @e[tag=vfg_%s,type=block_display,limit=1] run data get entity @s block_state" % instance)
+def display(copy):
+    """The block a display of a copy shows, or ""."""
+    return cmd("execute as @e[tag=vfg_%s,type=block_display,limit=1] run data get entity @s block_state" % copy)
 
 
 def forceloads():
     return set(re.findall(r"\[(-?\d+), (-?\d+)\]", cmd("forceload query")))
 
 
-def tagged(instance):
-    """How many entities are tagged vfg_<instance> (or with a tag of its own, vfg_<instance>_...)."""
-    m = re.search(r"Count: (\d+)", cmd("execute if entity @e[tag=vfg_%s]" % instance))
+def tagged(copy):
+    """How many entities are tagged vfg_<copy> (or with a tag of its own, vfg_<copy>_...)."""
+    m = re.search(r"Count: (\d+)", cmd("execute if entity @e[tag=vfg_%s]" % copy))
     return int(m.group(1)) if m else 0
 
 
@@ -161,8 +172,6 @@ def lane():
 
 
 class Powers(unittest.TestCase):
-    instances = ()
-
     @classmethod
     def setUpClass(cls):
         try:
@@ -187,8 +196,8 @@ class Powers(unittest.TestCase):
         cmd("effect clear @a")
 
     def tearDown(self):
-        for inst in self.started:
-            subprocess.run(["vfg", "script", "stop", inst], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        for copy in self.started:
+            subprocess.run(["vfg", "script", "stop", copy], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         for p in ("Steve", "Alex"):
             if p in PLAYERS.online():
                 PLAYERS.stop(p)
@@ -210,21 +219,33 @@ class Powers(unittest.TestCase):
         self.assertTrue(until(lambda: health(name) == 20.0, 3), "%s is not at full health" % name)
         return name
 
-    def run_(self, script, instance, *values):
-        out = vfg("script", "run", script, "as=" + instance, *values)
-        self.started.append(instance)
+    def run_(self, action, copy, *values):
+        """vfg action run <action> as=<copy>: its JSON line says ok, and the copy runs."""
+        got = json_line(vfg("action", "run", action, "as=" + copy, *values))
+        if got.get("copy"):
+            self.started.append(got["copy"])
+        self.assertTrue(got["ok"], got)
+        self.assertEqual((got["copy"], got["action"], got["running"]), (copy, action, True), got)
+        return got
+
+    def set_(self, copy, *values):
+        """vfg script set on live values: "<copy>: k=v …, live", no restart."""
+        out = vfg("script", "set", copy, *values)
+        self.assertTrue(out.rstrip().endswith(", live"), out)
         return out
 
-    def stop_clean(self, instance, item_id=None, holders=()):
-        """vfg script stop, then nothing tagged vfg_<instance> is left, no forceload of its own,
-        and the item it gave is gone from everyone it gave it to."""
-        vfg("script", "stop", instance)
-        self.started.remove(instance)
-        self.assertTrue(until(lambda: tagged(instance) == 0, 5), "entities tagged vfg_%s left" % instance)
-        self.assertEqual(forceloads() - self.loaded, set(), "forceloads left by %s" % instance)
+    def stop_clean(self, copy, item_id=None, holders=()):
+        """vfg script stop, then nothing tagged vfg_<copy> is left, no forceload of its own, the
+        item it gave is gone from everyone it gave it to, and the box no longer runs it."""
+        self.assertIn("stopped %s" % copy, vfg("script", "stop", copy))
+        self.started.remove(copy)
+        self.assertTrue(until(lambda: tagged(copy) == 0, 5), "entities tagged vfg_%s left" % copy)
+        self.assertEqual(forceloads() - self.loaded, set(), "forceloads left by %s" % copy)
         for p in holders:
             self.assertFalse(has_item(p, item_id) or has_item(p, item_id, "weapon.*"),
                              "%s still has the %s it was given" % (p, item_id))
+        running = json_line(vfg("script", "list", "--json", "--fresh"))["copies"]
+        self.assertNotIn(copy, running, "%s still runs after its stop" % copy)
 
     def given(self, p, item_id):
         self.assertTrue(until(lambda: holds_item(p, item_id), 10), "%s was not given %s" % (p, item_id))
@@ -247,7 +268,7 @@ class GalickGun(Powers):
         target("villager", X + 11.5, Y, Z + 0.5, mob="villager", hp=0)
         tamed_wolf("wolf", X + 5.5, Y, Z + 0.5)
         before = {n: health(n) for n in ("villager", "wolf")}
-        self.run_("galick_gun", "gg-steve", "player=Steve", "length=30", "charge_seconds=1")
+        self.run_("galick_gun", "gg_steve", "player=Steve", "length=30", "charge_seconds=1")
         self.given(steve, "galick_gun")
         PLAYERS.use(steve)
         self.assertTrue(until(lambda: health("a") < 100 and health("b") < 100, 12), "the beam hurt nothing")
@@ -264,49 +285,52 @@ class GalickGun(Powers):
         self.assertTrue(block(X + 34, Y - 6, Z + 4, "stone"), "the crater is too big")
         # a live value: less damage on the next shot
         a = health("a")
-        vfg("script", "set", "gg-steve", "damage_amount=10")
+        self.set_("gg_steve", "damage_amount=10")
         time.sleep(1.0)
         PLAYERS.use(steve)
         self.assertTrue(until(lambda: health("a") < a, 10), "the second shot missed")
         print("  after damage_amount=10:", a, "->", health("a"))
         self.assertGreater(health("a"), a - 12)
-        self.assertIn("fired", logs("gg-steve"))
-        self.stop_clean("gg-steve", "galick_gun", [steve])
+        self.assertIn("fired", logs("gg_steve"))
+        self.stop_clean("gg_steve", "galick_gun", [steve])
 
     def test_two_players_fire_at_each_other_and_the_beams_clash(self):
-        """One instance for everyone (player=@a), so each shot runs on its own; Steve and Alex
+        """One copy for everyone (player=@a), so each shot runs on its own; Steve and Alex
         face each other 22 blocks apart and fire; the beams clash and nobody is hit."""
         steve = self.player("Steve", (X - 10.5, Y, Z + 0.5), -90)
         alex = self.player("Alex", (X + 11.5, Y, Z + 0.5), 90)
         fill(X, Y, Z - 2, X, Y + 3, Z + 2, "glass")          # what a beam that was not stopped would carve
-        self.run_("galick_gun", "gg-all", "beam_clash_seconds=3", "beam_clash_blast=0")
+        self.run_("galick_gun", "gg_all", "beam_clash_seconds=3", "beam_clash_blast=0")
         self.given(steve, "galick_gun")
         self.given(alex, "galick_gun")
         PLAYERS.use(steve)
         time.sleep(0.5)
         PLAYERS.use(alex)
-        self.assertTrue(until(lambda: "beam clash won by" in logs("gg-all"), 20), logs("gg-all"))
-        out = logs("gg-all")
+        self.assertTrue(until(lambda: "beam clash won by" in logs("gg_all"), 20), logs("gg_all"))
+        out = logs("gg_all")
         print("\n" + "\n".join(l for l in out.splitlines() if "clash" in l))
         self.assertEqual(out.count("beam clash:"), 1)
         self.assertNotIn(" fired: ", out)                # neither beam hit anything: the clash was the shot
         self.assertEqual((health("Steve"), health("Alex")), (20.0, 20.0))
         self.assertTrue(block(X, Y + 1, Z, "glass"), "a beam carved through")
-        self.stop_clean("gg-all", "galick_gun", [steve, alex])
+        self.stop_clean("gg_all", "galick_gun", [steve, alex])
 
 
 class Themes(Powers):
     def test_every_note_of_their_themes_is_a_sound_26_3_plays(self):
-        """Each tune these examples play (their theme_tune, and the Spirit Bomb's throw), note
-        by note, sent the way fx.melody sends it near a player: the server must play each one."""
+        """Each tune these examples play (their action's theme_tune, and the Spirit Bomb's
+        throw), note by note, sent the way fx.melody sends it near a player: the server must
+        play each one."""
         import ast
         steve = self.player("Steve", (X + 0.5, Y, Z + 0.5), -90)
+        actions = json_line(vfg("action", "list", "--json"))["actions"]
         tunes = {}
         for name in ("galick_gun", "hollow_purple", "spirit_bomb", "ice_beam", "super_saiyan"):
-            tree = ast.parse(open(os.path.join(os.path.dirname(HERE), name, "main.py")).read())
+            with open(os.path.join(os.path.dirname(HERE), actions[name]["script"], "main.py")) as f:
+                tree = ast.parse(f.read())
             body = {n.targets[0].id: n.value for n in tree.body if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)}
-            values, all_tunes = ast.literal_eval(body["VALUES"]), ast.literal_eval(body["_THEME_MUSIC_TUNES"])
-            for t in [values["theme_tune"]["default"]] + (["spirit_bomb_throw"] if name == "spirit_bomb" else []):
+            all_tunes = ast.literal_eval(body["_THEME_MUSIC_TUNES"])
+            for t in [actions[name]["fields"]["theme_tune"]["default"]] + (["spirit_bomb_throw"] if name == "spirit_bomb" else []):
                 tunes[t] = all_tunes[t]
         refused = []
         for tune, notes in sorted(tunes.items()):
@@ -337,8 +361,8 @@ class HollowPurple(Powers):
         tamed_wolf("wolf", X + 5.5, Y, Z + 0.5)
         before = {n: health(n) for n in ("villager", "wolf")}
         for n in (1, 2, 3):                 # as an earlier run leaves on a player it killed mid-shot
-            cmd("tag Alex add vfg_hp-steve_hit%d" % n)
-        self.run_("hollow_purple", "hp-steve", "player=Steve", "length=30", "width=2", "around_radius=4",
+            cmd("tag Alex add vfg_hp_steve_hit%d" % n)
+        self.run_("hollow_purple", "hp_steve", "player=Steve", "length=30", "width=2", "around_radius=4",
                   "damage_what=mobs", "crater_radius=3", "crater_tunnel=1")
         self.given(steve, "hollow_purple")                  # the run's never gave it
         PLAYERS.use(steve)
@@ -352,25 +376,25 @@ class HollowPurple(Powers):
         self.assertTrue(until(lambda: air(X + 30, Y - 1, Z), 15), "no sphere erased at its end")  # carved after the tunnel
         self.assertEqual([x for x in range(X + 4, X + 28) if not air(x, Y + 2, Z)], [], "the tunnel along the path has gaps")
         self.assertEqual([x for x in range(X + 4, X + 26) if air(x, Y + 3, Z)], [], "the tunnel along the path is too tall")
-        vfg("script", "set", "hp-steve", "damage_what=all")
+        self.set_("hp_steve", "damage_what=all")
         time.sleep(1.0)
         PLAYERS.use(steve)
         self.assertTrue(until(lambda: alex not in PLAYERS.online(), 8), "everything, and Alex was not hit")
-        print("\n  " + "\n  ".join(l for l in logs("hp-steve").splitlines() if "fired" in l))
-        self.stop_clean("hp-steve", "hollow_purple", [steve])
+        print("\n  " + "\n  ".join(l for l in logs("hp_steve").splitlines() if "fired" in l))
+        self.stop_clean("hp_steve", "hollow_purple", [steve])
 
     def test_a_hollow_purple_and_a_galick_gun_fired_at_each_other_clash(self):
-        """Two scripts, two instances: Steve's Hollow Purple and Alex's Galick Gun, fired at once."""
+        """Two actions, two copies: Steve's Hollow Purple and Alex's Galick Gun, fired at once."""
         steve = self.player("Steve", (X - 10.5, Y, Z + 0.5), -90)
         alex = self.player("Alex", (X + 11.5, Y, Z + 0.5), 90)
         fill(X, Y, Z - 2, X, Y + 3, Z + 2, "glass")
-        self.run_("hollow_purple", "hp-clash", "player=Steve", "length=40", "beam_clash_seconds=3", "beam_clash_blast=0")
-        self.run_("galick_gun", "gg-clash", "player=Alex", "length=40", "beam_clash_seconds=3", "beam_clash_blast=0")
+        self.run_("hollow_purple", "hp_clash", "player=Steve", "length=40", "beam_clash_seconds=3", "beam_clash_blast=0")
+        self.run_("galick_gun", "gg_clash", "player=Alex", "length=40", "beam_clash_seconds=3", "beam_clash_blast=0")
         self.given(steve, "hollow_purple")
         self.given(alex, "galick_gun")
         PLAYERS.use(steve)
         PLAYERS.use(alex)
-        both = lambda: logs("hp-clash") + logs("gg-clash")
+        both = lambda: logs("hp_clash") + logs("gg_clash")
         self.assertTrue(until(lambda: "beam clash won by" in both(), 20), both())
         out = both()
         print("\n" + "\n".join(l for l in out.splitlines() if "clash" in l and "---" not in l))
@@ -378,8 +402,8 @@ class HollowPurple(Powers):
         self.assertNotIn(" fired: ", out)
         self.assertEqual((health(steve), health(alex)), (20.0, 20.0))
         self.assertTrue(block(X, Y + 1, Z, "glass"), "a beam carved through")
-        self.stop_clean("hp-clash", "hollow_purple", [steve])
-        self.stop_clean("gg-clash", "galick_gun", [alex])
+        self.stop_clean("hp_clash", "hollow_purple", [steve])
+        self.stop_clean("gg_clash", "galick_gun", [alex])
 
 
 class SpiritBomb(Powers):
@@ -394,26 +418,26 @@ class SpiritBomb(Powers):
         target("villager", X + 11.5, Y, Z - 3.5, mob="villager", hp=0)
         tamed_wolf("wolf", X + 12.5, Y, Z - 1.5)
         before = {n: health(n) for n in ("villager", "wolf")}
-        self.run_("spirit_bomb", "sb-steve", "player=Steve", "charge=0.5", "charge_seconds=1.5", "crater_radius=4",
+        self.run_("spirit_bomb", "sb_steve", "player=Steve", "charge=0.5", "charge_seconds=1.5", "crater_radius=4",
                   "explosion_power=3", "explosion_layout=one", "reach=40")
         self.given(steve, "spirit_bomb")
         PLAYERS.hold(steve)
         time.sleep(1.2)
         PLAYERS.stop(steve)
-        self.assertTrue(until(lambda: "threw it" in logs("sb-steve"), 10), logs("sb-steve"))
+        self.assertTrue(until(lambda: "threw it" in logs("sb_steve"), 10), logs("sb_steve"))
         self.assertTrue(until(lambda: health("a") < 100 and health("b") < 100, 5), "the blast hurt nothing")
         print("\n  husks a, b:", health("a"), health("b"), " Steve:", health(steve))
         self.assertEqual({n: health(n) for n in before}, before, "the villager or the wolf was hit")
         self.assertEqual(health(steve), 20.0, "it hurt the one who threw it")
         self.assertTrue(until(lambda: air(X + 15, Y + 1, Z) and air(X + 14, Y - 2, Z), 20), "no crater")
         self.assertTrue(block(X + 15, Y - 6, Z, "dirt"), "the crater is too deep")
-        vfg("script", "set", "sb-steve", "cooldown=60")
+        self.set_("sb_steve", "cooldown=60")
         PLAYERS.hold(steve)
         time.sleep(2.5)
         PLAYERS.stop(steve)
         time.sleep(2.5)
-        self.assertEqual(logs("sb-steve").count("threw it"), 1, "a second bomb within the cooldown")
-        self.stop_clean("sb-steve", "spirit_bomb", [steve])
+        self.assertEqual(logs("sb_steve").count("threw it"), 1, "a second bomb within the cooldown")
+        self.stop_clean("sb_steve", "spirit_bomb", [steve])
 
 
 class IceBeam(Powers):
@@ -429,7 +453,7 @@ class IceBeam(Powers):
         target("a", X + 8.5, Y, Z + 0.5)
         target("villager", X + 11.5, Y, Z + 0.5, mob="villager", hp=0)
         tamed_wolf("wolf", X + 4.5, Y, Z + 0.5)
-        self.run_("ice_beam", "ib-steve", "player=Steve", "length=20", "cooldown=1")
+        self.run_("ice_beam", "ib_steve", "player=Steve", "length=20", "cooldown=1")
         self.given(steve, "ice_beam_staff")
         PLAYERS.use(steve)
         self.assertTrue(until(lambda: effect("a", "slowness") and effect("a", "blindness"), 8), "the husk was not frozen")
@@ -447,20 +471,20 @@ class IceBeam(Powers):
         self.assertEqual([x for x in along if not block(x, Y + 3, Z, "packed_ice")], [], "no ice along the path")
         self.assertEqual([x for x in along if x not in (X + 6, X + 7) and not block(x, Y - 1, Z, "packed_ice")], [],
                          "the floor along the path is not ice")
-        print("\n  " + "\n  ".join(l for l in logs("ib-steve").splitlines() if "fired" in l))
-        vfg("script", "set", "ib-steve", "freeze_blindness=false")
+        print("\n  " + "\n  ".join(l for l in logs("ib_steve").splitlines() if "fired" in l))
+        self.set_("ib_steve", "freeze_blindness=false")
         target("c", X + 9.5, Y, Z + 0.5)
         time.sleep(1.5)
         PLAYERS.use(steve)
         self.assertTrue(until(lambda: effect("c", "slowness"), 8), "the second shot froze nothing")
         self.assertFalse(effect("c", "blindness"), "freeze_blindness=false, and it was blinded")
-        self.stop_clean("ib-steve", "ice_beam_staff", [steve])
+        self.stop_clean("ib_steve", "ice_beam_staff", [steve])
 
 
 class SuperSaiyan(Powers):
     def test_three_taps_power_up_fly_and_power_down_and_a_plain_carrot_does_nothing(self):
         steve = self.player("Steve", (X + 0.5, Y, Z + 0.5), -90)
-        self.run_("super_saiyan", "ss-steve", "player=Steve", "charge_seconds=1", "seconds=30")
+        self.run_("super_saiyan", "ss_steve", "player=Steve", "charge_seconds=1", "seconds=30")
         self.assertTrue(until(lambda: has_item(steve, "super_saiyan"), 10), "no star given")
         # the run's bug: any carrot on a stick set it off
         PLAYERS.give(steve, "carrot_on_a_stick")
@@ -483,7 +507,7 @@ class SuperSaiyan(Powers):
         print("\n  rose from %.1f to %.1f" % (y0, PLAYERS.pos(steve)[1]))
         PLAYERS.look(steve, -90, 0)
         self.assertEqual(amplifier(steve, "speed"), 2, "Blue is Speed III")
-        vfg("script", "set", "ss-steve", "level=1")
+        self.set_("ss_steve", "level=1")
         self.assertTrue(until(lambda: amplifier(steve, "speed") == 0, 8), "level=1 did not take")
         for _ in range(3):
             PLAYERS.sneak(steve)
@@ -496,7 +520,7 @@ class SuperSaiyan(Powers):
         # the star powers up too
         PLAYERS.use(steve)
         self.assertTrue(until(lambda: effect(steve, "speed"), 6), "the star did nothing")
-        self.stop_clean("ss-steve", "super_saiyan", [steve])
+        self.stop_clean("ss_steve", "super_saiyan", [steve])
         self.assertFalse(effect(steve, "speed"), "a stop left him powered up")
         self.assertEqual(gravity(steve), 0.08, "a stop left him floating")
 
@@ -509,25 +533,25 @@ class MeteorStaff(Powers):
         target("villager", X + 10.5, Y, Z + 2.5, mob="villager", hp=0)
         tamed_wolf("wolf", X + 10.5, Y, Z - 1.5)
         before = {n: health(n) for n in ("villager", "wolf")}
-        self.run_("meteor_staff", "ms-steve", "player=Steve", "meteor_seconds=1.5", "meteor_height=25",
+        self.run_("meteor_staff", "ms_steve", "player=Steve", "meteor_seconds=1.5", "meteor_height=25",
                   "explosion_power=3", "cooldown=1")
         self.given(steve, "meteor_staff")
         PLAYERS.use(steve)
-        self.assertTrue(until(lambda: "magma_block" in display("ms-steve"), 4), "no meteor in the sky: " + display("ms-steve"))
-        self.assertTrue(until(lambda: "landed" in logs("ms-steve"), 8), logs("ms-steve"))
-        self.assertTrue(until(lambda: tagged("ms-steve") == 0, 4), "the meteor's blocks stayed")
+        self.assertTrue(until(lambda: "magma_block" in display("ms_steve"), 4), "no meteor in the sky: " + display("ms_steve"))
+        self.assertTrue(until(lambda: "landed" in logs("ms_steve"), 8), logs("ms_steve"))
+        self.assertTrue(until(lambda: tagged("ms_steve") == 0, 4), "the meteor's blocks stayed")
         self.assertTrue(until(lambda: health("a") is None or health("a") < 100, 5), "the blast hurt nothing")
         self.assertEqual({n: health(n) for n in before}, before, "the villager or the wolf was hit")
         self.assertEqual(health(steve), 20.0)
         self.assertTrue(air(X + 11, Y - 1, Z) or air(X + 11, Y - 2, Z), "no crater where it landed")
-        print("\n  " + "\n  ".join(l for l in logs("ms-steve").splitlines() if "landed" in l))
-        vfg("script", "set", "ms-steve", "meteor_blocks=obsidian")
+        print("\n  " + "\n  ".join(l for l in logs("ms_steve").splitlines() if "landed" in l))
+        self.set_("ms_steve", "meteor_blocks=obsidian")
         time.sleep(1.0)
         PLAYERS.look(steve, -90, 15)
         PLAYERS.use(steve)
-        self.assertTrue(until(lambda: "obsidian" in display("ms-steve"), 4), "meteor_blocks=obsidian did not take")
-        self.assertTrue(until(lambda: logs("ms-steve").count("landed") == 2, 8))
-        self.stop_clean("ms-steve", "meteor_staff", [steve])
+        self.assertTrue(until(lambda: "obsidian" in display("ms_steve"), 4), "meteor_blocks=obsidian did not take")
+        self.assertTrue(until(lambda: logs("ms_steve").count("landed") == 2, 8))
+        self.stop_clean("ms_steve", "meteor_staff", [steve])
 
 
 class BoomTrident(Powers):
@@ -537,26 +561,27 @@ class BoomTrident(Powers):
         target("a", X + 10.5, Y, Z + 2.5)
         tamed_wolf("wolf", X + 10.5, Y, Z - 2.5)
         before = health("wolf")
-        self.run_("boom_trident", "bt-steve", "player=Steve", "explosion_power=3")
+        self.run_("boom_trident", "bt_steve", "player=Steve", "explosion_power=3")
         self.assertTrue(until(lambda: has_item(steve, "boom_trident"), 6), "no trident given")
         self.assertTrue(holds_item(steve, "boom_trident"))
         PLAYERS.use(steve, "continuous")
         time.sleep(1.0)
         PLAYERS.stop(steve)
-        self.assertTrue(until(lambda: "went off" in logs("bt-steve"), 8), logs("bt-steve"))
+        self.assertTrue(until(lambda: "went off" in logs("bt_steve"), 8), logs("bt_steve"))
         self.assertTrue(until(lambda: health("a") is None or health("a") < 100, 4), "the blast hurt nothing")
         self.assertEqual(health("wolf"), before, "the wolf was hit")
         self.assertEqual(health(steve), 20.0)
         holes = [(y, z) for y in range(Y, Y + 7) for z in range(Z - 3, Z + 4) if air(X + 12, y, z)]
         self.assertTrue(holes, "the wall is whole")
-        print("\n  wall holes:", len(holes), "|", [l for l in logs("bt-steve").splitlines() if "went off" in l])
-        vfg("script", "set", "bt-steve", "crater=true", "crater_radius=3")
+        print("\n  wall holes:", len(holes), "|", [l for l in logs("bt_steve").splitlines() if "went off" in l])
+        # crater is a value boom_trident fixes (its crater=true variant is spear_bomb): an edit may change it
+        self.set_("bt_steve", "crater=true", "crater_radius=3")
         self.assertTrue(until(lambda: holds_item(steve, "boom_trident"), 10), "the trident did not come back")
         PLAYERS.use(steve, "continuous")
         time.sleep(1.0)
         PLAYERS.stop(steve)
-        self.assertTrue(until(lambda: "crater r=3" in logs("bt-steve"), 15), logs("bt-steve"))
-        self.stop_clean("bt-steve", "boom_trident", [steve])
+        self.assertTrue(until(lambda: "crater r=3" in logs("bt_steve"), 15), logs("bt_steve"))
+        self.stop_clean("bt_steve", "boom_trident", [steve])
 
 
 if __name__ == "__main__":

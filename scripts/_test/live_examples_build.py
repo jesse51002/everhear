@@ -1,20 +1,23 @@
 """The build examples on a real Minecraft 26.3 server, with Carpet's fake players: world_replace,
-chunk_changer, ice_walk, meteor, lava_rain, castle, sniper_nest, nuke, hellscape and
-sky_platform.
+chunk_changer, ice_walk, meteor, lava_rain, castle, ice_castle, sniper_nest, nuke, hellscape
+and sky_platform.
 
     integration/realmc/up e3 --fresh && eval "$(integration/realmc/env e3)"
-    uv run --python 3.9 python scripts/_test/live_examples_build.py [-k castle]
+    uv run --no-project --python 3.12 python scripts/_test/live_examples_build.py [-k castle]
 
-Each example is started as the box starts it, with `vfg script run` (deployed to the realmc
-stand-in, run there on Python 3.9), with small values near the arena (0 85 0, its grass floor
-at y 84, x and z -16..15) so a big one stays small. Steve walks, falls or stands where the
+Each example is a copy of its action, started as the box starts it, with `vfg action run`
+(its values checked here, then deployed to the realmc stand-in and run there on Python 3.12),
+with small values near the arena (0 85 0, its grass floor at y 84, x and z -16..15) so a big
+one stays small. A once action's run answers when the copy has ended; the meteor and the nuke,
+changed while they run, are started in the background. Steve walks, falls or stands where the
 example needs him; then the world is asked with RCON what it did: blocks (execute if block),
 health of husks and of a tamed wolf that must be spared, a sign's text, Steve's respawn. The
-examples that keep running get one live value changed with `vfg script set` and are seen to
+copies that keep running get one live value changed with `vfg script set` and are seen to
 take it; the ones that build and end are checked once they end. After each, nothing tagged
-vfg_<instance> is left: no entity, no forceload of its own. It changes the world, so it runs
+vfg_<copy> is left: no entity, no forceload of its own. It changes the world, so it runs
 only against a realmc test server, never the box: `up e3 --fresh` puts the world back after.
 """
+import json
 import os
 import re
 import signal
@@ -64,14 +67,47 @@ def vfg(*args):
     return out
 
 
-def logs(instance, n=200):
-    return vfg("script", "logs", instance, "-n", str(n))
+def last_json(out):
+    """The JSON line vfg printed last (a warning on stderr may come before it)."""
+    for line in reversed(out.strip().splitlines()):
+        if line.startswith("{"):
+            return json.loads(line)
+    raise AssertionError("no JSON line from vfg:\n%s" % out)
 
 
-def running(instance):
-    """True while `vfg script list` shows the instance and not as stopped."""
-    m = re.search(r"^%s (\S+)" % re.escape(instance), vfg("script", "list"), re.M)
-    return bool(m) and m.group(1) != "stopped"
+def answer(p, copy, seconds=60):
+    """The JSON line of a run started in the background, once it answers: ok, for the copy. A
+    once action's run answers when the copy has ended (running false, its result), or when its
+    wait is over (running true, "still running as <copy>")."""
+    try:
+        out = p.communicate(timeout=seconds)[0].decode("utf-8", "replace")
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.communicate()
+        raise AssertionError("vfg action run for %s did not answer within %d s" % (copy, seconds))
+    line = last_json(out)
+    if p.returncode or not line["ok"] or line["copy"] != copy:
+        raise AssertionError("vfg action run for %s exited %d:\n%s" % (copy, p.returncode, out))
+    return line
+
+
+def set_live(copy, *values):
+    """vfg script set <copy> k=v …, each a live value: the edit lands in the running copy, no
+    restart, and says so, `<copy>: k=v …, live`. That line."""
+    said = vfg("script", "set", copy, *values).strip().splitlines()[-1]
+    if not (said.startswith(copy + ": ") and said.endswith(", live")) or \
+            any(v.split("=", 1)[0] + "=" not in said for v in values):
+        raise AssertionError("vfg script set %s %s: %s" % (copy, " ".join(values), said))
+    return said
+
+
+def logs(copy, n=200):
+    return vfg("script", "logs", copy, "-n", str(n))
+
+
+def running(copy):
+    """True while the box runs the copy: vfg script list --json --fresh asks it now."""
+    return copy in last_json(vfg("script", "list", "--json", "--fresh"))["copies"]
 
 
 def until(test, seconds=10.0, every=0.25):
@@ -129,9 +165,9 @@ def forceloads():
     return set(re.findall(r"\[(-?\d+), (-?\d+)\]", cmd("forceload query")))
 
 
-def tagged(instance):
-    """How many entities are tagged vfg_<instance> (or with a tag of its own, vfg_<instance>_...)."""
-    m = re.search(r"Count: (\d+)", cmd("execute if entity @e[tag=vfg_%s]" % instance))
+def tagged(copy):
+    """How many entities are tagged vfg_<copy>."""
+    m = re.search(r"Count: (\d+)", cmd("execute if entity @e[tag=vfg_%s]" % copy))
     return int(m.group(1)) if m else 0
 
 
@@ -166,13 +202,18 @@ class Build(unittest.TestCase):
 
     def setUp(self):
         self.started = []
+        self.runs = {}                                          # copy: its run, started in the background
         cmd("kill @e[tag=%s]" % TAG)
         cmd("time set noon")
         cmd("gamerule fire_spread_radius_around_player 0")     # fire stays where a script put it
 
     def tearDown(self):
-        for inst in self.started:
-            subprocess.run(["vfg", "script", "stop", inst], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        for copy in self.started:
+            subprocess.run(["vfg", "script", "stop", copy], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        for p in self.runs.values():                            # a run the test never read
+            if p.poll() is None:
+                p.kill()
+            p.communicate()
         for p in PLAYERS.online():
             try:
                 PLAYERS.stop(p)
@@ -194,31 +235,51 @@ class Build(unittest.TestCase):
         cmd("effect clear %s" % name)
         return name
 
-    def run_(self, script, instance, *values):
-        out = vfg("script", "run", script, "as=" + instance, *values)
-        self.started.append(instance)
-        return out
+    def run_(self, action, copy, *values):
+        """vfg action run <action> as=<copy> …: its JSON line, ok, for that copy. An
+        until-stopped action answers once its copy is ready, a once action when its copy has
+        ended (or its wait is over)."""
+        self.started.append(copy)
+        line = last_json(vfg("action", "run", action, "as=" + copy, *values))
+        self.assertTrue(line["ok"] and line["copy"] == copy, line)
+        return line
 
-    def ends(self, instance, seconds=60):
-        """Wait until an instance that ends by itself has ended; its log."""
-        self.assertTrue(until(lambda: not running(instance), seconds, 0.5), "%s did not end:\n%s"
-                        % (instance, logs(instance)))
-        self.started.remove(instance)
-        out = logs(instance)
+    def start(self, action, copy, *values):
+        """vfg action run in the background, for a once action the test changes while its run
+        waits for it to end; ends(copy) reads its answer. Back once the copy runs."""
+        self.started.append(copy)
+        p = self.runs[copy] = subprocess.Popen(["vfg", "action", "run", action, "as=" + copy] + list(values),
+                                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.assertTrue(until(lambda: p.poll() is not None or running(copy), 30, 0.5), "%s did not start" % copy)
+        if p.poll() is not None:
+            answer(p, copy)                                     # ended already: ok, or why not
+        return p
+
+    def ends(self, copy, seconds=60):
+        """Wait until a copy that ends by itself has ended (its run in the background answers
+        first, ok); its log."""
+        if copy in self.runs:
+            answer(self.runs.pop(copy), copy, seconds)
+        self.assertTrue(until(lambda: not running(copy), seconds, 0.5), "%s did not end:\n%s"
+                        % (copy, logs(copy)))
+        self.started.remove(copy)
+        out = logs(copy)
         self.assertNotIn("Traceback", out, out)
         self.assertNotIn("error", out.lower(), out)
-        self.assertEqual(tagged(instance), 0, "entities tagged vfg_%s left" % instance)
-        self.assertEqual(forceloads() - self.loaded, set(), "forceloads left by %s" % instance)
+        self.assertEqual(tagged(copy), 0, "entities tagged vfg_%s left" % copy)
+        self.assertEqual(forceloads() - self.loaded, set(), "forceloads left by %s" % copy)
         return out
 
-    def stop_clean(self, instance):
-        """vfg script stop, then nothing tagged vfg_<instance> is left, no forceload of its own."""
-        vfg("script", "stop", instance)
-        self.started.remove(instance)
-        out = logs(instance)
+    def stop_clean(self, copy):
+        """vfg script stop, then nothing tagged vfg_<copy> is left, no forceload of its own."""
+        self.assertIn("stopped " + copy, vfg("script", "stop", copy))
+        self.started.remove(copy)
+        if copy in self.runs:                                   # its run answers now the copy has ended
+            answer(self.runs.pop(copy), copy)
+        out = logs(copy)
         self.assertNotIn("Traceback", out, out)
-        self.assertTrue(until(lambda: tagged(instance) == 0, 5), "entities tagged vfg_%s left" % instance)
-        self.assertEqual(forceloads() - self.loaded, set(), "forceloads left by %s" % instance)
+        self.assertTrue(until(lambda: tagged(copy) == 0, 5), "entities tagged vfg_%s left" % copy)
+        self.assertEqual(forceloads() - self.loaded, set(), "forceloads left by %s" % copy)
         return out
 
 
@@ -311,7 +372,7 @@ class ChunkChanger(Build):
             print("\n  some of what the snow became:", sorted(k for k in kinds if k))
             self.assertTrue(is_(X - 14, F, Z + 4, "grass_block"), "grass changed under the snow rule")
             # a live value: the rules
-            vfg("script", "set", "cc", "replace_rules=grass_block > moss_block")
+            set_live("cc", "replace_rules=grass_block > moss_block")
             time.sleep(1.0)
             PLAYERS.look(steve, 180, 0)                                             # facing north
             PLAYERS.move(steve, "forward")
@@ -358,7 +419,7 @@ class IceWalk(Build):
             self.assertTrue(is_(X - 6, F, Z + 3, "grass_block"), "radius 2 reached 3")
             self.assertFalse(is_(X - 6, F - 3, Z, "packed_ice"), "depth 3 reached 4 down")
             # a live value: a narrower path from here on
-            vfg("script", "set", "iw", "under_radius=0")
+            set_live("iw", "under_radius=0")
             time.sleep(1.0)
             PLAYERS.move(steve, "forward")
             time.sleep(1.5)
@@ -393,14 +454,14 @@ class Meteor(Build):
         cmd("effect give Steve resistance 30 4 true")
         tamed_wolf("wolf", X + 2.5, Y, Z + 0.5)
         target("near", X + 0.5, Y, Z + 3.5)
-        self.run_("meteor", "mt", "player=Steve", "sky_radius=0", "meteor_size=3", "meteor_height=30",
-                  "meteor_seconds=5", "explosion_power=3", "explosion_keep=0", "explosion_layout=one")
+        self.start("meteor", "mt", "player=Steve", "sky_radius=0", "meteor_size=3", "meteor_height=30",
+                   "meteor_seconds=5", "explosion_power=3", "explosion_keep=0", "explosion_layout=one")
         try:
             self.assertTrue(until(lambda: tagged("mt") > 0, 10), "no meteor in the sky")
             shows = cmd("data get entity @e[tag=vfg_mt,type=block_display,limit=1] block_state")
             self.assertRegex(shows, r'"minecraft:(magma_block|blackstone|obsidian)"', "the meteor is not seen: " + shows)
             time.sleep(1.0)
-            vfg("script", "set", "mt", "explosion_layout=plus", "explosion_spread=6")
+            set_live("mt", "explosion_layout=plus", "explosion_spread=6")
             out = self.ends("mt", 40)
             print("\n  " + "\n  ".join(l for l in out.splitlines() if "impact" in l or "live" in l))
             self.assertIn("5 blasts", out)
@@ -425,7 +486,7 @@ class LavaRain(Build):
         self.assertEqual(count(floor, "air"), len(floor), "it put blocks down")
         self.assertEqual(count([(X, Y, Z)], "fire"), 0)
         self.assertEqual(health("Steve"), 20.0)
-        vfg("script", "set", "lr", "every=2", "drops=5")
+        set_live("lr", "every=2", "drops=5")
         self.assertTrue(until(lambda: "live: every=2" in logs("lr"), 5), logs("lr"))
         self.assertTrue(running("lr"))
         out = self.stop_clean("lr")
@@ -489,12 +550,13 @@ class Castle(Build):
             arena_back()
 
     def test_an_ice_castle_with_stairs_down_carved_through_the_ground(self):
-        """The run's ice castle, small: packed ice walls, blue ice towers, a staircase 8 deep
-        from the yard down and ahead, three blocks of headroom over each step."""
+        """The run's ice castle, small: packed ice walls, blue ice towers (ice_castle's own
+        blocks, fixed), a staircase 8 deep from the yard down and ahead, three blocks of
+        headroom over each step."""
         steve = self.player("Steve", (X + 0.5, Y, Z - 13.5), yaw=0)            # facing south
         try:
-            self.run_("castle", "ic", "player=Steve", "castle_size=21", "castle_height=8", "castle_ahead=2",
-                      "shape_blocks=packed_ice", "castle_tower_blocks=blue_ice", "castle_stairs=8")
+            self.run_("ice_castle", "ic", "player=Steve", "castle_size=21", "castle_height=8", "castle_ahead=2",
+                      "castle_stairs=8")
             self.ends("ic", 90)
             z0 = Z - 12                                                          # its front wall
             self.assertTrue(is_(X + 4, Y + 3, z0, "packed_ice") and is_(X - 10, Y + 3, z0 - 2, "blue_ice"))
@@ -539,16 +601,16 @@ class SniperNest(Build):
 
 class Nuke(Build):
     def test_a_ten_second_countdown_kills_in_the_radius_carves_a_crater_and_a_live_radius_takes(self):
-        """The nuke at nuke_at, 8 blocks from Steve: radius 5 at the start, set live to 3
-        during the countdown. A husk 2 from the middle dies, one 7 off lives."""
+        """The nuke at nuke_at, a place given as x y z, 8 blocks from Steve: radius 5 at the
+        start, set live to 3 during the countdown. A husk 2 from the middle dies, one 7 off lives."""
         steve = self.player("Steve", (X - 8.5, Y, Z + 0.5))
         target("in", X + 2.5, Y, Z + 0.5)
         target("out", X + 7.5, Y, Z + 0.5)
         try:
-            self.run_("nuke", "nk", "player=Steve", "nuke_at=%d,%d,%d" % (X, F, Z), "countdown_seconds=10",
-                      "crater_radius=5")
+            self.start("nuke", "nk", "player=Steve", "nuke_at=%d %d %d" % (X, F, Z), "countdown_seconds=10",
+                       "crater_radius=5")
             time.sleep(2.0)
-            vfg("script", "set", "nk", "crater_radius=3")
+            set_live("nk", "crater_radius=3")
             self.assertTrue(until(lambda: health("in") is None, 20), "the husk in the radius lived")
             out = self.ends("nk", 60)
             print("\n  " + "\n  ".join(out.strip().splitlines()[-4:]))
@@ -563,7 +625,7 @@ class Nuke(Build):
 
     def test_a_stop_before_zero_calls_it_off(self):
         steve = self.player("Steve", (X + 0.5, Y, Z + 0.5))
-        self.run_("nuke", "nk2", "player=Steve", "countdown_seconds=20", "crater_radius=4")
+        self.start("nuke", "nk2", "player=Steve", "countdown_seconds=20", "crater_radius=4")
         time.sleep(3.0)
         out = self.stop_clean("nk2")
         self.assertIn("stopping", out)
