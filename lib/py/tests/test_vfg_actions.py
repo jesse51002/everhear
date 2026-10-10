@@ -334,7 +334,8 @@ KIT = kit_reads([m.strip() for m in MIXES], PIECES)
 @pytest.fixture(scope="module")
 def kit():
     """The presets' readings of MIXES and PIECES."""
-    out, err = KIT.stdout.read(), KIT.stderr.read()
+    with KIT.stdout, KIT.stderr:
+        out, err = KIT.stdout.read(), KIT.stderr.read()
     assert KIT.wait(timeout=60) == 0, err
     return json.loads(out)
 
