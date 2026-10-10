@@ -85,7 +85,7 @@ def strip_end(text: str) -> str:
 
 
 class Dispatcher:
-    def __init__(self, cfg: Config, *, catalog: Catalog, refs, vfg: Vfg, ask, state: State,
+    def __init__(self, cfg: Config, *, catalog: Catalog, refs, vfg: Vfg, ask, state: State, plan_ask=None,
                  reply: Reply, batch: Batch, scripts: dict[str, str] | None = None,
                  hidden: frozenset[str] = frozenset()):
         self.cfg = cfg
@@ -95,7 +95,7 @@ class Dispatcher:
         self.reply = reply
         self.batch = batch
         self.selector = Selector(catalog, ask, cfg.model, scripts=scripts or ()) if catalog else None
-        self.planner = Planner(ask, cfg.model, refs, scripts, hidden=hidden)
+        self.planner = Planner(plan_ask or ask, cfg.plan_model, refs, scripts, hidden=hidden)
         self.stopping = False
         self.running: dict[str, asyncio.Task] = {}
 

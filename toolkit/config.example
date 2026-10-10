@@ -78,6 +78,12 @@ VFG_DISPATCH_MODEL_TIMEOUT_S=
 # The dispatcher's reasoning: off, or an effort (low, medium, high) for a model that
 # cannot turn it off, such as Sonnet 5.5 on OpenRouter. Default: off
 VFG_DISPATCH_REASONING=
+# The action planner's own model, providers and reasoning, when they should differ from the
+# selector's: a smarter selector to route, a faster planner to write the command. Each
+# defaults to the selector's setting above.
+VFG_DISPATCH_PLAN_MODEL=
+VFG_DISPATCH_PLAN_PROVIDERS=
+VFG_DISPATCH_PLAN_REASONING=
 # How often a failed action is changed and run again before it is handed on or
 # dropped. Default: 1
 VFG_DISPATCH_RETRIES=

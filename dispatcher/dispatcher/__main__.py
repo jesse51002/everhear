@@ -57,11 +57,12 @@ async def ask(prompt, output, *, system=None, model, providers=None, timeout: fl
                                     providers=providers, timeout=timeout)
 
 
-def asker(cfg: Config):
-    """`ask` with VFG_DISPATCH_PROVIDERS and VFG_DISPATCH_MODEL_TIMEOUT_S: what the selector
-    and the planner call."""
-    return functools.partial(ask, providers=list(cfg.providers) or None, timeout=cfg.model_timeout_s,
-                             reasoning=cfg.effort)
+def asker(cfg: Config, *, plan: bool = False):
+    """`ask` with VFG_DISPATCH_PROVIDERS, VFG_DISPATCH_REASONING and VFG_DISPATCH_MODEL_TIMEOUT_S:
+    what the selector calls; with `plan`, the VFG_DISPATCH_PLAN_ ones the planner calls."""
+    providers = cfg.plan_providers if plan else cfg.providers
+    return functools.partial(ask, providers=list(providers) or None, timeout=cfg.model_timeout_s,
+                             reasoning=cfg.plan_effort if plan else cfg.effort)
 
 
 async def load_refs(cfg: Config, vfg, http):
@@ -105,8 +106,9 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, ask=None, cata
     batch = Batch(state, vfg, cfg.window_s)
 
     catalog = actions.load(cfg.repo) if catalog is None else catalog
+    plan_ask = asker(cfg, plan=True) if ask is None else ask
     ask = asker(cfg) if ask is None else ask
-    d = Dispatcher(cfg, catalog=catalog, refs=None if refs is LOAD else refs, vfg=vfg, ask=ask, state=state,
+    d = Dispatcher(cfg, catalog=catalog, refs=None if refs is LOAD else refs, vfg=vfg, ask=ask, plan_ask=plan_ask, state=state,
                    reply=reply, batch=batch, scripts=actions.scripts(cfg.repo),
                    hidden=actions.hidden_commands(cfg.repo))
     batch.on_refused = d.refused
@@ -126,7 +128,7 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, ask=None, cata
         loading = asyncio.create_task(keep_loading_refs(cfg, vfg, http, d, refs_retry_s), name="refs")
 
     inbox = Inbox(cfg.inbox, state, stale_minutes=cfg.stale_minutes, on_expired=d.expired)
-    log("start", f"pid {os.getpid()}; {cfg.inbox} from byte {state.offset}; model {cfg.model}; "
+    log("start", f"pid {os.getpid()}; {cfg.inbox} from byte {state.offset}; model {cfg.model}, planner {cfg.plan_model}; "
                  f"window {cfg.window_s:g} s; retries {cfg.retries}; action timeout {cfg.action_timeout_s:g} s; "
                  f"stale after {cfg.stale_minutes} min")
     while not stop.is_set():

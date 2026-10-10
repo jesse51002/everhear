@@ -37,6 +37,10 @@ class Config:
     action_timeout_s: float = 20.0  # VFG_DISPATCH_ACTION_TIMEOUT_S
     model_timeout_s: float = 10.0   # VFG_DISPATCH_MODEL_TIMEOUT_S: one structured() call, retries included
     reasoning: str = "off"          # VFG_DISPATCH_REASONING: off, or an effort (low, medium, high)
+    # The action planner's own model, providers and reasoning; each defaults to the selector's.
+    plan_model: str = DEFAULT_MODEL                       # VFG_DISPATCH_PLAN_MODEL
+    plan_providers: tuple[str, ...] = DEFAULT_PROVIDERS   # VFG_DISPATCH_PLAN_PROVIDERS
+    plan_reasoning: str = "off"                           # VFG_DISPATCH_PLAN_REASONING
     stop_grace_s: float = 10.0      # how long a running action may finish on SIGTERM
     stale_minutes: int = 10         # VFG_ORCH_STALE_MINUTES: a task that waited longer is failed, never run
 
@@ -44,6 +48,11 @@ class Config:
     def effort(self) -> bool | str:
         """What structured() takes: False for off, else the effort."""
         return False if self.reasoning in ("", "off") else self.reasoning
+
+    @property
+    def plan_effort(self) -> bool | str:
+        """The planner's, as effort is the selector's."""
+        return False if self.plan_reasoning in ("", "off") else self.plan_reasoning
 
     @property
     def inbox(self) -> Path:
@@ -91,18 +100,24 @@ def load(env: dict[str, str] | None = None) -> Config:
         raw = get(key)
         return Path(raw).expanduser() if raw else default
 
+    model = get("VFG_DISPATCH_MODEL", DEFAULT_MODEL)
+    providers = names("VFG_DISPATCH_PROVIDERS", DEFAULT_PROVIDERS)
+    reasoning = get("VFG_DISPATCH_REASONING", "off")
     return Config(
         home=home,
         dispatch_dir=path("VFG_DISPATCH_DIR", home / "dispatch"),
         orch_dir=path("VFG_ORCH_DIR", home / "orch"),
         repo=path("VFG_REPO", REPO),
-        model=get("VFG_DISPATCH_MODEL", DEFAULT_MODEL),
-        providers=names("VFG_DISPATCH_PROVIDERS", DEFAULT_PROVIDERS),
+        model=model,
+        providers=providers,
         retries=number("VFG_DISPATCH_RETRIES", 1, int, 0),
         window_s=number("VFG_DISPATCH_WINDOW_S", 10.0, float, 0),
         action_timeout_s=number("VFG_DISPATCH_ACTION_TIMEOUT_S", 20.0, float, 1),
         model_timeout_s=number("VFG_DISPATCH_MODEL_TIMEOUT_S", 10.0, float, 1),
-        reasoning=get("VFG_DISPATCH_REASONING", "off"),
+        reasoning=reasoning,
+        plan_model=get("VFG_DISPATCH_PLAN_MODEL", model),
+        plan_providers=names("VFG_DISPATCH_PLAN_PROVIDERS", providers),
+        plan_reasoning=get("VFG_DISPATCH_PLAN_REASONING", reasoning),
         stale_minutes=number("VFG_ORCH_STALE_MINUTES", 10, int, 1),
     )
 

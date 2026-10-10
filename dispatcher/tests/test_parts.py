@@ -256,6 +256,32 @@ async def test_every_model_call_carries_the_providers_of_the_config(tmp_path, mo
                      {"system": None, "model": "m", "reasoning": False, "providers": None, "timeout": 10.0}]
 
 
+async def test_the_planner_has_its_own_model_providers_and_reasoning(tmp_path, monkeypatch):
+    home = tmp_path / "vh"
+    home.mkdir()
+    same = config.load({"VFG_HOME": str(home), "VFG_DISPATCH_MODEL": "openai/gpt-6.1-sol",
+                        "VFG_DISPATCH_REASONING": "low", "VFG_DISPATCH_PROVIDERS": "none"})
+    assert (same.plan_model, same.plan_providers, same.plan_effort) == ("openai/gpt-6.1-sol", (), "low")
+    (home / "config").write_text("VFG_DISPATCH_MODEL=openai/gpt-6.1-sol\nVFG_DISPATCH_REASONING=low\n"
+                                 "VFG_DISPATCH_PROVIDERS=none\nVFG_DISPATCH_PLAN_MODEL=~deepseek/deepseek-v4-flash-latest\n"
+                                 "VFG_DISPATCH_PLAN_REASONING=off\nVFG_DISPATCH_PLAN_PROVIDERS=parasail,wafer\n")
+    cfg = config.load({"VFG_HOME": str(home)})
+    assert (cfg.model, cfg.providers, cfg.effort) == ("openai/gpt-6.1-sol", (), "low")
+    assert (cfg.plan_model, cfg.plan_providers, cfg.plan_effort) == ("~deepseek/deepseek-v4-flash-latest", ("parasail", "wafer"), False)
+
+    import vfg_llm
+    from dispatcher.__main__ import asker
+    calls = []
+
+    async def fake(prompt, output, **kw):
+        calls.append((kw["providers"], kw["reasoning"]))
+
+    monkeypatch.setattr(vfg_llm, "structured", fake)
+    await asker(cfg)("p", object, model="m")
+    await asker(cfg, plan=True)("p", object, model="m")
+    assert calls == [(None, "low"), (["parasail", "wafer"], False)]
+
+
 def test_a_log_line_is_iso_time_area_message(capsys):
     config.log("select", "T7 812 ms\nsecond line")
     out = capsys.readouterr().out
