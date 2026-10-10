@@ -1,225 +1,246 @@
-"""The one call: every part of a task routed and, for an action, the action itself written, in
-one structured() call (VFG_DISPATCH_ONE_CALL=on), instead of the selector then a planner call
-per pick.
+"""The brain's one call: each event is one structured() call, on GPT-6.1 Sol with low reasoning,
+which routes every part of a line and does the work in the same answer (Prototype_Brain).
 
-It sees what the selector sees (its rules and menu) and what the action planner sees for every
-action at once (each action's full description, the planner's rules, Minecraft's command list),
-with the saved places and every online player's items, by slot, as `listing.readable` names
-them, so an item change needs no listing first. Each action part comes back with its action
-ready to run, or a drop. run_script, whose values are shown only for the script named, comes
-back without one and is planned by the planner as before; so is a command that Minecraft
-refuses, retried with its reference. The selector's code rules still hold: earlier work goes
-to the orchestrator whole, a script that does not exist hands the task on, and so does block
-work with no orchestrator part.
+Three events, one `Decision`, so the cached prefix is the same whatever the event:
+- LINE: a line Jev classed action_oriented, or a conversational one Respond handed up;
+- REPORT: an implementer's result;
+- BATCH: what no live read took in for VFG_BRAIN_BATCH_S.
+
+A part goes to an action, written in full in `action` and ready to run; to `implementer`, with
+a brief (a new task, or `task` naming the task it follows up); or to `talk`, answered by
+`reply`. The prompt, in the order the cache needs:
+1. the opening, marked: the rules (prompts/brain.md, with the owner named), the menu, every
+   library action in full and Minecraft's command list;
+2. the conversation, a minute-block at a time, marked at checkpoints (context.py);
+3. the tail, never cached: this server's own actions (an implementer may add one at any
+   moment, and the opening must not change for it), the world, the open tasks, what is new
+   since the last read, and the event.
+
+The schema never changes with the actions: `to` is a name and `action` the values, both
+checked here against the actions as they are now, so a new action never changes the request
+before the conversation. The old selector's code rules that still hold are the Decision's
+validators, and an answer that breaks one goes back to the model once with why (structured()):
+an action that is not on the menu, values its action refuses (a command that places blocks
+among them: building is an action's that builds, else an implementer's), an instruction that
+does nothing, a teleport that moves nobody, and a part with no reply.
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, Union
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
-from vfg_llm import Answer
+from vfg_actions import check_values, menu_line
 
-from .action_planner import PROMPT as PLANNER_PROMPT
-from .actions import Catalog
-from .config import log
-from .selector import (BLOCK_WORK, INSTRUCTION_MAX, MAX_PICKS, NO_MOVE, ORCHESTRATOR_MAX, PART_MAX, PLACEHOLDER,
-                       PROMPT as SELECTOR_PROMPT, WHOLE_TASK, distinct, menu, unknown_scripts)
+from .actions import Catalog, view
+from .context import Context, Row, show
+from .world import Seen
 
-# Planned after the one call, by the planner: its values are shown only for the script it names.
-DEFERRED = ("run_script",)
+PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "brain.md"
+IMPLEMENTER, TALK = "implementer", "talk"
+TASK_ID = re.compile(r"^T\d+$")
+REPLY_MAX = 300
 
-# The selector's and the planner's rules about listing a player's items first: in the one call
-# the items are already in PLAYERS, so an item change is one part, its slot named directly.
-LISTING_RULES = ("To change an item a player already has (enchant, rename, repair), answer two command parts",
-                 "- To list a player's items,")
+# An instruction that does nothing.
+PLACEHOLDER = re.compile(r"^\W*(nothing( to do)?|none( needed)?|n/?a|no[ -]?op|skip|not needed|do nothing|"
+                         r"no action( needed)?|empty|placeholder|tbd)?\W*$", re.IGNORECASE)
+# A teleport to where the player already is: a part invented to fill the list.
+NO_MOVE = re.compile(r"\bto (his|her|their|its|your) (own )?((current|present) )?(position|location)\b"
+                     r"|\bto (his|her|their|its|your) (own )?(current|present) (spot|place)\b"
+                     r"|\bto where (he|she|they|it) (is|are|stands?|stood)\b", re.IGNORECASE)
 
-ROUTER = """
-AS THE ROUTER
-You hear a player's line first: LINE is their own words as speech-to-text heard them, which may mishear ("T" can be TNT), not a task anyone wrote up. Besides the actions and the orchestrator, a part can go to conversation, the AI that talks with the players: send it there when it is talk rather than something to do (a question, a greeting, a joke, a plan to discuss, a complaint), or needs judgement about the players and the game rather than an action or a build. When the whole line is talk, answer one conversation part with an empty instruction.
-RECENT is what was said in the last two minutes, oldest first, by the players and the AI. TASKS is the latest work and how it ended, newest last, each by its id. Use them for "again", "that", "it", "make it bigger", "stop it": a change, fix, undo or stop of earlier work is one orchestrator part, "Change to T<n>: ..." or "Cancel T<n>: ...", with that task's id. Write players' names, never "me", "my" or "us": the speaker is the player LINE names.
-`reply` is the one chat line the players see once the actions are done: short, plain, in the AI's own voice ("Power V is on your bow"). Leave it empty when a part goes to conversation, which answers itself.
-"""
-
-HOW = """
-WRITING EACH ACTION
-For every action part, also write the action itself in `action`: that action with its options chosen, exactly as it will run, and one sentence in `say` for the conversation saying what it does, for whom. PLAYERS below lists every online player's items by slot: an item change is one command part that names the slot directly, never a part that lists. Leave `action` null for run_script (it is written after you) and for an orchestrator part. When a part cannot be done because something is missing, such as an item the player does not have, set `drop` to why, in words a player understands, and leave `action` null. Where the rules below say to hand a part on, send that part to orchestrator instead. These rules are the action writer's:
-"""
+BATCH = ("BATCH: the rows under NEW are what was said as background and what happened in the game "
+         "since the last read, as Jev heard it. Nothing here was asked of you directly. Act only where "
+         "something clearly needs it: an ask Jev filed as context that nobody answered, a player in "
+         "trouble, a moment worth a short line in chat. Otherwise answer no parts and an empty reply.")
 
 
-class OnePick(BaseModel):
-    """One action to run, as the dispatcher keeps it: with its action already written, or a drop."""
-    action: str
-    instruction: str
-    say: str = ""
-    planned: dict[str, Any] | None = None  # the action's options, ready to run; None: the planner writes it
-    drop: str = ""
+class PartBase(BaseModel):
+    part: str = Field(description="the words of the line this part covers, short, as the player said them")
+    to: str = Field(description="the name of the action on the menu that does this part, or implementer, or talk")
+    instruction: str = Field("", description="an action: one short sentence in plain words, the player names "
+                                             "and amounts as said; implementer: the brief; talk: empty")
+    task: str = Field("", description="implementer: empty for a new task, or the id of the open or earlier "
+                                      "task this follows up, such as T183; any other part: empty")
+    action: dict[str, Any] | None = Field(None, description="an action part: the values that action takes, "
+                                                            "written in full, ready to run; null for "
+                                                            "implementer, talk and a drop")
+    drop: str = Field("", description="only when an action part cannot be done (an item the player does not "
+                                      "have): why, in words a player understands; else empty")
 
 
-class Decided(BaseModel):
-    """What the one call decided: the picks in order, the orchestrator's part and, as the
-    router (`first`), the conversation's part and the chat line for the players."""
-    picks: list[OnePick] = Field(default_factory=list)
-    orchestrator: str = ""
-    conversation: str = ""
-    reply: str = ""
+class DecisionBase(BaseModel):
+    parts: list[PartBase] = Field(default_factory=list, description="every part of the line, in the order they "
+                                                                    "run; may be empty for a report or a batch")
+    reply: str = Field("", description="the one chat line the players see, in the AI's own voice; required "
+                                       "whenever there is any part")
+    record: str = Field("", description="for a REPORT: one short line for the context, such as 'T183 done: ice "
+                                        "trail running as ice_trail'; else empty")
+    status: Literal["", "done", "failed"] = Field("", description="for a REPORT: the task's status after it; "
+                                                                  "else empty")
 
 
-def decision_type(catalog: Catalog, *, first: bool = False) -> type[BaseModel]:
-    """`Decision`, what the model answers: every part of the task, each routed, and an action
-    part with its action (one of the catalog's, but run_script's) or a drop. As the router
-    (`first`), a part may also go to conversation, and the answer carries a `reply`."""
-    To = Literal[tuple(catalog) + ("orchestrator",) + (("conversation",) if first else ())]  # type: ignore[valid-type]
-    written = tuple(cls for name, cls in catalog.items() if name not in DEFERRED)
-    Act = Union[written] if len(written) > 1 else written[0]  # type: ignore[valid-type]
+def decision_type(catalog: Catalog) -> type[DecisionBase]:
+    """`Decision`, checked against `catalog` as it is when an answer arrives. Its JSON schema is
+    the same for every catalog."""
 
-    class Part(BaseModel):
-        part: str = Field(min_length=1, max_length=PART_MAX,
-                          description="the words of the task this part covers, short, as the task says them")
-        to: To = Field(description="the action that does this part completely, right now, or orchestrator")  # type: ignore[valid-type]
-        instruction: str = Field(
-            "", max_length=ORCHESTRATOR_MAX,
-            description="for an action: one short sentence in plain words, the player names and amounts exactly "
-                        "as the task says them; for the orchestrator: the part as a short task, or empty when "
-                        "every part is the orchestrator's")
-        action: Act | None = Field(  # type: ignore[valid-type]
-            None, description="for an action part: that action, its options chosen, ready to run; null for "
-                              "run_script, for an orchestrator part and for a part you drop")
-        drop: str = Field("", description="only when the part cannot be done because something is missing: "
-                                          "why, in words a player understands")
-        say: str = Field("", description="for an action part: one sentence for the conversation, what it does, "
-                                         "for whom")
-
+    class Part(PartBase):
         @model_validator(mode="after")
-        def _consistent(self):
+        def _checked(self):
             said = self.instruction.strip()
-            if self.to in ("orchestrator", "conversation"):
+            if self.to in (IMPLEMENTER, TALK):
                 if self.action is not None:
                     raise ValueError(f"the {self.to} part {self.part!r} carries an action: leave it null")
+                if self.to == IMPLEMENTER and not said:
+                    raise ValueError(f"the implementer part {self.part!r} has no brief")
+                if self.to == IMPLEMENTER and self.task.strip() and not TASK_ID.match(self.task.strip()):
+                    raise ValueError(f"task {self.task!r} is not a task id such as T183: empty for a new task")
             else:
+                cls = catalog.get(self.to)
+                if cls is None:
+                    raise ValueError(f"{self.to} is not on the menu: use an action that is, or implementer")
                 if not said:
                     raise ValueError(f"the {self.to} part {self.part!r} has no instruction")
-                if len(said) > INSTRUCTION_MAX:
-                    raise ValueError(f"the {self.to} instruction is {len(said)} characters: one short sentence "
-                                     f"of at most {INSTRUCTION_MAX}; the commands go in action")
-                if self.action is not None and getattr(self.action, "action", None) != self.to:
-                    raise ValueError(f"the {self.to} part carries a {getattr(self.action, 'action', '?')} action")
-                if self.to not in DEFERRED and self.action is None and not self.drop.strip():
+                if self.drop.strip():
+                    if self.action is not None:
+                        raise ValueError(f"the {self.to} part {self.part!r} has both an action and a drop: one")
+                elif self.action is None:
                     raise ValueError(f"the {self.to} part {self.part!r} has no action: write it, or drop it "
                                      "and say why")
+                else:
+                    try:
+                        check_values(cls, self.action)
+                    except ValueError as e:
+                        raise ValueError(f"the {self.to} part {self.part!r}: "
+                                         + str(e).replace("the orchestrator's: hand it on", "an implementer's")
+                                         ) from None
             if said and PLACEHOLDER.match(said):
                 raise ValueError(f"the instruction {self.instruction!r} does nothing: leave the part out")
             if self.to == "teleport" and NO_MOVE.search(said):
                 raise ValueError(f"{self.instruction!r} moves nobody: leave the part out")
             return self
 
-    class Decision(BaseModel):
-        parts: list[Part] = Field(min_length=1, description="every part of the task, in the order they run")
+    class Decision(DecisionBase):
+        parts: list[Part] = Field(default_factory=list,
+                                  description=DecisionBase.model_fields["parts"].description)
 
-    class RouterDecision(Decision):
-        reply: str = Field("", max_length=300, description="the one chat line the players see once the actions "
-                                                           "are done, in the AI's own voice; empty when a part "
-                                                           "goes to conversation or nothing needs saying")
+        @model_validator(mode="after")
+        def _replied(self):
+            if self.parts and not self.reply.strip():
+                raise ValueError("there are parts and no reply: every line acted on gets one chat line")
+            if len(self.reply) > REPLY_MAX:
+                raise ValueError(f"the reply is {len(self.reply)} characters: one chat line, under 200")
+            return self
 
-    RouterDecision.__name__ = "Decision"
-    return RouterDecision if first else Decision
-
-
-def decided(decision) -> Decided:
-    """The parts as picks, each its own (none merged), and the orchestrator text; more than
-    MAX_PICKS picks, or none, is the whole task handed on."""
-    picks, orchestrator, conversation = [], [], []
-    for p in decision.parts:
-        if p.to == "orchestrator":
-            orchestrator.append((p.instruction or p.part).strip())
-            continue
-        if p.to == "conversation":
-            conversation.append((p.instruction or p.part).strip())
-            continue
-        planned = p.action.model_dump(mode="json") if p.action is not None and not p.drop.strip() else None
-        picks.append(OnePick(action=p.to, instruction=p.instruction.strip(), say=p.say.strip(), planned=planned,
-                             drop=p.drop.strip()))
-    picks = distinct(picks)
-    talk = "; ".join(x for x in conversation if x)
-    reply = getattr(decision, "reply", "").strip()
-    if len(picks) > MAX_PICKS or (not picks and not orchestrator and not conversation):
-        return Decided(conversation=talk)
-    return Decided(picks=picks, orchestrator="; ".join(x for x in orchestrator if x), conversation=talk, reply=reply)
+    return Decision
 
 
-def without(text: str, starts: tuple[str, ...]) -> str:
-    """`text` without its paragraphs and bullets that start with any of `starts`."""
-    return "\n".join(line for line in text.split("\n") if not line.lstrip().startswith(starts))
+@dataclass
+class Event:
+    kind: Literal["LINE", "REPORT", "BATCH"]
+    row: Row | None = None          # LINE: the line
+    handed_up: str = ""             # LINE: Respond's reason, when Respond handed it up
+    task: dict | None = None        # REPORT: the task's entry in tasks.json
+    status: str = ""                # REPORT: done or failed, as the implementer said
+    report: str = ""                # REPORT: the implementer's report, which never reaches the context
+
+    def show(self) -> str:
+        if self.kind == "LINE":
+            r = self.row
+            how = "typed" if r.source == "chat" else "said"
+            text = f"LINE #{r.seq}, {r.hms}: {r.who} {how}: {r.text}"
+            if self.handed_up:
+                text += f"\n(Respond, the cheap mode, handed this line up to you: {self.handed_up})"
+            return text
+        if self.kind == "REPORT":
+            t = self.task or {}
+            return (f"REPORT: the implementer of {t.get('id', '?')} ended, {self.status}.\n"
+                    f"{t.get('id', '?')} was for {t.get('player') or 'nobody'}, who said: {t.get('line', '')}\n"
+                    f"ITS BRIEF: {t.get('task', '')}\nITS REPORT:\n{self.report.strip()}")
+        return BATCH
 
 
-class OneCall:
-    def __init__(self, catalog: Catalog, ask, model: str, planner, *, scripts=(), hidden=frozenset(),
-                 first: bool = False):
-        if not catalog:
-            raise ValueError("the one call needs at least one action")
-        self.ask = ask
-        self.model = model
-        self.scripts = frozenset(scripts)
+def library(catalog: Catalog) -> list[str]:
+    return [n for n in catalog.names() if catalog.source(n) == "library"]
+
+
+def made(catalog: Catalog) -> list[str]:
+    return [n for n in catalog.names() if catalog.source(n) != "library"]
+
+
+def menu_lines(catalog: Catalog, names: list[str]) -> str:
+    return "\n".join(f"- {menu_line(n, catalog.get(n))}" for n in names)
+
+
+class Call:
+    def __init__(self, catalog: Catalog, ask, *, owner: str = "", hidden: frozenset[str] = frozenset(),
+                 checkpoint: int = 5, prompt: Path = PROMPT):
+        self.catalog = catalog
+        self.ask = ask  # structured() with the brain's model, reasoning, providers and timeout
         self.hidden = hidden
-        self.first = first  # the router: raw lines in, with RECENT and TASKS; three ways out
-        self.Decision = decision_type(catalog, first=first)
-        routing = without(SELECTOR_PROMPT.read_text(encoding="utf-8").rstrip("\n"), LISTING_RULES)
-        writing = PLANNER_PROMPT.read_text(encoding="utf-8").split("\n", 1)[1].strip("\n")  # its rules, not its role
-        writing = without(writing, LISTING_RULES).replace("the listing under EARLIER IN THIS TASK", "PLAYERS below")
-        full = "\n".join(planner.describe(cls) for name, cls in catalog.items() if name not in DEFERRED)
-        self.rules = (f"{routing}\n{menu(catalog, scripts)}\n{ROUTER if first else ''}{HOW}{writing}\n\n"
-                      f"THE ACTIONS IN FULL:\n{full}")
+        self.checkpoint = checkpoint
+        rules = prompt.read_text(encoding="utf-8").rstrip("\n")
+        who = owner or "not named (VFG_OWNER is not set)"
+        self.rules = rules.replace("{owner}", who)
+        self.Decision = decision_type(catalog)
+        self._opening: tuple[tuple, str] | None = None
 
-    def fixed(self, refs) -> str:
-        """The opening every call shares, sent for the prompt cache: the rules, the actions, the commands."""
-        commands = (refs.menu(exclude=self.hidden) if refs is not None
-                    else "(not loaded yet: no command can run, so send what needs one to orchestrator)")
-        return f"{self.rules}\nMINECRAFT COMMANDS (name — what it does):\n{commands}\n\n"
+    def opening(self, refs) -> str:
+        """The rules, the menu, every library action in full and the command list: the same for
+        every call while the library and the references stay as they are."""
+        names = library(self.catalog)
+        key = (id(refs), tuple((n, id(self.catalog.get(n))) for n in names))
+        if self._opening is None or self._opening[0] != key:
+            commands = (refs.menu(exclude=self.hidden) if refs is not None
+                        else "(not loaded yet: write commands from what you know of 26.3)")
+            full = "\n".join(view(n, self.catalog.get(n)) for n in names)
+            text = (f"{self.rules}\n\nTHE MENU (each action: its name and what it does; this server's own "
+                    f"actions are at the end, after the conversation):\n{menu_lines(self.catalog, names)}\n"
+                    f"- {IMPLEMENTER} — a coding implementer: anything new no action does, or a follow-up "
+                    "to its task\n"
+                    f"- {TALK} — talk: answered by your reply alone\n\n"
+                    f"THE ACTIONS IN FULL:\n{full}\n"
+                    f"MINECRAFT COMMANDS (name — what it does):\n{commands}\n\n"
+                    "THE CONVERSATION SO FAR (oldest first; each row: its time in UTC, who, and for a "
+                    "player's line Jev's class):\n")
+            self._opening = (key, text)
+        return self._opening[1]
 
-    @staticmethod
-    def task(task: str, context: str, places: str, players: str) -> str:
-        """What changes from call to call."""
-        return f"TASK: {task}\nCONTEXT: {context or '(none)'}\n{places}\n{players}\n"
+    def own_actions(self) -> str:
+        names = made(self.catalog)
+        if not names:
+            return "THIS SERVER'S OWN ACTIONS: none yet"
+        full = "\n".join(view(n, self.catalog.get(n)) for n in names)
+        return (f"THIS SERVER'S OWN ACTIONS (made by implementers; on the menu like the rest):\n"
+                f"{menu_lines(self.catalog, names)}\n\n{full}")
 
-    def prompt(self, task: str, context: str, places: str, players: str, refs) -> str:
-        return self.fixed(refs) + self.task(task, context, places, players)
+    def tail(self, event: Event, seen: Seen, tasks: str, new: list[Row]) -> str:
+        """Everything after the conversation: what changes from call to call."""
+        unread = (show(new) if new else "nothing") if event.kind != "REPORT" else "(a report reads nothing new)"
+        return (f"\n{self.own_actions()}\n\n{seen.show()}\n\n{tasks}\n\n"
+                f"NEW SINCE THE LAST READ (rows no call had read; they end the conversation above):\n{unread}\n\n"
+                f"THE EVENT:\n{event.show()}\n")
 
-    async def decide(self, task: str, context: str, places: str, players: str, refs, caught: list[str] | None = None):
-        """An Answer whose value is a Decided; raises LlmError. No picks is the whole task handed on."""
-        if WHOLE_TASK.match(task):
-            return Answer[Decided](value=Decided(), cost=0.0, ms=0)
-        answer = await self.ask(self.task(task, context, places, players), self.Decision, model=self.model,
-                                cached=self.fixed(refs))
-        d = decided(answer.value)
-        if bad := unknown_scripts(d, self.scripts):
-            log("select", f"a script that is not in scripts/ ({'; '.join(bad)[:200]}): the whole task is handed on")
-            d = Decided()
-            if caught is not None:
-                caught.extend(bad)
-        elif d.picks and not d.orchestrator and BLOCK_WORK.search(task):
-            log("select", "a task that builds or changes blocks, with picks and no orchestrator part: "
-                          "the whole task is handed on")
-            d = Decided()
-        return Answer[Decided](value=d, cost=answer.cost, ms=answer.ms)
+    def cached(self, ctx: Context, refs) -> list[tuple[str, bool]]:
+        return ctx.cached(self.opening(refs), self.checkpoint)
 
-
-    async def decide_line(self, line: str, recent: str, tasks: str, places: str, players: str, refs):
-        """As the router: one raw LINE, with RECENT and TASKS. An Answer whose value is a Decided."""
-        text = f"LINE: {line}\nRECENT:\n{recent or '(nothing)'}\nTASKS:\n{tasks or '(none)'}\n{places}\n{players}\n"
-        answer = await self.ask(text, self.Decision, model=self.model, cached=self.fixed(refs))
-        d = decided(answer.value)
-        if bad := unknown_scripts(d, self.scripts):
-            log("select", f"a script that is not in scripts/ ({'; '.join(bad)[:200]}): handed on whole")
-            d = Decided(orchestrator=line, conversation=d.conversation)
-        return Answer[Decided](value=d, cost=answer.cost, ms=answer.ms)
+    async def decide(self, event: Event, ctx: Context, seen: Seen, tasks: str, new: list[Row], refs):
+        """An Answer whose value is a Decision; raises LlmError."""
+        return await self.ask(self.tail(event, seen, tasks, new), self.Decision, cached=self.cached(ctx, refs))
 
 
-def describe(d: Decided) -> str:
-    """One log line: `command [written]: give … | run_script: … || orchestrator: …`."""
-    def one(p: OnePick) -> str:
-        mark = " [dropped]" if p.drop else " [written]" if p.planned else ""
-        return f"{p.action}{mark}: {p.instruction}"
-    picks = " | ".join(one(p) for p in d.picks) or "no picks"
-    return (picks + (f" || orchestrator: {d.orchestrator}" if d.orchestrator.strip() else "")
-            + (f" || conversation: {d.conversation}" if d.conversation.strip() else "")
-            + (f" || reply: {d.reply}" if d.reply.strip() else ""))
+def describe(decision) -> str:
+    """One log line: `command: give Steve … | implementer T183: … || reply: …`."""
+    def one(p) -> str:
+        if p.to == IMPLEMENTER:
+            return f"implementer{' ' + p.task if p.task else ''}: {p.instruction[:120]}"
+        if p.to == TALK:
+            return f"talk: {p.part[:80]}"
+        return f"{p.to}{' [dropped: ' + p.drop + ']' if p.drop else ''}: {p.instruction}"
+    parts = " | ".join(one(p) for p in decision.parts) or "no parts"
+    tail = "".join(f" || {k}: {v}" for k, v in (("reply", decision.reply), ("record", decision.record),
+                                                 ("status", decision.status)) if v)
+    return parts + tail
