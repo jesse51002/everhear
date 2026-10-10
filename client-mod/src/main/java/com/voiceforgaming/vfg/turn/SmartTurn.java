@@ -18,8 +18,7 @@ public final class SmartTurn implements TurnDetector {
 	private final float[] window = new float[WINDOW];
 	private final OnnxRuntime.Tensor input;
 	private final OnnxRuntime.Tensor probability;
-	private final Map<String, OnnxRuntime.Tensor> inputs;
-	private final Map<String, OnnxRuntime.Tensor> outputs;
+	private final OnnxRuntime.Binding binding;
 	private OnnxRuntime.Session session;
 
 	/** Takes over {@code session}, and runs it once on silence so a wrong model fails here and not at the first pause. */
@@ -28,8 +27,7 @@ public final class SmartTurn implements TurnDetector {
 		try {
 			input = session.tensor(1, WINDOW);
 			probability = session.tensor(1, 1);
-			inputs = Map.of("audio", input);
-			outputs = Map.of("probability", probability);
+			binding = session.binding(Map.of("audio", input), Map.of("probability", probability));
 			score(new float[0]);
 		} catch (RuntimeException | Error e) {
 			session.close();
@@ -57,7 +55,7 @@ public final class SmartTurn implements TurnDetector {
 			Arrays.fill(window, 0, WINDOW - n, 0f);
 			System.arraycopy(audio, audio.length - n, window, WINDOW - n, n);
 			input.set(window);
-			session.run(inputs, outputs);
+			session.run(binding);
 			return probability.get(0);
 		}
 	}

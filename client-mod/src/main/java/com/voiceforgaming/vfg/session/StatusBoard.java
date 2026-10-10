@@ -16,14 +16,14 @@ public final class StatusBoard {
 		VoiceStatus s = current;
 		current = new VoiceStatus(VoiceStatus.Setup.RUNNING, Math.max(0, Math.min(100, percent)), null, s.micError(),
 			s.tokenRejected(), s.deliveryProblem(), s.onServer(), s.listening(), s.muted(), s.noToken(), s.speaking(),
-			s.lineOpen(), s.livePeak(), s.lastHeard());
+			s.lineOpen(), s.livePeak(), s.lastHeard(), s.turnModel(), s.turnError());
 	}
 
 	public synchronized void setup(VoiceStatus.Setup setup, String error) {
 		VoiceStatus s = current;
 		current = new VoiceStatus(setup, setup == VoiceStatus.Setup.READY ? 100 : s.setupPercent(), error,
 			s.micError(), s.tokenRejected(), s.deliveryProblem(), s.onServer(), s.listening(), s.muted(), s.noToken(),
-			s.speaking(), s.lineOpen(), s.livePeak(), s.lastHeard());
+			s.speaking(), s.lineOpen(), s.livePeak(), s.lastHeard(), s.turnModel(), s.turnError());
 	}
 
 	public synchronized void micError(String error) {
@@ -33,7 +33,7 @@ public final class StatusBoard {
 		}
 		current = new VoiceStatus(s.setup(), s.setupPercent(), s.setupError(), error, s.tokenRejected(),
 			s.deliveryProblem(), s.onServer(), s.listening(), s.muted(), s.noToken(), s.speaking(), s.lineOpen(),
-			s.livePeak(), s.lastHeard());
+			s.livePeak(), s.lastHeard(), s.turnModel(), s.turnError());
 	}
 
 	public synchronized void tokenRejected(boolean rejected) {
@@ -43,7 +43,7 @@ public final class StatusBoard {
 		}
 		current = new VoiceStatus(s.setup(), s.setupPercent(), s.setupError(), s.micError(), rejected,
 			s.deliveryProblem(), s.onServer(), s.listening(), s.muted(), s.noToken(), s.speaking(), s.lineOpen(),
-			s.livePeak(), s.lastHeard());
+			s.livePeak(), s.lastHeard(), s.turnModel(), s.turnError());
 	}
 
 	public synchronized void deliveryProblem(boolean problem) {
@@ -53,21 +53,21 @@ public final class StatusBoard {
 		}
 		current = new VoiceStatus(s.setup(), s.setupPercent(), s.setupError(), s.micError(), s.tokenRejected(),
 			problem, s.onServer(), s.listening(), s.muted(), s.noToken(), s.speaking(), s.lineOpen(), s.livePeak(),
-			s.lastHeard());
+			s.lastHeard(), s.turnModel(), s.turnError());
 	}
 
 	public synchronized void session(boolean onServer, boolean listening, boolean muted, boolean noToken) {
 		VoiceStatus s = current;
 		current = new VoiceStatus(s.setup(), s.setupPercent(), s.setupError(), s.micError(), s.tokenRejected(),
 			s.deliveryProblem(), onServer, listening, muted, noToken, listening && s.speaking(), s.lineOpen(),
-			s.livePeak(), s.lastHeard());
+			s.livePeak(), s.lastHeard(), s.turnModel(), s.turnError());
 	}
 
 	public synchronized void live(boolean speaking, float livePeak, boolean lineOpen) {
 		VoiceStatus s = current;
 		current = new VoiceStatus(s.setup(), s.setupPercent(), s.setupError(), s.micError(), s.tokenRejected(),
 			s.deliveryProblem(), s.onServer(), s.listening(), s.muted(), s.noToken(), speaking, lineOpen, livePeak,
-			s.lastHeard());
+			s.lastHeard(), s.turnModel(), s.turnError());
 	}
 
 	public synchronized void lineOpen(boolean lineOpen) {
@@ -77,13 +77,20 @@ public final class StatusBoard {
 		}
 		current = new VoiceStatus(s.setup(), s.setupPercent(), s.setupError(), s.micError(), s.tokenRejected(),
 			s.deliveryProblem(), s.onServer(), s.listening(), s.muted(), s.noToken(), s.speaking(), lineOpen,
-			s.livePeak(), s.lastHeard());
+			s.livePeak(), s.lastHeard(), s.turnModel(), s.turnError());
+	}
+
+	public synchronized void turnModel(VoiceStatus.TurnModel turnModel, String error) {
+		VoiceStatus s = current;
+		current = new VoiceStatus(s.setup(), s.setupPercent(), s.setupError(), s.micError(), s.tokenRejected(),
+			s.deliveryProblem(), s.onServer(), s.listening(), s.muted(), s.noToken(), s.speaking(), s.lineOpen(),
+			s.livePeak(), s.lastHeard(), turnModel, error);
 	}
 
 	public synchronized void heard(String text) {
 		VoiceStatus s = current;
 		current = new VoiceStatus(s.setup(), s.setupPercent(), s.setupError(), s.micError(), s.tokenRejected(),
 			s.deliveryProblem(), s.onServer(), s.listening(), s.muted(), s.noToken(), s.speaking(), s.lineOpen(),
-			s.livePeak(), text == null ? "" : text);
+			s.livePeak(), text == null ? "" : text, s.turnModel(), s.turnError());
 	}
 }

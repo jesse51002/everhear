@@ -1,9 +1,7 @@
 package com.voiceforgaming.vfg.turn;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -40,8 +38,8 @@ public final class TurnOneMini implements TurnDetector {
 	private final OnnxRuntime.Tensor probs;
 	/** Two sets of state: a step reads one and writes the other, and the next step the other way round. */
 	private final OnnxRuntime.Tensor[][] state = new OnnxRuntime.Tensor[2][STATES.length];
-	private final List<Map<String, OnnxRuntime.Tensor>> inputs = new ArrayList<>(2);
-	private final List<Map<String, OnnxRuntime.Tensor>> outputs = new ArrayList<>(2);
+	/** A step's inputs and outputs, by the parity of the step: which set of state it reads. */
+	private final OnnxRuntime.Binding[] bindings = new OnnxRuntime.Binding[2];
 	private OnnxRuntime.Session session;
 
 	/** Takes over {@code session}, and runs it once on silence so a wrong model fails here and not at the first pause. */
@@ -63,8 +61,7 @@ public final class TurnOneMini implements TurnDetector {
 					in.put("state_" + STATES[i], state[p][i]);
 					out.put("new_state_" + STATES[i], state[1 - p][i]);
 				}
-				inputs.add(in);
-				outputs.add(out);
+				bindings[p] = session.binding(in, out);
 			}
 			score(new float[0]);
 		} catch (RuntimeException | Error e) {
@@ -103,7 +100,7 @@ public final class TurnOneMini implements TurnDetector {
 				Arrays.fill(chunk, 0, zeros, 0f);
 				System.arraycopy(clip, from + start + zeros, chunk, zeros, STEP - zeros);
 				audio.set(chunk);
-				session.run(inputs.get(s & 1), outputs.get(s & 1));
+				session.run(bindings[s & 1]);
 			}
 			return probs.get(FRAMES - 1);
 		}

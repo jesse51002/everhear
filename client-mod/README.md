@@ -242,8 +242,9 @@ The model runs on `vfg-stt`, one CPU thread, about 35 ms a score, on the ONNX Ru
 library sherpa-onnx has already loaded: `turn/OnnxRuntime.java` calls its C API through
 `java.lang.foreign`. (ONNX Runtime's own Java API would load a second copy of the runtime.)
 It installs and loads after the speech engine is ready, so it never holds up voice; until
-it is in, or if it cannot download or load, lines end on silence alone, with one warning in
-the log. A segment the VAD cut at its 7 s limit while you were still talking is not scored.
+it is in, or if it cannot download (tried again after 30 s, 2 min, then every 10 min) or
+load, lines end on silence alone, and Voice settings says which under the status. A segment
+the VAD cut at its 7 s limit while you were still talking is not scored.
 `turn_model: turn-1-mini` swaps in [turn-1-mini](https://huggingface.co/p99lab/turn-1-mini)
 (p99lab, Apache-2.0); `./gradlew turnCompare` is how the two were measured.
 
