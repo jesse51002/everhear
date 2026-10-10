@@ -3,7 +3,7 @@
 It sees ONE action: its full docstring, each option's description and limits, the pick's
 instruction, the task's context, the saved places, the reports of the task's earlier
 actions and the last failure; for `run_script`, every value of the scripts the
-instruction names and what each other script does; for `stop_script`, what each does.
+instruction names and the other scripts' names; for `stop_script`, what each script does.
 It never sees the other actions, the task's other parts or the server.
 
 `command` is written in steps, with Minecraft's own reference in between:
@@ -172,17 +172,21 @@ class Planner:
         name = action_name(cls) or cls.__name__
         text = f"ACTION: {name}\n{doc(cls)}\n\nOPTIONS:\n{options(cls)}\n"
         if name in SHOWS_SCRIPTS and self.scripts:
-            # run_script: every value of the scripts the instruction names (the selector made
-            # sure it names one); one line for each of the rest, as for stop_script.
+            # run_script: every value of the scripts the instruction names (the selector chose
+            # one, from a menu that listed every name) and the rest by name alone. Naming none,
+            # and for stop_script: one line for each, what it does.
             named = set(named_scripts(instruction, self.scripts)) if name == "run_script" else set()
             if named:
                 rows = "\n".join(f"- {n}: {about}" for n, about in self.scripts.items() if n in named)
                 text += ("\nTHE SCRIPT THE INSTRUCTION NAMES (what it does, then every value it takes as key "
                          "(type, default, limits or options), set as key=value with the key exactly as listed; "
                          f"for one written the old way, its usage and how it ends):\n{rows}\n")
-            rows = "\n".join(f"- {n}: {first_line(about)}" for n, about in self.scripts.items() if n not in named)
-            if rows:
-                text += f"\n{'THE OTHER SCRIPTS' if named else 'SCRIPTS'} (each: what it does):\n{rows}\n"
+                others = [n for n in self.scripts if n not in named]
+                if others:
+                    text += f"\nOTHER SCRIPTS: {', '.join(others)}\n"
+            else:
+                rows = "\n".join(f"- {n}: {first_line(about)}" for n, about in self.scripts.items())
+                text += f"\nSCRIPTS (each: what it does):\n{rows}\n"
         return text
 
     def base(self, cls: type[BaseModel], p: Pick) -> str:

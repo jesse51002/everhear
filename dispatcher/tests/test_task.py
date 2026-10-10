@@ -699,8 +699,8 @@ async def test_run_script_sees_each_scripts_values_and_an_old_ones_usage(h):
             "limits or options), set as key=value with the key exactly as listed; for one written the old way, "
             "its usage and how it ends):\n- zeus: Zeus: every trident a player throws calls lightning where it "
             "lands.\n  player (player, default @a)\n  strikes (int, default 1, 1..10)\n"
-            "\nTHE OTHER SCRIPTS (each: what it does):\n- tnt_rain: Drops TNT round players.\n\nINSTRUCTION:") in prompt
-    assert "Usage: tnt_rain" not in prompt
+            "\nOTHER SCRIPTS: tnt_rain\n\nINSTRUCTION:") in prompt
+    assert "Usage: tnt_rain" not in prompt and "Drops TNT" not in prompt
     assert h.vfg.actions() == [["script", "run", "zeus", "player=Alex"]]
     assert h.vfg.replies() == [(tid, "done", "zeus — started zeus (T1); stop: vfg script stop zeus")]
 
@@ -715,8 +715,8 @@ async def test_run_script_names_with_spaces_and_an_old_scripts_usage_and_no_name
     await h.run("rain tnt on Steve")
     [named] = h.llm.prompts("Planned_run_script")
     assert ("its usage and how it ends):\n- tnt_rain: Drops TNT round players.\n  Usage: tnt_rain [every_s=20]\n"
-            "  Ends: when stopped\n\nTHE OTHER SCRIPTS (each: what it does):\n- zeus: Zeus: every trident") in named
-    assert "player (player" not in named
+            "  Ends: when stopped\n\nOTHER SCRIPTS: zeus\n\nINSTRUCTION:") in named
+    assert "player (player" not in named and "Zeus: every trident" not in named
     # no script named (the selector hands such a task on before the planner, but the planner
     # holds on its own): what each does, one line each, and no value at all
     unnamed = h.d.planner.describe(RunScript, "start the lightning thing for Alex")

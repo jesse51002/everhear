@@ -421,12 +421,12 @@ def test_the_repos_scripts_reach_the_selectors_menu_and_the_planner_with_every_v
         assert block + "\n" in planner.describe(catalog["run_script"], "start %s for Steve" % name), name
 
 
-RUN_SCRIPT_PROMPT_MAX = 12_000  # bytes, for an instruction naming one script
+RUN_SCRIPT_PROMPT_MAX = 4_000  # bytes, for an instruction naming one script
 
 
-def test_the_planner_sees_every_value_of_the_script_named_and_one_line_for_each_other(fresh_actions_package):
-    """"start tnt_rain on Steve": tnt_rain's values, none of zeus's, every other script as its
-    first line, and the whole prompt small. The value names come from the scripts."""
+def test_the_planner_sees_every_value_of_the_script_named_and_the_others_by_name(fresh_actions_package):
+    """"start tnt_rain on Steve": tnt_rain's first line and values, none of zeus's, every other
+    script by name on one line, and the whole prompt small. The value names come from the scripts."""
     from dispatcher.action_planner import Pick, Planner
 
     found = actions.scripts(config.REPO)
@@ -438,14 +438,11 @@ def test_the_planner_sees_every_value_of_the_script_named_and_one_line_for_each_
     pick = Pick(task_id="T1", index=0, instruction="start tnt_rain on Steve", context="Steve asked",
                 places="SAVED PLACES: none", reports=[])
     prompt = Planner(None, "m", None, found).base(catalog["run_script"], pick)
-    zeus_first = found["zeus"].splitlines()[0]
-    assert found["tnt_rain"] + "\n" in prompt  # its first line and every value
-    assert "\n- zeus: %s\n" % zeus_first in prompt  # one line, no values under it
+    assert "\n- tnt_rain: %s\n" % found["tnt_rain"] in prompt  # its first line and every value
+    assert "\nOTHER SCRIPTS: %s\n" % ", ".join(n for n in found if n != "tnt_rain") in prompt
+    assert found["zeus"].splitlines()[0] not in prompt  # zeus by name alone
     for key in set(values["zeus"]) - set(values["tnt_rain"]):
         assert "  %s (" % key not in prompt, key
-    for name, about in found.items():
-        if name != "tnt_rain":
-            assert "\n- %s: %s\n" % (name, about.splitlines()[0]) in prompt
     size = len(prompt.encode("utf-8"))
     print("run_script planner prompt for 'start tnt_rain on Steve': %d bytes" % size)
     assert size < RUN_SCRIPT_PROMPT_MAX
