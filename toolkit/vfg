@@ -650,8 +650,9 @@ def cmd_history(cfg, a):
 
 def cmd_context(cfg, a):
     """The brain's context: the feed rows since then (by default the last
-    VFG_BRAIN_HISTORY_HOURS), oldest first; or `mark`, which sets processed_at on the rows it
-    names. One SSH call either way."""
+    VFG_BRAIN_HISTORY_HOURS), oldest first, and with --json the feed's highest seq last, which the
+    brain follows from even when no row is that recent; or `mark`, which sets processed_at on the
+    rows it names. One SSH call either way."""
     if a.op == "mark":
         seqs = []
         for s in a.seqs:
@@ -3049,7 +3050,8 @@ def build_parser():
     s.add_argument("--since", metavar="T", help="ISO-8601, or -90s, -10m, -2h, -1d (default: the last "
                    "VFG_BRAIN_HISTORY_HOURS, 6)")
     s.add_argument("--json", action="store_true",
-                   help='one {"seq", "at", "line", "processed_at"} object per line')
+                   help='one {"seq", "at", "line", "processed_at"} object per line, then {"last_seq": N}, '
+                        'the feed\'s highest seq')
     cs = s.add_subparsers(dest="op", metavar="mark")
     w = cs.add_parser("mark", help="set processed_at to now on these rows, where it is not set yet; "
                       "prints how many it set")

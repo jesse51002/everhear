@@ -7,7 +7,10 @@ background (about 95 s the first time on a server version), tried again every 5 
 they load; the context from `vfg context --json`, the last VFG_BRAIN_HISTORY_HOURS, what is
 older than two minutes and unread marked processed (history is never acted on), a line from the
 last two minutes still unread answered; the tasks a crash left open failed as interrupted; then
-`vfg watch --after <last seq>` followed for good; and the greeting, skipped when nobody is on.
+`vfg watch --after <seq>` followed for good, from the feed's highest seq when the context was read
+(`vfg context --json` gives it last, with rows or none), so nothing older is ever read as new; and
+the greeting, skipped when nobody is on. A read of the context that fails is tried again, never
+followed from 0.
 Stop (SIGTERM or SIGINT): read nothing new, let the calls in flight finish for up to 10 s, stop
 the implementers and fail their tasks as stopped, save, exit 0.
 """
@@ -23,7 +26,6 @@ import logging
 import os
 import signal
 import sys
-from datetime import timedelta
 from pathlib import Path
 
 import httpx
@@ -34,8 +36,8 @@ from .act import Acts
 from .action_planner import Planner
 from .call import Call
 from .config import Config, log
-from .context import LIVE, Context, parse
-from .loop import Brain, iso, jev_menu, utc_now
+from .context import Context, parse
+from .loop import Brain, jev_menu
 from .respond import Respond
 from .tasks import Tasks
 from .vfg import Later, follow
@@ -47,7 +49,7 @@ GREETING = "AI is on — say what you want into your mic, or type it in chat"
 WATCHERS = "join,leave,death,advancement,server"
 LOAD = object()      # serve(refs=LOAD): load them, as a real start does
 REFS_RETRY_S = 300   # a failed load of the references is tried again this often, until it works
-MARK_CHUNK = 500     # seqs in one `vfg context mark`
+CONTEXT_RETRY_S = 5.0  # a failed read of the context is tried again this often, until it works
 IMPLEMENTERS_GRACE_S = 2.0
 DRAIN_S = 1.5        # for the rows and usage still being written, at the very end
 
@@ -121,24 +123,49 @@ async def keep_loading_refs(cfg: Config, vfg, http, brain: Brain, planner: Plann
         await asyncio.sleep(every)
 
 
-async def load_context(vfg, hours: float) -> Context:
-    """The feed since `hours` ago, from `vfg context --json`; empty when it cannot be read."""
-    since = f"-{int(hours)}h" if float(hours).is_integer() else f"-{max(1, round(hours * 60))}m"
-    r = await vfg("context", "--since", since, "--json", timeout=120)
-    ctx = Context()
-    if r.code != 0:
-        log("start", f"vfg context failed ({(r.stderr or r.stdout).strip()[-200:]}): starting with no context")
-        return ctx
-    for raw in r.stdout.splitlines():
+def read_context(out: str) -> tuple[Context, int] | None:
+    """`vfg context --json`'s answer: its rows as a Context, and the feed's highest seq, its last
+    object; None when it gives neither (a vfg older than the brain), never a start from 0."""
+    ctx, last = Context(), None
+    for raw in out.splitlines():
         try:
             obj = json.loads(raw)
+            if "last_seq" in obj:
+                last = int(obj["last_seq"])
+                continue
             row = parse(str(obj["line"]), seq=int(obj["seq"]), at=str(obj["at"]),
                         processed=obj.get("processed_at") is not None)
         except (ValueError, KeyError, TypeError):
             continue
         if row is not None:
             ctx.add(row)
-    return ctx
+    if last is None and not ctx.rows:
+        return None
+    return ctx, max(last or 0, ctx.last_seq)
+
+
+async def load_context(vfg, hours: float, stop: asyncio.Event | None = None) -> tuple[Context, int] | None:
+    """The feed since `hours` ago, from `vfg context --json`, and the feed's highest seq, which the
+    watch follows from. A read that fails is tried again every CONTEXT_RETRY_S until it works:
+    followed from 0, `vfg watch` would print the feed's last rows, however old, as new. None when
+    `stop` is set first."""
+    since = f"-{int(hours)}h" if float(hours).is_integer() else f"-{max(1, round(hours * 60))}m"
+    while True:
+        r = await vfg("context", "--since", since, "--json", timeout=120)
+        got = read_context(r.stdout) if r.code == 0 else None
+        if got is not None:
+            return got
+        why = ((r.stderr or r.stdout).strip()[-200:] if r.code != 0
+               else "no rows and no last_seq: a vfg older than the brain?")
+        log("start", f"vfg context failed ({why}); trying again in {CONTEXT_RETRY_S:g} s, nothing followed "
+                     "until it works")
+        if stop is None:
+            await asyncio.sleep(CONTEXT_RETRY_S)
+            continue
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), CONTEXT_RETRY_S)
+        if stop.is_set():
+            return None
 
 
 def old_ids(cfg: Config, ctx: Context) -> str:
@@ -175,7 +202,12 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
     respond = Respond(catalog, respond_ask or asker(cfg.respond_model, cfg.respond_reasoning, cfg.timeout_s),
                       owner=cfg.owner, checkpoint=cfg.checkpoint)
 
-    ctx = await load_context(vfg, cfg.history_hours)
+    loaded = await load_context(vfg, cfg.history_hours, stop)
+    if loaded is None:
+        await later.drain(DRAIN_S)
+        log("stop", "stopped before the context could be read")
+        return 0
+    ctx, start = loaded
     tasks.at_least(old_ids(cfg, ctx))
 
     async def on_report(tid: str, status: str, text: str) -> None:
@@ -186,19 +218,14 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
                 world=world, action_timeout_s=cfg.action_timeout_s)
     brain = Brain(ctx=ctx, call=call, respond=respond, acts=acts, world=world, tasks=tasks, implementers=impl,
                   later=later, catalog=catalog, refs=None if refs is LOAD else refs, batch_s=cfg.batch_s,
-                  model=cfg.model, respond_model=cfg.respond_model,
+                  start=start, model=cfg.model, respond_model=cfg.respond_model,
                   menu=lambda text: later("jev", "menu", "set", text))
 
     for t in tasks.open_ones():  # their implementers went with the last run
         record = f"{t['id']} failed: interrupted, the brain restarted while it ran"
         tasks.close(t["id"], "failed", record)
         acts.post("result", t["id"], record)
-    history = ctx.take_before(iso(utc_now() - timedelta(minutes=2)))
-    for i in range(0, len(history), MARK_CHUNK):
-        later("context", "mark", *(str(r.seq) for r in history[i:i + MARK_CHUNK]), timeout=60)
-    for row in ctx.unprocessed():  # said in the last two minutes, and never read
-        if row.type == "LINE" and row.cls in LIVE:
-            brain.route(row)
+    history = brain.catch_up()
 
     background = [asyncio.create_task(brain.follow(watch), name="watch")]
     if refs is LOAD:
@@ -209,7 +236,7 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
     greeting = await vfg("say", GREETING, timeout=30)
     if greeting.code != 0 and "nobody" not in (greeting.stderr + greeting.stdout).lower():
         log("start", f"the greeting failed: {(greeting.stderr or greeting.stdout).strip()[-200:]}")
-    log("start", f"pid {os.getpid()}; {len(ctx.rows)} rows of context to #{ctx.last_seq} "
+    log("start", f"pid {os.getpid()}; {len(ctx.rows)} rows of context, following from #{brain.position()} "
                  f"({len(history)} history marked read); {len(catalog.names())} actions; brain {cfg.model} "
                  f"{cfg.reasoning}; respond {cfg.respond_model}; planner {cfg.plan_model}; batch after "
                  f"{cfg.batch_s:g} s; owner {cfg.owner or '(not set)'}; server {cfg.server}")

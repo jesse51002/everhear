@@ -5,6 +5,7 @@ import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 
+from brain import __main__ as main
 from brain import config
 from brain.__main__ import GREETING, serve
 from brain.tasks import Tasks
@@ -27,6 +28,7 @@ async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fail
         feed(10, now - timedelta(minutes=30), "Steve voice action_oriented 0.9 - | give me bread"),  # history
         feed(11, now - timedelta(minutes=29), "Alex voice context 0.9 - | so hungry", processed=True),
         feed(12, now - timedelta(seconds=20), "Steve voice action_oriented 0.9 - | give me a diamond pickaxe"),
+        json.dumps({"last_seq": 12}),
     ]) + "\n", ""))
     impl, stop, seen_after = FakeImplementers(), asyncio.Event(), []
 
@@ -58,3 +60,26 @@ async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fail
     assert ("result T1", "T1 failed: interrupted, the brain restarted while it ran") in vfg.rows("result")
     tasks = json.loads(cfg.tasks_file.read_text())["tasks"]
     assert [t["status"] for t in tasks.values()] == ["failed", "done", "done"] and impl.closed
+
+
+async def test_with_no_rows_that_recent_it_follows_from_the_feeds_last_seq_and_a_failed_read_is_tried_again(
+        tmp_path, monkeypatch):
+    """Yesterday's session ended at #902: followed from 0, `vfg watch` would replay its last rows as new."""
+    monkeypatch.setattr(main, "CONTEXT_RETRY_S", 0.001)
+    cfg = config.load({"VFG_HOME": str(tmp_path / "home")})
+    vfg = FakeVfg().on("context", "--since", answer=[
+        VfgResult(1, "", "vfg: the feed table has no processed_at column yet — restart vfg-bridge, which adds it"),
+        VfgResult(0, "", ""),                          # nothing at all: not an empty feed, a failed read
+        VfgResult(0, json.dumps({"last_seq": 902}) + "\n", "")])
+    stop, seen_after = asyncio.Event(), []
+
+    async def watch(after: int):
+        seen_after.append(after)
+        stop.set()
+        await asyncio.Event().wait()
+        yield ""
+
+    ask = FakeAsk(Decision=decision(reply="never"))
+    assert await serve(cfg, stop, vfg=vfg, watch=watch, catalog=catalog(), refs=FakeRefs(), ask=ask,
+                       make_implementers=lambda on_report: FakeImplementers()) == 0
+    assert len(vfg.of("context", "--since")) == 3 and seen_after == [902] and ask.calls == []

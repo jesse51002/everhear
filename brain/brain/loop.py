@@ -38,6 +38,7 @@ from .vfg import Later
 from .world import World
 
 HISTORY_S = 120  # a line older than this when it arrives is history
+MARK_CHUNK = 500  # seqs in one `vfg context mark`
 SORRY = "sorry, I lost that one — say it again?"
 WATCH_AGAIN_S = 2.0  # after `vfg watch` exits, before it is followed again
 
@@ -54,8 +55,9 @@ class Brain:
     def __init__(self, *, ctx: Context, call: Call, respond: Respond, acts: Acts, world: World, tasks: Tasks,
                  implementers, later: Later, catalog, refs=None, batch_s: float = 60.0,
                  model: str = "", respond_model: str = "", now: Callable[[], datetime] = utc_now,
-                 clock=None, menu: Callable[[str], object] | None = None):
+                 clock=None, menu: Callable[[str], object] | None = None, start: int = 0):
         self.ctx = ctx
+        self.start = start            # the feed's highest seq when the context was read: what is new is past it
         self.call = call
         self.respond = respond
         self.acts = acts
@@ -98,7 +100,7 @@ class Brain:
         if row.seq == 0:  # vfg watch's own notices: EC2 unreachable, reconnected, lines skipped
             log("watch", row.text)
             return None
-        if not self.ctx.add(row):
+        if row.seq <= self.position() or not self.ctx.add(row):  # not past where the watch follows from
             return None
         self.timer.arrived()
         return self.route(row)
@@ -114,6 +116,23 @@ class Brain:
         if row.cls == "action_oriented":
             return self.spawn(self.line(row), f"line #{row.seq}")
         return self.spawn(self.conversational(row), f"respond #{row.seq}")
+
+    def position(self) -> int:
+        """Where the watch follows from: the context's last row, or the feed's highest seq when the
+        context was read, whichever is later; never 0 for a feed with rows in it."""
+        return max(self.ctx.last_seq, self.start)
+
+    def catch_up(self) -> list[Row]:
+        """The context as read at the start: what is unread and older than HISTORY_S is history,
+        marked read, never acted on; a line of the last HISTORY_S still unread is answered.
+        Returns the history."""
+        history = self.ctx.take_before(iso(self.now() - timedelta(seconds=HISTORY_S)))
+        for i in range(0, len(history), MARK_CHUNK):
+            self.later("context", "mark", *(str(r.seq) for r in history[i:i + MARK_CHUNK]), timeout=60)
+        for row in self.ctx.unprocessed():
+            if row.type == "LINE" and row.cls in LIVE:
+                self.route(row)
+        return history
 
     def take(self) -> list[Row]:
         """A read: what no call has read yet, marked processed, and the timer pushed back."""
@@ -248,9 +267,9 @@ class Brain:
     # ------------------------------------------------------------- running and stopping
 
     async def follow(self, watch: Callable[[int], AsyncIterator[str]]) -> None:
-        """Feed every line of `vfg watch --after <last seq>`; follow again whenever it exits."""
+        """Feed every line of `vfg watch --after <position>`; follow again whenever it exits."""
         while not self.stopping:
-            async for text in watch(self.ctx.last_seq):
+            async for text in watch(self.position()):
                 if self.stopping:
                     return
                 try:
@@ -258,7 +277,7 @@ class Brain:
                 except Exception as e:  # noqa: BLE001 — a line it cannot read never stops the watch
                     log("error", f"feeding {text.strip()[:200]!r}: {type(e).__name__}: {e}")
             if not self.stopping:
-                log("watch", f"vfg watch ended; following again in {WATCH_AGAIN_S:g} s from #{self.ctx.last_seq}")
+                log("watch", f"vfg watch ended; following again in {WATCH_AGAIN_S:g} s from #{self.position()}")
                 await asyncio.sleep(WATCH_AGAIN_S)
 
     async def stop(self, grace_s: float, implementers_grace_s: float = 2.0) -> None:

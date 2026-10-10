@@ -81,8 +81,10 @@ vfg brain stop      # SIGTERM: in-flight calls finish for up to 10 s, implemente
 `run` syncs the dependencies from `uv.lock` and execs `python -m brain`. A start takes the lock,
 runs `vfg up`, sets the watchers (`join,leave,death,advancement,server`), Jev's lookout
 ([`prompts/lookout.md`](prompts/lookout.md)) and Jev's menu (every action's line, set again when
-an action changes), loads the context from `vfg context --json`, fails the tasks a crash left open,
-follows `vfg watch --after <last seq>`, and greets, unless nobody is online. **The first start on
+an action changes), loads the context from `vfg context --json` (tried again every 5 s while it
+fails), fails the tasks a crash left open, follows `vfg watch --after <seq>` from the feed's highest
+seq that read gave (`last_seq`, its last object: with no row in the last 6 h, the watch still never
+replays old rows as new), and greets, unless nobody is online. **The first start on
 a new server version fetches the command references** (about 95 s, in the background, into
 `~/.vfg/brain/refs/<version>/`); until they are in, a refused command is not retried.
 

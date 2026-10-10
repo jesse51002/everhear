@@ -420,9 +420,12 @@ class TestHistory(BoxCase):
 
 class TestContext(BoxCase):
     def rows(self, *args, **env):
+        """The rows; the last object, checked here, is the feed's highest seq."""
         r = self.vfg("context", "--json", *args, **env)
         self.assertOk(r)
-        return [json.loads(l) for l in r.stdout.splitlines()]
+        objs = [json.loads(l) for l in r.stdout.splitlines()]
+        self.assertEqual(objs[-1], {"last_seq": self.box.query("SELECT MAX(seq) FROM feed")[0][0]})
+        return objs[:-1]
 
     def test_the_rows_of_the_last_hours_oldest_first(self):
         old = iso(datetime.now(timezone.utc) - timedelta(hours=2))
@@ -438,9 +441,10 @@ class TestContext(BoxCase):
         self.assertRegex(rows[4]["line"], r"^AI#4 \d\d:\d\d:\d\d action T7 \| give Steve diamond_pickaxe — ok$")
         self.assertEqual([r["seq"] for r in self.rows(VFG_BRAIN_HISTORY_HOURS="1")], [1, 2, 3, 4])
         self.assertEqual([r["seq"] for r in self.rows("--since", "-8m")], [3, 4])
+        self.assertEqual(self.rows("--since", "2999-01-01"), [])   # none that recent: the last seq alone
         r = self.vfg("context", "--since", "-8m")
         self.assertEqual(r.stdout.splitlines(), [rows[3]["line"], rows[4]["line"]])
-        self.assertEqual(len(self.box.programs("read")), 4)
+        self.assertEqual(len(self.box.programs("read")), 5)
 
     def test_mark_sets_processed_at_once_in_one_call(self):
         r = self.vfg("context", "mark", "1", "2", "99")

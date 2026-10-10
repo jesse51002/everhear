@@ -593,9 +593,11 @@ def path0(box, rep, ctx):
               "vfg jev menu set writes /opt/vfg/menu.md; vfg jev menu show prints it back",
               "set %s %s; show %r" % (r.stdout, r.stderr, shown.stdout[:200]))
     objs, r = box.context_json()
-    rep.check(r.returncode == 0 and all(set(o) == {"seq", "at", "line", "processed_at"} for o in objs),
-              "vfg context --json reads the feed table (%d rows so far)" % len(objs), r.stdout[-600:] + r.stderr)
-    start = objs[-1]["seq"] if objs and "seq" in objs[-1] else 0
+    rep.check(r.returncode == 0 and objs and set(objs[-1]) == {"last_seq"}
+              and all(set(o) == {"seq", "at", "line", "processed_at"} for o in objs[:-1]),
+              "vfg context --json reads the feed table (%d rows so far), then the feed's last seq"
+              % (len(objs) - 1), r.stdout[-600:] + r.stderr)
+    start = objs[-1].get("last_seq", 0) if objs else 0
     box.start_watch(start)
     r = box.vfg("feed", "post", "SYS", "", "the brain's watch is on")
     seq = r.stdout.strip()
@@ -925,10 +927,13 @@ def path5(box, rep, ctx):
     objs, r = box.context_json()
     table = box.feed_rows()
     since = [t for t in table if t["at"] >= iso(now() - dt.timedelta(hours=6))]
-    rep.check(r.returncode == 0 and [(o.get("seq"), o.get("at"), o.get("line"), o.get("processed_at")) for o in objs]
-              == [(t["seq"], t["at"], t["line"], t["processed_at"]) for t in since],
+    rep.check(r.returncode == 0 and [(o.get("seq"), o.get("at"), o.get("line"), o.get("processed_at"))
+                                     for o in objs[:-1]] == [(t["seq"], t["at"], t["line"], t["processed_at"])
+                                                             for t in since]
+              and objs[-1] == {"last_seq": max(t["seq"] for t in table)},
               "vfg context --json: every feed row of the last VFG_BRAIN_HISTORY_HOURS, oldest first, "
-              "{seq, at, line, processed_at}", "%d objects vs %d rows; %s" % (len(objs), len(since), r.stderr))
+              "{seq, at, line, processed_at}, then {last_seq}", "%d objects vs %d rows; %s"
+              % (len(objs), len(since), r.stderr))
     plain = box.vfg("context", "--since", "-1m")
     recent = [t["line"] for t in table if t["at"] >= iso(now() - dt.timedelta(seconds=55))]
     rep.check(plain.returncode == 0 and all(l in plain.stdout.splitlines() for l in recent),
