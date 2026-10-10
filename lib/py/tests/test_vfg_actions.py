@@ -40,18 +40,45 @@ def fresh_modules():
     sys.path[:] = saved
 
 
+@pytest.fixture(scope="module")
+def loaded():
+    """The repo's own library actions, loaded once (a fifth of a second), with the modules and
+    sys.path they were loaded with."""
+    saved = list(sys.path)
+    purge()
+    cat = Catalog(REPO, None)
+    modules = {k: v for k, v in sys.modules.items()
+               if k == "actions" or k.startswith(("actions.", "vfg_made__", "vfg_preset__"))}
+    path = list(sys.path)
+    purge()
+    sys.path[:] = saved
+    return cat, modules, path
+
+
 @pytest.fixture
-def lib():
-    """The repo's own library actions."""
-    return Catalog(REPO, None)
+def lib(loaded):
+    """The repo's own library actions, each test given back the modules they were loaded with."""
+    cat, modules, path = loaded
+    sys.modules.update(modules)
+    sys.path[:] = path
+    return cat
+
+
+_repo_types = None
 
 
 def T():
-    """actions/_types.py: the one the last catalog loaded, else the repo's."""
-    if "actions._types" not in sys.modules and str(REPO) not in sys.path:
-        sys.path.insert(0, str(REPO))
-    import actions._types as t
-    return t
+    """actions/_types.py: the one the last catalog loaded, else the repo's, imported once (each
+    import reads the command rules and the kit's GONE again)."""
+    global _repo_types
+    if "actions._types" in sys.modules:
+        return sys.modules["actions._types"]
+    if _repo_types is None:
+        if str(REPO) not in sys.path:
+            sys.path.insert(0, str(REPO))
+        import actions._types as t
+        _repo_types = t
+    return _repo_types
 
 
 def write(path: Path, text: str) -> Path:
@@ -274,9 +301,15 @@ def test_the_id_and_player_types_take_and_refuse_what_the_kit_did():
                 assert adapter.validate_python(ours) == ours      # and what is sent reads back the same
 
 
-def kit_reads(mixes: list, rules: list) -> list:
+MIXES = ["stone_bricks", " 70% stone_bricks 30% cobblestone ", "70% stone, 30% minecraft:andesite",
+         "oak_stairs[facing=east] 2.5% glowstone", "air"]
+PIECES = ["stone > 70% netherrack", "30% magma_block", "solid water > packed_ice", "#minecraft:snow > keep"]
+
+
+def kit_reads(mixes: list, rules: list) -> subprocess.Popen:
     """How the presets read mixes (shape_fill's) and rules (replace_blocks' joining), run in a
-    subprocess as a script would: [[[block, weight] ...] ..., [rule ...]]."""
+    subprocess as a script would, started now and read by `kit`: [[[block, weight] ...] ...,
+    [rule ...]]."""
     code = textwrap.dedent("""
         import json, sys
         sys.path.insert(1, %r)
@@ -287,31 +320,39 @@ def kit_reads(mixes: list, rules: list) -> list:
     """ % str(REPO / "scripts"))
     env = {**os.environ, "PYTHONPATH": "%s:%s" % (REPO / "scripts" / "_lib", REPO), "VFG_INSTANCE": "t",
            "PYTHONDONTWRITEBYTECODE": "1"}
-    p = subprocess.run([sys.executable, "-c", code], input=json.dumps([mixes, rules]), env=env, capture_output=True,
-                       text=True, timeout=60)
-    assert p.returncode == 0, p.stderr
-    return json.loads(p.stdout)
+    p = subprocess.Popen([sys.executable, "-c", code], env=env, text=True, stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    p.stdin.write(json.dumps([mixes, rules]))
+    p.stdin.close()
+    return p
 
 
-def test_a_block_mix_is_read_as_the_kit_reads_it_and_refused_where_it_builds_nothing():
+# Started as the tests are collected, so it runs beside them rather than before two of them.
+KIT = kit_reads([m.strip() for m in MIXES], PIECES)
+
+
+@pytest.fixture(scope="module")
+def kit():
+    """The presets' readings of MIXES and PIECES."""
+    out, err = KIT.stdout.read(), KIT.stderr.read()
+    assert KIT.wait(timeout=60) == 0, err
+    return json.loads(out)
+
+
+def test_a_block_mix_is_read_as_the_kit_reads_it_and_refused_where_it_builds_nothing(kit):
     mix = TypeAdapter(T().BlockMix)
-    good = ["stone_bricks", " 70% stone_bricks 30% cobblestone ", "70% stone, 30% minecraft:andesite",
-            "oak_stairs[facing=east] 2.5% glowstone", "air"]
-    kit_mixes, _ = kit_reads([g.strip() for g in good], [])
-    for raw, kit in zip(good, kit_mixes):
+    for raw, read in zip(MIXES, kit[0]):
         assert mix.validate_python(raw) == raw.strip()
-        assert [list(m) for m in T()._mix(raw.strip())] == kit
+        assert [list(m) for m in T()._mix(raw.strip())] == read
     for bad, says in (("", "is not a block or a mix"), ("#logs", "not a #tag"), ("Stone", "Stone is not a block id"),
                       ("70%", "is not a block or a mix"), ("0% stone", "add up to 0%"), ("stone {x", "is not a block")):
         with pytest.raises(ValidationError, match=re.escape(says)):
             mix.validate_python(bad)
 
 
-def test_replace_rules_join_as_the_kit_joins_them_and_each_is_a_rule():
+def test_replace_rules_join_as_the_kit_joins_them_and_each_is_a_rule(kit):
     rules = TypeAdapter(T().ReplaceRules)
-    pieces = ["stone > 70% netherrack", "30% magma_block", "solid water > packed_ice", "#minecraft:snow > keep"]
-    _, kit = kit_reads([], pieces)
-    assert rules.validate_python(pieces) == kit == [
+    assert rules.validate_python(PIECES) == kit[1] == [
         "stone > 70% netherrack, 30% magma_block", "solid water > packed_ice", "#minecraft:snow > keep"]
     for bad, says in ((["stone"], "is not a rule"), (["> lava"], "name the blocks to change"),
                       (["stone > #logs"], "not a #tag"), (["50% stone > lava"], "a weight goes after >"),
