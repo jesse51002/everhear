@@ -43,10 +43,10 @@ __all__ = ["Action", "Values", "Live", "preset", "Field", "Literal", "Player", "
            "ItemId", "ParticleId", "SoundId", "Place", "Command"]
 
 
-# The command-safety rules: toolkit/remote/commands.py's, loaded by path, the one list of
+# The command-safety rules: scripts/_lib/commands.py's, loaded by path, the one list of
 # refused commands, so the PC and EC2 refuse the same words.
 def _load_commands():
-    path = REPO / "toolkit" / "remote" / "commands.py"
+    path = REPO / "scripts" / "_lib" / "commands.py"
     spec = importlib.util.spec_from_file_location("vfg_remote_commands", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

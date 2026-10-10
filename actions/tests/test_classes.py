@@ -144,11 +144,11 @@ def refused_in(path: str) -> set[str]:
 
 
 def test_the_command_rules_are_one_module_and_every_refused_list_matches_it():
-    commands = _types._commands  # toolkit/remote/commands.py, loaded by path
-    assert Path(commands.__file__) == REPO / "toolkit" / "remote" / "commands.py"
+    commands = _types._commands  # scripts/_lib/commands.py, loaded by path
+    assert Path(commands.__file__) == REPO / "scripts" / "_lib" / "commands.py"
     assert (_types.REFUSED, _types.BLOCK_COMMANDS, _types.RCON_MAX, _types.command_problem) == \
         (commands.REFUSED, commands.BLOCK_COMMANDS, commands.RCON_MAX, commands.command_problem)
-    assert set(commands.REFUSED) == refused_in("toolkit/remote/commands.py") == refused_in("scripts/_lib/mc.py")
+    assert set(commands.REFUSED) == refused_in("scripts/_lib/commands.py") == refused_in("scripts/_lib/mc.py")
     if (REPO / "orchestrator/orchestrator/guard.py").exists():
         assert set(commands.REFUSED) == refused_in("orchestrator/orchestrator/guard.py")
     assert set(commands.BLOCK_COMMANDS) == {"setblock", "fill", "clone", "place", "fillbiome"}
