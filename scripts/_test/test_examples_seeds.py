@@ -29,12 +29,14 @@ RESULTS = {}
 
 
 def values_of(name):
+    """Its VALUES, or, ported to its action, the values a copy of its first action gets."""
     with open(os.path.join(run_tests.SCRIPTS, name, "main.py"), encoding="utf-8") as f:
-        tree = ast.parse(f.read())
-    for node in tree.body:
+        source = f.read()
+    for node in ast.parse(source).body:
         if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "VALUES" for t in node.targets):
             return ast.literal_eval(node.value)
-    return None
+    meta = run_tests.action_meta(name, source)
+    return meta and meta["values"]
 
 
 class SeedExampleTests(unittest.TestCase):

@@ -294,11 +294,17 @@ def run_script(name):
     password = secrets.token_hex(8)
     fake = FakeRcon(password).start()
     out_path = os.path.join(TMP, name + ".out")
+    env = script_env(properties(password, fake.port))
+    meta = action_meta(name, source)          # a seed ported to its action runs as a copy of it
+    if meta is not None:
+        env.update(VFG_INSTANCE=name, VFG_SCRIPT=name, VFG_RUN_DIR=tempfile.mkdtemp(dir=TMP))
+        with open(os.path.join(env["VFG_RUN_DIR"], name + ".json"), "w") as f:
+            json.dump(meta, f)
     try:
         with open(out_path, "wb") as out:
             start = time.time()
             proc = subprocess.Popen([sys.executable, "-u", "main.py"] + args, cwd=folder,
-                                    env=script_env(properties(password, fake.port)), stdout=out, stderr=out)
+                                    env=env, stdout=out, stderr=out)
             if ends_itself:
                 try:
                     proc.wait(timeout=20)

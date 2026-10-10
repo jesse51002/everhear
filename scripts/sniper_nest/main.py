@@ -2,23 +2,12 @@
 ASKS = ["set my spawn, give me a sniper outlet and set my spawn there, and make sure it's like a name for people",
         "can you also build me a sniper nest far away from him to spawn in",
         "build me a sniper nest", "a sniper tower with my name on it", "make it taller"]
-from kit import values, aim, area, loop, world
+from kit import values, result, aim, area, loop, world
 import json
 import math
 import random
 import re
 import mc
-
-VALUES = {
-    "player":       {"type": "player", "default": "@a"},
-    "nest_height":  {"type": "int", "min": 4, "max": 120, "default": 14},
-    "nest_ahead":   {"type": "int", "min": 0, "max": 64, "default": 5},
-    "nest_at":      {"type": "list", "of": "number", "default": []},
-    "nest_sign":    {"type": "list", "of": "str", "default": ["{player}", "Sniper Nest"]},
-    "nest_spawn":   {"type": "bool", "default": True},
-    "shape_facing": {"type": "enum", "of": ["look", "north", "east", "south", "west"], "default": "look", "live": True},
-    "shape_blocks": {"type": "str", "default": "stone_bricks", "live": True},
-}
 
 
 # --- preset: shape_fill (copied from _presets/shape_fill.py) ---
@@ -168,12 +157,13 @@ def _shape_fill_cells(b):
             for x in range(b[0], b[3] + 1, n) for y in range(b[1], b[4] + 1, n) for z in range(b[2], b[5] + 1, n)]
 
 
-v = values(VALUES)
+v = values()
 # For each player the player value names: a tower of shape_blocks, nest_ahead blocks in front of
-# them (or with its door at nest_at, x y z, facing north), 5 wide and nest_height high on a
-# footing 8 deep, its top the lookout's floor; walls round the lookout with slits all round
-# and a roof over it; a ladder up the inside, a door facing the player, a lantern, a sign over
-# the door ({player} is their name), and their spawn on the lookout. Then it ends.
+# them (or one with its door at nest_at, a saved place, x y z or a player, facing north, for
+# them all), 5 wide and nest_height high on a footing 8 deep, its top the lookout's floor;
+# walls round the lookout with slits all round and a roof over it; a ladder up the inside, a
+# door facing the player, a lantern, a sign over the door ({player} is their name: the first
+# player's at nest_at), and their spawn on the lookout. Then it ends.
 
 
 def part(kind, width, depth, height, offset, blocks=None, hollow=False):
@@ -182,13 +172,21 @@ def part(kind, width, depth, height, offset, blocks=None, hollow=False):
                       blocks=blocks or v["shape_blocks"], hollow=hollow)
 
 
+place = world.place(v["nest_at"]) if v["nest_at"] else None
+if v["nest_at"] and place is None:
+    result("no sniper nest: %s is not a saved place nor a player online" % v["nest_at"], at=v["nest_at"], nests=0)
+    raise SystemExit(0)
+top, made = None, []                                                # (player, where its lookout is)
 for p in loop.who(v["player"]):
-    at = aim.look(p)
+    placed = place is not None
+    if placed and top is not None:                                  # one nest at a place: their spawn on it too
+        if v["nest_spawn"]:
+            mc.rcon(world.run(top, "spawnpoint %s %d %d %d" % (p, x, y, z)))
+        made.append((p, made[0][1]))
+        continue
+    at = place or aim.look(p)
     if at is None:
         continue
-    placed = len(v["nest_at"]) >= 3
-    if placed:
-        at = world.Pos(v["nest_at"][0], v["nest_at"][1], v["nest_at"][2], at.dim)
     way = v["shape_facing"] if v["shape_facing"] != "look" else (
         "south" if placed else ["south", "west", "north", "east"][int(round(at.yaw / 90.0)) % 4])
     back = {"south": "north", "north": "south", "east": "west", "west": "east"}[way]
@@ -212,3 +210,10 @@ for p in loop.who(v["player"]):
     if v["nest_spawn"]:
         mc.rcon(world.run(top, "spawnpoint %s %d %d %d" % (p, x, y, z)))
     mc.log("sniper nest for %s: lookout at %d %d %d%s" % (p, x, y, z, ", spawn set there" if v["nest_spawn"] else ""))
+    made.append((p, "%d %d %d" % (x, y, z) + (" in " + top.dim.split(":")[-1] if top.dim else "")))
+if made:
+    result("%s%s" % ("; ".join("sniper nest for %s, lookout at %s" % m for m in made),
+                     ", spawn set there" if v["nest_spawn"] else ""),
+           players=[p for p, _ in made], at=[a for _, a in made], height=v["nest_height"], spawn=v["nest_spawn"])
+else:
+    result("no sniper nest: %s is not online" % v["player"], players=[], nests=0)
