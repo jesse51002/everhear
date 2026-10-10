@@ -5,12 +5,17 @@ S3, Fabric's meta server and Modrinth.
 
     python3 installer/tests/test_installer.py            # everything
     python3 installer/tests/test_installer.py -k Ps      # unittest's own filters
+    python3 -m unittest discover -s installer/tests      # the same, from the repo's root
+
+The cases run side by side, each in a thread of its own (load_tests below); a test named on its
+own, e.g. test_installer.PsCases.test_fresh_install, runs alone.
 
 Needs bash, python3 and perl. The PowerShell tests need pwsh (PowerShell 7) on PATH, at
 $VFG_PWSH, or at ~/.local/opt/powershell-*/pwsh; without it they are skipped, and say so.
 No real token, host, bucket or AWS call is involved: the token is made up per run, the
 addresses are from the documentation ranges (203.0.113.0/24, 198.51.100.0/24).
 """
+import concurrent.futures
 import functools
 import glob
 import hashlib
@@ -391,22 +396,88 @@ class World:
 
     def close(self):
         self.server.shutdown()
+        self.server.server_close()
         shutil.rmtree(self.tmp, ignore_errors=True)
 
 
 WORLD = None
+WORLD_FAILED = None
+WORLD_LOCK = threading.Lock()
 
 
 def world():
-    global WORLD
-    if WORLD is None:
-        WORLD = World()
-    return WORLD
+    """The shared fixture: the first test to ask builds it, the others wait. Built once even when
+    it fails, so a broken publish fails every test at once instead of being retried by each."""
+    global WORLD, WORLD_FAILED
+    with WORLD_LOCK:
+        if WORLD is None and WORLD_FAILED is None:
+            try:
+                WORLD = World()
+            except Exception as e:
+                WORLD_FAILED = "building the shared fixture failed: %s" % e
+                raise
+        if WORLD is None:
+            raise AssertionError(WORLD_FAILED)
+        return WORLD
 
 
 def tearDownModule():
+    global WORLD
     if WORLD is not None:
         WORLD.close()
+        WORLD = None
+
+
+# --- running the cases side by side ----------------------------------------------------------------
+
+class Recorder(unittest.TestResult):
+    """What one test reported, kept to be passed on to the real result afterwards."""
+
+    def __init__(self):
+        super().__init__()
+        self.events = []
+
+
+for _name in ("addSuccess", "addFailure", "addError", "addSkip", "addExpectedFailure", "addUnexpectedSuccess",
+              "addSubTest", "addDuration"):
+    setattr(Recorder, _name, lambda self, *args, _name=_name: self.events.append((_name, args)))
+
+
+class ConcurrentSuite(unittest.TestSuite):
+    """Runs every test at once, each in a thread of its own, then reports them in their order.
+
+    The cases are independent: each has its own home folder, its own copy of anything it breaks,
+    and its work happens in subprocesses, so threads are enough."""
+
+    def run(self, result, debug=False):
+        def cases(suite):
+            for t in suite:
+                yield from (cases(t) if isinstance(t, unittest.TestSuite) else [t])
+
+        def one(test):
+            r = Recorder()
+            test.run(r)
+            return r.events
+
+        tests = list(cases(self))
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=max(4, 2 * (os.cpu_count() or 2)))
+        try:
+            outcomes = list(pool.map(one, tests))
+        finally:
+            pool.shutdown(cancel_futures=True)
+            tearDownModule()  # unittest only calls it for tests it ran itself
+        for test, events in zip(tests, outcomes):
+            result.startTest(test)
+            for name, args in events:
+                report = getattr(result, name, None)
+                if report:
+                    report(*args)
+            result.stopTest(test)
+        return result
+
+
+def load_tests(loader, tests, pattern):
+    return ConcurrentSuite(tests)
 
 
 # --- publish.sh ---------------------------------------------------------------------------------
