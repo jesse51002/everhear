@@ -8,8 +8,8 @@
 #   @hb                 heartbeat, every 10 s and at the end of the first write
 import re
 
-FEED_RE = re.compile(rb"^(LINE|GAME|ORCH|SYS)#(\d+) ")
-POLL = 0.1
+FEED_RE = re.compile(rb"^([A-Z]+)#(\d+) ")  # any type: LINE, GAME, AI, SYS, and an old ORCH
+POLL = 0.05         # as Jev's: a line reaches the brain at most this late
 HEARTBEAT = 10.0
 
 

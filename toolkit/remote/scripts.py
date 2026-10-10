@@ -16,7 +16,8 @@
 #   {"vfg": "/opt/vfg", "op": "info", "copy": "galick_gun_2"}
 #   {"vfg": "/opt/vfg", "op": "logs", "name": "galick_gun_2", "n": 40, "follow": false}
 #   {"vfg": "/opt/vfg", "op": "copies"}
-#   {"vfg": "/opt/vfg", "mc": "/opt/mc", "op": "state"}
+#   {"vfg": "/opt/vfg", "mc": "/opt/mc", "op": "state", "items": false}   with items, each online
+#    player also gets "items": the replies to data get Inventory, equipment and SelectedItemSlot
 #
 # `run` deploys (or checks the stamps), starts the copy (instances.Box.start) and waits: a once copy until it ends or
 # "wait" s pass, an until-stopped one until its first result() or "wait" s (the 2 s check),
@@ -36,7 +37,7 @@ ROOT_RE = re.compile(r"^(scripts|made/[a-z0-9][a-z0-9_-]{0,47}/scripts)$")
 PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
 BASE = ARGS["vfg"]
 RUN = os.path.join(BASE, "run")
-RUN_MIN_WAIT = 0.5    # what a copy is waited for at least, whatever the deploy took
+RUN_MIN_WAIT = 0.5    # what a copy is waited for at least (or the whole wait, when shorter), whatever the deploy took
 STAMP = ".vfg-stamp"  # in a deployed folder: the stamp vfg sent with it
 STAMP_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -229,7 +230,8 @@ def op_run():
         die(1, str(e))
     # The caller's clock started before the deploy: a once copy past its timeout is answered
     # as still running, not cut off by vfg's or the dispatcher's own timeout.
-    left = max(RUN_MIN_WAIT, float(ARGS.get("wait") or instances.CHECK_S) - (time.time() - began))
+    wait = float(ARGS.get("wait") or instances.CHECK_S)
+    left = max(min(RUN_MIN_WAIT, wait), wait - (time.time() - began))
     got = b.wait(name, proc, left, on_result=bool(ARGS.get("on_result")))
     got.update(copy=name, pid=pid, started=b.meta(name)["started"])
     if not got["running"] and got["code"]:
@@ -334,6 +336,12 @@ def time_of_day(r):
     return (int(d.group(1)) % 24000 if d else None), (int(day.group(1)) if day else None)
 
 
+# What vfg state --items asks of each online player, as the replies the brain's listing reads.
+ITEMS = ("data get entity {p} Inventory",
+         "execute if data entity {p} equipment run data get entity {p} equipment",
+         "data get entity {p} SelectedItemSlot")
+
+
 def op_state():
     t0 = time.time()
     world = {"online": [], "daytime": None, "day": None, "raining": None, "thundering": None,
@@ -345,10 +353,14 @@ def op_state():
                 pos = entity_data(r, p, "Pos")
                 dim = entity_data(r, p, "Dimension")
                 nums = re.findall(r"(-?[\d.]+(?:[eE]-?\d+)?)d", pos or "")
-                world["online"].append({
+                entry = {
                     "name": p,
                     "pos": [int(float(x) // 1) for x in nums[:3]] if len(nums) >= 3 else None,
-                    "dimension": dim.strip('"').split(":")[-1] if dim else None})
+                    "dimension": dim.strip('"').split(":")[-1] if dim else None}
+                if ARGS.get("items"):
+                    # A player wearing nothing has no equipment: the execute if keeps that from failing.
+                    entry["items"] = [r.command(c.format(p=p)) for c in ITEMS]
+                world["online"].append(entry)
             world["daytime"], world["day"] = time_of_day(r)
             world["raining"] = passes(r, WEATHER % "raining")
             world["thundering"] = passes(r, WEATHER % "thundering")
