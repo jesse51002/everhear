@@ -1,24 +1,9 @@
 """Zoo: random animals keep coming round each player, up to a most alive at once."""
 ASKS = ["spawn animals around me", "a zoo", "random animals everywhere"]
-from kit import values, loop, mobs, fx
+from kit import values, result, loop, mobs, fx
 import random
 import time
 import mc
-
-VALUES = {
-    "player":           {"type": "player", "default": "@a"},
-    "horde_mobs":       {"type": "list", "of": "mob", "live": True,
-                         "default": ["pig", "cow", "sheep", "chicken", "rabbit", "fox", "goat", "llama", "cat", "wolf",
-                                     "parrot", "frog", "turtle", "axolotl", "panda", "horse", "donkey", "bee",
-                                     "armadillo", "camel"]},
-    "horde_per_player": {"type": "int", "min": 1, "max": 100, "default": 20, "live": True},
-    "horde_every":      {"type": "number", "min": 1, "max": 3600, "default": 1, "live": True},
-    "horde_cap":        {"type": "int", "min": 1, "max": 400, "default": 200, "live": True},
-    "horde_spread":     {"type": "int", "min": 4, "max": 100, "default": 8, "live": True},
-    "horde_waves":      {"type": "int", "min": 0, "max": 1000, "default": 0},
-    "horde_explode":    {"type": "bool", "default": False, "live": True},
-    "horde_announce":   {"type": "bool", "default": False, "live": True},
-}
 
 
 # --- preset: horde_wave (copied from _presets/horde_wave.py) ---
@@ -60,6 +45,8 @@ def horde_wave(player, v):
     return waves
 
 
-v = values(VALUES)
-mc.log("a zoo round", v["player"], "of at most", v["horde_cap"])
+v = values()
+result("a zoo round %s: %d animals each, never more than %d alive"
+       % (v["player"], v["horde_per_player"], v["horde_cap"]), player=v["player"],
+       per_player=v["horde_per_player"], cap=v["horde_cap"], animals=list(v["horde_mobs"]))
 horde_wave(v["player"], v)

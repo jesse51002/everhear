@@ -2,19 +2,9 @@
 ASKS = ["give us a radius of forty blocks and anyone that leaves the radius, they teleport back to the center",
         "keep everyone inside", "nobody can leave this area", "make an arena we can't get out of",
         "teleport anyone who walks out back to the middle"]
-from kit import values, fx, loop, world
+from kit import values, result, fx, loop, world
 import math
 import mc
-
-VALUES = {
-    "player":           {"type": "player", "default": "@a"},
-    "message":          {"type": "str", "default": "Back inside the arena", "live": True},
-    "leaves_area":      {"type": "enum", "of": ["radius", "box", "player"], "default": "radius"},
-    "leaves_radius":    {"type": "number", "min": 1, "max": 10000, "default": 40, "live": True},
-    "leaves_center":    {"type": "list", "of": "number", "default": [], "live": True},
-    "leaves_box":       {"type": "list", "of": "number", "default": [], "live": True},
-    "leaves_of_player": {"type": "player", "default": "@a", "live": True},
-}
 
 
 # --- preset: leaves_area (copied from _presets/leaves_area.py) ---
@@ -79,7 +69,26 @@ def _leaves_back(p, at, home, last, anchors, v):
     return None if at.dim == centre.dim and _leaves_flat(at, centre) <= r else centre
 
 
-v = values(VALUES)
+def kept_in(v):
+    """(where players are kept, in words; its facts), as the arena starts."""
+    if v["leaves_area"] == "box":
+        b = list(v["leaves_box"])
+        return ("in the box %s" % " ".join("%g" % c for c in b[:6]) if len(b) >= 6 else "nowhere yet: no box"), {"box": b}
+    if v["leaves_area"] == "player":
+        return "within %g blocks of %s" % (v["leaves_radius"], v["leaves_of_player"]), {"near": v["leaves_of_player"]}
+    c = list(v["leaves_center"])[:3]
+    if len(c) < 3:
+        first = (loop.who(v["player"]) or [None])[0]
+        at = mc.pos(first) if first else None
+        if not at:
+            return "within %g blocks of where the first of them stands" % v["leaves_radius"], {"center": None}
+        c = [round(x, 1) for x in at]
+    return "within %g blocks of %s" % (v["leaves_radius"], " ".join("%g" % x for x in c)), {"center": c}
+
+
+v = values()
+words, facts = kept_in(v)
+result("%s kept %s" % (v["player"], words), player=v["player"], area=v["leaves_area"], radius=v["leaves_radius"], **facts)
 for p, back in loop(leaves_area(v["player"], v)):
     mc.rcon(world.run(back.dim, "tp %s %.2f %.2f %.2f" % (p, back[0], back[1], back[2])))
     fx.sound("entity.enderman.teleport", p, volume=1.5)
