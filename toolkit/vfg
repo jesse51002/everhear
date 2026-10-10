@@ -22,6 +22,7 @@ import base64
 import collections
 import errno
 import fcntl
+import hashlib
 import io
 import json
 import math
@@ -1142,36 +1143,57 @@ def script_problem(cfg, name, root=None):
     return None
 
 
+def tree(root, name):
+    """What a deploy sends of <root>/<name>, in its order: (path in the tar, its os.stat, the
+    file's bytes, or None for a folder); no caches, no dotfiles, no links."""
+    for dirpath, dirnames, filenames in os.walk(os.path.join(root, name)):
+        dirnames[:] = sorted(d for d in dirnames
+                             if not d.startswith(".") and d != "__pycache__"
+                             and not os.path.islink(os.path.join(dirpath, d)))
+        rel = os.path.relpath(dirpath, root)
+        yield rel, os.stat(dirpath), None
+        for fn in sorted(filenames):
+            path = os.path.join(dirpath, fn)
+            if fn.startswith(".") or fn.endswith(".pyc") or os.path.islink(path) or not os.path.isfile(path):
+                continue
+            with open(path, "rb") as f:
+                yield rel + "/" + fn, os.stat(path), f.read()
+
+
+def stamp(entries):
+    """A folder's stamp: the sha256 of its files' paths, exec bits and bytes as a deploy sends
+    them (tree), not of the gzip. The box keeps it in the folder it deployed (.vfg-stamp)."""
+    h = hashlib.sha256()
+    for path, st, data in entries:
+        if data is not None:
+            h.update(b"%s\0%d\0%d\0" % (path.encode("utf-8"), bool(st.st_mode & 0o111), len(data)))
+            h.update(data)
+    return h.hexdigest()
+
+
 def pack(cfg, names, root=None):
-    """The folders as a gzipped tar in memory, base64; no caches, no dotfiles."""
+    """The folders as a gzipped tar in memory, base64, and each one's stamp, from the same bytes:
+    (tar, {name: stamp})."""
     root = root or scripts_dir(cfg)
     buf = io.BytesIO()
-
-    def tidy(ti):
-        ti.uid = ti.gid = 0
-        ti.uname = ti.gname = ""
-        ti.mtime = int(ti.mtime)
-        return ti
-
+    stamps = {}
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
         for name in names:
-            top = os.path.join(root, name)
-            for dirpath, dirnames, filenames in os.walk(top):
-                dirnames[:] = sorted(d for d in dirnames
-                                     if not d.startswith(".") and d != "__pycache__"
-                                     and not os.path.islink(os.path.join(dirpath, d)))
-                rel = os.path.relpath(dirpath, root)
-                tf.add(dirpath, arcname=rel, recursive=False, filter=tidy)
-                for fn in sorted(filenames):
-                    path = os.path.join(dirpath, fn)
-                    if fn.startswith(".") or fn.endswith(".pyc") or os.path.islink(path) \
-                            or not os.path.isfile(path):
-                        continue
-                    tf.add(path, arcname=rel + "/" + fn, recursive=False, filter=tidy)
+            entries = list(tree(root, name))
+            stamps[name] = stamp(entries)
+            for path, st, data in entries:
+                ti = tarfile.TarInfo(path)
+                ti.mode, ti.mtime = stat.S_IMODE(st.st_mode), int(st.st_mtime)
+                if data is None:
+                    ti.type = tarfile.DIRTYPE
+                    tf.addfile(ti)
+                else:
+                    ti.size = len(data)
+                    tf.addfile(ti, io.BytesIO(data))
     data = buf.getvalue()
     if len(data) > DEPLOY_MAX:
         raise Fail(1, "the scripts pack to %d MB; at most 20 MB" % (len(data) // (1024 * 1024)))
-    return base64.b64encode(data).decode("ascii")
+    return base64.b64encode(data).decode("ascii"), stamps
 
 
 def with_lib(cfg, names):
@@ -1184,13 +1206,29 @@ def made_root(cfg):
     return "made/%s/scripts" % server_name(cfg)
 
 
-def tars_for(cfg, source, names):
-    """What one deploy sends: _lib/ (with kit/) and library scripts into scripts/,
-    made scripts into made/<server>/scripts/."""
+def deployed(cfg, source, names):
+    """What one deploy sends, as (the box's root, the folder here, names): _lib/ (with kit/) and
+    library scripts into scripts/, made scripts into made/<server>/scripts/."""
     if source == "made":
-        tars = [{"root": "scripts", "tar": pack(cfg, with_lib(cfg, []))}] if with_lib(cfg, []) else []
-        return tars + [{"root": made_root(cfg), "tar": pack(cfg, names, made_scripts_dir(cfg))}]
-    return [{"root": "scripts", "tar": pack(cfg, with_lib(cfg, names))}]
+        lib = [("scripts", scripts_dir(cfg), with_lib(cfg, []))] if with_lib(cfg, []) else []
+        return lib + [(made_root(cfg), made_scripts_dir(cfg), list(names))]
+    return [("scripts", scripts_dir(cfg), with_lib(cfg, names))]
+
+
+def tars_for(cfg, source, names):
+    """The deploy itself: [{"root", "tar", "stamps"}]."""
+    out = []
+    for root, here, folders in deployed(cfg, source, names):
+        tar, stamps = pack(cfg, folders, here)
+        out.append({"root": root, "tar": tar, "stamps": stamps})
+    return out
+
+
+def stamps_for(cfg, source, names):
+    """What the box checks before it starts a copy with no deploy: [{"root", "stamps"}], the
+    stamps of what tars_for would send, read from the files, never packed."""
+    return [{"root": root, "stamps": dict((n, stamp(tree(here, n))) for n in folders)}
+            for root, here, folders in deployed(cfg, source, names)]
 
 
 def scan_scripts(cfg, root):
@@ -1231,9 +1269,11 @@ def cmd_script_deploy(cfg, a):
         lib_names, skipped = scan_scripts(cfg, root)
         made_names, skipped_made = scan_scripts(cfg, made)
         skipped += skipped_made
-    tars = [{"root": "scripts", "tar": pack(cfg, with_lib(cfg, lib_names))}]
+    tar, stamps = pack(cfg, with_lib(cfg, lib_names))
+    tars = [{"root": "scripts", "tar": tar, "stamps": stamps}]
     if made_names:
-        tars.append({"root": made_root(cfg), "tar": pack(cfg, made_names, made)})
+        tar, stamps = pack(cfg, made_names, made)
+        tars.append({"root": made_root(cfg), "tar": tar, "stamps": stamps})
     rc, o, e = remote(cfg, a, "scripts.py", {"op": "deploy", "tars": tars}, 30, libs=SCRIPTS_LIBS)
     finish(rc, o, e)
     if skipped:
@@ -1365,8 +1405,11 @@ def checked_values(cfg, a, va, cls, given):
 
 
 def start_copy(cfg, a, name, cls, source, values, live, task, as_=None):
-    """One SSH call: deploy the action's script and _lib, start a copy, wait as its runs says.
-    The box's answer: {"copy", "pid", "started", "running", "code", "result", "error", "tail"}."""
+    """Start a copy on the box and wait as its runs says, in one SSH call when the box has the
+    action's script and _lib as they are here: the call sends their stamps (stamps_for), and
+    the box starts the copy when its own match. When one does not, the box answers that it needs
+    them, and a second call sends them (tars_for) with the run. The box's answer: {"copy",
+    "pid", "started", "running", "code", "result", "error", "tail"}."""
     owner = cfg.get("VFG_OWNER")
     if owner and not PLAYER_RE.match(owner):
         raise Fail(3, "not configured: VFG_OWNER must be a Minecraft name")
@@ -1379,22 +1422,30 @@ def start_copy(cfg, a, name, cls, source, values, live, task, as_=None):
     home = script_home(cfg, source, script)
     args = {"op": "run", "action": name, "script": script, "source": home, "server": server_name(cfg),
             "values": values, "live": live, "runs": runs, "task": task, "as": as_,
-            "tars": tars_for(cfg, home, [script]), "owner": owner, "poll": live_poll(cfg),
+            "stamps": stamps_for(cfg, home, [script]), "owner": owner, "poll": live_poll(cfg),
             "wait": wait, "on_result": runs != "once"}
     timeout = a.timeout if getattr(a, "timeout", None) is not None else wait + 30
-    try:
-        rc, o, e = Ssh(cfg).call(program("scripts.py", dict(args, vfg=cfg.rvfg, mc=cfg.rmc), SCRIPTS_LIBS),
-                                 timeout, keep_master=True)
-    except TimedOut:
-        raise Fail(124, "timed out: %s did not answer within %s s; it may still have happened"
-                   % (name, fmt_s(timeout)))
-    if rc != 0:
-        finish(rc, o, e)
-    lines = o.decode("utf-8", "replace").rstrip("\n").split("\n")
-    try:
-        got = json.loads(lines[-1])
-    except ValueError:
-        raise Fail(1, "scripts.py answered something that is not JSON")
+    deadline = time.monotonic() + timeout
+
+    def call(args):
+        try:
+            rc, o, e = Ssh(cfg).call(program("scripts.py", dict(args, vfg=cfg.rvfg, mc=cfg.rmc), SCRIPTS_LIBS),
+                                     max(0.1, deadline - time.monotonic()), keep_master=True)
+        except TimedOut:
+            raise Fail(124, "timed out: %s did not answer within %s s; it may still have happened"
+                       % (name, fmt_s(timeout)))
+        if rc != 0:
+            finish(rc, o, e)
+        lines = o.decode("utf-8", "replace").rstrip("\n").split("\n")
+        try:
+            return json.loads(lines[-1])
+        except ValueError:
+            raise Fail(1, "scripts.py answered something that is not JSON")
+
+    got = call(args)
+    if got.get("needs") == "tars":   # nothing was started: the box has another _lib or script
+        args.pop("stamps")
+        got = call(dict(args, tars=tars_for(cfg, home, [script])))
     got["runs"] = runs
     return got
 

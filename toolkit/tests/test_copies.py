@@ -177,7 +177,8 @@ class TestRun(ActionCase):
         try:
             before = len(self.box.ssh_calls())
             p = self.box.popen("action", "run", "ping", "nap=5", VFG_DISPATCH_ACTION_TIMEOUT_S="2")
-            self.assertTrue(wait_for(lambda: self.remote_calls(before), 30))
+            # The box has no stamps yet: the first call asks for the tars, the second deploys.
+            self.assertTrue(wait_for(lambda: len(self.remote_calls(before)) >= 2, 30))
             time.sleep(2.5)                                 # the op began, and waits for the lock
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
@@ -258,6 +259,54 @@ class TestRun(ActionCase):
         self.line(self.run_action("ping"))
         self.assertNotEqual(os.stat(lib).st_ino, ino)       # a change is deployed whole
         self.assertTrue(os.path.isfile(os.path.join(lib, "kit", "extra.py")))
+
+    def test_a_run_sends_only_stamps_while_the_box_has_what_it_would_deploy(self):
+        lib = os.path.join(self.box.rvfg, "scripts", "_lib")
+        mine = os.path.join(self.box.repo, "scripts", "_lib", "kit", "extra.py")
+
+        def calls(*args):
+            """The SSH calls one run made: 1 when the box had it all, 2 when it asked for the tars."""
+            before = len(self.box.ssh_calls())
+            self.line(self.run_action(*args))
+            return len(self.remote_calls(before))
+
+        def same_lib():
+            with open(mine) as a, open(os.path.join(lib, "kit", "extra.py")) as b:
+                return a.read() == b.read()
+
+        self.assertEqual(calls("ping"), 2)                  # a new box: no stamps yet
+        with open(os.path.join(lib, ".vfg-stamp")) as f:
+            self.assertRegex(f.read(), r"^[0-9a-f]{64}\n$")
+        self.assertTrue(os.path.isfile(os.path.join(self.box.rvfg, "scripts", "ping", ".vfg-stamp")))
+        ino = os.stat(lib).st_ino
+        self.assertEqual(calls("ping"), 1)                  # nothing changed: no tars, no deploy
+        self.assertEqual(calls("ping", "say=again"), 1)
+        self.assertEqual(os.stat(lib).st_ino, ino)
+        # Another worktree's _lib (here, the next edit, then the first again): whoever runs last wins.
+        standins.write(mine, "# v2\n")
+        self.assertEqual(calls("ping"), 2)
+        self.assertTrue(same_lib())
+        standins.write(mine, "# v1\n")
+        self.assertEqual(calls("ping"), 2)
+        self.assertTrue(same_lib())
+        # A folder an older vfg swapped in has no stamp: it is deployed again.
+        shutil.rmtree(lib)
+        shutil.copytree(os.path.join(self.box.repo, "scripts", "_lib"), lib)
+        standins.write(os.path.join(lib, "kit", "extra.py"), "# an older vfg's\n")
+        self.assertEqual(calls("ping"), 2)
+        self.assertTrue(same_lib())
+        # The script alone changed: it is deployed, the unchanged _lib left as it is.
+        ino = os.stat(lib).st_ino
+        standins.write(os.path.join(self.box.repo, "scripts", "ping", "main.py"),
+                       standins.SCRIPTS["ping"].replace('"%s: %d online"', '"%s: %d are online"'))
+        self.assertEqual(calls("ping", "say=hey"), 2)
+        self.assertEqual(self.box_json("ping.result.json")["summary"], "hey: 1 are online")
+        self.assertEqual(os.stat(lib).st_ino, ino)
+        # vfg script deploy stamps what it deploys too.
+        standins.write(mine, "# v3\n")
+        self.assertEqual(self.box.vfg("script", "deploy", "ping").returncode, 0)
+        self.assertEqual(calls("ping"), 1)
+        self.assertTrue(same_lib())
 
     def test_minecraft_down_and_ec2_unreachable(self):
         self.box.stop_rcon()

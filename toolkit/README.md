@@ -90,8 +90,10 @@ task. `vfg orch start`, `stop` and `status` run both processes: the dispatcher's
 (`lib/py/vfg_actions.py`, the one loader), checks the values against the action's class (an
 unknown or fixed key, or a value its field refuses, exits 2; a number out of range is clamped
 and a note says so; a saved place against the places cache, fetched again only when a place
-check fails on a stale one), then makes one SSH call: `_lib` and the action's script deployed,
-a copy started, waited for. It prints ONE JSON line, `{"ok", "copy", "action", "running",
+check fails on a stale one), then makes one SSH call: a copy started and waited for, when EC2
+has `_lib` and the action's script as this repo does (a deploy leaves in each folder the stamp
+it was sent with, `.vfg-stamp`, a hash of its files, and the run sends only the stamps);
+otherwise EC2 starts nothing and asks for them, and a second call deploys them with the run. It prints ONE JSON line, `{"ok", "copy", "action", "running",
 "summary", "facts", "notes", "error"?}`, whatever happens, and exits 0 when ok. A once action
 is waited for up to its `timeout_s`, else `VFG_DISPATCH_ACTION_TIMEOUT_S` (20 s), and answers
 with its script's `result()`; past it, `"running": true` and "still running as <copy>": it is

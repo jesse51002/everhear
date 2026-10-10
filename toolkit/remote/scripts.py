@@ -1,17 +1,24 @@
 # scripts.py: the box's side of vfg action run, vfg script deploy|logs|list|save and vfg state.
 # Appended after common.py, ARGS and scripts/_lib/instances.py (the module `instances`), the
 # code that starts, stops and edits a copy, which the stop and edit scripts import too. ARGS:
-#   {"vfg": "/opt/vfg", "op": "deploy", "tars": [{"root": "scripts"|"made/<server>/scripts", "tar": ...}]}
+#   {"vfg": "/opt/vfg", "op": "deploy", "tars": [{"root": "scripts"|"made/<server>/scripts", "tar": ...,
+#    "stamps": {"_lib": "<sha256>", "galick_gun": ...}}]}
 #   {"vfg": "/opt/vfg", "mc": "/opt/mc", "op": "run", "action": "galick_gun", "script": "galick_gun",
 #    "source": "library"|"made", "server": "main", "values": {...}, "live": [...], "runs": "once"|
-#    "until_stopped", "task": "T7"|null, "as": null|"steve_gun", "tars": [...], "owner": ..., "poll": 0.5,
-#    "wait": 20, "on_result": false}
+#    "until_stopped", "task": "T7"|null, "as": null|"steve_gun", "tars": [...] | "stamps": [{"root",
+#    "stamps"}], "owner": ..., "poll": 0.5, "wait": 20, "on_result": false}
+#
+# A deploy keeps each folder's stamp, the PC's hash of what it sent (toolkit/vfg, stamp), in the
+# folder, as .vfg-stamp. A run with "stamps" in place of "tars" deploys nothing: when every folder
+# it names has that stamp, it starts the copy; when one does not (missing, another, or none: a
+# folder an older vfg swapped in has none), it starts nothing and answers {"needs": "tars",
+# "stale": ["scripts/_lib", ...]}, exit 0, and vfg sends the run again with the tars.
 #   {"vfg": "/opt/vfg", "op": "info", "copy": "galick_gun_2"}
 #   {"vfg": "/opt/vfg", "op": "logs", "name": "galick_gun_2", "n": 40, "follow": false}
 #   {"vfg": "/opt/vfg", "op": "copies"}
 #   {"vfg": "/opt/vfg", "mc": "/opt/mc", "op": "state"}
 #
-# `run` deploys, starts the copy (instances.Box.start) and waits: a once copy until it ends or
+# `run` deploys (or checks the stamps), starts the copy (instances.Box.start) and waits: a once copy until it ends or
 # "wait" s pass, an until-stopped one until its first result() or "wait" s (the 2 s check),
 # counted from the op's start, so the deploy and the RCON check are inside it (at least 0.5 s
 # is left for the copy). It prints one JSON object: {"copy", "pid", "started", "running",
@@ -30,6 +37,8 @@ PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
 BASE = ARGS["vfg"]
 RUN = os.path.join(BASE, "run")
 RUN_MIN_WAIT = 0.5    # what a copy is waited for at least, whatever the deploy took
+STAMP = ".vfg-stamp"  # in a deployed folder: the stamp vfg sent with it
+STAMP_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def box(rcon=None):
@@ -54,10 +63,44 @@ def on_disk(folder):
     return got
 
 
-def deploy(b64, root="scripts"):
+def write_stamp(folder, value):
+    tmp = os.path.join(folder, "%s.tmp-%d" % (STAMP, os.getpid()))
+    with open(tmp, "w", encoding="ascii") as f:
+        f.write(value + "\n")
+    os.replace(tmp, os.path.join(folder, STAMP))
+
+
+def scripts_root(root, top):
+    """<root>/<top> below /opt/vfg, refused unless root is a scripts folder and top a script (or _lib)."""
+    if not ROOT_RE.match(root):
+        die(1, "refused: %r is not a scripts folder" % root)
+    if not ((top == "_lib" and root == "scripts") or instances.NAME_RE.match(top)):
+        die(1, "refused: %r is not a script name" % top)
+    return os.path.join(BASE, *root.split("/") + [top])
+
+
+def stale(entries):
+    """Of [{"root", "stamps": {folder: stamp}}], the folders deployed here with another stamp or
+    none, or missing: ["scripts/_lib", ...]. No lock: a stamp moves with its folder, so a read
+    mid-swap finds the old folder's, the new one's, or none (stale, and the tars come)."""
+    out = []
+    for t in entries:
+        for top, want in sorted((t.get("stamps") or {}).items()):
+            try:
+                with open(os.path.join(scripts_root(t["root"], top), STAMP), encoding="ascii") as f:
+                    have = f.read().strip()
+            except (OSError, ValueError):
+                have = None
+            if not (STAMP_RE.match(want or "") and have == want):
+                out.append("%s/%s" % (t["root"], top))
+    return out
+
+
+def deploy(b64, root="scripts", stamps=None):
     """Unpack a tar.gz into <root>/.incoming-<pid>/, then swap each folder in, one deploy at
     a time. A folder the box has already, file for file, is left as it is: a copy starting
-    meanwhile never finds its _lib half swapped."""
+    meanwhile never finds its _lib half swapped. Each folder keeps its stamp from `stamps`
+    ({folder: stamp}): a swapped one gets it before the swap, so the two never part."""
     if not ROOT_RE.match(root):
         die(1, "deploy refused: %r is not a scripts folder" % root)
     dest_root = os.path.join(BASE, *root.split("/"))
@@ -100,6 +143,11 @@ def deploy(b64, root="scripts"):
                 with open(dest, "wb") as f:
                     f.write(files[m.name.split("/")[0]]["/".join(m.name.split("/")[1:])][1])
                 os.chmod(dest, 0o755 if m.mode & 0o111 else 0o644)
+            for top in tops:
+                given = (stamps or {}).get(top)
+                folder = os.path.join(incoming if top in swap else dest_root, top)
+                if given and STAMP_RE.match(given) and os.path.isdir(folder):
+                    write_stamp(folder, given)
             for top in swap:
                 new = os.path.join(incoming, top)
                 cur = os.path.join(dest_root, top)
@@ -146,7 +194,7 @@ def op_deploy():
     """One tar ("tar", into "root" or scripts/), or several ("tars": [{"root", "tar"}])."""
     tars = ARGS.get("tars") or [{"root": ARGS.get("root") or "scripts", "tar": ARGS["tar"]}]
     for t in tars:
-        tops = deploy(t["tar"], t["root"])
+        tops = deploy(t["tar"], t["root"], t.get("stamps"))
         root = t["root"]
         print(("deployed: " if root == "scripts" else "deployed %s: " % root[:-len("/scripts")])
               + " ".join(tops))
@@ -155,8 +203,14 @@ def op_deploy():
 def op_run():
     """Deploy, start one copy of an action and wait for it, as the module comment says."""
     began = time.time()
-    for t in ARGS.get("tars") or []:
-        deploy(t["tar"], t["root"])
+    if ARGS.get("tars"):
+        for t in ARGS["tars"]:
+            deploy(t["tar"], t["root"], t.get("stamps"))
+    else:
+        need = stale(ARGS.get("stamps") or [])
+        if need:
+            answer({"needs": "tars", "stale": need})   # nothing started: vfg sends the tars
+            return
     meta = {"action": ARGS["action"], "script": ARGS["script"], "source": ARGS.get("source") or "library",
             "values": ARGS.get("values") or {}, "live": ARGS.get("live") or [],
             "runs": ARGS.get("runs") or "until_stopped", "task": ARGS.get("task")}
