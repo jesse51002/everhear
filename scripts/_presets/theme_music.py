@@ -1,5 +1,6 @@
 """Music for a power, a fight or a boss: a theme tune, riff, chime or boss music by name, once or on a loop, heard near a player, by everyone or by one player alone; a newer one, or none, cuts it off."""
 from kit import fx, loop
+from actions._types import Field, Literal, Live, Values  # the values class: read on the PC only
 
 VALUES = {
     "theme_tune": {"type": "enum", "of": ["galick_gun", "hollow_purple", "ice_beam", "spirit_bomb",
@@ -9,6 +10,18 @@ VALUES = {
     "theme_reach": {"type": "int", "min": 8, "max": 256, "default": 48, "live": True},
     "theme_loop": {"type": "bool", "default": False, "live": True},
 }
+
+
+class ThemeMusic(Values):
+    theme_tune: Live[Literal["galick_gun", "hollow_purple", "ice_beam", "spirit_bomb", "spirit_bomb_throw",
+                             "super_saiyan", "boss", "none"]] = "galick_gun"
+    """the tune, named for the power it was written for (boss: Pigstep, 148 s); none plays nothing and cuts off what plays"""
+    theme_to: Live[Literal["near", "everyone", "player"]] = "near"
+    """near: heard within theme_reach blocks; everyone: by every player wherever they are; player: by that player alone"""
+    theme_reach: Live[int] = Field(48, ge=8, le=256)
+    """for near: how far away it is heard, in blocks"""
+    theme_loop: Live[bool] = False
+    """play it again each time it ends, until a newer tune or none cuts it off"""
 
 
 def theme_music(at, v, *, tune=None):

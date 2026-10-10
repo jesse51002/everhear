@@ -6,6 +6,7 @@ import threading
 
 import mc
 from kit import aim, area, loop, world
+from actions._types import Field, Literal, Live, Values  # the values class: read on the PC only
 
 VALUES = {
     "freeze_seconds": {"type": "number", "min": 1, "max": 120, "default": 5, "live": True},
@@ -14,6 +15,17 @@ VALUES = {
                      "default": "ice", "live": True},
     "freeze_blindness": {"type": "bool", "default": False, "live": True},
 }
+
+
+class Freeze(Values):
+    freeze_seconds: Live[float] = Field(5, ge=1, le=120)
+    """how long what is hit cannot move or attack, in seconds (rounded up to whole seconds)"""
+    freeze_shell: Live[bool] = False
+    """wrap each in a shell of freeze_block that melts when the freeze ends; it only fills air"""
+    freeze_block: Live[Literal["ice", "packed_ice", "blue_ice", "snow_block"]] = "ice"
+    """the block of the shell; does nothing while freeze_shell is off"""
+    freeze_blindness: Live[bool] = False
+    """blind them too while frozen"""
 
 
 def freeze(hits, v):

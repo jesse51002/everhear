@@ -4,6 +4,7 @@ import time
 
 import mc
 from kit import items, loop, world
+from actions._types import Field, Literal, Live, Values  # the values class: read on the PC only
 
 VALUES = {
     "projectile_lands_kind": {"type": "enum", "of": ["both", "arrow", "trident"], "default": "both", "live": True},
@@ -11,6 +12,17 @@ VALUES = {
     "projectile_lands_cooldown": {"type": "number", "min": 0, "max": 60, "default": 0, "live": True},
     "projectile_lands_remove": {"type": "bool", "default": False, "live": True},
 }
+
+
+class ProjectileLands(Values):
+    projectile_lands_kind: Live[Literal["both", "arrow", "trident"]] = "both"
+    """what counts: a player's arrows, their tridents, or both"""
+    projectile_lands_named: Live[list[str]] = []
+    """only those from weapons of these names a script gave ("Spear Bomb"); []: from any bow or trident"""
+    projectile_lands_cooldown: Live[float] = Field(0, ge=0, le=60)
+    """seconds after one of a player's counts during which their next ones land as plain ones (0: all count)"""
+    projectile_lands_remove: Live[bool] = False
+    """take it away where it lands, so it cannot be picked up and used again"""
 
 
 def projectile_lands(player, v):

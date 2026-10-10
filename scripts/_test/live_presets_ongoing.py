@@ -36,6 +36,7 @@ os.environ["VFG_INSTANCE"] = "lpresets"         # this process's own tag, for th
 
 import mc  # noqa: E402
 from kit import world  # noqa: E402
+from test_kit import copied  # noqa: E402  (only the helper: mc stays on the real server)
 import players as fake_players  # noqa: E402
 
 signal.signal(signal.SIGINT, signal.default_int_handler)
@@ -56,8 +57,7 @@ except Exception:
 
 def script(preset, wiring):
     """A preset's file as a script holds it once copied in, with the wiring under it."""
-    with open(os.path.join(PRESETS, preset + ".py"), encoding="utf-8") as f:
-        text = f.read()
+    text = copied(os.path.join(PRESETS, preset + ".py"))
     return (text.replace("import mc\n", "import mc\nimport sys\nfrom kit import values, aim, loop, world\n", 1)
             + "\n\nv = values(VALUES)\n" + wiring)
 

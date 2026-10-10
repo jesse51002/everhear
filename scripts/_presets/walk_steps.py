@@ -4,10 +4,17 @@ import re
 
 import mc
 from kit import loop, world
+from actions._types import Field, Live, Values  # the values class: read on the PC only
 
 VALUES = {
     "walk_every": {"type": "number", "min": 0.5, "max": 32, "default": 1, "live": True},
 }
+
+
+class WalkSteps(Values):
+    walk_every: Live[float] = Field(1, ge=0.5, le=32)
+    """how far a player walks between steps, in blocks across the ground; stepping a block up or down is a step too"""
+
 
 _WALK_STEPS_POS = re.compile(r"\[(-?[\d.]+(?:[eE]-?\d+)?)d, (-?[\d.]+(?:[eE]-?\d+)?)d, (-?[\d.]+(?:[eE]-?\d+)?)d\]")
 

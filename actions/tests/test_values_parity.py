@@ -8,9 +8,9 @@ snapshot in fixtures/, read from each file's literal VALUES before the port (ast
 
     uv run --no-project --with pytest --with pydantic pytest actions/tests/test_values_parity.py
 
-A script with no action yet is skipped, and so is a preset with no class yet (each listed in
-one log line). The defaults are compared after the action's `defaults` and before its
-`fixed`, for each action that is not a variant of another; a variant fixes what it changes.
+A script with no action yet is skipped (listed in one log line); every preset has its class.
+The defaults are compared after the action's `defaults` and before its `fixed`, for each
+action that is not a variant of another; a variant fixes what it changes.
 
 To take the snapshot again (it keeps a script whose VALUES is gone, as it was):
     uv run --no-project --with pytest python actions/tests/test_values_parity.py --write
@@ -196,14 +196,24 @@ def test_every_preset_class_takes_its_values():
             have[name] = T.preset(name)
         except ImportError:
             continue
-    waiting = sorted(set(PRESETS) - set(have))
-    log.warning("parity: %d of %d presets have no values class yet: %s", len(waiting), len(PRESETS), ", ".join(waiting))
-    assert "damage_hits" in have
+    assert sorted(set(PRESETS) - set(have)) == []
     failed = {}
     for name, cls in have.items():
         defaults = {k: f.get_default(call_default_factory=True) for k, f in cls.model_fields.items()}
         bad = problems(cls.model_fields, defaults, PRESETS[name], T)
-        bad += ["%s has no description" % k for k, f in cls.model_fields.items() if not (f.description or "").strip()]
+        for k, f in cls.model_fields.items():
+            text = (f.description or "").strip()
+            if not text:
+                bad.append("%s has no description" % k)
+            elif "\n" in text:
+                bad.append("%s's description is more than one line (describe() gives each field one)" % k)
+            why = T.type_problem(f.annotation, f.metadata)
+            if why:
+                bad.append("%s: %s" % (k, why))
+        try:  # every default is one its own field takes, as vfg action check asks of an action's
+            cls.model_validate(defaults, context={"notes": [], "clamp": False})
+        except ValueError as e:
+            bad.append("a default its field refuses: %s" % e)
         if bad:
             failed[name] = bad
     assert failed == {}
