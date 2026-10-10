@@ -5,7 +5,8 @@
 They start fake_rcon.py on a free port with a temp server.properties, check
 _lib/mc.py, then run every script (every folder without a leading "_") the way
 EC2 does: `python3 -u main.py` in its own folder with PYTHONPATH=scripts/_lib.
-A seed (README.md beside main.py) runs with its Usage line's arguments. An example
+A seed (README.md beside main.py) runs with its Usage line's arguments (one ported to its
+action, as a copy of it, like an example below). An example
 (main.py with ASKS, no README.md) runs with its defaults and VFG_INSTANCE set: one with
 VALUES reads them; one ported to its action (v = values()) gets the meta file `vfg action
 run` would write for its first action with nothing given (lib/py/vfg_actions.py). It runs
@@ -294,11 +295,17 @@ def run_script(name):
     password = secrets.token_hex(8)
     fake = FakeRcon(password).start()
     out_path = os.path.join(TMP, name + ".out")
+    env = script_env(properties(password, fake.port))
+    meta = action_meta(name, source)      # a seed ported to its action runs as a copy of it
+    if meta is not None:
+        env.update(VFG_INSTANCE=name, VFG_SCRIPT=name, VFG_RUN_DIR=tempfile.mkdtemp(dir=TMP))
+        with open(os.path.join(env["VFG_RUN_DIR"], name + ".json"), "w") as f:
+            json.dump(meta, f)
     try:
         with open(out_path, "wb") as out:
             start = time.time()
             proc = subprocess.Popen([sys.executable, "-u", "main.py"] + args, cwd=folder,
-                                    env=script_env(properties(password, fake.port)), stdout=out, stderr=out)
+                                    env=env, stdout=out, stderr=out)
             if ends_itself:
                 try:
                     proc.wait(timeout=20)

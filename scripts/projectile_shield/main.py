@@ -1,20 +1,11 @@
 """Projectile Shield: arrows, tridents, fireballs and skulls that fly at a player turn round a few blocks from them and fly back the way they came."""
 ASKS = ["make sure all projectiles bounce off me", "give me the ability to deflect",
         "deflect everything", "can you make projectiles deflect off of me"]
-from kit import values, aim, exclude, fx, loop, world
+from kit import values, result, aim, exclude, fx, loop, world
 import math
 import re
 import mc
 import random
-
-VALUES = {
-    "player":        {"type": "player", "default": "@a", "live": True},
-    "around_radius": {"type": "number", "min": 1, "max": 128, "default": 8, "live": True},
-    "around_what":   {"type": "enum", "of": ["mobs", "hostile", "players", "everything", "projectiles"], "default": "projectiles", "live": True},
-    "around_most":   {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
-    "push_way":      {"type": "enum", "of": ["away", "toward", "up"], "default": "away", "live": True},
-    "push_strength": {"type": "number", "min": 0.5, "max": 40, "default": 8, "live": True},
-}
 
 
 # --- preset: around (copied from _presets/around.py) ---
@@ -140,7 +131,9 @@ def _push_player(h, ux, uz, s, way):
     return 0
 
 
-v = values(VALUES)
+v = values()
+result("%s has a projectile shield: what flies within %g blocks turns back" % (v["player"], v["around_radius"]),
+       player=v["player"], radius=v["around_radius"])
 for _ in loop(every=0.1):
     for p in loop.who(v["player"]):
         hits = around(p, v)                         # what flies near them, never their own
