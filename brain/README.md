@@ -77,8 +77,13 @@ instead, so a reply never claims what did not happen.
 ```sh
 vfg brain start     # brain/run, detached: pid ~/.vfg/brain/brain.pid, log ~/.vfg/brain/brain.log
 vfg brain status    # running or not, and the open tasks
-vfg brain stop      # SIGTERM: in-flight calls finish for up to 10 s, implementers stopped, their tasks failed
+vfg brain stop      # SIGTERM to the brain alone: in-flight calls finish for up to 10 s, implementers stopped, their tasks failed
 ```
+
+While it stops, an implementer that ends closes its task on its own status, with a record written in
+code (`T7 done: <its brief>`, an `AI result` row) and no model call. `vfg brain stop` signals the
+brain's pid, not its process group, where the implementers' claude CLIs run: the brain interrupts
+them itself; the group gets SIGKILL only after 15 s.
 
 `run` syncs the dependencies from `uv.lock` and execs `python -m brain`. A start takes the lock,
 runs `vfg up`, sets the watchers (`join,leave,death,advancement,server`), Jev's lookout

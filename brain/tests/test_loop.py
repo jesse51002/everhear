@@ -103,6 +103,28 @@ async def test_a_report_while_a_follow_up_to_its_task_runs_keeps_the_task_open(k
     assert "an implementer is on it" in k.brain.open_tasks()
 
 
+async def test_a_report_while_the_brain_stops_closes_its_task_in_code(kit):
+    gate = asyncio.Event()
+
+    async def held(prompt):
+        await gate.wait()
+        return GIVE
+
+    k = kit(Decision=held)
+    tid = k.tasks.open("Steve", "build a castle", "a castle at spawn, 40 by 40")
+    k.brain.feed(ASK.format(seq=5))                       # a call in flight as the stop begins
+    stopping = asyncio.create_task(k.brain.stop(1.0))
+    await asyncio.sleep(0)
+    await k.brain.on_report(tid, "done", "Done: the castle is up at spawn, with a moat I added.")  # meanwhile
+    gate.set()
+    await stopping
+    await k.settle()
+    assert len(k.ask.calls) == 1                          # the line's call; the report's needs no model
+    t = k.tasks.get(tid)
+    assert (t["status"], t["result"]) == ("done", "T1 done: a castle at spawn, 40 by 40")
+    assert k.vfg.rows("result") == [("result T1", "T1 done: a castle at spawn, 40 by 40")]
+
+
 class Finished:
     """A batch call that is over at once."""
 

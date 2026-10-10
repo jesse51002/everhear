@@ -250,10 +250,17 @@ class Brain:
         call of its own, and the implementer waits for none of it. A task whose implementers still
         name it as running has a follow-up queued or started behind this run."""
         following = tid in self.implementers.running()
-        if self.stopping:
+        if self.stopping:  # no model call now: the task closes on the implementer's status, in code
             log("task", f"{tid} reported {status} while the brain stops: {short(text, 200)}")
+            self.keep_session(tid)
+            self.result(tid, status, self.written(tid, status), following)
             return
         self.spawn(self.report(tid, status, text, following), f"report {tid}")
+
+    def written(self, tid: str, status: str) -> str:
+        """A task's record written in code, never the implementer's words: `T7 done: <its brief>`."""
+        brief = short((self.tasks.get(tid) or {}).get("task") or "", 120)
+        return f"{tid} {status}" + (f": {brief}" if brief else "")
 
     def batch_now(self) -> asyncio.Task:
         return self.spawn(self.batch(), "batch")
@@ -297,8 +304,9 @@ class Brain:
                 await asyncio.sleep(WATCH_AGAIN_S)
 
     async def stop(self, grace_s: float, implementers_grace_s: float = 2.0) -> None:
-        """Read nothing new; let the calls in flight finish for up to `grace_s`; stop the
-        implementers and fail their tasks as stopped."""
+        """Read nothing new; let the calls in flight finish for up to `grace_s` (a report that
+        comes in meanwhile closes its task in code, on_report()); stop the implementers and fail
+        their tasks as stopped."""
         self.stopping = True
         await self.timer.stop()
         pending = list(self.inflight)

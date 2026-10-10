@@ -931,9 +931,11 @@ def group_alive(pgid):
 
 
 def stop_group(pid):
-    """SIGTERM the process group, SIGKILL after STOP_GRACE_S."""
+    """SIGTERM the brain alone, then wait for its whole process group; SIGKILL the group after
+    STOP_GRACE_S. The implementers' claude CLIs are in that group: the brain interrupts them
+    itself and fails their tasks, which a SIGTERM to the group would kill first."""
     try:
-        os.killpg(pid, signal.SIGTERM)
+        os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
         pass
     deadline = time.monotonic() + STOP_GRACE_S
@@ -950,7 +952,8 @@ def stop_group(pid):
 
 
 def cmd_brain_stop(cfg, a):
-    """SIGTERM, so the brain can fail what it holds; SIGKILL after STOP_GRACE_S."""
+    """SIGTERM to the brain, so it can stop its implementers and close what it holds; SIGKILL to
+    its process group after STOP_GRACE_S."""
     pid = brain_pid(cfg)
     if not pid:
         out("brain  not running")
@@ -3080,7 +3083,8 @@ def build_parser():
     bs.required = True
     bs.add_parser("start", help="start brain/run detached, its log in $VFG_HOME/brain/brain.log "
                   "(prints its pid when it runs already)")
-    bs.add_parser("stop", help="SIGTERM the brain, SIGKILL after 15 s")
+    bs.add_parser("stop", help="SIGTERM the brain, which stops its implementers; SIGKILL its process group "
+                  "after 15 s")
     bs.add_parser("status", help="running or stopped, and the open tasks in $VFG_HOME/brain/tasks.json")
 
     s = sub.add_parser("jev", help="what Jev reads beside lookout.md: the brain's action menu")

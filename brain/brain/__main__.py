@@ -266,9 +266,9 @@ async def _main(cfg: Config) -> int:
             return await serve(cfg, stop, http=http)
         finally:
             vfg_llm.client = None
-            # vfg brain stop signals the whole group: a second signal landing while asyncio.run
-            # closes the loop's self-pipe prints a traceback. The stop is under way, so later
-            # ones are ignored.
+            # A second signal (a Ctrl-C at a terminal reaches the whole group) landing while
+            # asyncio.run closes the loop's self-pipe prints a traceback. The stop is under way,
+            # so later ones are ignored.
             for sig in (signal.SIGTERM, signal.SIGINT):
                 loop.remove_signal_handler(sig)
                 signal.signal(sig, signal.SIG_IGN)

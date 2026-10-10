@@ -597,8 +597,11 @@ class TestFeed(BoxCase):
 # ===================================================================== brain
 
 BRAIN = """#!/usr/bin/env bash
-# A stand-in for brain/run: up until SIGTERM, which it notes.
+# A stand-in for brain/run: up until SIGTERM, which it notes. Its child, in its process group as an
+# implementer's claude CLI is, notes a SIGTERM too, and ends once the brain has gone.
 trap 'echo "stopping" >> "$VFG_HOME/brain/order"; exit 0' TERM
+( trap 'echo "child signalled" >> "$VFG_HOME/brain/order"' TERM
+  while kill -0 $$ 2>/dev/null; do sleep 0.02; done ) &
 echo "fake brain $$ up"
 while true; do sleep 0.02; done
 """
@@ -663,7 +666,7 @@ class TestBrain(BoxCase):
         self.assertEqual(r.stdout, "brain  stopped pid %d\n" % pid)
         self.assertTrue(wait_for(lambda: not alive(pid)))
         with open(self.brain("order")) as f:
-            self.assertEqual(f.read(), "stopping\n")   # SIGTERM, which it saw
+            self.assertEqual(f.read(), "stopping\n")   # SIGTERM to the brain, which it saw; none to its child
         self.assertFalse(os.path.exists(self.brain("brain.pid")))
         self.assertOneLine(self.vfg("brain", "status"), 1)
 
