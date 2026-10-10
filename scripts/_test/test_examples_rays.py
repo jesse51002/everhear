@@ -27,6 +27,7 @@ sys.path.insert(0, HERE)
 
 from fake_rcon import FakeRcon  # noqa: E402
 from fake_world import World  # noqa: E402
+from test_kit import looked, until  # noqa: E402
 
 TMP = tempfile.mkdtemp(prefix="vfg-rays-test-")
 
@@ -48,20 +49,20 @@ def start(name, fake, password, protected, **values):
 
 
 class WitherWand(unittest.TestCase):
-    def play(self, protected):
+    def play(self, protected, done):
+        """Steve clicks the wand once the script looks at his clicks with it in his hand; it is
+        stopped once done(the commands it sent) is true."""
         world = World()
         world.add_player("Steve", (0.5, 64.0, 0.5), rot=(0.0, 90.0))      # looking straight down
         password = secrets.token_hex(8)
         fake = FakeRcon(password, responder=world.respond).start()
         proc = start("wither_wand", fake, password, protected, player="Steve", summon_count=2)
         try:
-            end = time.time() + 15
-            while time.time() < end and not any("wither_wand" in i for p, i in world.gives):
-                time.sleep(0.1)
+            until(lambda: any("wither_wand" in i for p, i in world.gives), 15)
             world.hold("Steve", main="wither_wand")
-            time.sleep(0.5)
+            looked(world, "vfg_click", '"wither_wand"')
             world.click("Steve")
-            time.sleep(2.0)
+            until(lambda: done(list(world.commands)), 5)
             proc.send_signal(signal.SIGTERM)
             out = proc.communicate(timeout=5)[0].decode()
             self.assertEqual(proc.returncode, 0, out)
@@ -74,13 +75,15 @@ class WitherWand(unittest.TestCase):
         path = os.path.join(TMP, "protected.json")
         with open(path, "w") as f:
             json.dump([{"name": "castle", "dim": "minecraft:overworld", "box": [-5, 50, -5, 5, 80, 5]}], f)
-        cmds, out = self.play(path)
+        cmds, out = self.play(path, lambda cmds: any("actionbar" in c and "protected" in c for c in cmds))
         self.assertTrue(any("actionbar" in c and "protected" in c for c in cmds), cmds[-20:])
         self.assertFalse([c for c in cmds if "summon wither" in c])
         self.assertFalse([c for c in cmds if c.startswith("gamerule mob_griefing f")])
 
     def test_withers_where_he_looks_elsewhere(self):
-        cmds, out = self.play(os.path.join(TMP, "none.json"))
+        cmds, out = self.play(os.path.join(TMP, "none.json"),
+                              lambda cmds: len([c for c in cmds if "summon wither" in c]) >= 2
+                              and "gamerule mob_griefing false" in cmds)
         summons = [c for c in cmds if "summon wither" in c]
         self.assertEqual(len(summons), 2, cmds[-30:])
         self.assertTrue(all("positioned 0.50 6" in c for c in summons), summons)   # at the ground he looks at

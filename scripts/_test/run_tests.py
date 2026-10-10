@@ -542,8 +542,9 @@ class ExampleHarnessTests(unittest.TestCase):
         os.makedirs(folder, exist_ok=True)
         with open(os.path.join(folder, "main.py"), "w") as f:
             f.write(DEMO % extra)
-        return run_example(name, folder=folder, meta={"values": {"player": "@a", "cooldown": 0, "crater_radius": 3},
-                                                     "live": ["cooldown", "crater_radius"]})
+        return run_example(name, seconds=1.5, folder=folder,      # Steve's first click reaches the body
+                           meta={"values": {"player": "@a", "cooldown": 0, "crater_radius": 3},
+                                 "live": ["cooldown", "crater_radius"]})
 
     def test_a_good_example_passes(self):
         res = self.demo("demo_wand")
