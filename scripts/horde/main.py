@@ -3,22 +3,11 @@ ASKS = ["spawn a horde of zombies, a hundred zombies in a hundred blocks radius 
         "do not just zombies, also skeletons, wither skeletons, creepers, silverfish, everything",
         "do a thousand mobs on each of us so we are surrounded by mobs everywhere",
         "be careful not to kill each other"]
-from kit import values, fx, loop, mobs
+from kit import values, result, fx, loop, mobs
 import random
+import threading
 import time
 import mc
-
-VALUES = {
-    "player":           {"type": "player", "default": "@a"},
-    "horde_mobs":       {"type": "list", "of": "mob", "default": ["zombie"], "live": True},
-    "horde_per_player": {"type": "int", "min": 1, "max": 100, "default": 100, "live": True},
-    "horde_every":      {"type": "number", "min": 1, "max": 3600, "default": 30, "live": True},
-    "horde_cap":        {"type": "int", "min": 1, "max": 400, "default": 300, "live": True},
-    "horde_spread":     {"type": "int", "min": 4, "max": 100, "default": 60, "live": True},
-    "horde_waves":      {"type": "int", "min": 0, "max": 1000, "default": 1},
-    "horde_explode":    {"type": "bool", "default": False, "live": True},
-    "horde_announce":   {"type": "bool", "default": True, "live": True},
-}
 
 
 # --- preset: horde_wave (copied from _presets/horde_wave.py) ---
@@ -60,5 +49,30 @@ def horde_wave(player, v):
     return waves
 
 
-v = values(VALUES)
-horde_wave(v["player"], v)      # one wave by default; it ends when the last of them is dead
+ENDED = []                  # the horde is dead: the first wave's count is not said after that
+SAID = threading.Lock()
+
+
+def report(v):
+    """Once the first wave is out (the count alive stops rising), say how many came round whom."""
+    last = -1
+    for _ in loop(every=1):
+        n = mobs.count(mc.TAG + "_horde")
+        if n and n == last:
+            who = loop.who(v["player"])
+            with SAID:
+                if not ENDED:
+                    result("summoned %d mobs (%s) round %s" % (n, ", ".join(v["horde_mobs"]), ", ".join(who) or v["player"]),
+                           count=n, mobs=list(v["horde_mobs"]), players=who, waves=v["horde_waves"])
+            return
+        last = n
+
+
+v = values()
+loop.background(report, v)
+waves = horde_wave(v["player"], v)      # one wave by default; it ends when the last of them is dead
+with SAID:
+    ENDED.append(waves)
+if not mc.stopping():
+    result("the horde round %s is dead, after %d wave%s" % (v["player"], waves, "" if waves == 1 else "s"),
+           players=v["player"], waves=waves, mobs=list(v["horde_mobs"]))

@@ -1,30 +1,12 @@
 """Meteor Staff: right-click a staff and a flaming meteor falls from the sky onto the block you look at and explodes; the one who called it is spared."""
 ASKS = ["I want the power to toss meteors, give it", "giving the ability to toss meteors", "the meteor staff",
         "meteor powers"]
-from kit import values, aim, fx, world, exclude, items, loop
+from kit import values, result, aim, fx, world, exclude, items, loop
 import math
 import random
 import re
 import time
 import mc
-
-VALUES = {
-    "player":           {"type": "player", "default": "@a"},
-    "item":             {"type": "str", "default": "Meteor Staff"},
-    "cooldown":         {"type": "number", "min": 0, "max": 60, "default": 5, "live": True},
-    "reach":            {"type": "int", "min": 4, "max": 300, "default": 120, "live": True},
-    "meteor_size":      {"type": "number", "min": 1, "max": 24, "default": 4, "live": True},
-    "meteor_blocks":    {"type": "str", "default": "magma_block", "live": True},
-    "meteor_height":    {"type": "int", "min": 10, "max": 300, "default": 60, "live": True},
-    "meteor_slant":     {"type": "int", "min": 0, "max": 100, "default": 15, "live": True},
-    "meteor_seconds":   {"type": "number", "min": 0.5, "max": 20, "default": 2.5, "live": True},
-    "explosion_power":  {"type": "number", "min": 0, "max": 16, "default": 4, "live": True},
-    "explosion_layout": {"type": "enum", "of": ["one", "plus", "ring", "rings"], "default": "plus", "live": True},
-    "explosion_spread": {"type": "number", "min": 1, "max": 32, "default": 3, "live": True},
-    "explosion_breaks": {"type": "bool", "default": True, "live": True},
-    "explosion_keep":   {"type": "number", "min": 0, "max": 32, "default": 0, "live": True},
-    "explosion_spare":  {"type": "list", "of": "player", "default": [], "live": True},
-}
 
 
 # --- preset: meteor_fall (copied from _presets/meteor_fall.py) ---
@@ -177,7 +159,7 @@ def _explosion_blast(pre, p, power, spare):
             mc.rcon(here + "%s run damage @s %.1f minecraft:explosion at %.2f %.2f %.2f" % (frag, amount, x, y, z))
 
 
-v = values(VALUES)
+v = values()
 
 
 def drop(p, at):
@@ -189,6 +171,8 @@ def drop(p, at):
         mc.log("%s's meteor landed at %d %d %d: %d blasts" % ((p,) + land.block() + (n,)))
 
 
+result("%s has the %s: right-click and a meteor falls where you look" % (v["player"], v["item"]),
+       player=v["player"], item=v["item"])
 for p in loop(items.clicks(v["player"], v["item"], cooldown=v["cooldown"], color="gold", model="blaze_rod")):
     r = aim.ray(p, v["reach"])
     if r is None or r.why != "block":

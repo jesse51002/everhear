@@ -1,6 +1,6 @@
 """Grave Marks: where a player dies, a skull and a glowing name mark the spot for a while, and chat says where."""
 ASKS = ["mark where I died", "show me where I died", "a grave where you die"]
-from kit import values, items, loop, world
+from kit import values, result, items, loop, world
 import itertools
 import json
 import math
@@ -8,13 +8,6 @@ import re
 import threading
 import time
 import mc
-
-VALUES = {
-    "player":         {"type": "player", "default": "@a"},
-    "on_death_event": {"type": "enum", "of": ["death", "kill", "both"], "default": "death", "live": True},
-    "seconds":        {"type": "number", "min": 5, "max": 3600, "default": 30, "live": True},
-    "found_within":   {"type": "number", "min": 0, "max": 16, "default": 3, "live": True},
-}
 
 
 # --- preset: on_death (copied from _presets/on_death.py) ---
@@ -72,7 +65,7 @@ def _on_death_where(p):
     return world.Pos(int(at.group(1)) + 0.5, int(at.group(2)), int(at.group(3)) + 0.5, dim.group(1) if dim else None)
 
 
-v = values(VALUES)
+v = values()
 graves = {}         # its tag -> {"p", "at" (the skull's block), "dim", "made", "left"}
 lock = threading.Lock()
 GRAVE_IDS = itertools.count(1)
@@ -141,7 +134,9 @@ def watch():
 
 mc.on_stop(clear_all)
 loop.background(watch)
-mc.log("marking graves for", v["seconds"], "s")
+result("a skull marks where %s %s, for %g s" % (v["player"], {"death": "die", "kill": "make a kill",
+                                                              "both": "die or make a kill"}[v["on_death_event"]],
+                                              v["seconds"]), player=v["player"], seconds=v["seconds"])
 deaths = {}
 for at, p, what in loop(on_death(v["player"], v)):
     deaths[p] = deaths.get(p, 0) + 1

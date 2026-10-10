@@ -1,18 +1,9 @@
 """Kill FX: sounds for each player alone: a sting when they die, rising chimes for a kill streak, hit markers and a thud when hurt."""
 ASKS = ["kill streak sounds", "hit markers", "a sound when I get a kill"]
-from kit import values, items, loop, world
+from kit import values, result, items, loop, world
 import re
 import time
 import mc
-
-VALUES = {
-    "player":         {"type": "player", "default": "@a"},
-    "on_death_event": {"type": "enum", "of": ["death", "kill", "both"], "default": "both", "live": True},
-    "streak_s":       {"type": "number", "min": 1, "max": 60, "default": 8, "live": True},
-    "hit_markers":    {"type": "bool", "default": True, "live": True},
-    "hurt_sound":     {"type": "bool", "default": True, "live": True},
-    "volume":         {"type": "number", "min": 0.1, "max": 4, "default": 1, "live": True},
-}
 
 
 # --- preset: on_death (copied from _presets/on_death.py) ---
@@ -70,7 +61,7 @@ def _on_death_where(p):
     return world.Pos(int(at.group(1)) + 0.5, int(at.group(2)), int(at.group(3)) + 0.5, dim.group(1) if dim else None)
 
 
-v = values(VALUES)
+v = values()
 
 
 def play(p, sound, volume, pitch):
@@ -108,7 +99,9 @@ def hits():
 
 
 loop.background(hits)
-mc.log("kill fx on")
+sounds = [w for w, on in (("kill streaks", v["on_death_event"] != "death"), ("a sting on death", v["on_death_event"] != "kill"),
+                          ("hit markers", v["hit_markers"]), ("a thud when hurt", v["hurt_sound"])) if on]
+result("kill sounds on for %s: %s" % (v["player"], ", ".join(sounds)), player=v["player"], sounds=sounds)
 streak, streak_at = {}, {}
 for at, p, what in loop(on_death(v["player"], v)):
     if what == "death":

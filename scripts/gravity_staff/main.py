@@ -1,7 +1,7 @@
 """Gravity Staff: right-click to crush every mob round where you look to the ground, flyers too, or to lift, pull or push them."""
 ASKS = ["give me the power to control gravity and stop their flight", "gravity crush", "gravity lift",
         "lift, arise"]
-from kit import values, items, aim, fx, exclude, world, area, loop
+from kit import values, result, items, aim, fx, exclude, world, area, loop
 import math
 import re
 import mc
@@ -9,22 +9,6 @@ import random
 import itertools
 import threading
 import time
-
-VALUES = {
-    "player":           {"type": "player", "default": "@a"},
-    "item":             {"type": "str", "default": "Gravity Staff"},
-    "mode":             {"type": "enum", "of": ["crush", "lift", "pull", "push"], "default": "crush", "live": True},
-    "range":            {"type": "int", "min": 4, "max": 300, "default": 30, "live": True},
-    "cooldown":         {"type": "number", "min": 0, "max": 60, "default": 0, "live": True},
-    "around_radius":    {"type": "number", "min": 1, "max": 128, "default": 40, "live": True},
-    "around_what":      {"type": "enum", "of": ["mobs", "hostile", "players", "everything", "projectiles"], "default": "mobs", "live": True},
-    "around_most":      {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
-    "push_strength":    {"type": "number", "min": 0.5, "max": 40, "default": 30, "live": True},
-    "freeze_seconds":   {"type": "number", "min": 1, "max": 120, "default": 5, "live": True},
-    "freeze_shell":     {"type": "bool", "default": False, "live": True},
-    "freeze_block":     {"type": "enum", "of": ["ice", "packed_ice", "blue_ice", "snow_block"], "default": "ice", "live": True},
-    "freeze_blindness": {"type": "bool", "default": False, "live": True},
-}
 
 
 # --- preset: around (copied from _presets/around.py) ---
@@ -223,7 +207,7 @@ def _freeze_melt(shell):
         mc.rcon(world.run(dim, "fill %d %d %d %d %d %d air replace %s" % (b + (block,))))
 
 
-v = values(VALUES)
+v = values()
 PINNED = mc.TAG + "_pinned"
 mc.on_stop(lambda: mc.rcon("tag @e[tag=%s] remove %s" % (PINNED, PINNED)))
 
@@ -240,6 +224,9 @@ def pin(hits):
     mc.rcon("tag @e[tag=%s] remove %s" % (PINNED, PINNED))
 
 
+result("%s has the %s: right-click to %s every mob round where you look" % (
+    v["player"], v["item"], {"crush": "crush", "lift": "lift", "pull": "pull in", "push": "push away"}[v["mode"]]),
+    player=v["player"], item=v["item"], mode=v["mode"])
 for p in loop(items.clicks(v["player"], v["item"], cooldown=v["cooldown"], color="dark_purple")):
     r = aim.ray(p, v["range"])
     if r is None:

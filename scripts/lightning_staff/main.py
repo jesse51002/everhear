@@ -2,34 +2,12 @@
 ASKS = ["can you make me a lightning staff", "is it possible to increase the lightning's damage",
         "increase the amount of lightning strikes", "the lightning is so hard to aim, it's hyper delayed",
         "stop the lightning striking me"]
-from kit import values, items, aim, fx, loop, exclude, world
+from kit import values, result, items, aim, fx, loop, exclude, world
 import itertools
 import math
 import mc
 import random
 import re
-
-VALUES = {
-    "player":           {"type": "player", "default": "@a"},
-    "item":             {"type": "str", "default": "Lightning Staff"},
-    "cooldown":         {"type": "number", "min": 0, "max": 60, "default": 1, "live": True},
-    "range":            {"type": "int", "min": 4, "max": 300, "default": 120, "live": True},
-    "damage_amount":    {"type": "number", "min": 0, "max": 100000, "default": 40, "live": True},
-    "damage_type":      {"type": "enum", "of": ["player_attack", "magic", "lightning_bolt", "explosion", "freeze", "on_fire", "sonic_boom", "arrow", "wither", "generic"], "default": "lightning_bolt", "live": True},
-    "damage_kill":      {"type": "bool", "default": False, "live": True},
-    "damage_what":      {"type": "enum", "of": ["all", "mobs", "hostile", "players"], "default": "all", "live": True},
-    "damage_most":      {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
-    "damage_head":      {"type": "number", "min": 1, "max": 10, "default": 1, "live": True},
-    "damage_spare":     {"type": "list", "of": "player", "default": [], "live": True},
-    "lightning_count":  {"type": "int", "min": 1, "max": 50, "default": 4, "live": True},
-    "lightning_spread": {"type": "number", "min": 0, "max": 32, "default": 3, "live": True},
-    "lightning_layout": {"type": "enum", "of": ["scatter", "ring"], "default": "scatter", "live": True},
-    "lightning_every":  {"type": "number", "min": 0, "max": 5, "default": 0, "live": True},
-    "lightning_spare":  {"type": "list", "of": "player", "default": [], "live": True},
-    "around_radius":    {"type": "number", "min": 1, "max": 128, "default": 4, "live": True},
-    "around_what":      {"type": "enum", "of": ["mobs", "hostile", "players", "everything", "projectiles"], "default": "everything", "live": True},
-    "around_most":      {"type": "int", "min": 0, "max": 1000, "default": 0, "live": True},
-}
 
 
 # --- preset: damage_hits (copied from _presets/damage_hits.py) ---
@@ -172,7 +150,9 @@ def _around_projectiles(at, me, r):
     return sorted(hits, key=lambda h: h.t)
 
 
-v = values(VALUES)
+v = values()
+result("%s has the %s: right-click and lightning strikes where you look" % (v["player"], v["item"]),
+       player=v["player"], item=v["item"])
 for p in loop(items.clicks(v["player"], v["item"], cooldown=v["cooldown"], color="yellow")):
     r = aim.ray(p, v["range"])
     if r is None or r.why != "block":

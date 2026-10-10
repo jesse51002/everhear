@@ -1,24 +1,11 @@
 """Herobrine: horror pranks on the players, one at random every minute or two: footsteps, a door, a whisper, Herobrine behind them."""
 ASKS = ["be like a horror mod", "turn on spooky mode", "a horror atmosphere: eerie sounds, darkness and jump scares"]
-from kit import values, aim, loop, world
+from kit import values, result, aim, loop, world
 import itertools
 import json
 import random
 import time
 import mc
-
-VALUES = {
-    "player":            {"type": "player", "default": "@a"},
-    "director_events":   {"type": "list", "of": "str", "live": True,
-                          "default": ["sound", "door", "fake_join", "message", "shadow", "torches", "dark", "sign",
-                                      "lightning"]},
-    "director_weights":  {"type": "list", "of": "number", "default": [3, 1, 1, 1, 1, 1, 1, 1, 1], "live": True},
-    "director_min_s":    {"type": "number", "min": 1, "max": 3600, "default": 60, "live": True},
-    "director_max_s":    {"type": "number", "min": 1, "max": 3600, "default": 150, "live": True},
-    "director_messages": {"type": "list", "of": "str", "live": True,
-                          "default": ["i see you", "turn around", "you are not alone", "behind you"]},
-    "director_each":     {"type": "bool", "default": True, "live": True},
-}
 
 
 # --- preset: director (copied from _presets/director.py) ---
@@ -147,7 +134,7 @@ def _director_dark(p, v):
         _director_hear(p, "entity.warden.heartbeat", at, 1.0, 0.5)
 
 
-v = values(VALUES)
+v = values()
 
 
 def door(p, v):
@@ -189,6 +176,7 @@ def far_lightning(p, v):
             % (p, mc.TAG))
 
 
-mc.log("haunting", v["player"])
+result("Herobrine haunts %s: a prank every %g to %g s" % (v["player"], v["director_min_s"], v["director_max_s"]),
+       player=v["player"], events=list(v["director_events"]), min_s=v["director_min_s"], max_s=v["director_max_s"])
 director(v["player"], v, events={"door": door, "fake_join": fake_join, "message": whisper, "torches": torches,
                                  "sign": sign, "lightning": far_lightning})

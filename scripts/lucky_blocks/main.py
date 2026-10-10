@@ -4,12 +4,7 @@ import json
 import random
 
 import mc
-from kit import values, loop
-
-VALUES = {
-    "player": {"type": "player", "default": "@a"},
-    "give":   {"type": "int", "min": 0, "max": 64, "default": 3},
-}
+from kit import values, result, loop
 
 MINED = "vfg_lucky"
 TRAP = '{Tags:["vfg","%s"]}' % mc.TAG  # traps are removed on stop; gifts stay with the player
@@ -42,13 +37,14 @@ def cleanup():
     mc.rcon("scoreboard objectives remove " + MINED)
 
 
-v = values(VALUES)
+v = values()
 mc.on_stop(cleanup)
 mc.rcon("scoreboard objectives add %s minecraft.mined:minecraft.sponge" % MINED)
-if v["give"]:
-    for p in loop.who(v["player"]):
-        mc.rcon('give %s sponge[item_name="Lucky Block"] %d' % (p, v["give"]))
-mc.log("lucky blocks on; gave", v["give"], "each")
+given = loop.who(v["player"]) if v["give"] else []
+for p in given:
+    mc.rcon('give %s sponge[item_name="Lucky Block"] %d' % (p, v["give"]))
+result("lucky blocks on for %s%s" % (v["player"], "; gave %d each to %s" % (v["give"], ", ".join(given)) if given else ""),
+       player=v["player"], given=given, each=v["give"])
 counts = {}
 for _ in loop(every=0.5):
     for p in loop.who(v["player"]):
