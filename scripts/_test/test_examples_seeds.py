@@ -29,7 +29,7 @@ RESULTS = {}
 
 
 def values_of(name):
-    """The values a seed takes: its VALUES, or once it is ported, its first action's fields."""
+    """The values a seed takes: its VALUES, or, ported, its action's fields."""
     with open(os.path.join(run_tests.SCRIPTS, name, "main.py"), encoding="utf-8") as f:
         source = f.read()
     for node in ast.parse(source).body:

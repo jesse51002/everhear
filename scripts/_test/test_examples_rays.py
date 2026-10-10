@@ -2,7 +2,7 @@
 server (a script started there does not see VFG_PROTECTED): the wither wand summons nothing
 in a protected place, and does where it is not.
 
-    uv run --python 3.9 python scripts/_test/test_examples_rays.py
+    uv run --no-project --python 3.12 --with pydantic python scripts/_test/test_examples_rays.py
 
 Each example runs as on EC2 (python3 -u main.py in its folder, PYTHONPATH=_lib) against
 fake_world with Steve online, looking straight down at the ground.
@@ -29,15 +29,19 @@ from fake_world import World  # noqa: E402
 TMP = tempfile.mkdtemp(prefix="vfg-rays-test-")
 
 
-def start(name, fake, password, protected, *values):
-    """An example started as on EC2, against a fake, with a protected file."""
+def start(name, fake, password, protected, **values):
+    """An example started as on EC2, as a copy of the action named as it, against a fake, with
+    a protected file."""
     props = os.path.join(TMP, "server-%d.properties" % fake.port)
     with open(props, "w") as f:
         f.write("enable-rcon=true\nrcon.port=%d\nrcon.password=%s\n" % (fake.port, password))
     env = dict(os.environ, PYTHONPATH=LIB, VFG_MC_PROPERTIES=props, VFG_RCON_HOST="127.0.0.1",
                PYTHONDONTWRITEBYTECODE="1", VFG_INSTANCE=name, VFG_RUN_DIR=tempfile.mkdtemp(dir=TMP),
                VFG_PROTECTED=protected, VFG_RCON_LOCK=os.path.join(TMP, "rcon-%d.lock" % fake.port))
-    return subprocess.Popen([sys.executable, "-u", "main.py"] + list(values), cwd=os.path.join(SCRIPTS, name),
+    import run_tests  # its catalog of the actions
+    with open(os.path.join(env["VFG_RUN_DIR"], name + ".json"), "w") as f:
+        json.dump(run_tests.copy_meta(name, values), f)
+    return subprocess.Popen([sys.executable, "-u", "main.py"], cwd=os.path.join(SCRIPTS, name),
                             env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 
 
@@ -47,7 +51,7 @@ class WitherWand(unittest.TestCase):
         world.add_player("Steve", (0.5, 64.0, 0.5), rot=(0.0, 90.0))      # looking straight down
         password = secrets.token_hex(8)
         fake = FakeRcon(password, responder=world.respond).start()
-        proc = start("wither_wand", fake, password, protected, "player=Steve", "summon_count=2")
+        proc = start("wither_wand", fake, password, protected, player="Steve", summon_count=2)
         try:
             end = time.time() + 15
             while time.time() < end and not any("wither_wand" in i for p, i in world.gives):

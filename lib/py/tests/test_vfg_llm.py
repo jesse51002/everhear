@@ -97,6 +97,28 @@ async def test_reasoning_true_leaves_the_model_default(monkeypatch):
     assert "reasoning" not in json.loads(seen[0].content)
 
 
+async def test_reasoning_effort_goes_as_effort(monkeypatch):
+    seen = serve(monkeypatch, ok(GOOD))
+    await structured("Name two mobs.", Mobs, reasoning="low")
+    assert json.loads(seen[0].content)["reasoning"] == {"effort": "low"}
+
+
+class Tagged(BaseModel):
+    mob: Mob
+    note: str = ""
+
+
+async def test_openai_models_get_a_strict_schema(monkeypatch):
+    seen = serve(monkeypatch, ok('{"mob": {"name": "Cow", "temper": "passive"}, "note": ""}'), ok(GOOD))
+    await structured("Tag a mob.", Tagged, model="openai/gpt-6.1-sol")
+    schema = json.loads(seen[0].content)["response_format"]["json_schema"]["schema"]
+    for obj in (schema, schema["$defs"]["Mob"]):
+        assert obj["additionalProperties"] is False
+        assert obj["required"] == list(obj["properties"])
+    await structured("Name two mobs.", Mobs)  # any other model: the schema as pydantic writes it
+    assert json.loads(seen[1].content)["response_format"]["json_schema"]["schema"] == Mobs.model_json_schema()
+
+
 async def test_invalid_answer_repaired_on_second_try(monkeypatch):
     seen = serve(monkeypatch, ok(BAD, cost=0.001), ok(GOOD, cost=0.002))
     answer = await structured("Name two mobs.", Mobs)
