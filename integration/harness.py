@@ -2,11 +2,11 @@
 """End-to-end harness: the REAL bridge, Jev filter and vfg toolkit running together on
 this PC, with a temp folder standing in for the EC2 box's /opt/vfg and /opt/mc.
 
-    integration/run.sh [--keep]          (run.sh finds Python 3.9 and the JDK, then runs this)
+    integration/run.sh [--keep]          (run.sh finds Python 3.12 and the JDK, then runs this)
 
-Real:  bridge (vfg_bridge + vfg_feed, run on Python 3.9 as on Amazon Linux 2023), the Jev
-       filter (Python 3.9), the vfg toolkit (this repo's toolkit/vfg; its remote programs run on
-       3.9 through the fake ssh), the client mod's BridgeClient/LinePayload (path 8), the
+Real:  bridge (vfg_bridge + vfg_feed, run on the box's Python 3.12), the Jev filter (3.12), the
+       vfg toolkit (this repo's toolkit/vfg, under uv; its remote programs run on 3.12 through
+       the fake ssh), the client mod's BridgeClient/LinePayload (path 8), the
        conversation's hooks (after-compact.sh, usage.py).
 Stand-ins: Minecraft (console.log lines appended here, shapes from the bridge's own
        fixture console-26.3.log; toolkit/tests/fake_rcon.py), SSH (toolkit/tests/fake_ssh,
@@ -217,10 +217,10 @@ class Box:
                     "server-port=25565\n" % (self.rcon_port, self.rcon_password))
         open(self.console_log, "a").close()
         os.symlink(self.ec2_py, os.path.join(self.ec2bin, "python3"))
-        os.makedirs(j("opt", "vfg", "python", "bin"), exist_ok=True)
-        os.symlink(self.ec2_py, j("opt", "vfg", "python", "bin", "python3"))  # the box's 3.12, as python.sh lays it out
+        os.makedirs(os.path.join(self.vfg_dir, "python", "bin"), exist_ok=True)
+        os.symlink(self.ec2_py, os.path.join(self.vfg_dir, "python", "bin", "python3"))  # as python.sh lays it out
         with open(os.path.join(self.pcbin, "vfg"), "w") as f:
-            f.write("#!/bin/sh\nexec '%s' '%s' \"$@\"\n" % (PC_PY, VFG))
+            f.write("#!/bin/sh\nexec '%s' \"$@\"\n" % VFG)                      # under uv, as on the PC
         os.chmod(os.path.join(self.pcbin, "vfg"), 0o755)
         with open(self.fake_key, "w") as f:
             f.write("not a key: fake_ssh never reads it\n")
@@ -802,12 +802,13 @@ def path5(box, rep, ctx):
     rep.check(r.returncode != 0 and len(r.stderr.strip().splitlines()) == 1 and len(box.feed_rows()) == n,
               "bad GAME fields: refused by the real writer, one stderr line", r.stderr)
     r = box.vfg("orch", "send", "Build a small castle at Steve’s position", "--context", "Steve asked (#1)")
-    inbox = os.path.join(box.vhome, "orch", "inbox.jsonl")
+    inbox = os.path.join(box.vhome, "dispatch", "inbox.jsonl")     # the dispatcher's (§14), VFG_DISPATCH_DIR's default
     task = r.stdout.strip()
     rec = json.loads(open(inbox).read().splitlines()[-1]) if os.path.exists(inbox) else {}
     rep.check(r.returncode == 0 and re.match(r"^T\d+$", task) and set(rec) == {"id", "at", "task", "context"}
               and rec["id"] == task and ISO_RE.match(rec["at"]),
-              "vfg orch send prints T<n> and appends the §9 inbox record (runner not started)", r.stdout + r.stderr)
+              "vfg orch send prints T<n> and appends the §9 record to the dispatcher's inbox (nothing started)",
+              r.stdout + r.stderr)
     for status, text in (("progress", "walls going up"), ("done", "small stone castle built at Steve’s position")):
         r = box.vfg("orch", "reply", task or "T1", status, text)
         got = box.wait_watch(r"^ORCH#\d+ \d\d:\d\d:\d\d %s %s \| %s$" % (task, status, re.escape(text)), 6)
