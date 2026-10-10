@@ -137,7 +137,13 @@ UNAME_DARWIN = r'''#!/usr/bin/env bash
 if [ "${1:-}" = "-s" ]; then echo Darwin; else exec /usr/bin/uname "$@"; fi
 '''
 
-# Get-Process for the PowerShell tests: same count file.
+# sleep without the wait, for the installer's launcher poll and publish.sh's retries: it only
+# notes how long it was asked for, in $FAKE_SLEEP_LOG when that is set.
+SLEEP_STUB = r'''#!/bin/sh
+if [ -n "${FAKE_SLEEP_LOG:-}" ]; then echo "$*" >> "$FAKE_SLEEP_LOG"; fi
+'''
+
+# Get-Process for the PowerShell tests: same count file. Start-Sleep: as the sleep above.
 PS_PRELUDE = r'''
 function global:Get-Process {
 	[CmdletBinding()] param([string[]]$Name)
@@ -146,6 +152,10 @@ function global:Get-Process {
 		$n = [int](Get-Content -LiteralPath $f)
 		if ($n -gt 0) { Set-Content -LiteralPath $f ($n - 1); return [pscustomobject]@{ ProcessName = 'MinecraftLauncher'; Id = 4242 } }
 	}
+}
+function global:Start-Sleep {
+	[CmdletBinding()] param([Parameter(Position = 0)][double]$Seconds, [int]$Milliseconds)
+	if ($env:FAKE_SLEEP_LOG) { Add-Content -LiteralPath $env:FAKE_SLEEP_LOG "$Seconds" }
 }
 '''
 
@@ -266,6 +276,7 @@ class World:
         write_exec(self.stubs / "aws", AWS_STUB)
         write_exec(self.stubs / "ssh", SSH_STUB)
         write_exec(self.stubs / "pgrep", PGREP_STUB)
+        write_exec(self.stubs / "sleep", SLEEP_STUB)
         write_exec(self.mac_stubs / "uname", UNAME_DARWIN)
 
         handler = functools.partial(QuietHandler, directory=str(self.www))
@@ -767,12 +778,15 @@ class InstallerCases:
         game = self.make_game(self.game_dirs(home)[0])
         count = home.parent / ("pgrep-" + home.name)
         count.write_text("2")
-        t0 = time.time()
-        r = self.ok(self.run_installer(w.pub1, home, FAKE_PGREP_COUNT=str(count)))
-        self.assertGreaterEqual(time.time() - t0, 1.5)
+        sleeps = home.parent / ("sleep-" + home.name)
+        r = self.ok(self.run_installer(w.pub1, home, FAKE_PGREP_COUNT=str(count), FAKE_SLEEP_LOG=str(sleeps)))
         self.assertIn("Close", r.stdout)
         self.assertIn("Closed. Carrying on.", r.stdout)
         self.assertEqual(count.read_text().strip(), "0")
+        # It paused between checks rather than spinning (the stand-in sleep only notes the pause).
+        waits = [float(s) for s in sleeps.read_text().split()]
+        self.assertTrue(waits)
+        self.assertTrue(all(s >= 1 for s in waits), waits)
         self.assert_installed(game, w.pub1, ADDR1, w.token1, w.jar1)
 
     def test_tampered_download_installs_nothing(self):
