@@ -364,19 +364,24 @@ _CATALOG = []
 _CATALOG_LOCK = threading.Lock()
 
 
+def catalog():
+    """(lib/py/vfg_actions.py, the library's actions), loaded once."""
+    with _CATALOG_LOCK:   # the scripts run in threads: the actions load once
+        if not _CATALOG:
+            sys.path.insert(0, os.path.join(os.path.dirname(SCRIPTS), "lib", "py"))
+            import vfg_actions
+            _CATALOG.append((vfg_actions, vfg_actions.Catalog(os.path.dirname(SCRIPTS), None)))
+        return _CATALOG[0]
+
+
 def action_meta(name, source):
     """For a script ported to its action (no VALUES): the meta file of a copy of its first
     action (the one named as the script, else the first by name) run with nothing given, as
     vfg action run writes it; None for a script that still has VALUES."""
     if re.search(r"^VALUES\s*=", source, re.M):
         return None
-    with _CATALOG_LOCK:   # the scripts run in threads: the actions load once
-        if not _CATALOG:
-            sys.path.insert(0, os.path.join(os.path.dirname(SCRIPTS), "lib", "py"))
-            import vfg_actions
-            _CATALOG.append((vfg_actions, vfg_actions.Catalog(os.path.dirname(SCRIPTS), None)))
-        va, cat = _CATALOG[0]
-        meta_of = va.check_values
+    va, cat = catalog()
+    meta_of = va.check_values
     over = sorted(n for n in cat.names() if cat.get(n).script == name)
     if not over:
         raise AssertionError("%s has no VALUES and no action runs it" % name)
@@ -602,6 +607,10 @@ def _add_kit_and_preset_tests():
                 globals()[name if mod.__name__ in ("test_kit", "test_instances") else "%s__%s" % (mod.__name__, name)] = obj
 
 
+# The actions load before the preset tests import each preset as a module of its own name:
+# pydantic finds a values class's descriptions through inspect.getmodule, which would then
+# take the preset's file for the test's module, find none, and the action would be left out.
+catalog()
 _add_kit_and_preset_tests()
 
 if __name__ == "__main__":
