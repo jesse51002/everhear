@@ -16,7 +16,7 @@ every item it gives him (a click, a 1.5 s hold) and crouches; after 4 s it gets 
 send commands, raise nothing, exit 0 within 2 s of the stop, and leave nothing tagged
 vfg_<name>: no entity, bossbar, forceload or objective. A seed (README.md beside main.py) has its
 README checked too, and must end as its README says; one that ends by itself runs to its end,
-its sleeps ten times as fast (fast_sleep/). The scripts under the six core actions (CORE) need
+on a clock ten times as fast (fast_clock/). The scripts under the six core actions (CORE) need
 values their defaults leave empty, so test_core.py runs them instead. The kit's tests
 (test_kit.py), instances.py's (test_instances.py), test_core.py and every test_presets_*.py and
 test_examples_*.py beside this file run with them. A script that ends by itself cleans up at
@@ -275,7 +275,7 @@ class McTests(unittest.TestCase):
 # The scripts under the dispatcher's core actions: each needs values its defaults leave empty (a
 # command, a place, a running copy), so test_core.py runs them, with those values, on a fake world.
 CORE = ("command", "edit", "save_place", "stop", "summon_around", "teleport")
-FAST_SLEEP = os.path.join(HERE, "fast_sleep")
+FAST_CLOCK = os.path.join(HERE, "fast_clock")
 
 
 def script_names():
@@ -358,11 +358,11 @@ def action_meta(name):
     return copy_meta(name if name in over else over[0], {}, copy=name)
 
 
-def run_example(name, seconds=4.0, folder=None, meta=None, sleep_scale=None):
+def run_example(name, seconds=4.0, folder=None, meta=None, clock_rate=None):
     """An example started as on EC2, as a copy of its action with nothing given (a library
     script; else `meta`, the meta file's dict), against a fake world with Steve and Alex
-    online: it plays a little, then SIGTERM if it is still running. sleep_scale: its
-    time.sleep runs that much faster (fast_sleep/sitecustomize.py)."""
+    online: it plays a little, then SIGTERM if it is still running. clock_rate: its clock
+    runs that many times as fast (fast_clock/sitecustomize.py)."""
     folder = folder or os.path.join(SCRIPTS, name)
     res = {"name": name, "example": True}
     with open(os.path.join(folder, "main.py"), encoding="utf-8") as f:
@@ -383,8 +383,8 @@ def run_example(name, seconds=4.0, folder=None, meta=None, sleep_scale=None):
     env = script_env(properties(password, fake.port))
     env.update(VFG_INSTANCE=name, VFG_SCRIPT=name, VFG_RUN_DIR=tempfile.mkdtemp(dir=TMP), VFG_LIVE_POLL_S="0.5",
                VFG_PROTECTED=os.path.join(TMP, "no-protected.json"))
-    if sleep_scale:
-        env.update(PYTHONPATH=os.pathsep.join([LIB, FAST_SLEEP]), VFG_TEST_SLEEP_SCALE=str(sleep_scale))
+    if clock_rate:
+        env.update(PYTHONPATH=os.pathsep.join([LIB, FAST_CLOCK]), VFG_TEST_CLOCK_RATE=str(clock_rate))
     if meta is None:
         meta = action_meta(name)
     with open(os.path.join(env["VFG_RUN_DIR"], name + ".json"), "w") as f:
@@ -441,7 +441,7 @@ RESULTS = {}
 class ScriptTests(unittest.TestCase):
     """Every script once, all at once, each against its own fake: an example (main.py with
     ASKS) as a copy of its first action with nothing given, a seed (README.md beside it) too,
-    and a seed that ends by itself run to its end, its sleeps ten times as fast."""
+    and a seed that ends by itself run to its end, on a clock ten times as fast."""
 
     run_whole = True     # the runner gives one worker the whole class: setUpClass runs every script
 
@@ -451,7 +451,7 @@ class ScriptTests(unittest.TestCase):
         for name in script_names():
             def go(n=name):
                 try:
-                    RESULTS[n] = run_example(n, seconds=10, sleep_scale=0.1) if ends_by_itself(n) else run_example(n)
+                    RESULTS[n] = run_example(n, seconds=10, clock_rate=10) if ends_by_itself(n) else run_example(n)
                 except Exception as e:  # reported by the test itself
                     RESULTS[n] = {"name": n, "error": repr(e)}
             t = threading.Thread(target=go)

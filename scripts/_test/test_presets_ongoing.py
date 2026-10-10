@@ -33,7 +33,7 @@ from test_kit import TMP  # noqa: E402
 from fake_rcon import FakeRcon  # noqa: E402
 from fake_world import World  # noqa: E402
 import mc  # noqa: E402
-from kit import aim, values, world  # noqa: E402
+from kit import aim, loop, values, world  # noqa: E402
 
 def load(name):
     """A preset's file as a module, as a script holds it once copied in."""
@@ -99,6 +99,12 @@ class OngoingValuesTests(unittest.TestCase):
 # ---- boss --------------------------------------------------------------------------------
 
 class OngoingBossTests(OngoingCase):
+    """The boss's clock and the kit's run five times as fast: a second-long turn is 0.2 s."""
+
+    def setUp(self):
+        super().setUp()
+        self.t = self.clock(BOSS, loop, rate=5)
+
     def bodies(self, b_tag=None):
         return [e for e in self.world.entities if any(re.match(r"^%s_boss\d+$" % mc.TAG, t) for t in e["tags"])]
 
@@ -154,7 +160,7 @@ class OngoingBossTests(OngoingCase):
     def test_a_player_value_waits_for_one_of_them_and_takes_one(self):
         out, th = background(BOSS.boss, "Steve,Nobody", vals(BOSS, "boss_bodies=1"))
         self.assertTrue(until(lambda: len(self.bodies()) == 1))
-        time.sleep(1.5)
+        self.t.sleep(1.5)
         self.assertEqual(len(self.bodies()), 1)
         self.assertTrue(th.is_alive())
         self.assertTrue(self.sent("kill @e[tag=%s_boss" % mc.TAG))      # leftovers first
@@ -163,13 +169,17 @@ class OngoingBossTests(OngoingCase):
 # ---- horde_wave -------------------------------------------------------------------------------
 
 class OngoingHordeTests(OngoingCase):
+    def setUp(self):
+        super().setUp()
+        self.t = self.clock(HORDE, loop, rate=5)
+
     def test_waves_round_each_player_up_to_the_cap_then_it_waits_for_them_to_die(self):
         v = vals(HORDE, "horde_per_player=3", "horde_every=1", "horde_cap=5", "horde_waves=2",
                  "horde_mobs=creeper,zombie")
         out, th = background(HORDE.horde_wave, "@a", v)
         horde = lambda: [e for e in self.world.entities if mc.TAG + "_horde" in e["tags"]]
         self.assertTrue(until(lambda: len(horde()) == 5))
-        time.sleep(1.5)
+        self.t.sleep(1.5)
         self.assertEqual(len(horde()), 5)                        # the cap holds through the second wave
         near = {p: [e for e in horde() if abs(e["pos"][0] - self.world.players[p]["pos"][0]) < 20] for p in ("Steve", "Alex")}
         self.assertTrue(near["Steve"] and near["Alex"])
@@ -181,19 +191,22 @@ class OngoingHordeTests(OngoingCase):
         th.join(5)
         self.assertEqual(out, [2])
 
-
     def test_no_wave_announced_and_a_log_line_only_when_the_count_changed(self):
         v = vals(HORDE, "horde_per_player=1", "horde_every=1", "horde_cap=2", "horde_announce=false")
         background(HORDE.horde_wave, "@a", v)
         horde = lambda: [e for e in self.world.entities if mc.TAG + "_horde" in e["tags"]]
         self.assertTrue(until(lambda: len(horde()) == 2))
-        time.sleep(1.2)
+        self.t.sleep(1.2)
         self.assertFalse(self.sent("Wave"))
 
 
 # ---- director -----------------------------------------------------------------------------------
 
 class OngoingDirectorTests(OngoingCase):
+    def setUp(self):
+        super().setUp()
+        self.t = self.clock(DIRECTOR, loop, rate=5)
+
     def test_each_player_gets_events_of_their_own_on_the_timer(self):
         v = vals(DIRECTOR, "director_events=ping,never", "director_weights=1,0", "director_min_s=1", "director_max_s=1")
         got = []
@@ -204,7 +217,7 @@ class OngoingDirectorTests(OngoingCase):
     def test_one_clock_for_everyone_and_one_of_them_at_random(self):
         v = vals(DIRECTOR, "director_events=ping", "director_min_s=1", "director_max_s=1", "director_each=false")
         got = []
-        background(DIRECTOR.director, "@a", v, events={"ping": lambda p, v: got.append((p, time.time()))})
+        background(DIRECTOR.director, "@a", v, events={"ping": lambda p, v: got.append((p, self.t.time()))})
         self.assertTrue(until(lambda: len(got) >= 3, 6))
         times = [t for _, t in got[:3]]
         self.assertTrue(all(b - a > 0.6 for a, b in zip(times, times[1:])), got)    # one event a second, not two
@@ -239,29 +252,39 @@ class OngoingDirectorTests(OngoingCase):
 # ---- leaves_area and stands_still --------------------------------------------------------------
 
 class OngoingLeavesTests(OngoingCase):
+    """Its passes (every 0.5 s) and the kit's run eight times as fast; each step waits for its
+    next looks at Steve."""
+
+    def setUp(self):
+        super().setUp()
+        self.clock(loop, world, rate=8)
+
     def move(self, p, x, z, dim=None):
         with self.world.lock:
             self.world.players[p]["pos"][0], self.world.players[p]["pos"][2] = x, z
             if dim:
                 self.world.players[p]["dim"] = dim
 
+    def look(self, times=2):
+        self.looked("data get entity Steve Pos", times=times)
+
     def test_a_radius_round_where_they_started(self):
         v = vals(LEAVES, "leaves_radius=10")
         got, _ = test_kit.collect(LEAVES.leaves_area("Steve", v), 8)
-        time.sleep(0.8)
+        self.look()
         self.assertEqual(got, [])
         self.move("Steve", 25.5, -3.5)
         self.assertTrue(until(lambda: got))
         p, back = got[0][0]
         self.assertEqual((p, back[:3]), ("Steve", (10.5, 64.0, -3.5)))
-        time.sleep(1.0)
+        self.look()
         self.assertEqual(len(got), 1)                            # still out: once only
         self.move("Steve", 12.5, -3.5)
-        time.sleep(0.8)
+        self.look()
         self.move("Steve", 10.5, 20.5)
         self.assertTrue(until(lambda: len(got) == 2))
         self.move("Steve", 10.5, -3.5)
-        time.sleep(0.8)
+        self.look()
         self.assertEqual(len(got), 2)
         self.move("Steve", 10.5, -3.5, "minecraft:the_nether")   # the same x and z in another dimension is out
         self.assertTrue(until(lambda: len(got) == 3, 4))
@@ -270,7 +293,7 @@ class OngoingLeavesTests(OngoingCase):
         v = vals(LEAVES, "leaves_area=box", "leaves_box=0,60,-10,20,70,10")
         got, _ = test_kit.collect(LEAVES.leaves_area("Steve", v), 8)
         self.move("Steve", 18.5, -3.5)
-        time.sleep(0.8)
+        self.look()
         self.move("Steve", 22.5, -3.5)
         self.assertTrue(until(lambda: got))
         self.assertEqual(got[0][0][1][:3], (18.5, 64.0, -3.5))
@@ -278,7 +301,7 @@ class OngoingLeavesTests(OngoingCase):
     def test_another_players_reach(self):
         v = vals(LEAVES, "leaves_area=player", "leaves_of_player=Alex", "leaves_radius=25")
         got, _ = test_kit.collect(LEAVES.leaves_area("@a", v), 8)
-        time.sleep(0.8)
+        self.look()
         self.assertEqual(got, [])                                # 20 apart; Alex is never out of his own reach
         self.move("Steve", -20.5, -3.5)
         self.assertTrue(until(lambda: got))
@@ -288,8 +311,9 @@ class OngoingLeavesTests(OngoingCase):
 
 class OngoingStandsTests(OngoingCase):
     def test_staying_put_fires_with_a_warning_and_moving_resets_it(self):
+        t = self.clock(STANDS, loop, world, rate=10)              # its passes (every 0.5 s) ten times as fast
         v = vals(STANDS, "stands_seconds=1.5", "stands_radius=3")
-        got, _ = test_kit.collect(STANDS.stands_still("Steve", v), 8)
+        got, _ = test_kit.collect(STANDS.stands_still("Steve", v), 8, clock=t)
         self.assertTrue(until(lambda: got, 4))
         self.assertTrue(self.sent('"text": "Move! 1"'))
         first = got[0][1]
@@ -298,10 +322,10 @@ class OngoingStandsTests(OngoingCase):
         self.assertTrue(until(lambda: len(got) >= 2, 4))
         self.assertGreater(got[1][1] - first, 1.3)
         n = len(got)
-        for _ in range(16):                                      # walking: never
+        for _ in range(8):                                       # walking, a pass after a pass (4 s): never
             with self.world.lock:
                 self.world.players["Steve"]["pos"][0] += 4.0
-            time.sleep(0.25)
+            self.looked("data get entity Steve Pos", times=1)
         self.assertEqual(len(got), n)
         self.assertEqual(self.sent("summon"), [])
 
@@ -312,10 +336,13 @@ EYES = 64.0 + aim.EYES
 
 
 class OngoingClashTests(OngoingCase):
+    """beam_clash's clock and the kit's run four times as fast; Steve's clicks keep their pace on it."""
+
     def setUp(self):
         super().setUp()
         self.saved_run_dir = os.environ.get("VFG_RUN_DIR")
         os.environ["VFG_RUN_DIR"] = tempfile.mkdtemp(dir=TMP)       # where the shared file goes
+        self.t = self.clock(CLASH, loop, rate=4)
 
     def tearDown(self):
         super().tearDown()
@@ -335,25 +362,25 @@ class OngoingClashTests(OngoingCase):
 
     def test_a_beam_at_no_one_goes_straight_on(self):
         v = vals(CLASH)
-        t = time.time()
+        t = self.t.time()
         self.assertIsNone(CLASH.beam_clash("Steve", aim.Ray(world.Pos(10.5, EYES, -3.5), (0.0, 0.0, 1.0), 20), v))
-        self.assertLess(time.time() - t, 0.5)
+        self.assertLess(self.t.time() - t, 0.5)
 
     def test_a_beam_at_a_player_who_does_not_answer_waits_then_goes_on(self):
         v = vals(CLASH, "beam_clash_window=1")
-        t = time.time()
+        t = self.t.time()
         self.assertIsNone(CLASH.beam_clash("Steve", self.ray(10.5, 1.0), v))
-        self.assertGreater(time.time() - t, 0.9)
+        self.assertGreater(self.t.time() - t, 0.9)
 
     def test_two_beams_meet_and_the_one_who_pushes_wins(self):
         v = vals(CLASH, "beam_clash_seconds=4", "beam_clash_window=2")
         self.world.hold("Steve", main="galick_gun")
         steve, a = background(CLASH.beam_clash, "Steve", self.ray(10.5, 1.0), v)
-        time.sleep(0.5)
+        self.t.sleep(0.5)
         alex, b = background(CLASH.beam_clash, "Alex", self.ray(30.5, -1.0), v)
         while a.is_alive() and b.is_alive():                    # Steve holds right-click down
             self.world.click("Steve")
-            time.sleep(0.2)
+            self.t.sleep(0.2)
         a.join(6)
         b.join(6)
         self.assertEqual(steve[0][0], True, steve)
@@ -383,8 +410,12 @@ def script(name):
     return text.replace("import mc\n", "import mc\nfrom kit import values\n", 1) + "\n\n" + WIRING[name]
 
 
+RATE = 4      # the scripts' clocks run four times as fast (fast_clock/)
+
+
 class OngoingStopTests(unittest.TestCase):
     def setUp(self):
+        self.epoch = time.time()
         self.world = World()
         self.world.add_player("Steve", (10.5, 64.0, -3.5), rot=(-90.0, 0.0), prefix="[Owner] ")
         self.world.add_player("Alex", (30.5, 64.0, -3.5), rot=(90.0, 0.0))
@@ -413,6 +444,7 @@ class OngoingStopTests(unittest.TestCase):
         env = dict(os.environ, PYTHONPATH=test_kit.LIB, VFG_RCON_HOST="127.0.0.1", PYTHONDONTWRITEBYTECODE="1",
                    VFG_MC_PROPERTIES=test_kit._properties(self.password, self.fake.port), VFG_INSTANCE=instance,
                    VFG_RUN_DIR=self.run_dir, VFG_PROTECTED=os.path.join(TMP, "none.json"))
+        env.update(test_kit.fast_clock_env(RATE, self.epoch))
         proc = subprocess.Popen([sys.executable, "-u", "main.py"] + list(argv), cwd=folder, env=env,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         self.procs.append(proc)
@@ -462,12 +494,12 @@ class OngoingStopTests(unittest.TestCase):
     def test_two_scripts_clash_through_the_shared_file(self):
         self.world.hold("Alex", main="hollow_purple")
         a = self.start("beam_clash", "pclash-a", "beam_clash_seconds=4", "beam_clash_window=5", "Steve")
-        time.sleep(1.0)
+        time.sleep(1.0 / RATE)
         b = self.start("beam_clash", "pclash-b", "beam_clash_seconds=4", "beam_clash_window=5", "Alex")
         end = time.time() + 12
         while time.time() < end and (a.poll() is None or b.poll() is None):
             self.world.click("Alex")                              # Alex mashes: Alex wins
-            time.sleep(0.15)
+            time.sleep(0.15 / RATE)
         out_a, out_b = a.communicate(timeout=5)[0].decode(), b.communicate(timeout=5)[0].decode()
         self.assertIn("result (False, Pos(", out_a, out_a + out_b)
         self.assertIn("result (True, Pos(", out_b, out_a + out_b)
@@ -476,7 +508,7 @@ class OngoingStopTests(unittest.TestCase):
 
     def test_a_clash_stopped_mid_struggle(self):
         a = self.start("beam_clash", "pclash-c", "beam_clash_seconds=20", "beam_clash_window=5", "Steve")
-        time.sleep(1.0)
+        time.sleep(1.0 / RATE)
         b = self.start("beam_clash", "pclash-d", "beam_clash_seconds=20", "beam_clash_window=5", "Alex")
         self.assertTrue(until(lambda: any("CLASH!" in c for c in self.world.commands), 8))
         for p in (a, b):

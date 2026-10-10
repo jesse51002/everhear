@@ -132,6 +132,17 @@ def looked(world, *words, times=2, seconds=5.0, also=()):
     return until(lambda: all(n >= w for n, w in zip(counts(), want)), seconds)
 
 
+FAST_CLOCK = os.path.join(HERE, "fast_clock")
+
+
+def fast_clock_env(rate, epoch):
+    """What a script's environment needs to run on a clock `rate` times as fast, from `epoch`
+    (the same for every script a test starts, so scripts sharing a file agree on the time):
+    fast_clock/sitecustomize.py on its path."""
+    return {"PYTHONPATH": os.pathsep.join([LIB, FAST_CLOCK]), "VFG_TEST_CLOCK_RATE": str(rate),
+            "VFG_TEST_CLOCK_EPOCH": repr(epoch)}
+
+
 class Clock(object):
     """A clock for the modules a test gives it (in place of their `time`): the real one, `rate`
     times as fast, plus whatever advance() skipped. A test skips what the code times with
@@ -208,15 +219,15 @@ class KitCase(unittest.TestCase):
 RUNNING = []
 
 
-def collect(gen, seconds):
+def collect(gen, seconds, clock=time):
     """Run a kit generator in a thread for a while (or until the test ends): a list of
-    (what it yielded, time.time())."""
+    (what it yielded, clock.time())."""
     got = []
     end = time.time() + seconds
 
     def go():
         for p in gen:
-            got.append((p, time.time()))
+            got.append((p, clock.time()))
             if time.time() > end:
                 return
     th = threading.Thread(target=go, daemon=True)
