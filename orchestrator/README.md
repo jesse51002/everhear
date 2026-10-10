@@ -32,8 +32,9 @@ to `vfg script new`, which copies into the server's folder. Implementers run `vf
 `vfg place save|list` and `vfg history`, but never `vfg script new --library`; joined with `&&`
 or `;`, with `2>&1`, `>&2` or `>/dev/null`, and piped into `head -n N`, `tail -n N` or `grep`; and
 `echo`, `sleep N`, `python3 -m py_compile`, and `ls`, `grep`, `head` and `tail` on files in the
-repo. Never `$( )`, backticks or variables, loops, `( )`, a lone `&`, a redirection into or out of
-a file, or another program: each refusal is one line saying what to send instead (`mkdir` points
+repo, with no unquoted `~name`, `{a,b}` or `* ? [` in their words (bash would expand them past the
+guard's check of the literal path; `~` and `~/` are followed). Never `$( )`, backticks or
+variables, loops, `( )`, a lone `&`, a redirection into or out of a file, or another program: each refusal is one line saying what to send instead (`mkdir` points
 at `vfg script new`, `cat` and `sed` at Read, `find` at Glob, `ps` at `vfg script list`), so the
 next call runs. And an implementer may not Edit or Write a script in `made/<VFG_SERVER>/scripts/`
 that an instance another task started is running (`vfg state --json`, asked only for a script the
@@ -58,7 +59,9 @@ that fails is skipped, and the call is never held up.
    job and those that are close; the presets to copy, and those Jev picked that a loaded script
    already holds, with the script they are in; every running instance with its script, changed
    values and task; who is online, where and in which dimension, the time and the weather, and a
-   line saying to act on that rather than ask again; the first line of every script and preset in
+   line saying to act on that rather than ask again (or, when the state could not be read or
+   Minecraft did not answer, that it is unknown and one `vfg state` is worth running); the first
+   line of every script and preset in
    `made/<VFG_SERVER>/`; and then, each
    under `=== <path> ===`, whole and with no cap: every script the router loaded (those that run
    the job first), every preset it loaded, every script the brief names, and the script of every

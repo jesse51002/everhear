@@ -8,7 +8,10 @@
 A stop (SIGTERM from `vfg script stop`, or Ctrl-C) runs every cleanup the script and the kit
 registered with mc.on_stop, newest first (bossbars, forceloads, gamerules, items given,
 objectives the kit made), then kills @e[tag=TAG] and exits 0, all within 2 s. Commands from
-other threads are dropped from the moment a stop begins, so nothing comes back after it.
+other threads are dropped from the moment a stop begins, so nothing comes back after it. A
+script that ends by itself (its loop over, its main.py done) runs the same cleanups but those
+registered with at_exit=False (a boss's bodies), and kills nothing: what it made stays. One that
+fails (an error nothing caught) cleans up as a stop does.
 """
 import random
 import sys

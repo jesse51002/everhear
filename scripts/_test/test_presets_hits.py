@@ -306,11 +306,29 @@ class DamageWhatTests(HitsCase):
     def test_a_tag_left_from_an_earlier_run_spares_nobody(self):
         import itertools
         self.world.add_player("Alex", (12.5, 64.0, 0.5))
-        P["damage_hits"]._DAMAGE_N = itertools.count(1)
+        P["damage_hits"]._DAMAGE_N = itertools.cycle(range(1, 17))         # a new process: its names from the first,
+        aim._cleared.clear()                                                # none of them cleared yet
         self.world.players["Alex"]["tags"].add("%s_hit1" % mc.TAG)         # he died tagged, last run
         hits = aim.near_line(aim.ray("Steve", 40), 1.5, shooter="Steve")
         self.assertEqual(P["damage_hits"].damage_hits(hits, "Steve", vals("damage_hits", damage_amount=4)), 1)
         self.assertEqual(self.world.players["Alex"]["health"], 16.0)
+        self.assertEqual(self.tags_left(), [])
+
+    def test_once_its_names_come_round_a_hit_costs_no_untag_first(self):
+        import itertools
+        P["damage_hits"]._DAMAGE_N = itertools.cycle(range(1, 17))
+        aim._cleared.clear()
+        z = self.mob("zombie", 10.5, health=1000.0)
+        hits = aim.near_line(aim.ray("Steve", 40), 1.5, shooter="Steve")
+        for _ in range(16):                                                 # each name once, cleared first
+            P["damage_hits"].damage_hits(hits, "Steve", vals("damage_hits", damage_amount=1))
+        before = len(self.world.commands)
+        self.assertEqual(P["damage_hits"].damage_hits(hits, "Steve", vals("damage_hits", damage_amount=1)), 1)
+        sent = self.world.commands[before:]
+        self.assertIn("%s_hit1" % mc.TAG, sent[0])                          # the first name again
+        self.assertNotIn("remove", sent[0])                                 # tagged at once, no untag first
+        self.assertEqual(len([c for c in sent if "remove" in c]), 2)        # only the untag after
+        self.assertEqual(z["health"], 1000.0 - 17)
         self.assertEqual(self.tags_left(), [])
 
 

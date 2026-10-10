@@ -42,7 +42,7 @@ MAX_COMMAND = 1446
 # On SIGTERM every cleanup has this long, so a script is gone within 2 s.
 STOP_BUDGET = 1.5
 # A script that ends by itself waits this long before its cleanup, so a blast it just set off
-# (fuse 0: the next tick) goes off before everything tagged with it is killed.
+# (fuse 0: the next tick) goes off before a gamerule is put back or a forceload released.
 EXIT_GRACE = 0.4
 # The server answers every RCON connection from one shared buffer, so two clients sending at
 # once get each other's output glued into their replies. Every command therefore holds this
@@ -65,7 +65,8 @@ _local = threading.local()
 _conn = None
 _settings = None
 _next_id = [1]
-_stoppers = []
+_stoppers = []      # (fn, at_exit), oldest first
+_failed = []        # an error nothing caught ended the script (sys.excepthook)
 _stopping = threading.Event()
 _stop = {"thread": None, "deadline": 0.0, "conn": None}
 
@@ -468,13 +469,20 @@ def spawn(player, mob, nbt="", spread=6, y=1, tags=()) -> bool:
     return False
 
 
-def _clean_up() -> None:
-    """Every on_stop cleanup, newest first, then everything tagged TAG, within the budget."""
-    for fn in reversed(list(_stoppers)):
+def _clean_up(stopped=True) -> None:
+    """A stop (or a failure): every on_stop cleanup, newest first, then everything tagged TAG,
+    within the budget. An end by itself: only the cleanups that run at exit too, and nothing
+    is killed."""
+    for fn, at_exit in reversed(list(_stoppers)):
+        if not (stopped or at_exit):
+            continue
         try:
             fn()
         except Exception as e:
             log("cleanup error:", type(e).__name__, e)
+    if not stopped:
+        log("cleaned up")
+        return
     # Anything summoned with TAG goes too, even if a cleanup forgot it or ran out of time.
     _stop["deadline"] = max(_stop["deadline"], time.time() + 0.3)
     rcon("kill @e[tag=%s]" % TAG)
@@ -498,31 +506,46 @@ def _on_signal(signum, frame) -> None:
     os._exit(0)
 
 
+def _on_failure(kind, value, tb) -> None:
+    _failed.append(kind.__name__)
+    _excepthook(kind, value, tb)
+
+
 def _on_exit() -> None:
-    """A script that ends by itself (its main.py returns, exits or fails) cleans up as a
-    stopped one does: the shells a freeze put up melt, items given come back, a gamerule goes
-    back, and everything tagged TAG goes. Only for a script (main.py), never for a test that
-    imports mc."""
+    """A script that ends by itself (its main.py returns or exits) keeps what it made on
+    purpose: the mobs it summoned and the blocks it built stay, and nothing tagged TAG is killed.
+    What was only for the while is undone, by the cleanups registered to run at exit too (all
+    but on_stop(fn, at_exit=False)): the shells a freeze put up melt, items lent come back, a
+    boss's bar goes, a gamerule goes back, forceloads are released. A script that fails (an
+    error nothing caught, its traceback in the log) cleans up as a stopped one does, so nothing
+    of a broken run is left when it is fixed and run again. Only for a script (main.py), never
+    for a test that imports mc."""
     if _stopping.is_set() or os.path.basename(sys.argv[0] or "") != "main.py":
         return
     _stop["thread"] = threading.get_ident()
     _stopping.set()
-    log("ended by itself, cleaning up")
+    log("failed, cleaning up as a stop does" if _failed else "ended by itself, cleaning up")
     # What it set off last goes off first: TNT or a creeper with no fuse explodes on the next
-    # tick, a bolt strikes, and the kill of everything tagged TAG would take them first.
+    # tick, a bolt strikes, before a gamerule is put back or its chunk let go.
     time.sleep(EXIT_GRACE)
     _stop["deadline"] = time.time() + STOP_BUDGET
-    _clean_up()
+    _clean_up(stopped=bool(_failed))
 
 
-def on_stop(fn) -> None:
-    """Run fn when the script is stopped (SIGTERM or SIGINT), or ends by itself. Every fn
-    runs, newest first; then everything tagged TAG is killed (and a stopped script exits 0).
-    Other threads' commands are dropped from then on, and the whole stop takes at most
-    STOP_BUDGET s."""
-    _stoppers.append(fn)
+def on_stop(fn, at_exit=True) -> None:
+    """Run fn when the script is stopped (SIGTERM or SIGINT: vfg script stop), and when it ends
+    by itself too unless at_exit=False. A stop (or a failure) runs every fn, newest first, then
+    kills everything tagged TAG: what the script made goes. An end by itself runs only the fns
+    registered at_exit, and kills nothing: what it made stays. So at_exit=True (the default) is
+    for undoing what was only for the while (an effect, a shell of ice, a gamerule, a tag on
+    players), and at_exit=False for taking away what the script made, which must outlast a
+    script that has done its job (mobs, a build). Other threads' commands are dropped from then
+    on, and the whole cleanup takes at most STOP_BUDGET s."""
+    _stoppers.append((fn, at_exit))
 
 
+_excepthook = sys.excepthook
+sys.excepthook = _on_failure
 atexit.register(_on_exit)
 if threading.current_thread() is threading.main_thread():
     signal.signal(signal.SIGTERM, _on_signal)

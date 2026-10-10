@@ -67,7 +67,7 @@ def damage_hits(hits, shooter, v):
     return sum(count.values())
 
 
-_DAMAGE_N = itertools.count(1)
+_DAMAGE_N = itertools.cycle(range(1, 17))    # 16 names in turn, so aim.mark clears each only once
 
 
 def _damage_all(tag, amount, kind, by):
@@ -219,7 +219,7 @@ def freeze(hits, v):
     return len(frozen)
 
 
-_FREEZE_N = itertools.count(1)
+_FREEZE_N = itertools.cycle(range(1, 17))    # 16 names in turn, so aim.mark clears each only once
 _FREEZE_POS = re.compile(r"\[(-?[\d.]+(?:E-?\d+)?)d, (-?[\d.]+(?:E-?\d+)?)d, (-?[\d.]+(?:E-?\d+)?)d\]")
 _FREEZE_SHELLS = []         # shells still standing; a stop melts them
 _FREEZE_LOCK = threading.Lock()

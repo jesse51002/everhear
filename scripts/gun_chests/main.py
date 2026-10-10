@@ -23,8 +23,9 @@ GUNS = [
     ('crossbow[item_name="Railgun",enchantments={piercing:10,quick_charge:3}]', "arrow 64"),
     ('trident[item_name="Harpoon Gun",enchantments={loyalty:3,impaling:5}]', "golden_apple 2"),
 ]
-# The glowing tags stay when the script is done, so they carry a tag of their own, not the
-# instance's: vfg cmd 'kill @e[tag=vfg_gun_chest]' takes them away.
+# The glowing tags stay when the script is done (it ends by itself, so nothing it made is killed),
+# and carry a tag of their own, not the instance's: vfg cmd 'kill @e[tag=vfg_gun_chest]' takes away
+# every chest's, from every run.
 LABEL = "vfg_gun_chest"
 
 v = values(VALUES)

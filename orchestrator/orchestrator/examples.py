@@ -205,8 +205,11 @@ def world_line(state: dict) -> str:
     return "Online: %s. %s, %s." % (", ".join(people) if people else "nobody", phase, weather)
 
 
-# After the state: the implementer acts on it rather than asking again.
+# After the state, when it was read: the implementer acts on it rather than asking again.
 NOW = "That is the server now, read for you by vfg state: act on it, with no vfg state or vfg script list first."
+# When it was not (vfg state failed, or Minecraft did not answer): one look is worth it.
+UNKNOWN = ("The server's state is unknown here: one vfg state is worth running before you act, for who is online, "
+           "where, and what runs.")
 
 
 @dataclass
@@ -262,7 +265,8 @@ def header(g: Gathered, libmod) -> list[str]:
         lines.append("Named in your brief, in full below: %s." % and_list([_named({"name": i.name, "source": i.source})
                                                                           for i in g.named]))
     if g.state is None:
-        lines.append("Server state: unavailable (%s); vfg state shows who is online, where, and what runs." % g.state_failed)
+        lines.append("Server state: unavailable (%s)." % g.state_failed)
+        lines.append(UNKNOWN)
         return lines
     running = g.state.get("instances") or []
     lines.append("Running: %s." % (", ".join(instance_line(libmod, i) for i in running) if running else "nothing"))
@@ -275,7 +279,7 @@ def header(g: Gathered, libmod) -> list[str]:
             inst.get("instance"), inst.get("script"), " for " + inst["task"] if inst.get("task") else "",
             _values(libmod, inst.get("values") or {}) or "no values", where, copy))
     lines.append(world_line(g.state))
-    lines.append(NOW)
+    lines.append(UNKNOWN if g.state.get("rcon") else NOW)
     return lines
 
 
