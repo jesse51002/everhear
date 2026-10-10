@@ -2750,7 +2750,9 @@ class Watcher(object):
         self.persist = tail is None and after is None
         self.cursor = os.path.join(cfg.home, "cursor")
         self.last = read_int(self.cursor) if self.persist else after
-        self.catchup = cfg.int("VFG_WATCH_CATCHUP")
+        # A person's watch prints at most the last VFG_WATCH_CATCHUP lines it missed; code's
+        # (--after) every one, on its first connection and on every reconnect.
+        self.catchup = None if after is not None else cfg.int("VFG_WATCH_CATCHUP")
         self.max_per_min = None if after is not None else cfg.int("VFG_WATCH_MAX_PER_MIN")
         self.silence = float(os.environ.get("VFG_WATCH_SILENCE_S") or 35)
         self.down_after = float(os.environ.get("VFG_WATCH_UNREACHABLE_S") or 60)

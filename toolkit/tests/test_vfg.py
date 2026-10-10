@@ -1086,6 +1086,9 @@ class TestWatch(BoxCase):
         F["opening"](entries, 0, 100, None, parts)
         self.assertEqual((parts[0], len(parts)), (b"@skip 1 401 401", 101))  # far behind: the last 100
         parts = []
+        F["opening"](entries, 200, None, None, parts)
+        self.assertEqual(parts, [l for _, l in entries[200:]])             # code's (no limit): every one
+        parts = []
         F["opening"](entries, 600, 100, None, parts)
         self.assertEqual(parts[:2], [b"@reset", b"@skip 1 401 401"])       # a shorter feed: from the start
         parts = []
@@ -1125,7 +1128,7 @@ class TestWatch(BoxCase):
         self.assertRegex(w.read()[0], r"^SYS#0 \d\d:\d\d:\d\d \| vfg watch: held back 7 lines \(seq 6–12\), feed "
                                       r"too busy — vfg history --feed has them$")
         code = self.watcher(after=3)
-        self.assertEqual((code.persist, code.last, code.max_per_min), (False, 3, None))
+        self.assertEqual((code.persist, code.last, code.max_per_min, code.catchup), (False, 3, None, None))
         code.handle(self.lines(1, 400), False)
         self.assertEqual(seqs(code.read()), list(range(4, 401)))
         self.assertEqual(len(code.printed), 0)

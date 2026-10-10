@@ -124,7 +124,7 @@ SYS#818 18:25:00 | jev unavailable — passing every line as context
 | Command | Does |
 |---|---|
 | `vfg up` | Checks SSH and the `minecraft`, `vfg-bridge` and `vfg-jev` units, starts any that are down, prints their status |
-| `vfg watch [--after <seq>]` | Prints the feed from the line after the last `seq` it printed (cursor in `~/.vfg/cursor`), then follows; reconnects on SSH drops; never exits on its own. `--after <seq>` starts after that seq and reads and writes no cursor: the brain keeps its own place |
+| `vfg watch [--after <seq>]` | Prints the feed from the line after the last `seq` it printed (cursor in `~/.vfg/cursor`), then follows; reconnects on SSH drops; never exits on its own. `--after <seq>` starts after that seq, prints every line after it, on its first connection and on every reconnect, with no catch-up limit, and reads and writes no cursor: the brain keeps its own place |
 | `vfg say "<text>" [--to <player>] [--task T7]` | `tellraw` to everyone or one player, with the prefix `[AI] ` in aqua (`VFG_CHAT_PREFIX`), and stores the text as an `ai` line (§4), and feeds it as an `AI say <task\|->` line (§7), in the same SSH call |
 | `vfg cmd "<command>"` | One server command, through the `command` action; prints Minecraft's reply |
 | `vfg history [--since <iso\|-10m>] [--until <iso>] [--player <name>] [--class <c>] [--source voice\|chat\|ai] [--events] [--limit N]` | Queries the transcript history, or `events` with `--events` |

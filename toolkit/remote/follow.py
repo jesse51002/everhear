@@ -1,6 +1,7 @@
 # follow.py: vfg watch, on EC2. ARGS:
-#   {"after": <seq>|null, "catchup": 100, "feed": "/opt/vfg/feed.log", "tail": null|N}
-# Prints feed lines with a seq above `after`, then follows feed.log by seq.
+#   {"after": <seq>|null, "catchup": 100|null, "feed": "/opt/vfg/feed.log", "tail": null|N}
+# Prints feed lines with a seq above `after`, then follows feed.log by seq. catchup null: every
+# line above `after`, however many (vfg watch --after, for code).
 # Protocol lines, besides feed lines:
 #   @at N               `after` was null: the follow starts after seq N
 #   @reset              the feed was recreated (its highest seq is below `after`)
@@ -46,7 +47,7 @@ def opening(entries, after, catchup, tail, parts):
     highest = max([s for s, _ in entries] or [0])
     if tail is not None:
         tail = max(0, int(tail))
-        catchup = max(catchup, tail)
+        catchup = None if catchup is None else max(catchup, tail)
         if tail == 0:
             after = highest
         elif tail >= len(entries):
@@ -61,7 +62,7 @@ def opening(entries, after, catchup, tail, parts):
         parts.append(b"@reset")
         after = 0
     pend = [(s, l) for s, l in entries if s > after]
-    if len(pend) > catchup:
+    if catchup is not None and len(pend) > catchup:
         skipped = pend[:len(pend) - catchup]
         parts.append(b"@skip %d %d %d" % (skipped[0][0], skipped[-1][0], len(skipped)))
         pend = pend[len(pend) - catchup:]
@@ -76,7 +77,8 @@ def opening(entries, after, catchup, tail, parts):
 def main():
     path = ARGS["feed"]
     after = ARGS.get("after")
-    catchup = int(ARGS.get("catchup") or 100)
+    catchup = ARGS.get("catchup")
+    catchup = None if catchup is None else int(catchup or 100)
     tail = ARGS.get("tail")
     last_hb = time.time()
 
