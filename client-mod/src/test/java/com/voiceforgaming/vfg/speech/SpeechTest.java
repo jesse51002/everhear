@@ -111,7 +111,7 @@ class SpeechTest {
 
 	/**
 	 * Long requests said in one breath, for the VAD's 7 s cap. Said at the right speed, the cap
-	 * cuts the last segment at the very end of the speech, so the pause after it, 0.6 s later,
+	 * cuts the last segment at the very end of the speech, so the pause after it, 0.35 s later,
 	 * is the only one the turn model gets.
 	 */
 	private static final String[] RUN_ONS = {
@@ -121,7 +121,7 @@ class SpeechTest {
 		"Go and find the village up to the north and trade all of our emeralds for books and then come straight back.",
 	};
 	private static final float[] RUN_ON_SPEEDS = {1.0f, 1.1f, 0.9f, 1.2f, 0.8f};
-	/** A segment this long was ended at the VAD's 7 s cap: one ended by 0.6 s of silence is at most about 6.5 s. */
+	/** A segment this long was ended at the VAD's 7 s cap: one ended by its 0.35 s of silence is shorter. */
 	private static final double CAPPED_SECONDS = 6.8;
 
 	private static SpeechEngine engine;
@@ -429,8 +429,8 @@ class SpeechTest {
 	/**
 	 * A request said in one breath for longer than the VAD's 7 s cap, ending on a finished
 	 * sentence, played with the mod's defaults: the cap ends its last segment at the end of
-	 * the speech, 0.1 s after it rather than 0.6 s, and the turn model is asked at the pause
-	 * the capture thread hears 0.6 s after that segment. The line must get a turn decision and
+	 * the speech, 0.1 s after it rather than 0.35 s, and the turn model is asked at the pause
+	 * the capture thread hears 0.35 s after that segment. The line must get a turn decision and
 	 * be ready well under the silence rule's 3.5 s: under 2 s after the last word.
 	 *
 	 * <p>Which takes do that is found offline ({@link #offline}): every run-on, at a few

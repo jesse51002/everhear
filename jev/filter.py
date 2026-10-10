@@ -47,7 +47,7 @@ class Config:
         "lib": ("VFG_LIB", "/opt/vfg/lib", str),
         "env_file": ("VFG_ENV_FILE", "/opt/vfg/.env", str),
         "batch_seconds": ("VFG_BATCH_SECONDS", 5.0, float),
-        "poll_ms": ("VFG_POLL_MS", 200, int),
+        "poll_ms": ("VFG_POLL_MS", 50, int),
         "jev_url": ("VFG_JEV_URL", ENDPOINT, str),
         "model": ("VFG_JEV_MODEL", MODEL, str),
         "timeout": ("VFG_JEV_TIMEOUT", 3.0, float),
