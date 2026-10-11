@@ -37,7 +37,7 @@ About a minute. The box's side (bridge, Jev filter, the toolkit's remote program
 | 2 | typed chat in Jev's four classes and watched game events reach `vfg watch`; `not_relevant` is stored, not fed; a `conversational` line flushes the waiting context at once |
 | 3 | `vfg say` writes an `ai` line Jev never judges and an `AI say` feed row in the same call, `AI say castle_steve` for `--task castle_steve`; Jev's next state holds the AI's lines, the brain's `action`, `task` and `result` rows (not its notes), the lookout and `menu.md` |
 | 4 | `vfg history` by date, source, player, each of the four classes, events and feed |
-| 5 | `vfg feed post AI` for each kind, its field a task's name or `-`; `GAME` of any kind, `SYS`; `ORCH`, a task number and bad `AI` fields refused; `vfg context`, `--json` (the rows, then `{tasks}`, then `{last_seq}`) and `vfg context mark` |
+| 5 | `vfg feed post AI` for each kind, its field a task's name or `-`, each row written processed; `GAME` of any kind, `SYS`; `ORCH`, a task number and bad `AI` fields refused; `vfg context`, `--json` (the rows, then `{tasks}`, then `{last_seq}`) and `vfg context mark` on the rows the brain reads |
 | 6 | `usage` rows: one per Jev call; `vfg usage add` as the brain, Respond, the orchestrator and an implementer write them, cached tokens included, the ref a `#seq` or a task's name |
 | 7 | killing and restarting Jev, the brain's watch (`--after` its last seq) and the bridge loses and repeats nothing, and keeps the processed marks |
 | 8 | the client mod's real `BridgeClient` and `LinePayload` against the real bridge |
