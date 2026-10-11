@@ -16,6 +16,7 @@ it no longer runs on this branch and **needs rewriting for the brain** (below).
 | `gate_bench.py`, `gate_score.py`, `gate_set.jsonl`, `gate_prompts/` | the gate bench: six ways to decide whether a line needs the brain or is talk (Respond as it was, Respond deciding first on DeepSeek and on Gemini, the Jev council in one call and in four), every one on the same fixed set of 592 lines; results and the commands in `gate_bench.md` |
 | `tree_bench.py`, `tree_score.py`, `tree_questions.py` | the tree bench: Jev routing each line by a decision tree of class questions (who it is said to; worth keeping; what the speaker wants), all asked in one Jev call, with and without a council of three questions a level, against Jev today on all 843 lines; results and the commands in `tree_bench.md` |
 | `trees_bench.py`, `trees_score.py`, `trees_questions.py` | the trees bench: five genuinely different ways to build that tree (who then what; kind first; a cheapest-first ladder; consequence first with two keys; observable signals with the tree in code), each one Jev call a line, against Jev today on all 843 lines; results and the commands in `trees_bench.md` |
+| `labels_build.py`, `labels_score.py`, `labels_2026-10-08.jsonl`, `labels_check.jsonl`, `labels_review.md`, `labels_score.md` | the hindsight labels: Jev labels each of the 843 lines seeing what the AI said and did in the 90 s after it (five labels, three questions in one call, combined by written rules, checked by hand), and Jev today and the five trees rescored against them from their recorded answers; results and the commands in `labels.md` |
 | `run.py`, `measure.py`, `tasks.jsonl` | the live task replay against the orchestrator: gone with it |
 
 ## The data
@@ -108,7 +109,8 @@ A **follow-up** is a line the conversation turned into `Change to T<n>` or `Canc
 those whose T<n> was written after the line reached the brain; it is right when an implementer
 part names T<n>, or a task of its chain. For Jev, a line was **answered in chat** when an AI chat
 line followed within 60 s with no task and no result between: a heuristic, so `chat` holds
-declined asks as well as talk.
+declined asks as well as talk. `labels_2026-10-08.jsonl` replaces these labels for routing: it finds 298
+asks where they find 187 (`labels.md`).
 
 For the orchestrator (`taskcall_score.py`), each of the conversation's T ids is given to the name
 its line's parts answered, so a follow-up is right when it names the task whose chain holds its
