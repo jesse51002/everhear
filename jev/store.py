@@ -99,6 +99,26 @@ class Store:
             "SELECT %s FROM lines WHERE jev_class IS NULL AND source != 'ai'%s "
             "ORDER BY at, id LIMIT ?" % (COLUMNS, self._live()), (limit,)).fetchall()
 
+    def gather_window(self, ask, since, limit=10):
+        """The gather call's lines for `ask`: the same speaker's lines said before
+        it (by `at`, then `id`) and since `since`, not the AI's, not dropped, not
+        blank, classed `context` or `not_relevant`, and said after that speaker's
+        last line classed `action_oriented` or `conversational` before the ask.
+        The newest `limit` of them, oldest first."""
+        before = "player_name = ? AND source != 'ai' AND (at < ? OR (at = ? AND id < ?))"
+        params = [ask["player_name"], ask["at"], ask["at"], ask["id"]]
+        last = self.conn.execute(
+            "SELECT at, id FROM lines WHERE %s AND jev_class IN ('action_oriented', 'conversational') "
+            "ORDER BY at DESC, id DESC LIMIT 1" % before, params).fetchone()
+        after = ""
+        if last is not None:
+            after = " AND (at > ? OR (at = ? AND id > ?))"
+            params += [last["at"], last["at"], last["id"]]
+        rows = self.conn.execute(
+            "SELECT %s FROM lines WHERE %s%s AND jev_class IN ('context', 'not_relevant') AND at >= ?%s "
+            "ORDER BY at DESC, id DESC" % (COLUMNS, before, after, self._live()), params + [since]).fetchall()
+        return [r for r in rows if r["text"].strip()][:limit][::-1]
+
     def history(self, since, exclude=(), limit=2000):
         """Every line said since `since`, the AI's included, newest first,
         leaving out `exclude` (the lines asked about, which go in regardless)."""

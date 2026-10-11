@@ -7,8 +7,9 @@ from support import T0, Lines, make_db, tempdir
 
 import prompt
 from jev_clock import iso
-from prompt import (D2, DEFAULT_LOOKOUT, EXAMPLES, HISTORY_HEADING, RULES, Lookout, Menu, build_state, estimate,
-                    in_short, questions, read_lookout, render_line, route, state_json)
+from prompt import (D2, DEFAULT_LOOKOUT, EXAMPLES, GATHER_CRITERIA, GATHER_HEADING, GATHER_RULES, HISTORY_HEADING,
+                    RULES, Lookout, Menu, build_state, estimate, gather_questions, in_short, questions, read_lookout,
+                    render_line, route, state_json)
 from store import Store
 
 
@@ -51,13 +52,21 @@ class TestState(unittest.TestCase):
             "[1] 18:22:31 Steve (voice): put it there, by the cave",
         ])))
 
-    def test_the_line_asked_about_kept_whole_when_nothing_else_fits(self):
-        new = row(20, T0, text="make it bigger " + "x" * 600)
+    def test_the_gather_state_marks_the_ask_and_its_lines_in_place_kept_when_nothing_else_fits(self):
+        ask = row(20, T0, text="make it bigger " + "x" * 600)
+        window = [row(10 + n, T0 - 10 * (4 - n), text="line %d " % n + "x" * 600) for n in (1, 2, 3)]   # oldest first
         others = [row(n, T0 - 5 - 10 * n, text="other %d" % n) for n in range(6)]
-        state, kept = build_state(DEFAULT_LOOKOUT, [(1, new)], others, 10)   # far too small for anything
+        marked = [("ask", ask)] + list(enumerate(window, 1))
+        state, kept = build_state(DEFAULT_LOOKOUT, marked, others, 10,   # far too small for anything
+                                  rules=GATHER_RULES, heading=GATHER_HEADING)
         self.assertEqual(kept, 0)
-        self.assertEqual(state["history"].split("\n")[1:],
-                         ["[1] 18:22:31 Steve (voice): make it bigger " + "x" * 600])   # never cut
+        self.assertEqual(state["rules"], GATHER_RULES)
+        hist = state["history"].split("\n")
+        self.assertEqual(hist.pop(0), GATHER_HEADING)
+        self.assertEqual([h.split(" ")[0] for h in hist], ["[1]", "[2]", "[3]", "[ask]"])   # where they were said
+        for h in hist:
+            self.assertNotIn("…", h)   # a line asked about is never cut
+            self.assertTrue(h.endswith("x" * 600))
 
     def test_budget_with_ten_thousand_lines(self):
         new = row(99999, T0, text="build me a castle")
@@ -129,6 +138,7 @@ class TestState(unittest.TestCase):
         long = render_line(row(1, T0, "Alex", "chat", "y" * 700))
         self.assertTrue(long.endswith("y" * 500 + "…"))
         self.assertTrue(render_line(row(1, T0, "Alex", "chat", "y" * 700), mark=1).endswith("y" * 700))
+        self.assertEqual(render_line(row(1, T0, text="hey"), mark="ask"), "[ask] 18:22:31 Steve (voice): hey")
 
 
 class TestHistoryFromTheStore(unittest.TestCase):
@@ -171,6 +181,19 @@ class TestQuestions(unittest.TestCase):
     def test_quote_is_the_first_200_characters_on_one_line(self):
         q = questions(row(1, T0, text="a\n" + "a" * 300))["d_what"]["instructions"]
         self.assertIn("“a " + "a" * 198 + "…”", q)
+
+    def test_gather_questions_one_per_line_oldest_first(self):
+        ask = row(9, T0, text="make it bigger")
+        qs = gather_questions(ask, [row(3, T0 - 30, text="the castle\nby the river"), row(5, T0 - 10, text="the big one")])
+        self.assertEqual(list(qs), ["line_1", "line_2"])
+        self.assertEqual(qs["line_2"], {
+            "type": "choice",
+            "instructions": "Steve's line [ask] at 18:22:31, “make it bigger”, goes to the AI. Line [2], said by Steve"
+                            " before it at 18:22:21: “the big one”. Is line [2] part of that ask?",
+            "criteria": GATHER_CRITERIA})
+        self.assertIn("Line [1], said by Steve before it at 18:22:01: “the castle by the river”. Is line [1] part",
+                      qs["line_1"]["instructions"])
+        self.assertEqual(list(GATHER_CRITERIA), ["part_of_the_ask", "not_part_of_it"])
 
 
 class TestRoute(unittest.TestCase):

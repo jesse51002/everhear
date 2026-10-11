@@ -7,7 +7,7 @@ import unittest
 import support  # noqa: F401  (puts the service folder on the path)
 import fake_jev
 from jev_api import Jev, JevDown, JevRefused, parse_answer
-from prompt import D2, questions
+from prompt import D2, gather_questions, questions
 from support import T0
 from jev_clock import iso
 
@@ -62,6 +62,9 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(res.input_tokens, 100)
         self.assertAlmostEqual(res.cost_usd, 100 * 0.000000042)
         self.assertGreaterEqual(res.ms, 0)
+        qs = gather_questions(row(9, "make it bigger"), [row(1, "the castle"), row(2, "the big one")])
+        res = self.jev.ask({"t": "s"}, qs, required=None)
+        self.assertEqual(res.answers, {"line_1": ("not_part_of_it", 0.8), "line_2": ("part_of_the_ask", 0.9)})
 
     def test_confidence_falls_back_to_probabilities(self):
         self.canned({"answers": {"d_what": {"type": "choice", "choice": "remember_it",

@@ -131,8 +131,8 @@ class Jev:
     def ask(self, state, questions, required="line_1"):
         """One state, every question about it, one attempt. Answers a `Result`.
         Raises `JevDown` when `required` is missing or malformed: the filter
-        passes `d_what` for the routing call (the default is the old benches'
-        `line_1`)."""
+        passes `d_what` for the routing call and None for the gather call (the
+        default is the old benches' `line_1`)."""
         if not self.key:
             raise JevDown("no key (TYPESAFE_API_KEY)")
         # UTF-8 JSON, not \u-escaped: the state's size here is the size the

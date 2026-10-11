@@ -10,7 +10,7 @@ from support import T0, FakeClock, Lines, load_fake_feed, make_db, tempdir
 
 from filter import SYS_BACK, SYS_OPEN, Config, Filter
 from jev_api import JevDown, JevRefused, Result
-from prompt import EXAMPLES, estimate, state_json
+from prompt import EXAMPLES, GATHER_HEADING, GATHER_RULES, estimate, state_json
 from store import Store
 
 
@@ -343,6 +343,90 @@ class TestJudging(Base):
         self.assertEqual(self.lines.usage(), [])
 
 
+class TestGather(Base):
+    """A line to the AI gets one more call, over its speaker's unsent lines; the yes lines go with it."""
+
+    def test_an_ask_is_fed_as_one_line_with_the_speakers_lines_that_belong_to_it(self):
+        add = self.lines.add
+        self.jev.answers["the big one, honestly"] = {"d_what": ("ignore_it", 0.8)}   # left unanswered when gathering
+        add(T0 - 181, "Steve", "chat", "the big one, long ago")       # over 3 minutes before the ask
+        a = add(T0 - 40, "Steve", "chat", "the big one by our base")  # context, and part of it
+        add(T0 - 30, "Alex", "chat", "the big one is mine")           # another player's: never asked about
+        b = add(T0 - 20, "Steve", "voice", "lol")
+        c = add(T0 - 15, "Steve", "chat", "the big one, honestly")    # no answer: a no
+        d = add(T0 - 10, "Steve", "chat", "yeah the big one")
+        ask = add(T0, "Steve", "chat", "make it bigger")
+        with self.assertLogs("vfg-jev", "INFO") as logs:
+            self.step()
+        self.assertEqual(len(self.jev.calls), 8)                      # seven lines, and the ask's gather call
+        state, qs = self.jev.calls[-1]
+        self.assertEqual([asked_about(q["instructions"]) for q in qs.values()],
+                         ["the big one by our base", "lol", "the big one, honestly", "yeah the big one"])
+        self.assertTrue(qs["line_1"]["instructions"].startswith("Steve's line [ask] at 18:22:31, “make it bigger”"))
+        self.assertEqual(state["rules"], GATHER_RULES)
+        hist = state["history"].split("\n")
+        self.assertEqual(hist[0], GATHER_HEADING)
+        self.assertEqual([h.split(" ")[0] for h in hist if h.startswith("[")], ["[1]", "[2]", "[3]", "[4]", "[ask]"])
+        self.assertIn("18:22:01 Alex (chat): the big one is mine", hist)
+        # the context line is fed on its own, as ever, and the ask as one line holding the yes lines
+        self.assertEqual(self.batches(), [[
+            ("LINE", "Steve chat context 0.70 -", "the big one by our base", self.row(a)["at"]),
+            ("LINE", "Steve chat action_oriented 0.90 -", "the big one by our base … yeah the big one … make it bigger",
+             self.row(ask)["at"])]])
+        self.assertEqual([self.row(i)["jev_class"] for i in (b, c, d)], ["not_relevant"] * 3)
+        self.assertEqual(self.f.groups, {})
+        usage = self.lines.usage()
+        self.assertEqual((len(usage), usage[-1]["ref"], usage[-1]["component"]), (8, "gather:" + ask, "jev"))
+        self.assertIn("gather %s Steve · 4 asked, 2 yes: %s 0.90, %s 0.90 · no: %s 0.80, %s - · 12ms %dtok"
+                      % (ask, a, d, b, c, usage[-1]["input_tokens"]), "\n".join(logs.output))
+
+    def test_no_call_when_the_speaker_has_no_unsent_line(self):
+        ids = [self.lines.add(T0 - 10, "Alex", "chat", "lol"),
+               self.lines.add(T0, "Steve", "chat", "build me a castle"),
+               self.lines.add(T0 + 1, "Steve", "chat", "thanks AI")]   # nothing unsent since his last line to the AI
+        self.step(1)
+        self.assertEqual(len(self.jev.calls), 3)
+        self.assertEqual([u["ref"] for u in self.lines.usage()], ids)
+
+    def test_a_failing_gather_call_feeds_the_ask_alone_and_leaves_failing_open_alone(self):
+        for n, err in enumerate((JevDown("timeout"), JevRefused("413 too large"))):
+            with self.subTest(err=err):
+                self.lines.add(T0 + 10 * n, "Steve", "chat", "the big one")
+                ask = self.lines.add(T0 + 10 * n + 1, "Steve", "chat", "make it bigger")
+                self.jev.raises = [None, None, err]   # the two lines' calls answer, the gather call fails
+                with self.assertLogs("vfg-jev", "WARNING") as logs:
+                    self.step(10)
+                self.assertEqual(len(self.jev.calls), 3 * (n + 1))   # and is not asked again
+                self.assertEqual(self.fed()[-1][2], "make it bigger")
+                self.assertEqual(self.row(ask)["jev_class"], "action_oriented")
+                self.assertIsNone(self.f.failing_since)
+                self.assertNotIn("gather:" + ask, [u["ref"] for u in self.lines.usage()])
+                self.assertIn("gather %s failed: %s — the ask goes alone" % (ask, err), "\n".join(logs.output))
+        self.assertEqual(self.sys_lines(), [])
+
+    def test_the_group_fits_500_characters_the_oldest_dropped_first(self):
+        steps = (   # the lines said before each ask, the ask, and what is fed
+            # the writer turns "\r\n" into one space: 280 + 3 + 200 + 3 + 14 = 500 characters, all in
+            (["the big one\r\n" + "a" * 268, "the big one " + "b" * 188], "make it bigger",
+             "the big one " + "a" * 268 + " … the big one " + "b" * 188 + " … make it bigger"),
+            # 501: the oldest goes
+            (["the big one " + "c" * 269, "the big one " + "d" * 188], "make it bigger",
+             "the big one " + "d" * 188 + " … make it bigger"),
+            # an ask alone over 500 goes alone, cut by the writer as ever
+            (["the big one"], "make " + "x" * 600, "make " + "x" * 494 + "…"),
+        )
+        for n, (before, ask, fed) in enumerate(steps):
+            for k, text in enumerate(before):
+                self.lines.add(T0 + 10 * n + k, "Steve", "chat", text)
+            self.lines.add(T0 + 10 * n + 5, "Steve", "chat", ask)
+            with self.assertLogs("vfg-jev", "INFO") as logs:
+                self.step(10)
+            self.assertEqual(self.feed.lines()[-1].split(" | ", 1)[1], fed)
+            dropped = [l for l in logs.output if "dropped to fit 500 characters" in l]
+            self.assertEqual(len(dropped), 0 if n == 0 else 1)
+        self.assertIn("the oldest 1 dropped", "\n".join(dropped))
+
+
 class TestState(Base):
     def test_the_menu_after_the_lookout_and_the_brains_records_in_the_history(self):
         with open(self.cfg.menu, "w") as f:
@@ -479,8 +563,9 @@ class TestWritesOnly(Base):
         self.lines.add(T0, "Alex", "chat", "that cave by spawn")
         self.lines.add(T0 + 1, "AI", "ai", "Where should it go?")
         self.lines.add(T0 + 1, "Steve", "chat", " ")
+        self.lines.add(T0 + 1, "Steve", "chat", "the big one")
         self.step(1)
-        self.lines.add(T0 + 2, "Steve", "voice", "put it there, by the cave")
+        self.lines.add(T0 + 2, "Steve", "voice", "put it there, by the cave")   # a gather call, and a group fed
         self.step(1)
         self.jev.raises = [JevRefused("400 bad request"), JevRefused("400 bad request")]
         self.lines.add(T0 + 3, "Steve", "voice", "and make it red")
@@ -503,6 +588,7 @@ class TestWritesOnly(Base):
                      sqlite3.SQLITE_DROP_TABLE, sqlite3.SQLITE_ALTER_TABLE, sqlite3.SQLITE_PRAGMA}
         self.assertEqual([s for s in seen if s[0] in forbidden], [])
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM feed").fetchone()[0], 0)
+        self.assertIn("gather:", " ".join(u["ref"] for u in self.lines.usage()))
 
 
 class TestMalformedTimes(Base):
@@ -599,6 +685,23 @@ class TestKilledBetweenFeedAndMark(Base):
         self.assertEqual(sum(l.endswith("| that cave by spawn") for l in lines), 2)   # the second line, once
         self.step(10)
         self.assertEqual(len(self.feed.lines()), 3)
+
+    def test_a_group_is_known_by_its_ask_and_not_fed_again(self):
+        self.lines.add(T0, "Steve", "chat", "yeah the big one")
+        ask = self.lines.add(T0 + 1, "Steve", "chat", "make it bigger")
+        self.die_after_the_next_batch()
+        with self.assertRaises(Killed):
+            self.step()
+        self.assertEqual(self.feed.lines(), ["LINE#1 18:22:32 Steve chat action_oriented 0.90 - | "
+                                             "yeah the big one … make it bigger"])
+        self.clock.advance(2)
+        self.f = self.new_filter()                       # the service restarts, the group forgotten
+        with self.assertLogs("vfg-jev", "WARNING") as logs:
+            self.step()
+            self.step(5)
+        self.assertIn("%s was already fed as LINE#1" % ask, "\n".join(logs.output))
+        self.assertIsNotNone(self.row(ask)["fed_at"])
+        self.assertEqual(len(self.feed.lines()), 1)
 
     def test_a_line_judged_but_never_fed_is_still_fed_after_a_restart(self):
         a = self.lines.add(T0, "Alex", "chat", "that cave by spawn")

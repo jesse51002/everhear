@@ -1,12 +1,14 @@
 """A local stand-in for Jev's `POST /v1/systemone`, for the tests.
 
 It answers every question by keyword in the line it asks about (the text
-between the last “ and ” of its instructions). The routing call's two
-questions answer so that D's walk gives:
+between the last “ and ” of its instructions; a gather question quotes the ask
+first). The routing call's two questions answer so that D's walk gives:
 `build`, `make` or `there` -> action_oriented 0.9 (act 0.9, let down);
 `thanks` -> conversational 0.85 (answer 0.85); `cave` or `base` -> context 0.7
 (remember 0.7); anything else -> not_relevant 0.8 (ignore 0.8). `d_feel` is
-always answered with 0.6, so the confidence fed is always `d_what`'s. A `noul`
+always answered with 0.6, so the confidence fed is always `d_what`'s. A gather
+question is answered `part_of_the_ask` 0.9 when the line contains `big one`,
+else `not_part_of_it` 0.8, so no line joins an ask by accident. A `noul`
 question is answered `noul: 0.9`. The state must be a JSON object, as the live
 API is called (a bare string is refused with 400); `usage.input_tokens` is its
 JSON-encoded length / 4.
@@ -26,7 +28,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-ASKED_ABOUT = re.compile(r"^.*“(.*)”", re.S)   # the last quote
+ASKED_ABOUT = re.compile(r"^.*“(.*)”", re.S)   # the last quote: a gather question quotes the ask first
+JOINS = "big one"
 WHAT = {"action_oriented": "the_ai_must_act", "conversational": "the_ai_should_answer", "context": "remember_it",
         "not_relevant": "ignore_it"}
 FEEL = {"action_oriented": "let_down_wanted_something_done", "conversational": "fine_a_reply_is_all",
@@ -51,10 +54,13 @@ def verdict(text):
 
 
 def choose(question, verdicts=None):
-    """`(label, confidence)` for one of D's two questions, by the line's class:
-    `verdicts[text]`, a `(class, confidence)`, or else its keywords."""
+    """`(label, confidence)` for a `choice` question: a gather question's by
+    `big one`, else D's two by the line's class — `verdicts[text]`, a
+    `(class, confidence)`, or else its keywords."""
     text = asked_about(question.get("instructions"))
     labels = question.get("criteria") or {}
+    if "part_of_the_ask" in labels:
+        return ("part_of_the_ask", 0.9) if JOINS in text.lower() else ("not_part_of_it", 0.8)
     cls, conf = (verdicts or {}).get(text) or verdict(text)
     if "let_down_wanted_something_done" in labels:
         return FEEL[cls], FEEL_CONFIDENCE

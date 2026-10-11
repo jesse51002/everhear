@@ -52,7 +52,8 @@ class TestTheProcess(WithJev):
                     "VFG_LOOKOUT": os.path.join(self.dir, "lookout.md"), "VFG_MENU": os.path.join(self.dir, "menu.md"),
                     "VFG_ENV_FILE": os.path.join(self.dir, "no.env"), "TYPESAFE_API_KEY": KEY})
         now = time.time()
-        lines.add(now, "Steve", "voice", "build me a castle", peak=-8.2)
+        lines.add(now - 0.01, "Steve", "voice", "the big one, by the river", peak=-20.0)
+        castle = lines.add(now, "Steve", "voice", "build me a castle", peak=-8.2)
         lines.add(now + 0.01, "AI", "ai", "Where should it go?")
         lines.add(now + 0.02, "Alex", "chat", "lol")
         lines.add(now + 0.03, "Alex", "chat", "that cave by spawn")
@@ -69,21 +70,24 @@ class TestTheProcess(WithJev):
                 return []
 
         end = time.monotonic() + 5
-        while len(self.server.calls) < 3 and time.monotonic() < end:   # castle, lol, cave
+        while len(self.server.calls) < 5 and time.monotonic() < end:   # the big one, castle, its gather, lol, cave
             time.sleep(0.01)
         p.send_signal(signal.SIGTERM)
         self.assertEqual(p.wait(timeout=5), 0)
-        # the ask went at once; the context line waited its batch and went on the way out
+        # the ask went at once, with the line before it that belongs to it; the context line waited its
+        # batch and went on the way out
         self.assertEqual([l.split(" ", 2)[2] for l in fed()], [
-            "Steve voice action_oriented 0.90 -8dB | build me a castle",
+            "Steve voice action_oriented 0.90 -8dB | the big one, by the river … build me a castle",
             "Alex chat context 0.70 - | that cave by spawn"])
         rows = {r[0]: r[1:] for r in conn.execute(
             "SELECT text, jev_class, jev_confidence, fed_at IS NOT NULL FROM lines")}
-        self.assertEqual(rows, {"build me a castle": ("action_oriented", 0.9, 1), "lol": ("not_relevant", 0.8, 0),
+        self.assertEqual(rows, {"the big one, by the river": ("not_relevant", 0.8, 0),
+                                "build me a castle": ("action_oriented", 0.9, 1), "lol": ("not_relevant", 0.8, 0),
                                 "Where should it go?": (None, None, 0), "that cave by spawn": ("context", 0.7, 1)})
-        usage = conn.execute("SELECT component, output_tokens, input_tokens, cost_usd FROM usage").fetchall()
-        self.assertEqual(len(usage), 3)
-        for component, out_tokens, tokens, cost in usage:
+        usage = conn.execute("SELECT component, output_tokens, input_tokens, cost_usd, ref FROM usage").fetchall()
+        self.assertEqual(len(usage), 5)
+        self.assertIn("gather:" + castle, [u[4] for u in usage])
+        for component, out_tokens, tokens, cost, _ in usage:
             self.assertEqual((component, out_tokens, cost), ("jev", 0, tokens * 0.000000042))
         self.assertEqual(self.server.calls[0]["headers"]["Authorization"], "Bearer " + KEY)
         with open(journal, encoding="utf-8") as f:

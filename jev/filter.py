@@ -1,11 +1,12 @@
 """The filter: `Filter(store, jev, feed, clock, cfg).step()` is one cycle.
 
 Each step: judge new lines, one Jev call each (or, while failing open, pass
-them all as `context`); then feed what is waiting. Everything that has to
-survive a restart is in the database — a verdict, `fed_at` — so the batch is
-read from the database each time rather than held here. What is held here is
-only what the contract lets go on a restart: the failing clock and an owed
-`SYS` line.
+them all as `context`), and for a line that goes to the AI one more, the gather
+call; then feed what is waiting. Everything that has to survive a restart is in
+the database — a verdict, `fed_at` — so the batch is read from the database
+each time rather than held here. What is held here is only what the contract
+lets go on a restart: the lines gathered into an ask not yet fed, the failing
+clock, and an owed `SYS` line.
 
 The clock, the Jev client and the feed writer are arguments, so the tests drive
 every rule with fakes and no test sleeps through a 10-second rule.
@@ -18,13 +19,18 @@ import sqlite3
 
 from jev_clock import iso, parse_iso
 from jev_api import ENDPOINT, MODEL, JevDown, JevRefused
-from prompt import KEPT, Lookout, Menu, build_state, in_short, questions, route
+from prompt import (GATHER_HEADING, GATHER_RULES, HISTORY_HEADING, KEPT, PART_OF_IT, RULES, Lookout, Menu,
+                    build_state, gather_questions, in_short, questions, route)
 
 log = logging.getLogger("vfg-jev")
 
 # Fixed in code, because the contract fixes them.
 FAIL_OPEN_AFTER = 10.0     # seconds of Jev failing before every line passes as context
 AT_ONCE = ("action_oriented", "conversational")   # both get a live answer: the batch goes at once
+GATHER_LOOKBACK = 180.0    # the gather call looks this far back from the ask, at most
+GATHER_MAX = 10            # and asks about this many of the speaker's lines, the newest
+GROUP_JOIN = " … "         # a group's lines, in the order said, the ask last
+TEXT_MAX = 500             # §7: the writer cuts a text longer than this
 PROBE_EVERY = 5.0          # while open
 FEED_MAX_AGE = 600.0       # a kept line older than this is never fed
 STALE_LOOKBACK = 3600.0    # how far back the feed looks for kept lines to report as too old
@@ -91,11 +97,33 @@ def feed_text(text):
 
 def same_text(written, text):
     """Whether `written` (from the feed) is `text`, allowing the writer's cut
-    at 500 characters with an ellipsis."""
+    at 500 characters with an ellipsis, or a group that ends with it. A group
+    is fitted to 500 characters (`fit_group`), so it is never cut."""
     full = feed_text(text)
-    if written == full:
+    if written == full or written.endswith(GROUP_JOIN + full):
         return True
     return written.endswith("…") and len(written) > 1 and full.startswith(written[:-1]) and len(full) >= 500
+
+
+def group_text(gathered, ask):
+    """The ask's text with the lines gathered into it before it, in the order
+    said, joined with " … "."""
+    return GROUP_JOIN.join([r["text"] for r in gathered] + [ask["text"]])
+
+
+def fit_group(gathered, ask):
+    """The gathered lines that fit with the ask in the feed's 500 characters,
+    dropping the oldest first, so the ask is always whole at the end. With
+    none left the ask goes alone, and the writer cuts it as ever."""
+    kept = list(gathered)
+    while kept and len(feed_text(group_text(kept, ask))) > TEXT_MAX:
+        kept.pop(0)
+    return kept
+
+
+def _listed(answered):
+    """`<id> <confidence>, …` for the journal, `-` for a missing answer or none."""
+    return ", ".join("%s %s" % (row["id"], "-" if got is None else "%.2f" % got[1]) for row, got in answered) or "-"
 
 
 def round_half_up(x):
@@ -124,6 +152,7 @@ class Filter:
         self.failing_since = None    # when the first failing call after a success began
         self.last_probe = None
         self.owed = []               # SYS texts not yet written to the feed
+        self.groups = {}             # ask id -> the lines gathered into it, oldest first, until it is fed
         self.unmarked = []           # fed, but fed_at not yet written
         self.stale = set()           # kept lines already reported as too old to feed
         self.stopping = False        # set by the signal handler: finish the call in hand
@@ -173,13 +202,13 @@ class Filter:
             self.feed()   # so a line for the AI goes before the next call
         return None
 
-    def _state(self, marked, began, share=1.0):
+    def _state(self, marked, began, share=1.0, rules=RULES, heading=HISTORY_HEADING):
         since = iso(began - self.cfg.history_hours * 3600)
         # the lines said and the brain's records of what it did, newest first
         others = sorted(list(self.store.history(since, exclude=[r["id"] for _, r in marked]))
                         + self.store.ai_records(since), key=lambda r: (r["at"], r["id"]), reverse=True)
         menu = self.menu.text()
-        state, _ = build_state(self.lookout.text(), marked, others, self.cfg.state_tokens, share, menu)
+        state, _ = build_state(self.lookout.text(), marked, others, self.cfg.state_tokens, share, menu, rules, heading)
         if menu and state.get("actions") != menu and menu != self._menu_cut:
             self._menu_cut = menu
             log.warning("menu %s is over half the state's room; Jev sees its first lines", self.cfg.menu)
@@ -189,8 +218,8 @@ class Filter:
         return self.jev.ask(self._state([(1, row)], began, share), questions(row), required="d_what")
 
     def _judge_one(self, row):
-        """The routing call for `row`. Answers False when Jev failed (the line
-        stays unjudged)."""
+        """The routing call for `row`, and the gather call when it goes to the AI.
+        Answers False when Jev failed (the line stays unjudged)."""
         began = self.clock.time()
         try:
             result = self._ask(row, began)
@@ -220,7 +249,43 @@ class Filter:
         said = said_at(row)
         if cls in KEPT and (said is None or said < now - FEED_MAX_AGE):
             self._too_old(row, said)
+        elif cls in AT_ONCE:
+            self._gather(row, said)
         return True
+
+    def _gather(self, ask, said):
+        """The gather call: is each of the speaker's unsent lines since their last
+        line to the AI, 3 minutes back at most, part of `ask`? The yes lines wait
+        in `groups` and go with the ask when it is fed. No lines, no call. A call
+        that fails leaves the ask to go alone; it is not Jev failing to judge a
+        line, so the failing clock is left as it is."""
+        window = self.store.gather_window(ask, iso(said - GATHER_LOOKBACK), GATHER_MAX)
+        if not window:
+            return
+        marked = [("ask", ask)] + list(enumerate(window, 1))
+        try:
+            state = self._state(marked, self.clock.time(), rules=GATHER_RULES, heading=GATHER_HEADING)
+            result = self.jev.ask(state, gather_questions(ask, window), required=None)
+        except (JevDown, JevRefused) as e:
+            log.warning("gather %s failed: %s — the ask goes alone", ask["id"], e)
+            return
+        yes, no = [], []
+        for k, row in enumerate(window, 1):
+            got = result.answers.get("line_%d" % k)   # missing or malformed: a no
+            (yes if got is not None and got[0] == PART_OF_IT else no).append((row, got))
+        kept = fit_group([row for row, _ in yes], ask)
+        if kept:
+            self.groups[ask["id"]] = kept
+        try:
+            self.store.add_usage(at=iso(self.clock.time()), model=self.cfg.model, input_tokens=result.input_tokens,
+                                 cost_usd=result.cost_usd, ref="gather:%s" % ask["id"])
+        except sqlite3.Error as e:
+            log.warning("could not write the gather call's usage row: %s", e)
+        dropped = len(yes) - len(kept)
+        log.info("gather %s %s · %d asked, %d yes: %s · no: %s · %dms %stok%s", ask["id"], ask["player_name"],
+                 len(window), len(yes), _listed(yes), _listed(no), result.ms,
+                 "?" if result.input_tokens is None else result.input_tokens,
+                 " · the oldest %d dropped to fit 500 characters" % dropped if dropped else "")
 
     def _failed(self, began, row, err):
         if self.failing_since is None:
@@ -274,6 +339,7 @@ class Filter:
         return " ".join(parts)
 
     def _too_old(self, row, said):
+        self.groups.pop(row["id"], None)
         if row["id"] not in self.stale:
             self.stale.add(row["id"])
             why = "over 10 minutes ago" if said is not None else "not an ISO-8601 time"
@@ -349,13 +415,16 @@ class Filter:
                 return
         # `at` goes in canonical form: the very string the bridge stores, and
         # one the writer is sure to accept even if a row was stored otherwise
-        entries = [("LINE", self.fields(r), r["text"], iso(said)) for r, said in waiting]
+        entries = [("LINE", self.fields(r), group_text(self.groups.get(r["id"], []), r), iso(said))
+                   for r, said in waiting]
         try:
             seqs = self.feed_writer.append_batch(entries)
         except Exception as e:
             log.warning("feed write failed: %s — %d line(s) wait for the next step", e, len(entries))
             return
         ids = [r["id"] for r, _ in waiting]
+        for line_id in ids:
+            self.groups.pop(line_id, None)
         try:
             self.store.mark_fed(ids, iso(self.clock.time()))
         except sqlite3.Error as e:

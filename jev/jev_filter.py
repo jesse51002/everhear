@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """vfg-jev: asks Jev what should become of each line a player says or types —
 the brain acts on it (action_oriented), Respond answers it (conversational), it
-is kept as context, or it is not relevant; writes the verdict back to the
+is kept as context, or it is not relevant — and, for a line to the AI, which of
+the speaker's earlier lines go with it; writes the verdict back to the
 transcript history; feeds the lines it keeps to the brain in batches.
 
     python3 -u /opt/vfg/jev/jev_filter.py              the service (systemd unit vfg-jev)
@@ -65,9 +66,9 @@ def setup_logging():
 
 def judge_once(cfg, key, text, raw=False):
     """`--judge`: one text as a chat line from `tester` said now, the current
-    lookout and menu, no history. Prints the class with both answers —
-    `action_oriented 0.91 · act 0.91, let down 0.88 · 230ms · 7012tok` — and
-    writes nothing. With `raw`, also prints the response body exactly as
+    lookout and menu, no history, no gather call. Prints the class with both
+    answers — `action_oriented 0.91 · act 0.91, let down 0.88 · 230ms · 7012tok`
+    — and writes nothing. With `raw`, also prints the response body exactly as
     Jev sent it — the way to check, on the first live run, the answer's shape
     this code assumes."""
     jev = Jev(key, url=cfg.jev_url, model=cfg.model, timeout=cfg.timeout)
