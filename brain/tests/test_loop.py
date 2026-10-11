@@ -96,6 +96,9 @@ GUARD = {  # reply -> what promises() says, no task open (the reviewer's probes 
     "Getting dark now, better find shelter.": "", "Haha, I'm making no promises about the creepers.": "",
     "Done already? That was fast.": "", "Right away? Patience, my friend.": "",
     "Okay, I'll stop talking now.": "", "Sure, I'll keep quiet for a bit.": "", "Arr, I'll turn the chatter down.": "",
+    "You're on the way to the nether, nice.": "", "Not right away, it takes a minute to learn.": "",
+    "Steak, well-done!": "", "I can get why you'd think that.": "", "Your stuff is on the way back to spawn.": "",
+    "Sure - on it.": "a promise", "Your sword's on the way.": "a promise", "I can get you one.": "an offer",
 }
 
 

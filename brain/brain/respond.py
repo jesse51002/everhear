@@ -55,7 +55,7 @@ _STEMS = ("mak", "giv", "build", "spawn", "summon", "set", "fix", "turn", "get",
 _DO = rf"(?:{'|'.join(_STEMS)})(?:e|es|s|ed|\w?ing|\w?in'?)?\b(?!(?<=give) you that\W*$)"  # not "I'll give you that."
 _ING = rf"(?:{'|'.join(_STEMS)})\w?(?:ing|in'?)\b"
 _I_WILL = r"(?:i'll|i will|i shall|i'm gonna|i am gonna|i'm going to|i am going to|imma|i'ma)"
-_START = r"(?:^|[.!?,;:—–-]\s*)"    # the start of the reply or of a clause
+_START = r"(?:^|[.!?,;:—–]\s*|\s-\s+)"    # the start of the reply or of a clause; never "well-done"
 # What an -ing verb is done to, for it to read as the AI doing something: "spawning some cows",
 # "getting you a sword", never "doing great", "getting hungry" or "making no promises".
 _OBJECT = r"(?:you|your|it|that|them|those|one|some|a|an|the)\b"
@@ -68,7 +68,7 @@ OFFERS = tuple(re.compile(p) for p in (
     # a question that waits for the player's yes: the reply's last sentence, not one it answers itself
     r"(?:^|[.!?,]\s+|\bor |\byou )want (it|one|them|that|this|the|a|an|some|more|another|extras?|your own)\b"
     r"[^.!?]*\?\W*$",
-    rf"\bi can {_DO}", rf"\bi could {_DO} (you|one|it|that|them|those|some|a|an|the|your)\b",
+    rf"\bi can (?!get (?:why|how|what)\b){_DO}", rf"\bi could {_DO} (you|one|it|that|them|those|some|a|an|the|your)\b",
     rf"\bi (might|may|could) be able to {_DO}", rf"\bhappy to {_DO}",
     rf"\blet me (?!put it this way|get this straight|turn that around){_DO}",
     r"\b(has|have|got) your name on it\b", r"\bwhenever you want it\b"))
@@ -80,13 +80,13 @@ PROMISES = tuple(re.compile(p) for p in (
     rf"(?:{_START}|\b(?:i'm|i am|we're|yep|yes|yeah|sure|sure thing|ok|okay|aye|got it|you got it|no problem|"
     rf"alright|right) +)(?:already |right )?on it\b",
     rf"{_START}(?:will do|consider it done|leave it to me)\b", rf"{_START}(?:all )?done(?=\s*(?:[.!,]|$))",
-    r"\bright away\b(?!\s*\?)",
+    r"(?<!not )\bright away\b(?!\s*\?)",
     r"\b(i'll|i will|i've got|i got) (watch )?your back\b", r"\bgive me a (sec|second|minute|moment)\b"))
 # Work under way: a status when the line's speaker has a task open, a promise when not.
 UNDER_WAY = tuple(re.compile(p) for p in (
     r"(?<!night's )(?<!day's )(?<!dawn's )(?<!morning's )(?<!sun's )\bcoming (right )?(up|at (ya|you))\b",
     r"\bgive (it|her|him|them) a (sec|second|minute|moment|beat)\b", r"\bhang tight\b", r"\bone sec\b",
-    r"\bon (its|their) way\b", r"('s|is|are|'re) on the way\b(?! (back|home|out|there))", r"\bit's coming\b",
+    r"\bon (its|their) way\b", r"(?<!you)(?<!you )(?<!we)(?<!we )('s|is|are|'re) on the way\b(?! (back|home|out|there))", r"\bit's coming\b",
     r"\b(should|will|'ll) be (done|ready) (in|soon)\b"))
 # An open task in the tasks text, as tasks.py writes it: `- T183 for Steve, since 18:22:31, open: …`,
 # or `…, an implementer is on it: …`; on the named-tasks branch, `- castle_steve for Steve, open: …`.
