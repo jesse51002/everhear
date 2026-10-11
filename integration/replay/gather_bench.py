@@ -32,6 +32,7 @@ THE LINES go in production's order, `Store.unjudged`: by `at`, then `id`. A blan
     $PY $L/gather_bench.py run --db $DB --out OUT --env ENV                 # goes on to all 843
     $PY $L/gather_bench.py regather g2 --db $DB --out OUT --half first --env ENV   # a candidate wording
     $PY $L/gather_bench.py ten --db $DB --out OUT --env ENV                 # 10-question calls
+    $PY $L/gather_bench.py live first g3 --runs RUNS --out OUT --env ENV    # the live runs' gather states
 
 `run` writes OUT/prod/rows.jsonl, one row a line, in order: its label and whole-ask input, the class
 the filter stored, every routing call (each answer as Jev gave it, [choice, confidence,
@@ -47,6 +48,11 @@ depend on the gather's answers. Into OUT/NAME/rows.jsonl. `repeat` is production
 
 `ten` asks production's gather call with all 10 questions, on windows made full (see `ten`).
 
+`live W …` asks each wording on the gather state of every line a live realmc run (integration/jev_live.py)
+sent to the AI: production's Store on a copy of the run's database cut at the ask, and the state the
+filter builds then. RUNS is the stand-in's vfg/ folder, its earlier runs under vfg/runs/. Into
+OUT/live/<wording>/rows.jsonl, each window line marked when it is its scenario's first piece.
+
 The TypeSafe key as classes.py reads it (`--env`), never printed. No OpenRouter calls.
 """
 
@@ -55,9 +61,12 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
+import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -66,10 +75,10 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from tree_bench import Bench, raw_answers, read_rows  # noqa: E402  (puts brain/ and jev/ on the path)
-from classes import HISTORY_H, STATE_TOKENS, TRIES  # noqa: E402
+from classes import HISTORY_H, STATE_TOKENS, TRIES, typesafe_key  # noqa: E402
 import prompt  # noqa: E402  (jev/prompt.py)
 from filter import GATHER_LOOKBACK, GATHER_MAX, Config, Filter, fit_group  # noqa: E402  (jev/filter.py)
-from jev_api import MODEL, PRICE_PER_INPUT_TOKEN, JevDown, JevRefused  # noqa: E402
+from jev_api import ENDPOINT, MODEL, PRICE_PER_INPUT_TOKEN, Jev, JevDown, JevRefused  # noqa: E402
 from jev_clock import iso, parse_iso  # noqa: E402
 from prompt import GATHER_HEADING, GATHER_RULES, PART_OF_IT, build_state, estimate  # noqa: E402
 from store import Store  # noqa: E402
@@ -118,14 +127,40 @@ def gather_wording(criteria: dict, why: str = ""):
     return qs
 
 
+# Round two, after the live realmc runs (integration/jev_live.py): g3 took the playtest's sentences cut
+# at a pause, but gave "I'm going down into that ocean monument", which says where the ask's "there"
+# is, 0.50 to 0.71 where the first wording gave 0.75 to 0.87. The guess: "a remark" and "talk to a
+# player" in g3's `not_part_of_it` describe that line too. g4 is the first wording with g3's sentence
+# on pauses. g5 says what each side is about, not what form the line takes: a piece, or what the ask's
+# words point at; another subject, another ask or a reaction.
+REFERS = {
+    "part_of_the_ask": "Part of the ask: a piece of the same sentence, cut off by a pause, or it says what, where, who "
+                       "or how for the ask, such as what \"it\", \"there\" or \"one\" in the ask points at.",
+    "not_part_of_it": "Not part of the ask: it is about something else, such as another subject, another ask or a "
+                      "reaction, and the ask needs nothing from it.",
+}
+# g6 is g5 in the spec's own order and words ("Part of it: it says what, where, who or how for the ask
+# … Not part of it: anything else."), with g5's two additions, and "anything else" named.
+SPEC = {
+    "part_of_the_ask": "Part of the ask: it says what, where, who or how for the ask, such as what \"it\", \"there\" "
+                       "or \"one\" in the ask points at, or it is a piece of the same sentence, cut off by a pause.",
+    "not_part_of_it": "Not part of the ask: anything else: another subject, another ask, or a reaction.",
+}
+
 # name -> (what it changes, the questions function). `prod` is the first wording (FIRST), which `run`
 # recorded; g3 has been jev/prompt.py's own since, so `run` now asks g3.
 WORDINGS = {
     "prod": ("the first wording: FIRST, production's when `run` recorded it", gather_wording(FIRST)),
+    "first": ("the first wording (FIRST), asked on the live states", gather_wording(FIRST)),
     "repeat": ("the first wording asked again, for run-to-run noise", gather_wording(FIRST)),
     "g2": ("the criteria balanced (BALANCED), the instruction production's", gather_wording(BALANCED)),
     "g3": ("g2, and the instruction says speech-to-text cuts a player at every pause (PIECES)",
            gather_wording(BALANCED, PIECES)),
+    "g4": ("the first wording's criteria (FIRST), and g3's sentence on pauses (PIECES)", gather_wording(FIRST, PIECES)),
+    "g5": ("criteria by what the line is about (REFERS), and g3's sentence on pauses (PIECES)",
+           gather_wording(REFERS, PIECES)),
+    "g6": ("g5 in the spec's order and words (SPEC), and g3's sentence on pauses (PIECES)",
+           gather_wording(SPEC, PIECES)),
 }
 _row = {"id": "x", "at": "2026-10-08T06:00:00.000Z", "player_name": "Steve", "source": "voice", "text": "the big one",
         "peak_dbfs": None}
@@ -489,17 +524,149 @@ def ten(args) -> None:
     print(f"ten: {tokens:,} Jev input tokens, ${tokens * PRICE_PER_INPUT_TOKEN:.4f} in this file")
 
 
+# ------------------------------------------------------------------ live: the realmc runs' gather states
+
+# integration/jev_live.py's SCENARIOS: each ask, and its first piece. Every other line in an ask's window
+# is another line of the script, about another scenario.
+LIVE_PIECES = {
+    "AI, give me something so I can see in there": "the cave over there is pitch black",
+    "AI, can you give me a new one": "my diamond pickaxe just broke",
+    "AI, I need to be able to breathe down there": "I'm going down into that ocean monument",
+}
+_GATHER_LOGGED = re.compile(r"\bgather (\S+) \S+ · \d+ asked, \d+ yes: (.*?) · no: (.*?) · \d+ms")
+
+
+def live_runs(root: Path) -> list[tuple[str, Path]]:
+    """jev_live.py's transcripts: each earlier run's folder under vfg/runs/, and the last run's, vfg/."""
+    runs = root / "runs"
+    found = [(d.name, d) for d in sorted(runs.iterdir()) if (d / "vfg.db").exists()] if runs.is_dir() else []
+    return found + ([("last", root)] if (root / "vfg.db").exists() else [])
+
+
+def logged_windows(folder: Path) -> dict[str, list[str]]:
+    """{ask id: the ids its gather call asked about, yes then no}, from the run's jev.log when there is one
+    (the last run's is beside vfg/, in the stand-in's folder)."""
+    out = {}
+    for log_path in (folder / "jev.log", folder.parent / "jev.log" if folder.name == "vfg" else None):
+        if log_path is None or not log_path.exists():
+            continue
+        for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            m = _GATHER_LOGGED.search(line)
+            if m:
+                out[m.group(1)] = [part.split()[0] for part in (m.group(2) + ", " + m.group(3)).split(", ")
+                                   if part.strip() and part.strip() != "-"]
+    return out
+
+
+def live_states(root: Path):
+    """(run, ask, window, state) for every line a live run sent to the AI whose gather window has lines:
+    production's Store on a copy of the run's database cut at the ask, and the state the filter builds
+    then, with the run's own lookout and menu (the defaults when it had none)."""
+    for name, folder in live_runs(root):
+        lookout = prompt.read_lookout(str(folder / "lookout.md"))[0]
+        menu = prompt.read_menu(str(folder / "menu.md"))[0]
+        src = sqlite3.connect("file:%s?mode=ro" % (folder / "vfg.db"), uri=True)
+        src.row_factory = sqlite3.Row
+        asks = src.execute("SELECT id, at FROM lines WHERE jev_class IN ('action_oriented', 'conversational') "
+                           "ORDER BY at, id").fetchall()
+        src.close()
+        for ask_id, ask_at in asks:
+            tmp = Path(tempfile.mkdtemp())
+            try:
+                for suffix in ("", "-wal", "-shm"):   # the WAL too: a run's last writes may be only there
+                    if (folder / ("vfg.db" + suffix)).exists():
+                        shutil.copy(folder / ("vfg.db" + suffix), tmp / ("vfg.db" + suffix))
+                con = sqlite3.connect(tmp / "vfg.db")
+                con.execute("DELETE FROM lines WHERE at > ?", (ask_at,))
+                con.execute("DELETE FROM feed WHERE at > ?", (ask_at,))
+                con.commit()
+                con.close()
+                st = Store(str(tmp / "vfg.db"))
+                assert st.ready()
+                ask = dict(st.conn.execute("SELECT * FROM lines WHERE id = ?", (ask_id,)).fetchone())
+                said = parse_iso(ask["at"])
+                window = [dict(r) for r in st.gather_window(ask, iso(said - GATHER_LOOKBACK), GATHER_MAX)]
+                if window:
+                    since = iso(said - HISTORY_H * 3600)
+                    marked = [("ask", ask)] + list(enumerate(window, 1))
+                    others = sorted(list(st.history(since, exclude=[r["id"] for _, r in marked]))
+                                    + st.ai_records(since), key=lambda r: (r["at"], r["id"]), reverse=True)
+                    state, kept = build_state(lookout, marked, others, STATE_TOKENS, 1.0, menu, GATHER_RULES,
+                                              GATHER_HEADING)
+                    yield name, folder, ask, window, state, kept
+                st.close()
+            finally:
+                shutil.rmtree(tmp)
+
+
+def live(args) -> None:
+    """Each wording on every live gather state. Into OUT/live/<wording>/rows.jsonl, a row an ask."""
+    jev = Jev(typesafe_key(args.env), url=ENDPOINT, model=MODEL, timeout=args.jev_timeout)
+    states = list(live_states(Path(args.runs)))
+    logged = {}
+    for name, folder in live_runs(Path(args.runs)):
+        logged.update(logged_windows(folder))
+    print(f"live: {len(states)} gather states in {len(live_runs(Path(args.runs)))} runs", flush=True)
+    for wording in args.wording:
+        _, qfun = WORDINGS[wording]
+        out = Path(args.out) / "live" / wording
+        out.mkdir(parents=True, exist_ok=True)
+        rows_file = out / "rows.jsonl"
+        have = read_rows(rows_file)
+        done = {(r["run"], r["id"]) for r in have}
+        tokens = sum(r.get("tokens", 0) for r in have)
+        with rows_file.open("a", encoding="utf-8") as f:
+            for name, folder, ask, window, state, kept in states:
+                if (name, ask["id"]) in done:
+                    continue
+                piece = LIVE_PIECES.get(ask["text"])
+                qs = qfun(ask, window)
+                row = {"run": name, "id": ask["id"], "who": ask["player_name"], "text": ask["text"],
+                       "window": [{"id": r["id"], "text": r["text"], "piece": r["text"] == piece} for r in window],
+                       "logged": logged.get(ask["id"]), "estimate": estimate(state), "history_kept": kept,
+                       "tries": []}
+                for _ in range(TRIES):
+                    try:
+                        res = jev.ask(state, qs, required=None)
+                    except JevRefused as e:
+                        row["tries"].append({"refused": str(e)})
+                        break
+                    except JevDown as e:
+                        row["tries"].append({"down": str(e)})
+                        time.sleep(1.0)
+                        continue
+                    row.update(answers=raw_answers(jev.last_body, qs), ms=res.ms, tokens=res.input_tokens or 0,
+                               missing=sorted(set(qs) - set(res.answers)))
+                    break
+                if "answers" not in row:
+                    row.update(failed=True, tokens=0)
+                tokens += row["tokens"]
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                f.flush()
+                got = row.get("answers", {})
+                print(f"{wording:6} {name:16} {ask['text'][:44]:44} | " + "  ".join(
+                    f"{(got.get(f'line_{k}') or ['-', 0, {}])[2].get(PART_OF_IT, 0):.2f}"
+                    f"{'*' if w['piece'] else ' '} {w['text'][:28]}" for k, w in enumerate(row["window"], 1)),
+                    flush=True)
+        print(f"{wording}: {tokens:,} Jev input tokens, ${tokens * PRICE_PER_INPUT_TOKEN:.4f} in this file")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name, about in (("run", "the production filter on every line"),
                         ("regather", "the gather call again with a candidate wording, on the recorded windows"),
-                        ("ten", "production's gather call with all 10 questions, on windows made full")):
+                        ("ten", "production's gather call with all 10 questions, on windows made full"),
+                        ("live", "wordings on the gather states of the live realmc runs (jev_live.py)")):
         s = sub.add_parser(name, help=about)
         if name == "regather":
             s.add_argument("wording", choices=sorted(WORDINGS))
             s.add_argument("--half", choices=("first", "second", "all"), default="first")
-        s.add_argument("--db", required=True, help="the playtest's vfg.db")
+        if name == "live":
+            s.add_argument("wording", nargs="+", choices=sorted(WORDINGS))
+            s.add_argument("--runs", required=True, help="the realmc stand-in's vfg/ folder that jev_live.py ran in")
+        else:
+            s.add_argument("--db", required=True, help="the playtest's vfg.db")
         s.add_argument("--out", required=True)
         s.add_argument("--limit", type=int, default=0,
                        help="the first N lines (run) or windows (regather) only; ten: how many calls (12)")
@@ -507,7 +674,7 @@ def main() -> None:
         s.add_argument("--jev-timeout", type=float, default=10.0, help="a Jev call's timeout, s")
         s.add_argument("--jev-budget", type=float, default=0.6, help="stop past this many dollars of Jev in the file")
     args = ap.parse_args()
-    {"run": run, "regather": regather, "ten": ten}[args.cmd](args)
+    {"run": run, "regather": regather, "ten": ten, "live": live}[args.cmd](args)
 
 
 if __name__ == "__main__":
