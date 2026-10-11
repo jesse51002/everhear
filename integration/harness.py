@@ -20,6 +20,7 @@ non-zero when anything failed.
 """
 import argparse
 import datetime as dt
+import fcntl
 import glob
 import http.client
 import importlib.util
@@ -56,7 +57,7 @@ ULID_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
 ISO_RE = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")
 # §7: TYPE#seq HH:MM:SS fields | text  (fields never hold a |)
 FEED_RE = re.compile(r"^(LINE|GAME|AI|SYS)#(\d+) (\d\d:\d\d:\d\d) (?:([^|]*?) )?\| (.*)$")
-# §7's field grammar, written from the contract text
+# §7's field grammar, written from the contract text (an old line may end with the retired re-ask's marker)
 C_LINE = re.compile(r"^[A-Za-z0-9_]{1,16} (voice|chat) (action_oriented|conversational|context) (\d\.\d\d|-) "
                     r"(-?\d+dB|-)( was=not_relevant)?$")
 C_GAME = re.compile(r"^[a-z_]+ ([A-Za-z0-9_]{1,16}|-)$")
@@ -548,7 +549,8 @@ def brain_lookout():
 
 
 def feed_lines_with_text(box, text):
-    return [r for r in box.feed_rows() if r["line"].endswith("| " + text)]
+    """The feed rows that hold `text` as a line: alone, or as the ask that ends a group (§7)."""
+    return [r for r in box.feed_rows() if r["line"].endswith("| " + text) or r["line"].endswith(" … " + text)]
 
 
 # ======================================================================= paths
@@ -903,23 +905,18 @@ def path5(box, rep, ctx):
         rep.check(ok, "vfg feed post AI '%s %s' … prints the seq; once in vfg watch, feed table and feed.log"
                   % (kind, task), why)
         posted.append(seq)
-    # The brain's own records are processed as they are written (vfg_feed): only it writes them.
-    ai = box.sql("SELECT seq, processed_at FROM feed WHERE seq IN (%s)" % ",".join(str(s) for s in posted if s))
-    rep.check(len(ai) == len(posted) and all(ISO_RE.match(a["processed_at"] or "") for a in ai),
-              "each AI row is written processed: the brain never reads its own", "%r" % ai)
-    read = []          # the rows the brain reads, and marks once it has
+    unread = []  # the rows no read has marked: the brain's AI rows are written processed (vfg_feed.py)
     r, seq = post("GAME", "cast Steve", "Steve cast fireball")
     ok, why = seen(seq, "GAME", "cast Steve", "Steve cast fireball") if seq else (False, r.stderr)
     rep.check(ok, "GAME takes any kind the bridge may feed: GAME cast Steve | …", why)
-    read.append(seq)
+    unread.append(seq)
     r, seq = post("SYS", "", "smoke test")
     ok, why = seen(seq, "SYS", "", "smoke test") if seq else (False, r.stderr)
     rep.check(ok, "vfg feed post SYS '' 'smoke test' -> SYS#n HH:MM:SS | smoke test", why)
-    read.append(seq)
+    unread.append(seq)
     r, seq = post("SYS", "", "two\nlines")
     ok, why = seen(seq, "SYS", "", "two lines") if seq else (False, r.stderr)
     rep.check(ok, "a newline in the text becomes a space", why)
-    read.append(seq)
     r, seq = post("AI", "note -", "long " + "y" * 700)
     cut = "long " + "y" * 494 + "…"
     ok, why = seen(seq, "AI", "note -", cut) if seq else (False, r.stderr)
@@ -951,7 +948,10 @@ def path5(box, rep, ctx):
     recent = [t["line"] for t in table if t["at"] >= iso(now() - dt.timedelta(seconds=55))]
     rep.check(plain.returncode == 0 and all(l in plain.stdout.splitlines() for l in recent),
               "vfg context --since -1m prints the lines themselves", plain.stdout[-600:] + plain.stderr)
-    seqs = [str(s) for s in read if s]
+    ai = box.sql("SELECT seq, processed_at FROM feed WHERE seq IN (%s)" % ",".join(str(s) for s in posted if s))
+    rep.check(len(ai) == len(posted) and all(ISO_RE.match(m["processed_at"] or "") for m in ai),
+              "the brain's AI rows are written processed: no read has to mark them", "%r" % ai)
+    seqs = [str(s) for s in unread if s]
     r = box.vfg("context", "mark", *seqs)
     marked = box.sql("SELECT seq, processed_at FROM feed WHERE seq IN (%s)" % ",".join(seqs))
     rep.check(r.returncode == 0 and r.stdout.strip() == str(len(seqs))
@@ -1070,26 +1070,46 @@ def path8(box, rep, ctx):
 
 
 def path9(box, rep, ctx):
-    rep.path("9", "the brain's context.parse vs what the real feed writer and its producers emit (§7 §9)")
-    # (a) a real flip: Jev's own was=not_relevant, through the real filter
-    time.sleep(1.0)   # every earlier line's `at` is now older than the next one's
-    s, d, a_body = box.voice("Steve", "over here", -10.4, seconds=0.1)
-    a = box.wait_judged("over here", 6)
-    newest = box.sql("SELECT text FROM lines WHERE jev_class = 'not_relevant' AND jev_confidence IS NOT NULL "
-                     "ORDER BY at DESC, id DESC LIMIT 1")
-    if not rep.check(a and a["jev_class"] == "not_relevant" and newest and newest[0]["text"] == "over here",
-                     "setup: 'over here' judged not_relevant, the newest such line (so it is line_2 when asked again)",
-                     "%r %r" % (a, newest)):
+    rep.path("9", "the brain's context.parse vs what the real feed writer and its producers emit (§5 §7 §9)")
+    # (a) a real group, through the real filter and the real feed writer: Steve's earlier line goes
+    # with his ask; Alex's, said between them, never does. The fake Jev says yes to any line with
+    # "big one" that a gather call asks about, so Alex's would join if it were ever asked.
+    box.voice("Steve", "the big one", -10.4)
+    box.voice("Alex", "is that the big one?", -12.0)
+    a, b = box.wait_judged("the big one", 6), box.wait_judged("is that the big one?", 6)
+    if not rep.check(a and b and a["jev_class"] == b["jev_class"] == "not_relevant",
+                     "setup: Steve's 'the big one' and Alex's 'is that the big one?' judged not_relevant",
+                     "%r %r" % (a, b)):
         return
+    # the ask's routing call, canned in D2's terms: act, and let down -> action_oriented, d_what's confidence
     box.fake_jev_api("/next", {"answers": {
-        "line_1": {"type": "choice", "choice": "action_oriented", "confidence": 0.88},
-        "line_2": {"type": "choice", "choice": "context", "confidence": 0.66}}, "usage": {"input_tokens": 1500}})
-    s, d, b_body = box.voice("Alex", "come look at this", -9.0)
-    rx_a = line_regex(a_body["started_at"][11:19], "Steve voice context 0.66 -10dB was=not_relevant", "over here")
-    rx_b = line_regex(b_body["started_at"][11:19], "Alex voice action_oriented 0.88 -9dB", "come look at this")
-    ga, gb = box.wait_watch(rx_a, 8), box.wait_watch(rx_b, 8)
-    rep.check(ga and gb and len(ga) == 1, "a real flip (Jev asked again in the next line's call) reaches vfg watch as "
-              "'Steve voice context 0.66 -10dB was=not_relevant'", "%r" % box.watch_lines()[-4:])
+        "d_what": {"type": "choice", "choice": "the_ai_must_act", "confidence": 0.87},
+        "d_feel": {"type": "choice", "choice": "let_down_wanted_something_done", "confidence": 0.93}},
+        "usage": {"input_tokens": 1500}})
+    s, d, ask = box.voice("Steve", "make it bigger", -9.0)
+    group = "the big one … make it bigger"
+    gg = box.wait_watch(line_regex(ask["started_at"][11:19], "Steve voice action_oriented 0.87 -9dB", group), 8)
+    frow = box.sql("SELECT at FROM feed WHERE seq = ?", (int(FEED_RE.match(gg[0]).group(2)),)) if gg else []
+    rep.check(gg and len(gg) == 1 and frow and frow[0]["at"] == ask["started_at"],
+              "one LINE for the ask, under its fields and time, its text the group: "
+              "'Steve voice action_oriented 0.87 -9dB | %s'" % group, "%r" % box.watch_lines()[-4:])
+    calls = [c["body"] for c in box.fake_jev_api("/calls")
+             if any("part_of_the_ask" in (q.get("criteria") or {})
+                    and "“make it bigger”" in q.get("instructions", "")
+                    for q in ((c["body"] or {}).get("questions") or {}).values())]
+    asked = [q["instructions"] for q in calls[-1]["questions"].values()] if calls else []
+    use = box.sql("SELECT * FROM usage WHERE ref = ?", ("gather:%s" % (d or {}).get("id"),))
+    rep.check(len(calls) == 1 and all(" said by Steve before it " in q for q in asked)
+              and any("“the big one”" in q for q in asked) and not any("is that the big one?" in q for q in asked)
+              and len(use) == 1 and use[0]["component"] == "jev" and use[0]["input_tokens"]
+              and abs(use[0]["cost_usd"] - use[0]["input_tokens"] * 4.2e-8) < 1e-12,
+              "one gather call, about Steve's own unsent lines only (%d, Alex's never), and its usage row "
+              "ref gather:<ask id>" % len(asked), "calls %d, asked %r, usage %r" % (len(calls), asked, use))
+    a, b = box.line_by_text("the big one"), box.line_by_text("is that the big one?")
+    rep.check(a["jev_class"] == b["jev_class"] == "not_relevant" and not a["fed_at"] and not b["fed_at"]
+              and not [r for r in box.feed_rows() if "is that the big one?" in r["line"]],
+              "the gathered line keeps its class and is not fed on its own; Alex's line is in no feed row",
+              "%r %r" % (a, b))
     # (b) real fail-open: the jev-down case's lines
     box.fake_jev_api("/mode", "fail")
     s, d, c_body = box.voice("Alex", "hello everyone", -21.4)
@@ -1100,8 +1120,8 @@ def path9(box, rep, ctx):
               "%r" % box.watch_lines()[-4:])
     box.fake_jev_api("/mode", "ok")
     g_back = box.wait_watch(r"^SYS#\d+ \d\d:\d\d:\d\d \| %s$" % re.escape(SYS_BACK), 12)
-    stamp = box.console("[Server thread/INFO]: <Steve> make it bigger")
-    g_n = box.wait_watch(line_regex(stamp, "Steve chat action_oriented 0.90 -", "make it bigger"), 8)
+    stamp = box.console("[Server thread/INFO]: <Steve> make it wider")
+    g_n = box.wait_watch(line_regex(stamp, "Steve chat action_oriented 0.90 -", "make it wider"), 8)
     rep.check(g_back and g_n, "Jev back: one SYS 'jev back — filtering again', next line judged normally",
               "%r" % box.watch_lines()[-4:])
 
@@ -1128,9 +1148,12 @@ def path9(box, rep, ctx):
               "\n".join("%s  (%s)" % x for x in parse_bad[:20]))
     types = sorted({FEED_RE.match(l).group(1) for _, l in box.watch_seen if FEED_RE.match(l)})
     rep.check(types == ["AI", "GAME", "LINE", "SYS"], "the run fed every type: %s" % ", ".join(types))
-    flip = [context.parse(l, now=now()) for l in (ga or [])]
-    rep.check(flip and flip[0].cls == "context" and flip[0].text == "over here",
-              "the flip's was=not_relevant does not change the class context.parse reads", "%r" % flip)
+    grouped = [context.parse(l, now=now()) for l in (gg or [])]
+    rep.check(grouped and (grouped[0].who, grouped[0].source, grouped[0].cls, grouped[0].text)
+              == ("Steve", "voice", "action_oriented", group)
+              and grouped[0].show() == "%s Steve (action_oriented): %s" % (ask["started_at"][11:19], group),
+              "context.parse reads the group LINE as one row: Steve's, the ask's class, the whole group its "
+              "text, shown to a model as one line", "%r" % grouped)
     opened = [context.parse(l, now=now()) for l in (g_c or [])]
     rep.check(opened and opened[0].cls == "context" and opened[0].who == "Alex" and opened[0].source == "voice",
               "a line passed open (`context - -21dB`) reads as context, for the batch call", "%r" % opened)
@@ -1155,7 +1178,8 @@ def path9(box, rep, ctx):
               "%r" % sorted(unread)[:20])
     blocks = c.blocks()
     cached = c.cached("OPENING", 5)
-    rep.check(sum(len(b) for b in blocks) == len(c.rows) and all(len({x.minute for x in b}) == 1 for b in blocks)
+    rep.check(sum(len(b) for b in blocks) == sum(1 for x in c.rows if x.shown)
+              and all(len({x.minute for x in b}) == 1 for b in blocks)
               and len(cached) == len(blocks) + 1 and sum(1 for _, mark in cached if mark) <= 4,
               "it shows them in %d minute-blocks for the prompt cache, at most four marks" % len(blocks))
 
@@ -1253,27 +1277,48 @@ def path7(box, rep, ctx):
               "SIGKILL right after append_batch, before fed_at is written: the restart does not feed it again",
               "Jev killed after writing LINE (fed_at still NULL: %r); after restart the feed holds it %d time(s) and "
               "vfg watch printed it %d time(s): %r" % (r and r["fed_at"], after, len(in_watch), in_watch))
-    # 7e: SIGKILL while a flipped line waits in its batch
-    s, d, a2 = box.voice("Steve", "wait for me", -11.0)
-    box.wait_judged("wait for me", 6)
-    box.fake_jev_api("/next", {"answers": {
-        "line_1": {"type": "choice", "choice": "not_relevant", "confidence": 0.7},
-        "line_2": {"type": "choice", "choice": "context", "confidence": 0.61}}, "usage": {"input_tokens": 1400}})
-    box.voice("Alex", "hmm okay", -15.0)
-    flipped = wait_for(lambda: (box.line_by_text("wait for me") or {}).get("jev_class") == "context", 5, 0.01)
-    unfed = flipped and not box.line_by_text("wait for me")["fed_at"]
-    box.stop("jev", signal.SIGKILL, 5)
+    # 7e: the same, with a group: the restart knows the group's line as the ask's (it ends with it)
+    box.stop("jev", signal.SIGTERM, 10)
+    open(box.crash_flag, "w").close()
+    box.start_jev(lib=os.path.join(HERE, "shims", "crash_after_feed"),
+                  VFG_HARNESS_REAL_FEED=os.path.join(box.lib, "vfg_feed.py"), VFG_HARNESS_CRASH_FLAG=box.crash_flag)
+    box.voice("Steve", "the big one by the hill", -11.0)
+    box.wait_judged("the big one by the hill", 6)
+    s, d, body = box.voice("Steve", "make that one taller", -8.0)
+    group = "the big one by the hill … make that one taller"
+    died = wait_for(lambda: box.procs["jev"].poll() is not None, 8)
+    r = box.line_by_text("make that one taller")
     box.start_jev()
-    rx = r"^LINE#\d+ %s Steve voice context 0\.61 -11dB( was=not_relevant)? \| wait for me$" % a2["started_at"][11:19]
-    got = box.wait_watch(rx, 10)
-    time.sleep(1.0)
-    got = box.watch_match(rx)
-    rep.check(unfed and got and len(got) == 1 and len(feed_lines_with_text(box, "wait for me")) == 1,
-              "SIGKILL while a flip waits in its batch: fed exactly once (the was=not_relevant marker is best-effort)",
-              "flipped and unfed at the kill: %r; after restart vfg watch printed %r" % (unfed, got))
-    if got and len(got) == 1:
-        rep.note("after that crash the flip was fed %s the marker" % ("with" if "was=not_relevant" in got[0] else "without"))
-    # 7f: the brain's watch killed and followed again from its own place: nothing lost, nothing twice
+    known = box.wait_log("jev", r"%s was already fed as LINE#\d+ before a restart" % (d or {}).get("id"), 8)
+    in_watch = box.wait_watch(line_regex(body["started_at"][11:19], "Steve voice action_oriented 0.90 -8dB", group), 8)
+    rep.check(died and r and r["fed_at"] is None and known and in_watch and len(in_watch) == 1
+              and len(feed_lines_with_text(box, "make that one taller")) == 1,
+              "SIGKILL right after a group's feed write, before fed_at: the restart finds the group as the ask's "
+              "line and does not feed the ask again", "fed_at at the kill %r; the restart's look-up %r; vfg watch %r"
+              % (r and r["fed_at"], bool(known), in_watch))
+    # 7f: SIGKILL between an ask's verdict and its feed, its group waiting (the feed's lock held)
+    lock = open(box.feed + ".lock", "a")
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    try:
+        box.voice("Steve", "that big one by the lake", -11.0)
+        box.wait_judged("that big one by the lake", 6)
+        s, d, body = box.voice("Steve", "make it twice as big", -9.0)
+        held = box.wait_log("jev", r"gather %s Steve · \d+ asked, 1 yes" % (d or {}).get("id"), 8)
+        r = box.line_by_text("make it twice as big")
+        box.stop("jev", signal.SIGKILL, 5)
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        lock.close()
+    box.start_jev()
+    got = box.wait_watch(line_regex(body["started_at"][11:19], "Steve voice action_oriented 0.90 -9dB",
+                                    "make it twice as big"), 8)
+    uses = [len(box.sql("SELECT id FROM usage WHERE ref = ?", (ref,))) for ref in (r["id"], "gather:" + r["id"])]
+    rep.check(held and r["jev_class"] == "action_oriented" and r["fed_at"] is None and got and len(got) == 1
+              and len(feed_lines_with_text(box, "make it twice as big")) == 1 and uses == [1, 1],
+              "SIGKILL while an ask's group waits for the feed: restarted, the ask is fed once, alone (a group is "
+              "held in memory only), and neither judged nor gathered again",
+              "gathered %r, row at the kill %r, vfg watch %r, usage rows %r" % (bool(held), r, got, uses))
+    # 7g: the brain's watch killed and followed again from its own place: nothing lost, nothing twice
     rc = box.stop("watch", signal.SIGTERM, 10)
     last = box.last_printed_seq()
     r = box.vfg("feed", "post", "SYS", "", "posted while vfg watch was down")
@@ -1286,7 +1331,7 @@ def path7(box, rep, ctx):
     got = box.wait_watch(r"^SYS#%s \d\d:\d\d:\d\d \| posted while vfg watch was down$" % r.stdout.strip(), 10)
     rep.check(rc == 0 and got and len(got) == 1, "vfg watch SIGTERMed (exit 0) and followed again with --after its "
               "last seq: the line written while it was down arrives once", "rc %r, %r" % (rc, got))
-    # 7g: the bridge restarted: console lines and a retried POST are stored once
+    # 7h: the bridge restarted: console lines and a retried POST are stored once
     rc = box.stop("bridge", signal.SIGTERM, 10)
     stamp = box.console("[Server thread/INFO]: <Steve> typed while the bridge was down",
                         "[Server thread/INFO]: System chat: Steve drowned")
@@ -1312,7 +1357,8 @@ def path7(box, rep, ctx):
               "the watched death fed once", "rc=%r refused=%r posts=%r/%r chat=%d events=%d voice=%d game=%r"
               % (rc, refused, s1, s2, n_chat, n_ev, n_voice, g))
     marks = box.sql("SELECT seq FROM feed WHERE processed_at IS NOT NULL")
-    rep.check(sorted(m["seq"] for m in marks) == sorted(ctx.get("marked") or []),
+    written = {t["seq"] for t in box.feed_rows() if t["line"].startswith("AI#")}  # written processed
+    rep.check(sorted(m["seq"] for m in marks) == sorted(set(ctx.get("marked") or []) | written),
               "the bridge's restarts kept the processed marks, and set none of their own", "%r" % marks)
 
 
@@ -1339,8 +1385,9 @@ def path6(box, rep, ctx):
               "usage row (ref=probe)", "%r" % probes)
     stray = box.sql("SELECT u.ref FROM usage u JOIN lines l ON l.id = u.ref WHERE l.source = 'ai'")
     rep.check(not stray, "no usage row points at an ai line")
-    # Each as its writer writes it: brain/loop.py's usage() (the orchestrator's too, for its line's #seq,
-    # or a report's task) and brain/implementers/usage.py's usage_args(), for the task's name.
+    # Rows as `vfg usage add` takes them: brain/implementers/usage.py's usage_args() and the like (the brain's,
+    # Respond's and the orchestrator's own rows are structured()'s, below: the orchestrator's ref is its line's
+    # #seq, or a report's task).
     rows = [
         (["--component", "brain", "--model", "openai/gpt-6.1-sol", "--in", "9512", "--out", "210", "--cost",
           "0.001834", "--cache-read", "9216", "--ref", "#812"],
@@ -1368,6 +1415,33 @@ def path6(box, rep, ctx):
                        row[0]["cost_usd"], row[0]["cache_read_tokens"], row[0]["cache_write_tokens"], row[0]["ref"])
         rep.check(r.returncode == 0 and got == want, "vfg usage add --component %s … --ref %r writes the §4 row, "
                   "its cached tokens too, and prints its id" % (want[0], want[-1]), r.stdout + r.stderr + "%r" % (got,))
+    # structured()'s rows (lib/py/vfg_llm.py usage_row and record): queued on the PC, a failed call's with its cost
+    # (NULL for one that timed out with an attempt in flight), sent by vfg usage flush into the columns the bridge
+    # added on start
+    queued = [dict(at=iso(now()), component=c, model="~deepseek/deepseek-v4-flash-latest",
+                   input_tokens=i, output_tokens=o, cost_usd=cost, ref=ref, cache_read_tokens=0,
+                   cache_write_tokens=None, ok=ok, error=err, ms=ms)
+              for c, i, o, cost, ref, ok, err, ms in (
+                  ("planner", 2400, 60, None, "#812 #1", 0, "no answer from ~deepseek/deepseek-v4-flash-latest "
+                   "within 20 s; $0.000310 spent before it, the attempt in flight not counted", 20012),
+                  ("planner", 2400, 60, 0.00062, "castle_steve #2", 0, "~deepseek/deepseek-v4-flash-latest twice "
+                   "failed to match Planned_command: - action: Field required", 3100),
+                  ("orchestrator", 3120, 96, 0.00069, "#816", 1, None, 2900),
+                  ("orchestrator", 3400, 0, 0.0003, "galick_gun_styrk", 0, "no answer from "
+                   "~deepseek/deepseek-v4-flash-latest within 15 s", 15004),
+                  ("alias", 300, 20, 0.00005, "fire ball", 1, None, 840))]
+    with open(os.path.join(box.vhome, "usage.pending.jsonl"), "a") as f:
+        f.write("".join(json.dumps(q) + "\n" for q in queued))
+    r = box.vfg("usage", "flush")
+    got = box.sql("SELECT component, cost_usd, ref, ok, error, ms FROM usage WHERE ref IN ('#812 #1', "
+                  "'castle_steve #2', '#816', 'galick_gun_styrk', 'fire ball') ORDER BY id")
+    rep.check(r.returncode == 0 and [tuple(g.values()) for g in got] == [
+        (q["component"], q["cost_usd"], q["ref"], q["ok"], q["error"], q["ms"]) for q in queued],
+        "vfg usage flush sends structured()'s queued rows, a failed call's with its cost (NULL when not known), ok, "
+        "error and ms",
+        r.stdout + r.stderr + "%r" % (got,))
+    r = box.vfg("usage", "flush")
+    rep.check(r.returncode == 0 and r.stdout == "", "nothing queued: vfg usage flush sends nothing", r.stdout + r.stderr)
     n = len(box.sql("SELECT id FROM usage"))
     r = box.vfg("usage", "add", "--component", "dispatcher", "--model", "x", "--in", "1", "--out", "1")
     rep.check(r.returncode == 2 and len(box.sql("SELECT id FROM usage")) == n,

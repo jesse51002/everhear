@@ -91,7 +91,7 @@ def _no_real_home(tmp_path, monkeypatch):
     monkeypatch.setenv("VFG_HOME", str(tmp_path / "vfg-home"))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     for key in ("VFG_BRAIN_DIR", "VFG_REPO", "OPEN_ROUTER_API", "VFG_OPENROUTER_KEY", "VFG_SERVER", "VFG_OWNER",
-                "VFG_BRAIN_MODEL", "VFG_RUNNING_TTL_S", "VFG_PLAN_CHECK"):
+                "VFG_BRAIN_MODEL", "VFG_RUNNING_TTL_S", "VFG_PLAN_CHECK", "VFG_USAGE_QUEUE"):
         monkeypatch.delenv(key, raising=False)
 
 
@@ -273,9 +273,9 @@ class FakeOrchestrator:
         self.calls: list[dict[str, Any]] = []
 
     async def answer(self, ctx, *, head: str, parts: list, k: int, given: list[str], others: list,
-                     replying: bool, tasks: list[dict], copies: dict[str, dict]) -> Answer:
+                     replying: bool, tasks: list[dict], copies: dict[str, dict], ref: str) -> Answer:
         call = {"ctx": ctx, "head": head, "parts": parts, "k": k, "given": list(given), "others": others,
-                "replying": replying, "tasks": tasks, "copies": copies}
+                "replying": replying, "tasks": tasks, "copies": copies, "ref": ref}
         self.calls.append(call)
         await asyncio.sleep(0)
         got = self.answers.pop(0) if self.answers else LlmError("no canned answer")
@@ -325,12 +325,11 @@ class Kit:
         self.call = Call(self.cat, self.ask, owner="KrownJM")
         self.respond = Respond(self.cat, self.ask, owner="KrownJM")
         self.acts = Acts(vfg=self.vfg, later=self.later, catalog=self.cat, planner=self.planner, tasks=self.tasks,
-                         implementers=self.impl, world=self.world, orchestrator=self.orch,
-                         usage=lambda *a: self.brain.usage(*a), orchestrator_model="orch-model", repo=REPO_COPY,
+                         implementers=self.impl, world=self.world, orchestrator=self.orch, repo=REPO_COPY,
                          server="main")
         self.brain = Brain(ctx=self.ctx, call=self.call, respond=self.respond, acts=self.acts, world=self.world,
                            tasks=self.tasks, implementers=self.impl, later=self.later, catalog=self.cat,
-                           refs=FakeRefs(), model="brain-model", respond_model="respond-model", now=lambda: NOW)
+                           refs=FakeRefs(), now=lambda: NOW)
 
     async def send(self, row: dict) -> bool:
         """`vfg task set`, as __main__ sends it."""

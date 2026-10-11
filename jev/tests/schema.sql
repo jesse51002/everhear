@@ -13,5 +13,5 @@ CREATE TABLE events (id TEXT PRIMARY KEY, at TEXT NOT NULL, kind TEXT NOT NULL,
 CREATE INDEX events_at ON events(at);
 CREATE TABLE feed (seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, line TEXT NOT NULL);  -- line: the whole line, exactly as in feed.log
 CREATE TABLE usage (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,
-  component TEXT NOT NULL CHECK (component IN ('jev','conversation','orchestrator','implementer','brain','respond')),
+  component TEXT NOT NULL CHECK (component IN ('jev','conversation','orchestrator','implementer','brain','respond','planner','alias')),
   model TEXT, input_tokens INTEGER, output_tokens INTEGER, cost_usd REAL, ref TEXT);

@@ -8,7 +8,8 @@ import json
 import pytest
 from vfg_llm import LlmError
 
-from brain.act import BROKE
+from brain.act import BROKE, TOLD
+from brain.vfg import VfgResult
 from brain.world import Seen
 
 from conftest import REPO_COPY, FakeOrchestrator, answer, cmd, decision, part, ran, rows
@@ -67,11 +68,50 @@ async def test_a_refused_command_is_retried_once_by_the_planner_with_its_referen
     await run(k, d, player="Steve", line="diamond pickaxe pls")
     plan = k.ask.of("Planned_command")
     assert len(plan) == 1 and plan[0]["model"] == "plan-model"
+    assert (plan[0]["component"], plan[0]["call_id"]) == ("planner", "#812 #1")  # its usage row's
     assert "IT FAILED: Unknown item" in plan[0]["prompt"] and "## give" in plan[0]["prompt"]  # its reference
     assert "Steve said: diamond pickaxe pls" in plan[0]["prompt"]
     assert k.vfg.of("action", "run")[1] == ["action", "run", "command",
                                             'commands=["give Steve minecraft:diamond_pickaxe 1"]', "--for", "Steve"]
     assert k.vfg.said() == [["there you go"]]
+    assert k.vfg.of("usage") == [["usage", "flush"]]  # the planner's row, sent nobody waiting
+
+
+async def test_a_failed_planner_call_counts_what_it_spent(kit, capsys):
+    failed = LlmError("no answer from plan-model within 20 s")
+    failed.cost, failed.ms = 0.0004, 20000
+    k = kit(Planned_command=failed)
+    k.vfg.on("action", "run", answer=ran(False, "Unknown item 'minecraft:diamond_pickax'"))
+    d = decision(part("command", "give Steve a diamond pickaxe", cmd("give Steve diamond_pickax")),
+                 reply="there you go")
+    await run(k, d, player="Steve", line="diamond pickaxe pls")
+    assert "#812 retries: 1 planner call(s), 20000 ms, $0.000400\n" in capsys.readouterr().out
+    assert k.vfg.of("usage") == [["usage", "flush"]]
+    failed.cost_known = False  # cut off with an attempt in flight: what it spent is a floor
+    await run(k, d, player="Steve", line="diamond pickaxe pls")
+    assert "#812 retries: 1 planner call(s), 20000 ms, $0.000400+\n" in capsys.readouterr().out
+
+
+async def test_the_planners_usage_flush_waits_for_the_one_running(kit):
+    k = kit(Planned_command={"action": cmd("give Steve minecraft:diamond_pickaxe 1"), "hand_on": "", "drop": "",
+                             "say": "a pickaxe for Steve"})
+    k.vfg.on("action", "run", answer=[ran(False, "Unknown item 'minecraft:diamond_pickax'"), ran(True, "Gave 1")])
+    down = asyncio.Event()
+
+    async def flush(argv):
+        await down.wait()
+        return VfgResult(0, "", "")
+
+    k.vfg.on("usage", "flush", answer=flush)
+    k.later.flush_usage()  # a brain call's, still running
+    await asyncio.sleep(0)
+    d = decided(k, decision(part("command", "give Steve a diamond pickaxe", cmd("give Steve diamond_pickax")),
+                            reply="there you go"))
+    await k.acts.run(d, player="Steve", line="diamond pickaxe pls", seen=SEEN, ctx=k.ctx, head=HEAD, ref="#812")
+    assert len(k.ask.of("Planned_command")) == 1 and k.vfg.of("usage") == [["usage", "flush"]]
+    down.set()
+    await k.settle()
+    assert k.vfg.of("usage") == [["usage", "flush"]] * 2  # the planner's row, in the one after it
 
 
 async def test_a_failed_action_is_never_claimed_a_code_line_says_so_instead(kit):
@@ -115,8 +155,9 @@ async def test_new_opens_the_task_writes_its_whole_row_and_starts_its_implemente
                    "updated_at": row["created_at"], "closed_at": None}
     assert k.vfg.rows("task") == [("task galick_gun_styrk", "new: A Galick Gun for Styrkaeopteryx: charge and fire.")]
     assert k.vfg.said() == [["on it, your galick gun's coming", "--task", "galick_gun_styrk"]]  # never the brain's
-    assert ["usage", "add", "--component", "orchestrator", "--model", "orch-model", "--in", "4000", "--out", "60",
-            "--cost", "0.007500", "--cache-read", "3000", "--ref", "#812"] in k.vfg.of("usage", "add")
+    # its usage row is structured()'s, named by the line's ref; the brain only sends the queue
+    assert k.orch.calls[0]["ref"] == "#812"
+    assert k.vfg.of("usage", "add") == [] and k.vfg.of("usage") == [["usage", "flush"]]
 
 
 @pytest.mark.parametrize("asked, got", [
@@ -313,11 +354,12 @@ async def test_a_later_call_that_breaks_never_costs_the_line_the_first_calls_rep
     k.acts.orchestrator = Breaks()
     d = decision(part("orchestrator", "make Steve's gun stronger"), part("orchestrator", "a moat round the castle"),
                  reply="say that again?")
-    with pytest.raises(KeyError):
+    with pytest.raises(KeyError) as broke:
         await k.acts.run(decided(k, d), player="Steve", line="…", seen=SEEN, ctx=k.ctx, head=HEAD, ref="#812")
     await k.settle()
     assert k.vfg.said() == [["which gun, the railgun or the galick gun?"],
                             [BROKE]]
+    assert TOLD in broke.value.__notes__  # said once: the loop never says an error line of its own for it
 
 
 async def test_a_task_whose_implementer_never_started_is_failed_by_name(kit):
@@ -390,5 +432,5 @@ async def test_a_reports_orchestrator_part_writes_no_reply_and_the_brains_is_sai
     assert [c["replying"] for c in k.orch.calls] == [False] and k.orch.calls[0]["head"] == "THE REPORT: …"
     assert k.vfg.said() == [["your galick gun's ready; making it reach further", "--task", "galick_gun_styrk"]]
     assert k.impl.followed[0][:2] == ("galick_gun_styrk", "fix the beam's range")
-    assert any(a[-2:] == ["--ref", "galick_gun_styrk"] for a in k.vfg.of("usage", "add"))
+    assert [c["ref"] for c in k.orch.calls] == ["galick_gun_styrk"] and k.vfg.of("usage", "add") == []
 

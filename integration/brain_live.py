@@ -54,9 +54,12 @@ TASK_S = 600       # an implementer task's time limit, its report included
 MODELS = ("brain", "respond", "orchestrator")   # the usage components on OpenRouter
 
 FEED_RE = re.compile(r"^([A-Z]+)#(\d+) (\d\d:\d\d:\d\d) (?:([^|]*?) )?\| (.*)$")
-# A model call in brain.log: the brain's, Respond's or the orchestrator's, for a line (#seq) or a
-# report (the task's name).
-LOG_CALL = re.compile(r"^(\S+) (brain|respond|orchestrator) (#\d+|[a-z][a-z0-9_]{1,31}) (\d+) ms \$([\d.]+), (\d+) in")
+# A model call in brain.log that answered: the brain's, Respond's or the orchestrator's, for a line
+# (#seq) or a report (the task's name); its cost ends in + when an attempt cut off in flight is not in it.
+LOG_CALL = re.compile(r"^(\S+) (brain|respond|orchestrator) (#\d+|[a-z][a-z0-9_]{1,31}) (\d+) ms \$([\d.]+)\+?, (\d+) in")
+# One that failed for good, with what it spent: its usage row is written all the same (ok 0).
+LOG_FAILED = re.compile(r"^(\S+) (brain|respond|orchestrator) (#\d+|[a-z][a-z0-9_]{1,31})(?: part \d+| report)? "
+                        r"FAILED \((\d+) ms \$([\d.]+)\+?")
 # The brain's decision for a line in brain.log: its parts, each `<to>: <instruction>`, joined by " | ".
 LOG_DECISION = r"^\S+ brain %s \S+: .*? -> (.*?) \|\| reply: "
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")   # a task's name
@@ -772,9 +775,10 @@ def end(run):
     rep.check(cost < BUDGET, "the brain, Respond and the orchestrator cost $%.4f of OpenRouter, under $%.2f"
               % (cost, BUDGET))
     orch = [u for u in model if u["component"] == "orchestrator"]
-    logged = [m for m in (LOG_CALL.match(l) for l in log.splitlines()) if m and m.group(2) == "orchestrator"]
-    rep.check(orch and len(logged) == len(orch), "every orchestrator call is in the usage rows (%d) and in "
-              "brain.log, timed (%d)" % (len(orch), len(logged)))
+    logged = [m for m in (LOG_CALL.match(l) or LOG_FAILED.match(l) for l in log.splitlines())
+              if m and m.group(2) == "orchestrator"]
+    rep.check(orch and len(logged) == len(orch), "every orchestrator call, answered or failed, is in the usage rows "
+              "(%d) and in brain.log, timed (%d)" % (len(orch), len(logged)))
     run.table()
     hours = (time.time() - run.started) / 3600.0
     prompt = sum(u["input_tokens"] or 0 for u in model)

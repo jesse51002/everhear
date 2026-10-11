@@ -48,19 +48,20 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import playtest  # noqa: E402  (puts brain/ on the path)
-from playtest import Clock, Playtest, iso, when  # noqa: E402
+from playtest import Clock, Playtest, iso, queue_usage, replayed, when  # noqa: E402
 
 sys.path.insert(0, str(playtest.REPO / "jev"))
 import httpx  # noqa: E402
 import vfg_llm  # noqa: E402
 from brain import actions, config  # noqa: E402
-from brain.__main__ import LOOKOUT, asker  # noqa: E402
+from brain.__main__ import asker  # noqa: E402
 from brain.context import LIVE  # noqa: E402
 from brain.loop import jev_menu  # noqa: E402
 from brain.respond import PROMPT as RESPOND_PROMPT  # noqa: E402
 from brain.respond import Respond  # noqa: E402
 from jev_api import ENDPOINT, MODEL, Jev, JevDown, JevRefused  # noqa: E402
-from prompt import KEPT, build_state, estimate, questions, read_lookout, read_menu  # noqa: E402
+from prompt import estimate, read_lookout, read_menu  # noqa: E402
+from state_v1 import KEPT, LOOKOUT, build_state, questions  # noqa: E402  (the old state, as benched)
 
 ENV_FILES = [playtest.REPO / "integration" / "realmc" / ".server" / "shared" / "env",
              playtest.REPO.parent / "script-library" / "integration" / "realmc" / ".server" / "shared" / "env"]
@@ -167,7 +168,7 @@ def run_jev(args) -> None:
             for attempt in range(TRIES):
                 state, kept = build_state(lookout, as_rows, others, STATE_TOKENS, share, menu)
                 try:
-                    result = jev.ask(state, questions(as_rows))
+                    result = jev.ask(state, questions(as_rows), required="line_1")
                     calls += 1
                     break
                 except JevRefused as e:
@@ -227,6 +228,7 @@ def final_classes(out: Path) -> dict[str, tuple[str, str, float | None, bool]]:
 
 async def run_respond(args) -> None:
     out = Path(args.out)
+    queue_usage(out)
     pt = Playtest(Path(args.db))
     cfg = config.load()
     catalog = actions.load(cfg.repo, cfg.server)
@@ -234,7 +236,7 @@ async def run_respond(args) -> None:
     entries = pt.entries({i: (c, fed) for i, (c, fed, _, _) in classes.items()})
     clock = Clock(entries, getattr(cfg, "batch_s", 60.0))
     chat = pt.answered()
-    base = asker(cfg.respond_model, cfg.respond_reasoning, cfg.timeout_s, cfg.respond_providers)
+    base = replayed(asker(cfg.respond_model, cfg.respond_reasoning, cfg.timeout_s, cfg.respond_providers))
     raw: dict = {}
 
     async def ask(*a, **k):

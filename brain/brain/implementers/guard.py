@@ -96,6 +96,10 @@ class DENY:
             "each file by its path in the repository.")
     grep_file = "Refused: grep reads a file in the repository, or what a vfg command pipes into it: name one."
     pattern_file = "Refused: no pattern files: give grep its pattern on the command line, or with -e."
+    json_object = ("Refused: a JSON object of two keys or more in one word is refused by the permission check, quoted or "
+                   "not: give each value as a word of its own, values.<name>=<value> "
+                   "(vfg action run incantation_edit player=Steve phrase='fire ball' values.power=6 values.breaks=true "
+                   "--task <your task>).")
     tail_follow = "Refused: tail -f never ends: use tail -n N, or vfg script logs <copy> -n 40."
 
     @staticmethod
@@ -530,6 +534,11 @@ def file_reason(prog: str, args: list[str], piped: bool, repo: str | None) -> st
     return None
 
 
+# key={...,...}: a JSON object of two keys or more, which Claude Code's own Bash check refuses in
+# "dontAsk" mode however it is quoted, with no reason the implementer can act on.
+OBJECT_WORD = re.compile(r"^[a-z_][a-z0-9_.]*=\{.*,.*\}$", re.DOTALL)
+
+
 def command_reason(cmd: ShellCommand, repo: str | None, server: str) -> str | None:
     """Why one simple command is refused, in one line saying what to send instead; or None."""
     w = cmd.words
@@ -559,6 +568,8 @@ def command_reason(cmd: ShellCommand, repo: str | None, server: str) -> str | No
             return DENY.pipe
         return DENY.wild if wild else file_reason(first, w[1:], True, repo)
     if first == "vfg":
+        if any(OBJECT_WORD.match(x) for x in w[2:]):
+            return DENY.json_object
         if w[1:3] == ["script", "run"]:
             return DENY.script_run
         if not allowed_form(w):

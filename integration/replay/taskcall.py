@@ -457,6 +457,7 @@ def part_of(q: dict) -> SimpleNamespace:
 async def run(args) -> None:
     out = Path(args.out)
     (out / "prompts").mkdir(parents=True, exist_ok=True)
+    playtest.queue_usage(out)
     pt = Playtest(Path(args.db))
     cfg = config.load()
     catalog = actions.load(cfg.repo, cfg.server)
@@ -536,9 +537,10 @@ async def run(args) -> None:
                     t0 = time.perf_counter()
                     try:
                         if args.built:
-                            a = await orch.answer(rp.ctx, **shape)
+                            a = await orch.answer(rp.ctx, **shape, ref=f"replay taskcall #{e.n}.{k}")
                         else:
-                            a = await ask(text, answer_type(names_now, banned, None, replying=k == 0), cached=blocks)
+                            a = await ask(text, answer_type(names_now, banned, None, replying=k == 0), cached=blocks,
+                                          component="orchestrator", call_id=f"replay taskcall #{e.n}.{k}")
                     except vfg_llm.LlmError as err:
                         g.update(error=str(err)[:500], ms=int((time.perf_counter() - t0) * 1000))
                     else:

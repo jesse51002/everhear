@@ -3,8 +3,10 @@ ASKS = ["make fire ball shoot a fireball", "give my fire ball a ten second coold
 # Run by the incantation_create, incantation_edit and incantation_remove actions. vfg checks
 # everything on the PC (toolkit/vfg, run_incantation) and sends, beside the action's own fields,
 # "op" and "entries": put, each a whole entry; update, each {"player", "phrase", "set"}, the
-# keys that change, "values" holding only the values that change; remove, each {"player",
-# "phrase"}. The store is the kit's incantations.Store, which the bridge reads as players cast.
+# keys that change, "values" and "asked" holding only the keys that change, with "drop_asked"
+# the keys asked no longer holds, or with "replace" true each whole (vfg's refresh, which made
+# them again); remove, each {"player", "phrase"}. The store is the kit's incantations.Store,
+# which the bridge reads as players cast.
 from kit import values, result
 import json
 import sys
@@ -29,7 +31,8 @@ def word(x):
 
 
 def change(old, new):
-    """What an update changed, in words: cooldown 5 s; aliases fireball, fire bowl; power=4."""
+    """What an update changed, in words: cooldown 5 s; aliases fireball, fire bowl; power=4; a
+    value a replacing update dropped, `speed gone`."""
     bits = []
     if old.get("cooldown_s") != new.get("cooldown_s"):
         bits.append("cooldown %s s" % word(new.get("cooldown_s")))
@@ -39,6 +42,7 @@ def change(old, new):
     for k in sorted(now):
         if was.get(k) != now[k]:
             bits.append("%s=%s" % (k, "the caster" if k in (new.get("caster_fields") or []) else word(now[k])))
+    bits += ["%s gone" % k for k in sorted(set(was) - set(now))]
     return "; ".join(bits) or "nothing new"
 
 
@@ -53,12 +57,14 @@ done, replaced, missing, said = [], [], [], ""
 
 
 def update(e):
-    """Store.update, with the values given merged over the ones the store holds as it writes,
-    under its lock, so two edits of different values close together both land: (the entry
-    before, for the summary, the entry after), or (None, None)."""
+    """Store.update, with the values and what was asked given merged over the ones the store
+    holds as it writes, under its lock, so two edits of different values close together both
+    land; replaced whole for an entry sent with "replace", so a value its action no longer has
+    goes: (the entry before, for the summary, the entry after), or (None, None)."""
     old = store.find(e["player"], e["phrase"])
     try:
-        return old or {}, store.update(e["player"], e["phrase"], merge_values=True, **e["set"])
+        return old or {}, store.update(e["player"], e["phrase"], merge_values=not e.get("replace"),
+                                       drop_asked=e.get("drop_asked") or (), **e["set"])
     except KeyError:
         return None, None
 

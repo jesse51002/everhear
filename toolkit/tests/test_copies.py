@@ -44,6 +44,10 @@ class ActionCase(BoxCase):
         BoxCase.setUp(self)
         standins.install(self.box.repo)
         self.box.predeploy()
+        # An incantation cache with none in it, as the brain keeps one: a run has no bindings to
+        # follow it, and says nothing of them (test_incantations.py's TestFollow does).
+        write(os.path.join(self.box.vhome, "incantations.json"),
+              json.dumps({"fetched_at": time.time(), "version": 0, "incantations": []}) + "\n")
 
     def run_action(self, *args, **env):
         return self.vfg("action", "run", *args, **env)

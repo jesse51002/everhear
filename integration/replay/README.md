@@ -18,6 +18,9 @@ it no longer runs on this branch and **needs rewriting for the brain** (below).
 | `trees_bench.py`, `trees_score.py`, `trees_questions.py` | the trees bench: five genuinely different ways to build that tree (who then what; kind first; a cheapest-first ladder; consequence first with two keys; observable signals with the tree in code), each one Jev call a line, against Jev today on all 843 lines; results and the commands in `trees_bench.md` |
 | `labels_build.py`, `labels_score.py`, `labels_2026-10-08.jsonl`, `labels_check.jsonl`, `labels_review.md`, `labels_score.md` | the hindsight labels: Jev labels each of the 843 lines seeing what the AI said and did in the 90 s after it (five labels, three questions in one call, combined by written rules, checked by hand), and Jev today and the five trees rescored against them from their recorded answers; results and the commands in `labels.md` |
 | `whole_asks_build.py`, `whole_asks_2026-10-08.jsonl`, `whole_asks_check.jsonl`, `whole_asks_review.md`, `state_v2.py`, `whole_asks_bench.py`, `whole_asks_score.py`, `whole_asks_score.md` | whole asks: the lines of one ask a player split across utterances merged into one input (Jev with hindsight judges each ask's same-speaker neighbours, checked by hand), then Jev today and the five trees routed on them with Jev's old state and its new one (neutral rules, one set of definitions, a lookout, examples); results and the commands in `whole_asks.md` |
+| `state_v1.py`, `lookout_v1.md` | Jev's state before the Jev routing (its rules, four classes, the re-ask's questions, the brain's old lookout), verbatim, so the benches above still build the state they measured |
+| `gather_bench.py`, `gather_score.py` | the Jev routing as it ships: Jev's production filter line by line on all 843 lines, D's two questions and the gather call, with the gather call's windows from production's own query; D with and without the gather call on the clean labels, and the gather call's wordings; results and the commands in `gather_bench.md` |
+| `respond_bench.py`, `respond_score.py`, `respond_prompts/` | Respond's prompt before and after its rewrite, and its code guard against promises and offers, on the whole-ask inputs D sends Respond and an invented set; results and the commands in `respond_bench.md` |
 | `run.py`, `measure.py`, `tasks.jsonl` | the live task replay against the orchestrator: gone with it |
 
 ## The data
@@ -50,7 +53,14 @@ settings are its own (`brain/brain/config.py`: the environment, then `~/.vfg/con
 model, the reasoning and `VFG_OWNER` are what a live brain on this PC would use. The OpenRouter
 key as `structured()` reads it; the TypeSafe key as `TYPESAFE_API_KEY`, else from `--env FILE`
 (default: realmc's stand-in box's `integration/realmc/.server/shared/env`, here or in the
-`script-library` worktree), never printed.
+`script-library` worktree), never printed. Every model call is a row of the one usage log, as a
+live call is (`docs/CONTRACTS.md` §4): the component of what it replays (`brain`, `respond`, or
+`orchestrator` for `taskcall.py`) and a call_id that starts `replay `, queued in the run's own
+OUT (`gate_bench.py`: OUT/X), never in `$VFG_HOME`, whose queue the brain's next `vfg usage
+flush` sends into the live usage table. Each replay sets `VFG_USAGE_QUEUE`, the folder of the
+queue (`playtest.queue_usage()`), to OUT unless it is set already; `VFG_HOME` stays, since it
+finds the OpenRouter key. A replay's rows reach the box only when sent on purpose:
+`VFG_USAGE_QUEUE=OUT vfg usage flush`.
 
 ```sh
 PY=brain/.venv/bin/python; DB=DIR/vfg/vfg.db
@@ -115,6 +125,7 @@ and p90 5.3 s, $0.16. Gemini is the better, and stays the orchestrator's model.
 |---|---|
 | `lines.jsonl` | one row per line: its words, when it was fed, what the conversation did (its tasks and their labels), the size of the context, the brain's decision (every part: `to`, `task`, instruction, action, drop) and reply, ms, cost, prompt, cached and completion tokens |
 | `meta.json` | the settings, the commit and a hash of `brain/prompts/brain.md` |
+| `usage.pending.jsonl`, `usage.pending.lock` | every model call's usage row, queued and not sent (`VFG_USAGE_QUEUE=OUT vfg usage flush` sends them); `classes.py respond`, `taskcall.py` and `gate_bench.py` leave them too |
 | `prompts/<n>.txt` | the whole prompt of every 50th call, `[MARK]` where the cache is marked |
 | `jev.jsonl`, `jev-meta.json`, `menu.md` | per line: Jev's class then and now, its confidence, what the conversation did, and what fit in the state (the menu, the history, the AI records); a `flip` row when a `not_relevant` line asked about again flipped |
 | `respond.jsonl`, `respond-meta.json` | per conversational line: hand-up or reply as the model gave them and after Respond's code, the reason, ms, cost, tokens |

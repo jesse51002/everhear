@@ -35,7 +35,6 @@ import asyncio
 import dataclasses
 import re
 import time
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -56,6 +55,7 @@ from .world import Seen
 SAY_TIMEOUT_S = 30
 BROKE = "sorry, something broke on my side and that one didn't finish"
 LOST = 'sorry, I lost part of that — say "{part}" again?'
+TOLD = "the player was told"  # a note on an exception already said in chat, so it is never said twice
 LINE_MAX = 200    # a chat line written here
 ROW_MAX = 400     # an AI row's text
 BRIEF_SHORT = 160  # a brief in an `AI task` row
@@ -89,6 +89,14 @@ class Turn:
 
 class NotRunning(Exception):
     """An edit or a stop of a copy that is not running: the part is dropped."""
+
+
+def spent(got) -> str:
+    """What a call spent, from its Answer or its LlmError: `840 ms $0.001234, 9000 in, 96% cached, 40 out`,
+    the cost `$0.001234+` when it timed out with an attempt in flight, whose cost is not in it."""
+    rate = f", {got.cached_tokens / got.prompt_tokens:.0%} cached" if got.prompt_tokens else ""
+    more = "" if getattr(got, "cost_known", True) else "+"
+    return f"{got.ms} ms ${got.cost:.6f}{more}, {got.prompt_tokens} in{rate}, {got.completion_tokens} out"
 
 
 def strip_end(text: str) -> str:
@@ -176,8 +184,7 @@ def answered(v) -> str:
 
 class Acts:
     def __init__(self, *, vfg: Vfg, later: Later, catalog: Catalog, planner: Planner, tasks: Tasks,
-                 implementers, world, orchestrator, usage: Callable[[str, str, Any, str], None],
-                 orchestrator_model: str, repo: Path, server: str, action_timeout_s: float = 20.0):
+                 implementers, world, orchestrator, repo: Path, server: str, action_timeout_s: float = 20.0):
         self.vfg = vfg
         self.later = later
         self.catalog = catalog
@@ -186,8 +193,6 @@ class Acts:
         self.implementers = implementers
         self.world = world
         self.orchestrator = orchestrator
-        self.usage = usage    # Brain.usage: (component, model, answer, ref)
-        self.orchestrator_model = orchestrator_model
         self.repo, self.server = repo, server
         self.action_timeout_s = action_timeout_s
 
@@ -225,8 +230,9 @@ class Acts:
                 await orchestrating
             for extra in turn.extras:
                 await self.say(extra)
-        except Exception:  # raised on, for the event's own log: the player hears so
+        except Exception as e:  # raised on, for the event's own log: the player hears so, once
             await self.say(BROKE, task)
+            e.add_note(TOLD)
             raise
         finally:  # cancelled: the brain stopped while it ran
             left = [t for t in (acting, orchestrating) if t is not None and not t.done()]
@@ -294,16 +300,18 @@ class Acts:
                 try:
                     answer = await self.orchestrator.answer(
                         ctx, head=head, parts=handed, k=k, given=list(given), others=others, replying=first,
-                        tasks=self.tasks.all(), copies=self.world.copies())
-                except LlmError as e:
-                    log("orchestrator", f"{ref} part {k + 1} FAILED: {e}")
+                        tasks=self.tasks.all(), copies=self.world.copies(), ref=ref)
+                except LlmError as e:  # its usage row is structured()'s, its cost in it
+                    log("orchestrator", f"{ref} part {k + 1} FAILED ({spent(e)}): {e}")
+                    self.later.flush_usage()
                     given.append("failed")
                     if first:
                         turn.decided.set()
                     elif not report:
                         turn.extras.append(LOST.format(part=short(p.part, PART_SHORT)))
                     continue
-                self.usage("orchestrator", self.orchestrator_model, answer, ref)
+                log("orchestrator", f"{ref} {spent(answer)}")  # as the brain's and Respond's calls log theirs
+                self.later.flush_usage()  # its usage row, structured()'s, sent nobody waiting
                 v = answer.value
                 log("orchestrator", f"{ref} part {k + 1} {p.part[:80]!r} -> {answered(v)}")
                 if v.kind == NEW:
@@ -470,8 +478,10 @@ class Acts:
             log("action", f"{ref} #{i + 1} {p.to} {state} in {time.perf_counter() - t0:.1f} s: {o.summary[:200]}")
             if p.to in ("stop", "edit") or (o.ok and getattr(self.catalog.get(p.to), "runs", "") == "until_stopped"):
                 self.world.refetch_running()
-        if spent.calls:
-            log("plan", f"{ref} retries: {spent.calls} planner call(s), {spent.ms} ms, ${spent.cost:.6f}")
+        if spent.calls:  # their usage rows, structured()'s, sent nobody waiting
+            log("plan", f"{ref} retries: {spent.calls} planner call(s), {spent.ms} ms, "
+                        f"${spent.cost:.6f}{'' if spent.known else '+'}")
+            self.later.flush_usage()
         return outcomes
 
     def values(self, name: str, cls, given: dict[str, Any], seen: Seen) -> tuple[dict[str, Any], list[str]]:

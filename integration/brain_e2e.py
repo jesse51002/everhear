@@ -55,9 +55,9 @@ BUDGET = 0.10        # dollars of OpenRouter a full run may spend
 WIKI = "https://minecraft.wiki/w/"
 
 FEED_RE = re.compile(r"^([A-Z]+)#(\d+) (\d\d:\d\d:\d\d) (?:([^|]*?) )?\| (.*)$")
-# A model call in brain.log: the brain's, Respond's or the orchestrator's, for a line (#seq) or a
-# report (the task's name).
-LOG_CALL = re.compile(r"^(\S+) (brain|respond|orchestrator) (#\d+|[a-z][a-z0-9_]{1,31}) (\d+) ms \$([\d.]+), (\d+) in")
+# A model call in brain.log that answered: the brain's, Respond's or the orchestrator's, for a line
+# (#seq) or a report (the task's name); its cost ends in + when an attempt cut off in flight is not in it.
+LOG_CALL = re.compile(r"^(\S+) (brain|respond|orchestrator) (#\d+|[a-z][a-z0-9_]{1,31}) (\d+) ms \$([\d.]+)\+?, (\d+) in")
 
 # Each player's items as 26.3 prints them (`data get entity <p> Inventory`, equipment,
 # SelectedItemSlot): Steve holds a diamond sword in hotbar.4, carries an iron sword and diamond

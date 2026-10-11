@@ -1,5 +1,6 @@
 """The loop: each row routed by its class, a context line no model is shown, Respond's
-hand-up, history, two lines at once, a report and what its task takes from it, and no batch."""
+hand-up and the order it answers in, history, two lines at once, a report and what its task takes
+from it, and no batch."""
 
 import asyncio
 import importlib.util
@@ -11,6 +12,9 @@ from brain import config, loop
 from brain.act import BROKE
 from brain.actions import variables_of
 from brain.call import PROMPT
+from brain.respond import Response, promises
+from brain.tasks import Tasks
+from brain.vfg import VfgResult
 
 from conftest import answer, cmd, decision, made, part, rows
 
@@ -38,9 +42,9 @@ async def test_each_row_goes_where_its_class_says_and_a_read_marks_what_it_took(
     # the context line marked as it came, nobody waiting; the line's read took the game events and the line
     assert k.vfg.of("context", "mark") == [["context", "mark", "4"], ["context", "mark", "1", "3", "5"],
                                            ["context", "mark", "6"]]
-    usage = k.vfg.of("usage", "add")
-    assert ["usage", "add", "--component", "brain", "--model", "brain-model", "--in", "1000", "--out", "40",
-            "--cost", "0.002000", "--cache-read", "900", "--ref", "#5"] in usage and any("respond" in u for u in usage)
+    # each call names its usage row, which structured() queues; the brain only sends the queue, per call
+    assert sorted((c["component"], c["call_id"]) for c in k.ask.calls) == [("brain", "#5"), ("respond", "#6")]
+    assert k.vfg.of("usage", "add") == [] and k.vfg.of("usage") == [["usage", "flush"]] * 2
     assert k.ctx.unprocessed() == [] and k.ctx.last_seq == 6
 
 
@@ -56,6 +60,70 @@ async def test_respond_replies_or_hands_up_never_both(kit):
     k.brain.feed(TALK.format(seq=8))
     await k.settle()
     assert [c["output"] for c in k.ask.calls] == ["Response", "Decision"]
+
+
+async def test_respond_never_says_an_offer_or_a_promise_it_hands_the_line_up_instead(kit, capsys):
+    k = kit(Decision=GIVE, Response={"reason": "a question", "hand_up": False, "reply": "Want me to make it rain?"})
+    k.brain.feed(TALK.format(seq=7))
+    await k.settle()
+    assert [c["output"] for c in k.ask.calls] == ["Response", "Decision"]
+    assert "handed this line up to you: a question · handed up in code: an offer" in k.ask.calls[1]["prompt"]
+    assert k.vfg.said() == [["there you go"]]  # the brain's line, never the offer
+    assert 'respond guard #7 an offer: "Want me to make it rain?"' in capsys.readouterr().out  # the log alone
+
+    ack = "Got it, I'll ask you before giving Alex anything."  # a rule for later: said
+    k = kit(Response={"reason": "a rule for later", "hand_up": False, "reply": ack})
+    k.brain.feed(TALK.format(seq=8))
+    await k.settle()
+    assert [c["output"] for c in k.ask.calls] == ["Response"] and k.vfg.said() == [[ack]]
+
+
+GUARD = {  # reply -> what promises() says, no task open (the reviewer's probes among them)
+    "Sure thing, on it!": "a promise", "Aye, on it, captain!": "a promise", "Will do!": "a promise",
+    "Consider it done.": "a promise", "Leave it to me!": "a promise", "I'm gonna make it rain!": "a promise",
+    "I'm going to build that for you.": "a promise", "Okay, making it rain now!": "a promise",
+    "I'll take care of it.": "a promise", "I'll make sure you get a netherite sword.": "a promise",
+    "Aye, I'll be makin' it rain, matey!": "a promise", "One storm, coming right at ya!": "a promise",
+    "Done! Enjoy the sword.": "a promise", "Sure thing, spawning some cows now.": "a promise",
+    "I can do that.": "an offer", "Let me do that for you.": "an offer", "Want it stopped?": "an offer",
+    "Yeah, I can add theme music. Want distinct tracks for each?": "an offer",
+    "Put a sign on it and click on it.": "", "Aye aye! I could get used to this pirate life.": "",
+    "Let me put it this way: smite only beats sharpness on undead.": "", "Will check with you first, promise.": "",
+    "Want the recipe? Three glass, five obsidian and a nether star.": "",
+    "You don't want me to spoil the ending, trust me.": "", "Good luck in the nether! Watch your back for ghasts.": "",
+    "Hang on, you lost everything in lava? Rip.": "", "Night's coming up, find a bed soon.": "",
+    "Grab some food on the way back.": "", "The sun will be up soon, hold out.": "",
+    "I mean, that was a pretty good one, I'll give you that.": "", "Aye aye, Captain Riley.": "",
+    # small talk and the AI's own talk: said, not handed up
+    "I'm doing great, thanks for asking!": "", "We're doing great as a team.": "",
+    "Getting dark now, better find shelter.": "", "Haha, I'm making no promises about the creepers.": "",
+    "Done already? That was fast.": "", "Right away? Patience, my friend.": "",
+    "Okay, I'll stop talking now.": "", "Sure, I'll keep quiet for a bit.": "", "Arr, I'll turn the chatter down.": "",
+    "You're on the way to the nether, nice.": "", "Not right away, it takes a minute to learn.": "",
+    "Steak, well-done!": "", "I can get why you'd think that.": "", "Your stuff is on the way back to spawn.": "",
+    "Sure - on it.": "a promise", "Your sword's on the way.": "a promise", "I can get you one.": "an offer",
+}
+
+
+def test_promises_catches_an_offer_or_a_promise_and_lets_talk_and_a_speakers_own_status_through():
+    assert {reply: promises(reply, "TASKS: none yet") for reply in GUARD} == GUARD
+    status = "castle's coming up, give it a sec"   # a status only while the speaker has a task open
+    castle = {"name": "castle_steve", "description": "a castle", "player": "Steve", "status": "open",
+              "line": "build me a castle", "created_at": "2026-10-08T18:22:31.000Z",
+              "updated_at": "2026-10-08T18:22:31.000Z"}
+    opened = Tasks(rows=[castle])                         # the new format: a named row, open
+    closed = Tasks(rows=[{**castle, "status": "done", "closed_at": "2026-10-08T18:25:00.000Z"}])
+    assert opened.show().endswith("\n- castle_steve for Steve, open: a castle")
+    assert [bool(promises(status, tasks, who)) for tasks, who in (
+        (opened.show(), "Steve"), (opened.show(["castle_steve"]), "Steve"), (opened.show(), "Alex"),
+        (closed.show(), "Steve"),                         # all closed: a status is a promise
+        ("TASKS: none yet", "Steve"))] == [False, False, True, True, True]
+
+
+def test_respond_decides_first_and_always_writes_its_reason():
+    schema = Response.model_json_schema()               # what the model is shown, and writes in this order
+    assert list(schema["properties"]) == ["reason", "hand_up", "reply"]
+    assert schema["required"] == ["reason"] and schema["properties"]["hand_up"]["default"] is True
 
 
 async def test_history_is_the_old_feed_at_the_start_and_a_line_on_the_watch_is_live_whatever_its_time(kit):
@@ -181,7 +249,7 @@ async def test_a_reports_part_goes_to_the_orchestrator_writing_no_reply_and_the_
                                 "A Galick Gun for Styrkaeopteryx: a 150-block beam.")]
     assert k.vfg.said() == [["your galick gun's up; making it reach further", "--task", "galick_gun_styrk"]]
     assert k.tasks.get(name)["status"] == "open"          # the follow-up runs
-    assert any(a[-2:] == ["--ref", "galick_gun_styrk"] for a in k.vfg.of("usage", "add"))
+    assert [c["ref"] for c in k.orch.calls] == ["galick_gun_styrk"] and k.vfg.of("usage", "add") == []
 
 
 async def test_a_report_while_a_follow_up_to_its_task_runs_keeps_the_task_open(kit):
@@ -341,3 +409,77 @@ async def test_respond_sees_each_players_place_and_state_but_no_items(kit):
     assert ("- Steve at 10 64 -20 in overworld: 14.5/20 health, 18/20 food, armor 12, level 5, survival; "
             "effects: speed II 0:30, night vision ∞\n") in prompt
     assert "items, by slot" not in prompt
+
+
+async def test_a_brain_call_that_fails_tells_the_player_it_errored_out_and_why(kit, capsys):
+    failed = LlmError("openai/gpt-6.1-sol twice failed to match Decision:\n- parts.0: Value error, the "
+                      "incantation_create part 'juicy steak': incantation_create has no value commands; "
+                      "its values: player, phrase, action, values, cooldown_s")
+    failed.cost, failed.ms, failed.prompt_tokens, failed.cached_tokens, failed.completion_tokens = \
+        0.031, 9400, 18000, 0, 900  # two uncached Sol attempts
+    k = kit(Decision=failed)
+    k.brain.feed("LINE#7 18:29:59 Steve voice action_oriented 0.9 - | make juicy steak give me 64 steak")
+    await k.settle()
+    assert k.vfg.said() == [["Steve: that errored out — incantation_create has no value commands; its values: "
+                             "player, phrase, action, values, cooldown_s"]]
+    # what it cost in the log line; its row, structured()'s, sent all the same
+    assert "brain #7 FAILED (9400 ms $0.031000, 18000 in, 0% cached, 900 out): openai/" in capsys.readouterr().out
+    assert k.vfg.of("usage") == [["usage", "flush"]]
+    assert loop.errored("Alex", LlmError("no answer from m within 30 s")) == \
+        "Alex: that errored out — no answer from m within 30 s"
+    cut = LlmError("no answer from m within 30 s")  # an attempt in flight when it timed out: billed, cost unknown
+    cut.cost, cut.cost_known, cut.ms = 0.0012, False, 30000
+    assert loop.spent(cut) == "30000 ms $0.001200+, 0 in, 0 out"
+
+
+async def test_a_burst_of_calls_sends_the_usage_queue_once_more_never_two_flushes_at_once(kit):
+    """The box down: each `vfg usage flush` is an SSH attempt that waits out its timeout. One runs at a
+    time; the calls that end meanwhile ask for one more, which sends every row they queued, once."""
+    k = kit(Decision=GIVE)
+    down, running, most = asyncio.Event(), [0], [0]
+
+    async def flush(argv):
+        running[0] += 1
+        most[0] = max(most[0], running[0])
+        await down.wait()
+        running[0] -= 1
+        return VfgResult(4, "", "vfg: cannot reach EC2")
+
+    k.vfg.on("usage", "flush", answer=flush)
+    k.brain.feed(ASK.format(seq=5))
+    for _ in range(100):  # the first call's flush, waiting on the box
+        if running[0]:
+            break
+        await asyncio.sleep(0)
+    for seq in range(6, 10):
+        k.brain.feed(ASK.format(seq=seq))
+    while k.brain.inflight:
+        await asyncio.gather(*k.brain.inflight)
+    assert len(k.ask.calls) == 5 and k.vfg.of("usage") == [["usage", "flush"]] and running[0] == 1
+    down.set()
+    await k.settle()
+    assert k.vfg.of("usage") == [["usage", "flush"]] * 2 and most[0] == 1  # one more for the four, after it
+    k.brain.feed(ASK.format(seq=10))  # nothing running: a call's own flush, at once
+    await k.settle()
+    assert len(k.vfg.of("usage")) == 3 and most[0] == 1
+
+
+async def test_a_line_whose_event_breaks_tells_the_player_it_errored_out(kit):
+    k = kit(Decision=GIVE)
+
+    async def broken(*a, **kw):
+        raise RuntimeError("the world broke")
+    k.brain.world.seen = broken
+    k.brain.feed("LINE#7 18:29:59 Steve voice action_oriented 0.9 - | give me a diamond pickaxe")
+    await k.settle()
+    assert k.vfg.said() == [["Steve: that errored out — the world broke"]]
+
+
+async def test_a_line_whose_orchestrator_part_breaks_is_told_once_never_a_second_error_line(kit):
+    async def broken(call):
+        raise KeyError("values")  # a bug, not the model's failure: Acts says BROKE and notes it was told
+
+    k = kit(Decision=decision(part("orchestrator", "a Galick Gun for Steve"), reply="on it"), orchestrator=[broken])
+    k.brain.feed("LINE#7 18:29:59 Steve voice action_oriented 0.9 - | make me a galick gun")
+    await k.settle()
+    assert k.vfg.said() == [[BROKE]]

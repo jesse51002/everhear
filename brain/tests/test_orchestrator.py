@@ -99,7 +99,7 @@ async def test_the_call_caches_the_conversation_exactly_as_the_brains_call_does(
                                brief="Make Steve a frost bow.", reply="on it"))
     o = orch(ask)
     got = await o.answer(ctx, head=HEAD, parts=PARTS, k=1, given=["follow_up frost_bow_alex"], others=OTHERS,
-                         replying=True, tasks=TASKS, copies=COPIES)
+                         replying=True, tasks=TASKS, copies=COPIES, ref="#812")
     assert got.value.kind == NEW and got.value.name == "frost_bow_steve"  # never made unique here
     sent = ask.calls[0]
     assert sent["output"] == "TaskAnswer"
@@ -109,6 +109,7 @@ async def test_the_call_caches_the_conversation_exactly_as_the_brains_call_does(
     assert sum(m for _, m in sent["cached"][1:]) >= 1  # a checkpoint mark, as the brain's
     assert sent["prompt"] == o.tail(head=HEAD, parts=PARTS, k=1, given=["follow_up frost_bow_alex"],
                                     others=OTHERS, replying=True, tasks=TASKS, copies=COPIES)
+    assert (sent["component"], sent["call_id"]) == ("orchestrator", "#812")  # its usage row's, structured()'s
     assert ctx.unprocessed() == []  # it never takes rows
 
 
@@ -305,18 +306,18 @@ async def test_the_reply_is_emptied_when_it_is_not_this_calls_and_every_string_i
     ask = FakeAsk(TaskAnswer=a(FOLLOW_UP, task=" frost_bow_alex ", name="frost_bow_alex",
                                description=" A Frost Bow, now on fire. ", brief=" Add fire. ", reply=" on it "))
     got = await orch(ask).answer(rows(LINE), head=HEAD, parts=PARTS, k=1, given=["new railgun_pierce_steve"],
-                                 others=[], replying=False, tasks=TASKS, copies=COPIES)
+                                 others=[], replying=False, tasks=TASKS, copies=COPIES, ref="#812")
     v = got.value
     assert (v.kind, v.task, v.name, v.description, v.brief, v.reply) == \
         (FOLLOW_UP, "frost_bow_alex", "", "A Frost Bow, now on fire.", "Add fire.", "")
     ask = FakeAsk(TaskAnswer=a(REPLY, reply=" more damage, or no cooldown? "))
     got = await orch(ask).answer(rows(LINE), head=HEAD, parts=PARTS, k=1, given=["failed"], others=[],
-                                 replying=False, tasks=TASKS, copies=COPIES)
+                                 replying=False, tasks=TASKS, copies=COPIES, ref="#812")
     assert got.value.reply == "more damage, or no cooldown?"  # a reply only keeps its reply
     ask = FakeAsk(TaskAnswer=a(STOP, copies=[" railgun_steve ", "", "summon_around", "railgun_steve"],
                                reply="stopped"))
     got = await orch(ask).answer(rows(LINE), head=HEAD, parts=PARTS, k=0, given=[], others=[], replying=True,
-                                 tasks=TASKS, copies=COPIES)
+                                 tasks=TASKS, copies=COPIES, ref="#812")
     assert got.value.copies == ["railgun_steve", "summon_around"] and got.value.reply == "stopped"  # each once
 
 
@@ -324,15 +325,15 @@ async def test_a_failed_call_raises_llm_error_and_the_answer_is_checked_against_
     ask = FakeAsk(TaskAnswer=LlmError("no answer within 15 s"))
     with pytest.raises(LlmError):
         await orch(ask).answer(rows(LINE), head=HEAD, parts=PARTS, k=0, given=[], others=[], replying=True,
-                               tasks=TASKS, copies=COPIES)
+                               tasks=TASKS, copies=COPIES, ref="#812")
     ask = FakeAsk(TaskAnswer=a(FOLLOW_UP, task="frost_bow_alex", description="d", brief="b"))
     with pytest.raises(ValidationError, match="not on TASKS"):
         await orch(ask).answer(rows(LINE), head=HEAD, parts=PARTS, k=1, given=["failed"], others=[],
-                               replying=False, tasks=[], copies={})
+                               replying=False, tasks=[], copies={}, ref="#812")
     ask = FakeAsk(TaskAnswer=a(NEW, name="railgun", description="d", brief="b"))
     with pytest.raises(ValidationError, match="library action's name"):
         await orch(ask).answer(rows(LINE), head=HEAD, parts=PARTS, k=1, given=["failed"], others=[],
-                               replying=False, tasks=[], copies={})
+                               replying=False, tasks=[], copies={}, ref="#812")
 
 
 def test_describe_gives_one_log_line_per_kind():

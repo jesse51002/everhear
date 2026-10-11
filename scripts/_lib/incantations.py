@@ -158,6 +158,27 @@ def now_iso(t=None):
     return d.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (d.microsecond // 1000)
 
 
+# What a merging update merges over the entry's own rather than replacing: the values, and what
+# was asked for them ("asked", from which vfg makes the values again when the action changes).
+MERGED = ("values", "asked")
+
+
+def updated(entry, changes, merge=False, drop_asked=()):
+    """`entry` with `changes` over it, as Store.update writes it: each change replaces its field
+    whole, except that with `merge` a values or asked change is merged over the entry's own, so
+    only the keys given change; `drop_asked`, keys taken out of asked (a field that became the
+    caster's). vfg makes its cache's copy of an edited entry with it too, so the two agree."""
+    new = dict(entry)
+    new.update(changes)
+    if merge:
+        for k in MERGED:
+            if isinstance(changes.get(k), dict):
+                new[k] = dict(entry.get(k) or {}, **changes[k])
+    if drop_asked and isinstance(new.get("asked"), dict):
+        new["asked"] = dict((k, x) for k, x in new["asked"].items() if k not in drop_asked)
+    return new
+
+
 class Store(object):
     """The box's incantations, one JSON file: {"version": n, "incantations": [entry, ...]}.
     Reads take no lock (a write replaces the file whole); every change is a read, change and
@@ -240,11 +261,13 @@ class Store(object):
                 ch.items[i] = e
         return dict(e), old is not None
 
-    def update(self, player, phrase, merge_values=False, **changes):
-        """Change fields of one entry (values, cooldown_s, aliases ...): the entry as stored.
-        With merge_values, a values change is merged over the values the store holds as it
-        writes, under its lock, so two edits of different values close together both land.
-        KeyError when there is none; ValueError for a change to id, player or phrase."""
+    def update(self, player, phrase, merge_values=False, drop_asked=(), **changes):
+        """Change fields of one entry (values, asked, cooldown_s, aliases ...): the entry as
+        stored (updated()). With merge_values, a values change and an asked change are each
+        merged over what the store holds as it writes, under its lock, so two edits of different
+        values close together both land; without, each replaces the whole. drop_asked: keys
+        taken out of asked as it writes. KeyError when there is none; ValueError for a change to
+        id, player or phrase."""
         bad = sorted(set(changes) & {"id", "player", "phrase"})
         if bad:
             raise ValueError("an incantation's %s cannot change: remove it and create it again" % bad[0])
@@ -252,10 +275,7 @@ class Store(object):
             i, old = _find(ch.items, player, phrase)
             if old is None:
                 raise KeyError("%s has no incantation %r" % (player, normalize(phrase)))
-            new = dict(old)
-            new.update(changes)
-            if merge_values and isinstance(changes.get("values"), dict):
-                new["values"] = dict(old.get("values") or {}, **changes["values"])
+            new = updated(old, changes, merge_values, drop_asked)
             ch.items[i] = new
         return dict(new)
 

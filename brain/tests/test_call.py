@@ -6,7 +6,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from brain.call import Call, Event, decision_type
+from brain.call import Call, Event, PartBase, decision_type
 from brain.context import parse
 from brain.world import Seen
 
@@ -135,3 +135,19 @@ def test_the_heads_the_orchestrator_is_given():
     assert head.startswith("THE REPORT: the implementer of ice_trail_steve ended, failed. ice_trail_steve was "
                            "for Steve, who said: make me an ice trail\nITS REPORT: Failed: xxx")
     assert len(head.split("ITS REPORT: ")[1]) == 600 and head.endswith("…")
+
+
+def test_values_keys_are_gathered_into_the_values_an_incantation_binds():
+    p = PartBase.model_validate(part("incantation_create", "juicy steak gives Steve 64 steak", {
+        "player": "Steve", "phrase": "juicy steak", "action": "command",
+        "values.commands": ["give Steve minecraft:cooked_beef 64"]}))
+    assert p.values() == {"player": "Steve", "phrase": "juicy steak", "action": "command",
+                          "values": {"commands": ["give Steve minecraft:cooked_beef 64"]}}
+
+
+def test_an_edit_keeps_its_flat_keys_beside_its_values_keys():
+    p = PartBase.model_validate(part("edit", "no cooldown and a longer railgun for Alex", {
+        "copy": "railgun_2", "values.cooldown": 0, "length": 80}))
+    assert p.values() == {"copy": "railgun_2", "values": {"cooldown": 0, "length": 80}}
+    p = PartBase.model_validate(part("edit", "a longer railgun for Alex", {"copy": "railgun_2", "length": 80}))
+    assert p.values() == {"copy": "railgun_2", "values": {"length": 80}}

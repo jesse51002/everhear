@@ -47,13 +47,13 @@ from playtest import Playtest, iso, when  # noqa: E402
 
 sys.path.insert(0, str(playtest.REPO / "jev"))
 from brain import actions, config  # noqa: E402
-from brain.__main__ import LOOKOUT  # noqa: E402
 from brain.loop import jev_menu  # noqa: E402
 from classes import HISTORY_H, STATE_TOKENS, TRIES, jev_rows, typesafe_key  # noqa: E402
 from jev_api import ENDPOINT, MODEL, PRICE_PER_INPUT_TOKEN, Jev, JevDown, JevRefused  # noqa: E402
-from prompt import QUOTE_MAX_CHARS, build_state, cut, estimate, one_line, questions  # noqa: E402
+from prompt import QUOTE_MAX_CHARS, cut, estimate, one_line  # noqa: E402
 from prompt import read_lookout, read_menu  # noqa: E402
 from prompt import when as jev_when  # noqa: E402
+from state_v1 import LOOKOUT, build_state, questions  # noqa: E402  (the old state, as benched)
 from tree_questions import A_ONLY, NAMES, VERSIONS  # noqa: E402
 
 SEED = 20261010

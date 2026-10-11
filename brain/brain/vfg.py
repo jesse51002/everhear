@@ -2,7 +2,8 @@
 
 Everything that takes a vfg runner accepts any async callable of this shape, so the
 tests pass fakes: `await vfg("say", "on it", "--task", "galick_gun_styrk", timeout=30)`. Also here: Later,
-for the calls nobody waits for, and follow(), the lines of `vfg watch --after <seq>`.
+for the calls nobody waits for (the usage queue's `vfg usage flush` among them, never two at
+once), and follow(), the lines of `vfg watch --after <seq>`.
 """
 
 from __future__ import annotations
@@ -74,14 +75,35 @@ def why(r: VfgResult) -> str:
 
 class Later:
     """The vfg calls nobody waits for (a feed row, a usage row, a context mark), each its own
-    task, a failure logged: `later("usage", "add", …)`."""
+    task, a failure logged: `later("usage", "add", …)`. The usage queue after a model call goes
+    by flush_usage(), coalesced."""
 
     def __init__(self, vfg: Vfg):
         self.vfg = vfg
         self.tasks: set[asyncio.Task] = set()
+        self.flushing: asyncio.Task | None = None  # the `vfg usage flush` running, and the one after it
+        self.flush_again = False                   # asked for since the one running began: one more is due
 
     def __call__(self, *args: str, timeout: float = 30) -> asyncio.Task:
-        t = asyncio.create_task(self._run(args, timeout), name=f"vfg {' '.join(args[:2])}")
+        return self._keep(self._run(args, timeout), f"vfg {' '.join(args[:2])}")
+
+    def flush_usage(self) -> asyncio.Task:
+        """`vfg usage flush` after a model call: the rows structured() queued, sent to the box. Never
+        two at once, so a box that is down never has SSH attempts piling up at it: asked while one
+        runs, it runs once more when that one ends, for every row queued meanwhile, however many
+        asked. A row is never lost: the queue holds it until a flush sends it."""
+        self.flush_again = True
+        if self.flushing is None or self.flushing.done():
+            self.flushing = self._keep(self._flushes(), "vfg usage flush")
+        return self.flushing
+
+    async def _flushes(self) -> None:
+        while self.flush_again:
+            self.flush_again = False
+            await self._run(("usage", "flush"), 30)
+
+    def _keep(self, coro, name: str) -> asyncio.Task:
+        t = asyncio.create_task(coro, name=name)
         self.tasks.add(t)
         t.add_done_callback(self.tasks.discard)
         return t

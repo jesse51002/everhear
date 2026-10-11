@@ -495,10 +495,10 @@ class TestUsage(BoxCase):
         self.assertEqual(rows[0][2:], ("brain", "openai/gpt-6.1-sol", 10, 5, 0.0012, "#812"))
         self.assertRegex(rows[0][1], ISO_RE)
         self.assertGreaterEqual(rows[0][1], before[:19])
-        for c in ("respond", "jev", "implementer", "conversation", "orchestrator"):
+        for c in ("respond", "jev", "implementer", "planner", "alias", "conversation", "orchestrator"):
             self.assertOk(self.vfg("usage", "add", "--component", c, "--model", "m", "--in", "1", "--out", "0"))
-        self.assertEqual([r[2] for r in self.usage()], ["brain", "respond", "jev", "implementer", "conversation",
-                                                       "orchestrator"])
+        self.assertEqual([r[2] for r in self.usage()], ["brain", "respond", "jev", "implementer", "planner", "alias",
+                                                       "conversation", "orchestrator"])
         self.assertIsNone(self.usage()[1][6])
 
     def test_queued_when_down_then_inserted_first(self):
@@ -516,6 +516,26 @@ class TestUsage(BoxCase):
         self.assertLess(rows[0][1], rows[1][1])
         self.assertFalse(os.path.exists(pending) and os.path.getsize(pending))
         self.assertEqual([n for n in os.listdir(self.box.vhome) if n.startswith("usage.sending")], [])
+
+    def test_flush_sends_the_queue_and_with_nothing_queued_sends_nothing(self):
+        r = self.vfg("usage", "flush")
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "", ""))
+        self.assertEqual(self.box.calls, [])                 # no SSH call for an empty queue
+        self.box.down = True
+        self.assertOneLine(self.vfg("usage", "add", "--component", "brain", "--model", "sol", "--in", "100",
+                                    "--out", "50", "--ref", "#812"), 4, "cannot reach EC2")
+        self.assertOneLine(self.vfg("usage", "flush"), 4, "cannot reach EC2")
+        pending = os.path.join(self.box.vhome, "usage.pending.jsonl")
+        with open(pending) as f:
+            self.assertEqual(len(f.read().splitlines()), 1)  # kept for the next one
+        self.box.down = False
+        r = self.vfg("usage", "flush")
+        self.assertEqual((r.returncode, r.stdout), (0, "1\n"), r.stderr)
+        self.assertEqual([x[2:] for x in self.usage()], [("brain", "sol", 100, 50, None, "#812")])
+        self.assertFalse(os.path.exists(pending) and os.path.getsize(pending))
+        calls = len(self.box.calls)
+        self.assertOk(self.vfg("usage", "flush"))
+        self.assertEqual(len(self.box.calls), calls)
 
     def test_bad_arguments(self):
         base = ["usage", "add", "--model", "m", "--in", "1", "--out", "1"]

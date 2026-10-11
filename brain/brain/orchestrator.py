@@ -23,7 +23,8 @@ the commands or the world but RUNNING NOW. The prompt, in the order the cache ne
 
 The schema never changes with the tasks or the copies: an answer is checked against them by its
 validator, and one that breaks a rule goes back to the model once with why (structured()). Code,
-not this, makes a new name unique, runs the edit and stop actions, and logs the usage.
+not this, makes a new name unique, runs the edit and stop actions, and logs what each call spent
+(its usage row is structured()'s own).
 """
 
 from __future__ import annotations
@@ -349,14 +350,17 @@ class Orchestrator:
                 + f"\n\n{reply}\n")
 
     async def answer(self, ctx: Context, *, head: str, parts: list, k: int, given: list[str], others: list,
-                     replying: bool, tasks: list[dict], copies: dict[str, dict]):
+                     replying: bool, tasks: list[dict], copies: dict[str, dict], ref: str):
         """One call: an Answer whose value is a TaskAnswer, every string stripped and the reply
-        emptied when it is not this call's and the answer is not a reply only. Raises LlmError."""
+        emptied when it is not this call's and the answer is not a reply only. Raises LlmError.
+        Its usage row is structured()'s: component orchestrator, `ref` (the line's `#<seq>`, or the
+        task's name for a report)."""
         output = answer_type({str(t.get("name")) for t in tasks}, set(call.library(self.catalog)) | RESERVED,
                              copies, self.catalog, replying)
         got = await self.ask(self.tail(head=head, parts=parts, k=k, given=given, others=others, replying=replying,
                                        tasks=tasks, copies=copies),
-                             output, cached=ctx.cached(self.opening(), self.checkpoint))
+                             output, cached=ctx.cached(self.opening(), self.checkpoint),
+                             component="orchestrator", call_id=(ref or "orchestrator")[:64])
         v = got.value
         v.task, v.name, v.copy = v.task.strip(), v.name.strip(), v.copy.strip()
         v.description, v.brief, v.reply = v.description.strip(), v.brief.strip(), v.reply.strip()

@@ -70,7 +70,7 @@ async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fail
     firsts = [c[:2] for c in vfg.calls]
     assert firsts[0] == ["up"] and {"watchers", "lookout", "jev", "context"} <= {c[0] for c in vfg.calls[1:6]}
     assert vfg.of("watchers")[0][2] == "join,leave,death,advancement,server"
-    assert "conversational: a line said to the AI" in vfg.of("lookout")[0][2]
+    assert "Names of places, bases, builds and coordinates" in vfg.of("lookout")[0][2]
     assert "command — Run vanilla commands" in vfg.of("jev", "menu", "set")[0][3]
     assert vfg.of("context", "--since") == [["context", "--since", "-6h", "--json"]] and seen_after == [12]
     assert ["context", "mark", "10"] in vfg.calls  # history: marked read, never acted on
@@ -89,6 +89,11 @@ async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fail
     assert json.loads(retired.read_text()) == old
     assert not any(w in json.dumps(vfg.calls) for w in ("old_castle", "by the old brain"))
     assert all("--task" not in c for c in vfg.calls)    # the lines' actions and replies carry no task
+    # the usage queue sent at the start, after the two calls and at the stop; never a row of its own. The calls
+    # asked at once: one flush for both, or one and the one more after it, never two running at once
+    flushes = vfg.of("usage")
+    assert 3 <= len(flushes) <= 4 and flushes == [["usage", "flush"]] * len(flushes)
+    assert vfg.calls[-1] == ["usage", "flush"] and vfg.calls.index(flushes[0]) < vfg.calls.index(vfg.of("say")[0])
 
 
 async def test_with_no_rows_that_recent_it_follows_from_the_feeds_last_seq_and_a_failed_read_is_tried_again(

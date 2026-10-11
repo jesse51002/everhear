@@ -120,6 +120,21 @@ class StoreTests(unittest.TestCase):
         entry = self.store.update("Steve", "fire ball", merge_values=True, values={"power": 4})
         self.assertEqual(entry["values"], {"power": 4, "speed": 1})
 
+    def test_update_merging_merges_what_was_asked_too_and_drops_what_it_names(self):
+        self.put("Steve", "beam me", values={"length": 50, "player": "Alex"}, asked={"length": 50, "player": "Alex"})
+        # Two edits, each sending only what it changed: both land.
+        self.store.update("Steve", "beam me", merge_values=True, values={"length": 80}, asked={"length": 80})
+        entry = self.store.update("Steve", "beam me", merge_values=True, drop_asked=["player"],
+                                  values={"cooldown": 1, "player": ""}, asked={"cooldown": 1})
+        self.assertEqual(entry["values"], {"length": 80, "player": "", "cooldown": 1})
+        self.assertEqual(entry["asked"], {"length": 80, "cooldown": 1})
+        self.assertEqual(self.store.find("Steve", "beam me"), entry)
+        # Without merging, each is replaced whole: a value the action no longer has goes.
+        entry = self.store.update("Steve", "beam me", values={"length": 80}, asked={"length": 80})
+        self.assertEqual((entry["values"], entry["asked"]), ({"length": 80}, {"length": 80}))
+        self.assertEqual(inc.updated({"values": {"a": 1}}, {"asked": {"a": 1}}, merge=True, drop_asked=["a"]),
+                         {"values": {"a": 1}, "asked": {}})
+
     def test_update_of_none_or_of_the_phrase_refused_without_a_write(self):
         self.put("Steve", "fire ball")
         with self.assertRaises(KeyError):

@@ -80,13 +80,19 @@ class PartBase(BaseModel):
 
     def values(self) -> dict[str, Any]:
         """The action as `vfg action run` takes it: {field: value}; for edit, the copy and the
-        values to change, {"copy": …, "values": {…}}."""
+        values to change, {"copy": …, "values": {…}}, whether each came as a key of its own or
+        as `values.<name>`, or some each way. A Value cannot hold an object, so a field that
+        holds another action's values (incantation_create's) comes as `values.<name>` keys,
+        gathered here into {"values": {…}}."""
         given = {v.key.strip(): v.value for v in self.action or []}
+        inner = {k.split(".", 1)[1].strip(): given.pop(k) for k in list(given) if k.startswith("values.")}
+        if inner:
+            given["values"] = {**(given["values"] if isinstance(given.get("values"), dict) else {}), **inner}
         if self.to != "edit":
             return given
         copy = given.pop("copy", "")
         nested = given.pop("values", None)
-        return {"copy": copy, "values": nested if isinstance(nested, dict) else given}
+        return {"copy": copy, "values": {**given, **nested} if isinstance(nested, dict) else given}
 
 
 class DecisionBase(BaseModel):
@@ -167,6 +173,12 @@ class Event:
     report: str = ""                # REPORT: the implementer's report, its DESCRIPTION line cut off; it
                                     # never reaches the context
     following: bool = False         # REPORT: a follow-up to the task already runs, so it stays open
+
+    def ref(self) -> str:
+        """The call's id in its usage row: `#<seq>` for a line, the task's name for a report."""
+        if self.kind == "LINE":
+            return f"#{self.row.seq}"
+        return str((self.task or {}).get("name") or "report")[:64]
 
     def show(self) -> str:
         if self.kind == "LINE":
@@ -264,8 +276,10 @@ class Call:
         return ctx.cached(self.opening(refs), self.checkpoint)
 
     async def decide(self, event: Event, ctx: Context, seen: Seen, tasks: str, new: list[Row], refs):
-        """An Answer whose value is a Decision; raises LlmError."""
-        return await self.ask(self.tail(event, seen, tasks, new), self.Decision, cached=self.cached(ctx, refs))
+        """An Answer whose value is a Decision; raises LlmError. Its usage row is structured()'s:
+        component brain, the event's ref."""
+        return await self.ask(self.tail(event, seen, tasks, new), self.Decision, cached=self.cached(ctx, refs),
+                              component="brain", call_id=event.ref())
 
 
 def describe(decision) -> str:

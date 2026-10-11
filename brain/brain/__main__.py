@@ -14,7 +14,9 @@ the context was read (`vfg context --json` gives it last, with rows or none), so
 ever read as new; and the greeting, skipped when nobody is on. A read of the context that fails
 is tried again, never followed from 0.
 Stop (SIGTERM or SIGINT): read nothing new, let the calls in flight finish for up to 10 s, stop
-the implementers and fail their tasks as stopped, let the tasks' writes go out, exit 0.
+the implementers and fail their tasks as stopped, let the tasks' writes go out, send the usage
+rows still queued, exit 0. The start sends the queue too (`vfg usage flush`), for the rows of
+calls made while it was down.
 """
 
 from __future__ import annotations
@@ -54,7 +56,7 @@ LOAD = object()      # serve(refs=LOAD): load them, as a real start does
 REFS_RETRY_S = 300   # a failed load of the references is tried again this often, until it works
 CONTEXT_RETRY_S = 5.0  # a failed read of the context is tried again this often, until it works
 IMPLEMENTERS_GRACE_S = 2.0
-DRAIN_S = 1.5        # for the rows and usage still being written, at the very end
+DRAIN_S = 1.5        # for the rows still being written and the usage sent, at the very end
 TASKS_DRAIN_S = 5.0  # for the tasks' writes still going out, before that
 RETIRED = "tasks.json"  # the brain's tasks before named tasks, in brain_dir: set aside at a start
 MADE_KINDS = ("scripts", "actions", "presets", "copies")
@@ -102,7 +104,8 @@ def implementers(on_report, on_session=None):
 
 
 def asker(model: str, reasoning: str, timeout: float, providers: tuple[str, ...] = ()):
-    """structured() with one model's settings; a call past `timeout` is an LlmError."""
+    """structured() with one model's settings; a call past `timeout` is an LlmError. Each caller
+    names the call's component and call_id, and structured() queues its usage row."""
     return functools.partial(vfg_llm.structured, model=model, reasoning=Config.effort_of(reasoning),
                              providers=list(providers) or None, timeout=timeout)
 
@@ -215,6 +218,7 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
 
     catalog = actions.load(cfg.repo, cfg.server) if catalog is None else catalog
     later("jev", "menu", "set", jev_menu(catalog))
+    later("usage", "flush")  # the usage rows queued while the brain was down
     hidden = actions.hidden_commands()
     copies = running.Refresher(vfg, cfg.running_ttl_s)
     world = World(vfg, cfg.running_file, catalog, refresher=copies)
@@ -249,12 +253,11 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
 
     impl = make_implementers(on_report, tasks.set_session)  # a session is kept as soon as the CLI names it
     acts = Acts(vfg=vfg, later=later, catalog=catalog, planner=planner, tasks=tasks, implementers=impl,
-                world=world, orchestrator=orchestrator, usage=lambda *a: brain.usage(*a),
-                orchestrator_model=cfg.orchestrator_model, repo=cfg.repo, server=cfg.server,
+                world=world, orchestrator=orchestrator, repo=cfg.repo, server=cfg.server,
                 action_timeout_s=cfg.action_timeout_s)
     brain = Brain(ctx=ctx, call=call, respond=respond, acts=acts, world=world, tasks=tasks, implementers=impl,
                   later=later, catalog=catalog, refs=None if refs is LOAD else refs,
-                  start=start, load=lambda: load_context(vfg, cfg.history_hours), model=cfg.model, respond_model=cfg.respond_model,
+                  start=start, load=lambda: load_context(vfg, cfg.history_hours),
                   menu=lambda text: later("jev", "menu", "set", text))
 
     for t in tasks.open_ones():  # their implementers went with the last run
@@ -286,6 +289,7 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
     await copies.stop()
     await world.close()
     await tasks.drain(TASKS_DRAIN_S)
+    later("usage", "flush")  # the rows of the calls the stop cut short; any not sent go with the next start's
     await later.drain(DRAIN_S)
     log("stop", "stopped")
     return 0

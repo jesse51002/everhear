@@ -28,15 +28,26 @@ There is no other call, but the orchestrator's, one for each part an event's cal
 `orchestrator`: no model is called for what nobody asked. A game event, a system notice
 and the brain's own rows wait for the next call, which reads them as NEW.
 
-**Respond** ([`respond.py`](brain/respond.py)) takes a `conversational` line: a cheap model (DeepSeek
-V4 Flash, reasoning off) on the same context that keeps up the banter and replies, or hands the
-line up to the brain when it asks for something to happen or Respond is unsure. It decides first
-(`reason`, `hand_up`, then `reply`), and handing up is the default unless the line is clearly pure
-talk ([`gate_bench.md`](../integration/replay/gate_bench.md)). A hand-up replaces its reply, so a
-player never gets two. Respond never acts on the game. A game event, a system notice and the
-brain's own rows are context only. A line already in the feed when the brain
-read its context, said more than two minutes before that, is history: never acted on. A line that
-arrives on the watch is live, whatever its time (the box's clock may be a minute off the PC's).
+A `LINE`'s text can hold several pieces one player said in a row, joined with " … ", the ask last:
+Jev's gather call joins the earlier pieces that belong to the ask (`docs/CONTRACTS.md` §5). Both
+prompts say so, and to read them as one ask.
+
+**Respond** ([`respond.py`](brain/respond.py)) takes a `conversational` line: a cheap model
+(DeepSeek V4 Flash, reasoning off) on the same context that keeps up the banter and replies, or
+hands the line up to the brain. It answers talk, and a rule or a preference about the future only
+("talk like a pirate from now on"), which holds because the brain reads the same conversation. It
+hands up anything that asks for something now, a change to what is already going on in the world, a
+rule the game itself would have to enforce ("from now on keep creepers away from the base"), an
+answer to the AI's question, and anything it is unsure of. It decides first (`reason`, which it must
+write, then `hand_up`, then `reply`), and handing up is the default
+([`gate_bench.md`](../integration/replay/gate_bench.md),
+[`respond_bench.md`](../integration/replay/respond_bench.md)). A hand-up replaces its reply, so a
+player never gets two. Respond never acts on the game, and never promises or offers anything there:
+a reply that still does, "want me to …?" or "I'll fix it", is handed up in code instead of said
+(`promises()`). A game event, a system notice and the brain's own rows are context only. A line
+already in the feed when the brain read its context, said more than two minutes before that, is
+history: never acted on. A line that arrives on the watch is live, whatever its time (the box's
+clock may be a minute off the PC's).
 
 ## The shared context and the cache
 

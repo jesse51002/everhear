@@ -99,13 +99,39 @@ class Store:
             "SELECT %s FROM lines WHERE jev_class IS NULL AND source != 'ai'%s "
             "ORDER BY at, id LIMIT ?" % (COLUMNS, self._live()), (limit,)).fetchall()
 
-    def ask_again(self, judged_since, limit=5):
-        """Jev's own `not_relevant` verdicts (a confidence, so not a blank line)
-        judged since `judged_since`, newest `at` first."""
+    def gather_window(self, ask, since, limit=10, sent_since=None):
+        """The gather call's lines for `ask`: the same speaker's lines, not the
+        AI's and not dropped, said before the ask (by `at`, then `id`) and since
+        `since`, that Jev classed `context` or `not_relevant` with a confidence
+        (so never a blank line, nor one passed as context while Jev failed open
+        or after it refused twice), judged after that speaker's last line classed
+        `action_oriented` or `conversational` was judged (by `jev_judged_at`, then
+        `id`). The newest `limit` of them, oldest first.
+
+        Judge order, not the order said, because a voice line is stored when its
+        speech is turned into text, after a line typed later may have been judged:
+        each line is offered to the speaker's next line to the AI judged after it
+        and to no other, so a line gathered into one ask is never gathered again,
+        and a piece stored after the ask it was said before reaches the next.
+
+        The last line to the AI is looked for among those said since `sent_since`
+        (all of them when None), on the (player_name, at) index: one judged after
+        a line in the window but said long before it cannot be, since lines are
+        judged in the order they are stored."""
+        bound, bound_params = ("", []) if sent_since is None else (" AND at >= ?", [sent_since])
+        last = self.conn.execute(
+            "SELECT jev_judged_at, id FROM lines WHERE player_name = ? AND source != 'ai' AND id != ?%s "
+            "AND jev_class IN ('action_oriented', 'conversational') ORDER BY jev_judged_at DESC, id DESC LIMIT 1"
+            % bound, [ask["player_name"], ask["id"]] + bound_params).fetchone()
+        params = [ask["player_name"], ask["at"], ask["at"], ask["id"], since]
+        after = ""
+        if last is not None:
+            after = " AND (jev_judged_at > ? OR (jev_judged_at = ? AND id > ?))"
+            params += [last["jev_judged_at"], last["jev_judged_at"], last["id"]]
         return self.conn.execute(
-            "SELECT %s FROM lines WHERE jev_class = 'not_relevant' AND jev_confidence IS NOT NULL "
-            "AND jev_judged_at >= ? ORDER BY at DESC, id DESC LIMIT ?" % COLUMNS,
-            (judged_since, limit)).fetchall()
+            "SELECT %s FROM lines WHERE player_name = ? AND source != 'ai' AND (at < ? OR (at = ? AND id < ?)) "
+            "AND at >= ? AND jev_class IN ('context', 'not_relevant') AND jev_confidence IS NOT NULL%s%s "
+            "ORDER BY at DESC, id DESC LIMIT ?" % (COLUMNS, after, self._live()), params + [limit]).fetchall()[::-1]
 
     def history(self, since, exclude=(), limit=2000):
         """Every line said since `since`, the AI's included, newest first,
@@ -135,10 +161,10 @@ class Store:
         return records
 
     def kept_unfed(self, since):
-        """Kept lines not yet fed, said since `since`, oldest first."""
+        """Kept lines not yet fed, said since `since`, oldest first; never a dropped one."""
         return self.conn.execute(
             "SELECT %s FROM lines WHERE jev_class IN ('action_oriented', 'conversational', 'context') "
-            "AND fed_at IS NULL AND at >= ? ORDER BY at, id" % COLUMNS, (since,)).fetchall()
+            "AND fed_at IS NULL AND at >= ?%s ORDER BY at, id" % (COLUMNS, self._live()), (since,)).fetchall()
 
     def feed_lines_at(self, ats):
         """`(seq, at, line)` of every LINE already in the `feed` table whose `at`
@@ -151,27 +177,24 @@ class Store:
 
     # -- writing ---------------------------------------------------------------
 
-    def judge(self, line_id, cls, confidence, judged_at, flips=(), usage=None):
-        """One transaction: the new line's verdict, each flip of a line asked
-        about again, and the call's `usage` row. Answers the ids that flipped."""
+    def judge(self, line_id, cls, confidence, judged_at, usage=None):
+        """One transaction: the line's verdict and the call's `usage` row. Answers
+        whether the verdict was written: not when the bridge dropped the line (only
+        an incantation) while Jev judged it, or it had a verdict already. The
+        usage row is written either way: the call was made."""
         statements = [(
             "UPDATE lines SET jev_class = ?, jev_confidence = ?, jev_judged_at = ? "
-            "WHERE id = ? AND jev_class IS NULL", (cls, confidence, judged_at, line_id))]
-        flips = list(flips)
-        for fid, fcls, fconf in flips:
-            statements.append((
-                "UPDATE lines SET jev_class = ?, jev_confidence = ?, jev_judged_at = ? "
-                "WHERE id = ? AND jev_class = 'not_relevant'", (fcls, fconf, judged_at, fid)))
+            "WHERE id = ? AND jev_class IS NULL" + self._live(), (cls, confidence, judged_at, line_id))]
         if usage is not None:
             statements.append(self._usage_sql(**usage))
-        counts = self._tx(statements)
-        return [fid for (fid, _, _), n in zip(flips, counts[1:]) if n]
+        return self._tx(statements)[0] == 1
 
     def set_class(self, line_id, cls, confidence, judged_at):
-        """A verdict written without Jev's answer (a blank line, a refusal)."""
+        """A verdict written without Jev's answer (a blank line, a refusal); none
+        on a line dropped meanwhile."""
         return self._tx([(
             "UPDATE lines SET jev_class = ?, jev_confidence = ?, jev_judged_at = ? "
-            "WHERE id = ? AND jev_class IS NULL", (cls, confidence, judged_at, line_id))])[0]
+            "WHERE id = ? AND jev_class IS NULL" + self._live(), (cls, confidence, judged_at, line_id))])[0]
 
     def pass_all_as_context(self, judged_at):
         """Failing open: every unjudged line but the AI's becomes `context`
