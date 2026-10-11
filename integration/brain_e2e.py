@@ -55,7 +55,9 @@ BUDGET = 0.10        # dollars of OpenRouter a full run may spend
 WIKI = "https://minecraft.wiki/w/"
 
 FEED_RE = re.compile(r"^([A-Z]+)#(\d+) (\d\d:\d\d:\d\d) (?:([^|]*?) )?\| (.*)$")
-LOG_CALL = re.compile(r"^(\S+) (brain|respond) (#\d+|T\d+) (\d+) ms \$([\d.]+), (\d+) in")
+# A model call in brain.log that answered: the brain's, Respond's or the orchestrator's, for a line
+# (#seq) or a report (the task's name); its cost ends in + when an attempt cut off in flight is not in it.
+LOG_CALL = re.compile(r"^(\S+) (brain|respond|orchestrator) (#\d+|[a-z][a-z0-9_]{1,31}) (\d+) ms \$([\d.]+)\+?, (\d+) in")
 
 # Each player's items as 26.3 prints them (`data get entity <p> Inventory`, equipment,
 # SelectedItemSlot): Steve holds a diamond sword in hotbar.4, carries an iron sword and diamond
@@ -382,13 +384,6 @@ class Box:
         except OSError:
             return ""
 
-    def tasks(self):
-        try:
-            with open(os.path.join(self.brain, "tasks.json")) as f:
-                return json.load(f).get("tasks") or {}
-        except (OSError, ValueError):
-            return {}
-
     # -- the box's database
     def sql(self, query, params=()):
         con = sqlite3.connect("file:%s?mode=ro" % self.db, uri=True, timeout=10)
@@ -418,8 +413,39 @@ class Box:
 
     def usage(self, ref=None):
         if ref is None:
-            return self.sql("SELECT * FROM usage WHERE component IN ('brain', 'respond') ORDER BY id")
+            return self.sql("SELECT * FROM usage WHERE component IN ('brain', 'respond', 'orchestrator') ORDER BY id")
         return self.sql("SELECT * FROM usage WHERE ref = ? ORDER BY id", (ref,))
+
+    def copies_since(self, at):
+        """The copies started since `at` (a time.time()), from their meta files in the box's run/,
+        which stay there after a copy ends: {copy: meta}. A later copy under a name that is free
+        again writes over the earlier one's."""
+        run_dir, out = os.path.join(self.rvfg, "run"), {}
+        try:
+            names = os.listdir(run_dir)
+        except OSError:
+            return out
+        for fn in names:
+            if not fn.endswith(".json") or fn.endswith((".values.json", ".result.json")):
+                continue
+            try:
+                with open(os.path.join(run_dir, fn)) as f:
+                    meta = json.load(f)
+                started = parse_iso(meta["started"]).timestamp()
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            if started >= at - 1:
+                out[fn[:-len(".json")]] = meta
+        return out
+
+    def tasks_table(self, since):
+        """The rows of vfg.db's tasks table created since `since` (a time.time()); None when the
+        table is not there."""
+        try:
+            return self.sql("SELECT name, player, status, created_at FROM tasks WHERE created_at >= ? ORDER BY "
+                            "created_at", (iso(dt.datetime.fromtimestamp(since, UTC)),))
+        except sqlite3.Error:
+            return None
 
     def lines(self, *said):
         """Players' lines into the feed in one write, as the Jev filter feeds a batch:
@@ -466,12 +492,12 @@ class Run:
         """The commands the fake world got since the line was fed."""
         return self.box.world.sent[ask["mark"]:]
 
-    def reply(self, ask, timeout=40, task=None):
-        """The first chat line after the line (for an action ask, the one under its task); its
-        time is kept for the table."""
+    def reply(self, ask, timeout=40, skip=()):
+        """The first chat line after the line, but those in `skip` (seqs another line's reply
+        took); its time is kept for the table."""
         def got():
             for r in self.box.said(ask["seq"]):
-                if task is None or r["fields"] == "say %s" % task:
+                if r["seq"] not in skip:
                     return r
             return None
         r = wait_for(got, timeout, 0.05)
@@ -480,17 +506,14 @@ class Run:
             ask["reply_at"] = parse_iso(r["at"]).timestamp()
         return r
 
-    def task_of(self, ask, timeout=40):
-        """The task the brain opened for the line, from tasks.json."""
-        def got():
-            for tid, t in self.box.tasks().items():
-                if t.get("line") == ask["text"]:
-                    return tid
-            return None
-        return wait_for(got, timeout, 0.05)
+    def tasked(self, ask):
+        """The AI task rows since the line: an orchestrator's new task or follow-up, which an
+        action ask never makes."""
+        return [x for x in self.box.rows(ask["seq"], "AI") if x["fields"].startswith("task ")]
 
     def call_ms(self, ref):
-        """The brain's and Respond's calls for `ref` in the log: [(area, ms, cost, ended at)]."""
+        """The brain's, Respond's and the orchestrator's calls for `ref` in the log: [(area, ms, cost,
+        ended at)]."""
         out = []
         for line in self.box.log().splitlines():
             m = LOG_CALL.match(line)
@@ -556,25 +579,32 @@ def ask_action(run):
          "cls": "action_oriented", "mark": mark, "reply": None}
     run.asks.append(a)
     rep.note("#%d Alex (context) and #%d Steve (action_oriented) fed in one write" % (ctx_seq, seq))
-    tid = run.task_of(a)
-    r = run.reply(a, task=tid)
+    r = run.reply(a)
     sent = run.sent(a)
     gives = [x for x in sent if re.match(r"^(execute .* run )?give Steve (minecraft:)?firework_rocket\S* 64$", x)]
     speed = [x for x in sent if re.match(r"^(execute .* run )?effect give Steve (minecraft:)?speed (\d+|infinite) 1( (true|false))?$", x)]
     rep.check(gives and speed, "64 firework rockets and Speed II given to Steve, in the world's command log",
               "sent %r" % sent)
-    rep.check(tid and r, "%s: its reply said under its task: %r" % (tid, r and r["text"]), short(box.log()[-1200:]))
+    rep.check(r and r["fields"] == "say -", "its reply said with no task (AI say -): %r" % (r and r["text"]),
+              "%r; %s" % (r, short(box.log()[-1200:])))
     replies = one_reply(run, a)
     rep.check(len(replies) == 1, "exactly one chat line for the line", "%r" % replies)
-    actions = [x for x in box.rows(a["seq"], "AI") if x["fields"] == "action %s" % tid]
-    rep.check(len(actions) >= 1 and all(" — ok: " in x["text"] for x in actions),
-              "each action it ran is an AI action row, ok", "%r" % [x["text"] for x in actions])
+    ai = box.rows(a["seq"], "AI")
+    actions = [x for x in ai if x["fields"].startswith("action ")]
+    rep.check(actions and all(x["fields"] == "action -" and " — ok: " in x["text"] for x in actions),
+              "each action it ran is an AI action - row, ok: an action never carries a task",
+              "%r" % [(x["fields"], x["text"]) for x in actions])
+    rep.check(not run.tasked(a), "no task for it: no AI task row", "%r" % [x["line"] for x in run.tasked(a)])
+    copies = box.copies_since(at)
+    named = all(re.match(r"^%s_steve(_\d+)?$" % re.escape(m.get("action") or "?"), c) and m.get("task") is None
+                for c, m in copies.items())
+    rep.check("command_steve" in copies and named, "the brain's own copies, named for Steve with no task: %s"
+              % ", ".join("%s (%s)" % (c, m.get("action")) for c, m in sorted(copies.items())),
+              "%r" % {c: (m.get("action"), m.get("task")) for c, m in copies.items()})
     marks = {x["seq"]: x["processed_at"] for x in box.rows(ctx_seq - 1) if x["seq"] in (ctx_seq, a["seq"])}
     rep.check(len(marks) == 2 and all(marks.values()),
               "the context line waiting before it is marked processed as it came, the line by the call's read",
               "%r" % marks)
-    t = box.tasks().get(tid) or {}
-    rep.check(t.get("status") == "done" and t.get("player") == "Steve", "%s is done in tasks.json" % tid, "%r" % t)
 
 
 def ask_item(run):
@@ -582,16 +612,17 @@ def ask_item(run):
     rep.head("2. An item ask: boots worn and boots carried; the worn ones changed, by their slot")
     before = len(box.world.modified)
     a = run.line("Steve", "action_oriented", "put depth strider three on my boots")
-    tid = run.task_of(a)
-    r = run.reply(a, task=tid)
+    r = run.reply(a)
     mods = box.world.modified[before:]
     rep.check(len(mods) == 1 and mods[0][1] == "armor.feet" and "depth_strider" in mods[0][2]
               and "type" in mods[0][2] and "function" not in mods[0][2],
               "item modify entity Steve armor.feet {type:…set_enchantments…depth_strider…}: the boots he wears",
               "modified %r; sent %r" % (mods, run.sent(a)))
-    rep.check(r, "one reply: %r" % (r and r["text"]), short(box.log()[-1200:]))
+    rep.check(r and r["fields"] == "say -", "one reply, with no task: %r" % (r and r["text"]),
+              "%r; %s" % (r, short(box.log()[-1200:])))
     replies = one_reply(run, a)
-    rep.check(len(replies) == 1, "exactly one chat line for the line", "%r" % replies)
+    rep.check(len(replies) == 1 and not run.tasked(a), "exactly one chat line for the line, and no AI task row",
+              "%r %r" % (replies, run.tasked(a)))
 
 
 def ask_talk(run):
@@ -613,8 +644,7 @@ def ask_handed_up(run):
     rep, box = run.rep, run.box
     rep.head("4. A conversational ask: Respond hands it up and says nothing; the brain acts and replies")
     a = run.line("Alex", "conversational", "lol can you make it night already")
-    tid = run.task_of(a)
-    r = run.reply(a, task=tid) if tid else run.reply(a)
+    r = run.reply(a)
     handed = re.search(r"^\S+ respond #%d handed up" % a["seq"], box.log(), re.M)
     rep.check(handed, "Respond handed it up (brain.log)", short(box.log()[-1500:]))
     use = sorted(u["component"] for u in box.usage("#%d" % a["seq"]))
@@ -622,8 +652,9 @@ def ask_handed_up(run):
     night = [x for x in run.sent(a) if re.match(r"^(execute .* run )?time set (night|midnight|1[3-8]\d{3})$", x)]
     rep.check(night, "the time set to night in the world", "sent %r" % run.sent(a))
     replies = one_reply(run, a)
-    rep.check(r and len(replies) == 1 and r["fields"] == "say %s" % tid,
-              "one chat line, the brain's, under %s: %r" % (tid, r and r["text"]), "%r" % replies)
+    rep.check(r and len(replies) == 1 and r["fields"] == "say -" and not run.tasked(a),
+              "one chat line, the brain's, with no task (AI say -): %r" % (r and r["text"]),
+              "%r %r" % (replies, run.tasked(a)))
 
 
 def ask_two_at_once(run):
@@ -638,14 +669,25 @@ def ask_two_at_once(run):
           "mark": mark, "reply": None}
     run.asks += [a1, a2]
     rep.note("#%d and #%d fed in one write" % (s1, s2))
-    t1, t2 = run.task_of(a1), run.task_of(a2)
-    r1, r2 = run.reply(a1, task=t1), run.reply(a2, task=t2)
+    # Neither carries a task, so the two replies are told apart only by their order: the first
+    # said is put to the first line, for the table.
+    r1 = run.reply(a1)
+    run.reply(a2, skip={r1["seq"]} if r1 else ())
+    time.sleep(3)
     sent = box.world.sent[mark:]
     rep.check(any(re.match(r"^(execute .* run )?give Steve (minecraft:)?golden_apple( 1)?$", x) for x in sent)
               and any(re.match(r"^(execute .* run )?give Alex (minecraft:)?emerald 16$", x) for x in sent),
               "the golden apple to Steve and 16 emeralds to Alex, in the world", "sent %r" % sent)
-    rep.check(r1 and r2 and t1 != t2, "both answered, each under its own task (%s, %s)" % (t1, t2),
-              "%r %r" % (r1, r2))
+    said = box.said(s1)
+    rep.check(len(said) == 2 and all(x["fields"] == "say -" for x in said) and not run.tasked(a1),
+              "both answered: two AI say - rows (%s), and no AI task row" % "; ".join(repr(x["text"]) for x in said),
+              "%r %r" % ([(x["fields"], x["text"]) for x in said], run.tasked(a1)))
+    copies = box.copies_since(at)
+    rep.check(all(m.get("task") is None for m in copies.values())
+              and any(re.match(r"^command_steve(_\d+)?$", c) for c in copies)
+              and any(re.match(r"^command_alex(_\d+)?$", c) for c in copies),
+              "each player's copy named for them, with no task: %s" % ", ".join(sorted(copies)),
+              "%r" % {c: (m.get("action"), m.get("task")) for c, m in copies.items()})
     c1, c2 = run.call_ms("#%d" % s1), run.call_ms("#%d" % s2)
     if c1 and c2:
         (_, ms1, _, end1), (_, ms2, _, end2) = c1[0], c2[0]
@@ -690,14 +732,14 @@ def end(run):
               "%r" % [(x["seq"], x["line"][:80]) for x in unread])
     r = box.stop()
     log = box.log()
-    tasks = box.tasks()
+    tasks = box.tasks_table(run.started)
     rep.check(r is not None and r.returncode == 0 and "stopped pid" in r.stdout
               and re.search(r"^\S+ stop stopped$", log, re.M),
               "vfg brain stop: the brain stopped cleanly",
               "%s %s; log tail %s" % (r and r.stdout, r and r.stderr, short(log[-800:])))
     rep.check(not os.path.exists(os.path.join(box.brain, "brain.pid")), "brain.pid is gone")
-    rep.check(tasks and not [t for t in tasks.values() if t.get("status") == "open"],
-              "tasks.json: %d tasks, none left open" % len(tasks), "%r" % tasks)
+    rep.check(tasks == [], "no task in vfg.db's tasks table opened by the run: no line of it went to the "
+              "orchestrator", "no tasks table" if tasks is None else "%r" % tasks)
     rep.check("Traceback" not in log and not re.search(r"^\S+ error ", log, re.M), "no traceback or error in brain.log",
               short(log[max(0, log.find("Traceback")):][:1500]))
     leaks = []
@@ -718,7 +760,7 @@ def end(run):
     print("\nCOST: %d calls, $%.4f; %d prompt tokens, %.0f%% read from the cache" % (
         len(use), cost, prompt, 100.0 * cached / prompt if prompt else 0))
     for u in use:
-        print("  %-8s %-10s %-24s in %6d (%3.0f%% cached) out %4d  $%.5f" % (
+        print("  %-12s %-10s %-24s in %6d (%3.0f%% cached) out %4d  $%.5f" % (
             u["component"], u["ref"], u["model"], u["input_tokens"],
             100.0 * (u["cache_read_tokens"] or 0) / u["input_tokens"] if u["input_tokens"] else 0,
             u["output_tokens"], u["cost_usd"] or 0))

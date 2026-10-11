@@ -193,14 +193,15 @@ def scenario(run, name, asker, other, said, world):
                                                                    ("#%d" % a["seq"],))), 15) or []
     logged = [m.group(3) for m in map(SAID.match, live.log_since(live.mark).splitlines())
               if m and m.group(2) == str(a["seq"])]
-    opened = [t for t in live.tasks().values() if t.get("player") == asker and parse_iso(t["at"]) >= a["at"] - 2]
+    opened = [t for t in live.sql("SELECT * FROM tasks WHERE player = ? ORDER BY created_at", (asker,))
+              if parse_iso(t["created_at"]) >= a["at"] - 2]   # the brain's tasks, in vfg.db by name
     task = opened[0] if opened else {}
     first_fed = rows[0]["fed_at"] and [r["seq"] for r in live.rows(run.start_seq, "LINE") if r["text"] == said[0]]
     alone = first_fed and live.sql("SELECT id FROM usage WHERE ref = ?", ("#%d" % first_fed[0],))
     rep.check(a["reply"] and use and logged and all(t == repr(group[:80]) for t in logged)
               and (not task or task.get("line") == group) and not alone,
               "the brain's call is for that LINE (%s #%d%s), and none for the first piece alone"
-              % (" and ".join(use) or "no call", a["seq"], ", task %s's line the group" % task["id"] if task else ""),
+              % (" and ".join(use) or "no call", a["seq"], ", task %s's line the group" % task["name"] if task else ""),
               "usage %r; brain.log %r; task %r; first piece's calls %r" % (use, logged, task, alone))
     effects = [e for e in world["effects"] if live.effect_level(asker, e) is not None]
     items = {i: live.count_items(asker, i) - before[i] for i in world["items"]}

@@ -12,6 +12,8 @@ On the box it is the systemd unit `vfg-bridge`:
 Python 3.12 (below). Two one-shot modes:
 `--init-db` applies the schema and exits; `--parse FILE` prints each console line it recognises as
 JSON. `vfg_feed.py` is the one feed writer, deployed to `/opt/vfg/lib/`; the Jev filter imports it.
+It checks each type's fields as it writes; an `AI` row's are `<say|action|task|result|note> <name|->`,
+the name a task's (`galick_gun_styrk`, `[a-z][a-z0-9_]{1,31}`). Older `T<n>` rows still read.
 
 **An older history is brought up to date** whenever the schema is applied: the columns added since
 §4's DDL (`db.COLUMNS`), and `lines` and `usage` rebuilt once, in one transaction, when their CHECK
@@ -94,6 +96,13 @@ incantation_id, action, copy, status, error, line_id, client_cast_id UNIQUE)`, i
 mod's audio clock, after the same clock guard as lines. The guard keeps the shift it found for a
 player's clock and applies it to their later casts and lines while it brings them within bounds,
 so a cast and its line stay on one clock. `lines` has `dropped` and `cast_id`.
+
+`tasks` in `vfg.db` is the brain's, one row per implementer task, keyed by its name:
+`(name PRIMARY KEY, description, player, status open|done|failed, line, brief, made, variables,
+session, result, created_at, updated_at, closed_at)`, `made` and `variables` JSON text. The bridge
+creates it, on every start and every `--init-db` (`deploy.sh` runs one), and never writes it: only
+`vfg task set` does, for the brain. A history from before it gets the table on the bridge's next start,
+and nothing else changes (`PRAGMA user_version` 4).
 
 ## Settings
 

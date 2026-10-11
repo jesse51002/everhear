@@ -49,13 +49,21 @@ TYPES = ["LINE", "GAME", "AI", "SYS"]
 AI_KINDS = ["say", "action", "task", "result", "note"]
 CLASSES = ["action_oriented", "conversational", "context", "not_relevant", "unjudged"]
 # lib/py/vfg_llm.py's Component, and the usage table's CHECK (bridge/vfg_bridge/db.py): brain,
-# respond and planner are the brain's, alias the incantation alias call's; the old components
-# stay valid for the rows that have them.
+# respond, planner and orchestrator are the brain's, alias the incantation alias call's;
+# conversation stays valid for the rows that have it.
 COMPONENTS = ["jev", "brain", "respond", "implementer", "planner", "alias", "conversation", "orchestrator"]
-PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
+PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,16}\Z")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
-TASK_RE = re.compile(r"^T[1-9][0-9]*$")
-AI_FIELDS_RE = re.compile(r"^(say|action|task|result|note) (T[1-9][0-9]*|-)$")
+# A task's name (Prototype_Named_Tasks): the brain's tasks table's key, and the --task, --by and AI
+# field that name one. cast is the bridge's own task for an incantation's copies, never a task's name.
+# \Z, not $: $ also matches before a last newline, and "gun_a\n" would pass as a name.
+TASK_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}\Z")
+AI_FIELDS_RE = re.compile(r"^(say|action|task|result|note) ([a-z][a-z0-9_]{1,31}|-)\Z")
+TASK_COLUMNS = ("name", "description", "player", "status", "line", "brief", "made", "variables",
+                "session", "result", "created_at", "updated_at", "closed_at")
+TASK_STATUSES = ("open", "done", "failed")
+MADE_KINDS = ("scripts", "actions", "presets", "copies")
+RESERVED_TASKS = ("cast",)
 # Any type: a feed written before ORCH was retired, or after a new type came, still reads.
 FEED_LINE_RE = re.compile(r"^([A-Z]+)#(\d+) \d\d:\d\d:\d\d ")
 PLACE_RE = re.compile(r"^[a-z0-9_]{1,32}$")
@@ -179,6 +187,15 @@ def clean_text(text):
     return "".join(" " if unicodedata.category(c) == "Cc" else c for c in text).strip()
 
 
+def check_task(name, flag):
+    """Exit 2 unless `name` is a task's name: TASK_RE, and never the bridge's cast."""
+    if name in RESERVED_TASKS:
+        raise Fail(2, "%s is the bridge's task for an incantation's copies, never a task's name" % name)
+    if not TASK_RE.match(name):
+        raise Fail(2, "%s %s is not a task's name (a-z, 0-9 and _, starting with a letter, 2 to 32), "
+                      "like galick_gun_styrk" % (flag, name if name.isprintable() else repr(name)))
+
+
 def check_home(words):
     home = os.environ.get("HOME", "")
     if home in ("", "/"):
@@ -288,7 +305,7 @@ class Config(object):
 
     @property
     def brain(self):
-        """VFG_BRAIN_DIR, else $VFG_HOME/brain: the brain's tasks.json, pid, log and lock."""
+        """VFG_BRAIN_DIR, else $VFG_HOME/brain: the brain's pid, log and lock."""
         return os.path.expanduser(self.get("VFG_BRAIN_DIR") or os.path.join(self.home, "brain"))
 
     def require_ssh(self):
@@ -562,7 +579,7 @@ def tellraws(target, prefix, text):
 
 
 def say_words(a):
-    """Every word is the message, wherever `--to P` or `--task T7` sits; after `--`, all are.
+    """Every word is the message, wherever `--to P` or `--task <name>` sits; after `--`, all are.
 
     A model that splits the text on a stray quote still sends the whole line."""
     flags = {"--to": a.to, "--task": a.task}
@@ -574,7 +591,8 @@ def say_words(a):
             break
         if tok in flags:
             if i + 1 >= len(rest):
-                raise Fail(2, "--to needs a player name" if tok == "--to" else "--task needs a task, like T7")
+                raise Fail(2, "--to needs a player name" if tok == "--to"
+                           else "--task needs a task's name, like galick_gun_styrk")
             flags[tok] = rest[i + 1]
             i += 2
             continue
@@ -588,15 +606,15 @@ def say_words(a):
 
 
 def cmd_say(cfg, a):
-    """tellraw, the text stored as an ai line, and the feed's `AI say <task|->` row: one SSH call."""
+    """tellraw, the text stored as an ai line, and the feed's `AI say <task's name|->` row: one SSH call."""
     a.to, a.task, words = say_words(a)
     text = clean_text(" ".join(words))
     if not text:
         raise Fail(2, "nothing to say")
     if a.to is not None and not PLAYER_RE.match(a.to):
         raise Fail(2, "--to must be a player name (letters, digits, _; at most 16)")
-    if a.task is not None and not TASK_RE.match(a.task):
-        raise Fail(2, "--task is T<n>, like T7")
+    if a.task is not None:
+        check_task(a.task, "--task")
     commands = tellraws(a.to or "@a", cfg.get("VFG_CHAT_PREFIX"), text)
     store = "(to %s) %s" % (a.to, text) if a.to else text
     return finish(*remote(cfg, a, "rcon.py", {"mode": "say", "to": a.to, "commands": commands,
@@ -652,9 +670,10 @@ def cmd_history(cfg, a):
 
 def cmd_context(cfg, a):
     """The brain's context: the feed rows since then (by default the last
-    VFG_BRAIN_HISTORY_HOURS), oldest first, and with --json the feed's highest seq last, which the
-    brain follows from even when no row is that recent; or `mark`, which sets processed_at on the
-    rows it names. One SSH call either way."""
+    VFG_BRAIN_HISTORY_HOURS), oldest first, and with --json then {"tasks": [every row of the box's
+    tasks table, oldest first]}, the brain's tasks as it starts, and the feed's highest seq last,
+    which the brain follows from even when no row is that recent; or `mark`, which sets
+    processed_at on the rows it names. One SSH call either way."""
     if a.op == "mark":
         seqs = []
         for s in a.seqs:
@@ -733,7 +752,8 @@ def feed_post(cfg, a, typ, fields, text):
     if typ == "SYS" and fields != "":
         raise Fail(2, "SYS lines have no fields")
     if typ == "AI" and not AI_FIELDS_RE.match(fields):
-        raise Fail(2, "AI fields are '<%s> <task|->', like 'action T7' or 'note -'" % "|".join(AI_KINDS))
+        raise Fail(2, "AI fields are '<%s> <name|->', a task's name or -, like 'task galick_gun_styrk' "
+                      "or 'action -'" % "|".join(AI_KINDS))
     # ssh carries no environment, and vfg_feed.py finds its files by VFG_DB and
     # VFG_FEED (default /opt/vfg), so they are set here; `env` keeps them
     # assignments however shlex quotes them.
@@ -860,14 +880,15 @@ class Pending(object):
 
 # ----------------------------------------------------------------- brain
 
-# The brain, brain/run, runs detached on this PC with its files in $VFG_HOME/brain: brain.pid,
-# brain.log (one `<ISO time> <area> <message>` line each; its output goes there too) and
-# tasks.json, {"next", "tasks": {"T183": {"id", "at", "player", "line", "task", "status",
-# "result", "session", "closed_at"}}}, which only the brain writes. vfg reads the open tasks
-# there (vfg brain status) and a task's brief (vfg route --task).
+# The brain, brain/run, runs detached on this PC with its files in $VFG_HOME/brain: brain.pid and
+# brain.log (one `<ISO time> <area> <message>` line each; its output goes there too). Its tasks are
+# rows of the tasks table in the box's vfg.db (Prototype_Named_Tasks), which only the brain writes,
+# through vfg task set; vfg reads them through remote/tasks.py, as vfg task list does: the open ones
+# (vfg brain status) and one task's description (vfg route --task).
 BRAIN_MARKER = "VFG_BRAIN=1"  # in its environment: a pid without it is not the brain
 START_CHECK_S = 3.0           # a brain that exits within this did not start
 STOP_GRACE_S = 15.0           # SIGTERM, then SIGKILL after this
+BRAIN_TASKS_S = 10.0          # vfg brain status's read of the open tasks from the box
 
 
 def brain_pidfile(cfg):
@@ -886,22 +907,6 @@ def brain_pid(cfg):
     except OSError:
         pass
     return None
-
-
-def brain_tasks(cfg):
-    """tasks.json's tasks, {id: task}; {} when there is no tasks.json or it does not read."""
-    try:
-        with open(os.path.join(cfg.brain, "tasks.json"), encoding="utf-8") as f:
-            tasks = json.load(f).get("tasks")
-    except (OSError, ValueError, AttributeError):
-        return {}
-    if not isinstance(tasks, dict):
-        return {}
-    return dict((k, v) for k, v in tasks.items() if isinstance(v, dict))
-
-
-def task_number(tid):
-    return int(tid[1:]) if TASK_RE.match(tid) else 0
 
 
 def cmd_brain_start(cfg, a):
@@ -992,7 +997,9 @@ def cmd_brain_stop(cfg, a):
 
 
 def cmd_brain_status(cfg, a):
-    """Running or stopped, then one line per open task: its id, its player and its brief."""
+    """Running or stopped, then one line per open task, oldest first, read from the box: its name,
+    its player and its description. A read that fails warns and says `open   ?`; the exit code is
+    the brain's either way."""
     pid = brain_pid(cfg)
     if pid:
         try:
@@ -1002,13 +1009,17 @@ def cmd_brain_status(cfg, a):
         out("brain  running pid %d since %s" % (pid, since))
     else:
         out("brain  stopped")
-    tasks = brain_tasks(cfg)
-    open_ = sorted((t for t, v in tasks.items() if v.get("status") == "open"), key=task_number)
-    for tid in open_:
-        brief = clean_text(str(tasks[tid].get("task") or ""))
-        brief = brief if len(brief) <= 120 else brief[:119] + "…"
-        out("open   %s %s: %s" % (tid, tasks[tid].get("player") or "?", brief))
-    if not open_:
+    try:
+        open_ = task_read(cfg, {"open": True, "name": None}, BRAIN_TASKS_S if a.timeout is None else a.timeout)
+    except Fail as f:
+        warn("cannot read the open tasks from the box: %s" % f.msg)
+        out("open   ? (%s)" % f.msg)
+        open_ = None
+    for t in open_ or []:
+        text = clean_text(str(t.get("description") or ""))
+        text = text if len(text) <= 120 else text[:119] + "…"
+        out("open   %s %s: %s" % (t.get("name"), t.get("player") or "-", text))
+    if open_ == []:
         out("open   none")
     if not pid:
         raise Fail(1, "the brain is not running — vfg brain start")
@@ -1017,6 +1028,104 @@ def cmd_brain_status(cfg, a):
 
 def cmd_brain(cfg, a):
     return {"start": cmd_brain_start, "stop": cmd_brain_stop, "status": cmd_brain_status}[a.op](cfg, a)
+
+
+# ----------------------------------------------------------------- tasks
+
+# The brain's tasks (Prototype_Named_Tasks): the tasks table in the box's vfg.db, one row per
+# implementer task, keyed by its name, which the bridge creates. `vfg task set` is how the brain,
+# and only the brain, writes a row: every key checked here, then one SSH call to remote/tasks.py,
+# an insert or an update of the keys given in one transaction there. `vfg task list` reads them;
+# vfg brain status and vfg route --task read them the same way (task_read). A row is one shape
+# everywhere: TASK_COLUMNS, made {"scripts", "actions", "presets", "copies"} of names, variables a
+# list of the action's fields (vfg_actions.variables), times ISO UTC with milliseconds and a Z.
+
+def task_read(cfg, args, timeout, keep_master=False):
+    """Tasks from the box, as vfg task list --json prints them, `args` {"open", "name"} saying
+    which: a list of rows. Fail when they cannot be read: not configured, EC2 down or out of
+    time, or no tasks table on the box yet."""
+    data = program("tasks.py", dict(args, op="list", json=True, vfg=cfg.rvfg, mc=cfg.rmc))
+    rc, o, e = Ssh(cfg).call(data, timeout, keep_master=keep_master)
+    if rc != 0:
+        finish(rc, b"", e)   # raises Fail with the box's one line
+    try:
+        rows = json.loads(o.decode("utf-8"))
+    except ValueError:
+        raise Fail(1, "tasks.py answered something that is not JSON")
+    if not isinstance(rows, list):
+        raise Fail(1, "tasks.py answered something that is not a list")
+    return [t for t in rows if isinstance(t, dict)]
+
+
+def checked_task(raw):
+    """vfg task set's JSON, checked: one object of TASK_COLUMNS only, its name a task's (never
+    cast), its status open, done or failed, its description a text, its player a player's name, made
+    an object of names per kind, variables a list of objects, and its times ISO with milliseconds
+    and a Z (parse_when). The dict sent to the box; Fail 2 for anything wrong, before any SSH call."""
+    try:
+        task = json.loads(raw)
+    except ValueError as e:
+        raise Fail(2, "the task is one JSON object: %s" % e)
+    if not isinstance(task, dict):
+        raise Fail(2, "the task is one JSON object, not %s" % type(task).__name__)
+    unknown = [k for k in task if k not in TASK_COLUMNS]
+    if unknown:
+        raise Fail(2, "%s %s not a task's key; its keys: %s" % (", ".join(sorted(unknown)),
+                                                               "is" if len(unknown) == 1 else "are",
+                                                               ", ".join(TASK_COLUMNS)))
+    name = task.get("name")
+    if not isinstance(name, str):
+        raise Fail(2, "the task needs its name, like {\"name\": \"galick_gun_styrk\", …}")
+    check_task(name, "name")
+    if "status" in task and task["status"] not in TASK_STATUSES:
+        raise Fail(2, "status is %s, not %r" % (", ".join(TASK_STATUSES), task["status"]))
+    if "description" in task and not (isinstance(task["description"], str) and task["description"].strip()):
+        raise Fail(2, "description is what the thing is now: a text that is not empty")
+    if task.get("player") is not None and not (isinstance(task["player"], str) and PLAYER_RE.match(task["player"])):
+        raise Fail(2, "player is a player's name (letters, digits, _; at most 16) or null")
+    for k in ("line", "brief", "session", "result"):
+        if task.get(k) is not None and not isinstance(task[k], str):
+            raise Fail(2, "%s is a text or null" % k)
+    made = task.get("made")
+    if made is not None:
+        if not isinstance(made, dict) or any(k not in MADE_KINDS for k in made) or \
+                any(not isinstance(v, list) or any(not isinstance(x, str) for x in v) for v in made.values()):
+            raise Fail(2, "made is null, or an object of %s, each a list of names" % ", ".join(MADE_KINDS))
+    variables = task.get("variables")
+    if variables is not None and not (isinstance(variables, list) and all(isinstance(v, dict) for v in variables)):
+        raise Fail(2, "variables is null, or a list of objects, one per field of the task's action")
+    for k in ("created_at", "updated_at", "closed_at"):
+        if task.get(k) is None:
+            continue
+        if not isinstance(task[k], str):
+            raise Fail(2, "%s is a time, like 2026-10-11T18:22:33.120Z, or null" % k)
+        try:
+            task[k] = parse_when(task[k])
+        except Fail as f:
+            raise Fail(2, "%s: %s" % (k, f.msg))
+    return task
+
+
+def cmd_task_set(cfg, a):
+    """vfg task set '<json>' (or - for stdin): one SSH call, which adds the task or changes the
+    keys given; it prints added, updated, or kept when the box holds a newer write."""
+    raw = sys.stdin.read() if a.row == "-" else a.row
+    task = checked_task(raw)
+    # A new task never takes a library action's name: the box refuses the insert when this is true.
+    library_action = os.path.isfile(os.path.join(cfg.repo, "actions", task["name"] + ".py"))
+    return finish(*remote(cfg, a, "tasks.py", {"op": "set", "task": task, "library_action": library_action}, 30))
+
+
+def cmd_task_list(cfg, a):
+    """vfg task list [--open] [--name N] [--json]: one SSH call."""
+    if a.name is not None:
+        check_task(a.name, "--name")
+    return finish(*remote(cfg, a, "tasks.py", {"op": "list", "open": bool(a.open), "name": a.name,
+                                               "json": bool(a.json)}, 30))
+
+
+def cmd_task(cfg, a):
+    return {"set": cmd_task_set, "list": cmd_task_list}[a.op](cfg, a)
 
 
 # --------------------------------------------------------------- scripts
@@ -1349,12 +1458,13 @@ def checked_values(cfg, a, va, cls, given):
     return with_places(cfg, a, lambda places: va.check_values(cls, given, places=places))
 
 
-def start_copy(cfg, a, name, cls, source, values, live, task, as_=None):
+def start_copy(cfg, a, name, cls, source, values, live, task, as_=None, base=None):
     """Start a copy on the box and wait as its runs says, in one SSH call when the box has the
     action's script and _lib as they are here: the call sends their stamps (stamps_for), and
     the box starts the copy when its own match. When one does not, the box answers that it needs
-    them, and a second call sends them (tars_for) with the run. The box's answer: {"copy",
-    "pid", "started", "running", "code", "result", "error", "tail"}."""
+    them, and a second call sends them (tars_for) with the run. `base` is the name the copy takes
+    in place of the action's (--for: <action>_<player>), then _2, _3 ..., picked on the box. The
+    box's answer: {"copy", "pid", "started", "running", "code", "result", "error", "tail"}."""
     owner = cfg.get("VFG_OWNER")
     if owner and not PLAYER_RE.match(owner):
         raise Fail(3, "not configured: VFG_OWNER must be a Minecraft name")
@@ -1366,7 +1476,7 @@ def start_copy(cfg, a, name, cls, source, values, live, task, as_=None):
     script = cls.script
     home = script_home(cfg, source, script)
     args = {"op": "run", "action": name, "script": script, "source": home, "server": server_name(cfg),
-            "values": values, "live": live, "runs": runs, "task": task, "as": as_,
+            "values": values, "live": live, "runs": runs, "task": task, "as": as_, "base": base,
             "stamps": stamps_for(cfg, home, [script]), "owner": owner, "poll": live_poll(cfg),
             "wait": wait, "on_result": runs != "once"}
     timeout = a.timeout if getattr(a, "timeout", None) is not None else wait + 30
@@ -1419,16 +1529,17 @@ def answer_of(name, got, notes):
     return line
 
 
-def run_action(cfg, a, name, given, as_=None, task=None, extra=None):
+def run_action(cfg, a, name, given, as_=None, task=None, extra=None, base=None):
     """Check the values here, run the action on EC2, write the copy through to running.json:
     the JSON line's dict. Fail for anything that stopped it before it ran. `extra` goes into
-    the copy's values as it is, checked already (an edit's values, against its copy's action)."""
+    the copy's values as it is, checked already (an edit's values, against its copy's action);
+    `base` names the copy in place of the action (start_copy)."""
     cfg.require_ssh()
     va, cat, cls = action_class(cfg, name)
     checked = checked_values(cfg, a, va, cls, given)
     values = dict(checked.values)
     values.update(extra or {})
-    got = start_copy(cfg, a, name, cls, cat.source(name), values, list(checked.live), task, as_)
+    got = start_copy(cfg, a, name, cls, cat.source(name), values, list(checked.live), task, as_, base)
     line = answer_of(name, got, checked.notes)
     if got["running"]:
         note_copy(cfg, got["copy"], {"action": name, "script": cls.script, "values": values,
@@ -1517,21 +1628,28 @@ def known_copy(cfg, a, copy):
 
 
 def action_words(words):
-    """`<action> key=value … [as=<name>] [--task T7]`, in any order: (action, given, as, task)."""
+    """`<action> key=value … [as=<copy> | --for <player>] [--task <name>]`, in any order: (action,
+    given, as, for, task)."""
     if words[:1] == ["--"]:
         words = words[1:]
-    name, given, as_, task = None, {}, None, None
+    name, given, as_, for_, task = None, {}, None, None, None
     i = 0
     while i < len(words):
         w = words[i]
-        if w == "--task":
+        if w in ("--task", "--for"):
             if i + 1 >= len(words):
-                raise Fail(2, "--task takes the task, like --task T7")
-            task = words[i + 1]
+                raise Fail(2, "--task takes a task's name, like --task galick_gun_styrk" if w == "--task"
+                           else "--for takes the player the copy is for, like --for Steve")
+            if w == "--task":
+                task = words[i + 1]
+            else:
+                for_ = words[i + 1]
             i += 2
             continue
         if w.startswith("--task="):
             task = w[len("--task="):]
+        elif w.startswith("--for="):
+            for_ = w[len("--for="):]
         elif name is None and "=" not in w:
             name = w
         elif "=" in w:
@@ -1548,23 +1666,30 @@ def action_words(words):
             raise Fail(2, "%r is not key=value" % w)
         i += 1
     if name is None:
-        raise Fail(2, "which action? vfg action run <action> key=value … [as=<name>] [--task T7]")
+        raise Fail(2, "which action? vfg action run <action> key=value … [as=<copy> | --for <player>] "
+                      "[--task <name>]")
     if not NAME_RE.match(name):
         raise Fail(2, "%s is not an action name" % name)
-    if task is not None and not TASK_RE.match(task):
-        raise Fail(2, "--task is T<n>, like T7")
+    if task is not None:
+        check_task(task, "--task")
     if as_ is not None and not COPY_RE.match(as_):
         raise Fail(2, "as=%s is not a copy name (a-z, 0-9 and _, at most 48)" % as_)
+    if for_ is not None and not PLAYER_RE.match(for_):
+        raise Fail(2, "--for %s is not a player's name (letters, digits, _; at most 16)" % for_)
+    if as_ is not None and for_ is not None:
+        raise Fail(2, "as= and --for both name the copy")
     check_home(given.values())
-    return name, given, as_, task
+    return name, given, as_, for_, task
 
 
-def run_named(cfg, a, name, given, as_=None, task=None):
+def run_named(cfg, a, name, given, as_=None, task=None, for_=None):
     """Any action, as vfg action run and its shortcuts run it: edit through run_edit and stop
     through run_stop, which write the copy they name through to running.json; the incantation
-    actions through run_incantation; the rest through run_action, and after a run that went
-    well, which deployed the action's script as it is here, the incantations bound to it made
-    to follow it (refresh_incantations, its notes the line's)."""
+    actions through run_incantation; the rest through run_action, a copy for `for_` named
+    <action>_<player> (the brain's own copy: railgun_steve, then railgun_steve_2), which edit,
+    stop and the incantation actions leave alone; after a run that went well, which deployed the
+    action's script as it is here, the incantations bound to it made to follow it
+    (refresh_incantations, its notes the line's)."""
     if name == "edit":
         copy, changes = edit_words(given)
         return run_edit(cfg, a, copy, changes, task)
@@ -1572,7 +1697,8 @@ def run_named(cfg, a, name, given, as_=None, task=None):
         return run_stop(cfg, a, given["copy"], as_, task)
     if name in INCANT_ACTIONS:
         return run_incantation(cfg, a, name, given, as_, task)
-    line = run_action(cfg, a, name, given, as_, task)
+    base = "%s_%s" % (name, for_.lower()) if for_ and name != "stop" else None
+    line = run_action(cfg, a, name, given, as_, task, base=base)
     if line["ok"]:
         line["notes"] = line["notes"] + refresh_incantations(cfg, a, name)
     return line
@@ -1582,8 +1708,8 @@ def cmd_action_run(cfg, a):
     """vfg action run: ONE JSON line, whatever happens; exit 0 when ok."""
     name, task = None, None
     try:
-        name, given, as_, task = action_words(list(a.rest))
-        line = run_named(cfg, a, name, given, as_, task)
+        name, given, as_, for_, task = action_words(list(a.rest))
+        line = run_named(cfg, a, name, given, as_, task, for_)
     except Fail as f:
         out(json.dumps({"ok": False, "copy": "", "action": name or "", "running": False, "summary": "",
                         "facts": {}, "notes": [], "error": f.msg or "failed"}, ensure_ascii=False))
@@ -1739,12 +1865,13 @@ def show_value(v):
 
 
 def copy_line(name, e, base):
-    """`galick_gun_2 — galick_gun, T7, player=Alex cooldown=0`: the action when it is not the
-    copy's own name, the task, and the values that differ from the action's."""
+    """`railgun_steve — railgun, player=Steve cooldown=0`: the action when it is not the copy's own
+    name, the task that started it when that is not the copy's own name either (a task's copy,
+    galick_gun_styrk, carries it already), and the values that differ from the action's."""
     bits = []
     if e.get("action") and e.get("action") != name:
         bits.append(e["action"])
-    if e.get("task"):
+    if e.get("task") and e.get("task") != name:
         bits.append(e["task"])
     changed = differs(base.get(e.get("action"), {}), e.get("values"))
     if changed:
@@ -2309,7 +2436,7 @@ def cmd_state(cfg, a):
             bits = []
             if r["action"] != r["copy"]:
                 bits.append(r["action"] or "?")
-            if r["task"]:
+            if r["task"] and r["task"] != r["copy"]:     # a task's own copy carries its name already
                 bits.append(r["task"])
             if r["changed"]:
                 bits.append(" ".join("%s=%s" % (k, show_value(v)) for k, v in r["changed"].items()))
@@ -2489,8 +2616,8 @@ def cmd_place(cfg, a):
     dim = None if a.dim is None else a.dim.strip().lower()
     if dim is not None and (a.at is None or not DIM_RE.match(dim)):
         raise Fail(2, "--dim goes with --at: overworld, the_nether or the_end")
-    if a.by is not None and not TASK_RE.match(a.by):
-        raise Fail(2, "--by is a task id, like T7")
+    if a.by is not None:
+        check_task(a.by, "--by")
     # The save_place action: where a player stands, or x y z [dim], under the name.
     given = {"name": a.name}
     if a.player is not None:
@@ -3170,15 +3297,21 @@ def lib_module(name):
     return __import__(name)
 
 
-def task_record(cfg, tid):
-    """(task, context) for `tid` from the brain's tasks.json, or None: its brief, and the
-    player's words as its context. The one place vfg route reads the brain's files, so a
-    change of their shape is one change here."""
-    t = brain_tasks(cfg).get(tid)
-    if not t or not t.get("task"):
+ROUTE_TASK_S = 1.5   # vfg route's read of its task's row, at most, out of VFG_ROUTE_TIMEOUT_S
+
+
+def task_record(cfg, a, name, timeout=ROUTE_TASK_S):
+    """(task, context) for the task `name`, read from the box's tasks table (task_read): its
+    description, else its brief, and `<player> said: <line>` as its context; None when the box
+    has no such task. Fail when it cannot be read. The one place vfg route reads the brain's
+    tasks, so a change of their shape is one change here."""
+    rows = task_read(cfg, {"open": False, "name": name}, timeout, keep_master=True)
+    t = rows[0] if rows else None
+    text = str((t or {}).get("description") or (t or {}).get("brief") or "")
+    if not text:
         return None
     line = str(t.get("line") or "")
-    return str(t["task"]), ("%s said: %s" % (t["player"], line) if t.get("player") and line else line)
+    return text, ("%s said: %s" % (t["player"], line) if t.get("player") and line else line)
 
 
 def setting(cfg, key, default, lo, hi):
@@ -3193,13 +3326,16 @@ def setting(cfg, key, default, lo, hi):
     return v
 
 
-def jev_ask(cfg, state, questions, budget):
+def jev_ask(cfg, state, questions, budget, said=None):
     """One Jev call through remote/jev.py, everything within `budget` seconds.
 
     Raises route.JevFailed for anything short of an answer: not configured,
-    EC2 unreachable, Jev down or refusing, or no answer in time. A late answer
-    is never waited for, and the shared SSH master is left up for the next."""
+    EC2 unreachable, Jev down or refusing, or no answer in time, which it says as
+    `said` seconds (VFG_ROUTE_TIMEOUT_S, of which `budget` is what was left), else
+    `budget`. A late answer is never waited for, and the shared SSH master is left
+    up for the next."""
     route = lib_module("route")
+    late = "jev did not answer within %s s" % fmt_s(budget if said is None else said)
     deadline = time.monotonic() + budget
     spent = route.estimate(state, questions)
     try:
@@ -3210,7 +3346,7 @@ def jev_ask(cfg, state, questions, budget):
     for direct in ([False, True] if via_master else [True]):
         left = deadline - time.monotonic()
         if left <= 0.05:
-            raise route.JevFailed("jev did not answer within %s s" % fmt_s(budget), tokens=spent)
+            raise route.JevFailed(late, tokens=spent)
         data = program("jev.py", {"vfg": cfg.rvfg, "mc": cfg.rmc, "state": state,
                                   "questions": questions, "timeout": round(max(0.2, left - 0.05), 2)})
         try:
@@ -3223,7 +3359,7 @@ def jev_ask(cfg, state, questions, budget):
         except subprocess.TimeoutExpired:
             p.kill()
             p.communicate()
-            raise route.JevFailed("jev did not answer within %s s" % fmt_s(budget), tokens=spent)
+            raise route.JevFailed(late, tokens=spent)
         if p.returncode == 255 and not direct:
             txt = e.decode("utf-8", "replace")
             if "Host key verification failed" not in txt and "IDENTIFICATION HAS CHANGED" not in txt:
@@ -3237,7 +3373,7 @@ def jev_ask(cfg, state, questions, budget):
         line = line[5:] if line.startswith("vfg: ") else line
         if line.startswith("jev did not answer within"):
             # the box gave up first, on what was left of the budget
-            raise route.JevFailed("jev did not answer within %s s" % fmt_s(budget), tokens=spent)
+            raise route.JevFailed(late, tokens=spent)
         raise route.JevFailed(line)
     try:
         got = json.loads(o.decode("utf-8"))
@@ -3276,31 +3412,40 @@ def flush_usage_later(cfg):
 
 
 def cmd_route(cfg, a):
-    """The example scripts and presets for one implementer's brief, as JSON."""
+    """The example scripts and presets for one implementer's brief, as JSON. With --task, the
+    task's row is read from the box first (at most ROUTE_TASK_S, out of the budget): Jev gets its
+    description and the player's words beside the brief; without it, or when it cannot be read,
+    the brief alone."""
     t0 = time.monotonic()
-    if a.task is not None and not TASK_RE.match(a.task):
-        raise Fail(2, "--task is T<n>, like T7")
+    if a.task is not None:
+        check_task(a.task, "--task")
     ref = a.ref if a.ref is not None else a.task
     if ref is not None and not 0 < len(ref) <= 64:
         raise Fail(2, "--ref is 1 to 64 characters")
     if sys.stdin is None or sys.stdin.isatty():
-        raise Fail(2, "the brief goes on stdin: vfg route --task T7 < brief.txt")
+        raise Fail(2, "the brief goes on stdin: vfg route --task galick_gun_styrk < brief.txt")
     brief = sys.stdin.buffer.read().decode("utf-8", "replace").strip()
-    task, context = "", ""
-    if a.task:
-        found = task_record(cfg, a.task)
-        if found is None:
-            warn("%s is not in the brain's tasks.json — routing on the brief alone" % a.task)
-        else:
-            task, context = found
-    if not brief and not task:
-        raise Fail(2, "no brief on stdin")
     budget = setting(cfg, "VFG_ROUTE_TIMEOUT_S", 3.0, 0.1, 60)
     load = setting(cfg, "VFG_ROUTE_LOAD", 0.3, 0.0, 1.0)
+    task, context = "", ""
+    if a.task:
+        try:
+            found = task_record(cfg, a, a.task, min(ROUTE_TASK_S, budget))
+        except Fail as f:
+            warn("cannot read %s from the box (%s) — routing on the brief alone" % (a.task, f.msg))
+        else:
+            if found is None:
+                warn("%s is not a task on the box — routing on the brief alone" % a.task)
+            else:
+                task, context = found
+    if not brief and not task:
+        raise Fail(2, "no brief on stdin")
     route = lib_module("route")
     cards = route.load_cards(cfg.repo, server_name(cfg), actions_cache(cfg))
+    # What Jev gets is what is left of the budget: the task's read came out of it.
     result = route.route(cards, brief, a.task, task, context,
-                         lambda st, qs, b: jev_ask(cfg, st, qs, b), load, budget, t0)
+                         lambda st, qs, b: jev_ask(cfg, st, qs, b, budget), load,
+                         max(0.1, budget - (time.monotonic() - t0)), t0)
     out(json.dumps(result, ensure_ascii=False))
     usage_later(cfg, ref, result["tokens"])
     sys.stderr.write(route.log_line(result) + "\n")
@@ -3657,7 +3802,7 @@ def build_parser():
     s = sub.add_parser("say", help="tellraw to everyone or one player with the [AI] prefix, "
                        "stored as an ai line and fed as AI say")
     s.add_argument("--to", metavar="PLAYER", help="whisper to one player")
-    s.add_argument("--task", metavar="T7", help="the task it is about, in its feed row")
+    s.add_argument("--task", metavar="NAME", help="the task it is about, by its name, in its feed row")
     s.add_argument("text", nargs=argparse.REMAINDER, metavar="<text…>",
                    help="what to say; every word is joined with single spaces "
                         "(text starting with - goes after --)")
@@ -3684,8 +3829,8 @@ def build_parser():
     s.add_argument("--since", metavar="T", help="ISO-8601, or -90s, -10m, -2h, -1d (default: the last "
                    "VFG_BRAIN_HISTORY_HOURS, 6)")
     s.add_argument("--json", action="store_true",
-                   help='one {"seq", "at", "line", "processed_at"} object per line, then {"last_seq": N}, '
-                        'the feed\'s highest seq')
+                   help='one {"seq", "at", "line", "processed_at"} object per line, then {"tasks": [...]}, '
+                        'every row of the box\'s tasks table, then {"last_seq": N}, the feed\'s highest seq')
     cs = s.add_subparsers(dest="op", metavar="mark")
     w = cs.add_parser("mark", help="set processed_at to now on these rows, where it is not set yet; "
                       "prints how many it set")
@@ -3716,7 +3861,21 @@ def build_parser():
                   "(prints its pid when it runs already)")
     bs.add_parser("stop", help="SIGTERM the brain, which stops its implementers; SIGKILL its process group "
                   "after 15 s")
-    bs.add_parser("status", help="running or stopped, and the open tasks in $VFG_HOME/brain/tasks.json")
+    bs.add_parser("status", help="running or stopped, and the open tasks, read from the box's tasks table")
+
+    s = sub.add_parser("task", help="the brain's tasks, the tasks table in the box's vfg.db: set one "
+                       "(the brain alone writes it) or list them")
+    ts = s.add_subparsers(dest="op", metavar="set|list")
+    ts.required = True
+    w = ts.add_parser("set", help="add a task, or change the keys given, by its name: one JSON object of "
+                      "name, description, player, status, line, brief, made, variables, session, result, "
+                      "created_at, updated_at, closed_at; prints added, updated, or kept when the box "
+                      "holds a newer write")
+    w.add_argument("row", metavar="'<json>'|-", help="the task as one JSON object, or - to read it from stdin")
+    w = ts.add_parser("list", help="one line per task, oldest first: name status player: description; or none")
+    w.add_argument("--open", action="store_true", help="only the open ones")
+    w.add_argument("--name", metavar="NAME", help="only this task")
+    w.add_argument("--json", action="store_true", help="a JSON list of the rows, made and variables decoded")
 
     s = sub.add_parser("jev", help="what Jev reads beside lookout.md: the brain's action menu")
     js = s.add_subparsers(dest="what", metavar="menu")
@@ -3734,7 +3893,8 @@ def build_parser():
     fs.required = True
     w = fs.add_parser("post", help="/opt/vfg/lib/vfg_feed.py post, on the box's Python, over SSH; prints the seq")
     w.add_argument("type", metavar="TYPE", help="LINE, GAME, AI or SYS")
-    w.add_argument("fields", help="the fields; empty for SYS; for AI '<say|action|task|result|note> <task|->'")
+    w.add_argument("fields", help="the fields; empty for SYS; for AI '<say|action|task|result|note> <name|->', "
+                   "a task's name or -")
     w.add_argument("text")
 
     s = sub.add_parser("script", help="make, check and deploy scripts; list, change, stop and read "
@@ -3795,9 +3955,9 @@ def build_parser():
 
     s = sub.add_parser("route", help="the example scripts and presets for an implementer's brief "
                        "(on stdin), picked by Jev; prints JSON")
-    s.add_argument("--task", metavar="T7", help="the task the brief is for; its brief and the player's "
-                   "words come from the brain's tasks.json")
-    s.add_argument("--ref", metavar="REF", help="the usage row's ref (default: the task)")
+    s.add_argument("--task", metavar="NAME", help="the task the brief is for; its description and the "
+                   "player's words come from the box's tasks table")
+    s.add_argument("--ref", metavar="REF", help="the usage row's ref (default: the task's name)")
 
     sub.add_parser("prefix", help="print the implementer's static system prompt: how a script is "
                    "written, the kit, and every library script's and preset's first line and values")
@@ -3814,10 +3974,12 @@ def build_parser():
                                    "until-stopped one answers with its first result() or after a 2 s check. "
                                    "Prints one JSON line {ok, copy, action, running, summary, facts, notes, "
                                    "error}; exit 0 when ok.",
-                       usage="vfg action run <action> key=value … [as=<copy>] [--task T7]")
-    w.add_argument("rest", nargs=argparse.REMAINDER, metavar="<action> key=value … [as=<copy>] [--task T7]",
-                   help="as=<copy> names the copy (refused while one of that name runs); --task is "
-                        "the task that started it")
+                       usage="vfg action run <action> key=value … [as=<copy> | --for <player>] [--task <name>]")
+    w.add_argument("rest", nargs=argparse.REMAINDER,
+                   metavar="<action> key=value … [as=<copy> | --for <player>] [--task <name>]",
+                   help="as=<copy> names the copy (refused while one of that name runs); --for <player> "
+                        "names it <action>_<player>, then _2 while that one runs (not for edit, stop or "
+                        "the incantation actions); --task is the name of the task that started it")
     w = as_.add_parser("list", help="every action, the library's and this server's: its name and "
                        "what it does")
     w.add_argument("--json", action="store_true", help="the actions cache, $VFG_HOME/actions.json")
@@ -3845,13 +4007,13 @@ def build_parser():
     ps.required = True
     w = ps.add_parser("save", help="save where a player stands, or x y z, under a name; prints "
                       "saved <name> at x y z in <dim>",
-                      usage="vfg place save <name> (--player P | --at X Y Z [--dim D]) [--by T<n>]")
+                      usage="vfg place save <name> (--player P | --at X Y Z [--dim D]) [--by NAME]")
     w.add_argument("name", help="a-z, 0-9 and _, at most 32; an old place of that name is replaced")
     g = w.add_mutually_exclusive_group(required=True)
     g.add_argument("--player", metavar="P", help="where this online player stands, in their dimension")
     g.add_argument("--at", nargs=3, metavar=("X", "Y", "Z"), help="these coordinates, as whole blocks")
     w.add_argument("--dim", metavar="D", help="with --at: overworld (default), the_nether or the_end")
-    w.add_argument("--by", metavar="T<n>", help="the task that saved it")
+    w.add_argument("--by", metavar="NAME", help="the task that saved it, by its name")
     w = ps.add_parser("list", help="one line per place: name x y z dim (task); or none. From the "
                       "cache in $VFG_HOME/places.json while it is younger than VFG_PLACES_TTL_S")
     w.add_argument("--json", action="store_true", help="every place as one JSON object")
@@ -3882,7 +4044,7 @@ def build_parser():
     w.add_argument("--in", dest="in_", type=int, required=True, metavar="N")
     w.add_argument("--out", type=int, required=True, metavar="N")
     w.add_argument("--cost", type=float, metavar="X")
-    w.add_argument("--ref", metavar="T7")
+    w.add_argument("--ref", metavar="REF", help="what the row is for: a task's name, a line's #seq; at most 64")
     w.add_argument("--cache-read", type=int, metavar="N", help="input tokens read from the cache")
     w.add_argument("--cache-write", type=int, metavar="N", help="input tokens written to the cache")
     return p
@@ -3976,6 +4138,8 @@ def run(argv, started):
         return cmd_lookout(cfg, a)
     if a.command == "brain":
         return cmd_brain(cfg, a)
+    if a.command == "task":
+        return cmd_task(cfg, a)
     if a.command == "feed":
         return cmd_feed(cfg, a)
     if a.command == "jev":

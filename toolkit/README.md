@@ -27,12 +27,12 @@ vfg watch                                      # the feed from the cursor, then 
 vfg watch --tail 20                            # for a person at a terminal
 vfg watch --after 812                          # for the brain: from seq 813 on; no cursor, no lock, no valve
 vfg say 'on it — castle at spawn'              # tellraw @a with the aqua [AI] prefix, stored as an ai line, fed as AI say
-vfg say 'your base is ready' --to Steve --task T7   # a whisper, stored as "(to Steve) …"; fed as AI say T7
+vfg say 'your base is ready' --to Steve --task base_steve   # a whisper, stored as "(to Steve) …"; fed as AI say base_steve
 vfg cmd 'tp @a ~ ~10 ~'                        # the command action, one command; single-quote ~ and JSON
 vfg history --since -10m --player Steve        # lines; also --class, --source, --until, --limit
 vfg history --events --since -30m              # game events
 vfg history --feed --limit 20                  # the feed's stored lines
-vfg context --json                             # the brain's context: the feed rows of the last 6 h, oldest first
+vfg context --json                             # the brain's context: the feed rows of the last 6 h, oldest first, then the tasks
 vfg context mark 812 813 815                   # their processed_at set to now where it was not; prints 3
 vfg watchers set join,leave,death,server       # replaces watch.json; --players a,b --contains REGEX
 vfg watchers show
@@ -40,13 +40,17 @@ vfg lookout set 'requests to build or fight'   # or: vfg lookout set - < lookout
 vfg lookout show
 vfg jev menu set - < menu.md                   # the brain's action menu, which Jev reads; vfg jev menu show
 vfg brain start                                # brain/run, detached; "running pid N" when it is up already
-vfg brain status                               # running or stopped, and the open tasks in ~/.vfg/brain/tasks.json
+vfg brain status                               # running or stopped, and the open tasks, read from the box
 vfg brain stop                                 # SIGTERM, SIGKILL after 15 s
+vfg task set '{"name": "castle_steve", "description": "A stone castle at spawn for Steve", "player": "Steve"}'   # added castle_steve
+vfg task set - < row.json                      # the brain's whole row on stdin: updated castle_steve
+vfg task list                                  # castle_steve open Steve: A stone castle at spawn for Steve; --open, --name, --json
 vfg feed post SYS '' 'smoke'                   # low level; prints the seq
-vfg feed post AI 'action T7' 'give Steve diamond_pickaxe — ok'   # the brain's own records: say, action, task, result, note
-vfg action run railgun player=Steve --task T5  # one JSON line; the copy is "railgun"
-vfg action run railgun player=Alex cooldown=0 --task T6   # a second copy, "railgun_2"
-vfg action run railgun player=Alex as=alex_gun # a copy named as given (refused while one runs)
+vfg feed post AI 'action -' 'command: give Steve diamond_pickaxe — ok'   # the brain's own records: say, action, task, result, note
+vfg action run railgun player=Steve            # one JSON line; the copy is "railgun"
+vfg action run railgun player=Alex cooldown=0  # a second copy, "railgun_2"
+vfg action run railgun player=Steve --for Steve   # the brain's own copy, "railgun_steve", then "railgun_steve_2"
+vfg action run railgun player=Alex as=frost_rail_alex --task frost_rail_alex   # a task's copy, named as given (refused while one runs)
 vfg action run edit copy=railgun_2 cooldown=5  # what vfg script set runs
 vfg action list                                # every action, ours and the server's: name — its line; --json
 vfg action check tnt_crouch                    # what is wrong with it, or ok
@@ -63,15 +67,15 @@ vfg made save                                  # made/<VFG_SERVER>/ into a new $
 vfg made restore 2026-10-10                    # and back: that day's latest, or one save by its full name
 vfg state                                      # who is online and where, time, weather, what runs; --json
 vfg state --json --items                       # and each player's items, health, food, armor, level, mode, effects
-vfg route --task T7 < brief.txt                # the examples and presets for that brief, picked by Jev; JSON
+vfg route --task castle_steve < brief.txt      # the examples and presets for that brief, picked by Jev; JSON
 vfg prefix                                     # the implementer's static system prompt, the same bytes each time
 vfg action refs --version                      # the server's version, from server.jar: 26.3
 vfg action refs                                # {"version", "commands"}: the data generator's command tree
-vfg place save castle --player Steve --by T7   # the save_place action: saved castle at 197 68 251 in overworld
+vfg place save castle --player Steve --by castle_steve   # the save_place action: saved castle at 197 68 251 in overworld
 vfg place save home --at -368 70 912           # --dim the_nether or the_end; overworld by default
-vfg place list                                 # castle 197 68 251 overworld (T7), one per line, or none; --json, --fresh
+vfg place list                                 # castle 197 68 251 overworld (castle_steve), one per line, or none; --json, --fresh
 vfg place forget castle                        # forgot castle; exit 1 if there was none
-vfg usage add --component brain --model openai/gpt-6.1-sol --in 9000 --out 120 --cost 0.0016 --ref T7
+vfg usage add --component brain --model openai/gpt-6.1-sol --in 9000 --out 120 --cost 0.0016 --ref '#812'
 vfg usage add --component implementer --model haiku --in 900 --out 120 --cache-read 15000 --cache-write 2000
 vfg usage flush                                # the queued rows, every structured() call's among them; none, nothing sent
 ```
@@ -86,18 +90,44 @@ one line on stderr. `vfg --help` and `vfg <command> --help` list every option.
   with `VFG_BRAIN=1` and `VFG_HOME` in its environment; its pid in `~/.vfg/brain/brain.pid`
   and its output appended to `brain.log` there. `start` when it runs already prints its pid
   and succeeds; one that exits within 3 s did not start. `stop` sends SIGTERM, then SIGKILL
-  after 15 s. `status` says running or stopped and lists the open tasks of `tasks.json`, which
-  only the brain writes, one `open   T183 Steve: <its brief>` line each; it exits 1 when the
-  brain is not running.
-- **`vfg say "<text>" [--to P] [--task T7]`** sends the tellraw, stores the text as an `ai`
-  line and appends the feed's `AI say <task|->` row through the box's `vfg_feed.py`, all in
+  after 15 s. `status` says running or stopped and lists the open tasks, oldest first, read from
+  the box's `tasks` table (`remote/tasks.py`, 10 s at most, or `--timeout`), one `open
+  castle_steve Steve: <its description, cut to 120>` line each (`-` for no player), or `open
+  none`; when the read fails it warns and prints `open   ? (<why>)`. It exits 1 when the brain is
+  not running, whatever the read did.
+- **`vfg task set '<json>'|-`** writes one of the brain's tasks, the `tasks` table in the box's
+  `vfg.db`, which only the brain writes (the bridge creates it). The JSON is one object of the
+  table's columns, `name`, `description`, `player`, `status`, `line`, `brief`, `made`,
+  `variables`, `session`, `result`, `created_at`, `updated_at` and `closed_at` (`-` reads it
+  from stdin), checked here first: an unknown key, a name that is not a task's, a status other
+  than `open`, `done` or `failed`, an empty description, a bad player, `made` other than an object
+  of `scripts`, `actions`, `presets` and `copies` lists, `variables` other than a list of objects,
+  or a time `parse_when` cannot read, exits 2 with no SSH call; times go on as ISO UTC with
+  milliseconds. One SSH call then adds the task (`added <name>`), or changes only the keys given
+  (`updated <name>`), or keeps the row when the given `updated_at` is older than the stored one
+  (`kept <name>: a newer write is there`, exit 0). A new task needs a description and never takes
+  a library action's name; the box refuses either with exit 1, as it does when `vfg.db` has no
+  `tasks` table yet (`restart vfg-bridge, which adds it`). `name` and `created_at` never change;
+  `closed_at`, when not given, is set as the status leaves `open` and cleared as it opens again.
+- **`vfg task list [--open] [--name NAME] [--json]`** prints one `<name> <status> <player|->:
+  <description, cut to 120>` line per task, oldest created first, or `none`; `--json` one JSON
+  list of the rows, `made` and `variables` decoded.
+- **A task's name** is `^[a-z][a-z0-9_]{1,31}$` (`galick_gun_styrk`). `cast`, the bridge's task
+  for an incantation's copies, is refused (exit 2) everywhere a task is given: `vfg task set` and
+  `list --name`, `--task` on `vfg action run`, `vfg say` and `vfg route`, and `vfg place save
+  --by`.
+- **`vfg say "<text>" [--to P] [--task NAME]`** sends the tellraw, stores the text as an `ai`
+  line and appends the feed's `AI say <name|->` row through the box's `vfg_feed.py`, all in
   one SSH call. What the brain records otherwise goes through `vfg feed post AI "<kind>
-  <task|->" "<text>"`, the kind one of `say`, `action`, `task`, `result` and `note`.
+  <name|->" "<text>"`, the kind one of `say`, `action`, `task`, `result` and `note`, the second
+  field a task's name or `-`.
 - **`vfg context [--since <iso|-6h>] [--json]`** prints the feed rows since then, the last
   `VFG_BRAIN_HISTORY_HOURS` (6) by default, oldest first; `--json` one `{"seq", "at", "line",
-  "processed_at"}` object per line. **`vfg context mark <seq> …`** sets `processed_at` to now
-  on those rows where it is not set, in one call and one transaction, and prints how many. The
-  bridge adds the column on start; until it has, both exit 1 saying so.
+  "processed_at"}` object per line, then `{"tasks": [row, …]}`, every row of the box's `tasks`
+  table as `vfg task list --json` gives them, then `{"last_seq": N}`, in one SSH call. **`vfg
+  context mark <seq> …`** sets `processed_at` to now on those rows where it is not set, in one
+  call and one transaction, and prints how many. The bridge adds the column, and the `tasks`
+  table, on start; until it has, both exit 1 saying so, a `--json` read for the table too.
 - **`vfg watch --after <seq>`** prints the feed from seq+1, then follows; it reads and writes no
   cursor, takes no lock (a person's `vfg watch` runs beside it), has no valve and skips no line
   however far behind it starts: no `VFG_WATCH_CATCHUP`.
@@ -118,7 +148,7 @@ one line on stderr. `vfg --help` and `vfg <command> --help` list every option.
 
 ## Actions and places
 
-`vfg action run <action> key=value … [as=<copy>] [--task T7]` loads the actions
+`vfg action run <action> key=value … [as=<copy> | --for <player>] [--task <name>]` loads the actions
 (`lib/py/vfg_actions.py`, the one loader), checks the values against the action's class (an
 unknown or fixed key, or a value its field refuses, exits 2; a number out of range is clamped
 and a note says so; a saved place against the places cache, fetched again only when a place
@@ -151,9 +181,14 @@ on the PC; the router reads them through it too. A name is a script in one place
 `save` and `preset save` refuse one that is taken in either, and `new` one an action has.
 
 - **A copy** is one run of an action, named on the box under `run/copies.lock`: `as=` when
-  given, else the action's name, else the next free `<action>_2`, `_3` …. Its files in
+  given; else its stem, `<action>_<player>` for `--for <player>` (the player lowercased: the
+  brain's own copies, `railgun_steve`) or the action's name, and the stem itself, else the next
+  free `<stem>_2`, `_3` …. `as=` and `--for` together exit 2, and `--for` names no copy of `edit`,
+  `stop` or an incantation action. `--task <name>` is the task that started it, its `VFG_TASK`;
+  with none the copy has no task. Its files in
   `/opt/vfg/run/`: `<copy>.pid`, `<copy>.log`, `<copy>.json` (its action, script, every value
-  as checked, the Live fields, runs, task, started), `<copy>.values.json` (live edits, read
+  as checked, the Live fields, runs, task (a task's name, null, or `cast` for an incantation's),
+  started), `<copy>.values.json` (live edits, read
   again by the kit every `VFG_LIVE_POLL_S`) and `<copy>.result.json` (what `result()` wrote
   last). Everything it makes carries the tag `vfg_<copy>`, which a stop and its own end
   remove. `scripts/_lib/instances.py` starts, stops and edits copies, for vfg and for the
@@ -166,7 +201,10 @@ on the PC; the router reads them through it too. A name is a script in one place
   "live", "task", "started", "runs"}}}`, written atomically under `running.lock`: every run,
   edit and stop through vfg writes it through; `vfg script list --fresh` (and `vfg state`)
   fetch it from the box, which drops a copy that ended by itself, keeping one written through
-  after the fetch began. `vfg script list` reads it, fetching only when it never was.
+  after the fetch began. `vfg script list` reads it, fetching only when it never was, one
+  `railgun_steve — railgun, player=Steve cooldown=0` line per copy: the action when it is not the
+  copy's name, and the task when it is not the copy's name either, so a task's own copy,
+  `galick_gun_styrk`, shows neither (`vfg state` writes its copies the same way).
 - **`new`** writes the script (`v = values()`) and `made/<VFG_SERVER>/actions/<name>.py`: a
   class inheriting the values class of every preset the script holds (`preset("name")`), with
   a field for every other value, from the source script's action (descriptions, takes, runs,
@@ -198,7 +236,7 @@ on the PC; the router reads them through it too. A name is a script in one place
 
 ```sh
 vfg action run incantation_create player=Steve phrase='fire ball' action=command \
-    values='{"commands": ["effect give Steve speed 10 2"]}' cooldown_s=5 --task T7
+    values='{"commands": ["effect give Steve speed 10 2"]}' cooldown_s=5
 vfg action run incantation_edit player=Steve phrase='fire ball' cooldown_s=10   # or values='{…}', aliases='fireball,fire bowl'
 vfg action run incantation_edit player=Steve phrase='beam me' values.length=80 values.player=   # a value a word of its own
 vfg action run incantation_remove player=Steve phrase='fire ball'
@@ -254,8 +292,12 @@ once vfg has checked everything here (`run_incantation`):
 
 ## The router and the implementer's prompt
 
-- **`vfg route --task T7 [--ref R] < brief`** reads the implementer's brief on stdin, and the
-  task's brief and the player's words from the brain's `~/.vfg/brain/tasks.json`. It makes one
+- **`vfg route [--task NAME] [--ref REF] < brief`** reads the implementer's brief on stdin, and
+  with `--task` the task's description (else its brief) and `<player> said: <line>` from the box's
+  `tasks` table, in one SSH call of at most 1.5 s (`VFG_ROUTE_TIMEOUT_S` if that is less), which
+  comes out of the router's budget. A task the box does not have warns `<name> is not a task on
+  the box — routing on the brief alone`, a read that fails `cannot read <name> from the box
+  (<why>) — routing on the brief alone`, and both route on. It makes one
   card per example script and preset, ours and `made/<VFG_SERVER>/`'s, and asks Jev about all
   of them in one call through `remote/jev.py` on the box: `runs_it`, `close` or `no` per
   script, `use` or `no` per preset. It prints JSON on stdout: `{"task", "scripts":
@@ -265,7 +307,7 @@ once vfg has checked everything here (`run_incantation`):
   run the job first, and every preset whose `use` reaches it that no loaded script holds.
   Past `VFG_ROUTE_TIMEOUT_S` (3), or on any error, it picks by words instead: every card
   sharing a word with the job (`"fallback": true`). It writes one usage row, `--component
-  jev --ref T7`, in the background.
+  jev --ref <REF>` (by default the task's name), in the background.
 - **`vfg prefix`** prints the part of an implementer's system prompt that never changes
   between spawns, so the provider reads it from the cache: `scripts/README.md`, the kit in
   full (`_lib/mc.py`, every file in `_lib/kit/`), then every library preset and example
@@ -311,7 +353,9 @@ names one, with `vfg_llm` mocked, and no OpenRouter key passes in.
   replies) for places, a fake `java` for the data generator and `tests/bin/`'s fake
   `systemctl`, `sudo` and `journalctl` for `vfg up`; `TestRealFeedWriter` runs the bridge's
   `vfg_feed.py` in place of the fake.
-- `test_copies.py`: `vfg action run` and its copies, edits, stops, `running.json`, script save.
+- `test_copies.py`: `vfg action run` and its copies (`--for` among them), edits, stops, `running.json`, script save.
+- `test_task.py`: `vfg task set` and `list` on the box's `tasks` table, `vfg context --json`'s
+  tasks, and a box without the table.
 - `test_route.py`: the router, `remote/jev.py` against `fake_jev_route.py`, `vfg prefix`.
 - `test_library.py`: `vfg script new` and `check`, `vfg preset save`, five real presets in one script.
 - `test_incantations.py`: the incantation actions writing the box's store through their real

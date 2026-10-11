@@ -73,6 +73,9 @@ $PY integration/replay/taskcall.py --db $DB --lines OUT/lines.jsonl --out OUT3 \
 $PY integration/replay/taskcall.py --db $DB --lines OUT/lines.jsonl --out OUT3 \
     --model google/gemini-3.8-flash --reasoning low                     # goes on to all 168 parts
 python3 integration/replay/taskcall_score.py OUT3                         # OUT3/score.md, score.json
+$PY integration/replay/taskcall.py --db $DB --lines OUT/lines.jsonl --out OUT4 --built --limit 3   # the built one: a smoke
+$PY integration/replay/taskcall.py --db $DB --lines OUT/lines.jsonl --out OUT4 --built --budget 1.5  # all 168 parts
+python3 integration/replay/taskcall_score.py OUT4                         # scored as OUT3, reply-only parts apart
 
 $PY integration/replay/classes.py jev --db $DB --out OUT2                 # 843 lines, one TypeSafe call each
 $PY integration/replay/classes.py respond --db $DB --out OUT2             # every line now conversational
@@ -97,6 +100,31 @@ into an OUT that has rows goes on after the last line, the tasks rebuilt from th
 On 2026-10-10 the full 168 parts took about 9 minutes and $1.18 on Gemini 3.8 Flash at low
 reasoning (a call: median 3.0 s, p90 5.0 s), and 11 minutes and $0.16 on DeepSeek V4 Flash with
 reasoning off (3.6 s, 5.0 s); at low reasoning DeepSeek took 7.7 s, p90 26 s.
+
+`taskcall.py --built` asks the orchestrator as it is built (Prototype_Named_Tasks): `brain/brain/
+orchestrator.py`'s opening, tail and checks, its prompt `brain/prompts/orchestrator.md`, and the
+model, reasoning, providers and timeout of the brain's `VFG_ORCHESTRATOR_*` settings unless given.
+It reads the routes `implementer` and `orchestrator` alike, so an earlier `lines.jsonl` still
+serves. Its TASKS shows each task as a row of the tasks table, what it made not known (null), and
+RUNNING NOW is none, so an edit or a stop cannot be answered; the conversation's task rows read
+as the brain posts them (`AI task [<name>]: new: …`, `follow-up: …`). Its answers are a `kind`
+(new, follow_up, edit, stop or reply) with the fields the brain gets; a reply only is counted on
+its own line by `taskcall_score.py`. Without `--built`, `--version v3` runs as before.
+
+On 2026-10-11 the built orchestrator (prompt 8b7d42168ac4) ran all 168 parts on both models
+(`taskcall_scores/gemini-built.md`, `deepseek-built.md`). Gemini 3.8 Flash at low reasoning: follow-ups
+by script 36 of 41 (87.8%, bar met), new tasks taken for follow-ups 2 of 9 (22.2%, bar not met),
+0 calls failed, 52 tasks, a call median 3.1 s and p90 5.5 s, $1.21. DeepSeek V4 Flash with reasoning
+off: follow-ups 34 of 41 (82.9%, bar not met), new taken 2 of 9 (22.2%), 6 calls failed its checks
+twice (3 an empty reply, 3 an edit or stop of a copy RUNNING NOW does not hold), 26 tasks, 3.3 s
+and p90 5.3 s, $0.16. Gemini is the better, and stays the orchestrator's model.
+
+Jesse then ruled that those two new tasks are right either way (`either` in `tasks.jsonl`, which
+`taskcall_score.py` reads). T59 (#239): the brain gave the barrier to the `barrier_shield`
+action, so the line's one implementer part was the Infinity fix, which was rightly followed up.
+T115 (#517): the Ice Staff had been removed five minutes before, so rebuilding it as the Ice Beam
+Staff under the same task is as fine as a new one. The score files are scored with the rulings:
+Gemini takes 0 of 9 new tasks for follow-ups (bar met), and DeepSeek 1 of 9 (11.1%).
 
 ### What it leaves in OUT
 
@@ -207,6 +235,8 @@ and `run`: the run's figures for it — `send_to_done_s`, `words_to_done_s` (fro
 words), `kind` (what the run did: a new script written, a script edited, commands), `result`, and
 each implementer job: model, time, calls, calls before the first change, seconds per kind of call,
 turns, whether it hit the turn cap, cost; and the task's implementer and orchestrator cost.
+Two rows also carry `either`, a hand ruling with why: T59 and T115 are right as new tasks or as
+follow-ups, and `taskcall_score.py` counts them so.
 
 ### How it is measured
 

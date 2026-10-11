@@ -88,8 +88,8 @@ class Component(StrEnum):
     IMPLEMENTER = "implementer"    # the Agent SDK's runs, recorded by the brain, not here
     PLANNER = "planner"            # the action planner
     ALIAS = "alias"                # the incantation alias call
-    CONVERSATION = "conversation"  # this one and the next: valid only for old rows
-    ORCHESTRATOR = "orchestrator"
+    CONVERSATION = "conversation"  # valid only for old rows
+    ORCHESTRATOR = "orchestrator"  # the brain's orchestrator call, one per orchestrator part (named tasks)
 
 
 class LlmError(Exception):

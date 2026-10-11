@@ -1,8 +1,8 @@
 """Runs the `vfg` toolkit: an argv list, no shell, a timeout in seconds, its exit code and output.
 
 The shape is the brain's own runner's (brain/vfg.py) with stdin added, which vfg route reads the
-brief from: `await vfg("route", "--task", "T7", timeout=3.75, stdin=brief)`. Everything here that
-runs vfg takes a runner of this shape, so the tests pass a fake."""
+brief from: `await vfg("route", "--task", "galick_gun_styrk", timeout=3.75, stdin=brief)`.
+Everything here that runs vfg takes a runner of this shape, so the tests pass a fake."""
 import asyncio
 import contextlib
 import os

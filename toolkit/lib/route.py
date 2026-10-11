@@ -354,7 +354,8 @@ def route(cards, brief, task_id, task, context, ask, load, budget, t0=None):
 
 
 def log_line(result):
-    """`route T7 ice_beam runs_it 0.91 · galick_gun close 0.42 · crater use 0.77 · 7 loaded · 312ms 11840tok`"""
+    """`route ice_beam_alex ice_beam runs_it 0.91 · galick_gun close 0.42 · crater use 0.77 · 7 loaded · 312ms
+    11840tok`: the task's name, or -, first."""
     parts = []
     for s in result["scripts"]:
         if s["verdict"] == "words":

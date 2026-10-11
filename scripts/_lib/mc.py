@@ -30,8 +30,9 @@ import traceback
 from typing import Optional, Tuple
 
 # This script's folder name, from sys.argv[0]; the copy it runs as (VFG_INSTANCE or VFG_SCRIPT,
-# which instances.py sets, else the folder name); the tag for everything it makes; and the task
-# that started it (VFG_TASK, "" when none did).
+# which instances.py sets, else the folder name); the tag for everything it makes; and VFG_TASK,
+# as instances.py set it: a task's name (galick_gun_styrk), "" when no task started it (the
+# brain's own copies), or `cast`, the bridge's for an incantation's copies. task() says which.
 NAME = os.path.basename(os.path.dirname(os.path.abspath(sys.argv[0] or "."))) or "script"
 INSTANCE = (os.environ.get("VFG_INSTANCE") or os.environ.get("VFG_SCRIPT") or "").strip()
 if not re.match(r"^[a-z0-9][a-z0-9_-]{0,47}$", INSTANCE):
@@ -45,6 +46,9 @@ LEFT_TAG = "vfg_left_" + INSTANCE
 # may carry it, and an end by itself hands it over.
 _TAG_IN = re.compile(re.escape(TAG) + r"(?![A-Za-z0-9_.+-])")
 TASK = os.environ.get("VFG_TASK", "").strip()
+# A task's name, as the brain names it (Prototype_Named_Tasks); `cast` matches it and is still no
+# task's: the bridge gives it to an incantation's copies.
+TASK_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 
 PROPERTIES = os.environ.get("VFG_MC_PROPERTIES", "/opt/mc/server.properties")
 HOST = os.environ.get("VFG_RCON_HOST", "127.0.0.1")
@@ -93,6 +97,12 @@ def log(*parts) -> None:
         sys.stdout.flush()
     except Exception:
         pass
+
+
+def task() -> str:
+    """The task that started this copy, by its name (galick_gun_styrk), or "" when none did:
+    VFG_TASK when it is a task's name and not `cast`, the bridge's for an incantation's copies."""
+    return TASK if TASK_RE.match(TASK) and TASK != "cast" else ""
 
 
 def refused_word(cmd: str) -> Optional[str]:

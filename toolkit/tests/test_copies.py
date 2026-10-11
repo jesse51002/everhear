@@ -20,6 +20,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from harness import ISO_RE, BoxCase, alive, vfg_module, write  # noqa: E402
 import standins  # noqa: E402
 
+RETIRED = "T%d" % 7   # a task as it was named before named tasks: refused now
+
 CRATER = '''"""Carve a sphere out of the world at a place, leaving air, lava or fire."""
 from kit import area
 from actions._types import Field, Literal, Live, Values
@@ -107,20 +109,22 @@ class TestAnswer(unittest.TestCase):
 
 class TestRun(ActionCase):
     def test_a_once_action_answers_with_its_result_and_its_copy_is_named_and_cleaned(self):
-        got = self.line(self.run_action("ping", "say=hi", "--task", "T3"))
+        got = self.line(self.run_action("ping", "say=hi", "--task", "hello_steve"))
         self.assertEqual(got, {"ok": True, "copy": "ping", "action": "ping", "running": False,
-                               "summary": "hi: 1 online", "facts": {"online": ["Steve"], "task": "T3", "copy": "ping"},
+                               "summary": "hi: 1 online", "facts": {"online": ["Steve"], "task": "hello_steve",
+                                                                    "copy": "ping"},
                                "notes": []})
         args = self.box.programs("run")
         self.assertEqual(len(args), 1)                      # the box had it all: one call, stamps only
         self.assertEqual({k: args[0][k] for k in ("action", "script", "source", "runs", "task", "wait", "on_result")},
-                         {"action": "ping", "script": "ping", "source": "library", "runs": "once", "task": "T3",
+                         {"action": "ping", "script": "ping", "source": "library", "runs": "once", "task": "hello_steve",
                           "wait": 20, "on_result": False})
+        self.assertIsNone(args[0]["base"])
         self.assertNotIn("tars", args[0])
         meta = self.box_json("ping.json")
         self.assertEqual({k: meta[k] for k in ("copy", "values", "live", "runs", "task")},
                          {"copy": "ping", "values": {"say": "hi", "nap": 0, "fail": "", "early": False}, "live": [],
-                          "runs": "once", "task": "T3"})
+                          "runs": "once", "task": "hello_steve"})
         self.assertRegex(meta["started"], ISO_RE)
         self.assertFalse(os.path.exists(self.run_dir("ping.pid")))
         self.assertNotIn("kill @e[tag=vfg_ping]", self.box.rcon_commands())  # it ended by itself: what it made stays
@@ -128,7 +132,7 @@ class TestRun(ActionCase):
 
     def test_an_until_stopped_action_answers_with_its_first_result_and_runs_on(self):
         self.box.write_config("VFG_SSH_HOST=fakebox\nVFG_SSH_KEY=%s\nVFG_OWNER=Sunny\n" % self.box.key)
-        got = self.line(self.run_action("beam", "player=Steve", "--task", "T9"))
+        got = self.line(self.run_action("beam", "player=Steve", "--task", "laser_steve"))
         self.assertEqual((got["copy"], got["running"], got["summary"], got["facts"]),
                          ("beam", True, "Steve has a beam", {"player": "Steve"}))
         args = self.box.programs("run")[-1]
@@ -137,7 +141,7 @@ class TestRun(ActionCase):
         pid = self.pid("beam")
         with open("/proc/%d/environ" % pid, "rb") as f:
             env = f.read().split(b"\0")
-        for want in (b"VFG_SCRIPT=beam", b"VFG_TASK=T9", b"VFG_OWNER=Sunny", b"VFG_LIVE_POLL_S=0.5"):
+        for want in (b"VFG_SCRIPT=beam", b"VFG_TASK=laser_steve", b"VFG_OWNER=Sunny", b"VFG_LIVE_POLL_S=0.5"):
             self.assertIn(want, env)
         self.assertFalse(any(e.startswith(b"VFG_HOME=") for e in env))   # nothing of the PC's
         self.assertEqual(self.running()["copies"]["beam"]["values"]["player"], "Steve")
@@ -145,6 +149,30 @@ class TestRun(ActionCase):
         got = self.line(r, 1)
         self.assertRegex(got["error"], r"^beam is running \(pid %d\): stop it first" % pid)
         self.assertEqual(r.stderr.splitlines()[-1], "vfg: " + got["error"])
+
+    def test_for_a_player_the_copy_is_action_player_then_2_and_has_no_task(self):
+        # The brain's own copy of an action for a player (Prototype_Named_Tasks): <action>_<player>,
+        # the name lowercased in full, picked on the box under copies.lock; no --task, no task.
+        got = self.line(self.run_action("beam", "player=Steve", "--for", "Steve"))
+        self.assertEqual((got["copy"], got["running"]), ("beam_steve", True))
+        args = self.box.programs("run")[-1]
+        self.assertEqual((args["base"], args["as"], args["task"]), ("beam_steve", None, None))
+        meta = self.box_json("beam_steve.json")
+        self.assertEqual((meta["copy"], meta["action"], meta["task"]), ("beam_steve", "beam", None))
+        with open("/proc/%d/environ" % self.pid("beam_steve"), "rb") as f:
+            self.assertIn(b"VFG_TASK=", f.read().split(b"\0"))
+        self.assertEqual(self.line(self.run_action("--for=Steve", "beam", "cooldown=2"))["copy"], "beam_steve_2")
+        self.assertEqual(self.line(self.run_action("beam", "--for", "Styrkaeopteryx"))["copy"], "beam_styrkaeopteryx")
+        self.assertEqual(sorted(self.running()["copies"]), ["beam_steve", "beam_steve_2", "beam_styrkaeopteryx"])
+        self.assertIsNone(self.running()["copies"]["beam_steve"]["task"])
+        # edit and stop name the copy they act on: --for changes nothing there.
+        got = self.line(self.run_action("edit", "copy=beam_steve_2", "cooldown=1", "--for", "Steve"))
+        self.assertEqual(got["facts"]["copy"], "beam_steve_2")
+        self.assertIsNone(self.box.programs("run")[-1]["base"])
+        self.assertEqual(self.line(self.run_action("stop", "copy=beam_steve", "--for", "Steve"))["summary"],
+                         "stopped beam_steve")
+        self.assertIsNone(self.box.programs("run")[-1]["base"])
+        self.assertEqual(self.line(self.run_action("beam", "--for", "Steve"))["copy"], "beam_steve")  # free again
 
     def test_a_crash_is_not_ok_with_what_it_crashed_on(self):
         # The last line of the error, which mc.py wrote to <copy>.error as it cleaned up; the box
@@ -163,7 +191,14 @@ class TestRun(ActionCase):
                               (["beam", "length=far"], r"length"),
                               (["beam", "length=1", "length=2"], r"^length is given twice$"),
                               (["beam", "as=Bad-Name"], r"^as=Bad-Name is not a copy name"),
-                              (["beam", "--task", "7"], r"^--task is T<n>"),
+                              (["beam", "--task", "7"], r"^--task 7 is not a task's name"),
+                              (["beam", "--task", RETIRED], r"^--task %s is not a task's name" % RETIRED),
+                              (["beam", "--task", "gun_a\n"], r"^--task 'gun_a\\n' is not a task's name"),
+                              (["beam", "--task=cast"], r"^cast is the bridge's task for an incantation's copies"),
+                              (["beam", "--for", "not a name"], r"^--for not a name is not a player's name"),
+                              (["beam", "--for="], r"^--for  is not a player's name"),
+                              (["beam", "--for"], r"^--for takes the player"),
+                              (["beam", "as=mine", "--for", "Steve"], r"^as= and --for both name the copy$"),
                               (["beam", "Steve"], r"^'Steve' is not key=value$"),
                               ([], r"^which action\?")):
             r = self.run_action(*args)
@@ -237,7 +272,7 @@ class TestEditStop(ActionCase):
         the edit action the brain runs, and running.json written through. The box's side (a live
         value read again, a restart keeping the rest, a stop taking one copy's things) is
         scripts/_test/test_instances.py's; the stop shortcut is the next test's."""
-        a = self.line(self.run_action("beam", "player=Steve", "cooldown=5", "--task", "T5"))["copy"]
+        a = self.line(self.run_action("beam", "player=Steve", "cooldown=5", "--task", "laser_steve"))["copy"]
         b = self.line(self.run_action("beam", "player=Alex"))["copy"]
         pa = self.pid(a)
         os.remove(os.path.join(self.box.vhome, "running.json"))   # a copy this PC does not know: the box is asked
@@ -253,13 +288,13 @@ class TestEditStop(ActionCase):
             self.assertRegex(r.stderr.splitlines()[-1], pattern)
         self.assertEqual(self.vfg("script", "set", "beam", "cooldown=0").stdout, "beam: nothing changed\n")
         # The edit action itself, as the brain writes it: its values as one JSON object.
-        got = self.line(self.run_action("edit", "copy=beam", 'values={"length": 1000}', "--task", "T8"))
+        got = self.line(self.run_action("edit", "copy=beam", 'values={"length": 1000}', "--task", "laser_fix"))
         self.assertEqual(got["notes"], ["length=1000 is over its max, clamped to 200"])
         self.assertRegex(got["summary"], r"^beam restarted with length=200, pid \d+$")
         self.assertEqual((got["facts"]["changed"], got["facts"]["live"]), (["length"], False))
         self.assertNotEqual(self.pid(a), pa)
         meta = self.box_json("beam.json")
-        self.assertEqual((meta["values"]["length"], meta["values"]["cooldown"], meta["task"]), (200, 0, "T5"))
+        self.assertEqual((meta["values"]["length"], meta["values"]["cooldown"], meta["task"]), (200, 0, "laser_steve"))
         self.assertEqual(self.running()["copies"][a]["values"]["length"], 200)
         # The stop action: that copy and what it made go, here and in running.json; the other stays.
         self.assertEqual(self.line(self.run_action("stop", "copy=beam"))["summary"], "stopped beam")
@@ -362,18 +397,18 @@ class TestScriptSave(ActionCase):
 class TestRunning(ActionCase):
     def test_running_json_is_written_through_and_a_fresh_list_or_state_drops_an_ended_copy(self):
         self.rcon.world = {"players": {"Steve": {"pos": [120.7, 64.0, -40.2]}}, "daytime": 18000, "day": 3}
-        self.line(self.run_action("beam", "player=Steve", "--task", "T4"))
+        self.line(self.run_action("beam", "player=Steve", "--task", "laser_steve"))
         self.line(self.run_action("beam", "player=Alex", "cooldown=2"))
         data = self.running()
         self.assertEqual(data["fetched_at"], 0)             # written through, never fetched yet
         beam = data["copies"]["beam"]
         self.assertEqual({k: beam[k] for k in ("action", "script", "task", "runs", "live")},
-                         {"action": "beam", "script": "beam", "task": "T4", "runs": "until_stopped",
+                         {"action": "beam", "script": "beam", "task": "laser_steve", "runs": "until_stopped",
                           "live": ["cooldown", "colour"]})
         self.assertEqual(beam["values"]["player"], "Steve")
         self.assertRegex(beam["started"], ISO_RE)
         r = self.vfg("script", "list")                      # never fetched: it fetches once
-        self.assertEqual(r.stdout, "beam — T4, player=Steve\nbeam_2 — beam, player=Alex cooldown=2\n")
+        self.assertEqual(r.stdout, "beam — laser_steve, player=Steve\nbeam_2 — beam, player=Alex cooldown=2\n")
         self.assertEqual(self.vfg("script", "list").stdout, r.stdout)
         self.assertEqual(len(self.box.programs("copies")), 1)   # then from running.json
         # beam_2 ends without vfg: the file still has it; --fresh drops it, and so does vfg state.
@@ -384,13 +419,25 @@ class TestRunning(ActionCase):
         self.assertGreater(got["fetched_at"], time.time() - 30)
         os.remove(os.path.join(self.box.vhome, "running.json"))
         r = self.vfg("state")
-        self.assertEqual(r.stdout.splitlines()[-1], "running   beam — T4, player=Steve; touches Steve")
+        self.assertEqual(r.stdout.splitlines()[-1], "running   beam — laser_steve, player=Steve; touches Steve")
         self.assertEqual(sorted(self.running()["copies"]), ["beam"])
         beam = json.loads(self.vfg("state", "--json").stdout)["instances"][0]
         self.assertEqual({k: beam[k] for k in ("instance", "copy", "action", "script", "task", "changed", "touches")},
-                         {"instance": "beam", "copy": "beam", "action": "beam", "script": "beam", "task": "T4",
+                         {"instance": "beam", "copy": "beam", "action": "beam", "script": "beam", "task": "laser_steve",
                           "changed": {"player": "Steve"}, "touches": ["Steve"]})
         self.assertIn("scripts     running: beam", self.vfg("up").stdout)
+
+    def test_a_task_shows_on_a_copy_line_only_when_it_is_not_the_copys_own_name(self):
+        self.line(self.run_action("beam", "as=laser_steve", "player=Steve", "--task", "laser_steve"))
+        self.line(self.run_action("beam", "player=Alex", "--for", "Alex"))
+        self.line(self.run_action("beam", "as=laser_steve_2", "player=Sam", "--task", "laser_steve"))
+        self.assertEqual(self.vfg("script", "list").stdout.splitlines(),
+                         ["beam_alex — beam, player=Alex", "laser_steve — beam, player=Steve",
+                          "laser_steve_2 — beam, laser_steve, player=Sam"])
+        self.assertEqual([l[10:] for l in self.vfg("state").stdout.splitlines() if l.startswith("running")],
+                         ["beam_alex — beam, player=Alex; touches Alex",
+                          "laser_steve — beam, player=Steve; touches Steve",
+                          "laser_steve_2 — beam, laser_steve, player=Sam; touches Sam"])
 
     def test_a_fetch_keeps_a_copy_written_through_after_it_was_asked_for(self):
         with self.box.environ() as mod:

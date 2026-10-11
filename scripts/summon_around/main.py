@@ -5,7 +5,6 @@ ASKS = ["spawn a horde of zombies, a hundred zombies in a hundred blocks radius 
 from kit import values, result, loop, world
 import json
 import math
-import re
 import sys
 import mc
 
@@ -139,8 +138,9 @@ def fail(summary, **facts):
 
 v = values()
 mob = v["mob"]
-# Their own tag: the task's, as `kill @e[tag=vfg_summon_T7]` takes away what T7 summoned.
-tag = "vfg_summon_" + (mc.TASK if re.match(r"^T[1-9][0-9]*$", mc.TASK) else mc.INSTANCE)
+# Their own tag: the task's, as `kill @e[tag=vfg_summon_zombies_steve]` takes away what the task
+# zombies_steve summoned; the copy's when no task started it (the brain's own copy, or a cast's).
+tag = "vfg_summon_" + (mc.task() or mc.INSTANCE)
 names, offline = online(v["players"])
 if not names:
     if v["players"].startswith("@"):

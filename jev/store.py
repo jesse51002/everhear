@@ -20,7 +20,15 @@ log = logging.getLogger("vfg-jev")
 
 COLUMNS = "id, at, player_name, source, text, peak_dbfs, jev_class, jev_confidence, jev_judged_at, fed_at"
 RECORDS = ("action", "task", "result")   # the brain's AI rows that go into Jev's history
-_AI_ROW = re.compile(r"^AI#\d+ \d\d:\d\d:\d\d (\S+) \S+ \| (.*)$", re.S)
+_AI_ROW = re.compile(r"^AI#\d+ \d\d:\d\d:\d\d (\S+) (\S+) \| (.*)$", re.S)
+
+
+def named(task, text):
+    """A record's text with the task it is about in front (`frost_bow_alex: new: …`), unless the
+    text already starts with it, as a result's does, or it is about no task (`-`)."""
+    if task == "-" or text.startswith(task):
+        return text
+    return "%s: %s" % (task, text)
 
 
 class Store:
@@ -147,7 +155,8 @@ class Store:
     def ai_records(self, since, scan=2000):
         """The brain's own records said since `since` — the feed's `AI` rows of
         kind action, task and result, among its last `scan` rows — as history
-        rows whose `source` is the kind, newest first. A `say` is left out:
+        rows whose `source` is the kind and whose text names its task (named()),
+        newest first. A `say` is left out:
         `vfg say` keeps it in `lines` too."""
         rows = self.conn.execute(
             "SELECT seq, at, line FROM (SELECT seq, at, line FROM feed ORDER BY seq DESC LIMIT ?) "
@@ -157,7 +166,7 @@ class Store:
             m = _AI_ROW.match(line)
             if m and m.group(1) in RECORDS:
                 records.append({"id": "AI#%d" % seq, "at": at, "player_name": "AI", "source": m.group(1),
-                                "text": m.group(2), "peak_dbfs": None})
+                                "text": named(m.group(2), m.group(3)), "peak_dbfs": None})
         return records
 
     def kept_unfed(self, since):

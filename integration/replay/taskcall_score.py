@@ -22,6 +22,12 @@ Writes OUT/score.md and OUT/score.json for each and prints them. Standard librar
   Right when one of the line's parts said "new"; taken for a follow-up when none did. Bar: at most
   5% taken. Also counted: the parts on lines whose every task was fresh that went to a follow-up.
 - Lines the conversation made no task of: how many parts went new and how many followed up.
+- EITHER: a new task whose row in tasks.jsonl carries `either` (a hand ruling, with why) is right
+  whether the line's parts said "new" or followed a task up, by script and by the labels alike.
+- REPLY ONLY: a built orchestrator (taskcall.py --built) may answer a part with a reply alone,
+  starting nothing, such as asking back what was meant. Counted on a line of its own: a new task
+  on a line whose parts only asked back is neither called new nor taken for a follow-up; a
+  follow-up so answered is a miss. Runs before --built have none, and score as they did.
 - EDITS AND STOPS: every part the orchestrator answered `edit` or `stop` (a copy under RUNNING NOW
   changed or ended, no implementer), listed; not scored, since RUNNING NOW is unknown in this
   replay. One whose copy carries a task's name counts as naming that task above.
@@ -46,7 +52,8 @@ import statistics as st
 import sys
 from pathlib import Path
 
-NEW, STOP, EDIT = "new", "stop", "edit"
+NEW, STOP, EDIT, REPLY = "new", "stop", "edit", "reply"
+ROUTED = ("implementer", "orchestrator")  # the brain's route to the orchestrator, before and since named tasks
 RUNS = Path(__file__).resolve().parent / "tasks.jsonl"
 WROTE = re.compile(r"\bNEW\s+([a-z][a-z0-9_]*)")
 EDITED = re.compile(r"\b(?:edit|rerun)\s+([a-z][a-z0-9_]*(?:\s*\+\s*[a-z][a-z0-9_]*)*)")
@@ -63,6 +70,16 @@ def runs() -> tuple[list[str], dict[str, tuple[set[str], set[str]]]]:
         order.append(t["id"])
         out[t["id"]] = (set(WROTE.findall(result)), edited)
     return order, out
+
+
+def either() -> set[str]:
+    """The new tasks a hand ruling in tasks.jsonl accepts as a follow-up too."""
+    return {t["id"] for t in map(json.loads, RUNS.read_text().splitlines()) if t.get("either")}
+
+
+def called(t: dict, anew: bool, named: set[str], rulings: set[str]) -> bool:
+    """A new task is right when a part said "new", or, under a hand ruling, when one followed a task up."""
+    return anew or (t["id"] in rulings and bool(named))
 
 
 NOT_SCRIPTS = {"edit", "both"}  # words the results' shorthand puts where a script's name goes
@@ -85,10 +102,22 @@ def lumps(tasks: list[dict]) -> tuple[list[tuple[str, list[str], int]], dict[str
     return lumped, {sc: sorted(n) for sc, n in sorted(holders.items()) if len(n) > 1}
 
 
+def copies_of(answer: dict) -> list[str]:
+    """The copies a stop names: `copies` in a built run's answer, `stop` in an earlier one's."""
+    return answer.get("copies") or answer.get("stop") or []
+
+
+def asked(r: dict) -> bool:
+    """The line's parts named no task and started none, and one of them was a reply only."""
+    return any(p.get("kind") == REPLY for p in r["parts"]) and \
+        not any(p.get("kind") and p["kind"] != REPLY and (p["kind"] == NEW or p.get("name")) for p in r["parts"])
+
+
 def by_script(rows: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
     """(follow-ups, follow-ups no task held, new) by what each task's implementer wrote or edited;
     each item {r, t, ok, right}, the chains rebuilt from the replay's own attribution, line by line."""
     order, ran = runs()
+    rulings = either()
     pos = {tid: i for i, tid in enumerate(order)}
     owner: dict[str, str] = {}
     fu, none, new = [], [], []
@@ -107,7 +136,8 @@ def by_script(rows: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
                 item = {"r": r, "t": dict(t, right=right, scripts=sorted(prior)), "ok": bool(named & set(right))}
                 (fu if right else none).append(item)
             elif wrote and not edited and t["kind"] == "fresh":
-                new.append({"r": r, "t": dict(t, scripts=sorted(wrote)), "ok": anew})
+                new.append({"r": r, "t": dict(t, scripts=sorted(wrote)), "ok": called(t, anew, named, rulings),
+                            "asked": asked(r)})
         for t in r["truth"]:
             if t.get("owner"):
                 owner.setdefault(t["id"], t["owner"])
@@ -136,6 +166,7 @@ def score(out: Path) -> tuple[str, dict]:
     calls = [p for p in parts if "ms" in p]
     errors = [p for p in parts if "error" in p]
 
+    rulings = either()
     fu, fu_later, fu_no_task, fresh = [], [], [], []
     for r in rows:
         named = {p["name"] for p in r["parts"] if p.get("kind") and p["kind"] != NEW and p.get("name")}
@@ -143,7 +174,7 @@ def score(out: Path) -> tuple[str, dict]:
         for t in r["truth"]:
             item = {"r": r, "t": t}
             if t["kind"] == "fresh":
-                item["ok"] = anew
+                item["ok"], item["asked"] = called(t, anew, named, rulings), asked(r)
                 fresh.append(item)
             elif t["later"]:
                 fu_later.append(item)
@@ -155,14 +186,17 @@ def score(out: Path) -> tuple[str, dict]:
                 fu.append(item)
     all_fresh = [r for r in rows if r["truth"] and all(t["kind"] == "fresh" for t in r["truth"])]
     fresh_parts = [p for r in all_fresh for p in r["parts"] if p.get("kind")]
-    fresh_parts_fu = [p for p in fresh_parts if p["kind"] != NEW]
+    fresh_parts_fu = [p for p in fresh_parts if p["kind"] not in (NEW, REPLY)]
     none_parts = [p for r in rows if not r["truth"] for p in r["parts"] if p.get("kind")]
 
     s_fu, s_none, s_new = by_script(rows)
     s_hit = sum(x["ok"] for x in s_fu)
-    s_taken = sum(not x["ok"] for x in s_new)
+    s_asked = sum(not x["ok"] and x["asked"] for x in s_new)
+    s_taken = sum(not x["ok"] and not x["asked"] for x in s_new)
     hit = sum(x["ok"] for x in fu)
-    taken = sum(not x["ok"] for x in fresh)
+    l_asked = sum(not x["ok"] and x["asked"] for x in fresh)
+    taken = sum(not x["ok"] and not x["asked"] for x in fresh)
+    replies_only = [p for p in parts if p.get("kind") == REPLY]
     prompt = sum(p.get("prompt_tokens", 0) for p in calls)
     cached = sum(p.get("cached_tokens", 0) for p in calls)
     cost = [p.get("cost", 0) for p in calls]
@@ -186,24 +220,36 @@ def score(out: Path) -> tuple[str, dict]:
     w("| | Right | Of | Share | Bar |\n|---|---|---|---|---|")
     w(f"| **Follow-ups** named the task holding the script it edited | {s_hit} | {len(s_fu)} | "
       f"{pct(s_hit, len(s_fu))} | at least 85%: {'met' if s_fu and s_hit / len(s_fu) >= 0.85 else 'NOT met'} |")
-    w(f"| **New tasks** (a new script) called new | {len(s_new) - s_taken} | {len(s_new)} | "
-      f"{pct(len(s_new) - s_taken, len(s_new))} | taken for follow-ups at most 5%: {pct(s_taken, len(s_new))}, "
+    w(f"| **New tasks** (a new script) called new | {len(s_new) - s_taken - s_asked} | {len(s_new)} | "
+      f"{pct(len(s_new) - s_taken - s_asked, len(s_new))} | taken for follow-ups at most 5%: "
+      f"{pct(s_taken, len(s_new))}, "
       f"{'met' if s_new and s_taken / len(s_new) <= 0.05 else 'NOT met'} |")
     w(f"\n{len(s_none)} more edited a script no task here held (the brain ran its maker as an action).")
     w("\n**By the conversation's labels** (`Change to T<x>` is a follow-up, anything else fresh):\n")
     w("| | Right | Of | Share | Bar |\n|---|---|---|---|---|")
     w(f"| **Follow-ups** named the task whose chain holds the target | {hit} | {len(fu)} | {pct(hit, len(fu))} | "
       f"at least 85%: {'met' if fu and hit / len(fu) >= 0.85 else 'NOT met'} |")
-    w(f"| **New tasks** called new | {len(fresh) - taken} | {len(fresh)} | {pct(len(fresh) - taken, len(fresh))} | "
+    w(f"| **New tasks** called new | {len(fresh) - taken - l_asked} | {len(fresh)} | "
+      f"{pct(len(fresh) - taken - l_asked, len(fresh))} | "
       f"taken for follow-ups at most 5%: {pct(taken, len(fresh))}, "
       f"{'met' if fresh and taken / len(fresh) <= 0.05 else 'NOT met'} |")
+    ruled = sorted({x["t"]["id"] for x in [*s_new, *fresh] if x["t"]["id"] in rulings}, key=lambda i: int(i[1:]))
+    if ruled:
+        w(f"\n**Either way** (a hand ruling in tasks.jsonl): {', '.join(ruled)} are right as new or as a follow-up.")
+    if replies_only:
+        w(f"\n**Reply only** (nothing started): {len(replies_only)} parts. Of the new tasks, {s_asked} by script and "
+          f"{l_asked} by the labels were only asked back, so neither called new nor taken for follow-ups; of the "
+          f"follow-ups missed, {sum(asked(x['r']) for x in s_fu if not x['ok'])} by script and "
+          f"{sum(asked(x['r']) for x in fu if not x['ok'])} by the labels.")
     w(f"\n- Left out of the follow-ups: {len(fu_later)} whose target was written after the line reached the brain; "
       f"{len(fu_no_task)} whose target no task held (the brain ran actions for it), of which "
       f"{sum(x['ok'] for x in fu_no_task)} the orchestrator called new.")
     w(f"- On the {len(all_fresh)} lines whose every task was fresh, {len(fresh_parts_fu)} of {len(fresh_parts)} "
       f"parts went to a follow-up ({pct(len(fresh_parts_fu), len(fresh_parts))}).")
     w(f"- The lines the conversation made no task of: {len(none_parts)} parts, "
-      f"{sum(p['kind'] == NEW for p in none_parts)} new, {sum(p['kind'] != NEW for p in none_parts)} follow-ups.")
+      f"{sum(p['kind'] == NEW for p in none_parts)} new, "
+      f"{sum(p['kind'] not in (NEW, REPLY) for p in none_parts)} follow-ups"
+      + (f", {sum(p['kind'] == REPLY for p in none_parts)} reply only." if replies_only else "."))
     if calls:
         w(f"\n**Cost and time:** ${sum(cost):.4f} for {len(calls)} calls, a call median ${st.median(cost):.5f}, mean "
           f"${st.mean(cost):.5f}; a call median {st.median(ms) / 1000:.1f} s, p90 {quantile(ms, 0.9) / 1000:.1f} s, "
@@ -214,7 +260,7 @@ def score(out: Path) -> tuple[str, dict]:
     def row_of(x: dict) -> str:
         r, t = x["r"], x["t"]
         answer = "; ".join(f"{p.get('kind', 'ERROR')} {p.get('name', '')}"
-                           + (f" [stop {', '.join(p['answer']['stop'])}]" if p.get("kind") == STOP else "")
+                           + (f" [stop {', '.join(copies_of(p['answer']))}]" if p.get("kind") == STOP else "")
                            + f": {clip(p.get('shown', ''), 90)}" for p in r["parts"])
         truth = f"{t['id']}: {clip(t['task'], 80)}"
         if t["kind"] != "fresh":
@@ -261,7 +307,7 @@ def score(out: Path) -> tuple[str, dict]:
         w("| # | The line | The brain's instruction | The answer | The conversation's tasks |\n|---|---|---|---|---|")
         for r, p in stops:
             a = p["answer"]
-            what = (f"stop {', '.join(a['stop'])}" if p["kind"] == STOP else
+            what = (f"stop {', '.join(copies_of(a))}" if p["kind"] == STOP else
                     f"edit {a.get('copy')}: " + ", ".join(f"{v['key']}={v['value']}" for v in a.get("values", [])))
             w(f"| {r['n']} | {clip(r['words'], 100)} | {clip(p['shown'], 100)} | {what} | "
               f"{'; '.join(t['id'] + ': ' + clip(t['task'], 60) for t in r['truth']) or 'none'} |")
@@ -271,7 +317,7 @@ def score(out: Path) -> tuple[str, dict]:
         brain = {b["n"]: b for b in (json.loads(x) for x in Path(meta["lines"]).read_text().splitlines() if x.strip())}
 
     def others(n: int) -> str:
-        got = [q for q in brain.get(n, {}).get("parts", []) if q["to"] != "implementer"]
+        got = [q for q in brain.get(n, {}).get("parts", []) if q["to"] not in ROUTED]
         return "; ".join(f"{q['to']}: {clip(q['instruction'] or q['part'], 60)}" for q in got) or "none"
 
     replies = [(r, r["parts"][0]["answer"].get("reply", "")) for r in rows
@@ -297,7 +343,7 @@ def score(out: Path) -> tuple[str, dict]:
         w("| # | The brain's instruction | Went to |\n|---|---|---|")
         for r in all_fresh:
             for p in r["parts"]:
-                if p.get("kind") and p["kind"] != NEW:
+                if p.get("kind") and p["kind"] not in (NEW, REPLY):
                     w(f"| {r['n']} | {clip(p['shown'], 140)} | {p['name']} |")
 
     if tasks:
@@ -319,20 +365,24 @@ def score(out: Path) -> tuple[str, dict]:
     text = "\n".join(md) + "\n"
     lumped, split = lumps(tasks) if tasks else ([], {})
     summary = {"lumped": len(lumped), "split": len(split), "by_script": {"follow_ups": {"right": s_hit, "of": len(s_fu), "no_task": len(s_none)},
-                             "new": {"right": len(s_new) - s_taken, "of": len(s_new), "taken": s_taken}},
+                             "new": {"right": len(s_new) - s_taken - s_asked, "of": len(s_new), "taken": s_taken}},
                "first_ms_median": st.median(fms) if fms else None, "first_ms_p90": quantile(fms, 0.9) if fms else None,
                "model": meta.get("model"), "reasoning": meta.get("reasoning"), "version": meta.get("version"),
                "prompt_sha": meta.get("prompt_sha"), "lines": len(rows), "parts": len(parts), "calls": len(calls),
                "errors": len(errors), "tasks": len(tasks),
                "follow_ups": {"right": hit, "of": len(fu), "later": len(fu_later), "no_task": len(fu_no_task),
                               "no_task_new": sum(x["ok"] for x in fu_no_task)},
-               "new": {"right": len(fresh) - taken, "of": len(fresh), "taken": taken,
+               "new": {"right": len(fresh) - taken - l_asked, "of": len(fresh), "taken": taken,
                        "fresh_line_parts": len(fresh_parts), "fresh_line_parts_followed": len(fresh_parts_fu)},
                "none_lines": {"parts": len(none_parts), "new": sum(p["kind"] == NEW for p in none_parts)},
                "stops": len(stops),
                "cost": sum(cost), "cost_median": st.median(cost) if cost else None,
                "ms_median": st.median(ms) if ms else None, "ms_p90": quantile(ms, 0.9) if ms else None,
                "cache": cached / prompt if prompt else None, "prompt_tokens": prompt}
+    if replies_only:  # a built run's; earlier runs' summaries keep their keys
+        summary["replies_only"] = len(replies_only)
+        summary["by_script"]["new"]["asked"] = s_asked
+        summary["new"]["asked"] = l_asked
     return text, summary
 
 

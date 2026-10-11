@@ -50,7 +50,6 @@ for p in (REPO / "brain", REPO / "bridge"):
         sys.path.insert(0, str(p))
 
 from brain.context import Context, Row, parse  # noqa: E402
-from brain.tasks import Tasks  # noqa: E402
 from brain.world import Seen  # noqa: E402
 from vfg_feed import clean_text  # noqa: E402
 
@@ -264,18 +263,23 @@ class Playtest:
                     places="SAVED PLACES: none" if items else "", incantations="INCANTATIONS: none")
 
     def open_tasks(self, at: str) -> str:
-        """OPEN TASKS at `at`, as brain.tasks.Tasks shows them: written and not yet closed, each
-        with an implementer on it, as the orchestrator was."""
-        tasks = Tasks(Path("/nonexistent/tasks.json"))
+        """OPEN TASKS at `at`, as the brain's tasks.json showed them on 2026-10-08: written and not
+        yet closed, each with an implementer on it, as the orchestrator was. Rendered here, since
+        the brain's tasks are named and in vfg.db now (Prototype_Named_Tasks), and this replay keeps
+        the playtest's T ids."""
+        rows = []
         for t in self.tasks:
             if t["at"] > at:
                 continue
             closed = self.closed.get(t["id"])
             if closed and closed[0] <= at:
                 continue
-            tasks.tasks[t["id"]] = {"id": t["id"], "at": t["at"], "player": t["player"], "line": "",
-                                    "task": t["task"], "status": "open"}
-        return tasks.show(list(tasks.tasks))
+            brief = " ".join(str(t["task"] or "").split())
+            if len(brief) > BRIEF_MAX:
+                brief = brief[:BRIEF_MAX - 1] + "…"
+            rows.append(f"- {t['id']} for {t['player'] or 'nobody'}, since {str(t['at'])[11:19]}, "
+                        f"an implementer is on it: {brief}")
+        return "OPEN TASKS:\n" + ("\n".join(rows) or "none")
 
     # ------------------------------------------------------------- the truth
 

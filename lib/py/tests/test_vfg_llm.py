@@ -234,14 +234,14 @@ async def test_missing_key_names_the_file_to_create(monkeypatch, tmp_path):
 
 async def test_an_answer_queues_one_row_in_the_format_vfg_usage_add_queues(monkeypatch, tmp_path):
     serve(monkeypatch, ok(BAD, cost=0.001), ok(GOOD, cost=0.002))
-    answer = await structured("Name two mobs.", Mobs, component=Component.PLANNER, call_id="T7 #2",
+    answer = await structured("Name two mobs.", Mobs, component=Component.PLANNER, call_id="castle_steve #2",
                               model="~deepseek/deepseek-v4-flash-latest")
     [row] = queued(tmp_path)
     assert list(row) == ROW_KEYS
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z", row["at"])
     assert {k: v for k, v in row.items() if k != "at"} == {
         "component": "planner", "model": "~deepseek/deepseek-v4-flash-latest", "input_tokens": 40,
-        "output_tokens": 60, "cost_usd": pytest.approx(0.003), "ref": "T7 #2", "cache_read_tokens": 32,
+        "output_tokens": 60, "cost_usd": pytest.approx(0.003), "ref": "castle_steve #2", "cache_read_tokens": 32,
         "cache_write_tokens": None, "ok": 1, "error": None, "ms": answer.ms}  # both attempts, as the answer's
     assert (tmp_path / "usage.pending.lock").exists()
 

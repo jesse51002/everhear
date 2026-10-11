@@ -18,10 +18,12 @@ at or below the one it follows from), the context is read again and followed fro
 Every call (a line's, a report's, Respond's) takes in what no call has read yet and marks it
 processed (`vfg context mark`, nobody waiting), so the game's events since the last call are its
 NEW rows. There is no call of its own for what nobody reads: it waits for the next one. An
-implementer's report is a brain call of its own. Every model call's `usage` row, answered or
-failed, its cached tokens included, is structured()'s own, queued on this PC; after each call
-the brain logs what it spent and sends the queue (`vfg usage flush`), nobody waiting, never two
-at once: one asked for while another runs runs once when it ends.
+implementer's report is a brain call of its own, once its task has taken what the implementer
+made, its DESCRIPTION line and the variables of its action (Prototype_Named_Tasks). Every model
+call's `usage` row, answered or failed, its cached tokens included, is structured()'s own, queued
+on this PC; after each call the brain logs what it spent and sends the queue (`vfg usage flush`),
+nobody waiting, never two at once: one asked for while another runs runs once when it ends. An
+orchestrator call's ref is the line's #<seq>, or the task's name for a report.
 """
 
 from __future__ import annotations
@@ -37,7 +39,8 @@ from vfg_actions import menu_line
 from vfg_llm import LlmError
 
 from . import actions
-from .act import TOLD, Acts, short
+from .act import TOLD, Acts, short, spent
+from .actions import variables_of
 from .call import Call, Event, describe
 from .config import log
 from .context import LIVE, Context, Row, parse
@@ -49,14 +52,6 @@ from .world import World
 HISTORY_S = 120  # a line older than this when it arrives is history
 MARK_CHUNK = 500  # seqs in one `vfg context mark`
 ERRORED_MAX = 180  # the error line's reason, in characters
-
-
-def spent(got) -> str:
-    """What a call spent, from its Answer or its LlmError: `840 ms $0.001234, 9000 in, 96% cached, 40 out`,
-    the cost `$0.001234+` when it timed out with an attempt in flight, whose cost is not in it."""
-    rate = f", {got.cached_tokens / got.prompt_tokens:.0%} cached" if got.prompt_tokens else ""
-    more = "" if getattr(got, "cost_known", True) else "+"
-    return f"{got.ms} ms ${got.cost:.6f}{more}, {got.prompt_tokens} in{rate}, {got.completion_tokens} out"
 
 
 def errored(who: str, e: Exception) -> str:
@@ -84,7 +79,7 @@ class Brain:
                  implementers, later: Later, catalog, refs=None,
                  now: Callable[[], datetime] = utc_now,
                  menu: Callable[[str], object] | None = None, start: int = 0,
-                 load: Callable[[], Awaitable[tuple[Context, int]]] | None = None):
+                 load: Callable[[], Awaitable[tuple[Context, int, list[dict]]]] | None = None):
         self.ctx = ctx
         self.start = start            # the feed's highest seq when the context was read: what is new is past it
         self.call = call
@@ -98,7 +93,7 @@ class Brain:
         self.refs = refs              # the command references, once loaded (None until then)
         self.now = now
         self.menu = menu              # sets Jev's menu again when the actions change
-        self.load = load              # reads the context again, (ctx, start), after the feed restarted
+        self.load = load              # reads the context again, (ctx, start, task rows), after the feed restarted
         self.inflight: set[asyncio.Task] = set()
         self.stopping = False
         self.restarted = False        # the watch said the feed restarted, or gave a seq it had passed
@@ -200,16 +195,39 @@ class Brain:
         (Later.flush_usage), so a burst of calls with the box down is one SSH attempt, then one."""
         self.later.flush_usage()
 
-    def reload(self) -> None:
-        """Before each brain call: every action file that changed is loaded again, so an action an
-        implementer saved a moment ago is on the menu, and Jev's menu with it."""
+    def reload(self) -> list[str]:
+        """Before each call: every action file that changed is loaded again, so an action an
+        implementer saved a moment ago is on the menu, and Jev's menu with it, and every task whose
+        action changed has its variables read again. The names that changed."""
         try:
             changed = actions.refresh(self.catalog)
         except Exception as e:  # noqa: BLE001 — the actions as they were are still good
             log("actions", f"reloading failed ({type(e).__name__}: {e}); the menu is as it was")
-            return
+            return []
         if changed and self.menu is not None:
             self.menu(jev_menu(self.catalog))
+        for t in self.tasks.all() if changed else []:
+            if self.action_of(t) in changed:
+                self.refresh_variables(t["name"])
+        return changed
+
+    def action_of(self, task: dict) -> str | None:
+        """The action a task made: the one named after it, else the last it made that is loaded."""
+        if self.catalog.get(task["name"]) is not None:
+            return task["name"]
+        made = (task.get("made") or {}).get("actions") or []
+        return next((a for a in reversed(made) if self.catalog.get(a) is not None), None)
+
+    def refresh_variables(self, name: str) -> None:
+        """The task's `variables`, read again from its action (none loaded: left as they are)."""
+        task = self.tasks.get(name)
+        action = self.action_of(task) if task is not None else None
+        if action is None:
+            return
+        try:
+            self.tasks.set_variables(name, variables_of(self.catalog, action))
+        except Exception as e:  # noqa: BLE001 — the variables as they were are still good
+            log("tasks", f"{name}: reading {action}'s variables failed ({type(e).__name__}: {e})")
 
     # ------------------------------------------------------------- events
 
@@ -230,11 +248,14 @@ class Brain:
             return
         self.usage("brain", answer, f"#{row.seq}")
         log("brain", f"#{row.seq} {row.who}: {row.text[:80]!r} -> {describe(answer.value)}")
-        await self.acts.run(answer.value, player=row.who, line=row.text, seen=seen)
+        await self.acts.run(answer.value, player=row.who, line=row.text, seen=seen, ctx=self.ctx,
+                            head=event.head(), ref=f"#{row.seq}")
 
     async def conversational(self, row: Row) -> None:
-        """A conversational line: Respond replies, or hands it up to the brain."""
+        """A conversational line: Respond replies, or hands it up to the brain. The actions are
+        reloaded first, so a changed action file refreshes its tasks' variables at any call."""
         new = self.take()
+        self.reload()
         seen = await self.world.glance()
         try:
             answer = await self.respond.answer(row, self.ctx, seen, self.open_tasks(),
@@ -252,92 +273,107 @@ class Brain:
         if said.reply.strip():
             await self.acts.say(said.reply)
 
-    async def report(self, tid: str, status: str, text: str, following: bool = False) -> None:
-        """An implementer ended: one brain call writes the player's line and the record, reading
-        what no call has read yet, as every call does. When a follow-up to the task already runs
-        (`following`), the task stays open with the result so far, and the call is told, so its
-        reply never says it is all done."""
-        task = self.tasks.get(tid) or {"id": tid, "player": "", "line": "", "task": ""}
-        self.keep_session(tid)
+    async def report(self, name: str, status: str, text: str, description: str = "", made: dict | None = None,
+                     following: bool = False) -> None:
+        """An implementer ended: its task takes what it made, its DESCRIPTION line (when it gave
+        one; else the orchestrator's description stays) and the variables of its action; then one
+        brain call writes the player's line and the record, reading what no call has read yet, as
+        every call does. When a follow-up to the task already runs (`following`), the task stays
+        open with the result so far, and the call is told, so its reply never says it is all done."""
+        self.keep_session(name)
+        self.tasks.merge_made(name, made)
+        if description.strip():
+            self.tasks.describe(name, description)
         recorded = False
         try:
             self.reload()
+            self.refresh_variables(name)
+            task = self.tasks.get(name) or {"name": name, "player": None, "line": "", "brief": "", "description": ""}
             new = self.take()
             seen = await self.world.seen()
             event = Event("REPORT", task=task, status=status, report=text, following=following)
             try:
                 answer = await self.call.decide(event, self.ctx, seen, self.open_tasks(), new, self.refs)
             except LlmError as e:
-                log("brain", f"{tid} report FAILED ({spent(e)}): {e}")
+                log("brain", f"{name} report FAILED ({spent(e)}): {e}")
                 self.flush()
-                kept = self.result(tid, status, self.written(tid, status), following)
+                kept = self.result(name, status, self.written(name, status), following)
                 recorded = True
-                await self.acts.say(self.line_for(tid, status, kept), tid)
+                await self.acts.say(self.line_for(name, status, kept), name)
                 return
-            self.usage("brain", answer, tid)
+            self.usage("brain", answer, name)
             d = answer.value
-            log("brain", f"{tid} report ({status}) -> {describe(d)}")
+            log("brain", f"{name} report ({status}) -> {describe(d)}")
             final = d.status or status
-            kept = self.result(tid, final, d.record.strip() or self.written(tid, final), following)
+            kept = self.result(name, final, d.record.strip() or self.written(name, final), following)
             recorded = True
             if d.parts:
-                await self.acts.run(d, player=task.get("player") or "", line=task.get("line") or "", seen=seen)
+                await self.acts.run(d, player=task.get("player") or "", line=task.get("line") or "", seen=seen,
+                                    ctx=self.ctx, head=event.head(), ref=name, report=True)
             else:  # every report gets its chat line: the call's, else one written here
-                await self.acts.say(d.reply.strip() or self.line_for(tid, final, kept), tid)
+                await self.acts.say(d.reply.strip() or self.line_for(name, final, kept), name)
         except Exception:  # raised on, for the event's own log; the task never stays open for it
             if not recorded:
-                kept = self.result(tid, status, self.written(tid, status), following)
+                kept = self.result(name, status, self.written(name, status), following)
                 recorded = True
-                await self.acts.say(self.line_for(tid, status, kept), tid)
+                await self.acts.say(self.line_for(name, status, kept), name)
             raise
         finally:
             if not recorded:  # cancelled: the brain stopped while the call ran
-                self.result(tid, status, self.written(tid, status), following)
+                self.result(name, status, self.written(name, status), following)
 
-    def keep_session(self, tid: str) -> None:
-        """The task's implementer session into tasks.json, in case on_session missed it."""
+    def keep_session(self, name: str) -> None:
+        """The task's implementer session into its row, in case on_session missed it."""
         session = getattr(self.implementers, "session", None)
         if callable(session):
-            self.tasks.set_session(tid, session(tid))
+            self.tasks.set_session(name, session(name))
 
-    def result(self, tid: str, status: str, record: str, following: bool) -> bool:
+    def result(self, name: str, status: str, record: str, following: bool) -> bool:
         """A report's record, an `AI result` row: the task closed with it, or kept open with it as
         the result so far while a follow-up to it runs (one sent while the call ran included).
         True when kept open."""
-        kept = following or tid in self.implementers.running()
+        kept = following or name in self.implementers.running()
         if kept:
-            self.tasks.note(tid, record)
-            log("task", f"{tid} stays open: a follow-up to it runs")
+            self.tasks.note(name, record)
+            log("task", f"{name} stays open: a follow-up to it runs")
         else:
-            self.tasks.close(tid, status, record)
-        self.acts.post("result", tid, record)
+            self.tasks.close(name, status, record)
+        self.acts.post("result", name, record)
         return kept
 
-    async def on_report(self, tid: str, status: str, text: str) -> None:
-        """What the implementers call when one ends (their `on_report`): the report is a brain
-        call of its own, and the implementer waits for none of it. A task whose implementers still
-        name it as running has a follow-up queued or started behind this run."""
-        following = tid in self.implementers.running()
+    async def on_report(self, name: str, status: str, text: str, description: str = "",
+                        made: dict | None = None) -> None:
+        """What the implementers call when one ends (their `on_report`), with its report, its
+        DESCRIPTION line taken off it, and what it made: the report is a brain call of its own,
+        and the implementer waits for none of it. A task whose implementers still name it as
+        running has a follow-up queued or started behind this run."""
+        following = name in self.implementers.running()
         if self.stopping:  # no model call now: the task closes on the implementer's status, in code
-            log("task", f"{tid} reported {status} while the brain stops: {short(text, 200)}")
-            self.keep_session(tid)
-            self.result(tid, status, self.written(tid, status), following)
+            log("task", f"{name} reported {status} while the brain stops: {short(text, 200)}")
+            self.keep_session(name)
+            self.tasks.merge_made(name, made)
+            if description.strip():
+                self.tasks.describe(name, description)
+            self.result(name, status, self.written(name, status), following)
             return
-        self.spawn(self.report(tid, status, text, following), f"report {tid}")
+        self.spawn(self.report(name, status, text, description, made, following), f"report {name}")
 
-    def written(self, tid: str, status: str) -> str:
-        """A task's record written in code, never the implementer's words: `T7 done: <its brief>`."""
-        brief = short((self.tasks.get(tid) or {}).get("task") or "", 120)
-        return f"{tid} {status}" + (f": {brief}" if brief else "")
+    def written(self, name: str, status: str) -> str:
+        """A task's record written in code, never the implementer's words: `<name> done: <its brief>`."""
+        brief = short((self.tasks.get(name) or {}).get("brief") or "", 120)
+        return f"{name} {status}" + (f": {brief}" if brief else "")
 
-    def line_for(self, tid: str, status: str, following: bool = False) -> str:
-        """A report's chat line written in code, when the call gave none."""
-        brief = short((self.tasks.get(tid) or {}).get("task") or "", 80) or tid
+    def line_for(self, name: str, status: str, following: bool = False) -> str:
+        """A report's chat line written in code, when the call gave none: its brief, else the
+        player's own words, never its description, which players are not shown."""
+        t = self.tasks.get(name) or {}
+        what = short(t.get("brief") or "", 80) or short(t.get("line") or "", 80) or "that one"
         if following:
-            return f"still on it: {brief}"
-        return f"done: {brief}" if status == "done" else f"sorry, that one failed: {brief}"
+            return f"still on it: {what}"
+        return f"done: {what}" if status == "done" else f"sorry, that one failed: {what}"
 
     def open_tasks(self) -> str:
+        """TASKS, for the brain's tail and Respond's: every task, and which an implementer is on."""
         return self.tasks.show(self.implementers.running())
 
     # ------------------------------------------------------------- running and stopping
@@ -370,13 +406,15 @@ class Brain:
     async def reread(self) -> None:
         """After the feed restarted (a new feed.log, its seqs from 1 again): the context read
         again, with the start seq it gives, and caught up as at a start, so the new feed's rows
-        are heard and none of it older than two minutes is acted on."""
+        are heard and none of it older than two minutes is acted on; and the tasks read with it
+        merged into the memory's (Tasks.merge)."""
         if self.load is None:
             log("watch", "nothing to read the context again with: following the new feed from its start")
             self.ctx, self.start = Context(), 0
             return
-        ctx, start = await self.load()
+        ctx, start, rows = await self.load()
         self.ctx, self.start = ctx, max(start, ctx.last_seq)
+        self.tasks.merge(rows)
         history = self.catch_up()
         log("watch", f"the context read again: {len(ctx.rows)} rows, following from #{self.position()} "
                      f"({len(history)} history marked read)")
@@ -399,13 +437,14 @@ class Brain:
             log("error", f"stopping the implementers failed: {type(e).__name__}: {e} | "
                          f"{traceback.format_exc(limit=-4)}")
             stopped = []
-        for tid in stopped:
+        for name in stopped:
             try:
-                self.keep_session(tid)  # a follow-up after the restart resumes it
-                self.tasks.close(tid, "failed", f"{tid} failed: stopped, the brain stopped while it ran")
-                self.acts.post("result", tid, f"{tid} failed: stopped, the brain stopped while it ran")
+                self.keep_session(name)  # a follow-up after the restart resumes it
+                record = f"{name} failed: stopped, the brain stopped while it ran"
+                self.tasks.close(name, "failed", record)
+                self.acts.post("result", name, record)
             except Exception as e:  # noqa: BLE001 — one task's trouble never keeps the rest open
-                log("error", f"closing {tid} at the stop failed: {type(e).__name__}: {e}")
+                log("error", f"closing {name} at the stop failed: {type(e).__name__}: {e}")
         if stopped:
             log("stop", f"stopped the implementers of {', '.join(stopped)}")
 

@@ -206,7 +206,7 @@ class Spent:
 @dataclass
 class Pick:
     """What the action planner is told about one pick."""
-    task_id: str
+    ref: str                    # the line's #<seq>, or the task's name for a report's part, for the log
     index: int                  # 0-based, in the task's picks
     instruction: str
     context: str
@@ -261,7 +261,7 @@ class Planner:
         current = info.get("values") if isinstance(info.get("values"), dict) else {}
         return (f"ACTION: edit\n{doc(cls)}\n\n{p.running}\n\n"
                 f"THE COPY TO CHANGE: {p.copy}, a copy of {info.get('action')}"
-                f"{f', started by {task}' if task else ''}. Its values (now: its setting):\n"
+                f"{f', started by {task}' if task and task != p.copy else ''}. Its values (now: its setting):\n"
                 f"{describe(str(info.get('action')), copy_cls, current)}\n\n"
                 "Answer with the values to change, each by its name above with its new setting, "
                 "and every other null.\n")
@@ -294,15 +294,15 @@ class Planner:
     # ------------------------------------------------------------------ calls
 
     async def _call(self, step: str, prompt: str, output: type[BaseModel], p: Pick):
-        """One planner call: its usage row is structured()'s, component planner, `<task> #<part>`."""
+        """One planner call: its usage row is structured()'s, component planner, `<ref> #<part>`."""
         try:
             answer = await self.ask(prompt, output, system=self.system, model=self.model, component="planner",
-                                    call_id=f"{p.task_id} #{p.index + 1}"[:64])
+                                    call_id=f"{p.ref} #{p.index + 1}"[:64])
         except LlmError as e:
             p.spent.add(e)
             raise
         p.spent.add(answer)
-        self.log("plan", f"{p.task_id} #{p.index + 1} {step} {answer.ms} ms ${answer.cost:.6f}: {outcome(answer.value)}")
+        self.log("plan", f"{p.ref} #{p.index + 1} {step} {answer.ms} ms ${answer.cost:.6f}: {outcome(answer.value)}")
         return answer.value
 
     async def plan(self, name: str, cls, p: Pick, *, failure: str | None = None, last: dict | None = None,
@@ -371,10 +371,10 @@ class Planner:
         said = named(p.instruction, names)
         if failure is None and len(said) == 1:
             chosen = Out(action=Model(copy=said[0]), say=f"{'stopping' if name == 'stop' else 'changing'} {said[0]}")
-            self.log("plan", f"{p.task_id} #{p.index + 1} {name}: {said[0]}, named in the instruction")
+            self.log("plan", f"{p.ref} #{p.index + 1} {name}: {said[0]}, named in the instruction")
         elif failure is None and name == "edit" and len(names) == 1:
             chosen = Out(action=Model(copy=names[0]), say=f"changing {names[0]}")
-            self.log("plan", f"{p.task_id} #{p.index + 1} edit: {names[0]}, the only copy running")
+            self.log("plan", f"{p.ref} #{p.index + 1} edit: {names[0]}, the only copy running")
         elif failure is None:
             chosen = await self._call(f"{name} copy", self.base(self.copies_head(name, cls, p), p), Out, p)
         else:

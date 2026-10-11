@@ -9,7 +9,7 @@ every value with its type, limits, default (or fixed) and description, those it 
 
 WHAT RUNS comes from $VFG_HOME/running.json, which vfg writes through on every run, edit and stop
 and the brain fetches from EC2: each copy's name, its action, the values that differ from the
-action's own and the task that started it.
+action's own and the task that started it, when that is not the copy's own name.
 
 Neither goes in the implementer's system prompt (prefix.py): that is the same bytes for every
 implementer, so the provider's cache serves it to the second one on, and an action made mid-game
@@ -115,7 +115,7 @@ def describe(name: str, entry: dict) -> str:
 
 def section(data: dict | None, failed: str | None, server: str, task: str | None) -> str:
     """The ACTIONS part of the brief: every action whole, or why there are none."""
-    run = "vfg action run <action> key=value ... --task %s" % (task or "<task id>")
+    run = "vfg action run <action> key=value ... --task %s" % (task or "<your task>")
     if data is None:
         return ("ACTIONS: unavailable (%s). vfg action list names every action, and vfg action list --json gives "
                 "each one's values; run one with %s.\n" % (failed or "no answer", run))
@@ -185,15 +185,16 @@ def changed(data: dict | None, copy: dict) -> dict:
 
 
 def copy_line(name: str, copy: dict, data: dict | None) -> str:
-    """`galick_gun_2 (galick_gun, player=Alex, cooldown=0, T5)`: the action when it is not the
-    copy's name, the values that differ from the action's, the task."""
+    """`galick_gun_2 (galick_gun, player=Alex, cooldown=0, beam_duel_alex)`: the action and the task,
+    each when it is not the copy's own name, and the values that differ from the action's. A task's
+    copy named as the task (`torch_ring_steve`) is its name alone."""
     bits = []
     if copy.get("action") and copy.get("action") != name:
         bits.append(str(copy["action"]))
     diff = changed(data, copy)
     if diff:
         bits.append(pairs(diff))
-    if copy.get("task"):
+    if copy.get("task") and copy.get("task") != name:
         bits.append(str(copy["task"]))
     return "%s (%s)" % (name, ", ".join(bits)) if bits else name
 

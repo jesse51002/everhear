@@ -1,7 +1,7 @@
 # place.py: vfg place save, list and forget. Appended after common.py, ARGS and
 # remote/places.py, which is the module `places` here: the same code a handler runs
 # through mc.rcon runs here through common.py's RCON client. ARGS:
-#   {"mc": "/opt/mc", "op": "save", "name": "castle", "player": "Steve", "at": null, "dim": null, "by": "T7"}
+#   {"mc": "/opt/mc", "op": "save", "name": "castle", "player": "Steve", "at": null, "dim": null, "by": "castle_steve"}
 #   {"mc": "/opt/mc", "op": "save", "name": "castle", "player": null, "at": ["197", "68", "251.5"],
 #    "dim": "overworld" | null, "by": ""}
 #   {"mc": "/opt/mc", "op": "list", "json": false}

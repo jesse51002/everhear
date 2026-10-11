@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -152,7 +153,7 @@ FILES = {
     "made/main/actions/galick_ice.py": GALICK_ICE_ACTION,
 }
 
-ROUTE = {"task": "T7", "scripts": [
+ROUTE = {"task": "ice_beam_steve", "scripts": [
     {"name": "ice_beam", "source": "library", "verdict": "runs_it", "p_runs_it": 0.91, "p_close": 0.05,
      "path": "scripts/ice_beam/main.py"},
     {"name": "galick_gun", "source": "library", "verdict": "close", "p_runs_it": 0.1, "p_close": 0.42,
@@ -165,22 +166,26 @@ STATE = {"online": [{"name": "Steve", "pos": [120, 64, -40], "dimension": "overw
                     {"name": "Alex", "pos": [98, 70, -12], "dimension": "overworld"}],
          "time": {"daytime": 18000, "day": 3, "phase": "night"}, "weather": "clear",
          "instances": [
-             {"instance": "galick-alex", "script": "galick_gun", "source": "library", "task": "T5", "pid": 10,
+             {"instance": "galick_gun_alex", "script": "galick_gun", "source": "library", "task": "galick_duel_alex",
+              "pid": 10,
               "values": {"player": "Alex", "cooldown": 0}, "changed": {"player": "Alex", "cooldown": 0},
               "args": [], "touches": ["Alex"]},
-             {"instance": "horror_mode", "script": "horror_mode", "source": "library", "task": "T2", "pid": 11,
+             {"instance": "horror_mode", "script": "horror_mode", "source": "library", "task": "spooky_night",
+              "pid": 11,
               "values": {}, "changed": {}, "args": [], "touches": []},
-             {"instance": "zoo-steve", "script": "zoo", "source": "library", "task": "T3", "pid": 12,
+             {"instance": "zoo_steve", "script": "zoo", "source": "library", "task": "zoo_steve", "pid": 12,
               "values": {"player": "Steve"}, "changed": {"player": "Steve"}, "args": [], "touches": ["Steve"]}],
          "rcon": None, "ms": 300}
 
 # running.json: what vfg wrote through for every run (the state's instances, above, are what an older vfg gives)
 RUNNING = {"fetched_at": 1760000000, "copies": {
-    "galick-alex": {"action": "galick_gun", "script": "galick_gun", "values": {"player": "Alex", "cooldown": 0},
-                    "live": ["cooldown"], "task": "T5", "started": "2026-10-09T12:00:00Z", "runs": "until_stopped"},
-    "horror_mode": {"action": "horror_mode", "script": "horror_mode", "values": {}, "live": [], "task": "T2",
+    "galick_gun_alex": {"action": "galick_gun", "script": "galick_gun", "values": {"player": "Alex", "cooldown": 0},
+                        "live": ["cooldown"], "task": "galick_duel_alex", "started": "2026-10-09T12:00:00Z",
+                        "runs": "until_stopped"},
+    "horror_mode": {"action": "horror_mode", "script": "horror_mode", "values": {}, "live": [], "task": "spooky_night",
                     "started": "2026-10-09T11:00:00Z", "runs": "until_stopped"},
-    "zoo-steve": {"action": "zoo", "script": "zoo", "values": {"at": "Steve"}, "live": [], "task": "T3",
+    # a task's copy, named as the task
+    "zoo_steve": {"action": "zoo", "script": "zoo", "values": {"at": "Steve"}, "live": [], "task": "zoo_steve",
                   "started": "2026-10-09T11:30:00Z", "runs": "once"}}}
 
 JOB = "Give Steve an ice beam with a crater where it hits. Leave tnt_rain alone."
@@ -221,7 +226,7 @@ class Repo:
         with open(os.path.join(self.home, rel), "w") as f:
             f.write(text)
 
-    async def block(self, job: str = JOB, task: str = "T7") -> str:
+    async def block(self, job: str = JOB, task: str = "ice_beam_steve") -> str:
         return await examples.build(self.cfg, job, task, self.vfg)
 
 
@@ -244,12 +249,13 @@ async def test_the_block_in_the_specs_shape_with_every_file_whole_in_order(tmp_p
     block = await r.block()
     head, made, acts, files = parts(block)
     assert head.split("\n") == [
-        "EXAMPLES, picked for T7 by Jev in 0.3 s.",
+        "EXAMPLES, picked for ice_beam_steve by Jev in 0.3 s.",
         "ice_beam runs this job: run one of its actions, ice_beam or frost_ray, with the values the job needs. "
         "galick_gun is close.",
         "Presets to copy: crater and replace_blocks.",
         "Named in your brief, in full below: tnt_rain.",
-        "Running: galick-alex (galick_gun, player=Alex, cooldown=0, T5), horror_mode (T2), zoo-steve (zoo, at=Steve, T3).",
+        "Running: galick_gun_alex (galick_gun, player=Alex, cooldown=0, galick_duel_alex), horror_mode (spooky_night), "
+        "zoo_steve (zoo, at=Steve).",
         "Online: Steve 120 64 -40 overworld, Alex 98 70 -12 overworld. Night, clear.",
         examples.NOW,
     ]
@@ -261,7 +267,8 @@ async def test_the_block_in_the_specs_shape_with_every_file_whole_in_order(tmp_p
     # every action whole, the library's by name then this server's
     assert acts.startswith("ACTIONS: every action, the library's (actions/) then this server's (made/main/actions/), "
                            "whole, as they were when you started. Run one with vfg action run <action> key=value ... "
-                           "--task T7; * marks the values it takes, and any value but a fixed one can be given.\n")
+                           "--task ice_beam_steve; * marks the values it takes, and any value but a fixed one can be "
+                           "given.\n")
     firsts = [line.split(" — ")[0] for line in acts.split("\n") if " — " in line]
     assert firsts == ["frost_ray", "galick_gun", "ice_beam", "zoo", "galick_ice"]
     ice = acts[acts.index("ice_beam — "):].split("\n\n")[0].split("\n")
@@ -276,24 +283,31 @@ async def test_the_block_in_the_specs_shape_with_every_file_whole_in_order(tmp_p
     order = ["scripts/ice_beam/main.py", "scripts/galick_gun/main.py", "scripts/_presets/crater.py",
              "scripts/_presets/replace_blocks.py", "scripts/tnt_rain/main.py"]
     assert files == "\n".join(whole(rel) for rel in order)
-    # the router read the brain's brief for T7, on its stdin; the state was asked for
-    assert ["route", "--task", "T7"] in r.vfg.calls and r.vfg.stdin["route"] == JOB
+    # the router read the brief for ice_beam_steve, on its stdin; the state was asked for
+    assert ["route", "--task", "ice_beam_steve"] in r.vfg.calls and r.vfg.stdin["route"] == JOB
     assert ["state", "--json"] in r.vfg.calls
 
 
 async def test_a_running_copy_the_brief_names_comes_with_its_values_and_its_script(tmp_path):
     r = Repo(tmp_path)
-    lines = (await r.block("Make the zoo-steve pens bigger, and galick-alex fires faster.")).split("\n")
-    # another task's copies: their code is copied to be changed, never edited (the guard refuses it)
-    assert ("Your brief names galick-alex, a copy of galick_gun running for T5 with player=Alex, cooldown=0: vfg script "
-            "set galick-alex key=value changes it; its script is below; to change its code, copy it: vfg script new "
-            "<new_name> --from galick_gun.") in lines
+    lines = (await r.block("Make the zoo_steve pens bigger, and galick_gun_alex fires faster.")).split("\n")
+    # another task's copies: their code is copied to be changed, under this task's name, never edited (the guard
+    # refuses it); a task's copy named as the task is not named twice
+    assert ("Your brief names galick_gun_alex, a copy of galick_gun running for galick_duel_alex with player=Alex, "
+            "cooldown=0: vfg script set galick_gun_alex key=value changes it; its script is below; to change its code, "
+            "copy it: vfg script new ice_beam_steve --from galick_gun.") in lines
+    assert ("Your brief names zoo_steve, a copy of zoo running with at=Steve: vfg script set zoo_steve key=value "
+            "changes it; its script is below; to change its code, copy it: vfg script new ice_beam_steve --from zoo.") in lines
     assert "\n".join(lines).count("=== scripts/galick_gun/main.py ===") == 1
     assert "\n".join(lines).endswith(whole("scripts/zoo/main.py"))
     # the task that started it may change it
-    lines = (await r.block("galick-alex fires faster.", task="T5")).split("\n")
-    assert ("Your brief names galick-alex, a copy of galick_gun running for T5 with player=Alex, cooldown=0: vfg script "
-            "set galick-alex key=value changes it; its script is below.") in lines
+    lines = (await r.block("galick_gun_alex fires faster.", task="galick_duel_alex")).split("\n")
+    assert ("Your brief names galick_gun_alex, a copy of galick_gun running for galick_duel_alex with player=Alex, "
+            "cooldown=0: vfg script set galick_gun_alex key=value changes it; its script is below.") in lines
+    # a task with a script of its name already copies under another
+    lines = (await r.block("galick_gun_alex fires faster.", task="galick_ice")).split("\n")
+    assert any(line.endswith("to change its code, copy it: vfg script new <new_name> --from galick_gun.")
+               for line in lines)
 
 
 async def test_what_fails_is_said_and_the_block_still_goes(tmp_path, monkeypatch):
@@ -301,7 +315,7 @@ async def test_what_fails_is_said_and_the_block_still_goes(tmp_path, monkeypatch
     r.vfg.on("route", answer=bad("vfg: not configured: VFG_ROUTE_LOAD must be a number"))
     r.vfg.on("state", answer=bad("vfg: EC2 unreachable"))
     lines = (await r.block()).split("\n")
-    assert lines[:2] == ["EXAMPLES for T7: nothing was picked, the router failed (exit 1: vfg: not configured: "
+    assert lines[:2] == ["EXAMPLES for ice_beam_steve: nothing was picked, the router failed (exit 1: vfg: not configured: "
                          "VFG_ROUTE_LOAD must be a number). Every library script's and preset's first line is in your "
                          "system prompt, every action is under ACTIONS, and you can read any of them.",
                          "Named in your brief, in full below: ice_beam and tnt_rain."]
@@ -318,11 +332,12 @@ async def test_what_fails_is_said_and_the_block_still_goes(tmp_path, monkeypatch
     lines = (await r.block()).split("\n")
     assert lines[lines.index("Minecraft is not answering (RCON refused): who is online, the time and the weather are "
                              "unknown.") + 1] == examples.UNKNOWN
-    assert any(line.startswith("Running: galick-alex (galick_gun, player=Alex, cooldown=0, T5)") for line in lines)
+    assert any(line.startswith("Running: galick_gun_alex (galick_gun, player=Alex, cooldown=0, galick_duel_alex)")
+               for line in lines)
 
 
 def gathered(**over) -> examples.Gathered:
-    g = dict(task="T7", picks={**ROUTE}, route_failed=None, state=STATE, state_failed=None, server="main",
+    g = dict(task="ice_beam_steve", picks={**ROUTE}, route_failed=None, state=STATE, state_failed=None, server="main",
              acts={"actions": {"ice_beam": {"script": "ice_beam", "source": "library"}}}, copies={})
     g.update(over)
     return examples.Gathered(**g)
@@ -332,7 +347,7 @@ def test_the_header_says_how_the_picks_were_made_and_what_is_held():
     words = {**ROUTE, "fallback": True, "ms": 3012, "why": "jev did not answer within 3 s",
              "scripts": [{**ROUTE["scripts"][0], "verdict": "words"}], "presets": [ROUTE["presets"][0]]}
     assert examples.header(gathered(picks=words))[:3] == [
-        "EXAMPLES, picked for T7 by words in 3.0 s: Jev did not answer (jev did not answer within 3 s).",
+        "EXAMPLES, picked for ice_beam_steve by words in 3.0 s: Jev did not answer (jev did not answer within 3 s).",
         "Matched by words: ice_beam.", "Presets to copy: crater."]
     held = [{"name": "beam_clash", "source": "library", "in": "galick_gun"},
             {"name": "ice_trail", "source": "made", "in": "galick_ice"}]
@@ -344,6 +359,14 @@ def test_the_header_says_how_the_picks_were_made_and_what_is_held():
                                                              "Presets to copy: ice_trail (made)."]
     empty = examples.header(gathered(state={**STATE, "online": [], "weather": "rain", "time": {"phase": "day"}}))
     assert empty[-3:] == ["Running: nothing.", "Online: nobody. Day, rain.", examples.NOW]
+
+
+def test_the_brains_own_copy_of_the_tasks_action_is_the_tasks_to_change():
+    g = gathered(task="galick_ice", made=[SimpleNamespace(kind="script", name="galick_ice")])
+    copy = {"action": "galick_ice", "script": "galick_ice", "values": {}, "task": None}
+    assert examples.changing_line(g, "galick_ice_steve", copy, object()) == (
+        "Your brief names galick_ice_steve, a copy of galick_ice running with its action's values: vfg script set "
+        "galick_ice_steve key=value changes it; its script is below.")
 
 
 def test_which_actions_run_the_picked_scripts():
@@ -370,8 +393,8 @@ def test_names_match_as_words_in_a_row_however_they_are_written():
 async def test_route_run_refuses_what_is_not_its_json():
     vfg = FakeVfg().on("route", answer=ok('{"scripts": "no"}'))
     with pytest.raises(route.RouteFailed, match="no scripts and presets"):
-        await route.run("x", "T1", 1, vfg)
+        await route.run("x", "torch_ring_steve", 1, vfg)
     vfg.on("route", answer=ok("Traceback"))
     with pytest.raises(route.RouteFailed, match="not JSON"):
         await route.run("x", None, 1, vfg)
-    assert vfg.calls == [["route", "--task", "T1"], ["route"]] and vfg.stdin["route"] == "x"
+    assert vfg.calls == [["route", "--task", "torch_ring_steve"], ["route"]] and vfg.stdin["route"] == "x"

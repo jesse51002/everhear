@@ -130,6 +130,51 @@ def read_props(path):
     return props
 
 
+# ---------------------------------------------------------------- tasks
+
+# The brain's tasks in vfg.db (Prototype_Named_Tasks): one row per implementer task, keyed by its
+# name. The bridge creates the table, `vfg task set` (tasks.py) alone writes it, and tasks.py's list
+# and context.py's --json read it here.
+TASK_COLUMNS = ("name", "description", "player", "status", "line", "brief", "made", "variables",
+                "session", "result", "created_at", "updated_at", "closed_at")
+NO_TASKS = "vfg.db has no tasks table yet — restart vfg-bridge, which adds it"
+
+
+def has_tasks(con):
+    """True when vfg.db has the tasks table, which the bridge adds as it starts."""
+    return con.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tasks'").fetchone() is not None
+
+
+def json_or_none(text):
+    """A column's JSON text decoded; None when it is NULL or not JSON."""
+    if text is None:
+        return None
+    try:
+        return json.loads(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def task_rows(con, open_only=False, name=None):
+    """Every task (only the open ones; only `name`), oldest created first, made and variables
+    decoded (None when NULL or not JSON)."""
+    where, params = [], []
+    if open_only:
+        where.append("status = 'open'")
+    if name is not None:
+        where.append("name = ?")
+        params.append(name)
+    sql = "SELECT %s FROM tasks%s ORDER BY created_at, name" % (
+        ", ".join(TASK_COLUMNS), " WHERE " + " AND ".join(where) if where else "")
+    out = []
+    for row in con.execute(sql, params):
+        task = dict(zip(TASK_COLUMNS, row))
+        task["made"] = json_or_none(task["made"])
+        task["variables"] = json_or_none(task["variables"])
+        out.append(task)
+    return out
+
+
 # ---------------------------------------------------------------- RCON
 
 class RconDown(Exception):

@@ -88,8 +88,8 @@ UNDER_WAY = tuple(re.compile(p) for p in (
     r"\bgive (it|her|him|them) a (sec|second|minute|moment|beat)\b", r"\bhang tight\b", r"\bone sec\b",
     r"\bon (its|their) way\b", r"(?<!you)(?<!you )(?<!we)(?<!we )('s|is|are|'re) on the way\b(?! (back|home|out|there))", r"\bit's coming\b",
     r"\b(should|will|'ll) be (done|ready) (in|soon)\b"))
-# An open task in the tasks text, as tasks.py writes it: `- T183 for Steve, since 18:22:31, open: …`,
-# or `…, an implementer is on it: …`; on the named-tasks branch, `- castle_steve for Steve, open: …`.
+# An open task in the tasks text, as tasks.py writes it: `- castle_steve for Steve, open: …`, or `…, an
+# implementer is on it: …`; the optional `since HH:MM:SS, ` is the form before named tasks.
 OPEN_TASK = re.compile(r"^- \S+ for (\S+), (since \d\d:\d\d:\d\d, )?(open|an implementer is on it): ", re.M)
 
 
