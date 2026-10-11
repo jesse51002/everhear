@@ -667,7 +667,13 @@ def implementer(run):
     # each a follow-up to the task, the second run once the first has reported: all of them are
     # waited for before the copy and the stop are checked.
     parts = run.handed(b["seq"])
-    fu = wait_for(lambda: [r for r in live.ai(b["seq"], ("task",), tid) if r["text"].startswith("follow-up: ")], 10) or []
+    sent = len(re.findall(r"^\S+ orchestrator #%d part \d+ .* -> follow_up %s: " % (b["seq"], tid),
+                          live.log_since(live.mark), re.M))
+
+    def follow_ups():  # each one's AI task row, posted with nobody waiting, after its log line
+        rows = [r for r in live.ai(b["seq"], ("task",), tid) if r["text"].startswith("follow-up: ")]
+        return rows if len(rows) >= max(1, sent) else None
+    fu = wait_for(follow_ups, 10) or [r for r in live.ai(b["seq"], ("task",), tid) if r["text"].startswith("follow-up: ")]
     rep.note("the brain gave the line %s orchestrator part(s); %d follow-up(s) to %s" % (parts, len(fu), tid))
     other = [r for r in live.ai(b["seq"], ("task",)) if r["fields"] != "task %s" % tid]
     rep.check(fu and not other, "the orchestrator sent it to %s: a second AI task %s row, %r"
