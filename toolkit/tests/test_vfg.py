@@ -73,7 +73,8 @@ class TestBasics(BoxCase):
         self.assertOneLine(r, 3, r"^vfg: not configured: the key file VFG_SSH_KEY names is not readable$")
         self.assertNotIn(self.box.key, r.stderr)
         os.remove(os.path.join(self.box.vhome, "config"))
-        for args in (["say", "hi"], ["history"], ["up"], ["context"], ["feed", "post", "SYS", "", "x"]):
+        for args in (["say", "hi"], ["history"], ["up"], ["context"], ["feed", "post", "SYS", "", "x"],
+                     ["task", "list"], ["task", "set", '{"name": "castle_steve", "description": "A castle"}']):
             r = self.vfg(*args)
             self.assertOneLine(r, 3, r"^vfg: not configured: VFG_SSH_HOST missing in .*config$")
             self.assertEqual(r.stdout, "")
@@ -100,7 +101,8 @@ class TestBasics(BoxCase):
 
     def test_bad_arguments_are_one_line_and_2(self):
         for args in (["say"], ["nosuch"], ["history", "--limit", "x"], ["usage", "add"], ["watchers"],
-                     ["brain"], ["context", "mark"], ["watch", "--tail", "2", "--after", "3"]):
+                     ["brain"], ["context", "mark"], ["watch", "--tail", "2", "--after", "3"], ["task"],
+                     ["task", "set"], ["task", "list", "x"], ["task", "set", "{}", "extra"]):
             self.assertOneLine(self.vfg(*args), 2)
         self.assertEqual(self.box.calls, [])
 
