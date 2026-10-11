@@ -1,5 +1,5 @@
 """The loop: each row routed by its class, a context line no model is shown, Respond's
-hand-up, history, two lines at once, a report, and no batch."""
+hand-up and the order it answers in, history, two lines at once, a report, and no batch."""
 
 import asyncio
 import importlib.util
@@ -9,6 +9,7 @@ from vfg_llm import LlmError
 from brain import config, loop
 from brain.act import BROKE
 from brain.call import PROMPT
+from brain.respond import Response
 
 from conftest import cmd, decision, part, rows
 
@@ -54,6 +55,12 @@ async def test_respond_replies_or_hands_up_never_both(kit):
     k.brain.feed(TALK.format(seq=8))
     await k.settle()
     assert [c["output"] for c in k.ask.calls] == ["Response", "Decision"]
+
+
+def test_respond_decides_first_and_always_writes_its_reason():
+    schema = Response.model_json_schema()               # what the model is shown, and writes in this order
+    assert list(schema["properties"]) == ["reason", "hand_up", "reply"]
+    assert schema["required"] == ["reason"] and schema["properties"]["hand_up"]["default"] is True
 
 
 async def test_history_is_the_old_feed_at_the_start_and_a_line_on_the_watch_is_live_whatever_its_time(kit):

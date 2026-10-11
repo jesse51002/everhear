@@ -1,15 +1,24 @@
 """Respond, the brain's cheap mode: a line Jev classes conversational gets one structured() call
 on a cheap model (DeepSeek V4 Flash, reasoning off: config.py) over the same context, which keeps
 up the personality and the banter and replies. It can do one other thing: hand the line up to
-the brain, which runs the same line on GPT-6.1 Sol. It never acts on the game.
+the brain, which runs the same line on GPT-6.1 Sol. It never acts on the game, so it never
+promises or offers anything there.
+
+It answers talk, and a rule or a preference about the future only, which holds because the brain
+reads the same conversation. It hands up anything that asks for something now, a change to what
+is already going on in the world, a rule the game itself would have to enforce, an answer to the
+AI's question, and anything it is unsure of (Prototype_Jev_Routing, _Respond's prompt_;
+integration/replay/respond_bench.md).
 
 It decides first: its answer is {reason, hand_up, reply}, in that order, and handing up is the
-default unless the line is clearly pure talk. A model with no reasoning writes the fields in
-order, and with the reply first it committed to answering before it weighed handing up: on the
-2026-10-08 lines it handed up 31% of the asks, and 77.5% deciding first
-(integration/replay/gate_bench.md). A wrong hand-up costs about a second and a fraction of a
-cent, a missed ask the player's ask. Handing up replaces its reply, never adds to it, so a player
-never gets two answers: a hand-up's reply is dropped here, whatever the model wrote.
+default. A model with no reasoning writes the fields in order, and with the reply first it
+committed to answering before it weighed handing up: on the 2026-10-08 lines it handed up 31% of
+the asks, and 77.5% deciding first (integration/replay/gate_bench.md). `reason` is required: left
+optional, the model sometimes wrote `hand_up` first and decided with no reason at all (7 of 44
+answers in one run, none once required: respond_bench.md). A wrong hand-up costs about a second
+and a fraction of a cent, a missed ask the player's ask. Handing up replaces its reply, never adds
+to it, so a player never gets two answers: a hand-up's reply is dropped here, whatever the model
+wrote.
 
 Its prompt is laid out as the brain's: the opening (its rules, the owner, the menu's lines,
 marked), the conversation in the same minute-blocks (never a context line: context.py), then the
@@ -31,12 +40,13 @@ from .world import Seen
 PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "respond.md"
 
 
-class Response(BaseModel):  # decide first: a model writes the fields in this order
-    reason: str = Field("", description="first, a few words: what any part of the line wants, if anything, "
-                                        "and so whether it is pure talk")
-    hand_up: bool = Field(True, description="true unless the line is clearly pure talk: the brain answers it")
-    reply: str = Field("", description="your one chat line when you do not hand up, or empty to say nothing; "
-                                       "always empty when you hand up")
+class Response(BaseModel):  # decide first: a model writes the fields in this order, `reason` always
+    reason: str = Field(description="first, a few words: what any part of the line wants, if anything, now or "
+                                    "for later, and so whether you hand it up")
+    hand_up: bool = Field(True, description="true unless the line is clearly talk, or a rule or a preference about "
+                                            "the future only: the brain answers it")
+    reply: str = Field("", description="your one chat line when you do not hand up, never a promise or an offer, "
+                                       "or empty to say nothing; always empty when you hand up")
 
 
 class Respond:
