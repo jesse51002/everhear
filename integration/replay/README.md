@@ -101,6 +101,14 @@ as the brain posts them (`AI task [<name>]: new: …`, `follow-up: …`). Its an
 (new, follow_up, edit, stop or reply) with the fields the brain gets; a reply only is counted on
 its own line by `taskcall_score.py`. Without `--built`, `--version v3` runs as before.
 
+On 2026-10-11 the built orchestrator (prompt 8b7d42168ac4) ran all 168 parts on both models
+(`taskcall_scores/gemini-built.md`, `deepseek-built.md`). Gemini 3.8 Flash at low reasoning: follow-ups
+by script 36 of 41 (87.8%, bar met), new tasks taken for follow-ups 2 of 9 (22.2%, bar not met),
+0 calls failed, 52 tasks, a call median 3.1 s and p90 5.5 s, $1.21. DeepSeek V4 Flash with reasoning
+off: follow-ups 34 of 41 (82.9%, bar not met), new taken 2 of 9 (22.2%), 6 calls failed its checks
+twice (3 an empty reply, 3 an edit or stop of a copy RUNNING NOW does not hold), 26 tasks, 3.3 s
+and p90 5.3 s, $0.16. Gemini is the better, and stays the orchestrator's model.
+
 ### What it leaves in OUT
 
 | Path | Is |
