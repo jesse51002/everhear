@@ -513,7 +513,7 @@ class TestState(Base):
         self.assertEqual(state["history"].split("\n")[1:], [
             "18:22:02 AI (action): command: give Steve diamond_pickaxe — ok",
             "18:22:06 Steve (voice): thanks",
-            "18:22:23 AI (task): new: A Frost Bow for Alex",
+            "18:22:23 AI (task): frost_bow_alex: new: A Frost Bow for Alex",
             "18:22:24 AI (result): frost_bow_alex done: the bow is in Alex's hand",
             "[1] 18:22:31 Steve (voice): make it longer"])
 
