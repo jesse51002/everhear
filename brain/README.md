@@ -131,7 +131,8 @@ gets a line written in code; the error is logged.
 `^[a-z][a-z0-9_]{1,31}$`, kept for life), held in memory and written through to the `tasks` table of
 the box's `vfg.db`, which only the brain writes. Every change sends the whole row with `vfg task set`
 in the background, one task's writes in order; the box keeps the newer `updated_at` should two ever
-cross. A row: `name`, `description` (what the thing is now, for whom; players never see it),
+cross. A write that fails (EC2 out of reach for a moment) is sent again after 2, 5, 15 and 30 s,
+unless a newer change to the task carries the row first. A row: `name`, `description` (what the thing is now, for whom; players never see it),
 `player`, `status` (`open`, `done`, `failed`), `line` (the player's words), `brief` (the latest),
 `made` (`{"scripts", "actions", "presets", "copies"}`), `variables` (its action's fields, as
 `vfg_actions.variables()` reads them), `session`, `result`, `created_at`, `updated_at`, `closed_at`.
@@ -147,7 +148,8 @@ cross. A row: `name`, `description` (what the thing is now, for whom; players ne
 - **A start** takes every row from `vfg context --json` and fails each one still open (`<name>
   failed: interrupted, the brain restarted while it ran`, with its `AI result` row). When the feed
   restarts, the rows read again are merged: one the memory lacks is added, one the read lacks (a box
-  provisioned again) is written back, and for a name in both the memory wins.
+  provisioned again) or holds older than the memory (a write that never landed) is written back, and
+  for a name in both the memory wins.
 - **A stop** fails each task whose implementer it stopped, and gives the writes still going out 5 s.
 
 ## Run it
