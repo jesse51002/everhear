@@ -81,6 +81,18 @@ VFG_RESPOND_PROVIDERS=parasail,wafer,phala,together,venice
 VFG_PLAN_MODEL=~deepseek/deepseek-v4-flash-latest
 VFG_PLAN_REASONING=off
 VFG_PLAN_PROVIDERS=parasail,wafer,phala,together,venice
+# The orchestrator: one call for each part the brain sends it (anything new, a change to
+# something that exists, a stop), which names the task and writes the line's reply. Gemini
+# 3.8 Flash at low kept one thing to one task on the follow-up replay; DeepSeek V4 Flash is
+# about 7x cheaper but lumps things together, and wants reasoning off.
+VFG_ORCHESTRATOR_MODEL=google/gemini-3.8-flash
+VFG_ORCHESTRATOR_REASONING=low
+# OpenRouter providers to try first for it, comma-separated; none lets OpenRouter choose.
+# Default: none
+VFG_ORCHESTRATOR_PROVIDERS=
+# Seconds one orchestrator call may take, its retries included, before it is given up and
+# the brain's own reply is said instead. Default: 15
+VFG_ORCHESTRATOR_TIMEOUT_S=
 # Hours of the feed the brain reads as its context; vfg context's default. Default: 6
 VFG_BRAIN_HISTORY_HOURS=6
 # Every how many minute-blocks of the conversation a brain call marks for the prompt cache
@@ -94,7 +106,8 @@ VFG_BRAIN_PROVIDERS=
 # on: the retry planner checks its own draft against the command's reference first (about
 # 1 s more). Default: off
 VFG_PLAN_CHECK=
-# The brain's folder: tasks.json, brain.log, brain.pid, lock and the command references.
+# The brain's folder: brain.log, brain.pid, lock and the command references. The tasks are
+# in the box's vfg.db, written only by the brain.
 # Default: $VFG_HOME/brain
 VFG_BRAIN_DIR=
 # Seconds between fetches of the running copies the brain's menu lists. Default: 30

@@ -1,8 +1,8 @@
 """The action executor: runs one exact action through `vfg action run` and reports how it went.
 Code, no model.
 
-It runs `vfg action run <action> key=value … [as=<name>] --task T<n>` (a list or a dict as
-JSON), which prints ONE JSON line (Contracts §8):
+It runs `vfg action run <action> key=value … [as=<name> | --for <player>] [--task <name>]` (a
+list or a dict as JSON), which prints ONE JSON line (Contracts §8):
 
     {"ok": bool, "copy": str, "action": str, "running": bool, "summary": str, "facts": {},
      "notes": [], "error": str?}
@@ -59,20 +59,23 @@ def timeout_for(cls, default: float) -> float:
     return float(getattr(cls, "timeout_s", None) or default)
 
 
-def argv(name: str, values: dict[str, Any], task_id: str, as_name: str | None = None) -> list[str]:
-    """`action run <name> key=value … [as=<name>] --task T7`."""
+def argv(name: str, values: dict[str, Any], task: str = "", as_name: str | None = None,
+         for_player: str | None = None) -> list[str]:
+    """`action run <name> key=value … [as=<copy>] [--for <player>] [--task <name>]`. The brain's
+    own actions carry no task: their copy is named `<action>_<player>` on the box (--for)."""
     return ["action", "run", name, *(f"{k}={word(v)}" for k, v in values.items()),
-            *([f"as={as_name}"] if as_name else []), "--task", task_id]
+            *([f"as={as_name}"] if as_name else []), *(["--for", for_player] if for_player else []),
+            *(["--task", task] if task else [])]
 
 
-async def execute(name: str, cls, values: dict[str, Any], task_id: str, vfg: Vfg, default_timeout: float, *,
-                  as_name: str | None = None, label: str = "") -> Ran:
+async def execute(name: str, cls, values: dict[str, Any], task: str, vfg: Vfg, default_timeout: float, *,
+                  as_name: str | None = None, for_player: str | None = None, label: str = "") -> Ran:
     timeout = timeout_for(cls, default_timeout)
     t0 = time.perf_counter()
-    r = await vfg(*argv(name, values, task_id, as_name), timeout=timeout + GRACE_S)
+    r = await vfg(*argv(name, values, task, as_name, for_player), timeout=timeout + GRACE_S)
     ran = read(r, timeout=timeout)
     ms = int((time.perf_counter() - t0) * 1000)
-    log("exec", f"{task_id}{label} {name} {ran.kind} (exit {r.code}) {ms} ms: {ran.summary[:300]}")
+    log("exec", f"{task or '-'}{label} {name} {ran.kind} (exit {r.code}) {ms} ms: {ran.summary[:300]}")
     return ran
 
 

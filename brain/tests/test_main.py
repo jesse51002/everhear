@@ -1,5 +1,6 @@
 """python -m brain from start to stop, every part faked: the start's steps in order, the
-history it never acts on, the feed followed, and a stop that fails what it interrupts."""
+history it never acts on, the tasks it loads from the box, the old tasks file set aside, the
+feed followed, and a stop that fails what it interrupts."""
 
 import asyncio
 import json
@@ -7,11 +8,10 @@ from datetime import UTC, datetime, timedelta
 
 from brain import __main__ as main
 from brain import config
-from brain.__main__ import GREETING, serve
-from brain.tasks import Tasks
+from brain.__main__ import GREETING, NoImplementers, serve
 from brain.vfg import VfgResult
 
-from conftest import FakeAsk, FakeImplementers, FakeRefs, FakeVfg, catalog, cmd, decision, part
+from conftest import FakeAsk, FakeImplementers, FakeOrchestrator, FakeRefs, FakeVfg, catalog, cmd, decision, part
 
 
 def feed(seq: int, at: datetime, rest: str, processed: bool = False) -> str:
@@ -20,14 +20,26 @@ def feed(seq: int, at: datetime, rest: str, processed: bool = False) -> str:
                        "processed_at": stamp if processed else None})
 
 
+def row(name: str, status: str, at: str, **more) -> dict:
+    return {"name": name, "description": f"what {name} is", "player": "Alex", "status": status, "line": "…",
+            "brief": f"make {name}", "made": None, "variables": None, "session": None, "result": None,
+            "created_at": at, "updated_at": at, "closed_at": None, **more}
+
+
 async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fails_what_it_cut(tmp_path):
     cfg = config.load({"VFG_HOME": str(tmp_path / "home"), "VFG_OWNER": "KrownJM", "VFG_BRAIN_HISTORY_HOURS": "6"})
-    Tasks(cfg.tasks_file).open("Alex", "a castle", "a castle at home")  # T1, open when the last run died
+    cfg.brain_dir.mkdir(parents=True)
+    old = {"next": 2, "tasks": {"old_castle": {"player": "Alex", "task": "a castle, by the old brain",
+                                               "status": "open"}}}
+    (cfg.brain_dir / "tasks.json").write_text(json.dumps(old))  # the brain before named tasks: set aside
     now = datetime.now(UTC)
+    tasks = [row("castle_alex", "open", "2026-10-11T10:00:00.000Z"),  # open when the last run died
+             row("ice_trail_steve", "done", "2026-10-11T09:00:00.000Z", closed_at="2026-10-11T09:02:00.000Z")]
     vfg = FakeVfg().on("context", "--since", answer=VfgResult(0, "\n".join([
         feed(10, now - timedelta(minutes=30), "Steve voice action_oriented 0.9 - | give me bread"),  # history
         feed(11, now - timedelta(minutes=29), "Alex voice context 0.9 - | so hungry", processed=True),
         feed(12, now - timedelta(seconds=20), "Steve voice action_oriented 0.9 - | give me a diamond pickaxe"),
+        json.dumps({"tasks": tasks}),
         json.dumps({"last_seq": 12}),
     ]) + "\n", ""))
     impl, stop, seen_after = FakeImplementers(), asyncio.Event(), []
@@ -39,7 +51,14 @@ async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fail
 
     ask = FakeAsk(Decision=decision(part("command", "give a diamond pickaxe", cmd("give Steve diamond_pickaxe")),
                                     reply="there you go"))
+    orch, made_with = FakeOrchestrator(), []
+
+    def make_orchestrator(cat, ask, *, owner, checkpoint):
+        made_with.append((cat, owner, checkpoint))
+        return orch
+
     run = asyncio.create_task(serve(cfg, stop, vfg=vfg, watch=watch, catalog=catalog(), refs=FakeRefs(), ask=ask,
+                                    make_orchestrator=make_orchestrator,
                                     make_implementers=lambda on_report, on_session: impl))
     for _ in range(200):
         if len([s for s in vfg.said() if s[0] == "there you go"]) == 2:
@@ -56,10 +75,20 @@ async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fail
     assert vfg.of("context", "--since") == [["context", "--since", "-6h", "--json"]] and seen_after == [12]
     assert ["context", "mark", "10"] in vfg.calls  # history: marked read, never acted on
     assert len(ask.calls) == 2 and "give me bread" not in ask.calls[0]["prompt"].split("THE EVENT")[1]
-    assert [GREETING] in vfg.said()
-    assert ("result T1", "T1 failed: interrupted, the brain restarted while it ran") in vfg.rows("result")
-    tasks = json.loads(cfg.tasks_file.read_text())["tasks"]
-    assert [t["status"] for t in tasks.values()] == ["failed", "done", "done"] and impl.closed
+    assert [GREETING] in vfg.said() and impl.closed
+    assert made_with == [(made_with[0][0], "KrownJM", 5)]
+    # the tasks from the box: the open one failed by name, written through, its AI result row
+    record = "castle_alex failed: interrupted, the brain restarted while it ran"
+    assert vfg.rows("result") == [("result castle_alex", record)]
+    [written] = [json.loads(a[2]) for a in vfg.of("task", "set")]
+    assert (written["name"], written["status"], written["result"]) == ("castle_alex", "failed", record)
+    assert written["closed_at"] and written["description"] == "what castle_alex is"
+    # the old file: renamed, never read, and nothing in it carried over
+    assert not (cfg.brain_dir / "tasks.json").exists()
+    [retired] = cfg.brain_dir.glob("tasks.json.retired-*")
+    assert json.loads(retired.read_text()) == old
+    assert not any(w in json.dumps(vfg.calls) for w in ("old_castle", "by the old brain"))
+    assert all("--task" not in c for c in vfg.calls)    # the lines' actions and replies carry no task
 
 
 async def test_with_no_rows_that_recent_it_follows_from_the_feeds_last_seq_and_a_failed_read_is_tried_again(
@@ -81,5 +110,34 @@ async def test_with_no_rows_that_recent_it_follows_from_the_feeds_last_seq_and_a
 
     ask = FakeAsk(Decision=decision(reply="never"))
     assert await serve(cfg, stop, vfg=vfg, watch=watch, catalog=catalog(), refs=FakeRefs(), ask=ask,
+                       make_orchestrator=lambda *_, **__: FakeOrchestrator(),
                        make_implementers=lambda *_: FakeImplementers()) == 0
     assert len(vfg.of("context", "--since")) == 3 and seen_after == [902] and ask.calls == []
+
+
+async def test_with_no_implementers_a_new_task_reports_its_failure_with_five_arguments():
+    got = []
+
+    async def on_report(*args):
+        got.append(args)
+
+    none = NoImplementers(on_report, "No module named claude_agent_sdk")
+    await none.start("galick_gun_styrk", "a Galick Gun")
+    await none.follow_up("castle_steve", "a moat", session="sess-1", brief="a castle")
+    empty = {"scripts": [], "actions": [], "presets": [], "copies": []}
+    assert got == [("galick_gun_styrk", "failed", "Failed: no implementers here (No module named claude_agent_sdk).",
+                    "", empty),
+                   ("castle_steve", "failed", "Failed: no implementers here (No module named claude_agent_sdk).",
+                    "", empty)]
+
+
+def test_the_orchestrators_settings():
+    cfg = config.load({})
+    assert (cfg.orchestrator_model, cfg.orchestrator_reasoning, cfg.orchestrator_providers,
+            cfg.orchestrator_timeout_s) == ("google/gemini-3.8-flash", "low", (), 15.0)
+    cfg = config.load({"VFG_ORCHESTRATOR_MODEL": "deepseek/deepseek-v4-flash", "VFG_ORCHESTRATOR_REASONING": "off",
+                       "VFG_ORCHESTRATOR_PROVIDERS": "parasail, wafer", "VFG_ORCHESTRATOR_TIMEOUT_S": "8"})
+    assert (cfg.orchestrator_model, cfg.orchestrator_reasoning, cfg.orchestrator_providers,
+            cfg.orchestrator_timeout_s) == ("deepseek/deepseek-v4-flash", "off", ("parasail", "wafer"), 8.0)
+    assert config.load({"VFG_ORCHESTRATOR_TIMEOUT_S": "0.2"}).orchestrator_timeout_s == 15.0  # under 1 s: the default
+    assert not hasattr(cfg, "tasks_file")

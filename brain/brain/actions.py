@@ -90,6 +90,13 @@ def view(name: str, cls) -> str:
             f"FIELDS (fill each one; one the instruction does not give keeps its default):\n{values}\n")
 
 
+def variables_of(catalog: Catalog, name: str) -> list[dict] | None:
+    """A task's `variables` (Prototype_Named_Tasks): the fields of the action `name`, as
+    vfg_actions.variables() reads them; None when the action is not loaded."""
+    cls = catalog.get(name)
+    return None if cls is None else vfg_actions.variables(cls)
+
+
 def command_fields(model) -> list[str]:
     """The fields of an action, or of a model made from one, that hold server commands: a
     Command, or a list of them."""

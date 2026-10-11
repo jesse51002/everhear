@@ -1,0 +1,146 @@
+"""The tasks: in memory by name, every change written through whole, each task's writes in the
+order they were made, TASKS as the brain and Respond see it, and the merge after a feed restart."""
+
+import asyncio
+import json
+
+import pytest
+
+from brain.tasks import Tasks
+
+from conftest import Clock
+
+
+class Sent:
+    """`send`: every row given, in the order the writes went out; a write can be held."""
+
+    def __init__(self):
+        self.rows: list[dict] = []
+        self.hold: dict[str, asyncio.Event] = {}
+
+    async def __call__(self, row: dict) -> bool:
+        gate = self.hold.get(row["name"])
+        if gate is not None:
+            await gate.wait()
+        await asyncio.sleep(0)
+        self.rows.append(row)
+        return True
+
+
+def galick(tasks: Tasks) -> None:
+    tasks.open("galick_gun_styrk", "Styrkaeopteryx", "make me a galick gun", "a Galick Gun for Styrkaeopteryx",
+               "A Galick Gun for Styrkaeopteryx: charge and fire.")
+
+
+async def test_each_change_writes_the_whole_row_and_one_tasks_writes_go_out_in_order():
+    sent = Sent()
+    tasks = Tasks(send=sent, clock=Clock())
+    sent.hold["galick_gun_styrk"] = asyncio.Event()      # the first write is slow to land
+    galick(tasks)
+    tasks.set_session("galick_gun_styrk", "sess-1")
+    tasks.merge_made("galick_gun_styrk", {"scripts": ["galick_gun_styrk"], "actions": ["galick_gun_styrk"]})
+    tasks.close("galick_gun_styrk", "done", "galick_gun_styrk done: a Galick Gun")
+    tasks.open("castle_steve", "Steve", "a castle", "a castle at spawn", "A stone castle at spawn.")
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert [r["name"] for r in sent.rows] == ["castle_steve"]  # another task's write never waits on it
+    sent.hold["galick_gun_styrk"].set()
+    await tasks.drain(1.0)
+    gun = [r for r in sent.rows if r["name"] == "galick_gun_styrk"]
+    assert [(r["status"], r["session"], r["made"]["scripts"]) for r in gun] == [
+        ("open", None, []), ("open", "sess-1", []), ("open", "sess-1", ["galick_gun_styrk"]),
+        ("done", "sess-1", ["galick_gun_styrk"])]
+    assert gun[-1] == tasks.get("galick_gun_styrk") and set(gun[-1]) == {
+        "name", "description", "player", "status", "line", "brief", "made", "variables", "session", "result",
+        "created_at", "updated_at", "closed_at"}
+    assert [r["updated_at"] for r in gun] == sorted(r["updated_at"] for r in gun) and gun[-1]["closed_at"]
+    assert json.loads(json.dumps(gun[-1], ensure_ascii=False)) == gun[-1]
+    assert tasks.writes == {}
+
+
+async def test_drain_waits_for_the_writes_then_cuts_off_what_has_not_landed():
+    sent = Sent()
+    tasks = Tasks(send=sent)
+    sent.hold["galick_gun_styrk"] = asyncio.Event()      # never lands
+    galick(tasks)
+    tasks.open("castle_steve", "Steve", "a castle", "a castle at spawn", "A stone castle at spawn.")
+    await tasks.drain(0.05)
+    assert [r["name"] for r in sent.rows] == ["castle_steve"] and tasks.writes == {}
+
+
+async def test_a_change_is_written_only_when_it_changes_something_and_an_unknown_name_does_nothing():
+    sent = Sent()
+    tasks = Tasks(send=sent, clock=Clock())
+    galick(tasks)
+    tasks.describe("galick_gun_styrk", "")               # no DESCRIPTION line
+    tasks.describe("galick_gun_styrk", "A Galick Gun for Styrkaeopteryx: charge and fire.")  # the same
+    tasks.set_variables("galick_gun_styrk", None)        # not read yet, as it was
+    tasks.set_session("galick_gun_styrk", None)
+    tasks.merge_made("galick_gun_styrk", None)
+    tasks.close("nobody_here", "done", "x")
+    tasks.follow_up("nobody_here", "x", "y")
+    await tasks.drain(1.0)
+    assert len(sent.rows) == 1 and tasks.names() == {"galick_gun_styrk"}
+    tasks.set_variables("galick_gun_styrk", [{"name": "cooldown"}])
+    tasks.set_variables("galick_gun_styrk", [{"name": "cooldown"}])
+    tasks.merge_made("galick_gun_styrk", {"actions": ["galick_gun_styrk"], "copies": ["galick_gun_styrk"]})
+    tasks.merge_made("galick_gun_styrk", {"actions": ["galick_gun_styrk", "galick_beam"], "copies": []})
+    await tasks.drain(1.0)
+    assert len(sent.rows) == 4
+    assert tasks.get("galick_gun_styrk")["made"] == {"scripts": [], "actions": ["galick_gun_styrk", "galick_beam"],
+                                                     "presets": [], "copies": ["galick_gun_styrk"]}
+
+
+async def test_open_refuses_a_taken_or_bad_name_and_a_follow_up_opens_the_task_again():
+    tasks = Tasks(clock=Clock())                          # no send: nothing is written
+    galick(tasks)
+    for bad in ("galick_gun_styrk", "Galick", "7gun", "g", "cast", "x" * 33):
+        with pytest.raises(ValueError):
+            tasks.open(bad, "Steve", "…", "…", "…")
+    tasks.close("galick_gun_styrk", "done", "galick_gun_styrk done: a Galick Gun")
+    tasks.follow_up("galick_gun_styrk", "make it pierce blocks", "A Galick Gun that pierces blocks.")
+    t = tasks.get("galick_gun_styrk")
+    assert (t["status"], t["closed_at"], t["brief"], t["description"], t["result"]) == (
+        "open", None, "make it pierce blocks", "A Galick Gun that pierces blocks.",
+        "galick_gun_styrk done: a Galick Gun")
+    tasks.note("galick_gun_styrk", "galick_gun_styrk: piercing next")
+    assert tasks.get("galick_gun_styrk")["status"] == "open"
+    tasks.get("galick_gun_styrk")["status"] = "failed"   # a copy: the memory is untouched
+    assert tasks.open_ones()[0]["name"] == "galick_gun_styrk"
+
+
+def test_tasks_shows_every_task_oldest_first_and_none_yet():
+    assert Tasks().show() == "TASKS: none yet"
+    tasks = Tasks(rows=[
+        {"name": "castle_steve", "description": "A stone castle at spawn, 40x40.", "player": "Steve", "status": "done",
+         "created_at": "2026-10-11T18:10:00.000Z"},
+        {"name": "galick_gun_styrk", "description": "A Galick Gun for Styrkaeopteryx: " + "x" * 200,
+         "player": "Styrkaeopteryx", "status": "open", "made": {"scripts": ["galick_gun_styrk"]},
+         "created_at": "2026-10-11T18:22:33.120Z"},
+        {"name": "lost_one", "description": "", "status": "failed", "created_at": "2026-10-11T18:30:00.000Z"},
+        {"description": "no name: left out"}])
+    shown = tasks.show(["galick_gun_styrk"]).splitlines()
+    assert shown[0] == ("TASKS (every task on this server, oldest first: its name, for whom, its status, what it "
+                        "is now; you never name one):")
+    assert shown[1] == "- castle_steve for Steve, done: A stone castle at spawn, 40x40."
+    assert shown[2].startswith("- galick_gun_styrk for Styrkaeopteryx, an implementer is on it: A Galick Gun")
+    assert len(shown[2].split(": ", 1)[1]) == 160 and shown[2].endswith("…")
+    assert shown[3] == "- lost_one for nobody, failed: " and len(shown) == 4
+    assert tasks.get("galick_gun_styrk")["made"] == {"scripts": ["galick_gun_styrk"], "actions": [], "presets": [],
+                                                     "copies": []}
+
+
+async def test_merge_adds_what_the_memory_lacks_writes_back_what_the_read_lacks_and_the_memory_wins():
+    sent = Sent()
+    tasks = Tasks(send=sent, clock=Clock())
+    galick(tasks)
+    tasks.open("castle_steve", "Steve", "a castle", "a castle at spawn", "A stone castle at spawn.")
+    await tasks.drain(1.0)
+    sent.rows.clear()
+    tasks.merge([{"name": "castle_steve", "description": "an older castle", "status": "failed"},
+                 {"name": "ice_trail_alex", "description": "An ice trail for Alex.", "player": "Alex",
+                  "status": "done", "created_at": "2026-10-11T09:00:00.000Z"}])
+    await tasks.drain(1.0)
+    assert tasks.get("castle_steve")["description"] == "A stone castle at spawn."  # the memory wins
+    assert tasks.get("ice_trail_alex")["status"] == "done"
+    assert [r["name"] for r in sent.rows] == ["galick_gun_styrk"]  # the box had lost it: written back, whole

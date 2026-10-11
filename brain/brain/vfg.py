@@ -1,7 +1,7 @@
 """Runs the `vfg` toolkit: an argv list, no shell, a timeout, its exit code and output.
 
 Everything that takes a vfg runner accepts any async callable of this shape, so the
-tests pass fakes: `await vfg("say", "on it", "--task", "T7", timeout=30)`. Also here: Later,
+tests pass fakes: `await vfg("say", "on it", "--task", "galick_gun_styrk", timeout=30)`. Also here: Later,
 for the calls nobody waits for, and follow(), the lines of `vfg watch --after <seq>`.
 """
 

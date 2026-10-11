@@ -7,8 +7,9 @@ background; no ask waits on it, and every read is of the file:
 
     {"fetched_at": epoch, "copies": {copy: {"action", "script", "values", "live", "task", "started", "runs"}}}
 
-The selector and the planner see each copy as one line: its name, its action, the values
-that differ from the action's defaults and the task that started it.
+The brain and the planner see each copy as one line: its name, its action, the values that
+differ from the action's defaults and the task that started it, when that is not the copy's own
+name (a task's copy is named after its task: Prototype_Named_Tasks).
 """
 
 from __future__ import annotations
@@ -54,13 +55,14 @@ def differs(info: dict[str, Any], cls) -> dict[str, Any]:
 
 
 def line(name: str, info: dict[str, Any], catalog) -> str:
-    """`galick_gun_2: galick_gun, player=Alex cooldown=0, started by T12`."""
+    """`railgun_steve: railgun, player=Steve cooldown=0`; `ice_trail_alex_2: ice_trail_alex, its
+    defaults, started by ice_trail_alex`; the task left out when the copy is named after it."""
     action = str(info.get("action") or "?")
     vals = " ".join(f"{k}={word(v)}" for k, v in differs(info, catalog.get(action)).items()) or "its defaults"
     if len(vals) > LINE_MAX:
         vals = vals[:LINE_MAX - 1] + "…"
     task = str(info.get("task") or "").strip()
-    return f"{name}: {action}, {vals}" + (f", started by {task}" if task else "")
+    return f"{name}: {action}, {vals}" + (f", started by {task}" if task and task != name else "")
 
 
 def block(copies: dict[str, dict[str, Any]], catalog) -> str:
@@ -69,7 +71,7 @@ def block(copies: dict[str, dict[str, Any]], catalog) -> str:
         return "RUNNING NOW: none"
     rows = "\n".join(f"- {line(n, copies[n], catalog)}" for n in sorted(copies))
     return ("RUNNING NOW (each: the copy's name: its action, the values that differ from the action's "
-            f"defaults, the task that started it):\n{rows}")
+            f"defaults, the task that started it when that is not the copy's own name):\n{rows}")
 
 
 class Refresher:
