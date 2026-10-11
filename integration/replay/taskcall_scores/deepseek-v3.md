@@ -213,7 +213,7 @@ Length: median 71 characters, longest 201; 49 over 80, 1 over 200. 40 of the lin
 
 Lumped (a task holding more than one script's work): **immortality_eclipszr** (18 asks): hollow_purple, horror_mode; **one_shot_trident_krownjm** (13 asks): horror_mode, keep_effects, nuke; **meteor_toss_eclipszr** (15 asks): meteor_staff, spirit_bomb; **infinity_shield_eclipszr** (29 asks): barrier_shield, clash_test, death_gaze, gatling_gun, hollow_purple, infinity_gauntlet, keep_effects, spirit_bomb, super_saiyan; **thousand_mob_horde_krownjm** (5 asks): boss_music, horde, horde_boss, lava_rain; **ice_walker_krownjm** (43 asks): hollow_purple, ice_audit, ice_beam, ice_staff, ice_walk; **sniper_rifle_eclipszr** (3 asks): nest_guard, sniper_rifle; **sniper_nest_styrkaeopteryx** (13 asks): galick_gun, sniper_nest_.
 
-Split (a script spread over tasks): hollow_purple: ice_walker_krownjm, immortality_eclipszr, infinity_shield_eclipszr; horror_mode: immortality_eclipszr, one_shot_trident_krownjm; keep_effects: infinity_shield_eclipszr, one_shot_trident_krownjm; spirit_bomb: infinity_shield_eclipszr, meteor_toss_eclipszr; gatling_gun: gatling_gun_eclipszr, infinity_shield_eclipszr.
+Split (a script spread over tasks): gatling_gun: gatling_gun_eclipszr, infinity_shield_eclipszr; hollow_purple: ice_walker_krownjm, immortality_eclipszr, infinity_shield_eclipszr; horror_mode: immortality_eclipszr, one_shot_trident_krownjm; keep_effects: infinity_shield_eclipszr, one_shot_trident_krownjm; spirit_bomb: infinity_shield_eclipszr, meteor_toss_eclipszr.
 
 ## The busiest tasks: their names and descriptions
 

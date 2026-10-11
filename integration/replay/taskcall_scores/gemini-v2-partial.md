@@ -158,7 +158,7 @@
 
 Lumped (a task holding more than one script's work): **infinity_power_eclipszr** (4 asks): barrier_shield, infinity_gauntlet; **thousand_mobs_horde** (6 asks): horde, horde_boss, lava_rain; **death_gaze_eclipszr** (9 asks): death_gaze, gatling_gun, infinity_gauntlet; **frost_walker_krown** (11 asks): hollow_purple, ice_audit, ice_beam, ice_walk; **ice_staff_krown** (25 asks): ice_beam, ice_staff, ice_walk; **hollow_purple_eclipszr** (14 asks): clash_test, hollow_purple; **no_cooldowns_all** (1 asks): spirit_bomb, super_saiyan.
 
-Split (a script spread over tasks): horror_mode: exploding_trident_krown, horror_mode_all; keep_effects: no_damage_all, restore_kit_krown; infinity_gauntlet: death_gaze_eclipszr, infinity_power_eclipszr; gatling_gun: death_gaze_eclipszr, gatling_gun_eclipszr; ice_walk: frost_walker_krown, ice_staff_krown; ice_beam: frost_walker_krown, ice_staff_krown, shot_effects_all; hollow_purple: frost_walker_krown, hollow_purple_eclipszr; super_saiyan: no_cooldowns_all, super_saiyan_blue_eclipszr.
+Split (a script spread over tasks): gatling_gun: death_gaze_eclipszr, gatling_gun_eclipszr; hollow_purple: frost_walker_krown, hollow_purple_eclipszr; horror_mode: exploding_trident_krown, horror_mode_all; ice_beam: frost_walker_krown, ice_staff_krown, shot_effects_all; ice_walk: frost_walker_krown, ice_staff_krown; infinity_gauntlet: death_gaze_eclipszr, infinity_power_eclipszr; keep_effects: no_damage_all, restore_kit_krown; super_saiyan: no_cooldowns_all, super_saiyan_blue_eclipszr.
 
 ## The busiest tasks: their names and descriptions
 

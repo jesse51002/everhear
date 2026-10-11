@@ -82,7 +82,7 @@ def lumps(tasks: list[dict]) -> tuple[list[tuple[str, list[str], int]], dict[str
             holders.setdefault(sc, set()).add(t["name"])
         if len(scripts) > 1:
             lumped.append((t["name"], sorted(scripts), len(t["history"])))
-    return lumped, {sc: sorted(n) for sc, n in holders.items() if len(n) > 1}
+    return lumped, {sc: sorted(n) for sc, n in sorted(holders.items()) if len(n) > 1}
 
 
 def by_script(rows: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
