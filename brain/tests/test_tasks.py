@@ -137,10 +137,51 @@ async def test_merge_adds_what_the_memory_lacks_writes_back_what_the_read_lacks_
     tasks.open("castle_steve", "Steve", "a castle", "a castle at spawn", "A stone castle at spawn.")
     await tasks.drain(1.0)
     sent.rows.clear()
+    castle = tasks.get("castle_steve")
     tasks.merge([{"name": "castle_steve", "description": "an older castle", "status": "failed"},
                  {"name": "ice_trail_alex", "description": "An ice trail for Alex.", "player": "Alex",
                   "status": "done", "created_at": "2026-10-11T09:00:00.000Z"}])
     await tasks.drain(1.0)
     assert tasks.get("castle_steve")["description"] == "A stone castle at spawn."  # the memory wins
     assert tasks.get("ice_trail_alex")["status"] == "done"
-    assert [r["name"] for r in sent.rows] == ["galick_gun_styrk"]  # the box had lost it: written back, whole
+    # the box had lost galick_gun_styrk, and held castle_steve older than the memory: both written back, whole
+    assert sorted(r["name"] for r in sent.rows) == ["castle_steve", "galick_gun_styrk"]
+    assert [r for r in sent.rows if r["name"] == "castle_steve"] == [castle]
+    sent.rows.clear()
+    tasks.merge(tasks.all())  # the box as the memory: nothing to write
+    await tasks.drain(1.0)
+    assert sent.rows == []
+
+
+async def test_a_write_that_failed_is_sent_again_until_it_lands_and_a_newer_change_supersedes_it():
+    tries = []
+
+    async def flaky(row: dict) -> bool:  # EC2 out of reach for the first two tries
+        tries.append(row)
+        return len(tries) > 2
+
+    tasks = Tasks(send=flaky, clock=Clock())
+    tasks.retry_s = (0.01, 0.01, 0.01)
+    galick(tasks)
+    tasks.close("galick_gun_styrk", "done", "galick_gun_styrk done: a Galick Gun")
+    for _ in range(50):
+        await asyncio.sleep(0.005)
+        if not tasks.writes:
+            break
+    assert tasks.writes == {}
+    # the open row's write failed and was never retried: the close superseded it; the close's own
+    # write failed once, then landed
+    assert [r["status"] for r in tries] == ["open", "done", "done"]
+    assert tries[-1] == tasks.get("galick_gun_styrk")
+
+    fails = []
+
+    async def down(row: dict) -> bool:
+        fails.append(row)
+        return False
+
+    tasks = Tasks(send=down, clock=Clock())
+    tasks.retry_s = (0.01, 0.01)
+    galick(tasks)
+    await asyncio.sleep(0.1)
+    assert len(fails) == 3 and tasks.writes == {}  # one try and two retries, then given up, logged

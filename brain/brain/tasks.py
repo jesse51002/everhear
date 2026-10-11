@@ -11,7 +11,9 @@ writes, through `vfg task set` (Contracts §4, §8). There is no file.
 The tasks come in at the start from `vfg context --json`, every row of the table. Every change
 writes the whole row in the background (`send`), and the writes of one task are chained, so they
 go out in the order they were made; the toolkit keeps the newer `updated_at` should two ever
-cross. `vfg route --task` reads a row back, and `vfg brain status` lists the open ones.
+cross. A write that fails (EC2 out of reach for a moment) is sent again a few times, unless a
+newer change to the task has been written meanwhile, which carries the whole row anyway.
+`vfg route --task` reads a row back, and `vfg brain status` lists the open ones.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ Send = Callable[[dict], Awaitable[bool]]   # True when `vfg task set` exited 0
 MADE_KINDS = ("scripts", "actions", "presets", "copies")
 STATUSES = ("open", "done", "failed")
 DESCRIPTION_MAX = 160  # characters of a description in TASKS
+RETRY_S = (2.0, 5.0, 15.0, 30.0)  # the waits before each new try of a write that failed
 
 
 def no_made() -> dict[str, list[str]]:
@@ -56,6 +59,8 @@ class Tasks:
         self.clock = clock
         self.tasks: dict[str, dict[str, Any]] = {}
         self.writes: dict[str, asyncio.Task] = {}   # each task's last write, the next one chained to it
+        self.waiting: set[str] = set()   # tasks whose last write failed and waits to be tried again
+        self.retry_s = RETRY_S
         for row in rows:
             row = self._row(row)
             if row is not None:
@@ -175,8 +180,9 @@ class Tasks:
 
     def merge(self, rows: Iterable[dict]) -> None:
         """After the feed restarted, the tasks read again: a row the memory lacks is added, and a
-        task the memory has that the read lacked (a box provisioned again) is written through.
-        For a name in both, the memory wins."""
+        task the memory has that the read lacked (a box provisioned again), or read older than the
+        memory's (a write that never landed), is written through. For a name in both, the memory
+        wins."""
         read = {}
         for row in rows:
             row = self._row(row)
@@ -186,10 +192,12 @@ class Tasks:
         for n in added:
             self.tasks[n] = read[n]
         missing = [n for n in self.tasks if n not in read]
-        for n in missing:
+        stale = [n for n in self.tasks if n in read and n not in added
+                 and str(read[n].get("updated_at") or "") < str(self.tasks[n].get("updated_at") or "")]
+        for n in missing + stale:
             self._write(n)
-        if added or missing:
-            log("tasks", f"read again: {len(added)} added, {len(missing)} written back to the box")
+        if added or missing or stale:
+            log("tasks", f"read again: {len(added)} added, {len(missing) + len(stale)} written back to the box")
 
     # ------------------------------------------------------------- writing
 
@@ -215,6 +223,9 @@ class Tasks:
             log("tasks", f"{name} not written: no event loop to send it from")
             return
         prev = self.writes.get(name)
+        if prev is not None and name in self.waiting:  # a failed write waiting to be tried again:
+            prev.cancel()                              # this whole row supersedes it
+            self.waiting.discard(name)
         t = loop.create_task(self._send(prev, row), name=f"task set {name}")
         self.writes[name] = t
         t.add_done_callback(lambda done: self.writes.pop(name, None) if self.writes.get(name) is done else None)
@@ -222,6 +233,23 @@ class Tasks:
     async def _send(self, prev: asyncio.Task | None, row: dict) -> bool:
         if prev is not None:
             await asyncio.gather(prev, return_exceptions=True)
+        name = row["name"]
+        for wait in (*self.retry_s, None):
+            if await self._try(row):
+                return True
+            if wait is None or self.writes.get(name) is not asyncio.current_task():
+                break  # given up, or a newer write of the task carries the row
+            self.waiting.add(name)
+            try:
+                await asyncio.sleep(wait)
+            finally:
+                self.waiting.discard(name)
+            log("tasks", f"writing {name} again after {wait:g} s")
+        if self.writes.get(name) is asyncio.current_task():
+            log("tasks", f"{name} not written to the box: gave up after {len(self.retry_s) + 1} tries")
+        return False
+
+    async def _try(self, row: dict) -> bool:
         try:
             return bool(await self.send(row))
         except Exception as e:  # noqa: BLE001 — a write that broke is a failed write, logged
