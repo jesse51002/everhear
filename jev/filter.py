@@ -37,7 +37,9 @@ STALE_LOOKBACK = 3600.0    # how far back the feed looks for kept lines to repor
 JUDGE_PER_STEP = 32
 FAILURE_PAUSE = 1.0
 NO_DB_PAUSE = 2.0
-MAX_STATE_TOKENS = 28000   # under Jev's 32k for the state plus the longest question
+# The cap on VFG_JEV_STATE_TOKENS: the state plus the gather call's ten questions at their largest,
+# quotes of 4-byte characters (about 7,300 tokens by the same estimate), stays under Jev's 32k.
+MAX_STATE_TOKENS = 24000
 
 SYS_OPEN = "jev unavailable — passing every line as context"
 SYS_BACK = "jev back — filtering again"
@@ -243,9 +245,13 @@ class Filter:
         cls, conf = route(result.answers)
         usage = {"at": at, "model": self.cfg.model, "input_tokens": result.input_tokens,
                  "cost_usd": result.cost_usd, "ref": row["id"]}
-        self.store.judge(row["id"], cls, round(conf, 3), at, usage)
+        written = self.store.judge(row["id"], cls, round(conf, 3), at, usage)
         log.info("judge %s %s %s %s %.2f · %s · %dms %stok", row["id"], row["player_name"], row["source"], cls, conf,
                  in_short(result.answers), result.ms, "?" if result.input_tokens is None else result.input_tokens)
+        if not written:   # the bridge dropped it while Jev judged it: never fed, nothing gathered
+            log.warning("no verdict written for %s: the bridge dropped it (only an incantation) while Jev judged it",
+                        row["id"])
+            return True
         said = said_at(row)
         if cls in KEPT and (said is None or said < now - FEED_MAX_AGE):
             self._too_old(row, said)
@@ -254,11 +260,12 @@ class Filter:
         return True
 
     def _gather(self, ask, said):
-        """The gather call: is each of the speaker's unsent lines since their last
-        line to the AI, 3 minutes back at most, part of `ask`? The yes lines wait
-        in `groups` and go with the ask when it is fed. No lines, no call. A call
-        that fails leaves the ask to go alone; it is not Jev failing to judge a
-        line, so the failing clock is left as it is."""
+        """The gather call: is each of the speaker's unsent lines judged since their
+        last line to the AI, said 3 minutes before `ask` at most, part of it
+        (`store.gather_window`)? The yes lines wait in `groups` and go with the
+        ask when it is fed. No lines, no call. A call that fails leaves the ask to
+        go alone; it is not Jev failing to judge a line, so the failing clock is
+        left as it is."""
         window = self.store.gather_window(ask, iso(said - GATHER_LOOKBACK), GATHER_MAX)
         if not window:
             return

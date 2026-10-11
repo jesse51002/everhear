@@ -8,9 +8,9 @@ from unittest import mock
 from fake_jev import asked_about, choose
 from support import T0, FakeClock, Lines, load_fake_feed, make_db, tempdir
 
-from filter import SYS_BACK, SYS_OPEN, Config, Filter
+from filter import GATHER_MAX, MAX_STATE_TOKENS, SYS_BACK, SYS_OPEN, Config, Filter
 from jev_api import JevDown, JevRefused, Result
-from prompt import EXAMPLES, GATHER_HEADING, GATHER_RULES, estimate, state_json
+from prompt import EXAMPLES, GATHER_HEADING, GATHER_RULES, estimate, gather_questions, state_json
 from store import Store
 
 
@@ -343,6 +343,29 @@ class TestJudging(Base):
         self.assertEqual(self.lines.usage(), [])
 
 
+    def test_a_line_the_bridge_drops_while_jev_judges_it_gets_no_verdict_and_nothing_gathered(self):
+        self.conn.execute("ALTER TABLE lines ADD COLUMN dropped TEXT")
+        self.lines.add(T0 - 5, "Steve", "voice", "the big one")
+        self.step()
+        line = self.lines.add(T0, "Steve", "voice", "build a fire ball")
+        ask = self.jev.ask
+
+        def ask_while_the_bridge_drops_it(state, questions, required="line_1"):   # its drop_line, mid-call
+            self.conn.execute("UPDATE lines SET dropped = 'cast' WHERE id = ? AND jev_class IS NULL", (line,))
+            return ask(state, questions, required)
+
+        self.jev.ask = ask_while_the_bridge_drops_it
+        with self.assertLogs("vfg-jev", "WARNING"):
+            self.step(1)
+            self.step(10)
+        r = self.row(line)
+        self.assertEqual((r["jev_class"], r["fed_at"]), (None, None))
+        self.assertEqual(len(self.jev.calls), 2)       # no gather call
+        self.assertEqual(self.f.groups, {})
+        self.assertEqual(self.batches(), [])
+        self.assertEqual(len(self.lines.usage()), 2)   # the call was made and paid for
+
+
 class TestGather(Base):
     """A line to the AI gets one more call, over its speaker's unsent lines; the yes lines go with it."""
 
@@ -388,6 +411,27 @@ class TestGather(Base):
         self.assertEqual(len(self.jev.calls), 3)
         self.assertEqual([u["ref"] for u in self.lines.usage()], ids)
 
+    def test_a_line_gathered_into_one_ask_is_never_gathered_into_another(self):
+        self.lines.add(T0 - 20, "Steve", "chat", "the big one by the river")
+        self.step()
+        self.lines.add(T0 + 2, "Steve", "chat", "make it bigger")
+        self.step(3)
+        # a voice line is stored once its speech is text: this one was said before the typed ask
+        self.lines.add(T0, "Steve", "voice", "and make a moat")
+        self.step(1)
+        self.assertEqual([e[2] for e in self.fed()], ["the big one by the river … make it bigger", "and make a moat"])
+        self.assertEqual(len(self.jev.calls), 4)   # three lines, and the first ask's gather call
+
+    def test_a_piece_stored_after_the_ask_it_was_said_before_goes_with_the_next(self):
+        self.lines.add(T0 + 2, "Steve", "chat", "make it bigger")
+        self.step(3)
+        self.lines.add(T0, "Steve", "voice", "the big one by the river")
+        self.step(1)
+        self.lines.add(T0 + 30, "Steve", "chat", "and make it taller")
+        self.step(30)
+        self.assertEqual([e[2] for e in self.fed()],
+                         ["make it bigger", "the big one by the river … and make it taller"])
+
     def test_a_failing_gather_call_feeds_the_ask_alone_and_leaves_failing_open_alone(self):
         for n, err in enumerate((JevDown("timeout"), JevRefused("413 too large"))):
             with self.subTest(err=err):
@@ -425,6 +469,13 @@ class TestGather(Base):
             dropped = [l for l in logs.output if "dropped to fit 500 characters" in l]
             self.assertEqual(len(dropped), 0 if n == 0 else 1)
         self.assertIn("the oldest 1 dropped", "\n".join(dropped))
+
+    def test_the_state_cap_leaves_room_for_ten_gather_questions_at_their_largest(self):
+        line = {"id": "x", "at": _iso(T0), "player_name": "P" * 16, "source": "chat", "text": "😀" * 300,
+                "peak_dbfs": None}
+        self.assertLess(MAX_STATE_TOKENS + estimate(gather_questions(line, [line] * GATHER_MAX)), 32000)
+        self.assertEqual(Config(state_tokens=10 ** 6).state_tokens, MAX_STATE_TOKENS)
+        self.assertEqual(Config().state_tokens, 8000)
 
 
 class TestState(Base):
