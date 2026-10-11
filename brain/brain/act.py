@@ -212,8 +212,9 @@ class Acts:
             outcomes = await acting if acting is not None else []
             if orchestrating is not None and not report:
                 await turn.decided.wait()
-                if orchestrating.done():
-                    orchestrating.result()  # what it raised, raised here
+                if orchestrating.done() and not turn.answered:
+                    orchestrating.result()  # what the first call raised, raised here; a later
+                    # call's is raised below, once the first call's reply is said
                 task = turn.task
             reply = self.reply_for(decision, outcomes, turn, handed, ref, replying=orchestrating is not None
                                    and not report)

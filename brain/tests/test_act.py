@@ -8,9 +8,10 @@ import json
 import pytest
 from vfg_llm import LlmError
 
+from brain.act import BROKE
 from brain.world import Seen
 
-from conftest import REPO_COPY, answer, cmd, decision, part, ran, rows
+from conftest import REPO_COPY, FakeOrchestrator, answer, cmd, decision, part, ran, rows
 
 SEEN = Seen(places="SAVED PLACES: home 1 64 2 overworld (home_steve)", known={"home"})
 LINE = "LINE#812 18:22:31 Styrkaeopteryx voice action_oriented 0.93 -8dB | make me a galick gun"
@@ -259,6 +260,29 @@ async def test_two_orchestrator_parts_one_after_another_one_reply_and_a_later_re
                             ['sorry, I lost part of that — say "and a moat round my castle" again?']]
 
 
+async def test_a_later_call_that_breaks_never_costs_the_line_the_first_calls_reply(kit):
+    class Breaks:
+        """Call 0 answers reply only; call 1 raises before it awaits anything, as a bug in building
+        its prompt would."""
+        def __init__(self):
+            self.inner = FakeOrchestrator(answer("reply", reply="which gun, the railgun or the galick gun?"))
+
+        async def answer(self, ctx, **kw):
+            if kw["k"] == 1:
+                raise KeyError("values")
+            return await self.inner.answer(ctx, **kw)
+
+    k = kit()
+    k.acts.orchestrator = Breaks()
+    d = decision(part("orchestrator", "make Steve's gun stronger"), part("orchestrator", "a moat round the castle"),
+                 reply="say that again?")
+    with pytest.raises(KeyError):
+        await k.acts.run(decided(k, d), player="Steve", line="…", seen=SEEN, ctx=k.ctx, head=HEAD, ref="#812")
+    await k.settle()
+    assert k.vfg.said() == [["which gun, the railgun or the galick gun?"],
+                            [BROKE]]
+
+
 async def test_a_task_whose_implementer_never_started_is_failed_by_name(kit):
     async def broken(name, brief):
         raise RuntimeError("no CLI")
@@ -303,3 +327,4 @@ async def test_a_reports_orchestrator_part_writes_no_reply_and_the_brains_is_sai
     assert k.vfg.said() == [["your galick gun's ready; making it reach further", "--task", "galick_gun_styrk"]]
     assert k.impl.followed[0][:2] == ("galick_gun_styrk", "fix the beam's range")
     assert any(a[-2:] == ["--ref", "galick_gun_styrk"] for a in k.vfg.of("usage", "add"))
+
