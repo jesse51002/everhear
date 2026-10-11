@@ -266,7 +266,7 @@ class Acts:
             return Outcome(p.instruction, False, ran.summary)
         already = [str(c) for c in ran.facts.get("ran") or []]
         took = [str(x) for x in (ran.facts.get("replies") or [])[:len(already)]]
-        pick = Pick(tid, i, p.instruction, f"{player or 'the batch'} said: {line}", seen.places, [], spent, refs,
+        pick = Pick(tid, i, p.instruction, f"{player or 'someone'} said: {line}", seen.places, [], spent, refs,
                     already=list(already), known=seen.known, copies=seen.copies, running=seen.running,
                     catalog=self.catalog)
         checked = Checked()

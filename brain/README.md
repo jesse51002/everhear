@@ -20,15 +20,17 @@ apart each get a call at once.
 |---|---|---|
 | `LINE` | a `LINE` Jev classed `action_oriented`; or a `conversational` one Respond handed up | routes and does every part, and replies |
 | `REPORT` | an implementer ending (`Implementers`' `on_report`) | the player's chat line, one record for the context (`T183 done: …`), the task's status; when the call gives no record or no line, or fails, both are written in code from the task's brief, never the implementer's words; while a follow-up to the task already runs, the task stays open with the record as its result so far, and the call is told so |
-| `BATCH` | the timer: `VFG_BRAIN_BATCH_S` (60 s) with no read of any kind and something unread | usually nothing; acts where something clearly needs it |
+
+There is no other call: no model is called for what nobody asked. A game event, a system notice
+and the brain's own rows wait for the next call, which reads them as NEW.
 
 **Respond** ([`respond.py`](brain/respond.py)) takes a `conversational` line: a cheap model (DeepSeek
 V4 Flash, reasoning off) on the same context that keeps up the banter and replies, or hands the
 line up to the brain when it asks for something to happen or Respond is unsure. It decides first
 (`reason`, `hand_up`, then `reply`), and handing up is the default unless the line is clearly pure
 talk ([`gate_bench.md`](../integration/replay/gate_bench.md)). A hand-up replaces its reply, so a
-player never gets two. Respond never acts on the game. A `context` line, a game event, a
-system notice and the brain's own rows are context only. A line already in the feed when the brain
+player never gets two. Respond never acts on the game. A game event, a system notice and the
+brain's own rows are context only. A line already in the feed when the brain
 read its context, said more than two minutes before that, is history: never acted on. A line that
 arrives on the watch is live, whatever its time (the box's clock may be a minute off the PC's).
 
@@ -38,8 +40,15 @@ arrives on the watch is live, whatever its time (the box's clock may be a minute
 lines Jev kept, with their class; the game's events; the system's notices; and the brain's own
 `AI` rows, the only rows the AI side writes (`vfg say` and `vfg feed post AI`): what it said, each
 action and how it went, each task opened or followed up, each task's result. Nothing an implementer
-writes is in it. A live read (a brain call for a line, a Respond call) takes in everything unread
-and marks it (`vfg context mark`); the batch catches up what no live read took.
+writes is in it. Every call (a brain call for a line or a report, a Respond call) takes in
+everything unread and marks it (`vfg context mark`), so the game's events since the last call are
+its NEW rows.
+
+**A `context` line is never shown to a model**: not in the conversation, not under
+NEW, not in Respond's prompt. It stays in the feed and `vfg.db`, and in the context's rows, for a
+memory that will summarise it later; the brain marks it processed as it arrives (and, at a start,
+every one still unmarked), so nothing waits on it. Every `GAME` row, every `SYS` row, the brain's
+own `AI` rows and the `action_oriented` and `conversational` lines are shown.
 
 The prompt is laid out for the cache ([`call.py`](brain/call.py)):
 
@@ -49,9 +58,12 @@ The prompt is laid out for the cache ([`call.py`](brain/call.py)):
    changes once the next minute starts), every `VFG_BRAIN_CHECKPOINT` (5) closed blocks marked,
    the last three of them: four marks in all, the opening's included;
 3. **the tail**, never cached: this server's own actions (`made/<server>/actions/`, which an
-   implementer may add at any moment), the world (every online player's place and items by slot
-   from `vfg state --json --items`, the running copies, the saved places, the incantations, the
+   implementer may add at any moment), the world (from `vfg state --json --items`, every online
+   player on one line: `- Steve at 197 68 251 in overworld: 14/20 health, 18/20 food, armor 12,
+   level 5, survival; effects: speed II 0:30, night vision ∞; Steve's items, by slot: …`, what
+   Minecraft did not answer left out; the running copies, the saved places, the incantations, the
    time and the weather), the open tasks, what is new since the last read, and the event.
+   Respond's tail has the same players, without their items.
 
 One `Decision` answers every event, and its schema never changes with the actions, so nothing
 before the conversation changes between calls: a part names its action, and writes it as one
@@ -116,7 +128,6 @@ From the environment, then `~/.vfg/config`:
 | `VFG_BRAIN_PROVIDERS` | OpenRouter's choice; comma-separated providers to try first, for the brain's call |
 | `VFG_RESPOND_MODEL`, `VFG_RESPOND_REASONING`, `VFG_RESPOND_PROVIDERS` | `~deepseek/deepseek-v4-flash-latest`, `off`, `parasail,wafer,phala,together,venice` (tried first, fastest first; `none`: OpenRouter's choice) |
 | `VFG_PLAN_MODEL`, `VFG_PLAN_REASONING`, `VFG_PLAN_PROVIDERS`, `VFG_PLAN_CHECK` | as Respond's, and `off`: a retry is rare and has the command and Minecraft's error in hand |
-| `VFG_BRAIN_BATCH_S` | `60` s with no read of any kind, and something unread, before a batch call |
 | `VFG_BRAIN_CHECKPOINT` | `5` minute-blocks between cache marks |
 | `VFG_BRAIN_HISTORY_HOURS` | `6`: how much of the feed the context starts with |
 | `VFG_BRAIN_TIMEOUT_S` | `20` s per model call, its retries included |

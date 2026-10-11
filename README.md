@@ -117,8 +117,8 @@ flowchart TB
   new script and its action with `vfg script new` in `made/<server>/`. The library in `scripts/`
   and `actions/` is read-only during play. Each reports to the brain, which tells the player.
 - The **shared context** is the feed itself: every kept line, every game event and what the brain
-  did, in order, read whole on every call. What no call has read for a minute is caught up by one
-  batch call.
+  did, in order, read whole on every call; the lines Jev files as context are kept but shown to no
+  model yet. What arrives between calls is read by the next one.
 - **Saved places** live in the world itself, in the command storage `everhear:places`. Every agent reads and
   saves them with `vfg place`, which keeps a 30-second copy in `~/.vfg/places.json`.
 - A command Minecraft refuses is planned again once against the server's own command tree and the

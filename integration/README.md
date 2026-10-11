@@ -85,9 +85,9 @@ written. Each player's line goes into the feed as a `LINE` row through the box's
 Jev would put it there. It checks an action ask done in the world with one reply, an item ask on
 the right slot, a conversational line answered by Respond, a conversational ask handed up and
 acted on, two lines in the same second both answered with neither waiting, the rows a call read
-marked processed, a batch call after `VFG_BRAIN_BATCH_S` (5 s here), and `vfg brain stop`; then
-prints each line's time to its reply, and what the run cost. About a minute and nine model
-calls, about $0.09: the first call, its 22K-token opening not yet cached, is about $0.06 of it.
+marked processed, a context line marked read at once with no call and a game event read by the
+next call, and `vfg brain stop`; then prints each line's time to its reply, and what the run
+cost. About a minute and eight model calls, about $0.09: the first call, its 22K-token opening not yet cached, is about $0.06 of it.
 Not part of any test suite.
 
 ## The brain live, on realmc

@@ -5,18 +5,21 @@ A row from `vfg watch` goes into the context; then, by what it is:
 - a LINE Jev classed action_oriented: a brain call (call.py), its decision run (act.py);
 - a LINE classed conversational: a Respond call (respond.py), which replies, or hands the line
   up to the brain, which then runs it as an action_oriented one, with what Respond read;
-- anything else (context lines, game events, system notices, the brain's own AI rows): context
-  only, for the next read.
+- a LINE classed context: kept, and marked processed at once (`vfg context mark`, nobody
+  waiting); no model is shown it (context.py);
+- anything else (game events, system notices, the brain's own AI rows): context only, for the
+  next call to read.
 A LINE already in the feed when the context was read (at or below its highest seq then, `start`)
 and said more than HISTORY_S before that is history: context, marked processed, never acted on. A
 LINE that arrives on the watch is live whatever its HH:MM:SS: a box clock a minute off the PC's
 would otherwise make every line history. When the feed restarts (vfg watch says so, or gives a seq
 at or below the one it follows from), the context is read again and followed from its new start.
 
-Every live read takes in what no call has read yet, marks it processed (`vfg context mark`,
-nobody waiting) and pushes the batch timer back (timer.py). An implementer's report is a brain
-call of its own; it reads nothing new. Every model call writes a `usage` row, its cached tokens
-included, nobody waiting.
+Every call (a line's, a report's, Respond's) takes in what no call has read yet and marks it
+processed (`vfg context mark`, nobody waiting), so the game's events since the last call are its
+NEW rows. There is no call of its own for what nobody reads: it waits for the next one. An
+implementer's report is a brain call of its own. Every model call writes a `usage` row, its
+cached tokens included, nobody waiting.
 """
 
 from __future__ import annotations
@@ -34,10 +37,9 @@ from . import actions
 from .act import Acts, short
 from .call import Call, Event, describe
 from .config import log
-from .context import LIVE, Context, Row, parse, show
+from .context import LIVE, Context, Row, parse
 from .respond import Respond
 from .tasks import Tasks
-from .timer import Timer
 from .vfg import Later
 from .world import World
 
@@ -59,9 +61,9 @@ def iso(t: datetime) -> str:
 
 class Brain:
     def __init__(self, *, ctx: Context, call: Call, respond: Respond, acts: Acts, world: World, tasks: Tasks,
-                 implementers, later: Later, catalog, refs=None, batch_s: float = 60.0,
+                 implementers, later: Later, catalog, refs=None,
                  model: str = "", respond_model: str = "", now: Callable[[], datetime] = utc_now,
-                 clock=None, menu: Callable[[str], object] | None = None, start: int = 0,
+                 menu: Callable[[str], object] | None = None, start: int = 0,
                  load: Callable[[], Awaitable[tuple[Context, int]]] | None = None):
         self.ctx = ctx
         self.start = start            # the feed's highest seq when the context was read: what is new is past it
@@ -77,8 +79,6 @@ class Brain:
         self.model, self.respond_model = model, respond_model
         self.now = now
         self.menu = menu              # sets Jev's menu again when the actions change
-        self.timer = Timer(batch_s, lambda: bool(self.ctx.unprocessed()), self.batch_now,
-                           **({"clock": clock} if clock else {}))
         self.load = load              # reads the context again, (ctx, start), after the feed restarted
         self.inflight: set[asyncio.Task] = set()
         self.stopping = False
@@ -120,7 +120,10 @@ class Brain:
             return None
         if not self.ctx.add(row):
             return None
-        self.timer.arrived()
+        if not row.shown:  # a context line: no model reads it, so nothing waits on it
+            row.processed = True
+            self.later("context", "mark", str(row.seq))
+            return None
         return self.route(row)
 
     def route(self, row: Row) -> asyncio.Task | None:
@@ -145,20 +148,20 @@ class Brain:
 
     def catch_up(self) -> list[Row]:
         """The context as read at the start: what is unread and older than HISTORY_S is history,
-        marked read, never acted on; a line of the last HISTORY_S still unread is answered.
-        Returns the history."""
+        marked read, never acted on; a context line still unread is marked read, whatever its
+        age; a line of the last HISTORY_S still unread is answered. Returns the history."""
         history = self.ctx.take_before(iso(self.now() - timedelta(seconds=HISTORY_S)))
-        for i in range(0, len(history), MARK_CHUNK):
-            self.later("context", "mark", *(str(r.seq) for r in history[i:i + MARK_CHUNK]), timeout=60)
+        marks = sorted(history + self.ctx.take_quiet(), key=lambda r: r.seq)
+        for i in range(0, len(marks), MARK_CHUNK):
+            self.later("context", "mark", *(str(r.seq) for r in marks[i:i + MARK_CHUNK]), timeout=60)
         for row in self.ctx.unprocessed():
             if row.type == "LINE" and row.cls in LIVE:
                 self.route(row)
         return history
 
     def take(self) -> list[Row]:
-        """A read: what no call has read yet, marked processed, and the timer pushed back."""
+        """A read: what no call has read yet, marked processed."""
         new = self.ctx.take_unprocessed()
-        self.timer.read()
         if new:
             self.later("context", "mark", *(str(r.seq) for r in new))
         return new
@@ -222,18 +225,20 @@ class Brain:
             await self.acts.say(said.reply)
 
     async def report(self, tid: str, status: str, text: str, following: bool = False) -> None:
-        """An implementer ended: one brain call writes the player's line and the record. When a
-        follow-up to the task already runs (`following`), the task stays open with the result so
-        far, and the call is told, so its reply never says it is all done."""
+        """An implementer ended: one brain call writes the player's line and the record, reading
+        what no call has read yet, as every call does. When a follow-up to the task already runs
+        (`following`), the task stays open with the result so far, and the call is told, so its
+        reply never says it is all done."""
         task = self.tasks.get(tid) or {"id": tid, "player": "", "line": "", "task": ""}
         self.keep_session(tid)
         recorded = False
         try:
             self.reload()
+            new = self.take()
             seen = await self.world.seen()
             event = Event("REPORT", task=task, status=status, report=text, following=following)
             try:
-                answer = await self.call.decide(event, self.ctx, seen, self.open_tasks(), [], self.refs)
+                answer = await self.call.decide(event, self.ctx, seen, self.open_tasks(), new, self.refs)
             except LlmError as e:
                 log("brain", f"{tid} report FAILED: {e}")
                 kept = self.result(tid, status, self.written(tid, status), following)
@@ -303,28 +308,6 @@ class Brain:
             return f"still on it: {brief}"
         return f"done: {brief}" if status == "done" else f"sorry, that one failed: {brief}"
 
-    def batch_now(self) -> asyncio.Task:
-        return self.spawn(self.batch(), "batch")
-
-    async def batch(self) -> None:
-        """What no live read took in for a while: one brain call, which usually does nothing."""
-        if self.stopping:
-            return
-        new = self.take()
-        if not new:
-            return
-        self.reload()
-        seen = await self.world.seen()
-        try:
-            answer = await self.call.decide(Event("BATCH"), self.ctx, seen, self.open_tasks(), new, self.refs)
-        except LlmError as e:
-            log("brain", f"batch of {len(new)} FAILED: {e}")
-            return
-        self.usage("brain", self.model, answer, f"batch #{new[0].seq}-#{new[-1].seq}")
-        log("brain", f"batch of {len(new)} -> {describe(answer.value)}")
-        if answer.value.parts or answer.value.reply.strip():
-            await self.acts.run(answer.value, player="", line=short(show(new), 500), seen=seen)
-
     def open_tasks(self) -> str:
         return self.tasks.show(self.implementers.running())
 
@@ -374,7 +357,6 @@ class Brain:
         comes in meanwhile closes its task in code, on_report()); stop the implementers and fail
         their tasks as stopped."""
         self.stopping = True
-        await self.timer.stop()
         pending = list(self.inflight)
         if pending:
             log("stop", f"waiting up to {grace_s:g} s for {len(pending)} call(s) in flight")

@@ -2151,6 +2151,32 @@ def day_phase(t):
     return "day" if t < 12000 else "dusk" if t < 13000 else "night" if t < 23000 else "dawn"
 
 
+def condition(p):
+    """One player's state as --items read it, what Minecraft answered and nothing else:
+    `14.5/20 health, 18/20 food, armor 12, level 5, survival; effects: speed 2 0:30, night_vision ∞`."""
+    def num(x):
+        return None if isinstance(x, bool) or not isinstance(x, (int, float)) else f"{x:.1f}".removesuffix(".0")
+
+    def left(t):
+        if not isinstance(t, int) or isinstance(t, bool):
+            return ""
+        m, sec = divmod(max(t, 0) // 20, 60)
+        return "∞" if t < 0 else f"{m // 60}:{m % 60:02d}:{sec:02d}" if m >= 60 else f"{m}:{sec:02d}"
+
+    health, most, food, armor, level = (num(p.get(k)) for k in ("health", "max_health", "food", "armor", "xp_level"))
+    bits = [f"{health}/{most} health" if health and most else f"{health} health" if health else "",
+            f"{food}/20 food" if food else "", f"armor {armor}" if armor else "",
+            f"level {level}" if level else "", p.get("game_mode") or ""]
+    out = ", ".join(b for b in bits if b)
+    if isinstance(p.get("effects"), list):
+        on = ", ".join(" ".join(x for x in (str(e.get("id") or "?").removeprefix("minecraft:"),
+                                             str(e["amplifier"] + 1) if isinstance(e.get("amplifier"), int)
+                                             and e["amplifier"] > 0 else "", left(e.get("duration"))) if x)
+                       for e in p["effects"] if isinstance(e, dict))
+        out += ("; " if out else "") + ("effects: " + on if on else "no effects")
+    return out
+
+
 def touches(fields, values):
     """Who a copy acts on: what its Player and Players fields name (a selector as it is)."""
     out_ = []
@@ -2188,8 +2214,8 @@ def actions_cache(cfg):
 
 def cmd_state(cfg, a):
     """Who is online, where, the time, the weather and every running copy, and with --items each
-    player's inventory, armor and held slot: one SSH call. What runs is written to running.json
-    as a fetch would."""
+    player's inventory, armor and held slot, and their health, food, armor points, XP level, game
+    mode and effects: one SSH call. What runs is written to running.json as a fetch would."""
     t0 = time.monotonic()
     asked_at = now_iso()
     rc, o, e = remote(cfg, a, "scripts.py", {"op": "state", "items": bool(a.items)}, 30, libs=SCRIPTS_LIBS)
@@ -2242,6 +2268,7 @@ def cmd_state(cfg, a):
                 if p.get("items") is not None:
                     rows_.append(("items", "%s: %s" % (p["name"], " · ".join(
                         " ".join(str(x).split()) for x in p["items"] if str(x).strip()) or "nothing")))
+                    rows_.append(("player", "%s: %s" % (p["name"], condition(p) or "unknown")))
             t = result["time"]
             rows_.append(("time", "%s (%s)%s" % (t["phase"] or "?", "?" if daytime is None else daytime,
                                                  ", day %d" % t["day"] if isinstance(t["day"], int) else "")))
@@ -3585,7 +3612,8 @@ def build_parser():
                        "running copy, in one call")
     s.add_argument("--json", action="store_true", help="as JSON, for code")
     s.add_argument("--items", action="store_true", help="also each online player's inventory, armor and "
-                   "held slot (in --json, each player's \"items\": the three replies)")
+                   "held slot (in --json, each player's \"items\": the three replies), and their health, "
+                   "food, armor points, XP level, game mode and effects")
 
     s = sub.add_parser("route", help="the example scripts and presets for an implementer's brief "
                        "(on stdin), picked by Jev; prints JSON")

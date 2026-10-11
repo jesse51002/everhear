@@ -74,7 +74,8 @@ def test_the_opening_holds_the_rules_the_owner_and_the_library_and_the_tail_this
 
 
 async def test_each_event_puts_its_own_tail_after_the_cached_conversation():
-    ctx = rows("LINE#38 18:29:50 Alex voice context 0.8 - | I'm by the lava pool", LINE)
+    ctx = rows("LINE#37 18:29:49 Alex voice context 0.8 - | I'm by the lava pool",
+               "GAME#38 18:29:50 death Alex | Alex tried to swim in lava", LINE)
     ask = FakeAsk(Decision=decision())
     call = Call(catalog(), ask, owner="KrownJM")
     new = ctx.take_unprocessed()
@@ -82,26 +83,27 @@ async def test_each_event_puts_its_own_tail_after_the_cached_conversation():
 
     line = parse(LINE, now=NOW)
     await call.decide(Event("LINE", line, handed_up="it asks for an item"), ctx, seen, "OPEN TASKS:\nnone",
-                      new[:1], FakeRefs())
+                      new[:2], FakeRefs())
     tail, cached = ask.calls[0]["prompt"], ask.calls[0]["cached"]
     assert cached[0][1] and "THE CONVERSATION SO FAR" in cached[0][0]
-    assert cached[1] == ("18:29:50 Alex (context): I'm by the lava pool\n"
+    assert cached[1] == ("18:29:50 game, death: Alex tried to swim in lava\n"
                          "18:29:58 Steve (action_oriented): give me a diamond pickaxe\n", False)
     assert tail.index("THE WORLD NOW") < tail.index("OPEN TASKS") < tail.index("NEW SINCE") < tail.index("THE EVENT")
-    assert "Steve carries and wears nothing" in tail and "18:29:50 Alex (context): I'm by the lava pool" in tail
+    assert "Steve carries and wears nothing" in tail
+    assert "NEW SINCE THE LAST READ (rows no call had read; they end the conversation above):\n" \
+           "18:29:50 game, death: Alex tried to swim in lava\n\n" in tail  # the game event; never the context line
     assert tail.endswith("LINE #40, 18:29:58: Steve said: give me a diamond pickaxe\n"
                          "(Respond, the cheap mode, handed this line up to you: it asks for an item)\n")
 
     task = {"id": "T7", "player": "Steve", "line": "make me an ice trail", "task": "an ice trail behind Steve"}
     await call.decide(Event("REPORT", task=task, status="done", report="Done: the ice trail is on."), ctx,
-                      seen, "OPEN TASKS:\n- T7 …", [], FakeRefs())
+                      seen, "OPEN TASKS:\n- T7 …", new[1:2], FakeRefs())
     tail = ask.calls[1]["prompt"]
     assert "REPORT: the implementer of T7 ended, done." in tail and "ITS BRIEF: an ice trail behind Steve" in tail
-    assert "Done: the ice trail is on." in tail and "(a report reads nothing new)" in tail
+    assert "Done: the ice trail is on." in tail and "lava\n\nTHE EVENT:\nREPORT" in tail  # a report reads NEW too
     assert not any("the ice trail is on" in text for text, _ in ask.calls[1]["cached"])  # never in the context
-
-    await call.decide(Event("BATCH"), ctx, seen, "OPEN TASKS:\nnone", new, FakeRefs())
-    tail = ask.calls[2]["prompt"]
-    assert tail.rstrip().endswith("Otherwise answer no parts and an empty reply.")
-    assert "BATCH: the rows under NEW" in tail and "18:29:58 Steve (action_oriented)" in tail
-    assert ask.calls[0]["cached"][0] == ask.calls[2]["cached"][0]  # one opening for every event
+    await call.decide(Event("REPORT", task=task, status="done", report="Done."), ctx, seen, "", new[:1], FakeRefs())
+    assert "had read; they end the conversation above):\nnothing\n" in ask.calls[2]["prompt"]  # a context line alone
+    for c in ask.calls:
+        assert "lava pool" not in c["prompt"] + "".join(text for text, _ in c["cached"])
+    assert ask.calls[0]["cached"][0] == ask.calls[1]["cached"][0]  # one opening for every event

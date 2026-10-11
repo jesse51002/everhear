@@ -17,7 +17,11 @@
 #   {"vfg": "/opt/vfg", "op": "logs", "name": "galick_gun_2", "n": 40, "follow": false}
 #   {"vfg": "/opt/vfg", "op": "copies"}
 #   {"vfg": "/opt/vfg", "mc": "/opt/mc", "op": "state", "items": false}   with items, each online
-#    player also gets "items": the replies to data get Inventory, equipment and SelectedItemSlot
+#    player also gets "items": the replies to data get Inventory, equipment and SelectedItemSlot;
+#    and its state, read from Health, foodLevel, XpLevel, playerGameType and active_effects and
+#    the armor and max_health attributes: "health", "max_health", "food", "xp_level", "armor",
+#    "game_mode" and "effects" ([{"id", "amplifier", "duration"}], the duration in ticks, -1
+#    for infinite), each null when Minecraft's reply could not be read (never a guess)
 #
 # `run` deploys (or checks the stamps), starts the copy (instances.Box.start) and waits: a once copy until it ends or
 # "wait" s pass, an until-stopped one until its first result() or "wait" s (the 2 s check),
@@ -341,6 +345,106 @@ ITEMS = ("data get entity {p} Inventory",
          "execute if data entity {p} equipment run data get entity {p} equipment",
          "data get entity {p} SelectedItemSlot")
 
+# And its state. Player data on 26.3 (scripts/_test/mc_26_3.py has the replies, and says which
+# are recorded): Health a float (20.0f), foodLevel, XpLevel and playerGameType ints,
+# active_effects a list of {id, amplifier (a byte, left out at 0), duration (ticks, -1 infinite),
+# ...}, absent with no effect on, so Minecraft answers "Found no elements matching
+# active_effects". Armor is no NBT: the armor attribute is what the armor worn adds up to.
+GAME_MODES = {0: "survival", 1: "creative", 2: "adventure", 3: "spectator"}
+NUMBER_RE = re.compile(r"^(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)[bBsSlLfFdD]?$")
+ATTRIBUTE_RE = re.compile(r"attribute .+ for entity .+ is (-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*$", re.S)
+
+
+def nbt_number(r, player, path):
+    """A number the player's data holds at `path` (`20.0f`, `18`), as a float; None for any
+    other reply."""
+    got = entity_data(r, player, path)
+    m = NUMBER_RE.match(got.strip()) if got is not None else None
+    return float(m.group(1)) if m else None
+
+
+def attribute(r, player, name):
+    """`attribute <p> minecraft:<name> get`: the value, its modifiers counted; None for any
+    other reply."""
+    m = ATTRIBUTE_RE.search(r.command("attribute %s minecraft:%s get" % (player, name)).strip())
+    return float(m.group(1)) if m else None
+
+
+def compounds(listed):
+    """The {...} compounds of an SNBT list, each whole (nested ones inside it too)."""
+    out, depth, quote, start = [], 0, "", None
+    for i, ch in enumerate(listed):
+        if quote:
+            if ch == quote and listed[i - 1] != "\\":
+                quote = ""
+        elif ch in "\"'":
+            quote = ch
+        elif ch in "{[":
+            depth += 1
+            if ch == "{" and depth == 2:
+                start = i
+        elif ch in "}]":
+            if ch == "}" and depth == 2 and start is not None:
+                out.append(listed[start:i + 1])
+                start = None
+            depth -= 1
+    return out
+
+
+def top_fields(compound):
+    """A compound's own text, every nested compound and list in it left out: the hidden effect
+    a stronger one keeps is not read as this one's."""
+    out, depth, quote = [], 0, ""
+    for i, ch in enumerate(compound):
+        if quote:
+            if ch == quote and compound[i - 1] != "\\":
+                quote = ""
+        elif ch in "\"'":
+            quote = ch
+        elif ch in "{[":
+            depth += 1
+            continue
+        elif ch in "}]":
+            depth -= 1
+            continue
+        if depth == 1:
+            out.append(ch)
+    return "".join(out)
+
+
+def effects(r, player):
+    """[{"id", "amplifier", "duration"}] from active_effects; [] when Minecraft says the player
+    has none; None for any other reply."""
+    reply = r.command("data get entity %s active_effects" % player).strip()
+    if reply.startswith("Found no elements matching active_effects"):
+        return []
+    m = DATA_RE.search(reply)
+    if not m or not m.group(1).strip().startswith("["):
+        return None
+    out = []
+    for c in compounds(m.group(1).strip()):
+        own = top_fields(c)
+        name = re.search(r"\bid:\s*\"([^\"]+)\"", own)
+        if not name:
+            continue
+        amp = re.search(r"\bamplifier:\s*(-?\d+)b", own)
+        dur = re.search(r"\bduration:\s*(-?\d+)\b", own)
+        out.append({"id": name.group(1), "amplifier": int(amp.group(1)) % 256 if amp else 0,
+                    "duration": int(dur.group(1)) if dur else None})
+    return out
+
+
+def player_state(r, p):
+    """Health, food, XP level, game mode, effects and armor of one online player."""
+    health = nbt_number(r, p, "Health")
+    food, level, mode = (nbt_number(r, p, path) for path in ("foodLevel", "XpLevel", "playerGameType"))
+    return {"health": health, "max_health": attribute(r, p, "max_health"),
+            "food": int(food) if food is not None else None,
+            "xp_level": int(level) if level is not None else None,
+            "armor": attribute(r, p, "armor"),
+            "game_mode": GAME_MODES.get(int(mode)) if mode is not None else None,
+            "effects": effects(r, p)}
+
 
 def op_state():
     t0 = time.time()
@@ -360,6 +464,7 @@ def op_state():
                 if ARGS.get("items"):
                     # A player wearing nothing has no equipment: the execute if keeps that from failing.
                     entry["items"] = [r.command(c.format(p=p)) for c in ITEMS]
+                    entry.update(player_state(r, p))
                 world["online"].append(entry)
             world["daytime"], world["day"] = time_of_day(r)
             world["raining"] = passes(r, WEATHER % "raining")

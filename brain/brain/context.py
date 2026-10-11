@@ -10,15 +10,21 @@ The rows (Contracts §7, and the brain plan's AI type):
 
 A line of a type it does not know (an old ORCH line) is kept as its plain text.
 
-A row is processed once a call has read it: a live read (a brain call for a line, a Respond
-call) takes in everything not yet processed, and the batch call catches up what no live read
-took. The AI's own rows are processed as they arrive: the brain wrote them.
+A LINE Jev classed `context` is kept here, as in the feed and vfg.db, but no model is shown it:
+not in the conversation, not under NEW (2026-10-10: raw context lines are left out until a
+memory summarises them). The brain marks it processed as it arrives, so nothing waits on it.
+Every other row is shown: the players' live lines, every game event, the system's notices and
+the brain's own rows.
+
+A row is processed once a call has read it: every call (a brain call for a line or a report, a
+Respond call) takes in everything not yet processed, so the game's events since the last call
+show as NEW. The AI's own rows are processed as they arrive: the brain wrote them.
 
 The conversation goes to a model as minute-blocks: a block is a run of consecutive rows sharing
 a minute, and once the next minute's row arrives it never changes. Every `checkpoint`-th closed
 block is marked for the prompt cache, the last three of them with the opening as the fourth
 mark, so each call's prompt matches the last call's up to its last mark (Prototype_Brain:
-98% of a batch call's prompt cached, at $0.0047).
+98% of a call's prompt cached, at $0.0047).
 """
 
 from __future__ import annotations
@@ -29,6 +35,7 @@ from datetime import UTC, datetime, timedelta
 
 AI_KINDS = ("say", "action", "task", "result", "note")
 LIVE = ("action_oriented", "conversational")  # the classes that get a live call of their own
+QUIET = ("context",)  # the LINE classes no model is shown: kept in the feed for a later memory
 MARKS = 3  # conversation marks; the opening is the fourth
 HEAD = re.compile(r"^(?P<type>[A-Z]+)#(?P<seq>\d+) (?P<hms>\d\d:\d\d:\d\d)(?: (?P<fields>.*))?$")
 
@@ -53,6 +60,11 @@ class Row:
     @property
     def hms(self) -> str:
         return self.at[11:19]
+
+    @property
+    def shown(self) -> bool:
+        """Whether a model is shown it: every row but a LINE Jev classed context."""
+        return not (self.type == "LINE" and self.cls in QUIET)
 
     def show(self) -> str:
         """The row as a model reads it, on one line."""
@@ -134,6 +146,14 @@ class Context:
     def unprocessed(self) -> list[Row]:
         return [r for r in self.rows if not r.processed]
 
+    def take_quiet(self) -> list[Row]:
+        """The rows no model is shown (context lines) not yet processed, marked processed here;
+        the caller marks them in the database."""
+        out = [r for r in self.rows if not r.processed and not r.shown]
+        for r in out:
+            r.processed = True
+        return out
+
     def take_unprocessed(self) -> list[Row]:
         """What no call has read yet, marked processed here; the caller marks it in the database."""
         out = self.unprocessed()
@@ -149,9 +169,12 @@ class Context:
         return out
 
     def blocks(self) -> list[list[Row]]:
-        """The rows as minute-blocks: each a run of consecutive rows sharing a minute."""
+        """The rows a model is shown, as minute-blocks: each a run of consecutive rows sharing a
+        minute. A context line is never in one, so a block never changes for it."""
         out: list[list[Row]] = []
         for r in self.rows:
+            if not r.shown:
+                continue
             if out and out[-1][-1].minute == r.minute:
                 out[-1].append(r)
             else:
@@ -171,4 +194,5 @@ class Context:
 
 
 def show(rows: list[Row]) -> str:
-    return "\n".join(r.show() for r in rows)
+    """The rows a model is shown, one per line: a context line is left out."""
+    return "\n".join(r.show() for r in rows if r.shown)

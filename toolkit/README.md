@@ -62,7 +62,7 @@ vfg preset save galick_ice ice_path ice_trail  # a function lifted out into made
 vfg made save                                  # made/<VFG_SERVER>/ into a new $VFG_MADE_ARCHIVE/2026-10-10-142301/
 vfg made restore 2026-10-10                    # and back: that day's latest, or one save by its full name
 vfg state                                      # who is online and where, time, weather, what runs; --json
-vfg state --json --items                       # and each player's inventory, armor and held slot
+vfg state --json --items                       # and each player's items, health, food, armor, level, mode, effects
 vfg route --task T7 < brief.txt                # the examples and presets for that brief, picked by Jev; JSON
 vfg prefix                                     # the implementer's static system prompt, the same bytes each time
 vfg action refs --version                      # the server's version, from server.jar: 26.3
@@ -102,7 +102,16 @@ one line on stderr. `vfg --help` and `vfg <command> --help` list every option.
   however far behind it starts: no `VFG_WATCH_CATCHUP`.
 - **`vfg state --json --items`** adds to each online player `"items"`: Minecraft's replies to
   `data get entity <p> Inventory`, its `equipment` (asked only when it has any) and
-  `SelectedItemSlot`, which the brain's `listing.py` turns into slot names.
+  `SelectedItemSlot`, which the brain's `listing.py` turns into slot names. And the player's
+  state, in the same SSH call, read from `data get entity <p>` `Health`, `foodLevel`, `XpLevel`,
+  `playerGameType` and `active_effects`, and `attribute <p> minecraft:armor get` and
+  `minecraft:max_health get`: `"health"` (14.5), `"max_health"` (20.0), `"food"` (18),
+  `"xp_level"` (5), `"armor"` (12.0, the armor points worn), `"game_mode"` (`survival`,
+  `creative`, `adventure` or `spectator`) and `"effects"` (`[{"id": "minecraft:speed",
+  "amplifier": 1, "duration": 600}]`, the amplifier 0 for level I, the duration in ticks, -1
+  for infinite; `[]` when Minecraft says there is none). Each is `null` when Minecraft's reply
+  could not be read: never a guess. Without `--json`, a `player` row each: `Steve: 14.5/20
+  health, 18/20 food, armor 12, level 5, survival; effects: speed 2 0:30, night_vision ∞`.
 - **`vfg jev menu set|show`** writes or prints `/opt/vfg/menu.md`, the brain's action menu,
   which Jev reads after `lookout.md`; it may be empty.
 
@@ -176,7 +185,8 @@ on the PC; the router reads them through it too. A name is a script in one place
   `actions/_types.py`'s, a values class that does not load, no first-line docstring, no
   `ASKS`, an import from `_presets` or of what the box lacks; and for each action over a
   script, its TODOs and an action the loader left out.
-- **`state`** is one SSH call: `list`, each player's `Pos` and `Dimension`, `time query day`
+- **`state`** is one SSH call: `list`, each player's `Pos` and `Dimension` (with `--items`, their
+  items and state, above), `time query day`
   (26.3's day timeline) and `time query time` (the clock, for the day number), and the
   weather from an inline predicate, `{"type":"minecraft:weather_check","raining":true}`,
   which follows `weather …` within a few seconds, as the rain players see fades in. Then

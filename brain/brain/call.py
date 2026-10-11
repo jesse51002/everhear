@@ -1,10 +1,9 @@
 """The brain's one call: each event is one structured() call, on GPT-6.1 Sol with low reasoning,
 which routes every part of a line and does the work in the same answer (Prototype_Brain).
 
-Three events, one `Decision`, so the cached prefix is the same whatever the event:
+Two events, one `Decision`, so the cached prefix is the same whatever the event:
 - LINE: a line Jev classed action_oriented, or a conversational one Respond handed up;
-- REPORT: an implementer's result;
-- BATCH: what no live read took in for VFG_BRAIN_BATCH_S.
+- REPORT: an implementer's result.
 
 A part goes to an action, written in full in `action` and ready to run; to `implementer`, with
 a brief (a new task, or `task` naming the task it follows up); or to `talk`, answered by
@@ -14,7 +13,7 @@ a brief (a new task, or `task` naming the task it follows up); or to `talk`, ans
 2. the conversation, a minute-block at a time, marked at checkpoints (context.py);
 3. the tail, never cached: this server's own actions (an implementer may add one at any
    moment, and the opening must not change for it), the world, the open tasks, what is new
-   since the last read, and the event.
+   since the last read (never a context line: context.py), and the event.
 
 The schema never changes with the actions: `to` is a name and `action` the values, both
 checked here against the actions as they are now, so a new action never changes the request
@@ -51,11 +50,6 @@ PLACEHOLDER = re.compile(r"^\W*(nothing( to do)?|none( needed)?|n/?a|no[ -]?op|s
 NO_MOVE = re.compile(r"\bto (his|her|their|its|your) (own )?((current|present) )?(position|location)\b"
                      r"|\bto (his|her|their|its|your) (own )?(current|present) (spot|place)\b"
                      r"|\bto where (he|she|they|it) (is|are|stands?|stood)\b", re.IGNORECASE)
-
-BATCH = ("BATCH: the rows under NEW are what was said as background and what happened in the game "
-         "since the last read, as Jev heard it. Nothing here was asked of you directly. Act only where "
-         "something clearly needs it: an ask Jev filed as context that nobody answered, a player in "
-         "trouble, a moment worth a short line in chat. Otherwise answer no parts and an empty reply.")
 
 
 class Value(BaseModel):
@@ -162,7 +156,7 @@ def decision_type(catalog: Catalog) -> type[DecisionBase]:
 
 @dataclass
 class Event:
-    kind: Literal["LINE", "REPORT", "BATCH"]
+    kind: Literal["LINE", "REPORT"]
     row: Row | None = None          # LINE: the line
     handed_up: str = ""             # LINE: Respond's reason, when Respond handed it up
     task: dict | None = None        # REPORT: the task's entry in tasks.json
@@ -178,14 +172,12 @@ class Event:
             if self.handed_up:
                 text += f"\n(Respond, the cheap mode, handed this line up to you: {self.handed_up})"
             return text
-        if self.kind == "REPORT":
-            t = self.task or {}
-            more = (f"\nA FOLLOW-UP to {t.get('id', '?')} is already under way, so the task stays open: say how "
-                    "this step went, never that it is all done." if self.following else "")
-            return (f"REPORT: the implementer of {t.get('id', '?')} ended, {self.status}.\n"
-                    f"{t.get('id', '?')} was for {t.get('player') or 'nobody'}, who said: {t.get('line', '')}\n"
-                    f"ITS BRIEF: {t.get('task', '')}\nITS REPORT:\n{self.report.strip()}{more}")
-        return BATCH
+        t = self.task or {}
+        more = (f"\nA FOLLOW-UP to {t.get('id', '?')} is already under way, so the task stays open: say how "
+                "this step went, never that it is all done." if self.following else "")
+        return (f"REPORT: the implementer of {t.get('id', '?')} ended, {self.status}.\n"
+                f"{t.get('id', '?')} was for {t.get('player') or 'nobody'}, who said: {t.get('line', '')}\n"
+                f"ITS BRIEF: {t.get('task', '')}\nITS REPORT:\n{self.report.strip()}{more}")
 
 
 def library(catalog: Catalog) -> list[str]:
@@ -244,7 +236,7 @@ class Call:
 
     def tail(self, event: Event, seen: Seen, tasks: str, new: list[Row]) -> str:
         """Everything after the conversation: what changes from call to call."""
-        unread = (show(new) if new else "nothing") if event.kind != "REPORT" else "(a report reads nothing new)"
+        unread = show(new) or "nothing"
         return (f"\n{self.own_actions()}\n\n{seen.show()}\n\n{tasks}\n\n"
                 f"NEW SINCE THE LAST READ (rows no call had read; they end the conversation above):\n{unread}\n\n"
                 f"THE EVENT:\n{event.show()}\n")

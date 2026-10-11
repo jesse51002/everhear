@@ -94,6 +94,26 @@ SPAWNPOINT_NOT_PLAYER = ("Only players may be affected by this command, but the 
                          " -1416 69 1408<--[HERE]")
 WORLDSPAWN = "Set the world spawn point to 20, 80, -20 [0.0, 0.0] in minecraft:overworld"
 
+# A player's state, as `vfg state --items` reads it (op_state, toolkit/remote/scripts.py), each
+# after ENTITY_DATA's "<p> has the following entity data: ". 2026-10-10: NOT all recorded here.
+# Checked on 26.3: playerGameType is a bare int (realmc's smoke test, 'entity data: 0$'); Health
+# a float with f, an effect's id quoted with its namespace and its amplifier a byte left out at
+# 0 (scripts/_test/live_examples_*.py read them from real players); an attribute's reply is
+# ATTRIBUTE_GOT's shape (Scale, below in COMMANDS; gravity in live_examples_powers.py). Written
+# from the wiki's 26.x player data and not yet seen on 26.3: foodLevel and XpLevel as bare ints,
+# an effect's duration as a bare int of ticks (-1: infinite), a hidden_effect nested in the one
+# that hides it, and the armor and max_health attributes' names. Record them on a realmc server.
+HEALTH_SNBT = "14.5f"
+FOOD_SNBT = "18"
+XP_LEVEL_SNBT = "5"
+GAME_TYPE_SNBT = "0"            # 0 survival, 1 creative, 2 adventure, 3 spectator
+EFFECTS_SNBT = ('[{duration: 600, show_icon: 1b, id: "minecraft:speed", amplifier: 1b, show_particles: 1b, '
+                'hidden_effect: {duration: 9600, show_icon: 1b, id: "minecraft:speed", show_particles: 1b}}, '
+                '{duration: -1, show_icon: 1b, id: "minecraft:night_vision", show_particles: 1b}]')
+NO_EFFECTS = NO_ELEMENTS % "active_effects"   # active_effects is absent with no effect on
+ATTRIBUTE_GOT = "The value of attribute %s for entity %s is %s"
+ATTRIBUTE_NAMES = {"armor": "Armor", "max_health": "Max Health", "scale": "Scale"}
+
 # Commands-mode replies: (command, reply, is it an error).
 COMMANDS = [
     ("time set day", "Set minecraft:overworld to time marker minecraft:day", False),

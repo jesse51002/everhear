@@ -12,8 +12,9 @@ cent, a missed ask the player's ask. Handing up replaces its reply, never adds t
 never gets two answers: a hand-up's reply is dropped here, whatever the model wrote.
 
 Its prompt is laid out as the brain's: the opening (its rules, the owner, the menu's lines,
-marked), the conversation in the same minute-blocks, then the world as last fetched (no items),
-the open tasks, what is new and the line.
+marked), the conversation in the same minute-blocks (never a context line: context.py), then the
+world as last fetched (each player's place and state, no items), the open tasks, what is new and
+the line.
 """
 
 from __future__ import annotations
@@ -63,7 +64,7 @@ class Respond:
         how = "typed" if row.source == "chat" else "said"
         return (f"\n{seen.show()}\n\n{tasks}\n\n"
                 f"NEW SINCE THE LAST READ (rows no call had read; they end the conversation above):\n"
-                f"{show(new) if new else 'nothing'}\n\n"
+                f"{show(new) or 'nothing'}\n\n"
                 f"THE LINE #{row.seq}, {row.hms}: {row.who} {how}: {row.text}\n")
 
     async def answer(self, row: Row, ctx: Context, seen: Seen, tasks: str, new: list[Row]):

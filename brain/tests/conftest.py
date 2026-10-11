@@ -87,7 +87,7 @@ def _no_real_home(tmp_path, monkeypatch):
     monkeypatch.setenv("VFG_HOME", str(tmp_path / "vfg-home"))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     for key in ("VFG_BRAIN_DIR", "VFG_REPO", "OPEN_ROUTER_API", "VFG_OPENROUTER_KEY", "VFG_SERVER", "VFG_OWNER",
-                "VFG_BRAIN_MODEL", "VFG_BRAIN_BATCH_S", "VFG_RUNNING_TTL_S", "VFG_PLAN_CHECK"):
+                "VFG_BRAIN_MODEL", "VFG_RUNNING_TTL_S", "VFG_PLAN_CHECK"):
         monkeypatch.delenv(key, raising=False)
 
 
@@ -153,7 +153,11 @@ def ran(ok: bool, summary: str, *, copy: str = "", running: bool = False, **fact
 
 STATE = {"online": [{"name": "Steve", "pos": [10, 64, -20], "dimension": "overworld",
                      "items": ["Steve has the following entity data: [{Slot: 4b, id: \"minecraft:iron_sword\", "
-                               "count: 1}]", "Steve has the following entity data: 4"]}],
+                               "count: 1}]", "Steve has the following entity data: 4"],
+                     "health": 14.5, "max_health": 20.0, "food": 18, "xp_level": 5, "armor": 12.0,
+                     "game_mode": "survival", "effects": [{"id": "minecraft:speed", "amplifier": 1, "duration": 600},
+                                                          {"id": "minecraft:night_vision", "amplifier": 0,
+                                                           "duration": -1}]}],
          "time": {"daytime": 6000, "day": 3, "phase": "day"}, "weather": "clear", "instances": [], "rcon": None}
 
 

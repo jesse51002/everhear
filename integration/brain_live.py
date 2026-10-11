@@ -44,7 +44,7 @@ BUDGET = 1.00      # dollars of OpenRouter the brain and Respond may spend in a 
 TASK_S = 600       # an implementer task's time limit, its report included
 
 FEED_RE = re.compile(r"^([A-Z]+)#(\d+) (\d\d:\d\d:\d\d) (?:([^|]*?) )?\| (.*)$")
-LOG_CALL = re.compile(r"^(\S+) (brain|respond) (#\d+|T\d+|batch #\d+-#\d+) (\d+) ms \$([\d.]+), (\d+) in")
+LOG_CALL = re.compile(r"^(\S+) (brain|respond) (#\d+|T\d+) (\d+) ms \$([\d.]+), (\d+) in")
 
 
 def parse_iso(s):
@@ -468,7 +468,7 @@ def implementer(run):
               short(live.log_since(mark)[-1500:]))
     if not tid:
         return
-    # While it works, a context line nobody answers: the batch timer's to take in, after 60 s.
+    # While it works, a context line: marked read as it comes, and no model is shown it.
     live.lines(("Alex", "context", "lol Steve keeps walking into the lava over there"))
     t0 = opened[0]["at"]
     res = wait_for(lambda: live.ai(a["seq"], ("result",), tid), TASK_S, 1.0)
@@ -535,9 +535,6 @@ def nothing_from_it(run, after, tid, report, mark):
 def end(run):
     rep, live = run.rep, run.live
     rep.head("the end")
-    batch = [u for u in live.sql("SELECT * FROM usage WHERE ref LIKE 'batch #%' ORDER BY id")
-             if parse_iso(u["at"]) > run.started]
-    rep.note("batch calls: %d (%s)" % (len(batch), ", ".join("%s $%.4f" % (u["ref"], u["cost_usd"]) for u in batch)))
     unread = [r for r in live.rows(live.start_seq) if r["type"] == "LINE" and not r["processed_at"]]
     rep.check(not unread, "every line of the run was read and marked processed", "%r" % unread)
     r = live.stop()
