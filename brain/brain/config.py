@@ -35,16 +35,16 @@ class Config:
     reasoning: str = "low"                     # VFG_BRAIN_REASONING: off, or an effort
     providers: tuple[str, ...] = ()            # VFG_BRAIN_PROVIDERS, comma-separated, the brain's call only;
                                                # (): OpenRouter's choice
-    # Respond, the brain's cheap mode, for conversational lines: DeepSeek V4 Flash with reasoning
-    # off, through the providers that answer it fastest (at low reasoning it thinks ~900 tokens:
-    # 7.7 s a call). The action planner, kept only to retry a command Minecraft refused: Gemini 3.8
-    # Flash, low, which read every item listing right where DeepSeek misread 2 of 6 (2026-10-10).
+    # Respond, the brain's cheap mode, for conversational lines, and the action planner, kept only
+    # to retry a command Minecraft refused (rare, and it has the command and Minecraft's error in
+    # hand): DeepSeek V4 Flash with reasoning off, through the providers that answer it fastest
+    # (at low reasoning it thinks ~900 tokens: 7.7 s a call). No bigger model without a reason.
     respond_model: str = CHEAP                      # VFG_RESPOND_MODEL
     respond_reasoning: str = "off"                  # VFG_RESPOND_REASONING
     respond_providers: tuple[str, ...] = FAST       # VFG_RESPOND_PROVIDERS
-    plan_model: str = "google/gemini-3.8-flash"     # VFG_PLAN_MODEL
-    plan_reasoning: str = "low"                     # VFG_PLAN_REASONING
-    plan_providers: tuple[str, ...] = ()            # VFG_PLAN_PROVIDERS
+    plan_model: str = CHEAP                         # VFG_PLAN_MODEL
+    plan_reasoning: str = "off"                     # VFG_PLAN_REASONING
+    plan_providers: tuple[str, ...] = FAST          # VFG_PLAN_PROVIDERS
     plan_check: bool = False        # VFG_PLAN_CHECK: on checks a retried command against its references again
     batch_s: float = 60.0           # VFG_BRAIN_BATCH_S: this long with no read and something unread: a batch call
     checkpoint: int = 5             # VFG_BRAIN_CHECKPOINT: a cache mark every this many minute-blocks
@@ -117,9 +117,9 @@ def load(env: dict[str, str] | None = None) -> Config:
         respond_model=get("VFG_RESPOND_MODEL", CHEAP),
         respond_reasoning=get("VFG_RESPOND_REASONING", "off"),
         respond_providers=names("VFG_RESPOND_PROVIDERS", FAST),
-        plan_model=get("VFG_PLAN_MODEL", "google/gemini-3.8-flash"),
-        plan_reasoning=get("VFG_PLAN_REASONING", "low"),
-        plan_providers=names("VFG_PLAN_PROVIDERS"),
+        plan_model=get("VFG_PLAN_MODEL", CHEAP),
+        plan_reasoning=get("VFG_PLAN_REASONING", "off"),
+        plan_providers=names("VFG_PLAN_PROVIDERS", FAST),
         plan_check=get("VFG_PLAN_CHECK", "off").lower() in ("on", "1", "true", "yes"),
         batch_s=number("VFG_BRAIN_BATCH_S", 60.0, float, 1),
         checkpoint=number("VFG_BRAIN_CHECKPOINT", 5, int, 1),

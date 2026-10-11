@@ -208,7 +208,7 @@ SYS#818 18:25:00 | jev unavailable — passing every line as context
 
 ## 14. Actions from the brain — the owner's PC
 
-**The brain runs an action part at once**, written in full in its one answer: `vfg action run <action> key=value … --task <T7>` (§8), reading its one line. A command Minecraft refuses is planned again once, with the command's reference, on `VFG_PLAN_MODEL` (Gemini 3.8 Flash, reasoning low). Each action and how it went becomes one `AI action` line.
+**The brain runs an action part at once**, written in full in its one answer: `vfg action run <action> key=value … --task <T7>` (§8), reading its one line. A command Minecraft refuses is planned again once, with the command's reference, on `VFG_PLAN_MODEL` (DeepSeek V4 Flash, reasoning off). Each action and how it went becomes one `AI action` line.
 
 - **The menu** is every action (§10), the library's and `made/<VFG_SERVER>/actions/`, each as its name and docstring's first line, reloaded when a file changes, so a new action is on it at the next ask; then every running copy, one line each, from `running.json`, which a background `vfg script list --json --fresh` fetches every `VFG_RUNNING_TTL_S` (30 s); `edit` changes a running copy and `stop` ends one.
 - **An item a player owns** is changed by its slot, which the context names (`hotbar.4 iron_sword (held)`): the held one, then the worn one, then the first listed; an ask for an item the player does not have is dropped, with why.
