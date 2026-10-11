@@ -39,9 +39,9 @@ About a minute. The box's side (bridge, Jev filter, the toolkit's remote program
 | 4 | `vfg history` by date, source, player, each of the four classes, events and feed |
 | 5 | `vfg feed post AI` for each kind, `GAME` of any kind, `SYS`; `ORCH` and bad `AI` fields refused; `vfg context`, `--json` and `vfg context mark` |
 | 6 | `usage` rows: one per Jev call; `vfg usage add` as the brain, Respond and an implementer write them, cached tokens included |
-| 7 | killing and restarting Jev, the brain's watch (`--after` its last seq) and the bridge loses and repeats nothing, and keeps the processed marks |
+| 7 | killing and restarting Jev, the brain's watch (`--after` its last seq) and the bridge loses and repeats nothing, and keeps the processed marks; an ask killed while its group waits for the feed is fed once, alone, and one killed after its group's feed write is not fed again |
 | 8 | the client mod's real `BridgeClient` and `LinePayload` against the real bridge |
-| 9 | every line the real feed writer produced, read by the brain's `context.parse`, and `vfg context --json` built into the brain's `Context` |
+| 9 | a real group (§5): Steve's earlier line goes with his ask as one `LINE`, under the ask's fields and time, and Alex's line said between them is never asked about; every line the real feed writer produced, the group included, read by the brain's `context.parse`, and `vfg context --json` built into the brain's `Context` |
 
 ## Incantations, on a real server
 
