@@ -102,9 +102,9 @@ class TestByHand(WithJev):
     def test_judge_prints_the_verdict_and_writes_nothing(self):
         code, out, _ = self.judge("AI, build me a small tower here")
         self.assertEqual(code, 0)
-        self.assertRegex(out, r"^action_oriented 0\.90 · \d+ms · \d+tok\n$")
+        self.assertRegex(out, r"^action_oriented 0\.90 · act 0\.90, let down 0\.60 · \d+ms · \d+tok\n$")
         code, out, _ = self.judge("lol nice", raw=True)
-        self.assertIn('"choice": "not_relevant"', out)
+        self.assertIn('"choice": "ignore_it"', out)
         self.assertNotIn(KEY, out)
         self.server.mode = "fail"
         code, _, err = self.judge("x")

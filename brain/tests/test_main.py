@@ -51,7 +51,7 @@ async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fail
     firsts = [c[:2] for c in vfg.calls]
     assert firsts[0] == ["up"] and {"watchers", "lookout", "jev", "context"} <= {c[0] for c in vfg.calls[1:6]}
     assert vfg.of("watchers")[0][2] == "join,leave,death,advancement,server"
-    assert "conversational: a line said to the AI" in vfg.of("lookout")[0][2]
+    assert "Names of places, bases, builds and coordinates" in vfg.of("lookout")[0][2]
     assert "command — Run vanilla commands" in vfg.of("jev", "menu", "set")[0][3]
     assert vfg.of("context", "--since") == [["context", "--since", "-6h", "--json"]] and seen_after == [12]
     assert ["context", "mark", "10"] in vfg.calls  # history: marked read, never acted on

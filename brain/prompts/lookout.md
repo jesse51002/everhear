@@ -1,1 +1,6 @@
-Players on a Minecraft server talk to an AI that answers in chat and changes the game for them: it gives items and effects, builds, spawns, teleports, sets time and weather, makes new weapons and powers, and runs events. action_oriented: a line that asks the AI for something to happen in the game (AI, hey AI, Claude, can you, could you, I want, give me, make, build, spawn, stop, make it bigger), however casually it is said, or that follows up something the AI did or is doing. conversational: a line said to the AI that asks for nothing to happen: a greeting, thanks, a joke, a question it could answer from what it knows, a reaction to what it did. context: a line not said to the AI that helps make sense of an ask, such as where players are, what they are building or fighting, what they plan, or how they react to what the AI did. not_relevant: banter between players, callouts in a fight, laughter, single words, background noise, music or video, and lines meant for no one.
+- Anything said to the AI, or about what it built, gave, said or did: asks, questions, praise, complaints.
+- A player answering a question the AI asked, or saying an earlier ask again, more fully or corrected.
+- Names of places, bases, builds and coordinates, and whose they are.
+- Plans the group is making: where they are going, what they want to build, fight or find next, and rules they set.
+- A player in trouble: lost, low on health, stuck, trapped, or asking for help.
+- What a player likes or hates about the game right now, if the AI could change it.

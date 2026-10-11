@@ -4,14 +4,16 @@ Adapted from the workspace's `scripts/lib/typesafe.py`, with one difference
 that matters: ONE ATTEMPT PER CALL, no retries inside it. The filter's loop is
 what retries, because the loop is what keeps the failing clock.
 
-    body     {"model": ..., "state": {"rules", "look_out_for", "history"}, "questions": {name: question}}
+    body     {"model": ..., "state": {"rules", "look_out_for", "examples", "actions", "history"},
+              "questions": {name: question}}
     answer   {"answers": {name: {"choice", "confidence", "probabilities", ...}},
               "usage": {"input_tokens": N}}
 
 ERRORS. `JevRefused` for 400, 413 and 422 — the API answered and said no to
 this request. `JevDown` for everything else: a timeout, no connection, 401,
-403, 429, 5xx, a malformed or missing `line_1`, or no key. A message never
-carries the key, the headers or the state.
+403, 429, 5xx, a malformed or missing answer the call requires (the routing
+call's `d_what`), or no key. A message never carries the key, the headers or
+the state.
 """
 import http.client
 import json
@@ -128,7 +130,9 @@ class Jev:
 
     def ask(self, state, questions, required="line_1"):
         """One state, every question about it, one attempt. Answers a `Result`.
-        Raises `JevDown` when `required` is missing or malformed."""
+        Raises `JevDown` when `required` is missing or malformed: the filter
+        passes `d_what` for the routing call (the default is the old benches'
+        `line_1`)."""
         if not self.key:
             raise JevDown("no key (TYPESAFE_API_KEY)")
         # UTF-8 JSON, not \u-escaped: the state's size here is the size the

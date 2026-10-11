@@ -4,8 +4,8 @@ Each step: judge new lines, one Jev call each (or, while failing open, pass
 them all as `context`); then feed what is waiting. Everything that has to
 survive a restart is in the database — a verdict, `fed_at` — so the batch is
 read from the database each time rather than held here. What is held here is
-only what the contract lets go on a restart: which lines just flipped, the
-failing clock, and an owed `SYS` line.
+only what the contract lets go on a restart: the failing clock and an owed
+`SYS` line.
 
 The clock, the Jev client and the feed writer are arguments, so the tests drive
 every rule with fakes and no test sleeps through a 10-second rule.
@@ -18,14 +18,12 @@ import sqlite3
 
 from jev_clock import iso, parse_iso
 from jev_api import ENDPOINT, MODEL, JevDown, JevRefused
-from prompt import KEPT, Lookout, Menu, build_state, questions
+from prompt import KEPT, Lookout, Menu, build_state, in_short, questions, route
 
 log = logging.getLogger("vfg-jev")
 
 # Fixed in code, because the contract fixes them.
 FAIL_OPEN_AFTER = 10.0     # seconds of Jev failing before every line passes as context
-ASK_AGAIN_WINDOW = 120.0   # a not_relevant verdict this recent is asked about again
-ASK_AGAIN_MAX = 5
 AT_ONCE = ("action_oriented", "conversational")   # both get a live answer: the batch goes at once
 PROBE_EVERY = 5.0          # while open
 FEED_MAX_AGE = 600.0       # a kept line older than this is never fed
@@ -126,7 +124,6 @@ class Filter:
         self.failing_since = None    # when the first failing call after a success began
         self.last_probe = None
         self.owed = []               # SYS texts not yet written to the feed
-        self.flipped = set()         # lines asked about again that flipped, until fed
         self.unmarked = []           # fed, but fed_at not yet written
         self.stale = set()           # kept lines already reported as too old to feed
         self.stopping = False        # set by the signal handler: finish the call in hand
@@ -176,31 +173,32 @@ class Filter:
             self.feed()   # so a line for the AI goes before the next call
         return None
 
-    def _ask(self, asked, began, share=1.0):
+    def _state(self, marked, began, share=1.0):
         since = iso(began - self.cfg.history_hours * 3600)
         # the lines said and the brain's records of what it did, newest first
-        others = sorted(list(self.store.history(since, exclude=[r["id"] for r in asked]))
+        others = sorted(list(self.store.history(since, exclude=[r["id"] for _, r in marked]))
                         + self.store.ai_records(since), key=lambda r: (r["at"], r["id"]), reverse=True)
         menu = self.menu.text()
-        state, _ = build_state(self.lookout.text(), asked, others, self.cfg.state_tokens, share, menu)
+        state, _ = build_state(self.lookout.text(), marked, others, self.cfg.state_tokens, share, menu)
         if menu and state.get("actions") != menu and menu != self._menu_cut:
             self._menu_cut = menu
             log.warning("menu %s is over half the state's room; Jev sees its first lines", self.cfg.menu)
-        return self.jev.ask(state, questions(asked))
+        return state
+
+    def _ask(self, row, began, share=1.0):
+        return self.jev.ask(self._state([(1, row)], began, share), questions(row), required="d_what")
 
     def _judge_one(self, row):
-        """One call for `row`, with the recent not_relevant lines asked again.
-        Answers False when Jev failed (the line stays unjudged)."""
+        """The routing call for `row`. Answers False when Jev failed (the line
+        stays unjudged)."""
         began = self.clock.time()
-        asked = [row] + list(self.store.ask_again(iso(began - ASK_AGAIN_WINDOW), ASK_AGAIN_MAX))
         try:
-            result = self._ask(asked, began)
+            result = self._ask(row, began)
         except JevRefused as e:
-            log.warning("refused %s: %s — asking once more, half the history, nothing asked again", row["id"], e)
+            log.warning("refused %s: %s — asking once more, half the history", row["id"], e)
             began = self.clock.time()
-            asked = [row]
             try:
-                result = self._ask(asked, began, share=0.5)
+                result = self._ask(row, began, share=0.5)
             except JevRefused as e2:
                 self.store.set_class(row["id"], "context", None, iso(self.clock.time()))
                 log.error("refused again %s: %s — passed as context", row["id"], e2)
@@ -213,19 +211,12 @@ class Filter:
         self.failing_since = None
         now = self.clock.time()
         at = iso(now)
-        cls, conf = result.answers["line_1"]
-        flips = []
-        for n, again in enumerate(asked[1:], 2):
-            answer = result.answers.get("line_%d" % n)
-            if answer is not None and answer[0] in KEPT:
-                flips.append((again["id"], answer[0], round(answer[1], 3)))
+        cls, conf = route(result.answers)
         usage = {"at": at, "model": self.cfg.model, "input_tokens": result.input_tokens,
                  "cost_usd": result.cost_usd, "ref": row["id"]}
-        flipped = self.store.judge(row["id"], cls, round(conf, 3), at, flips, usage)
-        self.flipped.update(flipped)
-        log.info("judge %s %s %s %s %.2f · again %d, %d flipped · %dms %stok",
-                 row["id"], row["player_name"], row["source"], cls, conf, len(asked) - 1, len(flipped),
-                 result.ms, "?" if result.input_tokens is None else result.input_tokens)
+        self.store.judge(row["id"], cls, round(conf, 3), at, usage)
+        log.info("judge %s %s %s %s %.2f · %s · %dms %stok", row["id"], row["player_name"], row["source"], cls, conf,
+                 in_short(result.answers), result.ms, "?" if result.input_tokens is None else result.input_tokens)
         said = said_at(row)
         if cls in KEPT and (said is None or said < now - FEED_MAX_AGE):
             self._too_old(row, said)
@@ -270,7 +261,7 @@ class Filter:
     # -- feeding -------------------------------------------------------------------
 
     def fields(self, row):
-        """`<player> <voice|chat> <action_oriented|conversational|context> <confidence|-> <NdB|-> [was=not_relevant]`"""
+        """`<player> <voice|chat> <action_oriented|conversational|context> <confidence|-> <NdB|->`"""
         conf = row["jev_confidence"]
         peak = row["peak_dbfs"]
         parts = [
@@ -280,8 +271,6 @@ class Filter:
             "-" if conf is None else "%.2f" % conf,
             "%ddB" % round_half_up(peak) if row["source"] == "voice" and peak is not None else "-",
         ]
-        if row["id"] in self.flipped:
-            parts.append("was=not_relevant")
         return " ".join(parts)
 
     def _too_old(self, row, said):
@@ -366,15 +355,13 @@ class Filter:
         except Exception as e:
             log.warning("feed write failed: %s — %d line(s) wait for the next step", e, len(entries))
             return
-        fresh = [r for r, _ in waiting]
-        ids = [r["id"] for r in fresh]
+        ids = [r["id"] for r, _ in waiting]
         try:
             self.store.mark_fed(ids, iso(self.clock.time()))
         except sqlite3.Error as e:
             self.unmarked = ids
             log.warning("fed %d line(s) but could not mark them: %s — marking next step", len(ids), e)
             return
-        self.flipped.difference_update(ids)
         seqs = list(seqs or [])
         where = ("#%s–#%s" % (seqs[0], seqs[-1]) if len(seqs) > 1 else "#%s" % seqs[0]) if seqs else ""
         log.info("fed %d line%s %s", len(ids), "" if len(ids) == 1 else "s", where)

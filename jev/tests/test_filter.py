@@ -1,44 +1,50 @@
 """Every rule of Behaviour, driven through `Filter.step()` with a fake clock, a
 fake Jev and the stand-in feed writer. Nothing here sleeps."""
 import os
-import re
 import sqlite3
 import unittest
 from unittest import mock
 
-from fake_jev import verdict
+from fake_jev import asked_about, choose
 from support import T0, FakeClock, Lines, load_fake_feed, make_db, tempdir
 
 from filter import SYS_BACK, SYS_OPEN, Config, Filter
 from jev_api import JevDown, JevRefused, Result
-from prompt import estimate, state_json
+from prompt import EXAMPLES, estimate, state_json
 from store import Store
-
-QUOTED = re.compile(r"“(.*)”", re.S)
 
 
 class FakeJev:
-    """Answers by keyword in the quoted line, or as `verdicts[text]` says;
-    raises on demand; records every call."""
+    """Answers as the stand-in does (fake_jev.choose): by keyword in the line
+    asked about, or by the class `verdicts[text]` gives it; for a text in
+    `answers`, exactly those answers. Raises on demand, and, as the real
+    client does, JevDown when the answer `required` is missing. Records every
+    call."""
 
     def __init__(self):
         self.calls = []
         self.probes = 0
         self.down = None      # a reason: every call and probe raises JevDown
-        self.refuse = 0       # how many calls in a row raise JevRefused
-        self.verdicts = {}
+        self.raises = []      # what the next calls raise, in turn; None answers
+        self.verdicts = {}    # text -> (class, confidence), answered as D's two questions
+        self.answers = {}     # text -> {question name: (label, confidence)}, a question left out unanswered
 
-    def ask(self, state, questions):
+    def ask(self, state, questions, required="line_1"):
         self.calls.append((state, questions))
         if self.down:
             raise JevDown(self.down)
-        if self.refuse:
-            self.refuse -= 1
-            raise JevRefused("400 bad request")
+        if self.raises:
+            err = self.raises.pop(0)
+            if err is not None:
+                raise err
         answers = {}
         for name, q in questions.items():
-            text = QUOTED.search(q["instructions"]).group(1)
-            answers[name] = self.verdicts.get(text) or verdict(text)
+            text = asked_about(q["instructions"])
+            got = self.answers[text].get(name) if text in self.answers else choose(q, self.verdicts)
+            if got is not None:
+                answers[name] = got
+        if required and required not in answers:
+            raise JevDown("malformed or missing %s in the answer" % required)
         return Result(answers, len(state_json(state)) // 4, 12)
 
     def probe(self):
@@ -230,23 +236,18 @@ class TestBatching(Base):
 
 class TestFields(Base):
     def test_the_three_examples(self):
-        self.jev.verdicts = {"build me a castle": ("action_oriented", 0.93), "that cave by spawn": ("not_relevant", 0.8)}
+        self.jev.verdicts = {"build me a castle": ("action_oriented", 0.93), "that cave by spawn": ("context", 0.71)}
         s = self.lines.add(T0, "Steve", "voice", "build me a castle", peak=-8.2)
         a = self.lines.add(T0 + 1, "Alex", "chat", "that cave by spawn")
         self.step()
-        self.jev.verdicts["that cave by spawn"] = ("context", 0.71)
-        self.lines.add(T0 + 3, "Alex", "chat", "lol")
-        self.step(3)
-        self.step(5)
         self.jev.down = "500"
         v = self.lines.add(T0 + 9, "Alex", "voice", "anyone got iron", peak=-21.4)
         self.step(1)
         self.step(10)
         self.step(5)
         fields = [e[1] for e in self.fed()]
-        self.assertIn("Steve voice action_oriented 0.93 -8dB", fields)
-        self.assertIn("Alex chat context 0.71 - was=not_relevant", fields)
-        self.assertIn("Alex voice context - -21dB", fields)
+        self.assertEqual(fields, ["Steve voice action_oriented 0.93 -8dB", "Alex chat context 0.71 -",
+                                  "Alex voice context - -21dB"])
         self.assertEqual(self.row(s)["jev_confidence"], 0.93)
         self.assertEqual(self.row(a)["jev_class"], "context")
         self.assertIsNone(self.row(v)["jev_confidence"])
@@ -254,10 +255,9 @@ class TestFields(Base):
         for line in self.feed.lines():
             if line.startswith("LINE#"):
                 self.assertRegex(line, r"^LINE#\d+ \d\d:\d\d:\d\d \S+ (voice|chat) (action_oriented|context) "
-                                       r"(\d\.\d\d|-) (-?\d+dB|-)( was=not_relevant)? \| ")
+                                       r"(\d\.\d\d|-) (-?\d+dB|-) \| ")
         self.assertIn("LINE#1 18:22:31 Steve voice action_oriented 0.93 -8dB | build me a castle", self.feed.lines())
-        self.assertIn("18:22:32 Alex chat context 0.71 - was=not_relevant | that cave by spawn",
-                      "\n".join(self.feed.lines()))
+        self.assertIn("18:22:32 Alex chat context 0.71 - | that cave by spawn", "\n".join(self.feed.lines()))
         self.assertIn("18:22:40 Alex voice context - -21dB | anyone got iron", "\n".join(self.feed.lines()))
 
     def test_db_rounding_and_voice_without_peak(self):
@@ -275,21 +275,35 @@ class TestJudging(Base):
     def test_one_call_and_one_usage_row_per_new_line(self):
         ids = [self.lines.add(T0 + n, "Steve", "voice", t) for n, t in
                enumerate(["build me a castle", "lol", "that cave by spawn"])]
-        self.step()
+        with self.assertLogs("vfg-jev", "INFO") as logs:
+            self.step()
         self.assertEqual(len(self.jev.calls), 3)
         usage = self.lines.usage()
         self.assertEqual([u["ref"] for u in usage], ids)
-        for (state, _), u in zip(self.jev.calls, usage):
+        for (state, qs), u in zip(self.jev.calls, usage):
             self.assertEqual(u["component"], "jev")
             self.assertEqual(u["model"], "jev-latest")
             self.assertEqual(u["input_tokens"], len(state_json(state)) // 4)
-            self.assertEqual(list(state), ["rules", "look_out_for", "history"])
+            self.assertEqual(list(state), ["rules", "look_out_for", "examples", "history"])
+            self.assertEqual(state["examples"], EXAMPLES)
+            self.assertEqual(list(qs), ["d_what", "d_feel"])
             self.assertEqual(u["output_tokens"], 0)
             self.assertEqual(u["cost_usd"], u["input_tokens"] * 0.000000042)
             self.assertLessEqual(estimate(state), self.cfg.state_tokens)
         r = self.row(ids[0])
         self.assertEqual((r["jev_class"], r["jev_confidence"], r["jev_judged_at"]),
                          ("action_oriented", 0.9, "2026-10-07T18:22:31.000Z"))
+        self.assertIn("judge %s Steve voice action_oriented 0.90 · act 0.90, let down 0.60 · 12ms %dtok"
+                      % (ids[0], usage[0]["input_tokens"]), "\n".join(logs.output))
+
+    def test_an_answer_without_d_what_is_jev_down(self):
+        a = self.lines.add(T0, "Steve", "voice", "build me a castle")
+        self.jev.answers["build me a castle"] = {"d_feel": ("let_down_wanted_something_done", 0.9)}
+        with self.assertLogs("vfg-jev", "WARNING"):
+            self.assertEqual(self.step(), 1.0)
+        self.assertIsNone(self.row(a)["jev_class"])
+        self.assertEqual(self.f.failing_since, T0)
+        self.assertEqual(self.lines.usage(), [])
 
     def test_blank_line_is_not_relevant_without_a_call(self):
         a = self.lines.add(T0, "Steve", "voice", "   \n ")
@@ -299,70 +313,17 @@ class TestJudging(Base):
         self.assertEqual((r["jev_class"], r["jev_confidence"]), ("not_relevant", None))
         self.assertEqual(self.lines.usage(), [])
 
-    def test_asking_again_the_newest_five(self):
-        recent = []
-        for n in range(7):   # seven Jev verdicts of not_relevant in the last 2 minutes
-            judged = T0 - 100 + n * 10
-            recent.append(self.lines.add(judged - 1, "Alex", "chat", "meh %d" % n, jev_class="not_relevant",
-                                         jev_confidence=0.8, jev_judged_at=_iso(judged)))
-        old = self.lines.add(T0 - 181, "Alex", "chat", "old meh", jev_class="not_relevant", jev_confidence=0.8,
-                             jev_judged_at=_iso(T0 - 180))
-        blank = self.lines.add(T0 - 5, "Alex", "chat", " ", jev_class="not_relevant", jev_judged_at=_iso(T0 - 5))
-        before = {i: self.row(i) for i in recent + [old, blank]}
-        new = self.lines.add(T0, "Steve", "voice", "hello there")
-        self.step()
-        self.assertEqual(len(self.jev.calls), 1)
-        self.assertEqual(len(self.lines.usage()), 1)
-        state, qs = self.jev.calls[0]
-        self.assertEqual(list(qs), ["line_1", "line_2", "line_3", "line_4", "line_5", "line_6"])
-        quoted = [QUOTED.search(q["instructions"]).group(1) for q in qs.values()]
-        self.assertEqual(quoted, ["hello there", "meh 6", "meh 5", "meh 4", "meh 3", "meh 2"])
-        hist = state["history"].split("\n")[1:]
-        self.assertEqual([h.split(" ")[0] for h in hist if h.startswith("[")], ["[6]", "[5]", "[4]", "[3]", "[2]", "[1]"])
-        for i in recent + [old, blank]:   # all stayed not_relevant: nothing written
-            self.assertEqual(self.row(i), before[i])
-        self.assertEqual(self.row(new)["jev_class"], "action_oriented")
-
-    def test_a_flip_is_fed_with_was_not_relevant(self):
-        self.jev.verdicts = {"that cave by spawn": ("not_relevant", 0.6)}
-        a = self.lines.add(T0, "Alex", "chat", "that cave by spawn")
-        self.step()
-        self.assertEqual(self.row(a)["jev_class"], "not_relevant")
-        del self.jev.verdicts["that cave by spawn"]
-        self.lines.add(T0 + 30, "Steve", "voice", "put it there, by the cave")
-        self.step(30)
-        r = self.row(a)
-        self.assertEqual((r["jev_class"], r["jev_confidence"], r["jev_judged_at"]),
-                         ("context", 0.7, "2026-10-07T18:23:01.000Z"))
-        self.assertEqual(len(self.jev.calls), 2)
-        self.assertEqual(len(self.lines.usage()), 2)
-        self.assertEqual([e[1] for e in self.fed()],
-                         ["Alex chat context 0.70 - was=not_relevant", "Steve voice action_oriented 0.90 -"])
-        # once fed, the mark is gone
-        self.assertEqual(self.f.flipped, set())
-
-    def test_a_line_judged_3_minutes_ago_is_not_asked_again(self):
-        self.jev.verdicts = {"that cave by spawn": ("not_relevant", 0.6)}
-        self.lines.add(T0, "Alex", "chat", "that cave by spawn")
-        self.step()
-        self.lines.add(T0 + 121, "Steve", "voice", "hello")
-        self.step(121)
-        self.assertEqual(list(self.jev.calls[1][1]), ["line_1"])
-
-    def test_refused_once_asks_again_with_half_the_history_and_nothing_again(self):
+    def test_refused_once_asks_again_with_half_the_history(self):
         for n in range(300):
             self.lines.add(T0 - 3000 + n, "Alex", "chat", "filler line %d" % n + " x" * 30,
                            jev_class="context", fed_at=_iso(T0 - 3000 + n), jev_judged_at=_iso(T0 - 3000 + n))
-        self.lines.add(T0 - 10, "Alex", "chat", "meh", jev_class="not_relevant", jev_confidence=0.8,
-                       jev_judged_at=_iso(T0 - 10))
         a = self.lines.add(T0, "Steve", "voice", "build me a castle")
         self.cfg.state_tokens = 3000
-        self.jev.refuse = 1
+        self.jev.raises = [JevRefused("400 bad request")]
         self.step()
         self.assertEqual(len(self.jev.calls), 2)
         (first, q1), (second, q2) = self.jev.calls
-        self.assertEqual(len(q1), 2)
-        self.assertEqual(list(q2), ["line_1"])
+        self.assertEqual(q1, q2)
         self.assertLess(len(second["history"]), len(first["history"]))
         self.assertEqual(self.row(a)["jev_class"], "action_oriented")
         self.assertEqual(len(self.lines.usage()), 1)
@@ -370,7 +331,7 @@ class TestJudging(Base):
 
     def test_refused_twice_passes_as_context_without_a_sys_line(self):
         a = self.lines.add(T0, "Steve", "voice", "build me a castle")
-        self.jev.refuse = 2
+        self.jev.raises = [JevRefused("400 bad request"), JevRefused("400 bad request")]
         with self.assertLogs("vfg-jev", "ERROR"):
             self.step()
         r = self.row(a)
@@ -399,7 +360,7 @@ class TestState(Base):
         self.lines.add(T0, "Steve", "voice", "make it longer")
         self.step()
         state = self.jev.calls[0][0]
-        self.assertEqual(list(state), ["rules", "look_out_for", "actions", "history"])
+        self.assertEqual(list(state), ["rules", "look_out_for", "examples", "actions", "history"])
         self.assertEqual(state["actions"], "give — gives a player items\nweather — sets the weather")
         self.assertEqual(state["history"].split("\n")[1:], [
             "18:22:02 AI (action): command: give Steve diamond_pickaxe — ok",
@@ -417,8 +378,8 @@ class TestAiLines(Base):
         self.assertEqual(len(self.jev.calls), 1)
         state, qs = self.jev.calls[0]
         self.assertIn("18:22:31 AI (ai): Which colour should the tower be?", state["history"])
-        self.assertEqual(list(qs), ["line_1"])
-        self.assertNotIn("colour", qs["line_1"]["instructions"])
+        self.assertEqual(list(qs), ["d_what", "d_feel"])
+        self.assertNotIn("colour", qs["d_what"]["instructions"])
         self.assertIsNone(self.row(ai)["jev_class"])
         self.assertEqual(self.row(b)["jev_class"], "not_relevant")
         # failing open does not pass it either
@@ -515,15 +476,13 @@ class TestWritesOnly(Base):
             return sqlite3.SQLITE_OK
 
         self.f.store.conn.set_authorizer(watch)
-        self.jev.verdicts = {"that cave by spawn": ("not_relevant", 0.6)}
         self.lines.add(T0, "Alex", "chat", "that cave by spawn")
         self.lines.add(T0 + 1, "AI", "ai", "Where should it go?")
         self.lines.add(T0 + 1, "Steve", "chat", " ")
         self.step(1)
-        del self.jev.verdicts["that cave by spawn"]
         self.lines.add(T0 + 2, "Steve", "voice", "put it there, by the cave")
         self.step(1)
-        self.jev.refuse = 2
+        self.jev.raises = [JevRefused("400 bad request"), JevRefused("400 bad request")]
         self.lines.add(T0 + 3, "Steve", "voice", "and make it red")
         self.step(1)
         self.jev.down = "500"

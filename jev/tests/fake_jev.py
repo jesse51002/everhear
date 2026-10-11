@@ -1,11 +1,14 @@
 """A local stand-in for Jev's `POST /v1/systemone`, for the tests.
 
-It answers every question by keyword in the line its instructions quote (the
-text between “ and ”): `build`, `make` or `there` -> action_oriented 0.9;
-`thanks` -> conversational 0.85; `cave` or `base` -> context 0.7; anything else
--> not_relevant 0.8. A `noul` question is
-answered `noul: 0.9`. The state must be a JSON object, as the live API is
-called (a bare string is refused with 400); `usage.input_tokens` is its
+It answers every question by keyword in the line it asks about (the text
+between the last “ and ” of its instructions). The routing call's two
+questions answer so that D's walk gives:
+`build`, `make` or `there` -> action_oriented 0.9 (act 0.9, let down);
+`thanks` -> conversational 0.85 (answer 0.85); `cave` or `base` -> context 0.7
+(remember 0.7); anything else -> not_relevant 0.8 (ignore 0.8). `d_feel` is
+always answered with 0.6, so the confidence fed is always `d_what`'s. A `noul`
+question is answered `noul: 0.9`. The state must be a JSON object, as the live
+API is called (a bare string is refused with 400); `usage.input_tokens` is its
 JSON-encoded length / 4.
 
     POST /mode   body `ok`, `fail` (500), `hang` (sleeps past the timeout) or `refuse` (400)
@@ -23,7 +26,17 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-QUOTED = re.compile(r"“(.*)”", re.S)
+ASKED_ABOUT = re.compile(r"^.*“(.*)”", re.S)   # the last quote
+WHAT = {"action_oriented": "the_ai_must_act", "conversational": "the_ai_should_answer", "context": "remember_it",
+        "not_relevant": "ignore_it"}
+FEEL = {"action_oriented": "let_down_wanted_something_done", "conversational": "fine_a_reply_is_all",
+        "context": "not_talking_to_the_ai", "not_relevant": "not_talking_to_the_ai"}
+FEEL_CONFIDENCE = 0.6
+
+
+def asked_about(instructions):
+    m = ASKED_ABOUT.search(instructions or "")
+    return m.group(1) if m else ""
 
 
 def verdict(text):
@@ -37,11 +50,21 @@ def verdict(text):
     return "not_relevant", 0.8
 
 
+def choose(question, verdicts=None):
+    """`(label, confidence)` for one of D's two questions, by the line's class:
+    `verdicts[text]`, a `(class, confidence)`, or else its keywords."""
+    text = asked_about(question.get("instructions"))
+    labels = question.get("criteria") or {}
+    cls, conf = (verdicts or {}).get(text) or verdict(text)
+    if "let_down_wanted_something_done" in labels:
+        return FEEL[cls], FEEL_CONFIDENCE
+    return WHAT[cls], conf
+
+
 def answer(question):
     if question.get("type") == "noul":
         return {"type": "noul", "noul": 0.9}
-    m = QUOTED.search(question.get("instructions") or "")
-    label, conf = verdict(m.group(1) if m else "")
+    label, conf = choose(question)
     labels = list((question.get("criteria") or {}).keys()) or [label]
     rest = (1 - conf) / max(1, len(labels) - 1)
     probs = {name: (conf if name == label else rest) for name in labels}
