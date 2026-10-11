@@ -1,9 +1,8 @@
-"""The world a call sees, and tasks.json."""
+"""The world a call sees: each player, the time, the running copies, the places."""
 
 import asyncio
 import json
 
-from brain.tasks import Tasks
 from brain.vfg import VfgResult
 from brain.world import World, players
 
@@ -16,13 +15,17 @@ STEVE = ("- Steve at 10 64 -20 in overworld: 14.5/20 health, 18/20 food, armor 1
 async def test_the_world_shares_a_young_state_and_falls_back_to_the_last_good_one(tmp_path):
     vfg, now = FakeVfg(), [100.0]
     world = World(vfg, tmp_path / "running.json", catalog(), clock=lambda: now[0])
-    (tmp_path / "running.json").write_text(json.dumps({"copies": {"railgun_2": {
-        "action": "railgun", "values": {"player": "Alex", "cooldown": 0}, "task": "T4"}}}))
+    (tmp_path / "running.json").write_text(json.dumps({"copies": {
+        "railgun_alex": {"action": "railgun", "values": {"player": "Alex", "cooldown": 0}, "task": None},
+        "frost_bow_alex": {"action": "frost_bow_alex", "values": {}, "task": "frost_bow_alex"},
+        "frost_bow_alex_2": {"action": "frost_bow_alex", "values": {"player": "Steve"}, "task": "frost_bow_alex"}}}))
     seen = await world.seen()
     assert seen.players == f"PLAYERS ONLINE:\n{STEVE}; Steve's items, by slot: hotbar.4 iron_sword (held)"
     assert seen.clock == "TIME: day (6000, day 3). WEATHER: clear."
-    assert seen.running.endswith("- railgun_2: railgun, player=Alex cooldown=0, started by T4")
-    assert seen.places == "SAVED PLACES: home 1 64 2 overworld (T3)" and seen.known == {"home"}
+    assert seen.running.endswith("- frost_bow_alex: frost_bow_alex, its defaults\n"  # a task's copy: its own name
+                                 "- frost_bow_alex_2: frost_bow_alex, player=Steve, started by frost_bow_alex\n"
+                                 "- railgun_alex: railgun, player=Alex cooldown=0")
+    assert seen.places == "SAVED PLACES: home 1 64 2 overworld (home_steve)" and seen.known == {"home"}
     assert seen.incantations == "INCANTATIONS: none"
     now[0] += 1.5
     await world.seen()
@@ -55,20 +58,3 @@ def test_each_player_has_their_place_first_then_what_minecraft_answered_and_neve
         {"id": "minecraft:glowing", "amplifier": 0, "duration": None}]) == (
         "- Alex at 197 68 251 in the_nether: 13.3/40 health, level 0, creative; "
         "effects: strength 255 1:00:00, haste X 1:02, glowing")
-
-
-def test_tasks_json_is_whole_with_ids_past_every_one_in_use(tmp_path):
-    tasks = Tasks(tmp_path / "brain" / "tasks.json", clock=lambda: "2026-10-10T18:30:00.000Z")
-    tasks.at_least("ORCH#3 18:00:00 T182 done | old; started by T41")
-    tid = tasks.open("Steve", "make me an ice trail", "an ice trail behind Steve")
-    assert tid == "T183"
-    tasks.close(tid, "done", "T183 done: ice trail running as ice_trail")
-    tasks.reopen(tid)  # a follow-up
-    again = Tasks(tmp_path / "brain" / "tasks.json")
-    assert again.next == 184 and again.get("T183") == {
-        "id": "T183", "at": "2026-10-10T18:30:00.000Z", "player": "Steve", "line": "make me an ice trail",
-        "task": "an ice trail behind Steve", "status": "open", "result": "T183 done: ice trail running as ice_trail",
-        "session": None, "closed_at": None}
-    assert again.show(["T183"]) == ("OPEN TASKS:\n- T183 for Steve, since 18:30:00, an implementer is on it: "
-                                    "an ice trail behind Steve")
-    assert not list((tmp_path / "brain").glob(".*tmp"))

@@ -21,12 +21,13 @@ SERVER = "main"
 # The cheap model, and the providers that answer it fastest, first (the incantation alias call's).
 CHEAP = "~deepseek/deepseek-v4-flash-latest"
 FAST = ("parasail", "wafer", "phala", "together", "venice")
+ORCHESTRATOR = "google/gemini-3.8-flash"
 
 
 @dataclass(frozen=True)
 class Config:
     home: Path                      # VFG_HOME, default ~/.vfg
-    brain_dir: Path                 # VFG_BRAIN_DIR, default ~/.vfg/brain: tasks.json, brain.log, lock, refs/
+    brain_dir: Path                 # VFG_BRAIN_DIR, default ~/.vfg/brain: brain.log, lock, refs/
     repo: Path                      # VFG_REPO, default this repo
     server: str = SERVER            # VFG_SERVER: whose made/<server>/actions/ are on the menu too
     owner: str = ""                 # VFG_OWNER: the owner's Minecraft name, whose word wins
@@ -46,6 +47,13 @@ class Config:
     plan_reasoning: str = "off"                     # VFG_PLAN_REASONING
     plan_providers: tuple[str, ...] = FAST          # VFG_PLAN_PROVIDERS
     plan_check: bool = False        # VFG_PLAN_CHECK: on checks a retried command against its references again
+    # The orchestrator: one call per orchestrator part (Prototype_Named_Tasks). Gemini 3.8 Flash at low
+    # kept one thing to one task on the follow-up replay; DeepSeek V4 Flash (deepseek/deepseek-v4-flash)
+    # is about 7x cheaper but lumps things, and wants reasoning off (at low: 7.7 s median, 26 s p90).
+    orchestrator_model: str = ORCHESTRATOR            # VFG_ORCHESTRATOR_MODEL
+    orchestrator_reasoning: str = "low"               # VFG_ORCHESTRATOR_REASONING: off, or an effort
+    orchestrator_providers: tuple[str, ...] = ()      # VFG_ORCHESTRATOR_PROVIDERS; (): OpenRouter's choice
+    orchestrator_timeout_s: float = 15.0              # VFG_ORCHESTRATOR_TIMEOUT_S, retries included
     checkpoint: int = 5             # VFG_BRAIN_CHECKPOINT: a cache mark every this many minute-blocks
     history_hours: float = 6.0      # VFG_BRAIN_HISTORY_HOURS: how much of the feed the context starts with
     timeout_s: float = 20.0         # VFG_BRAIN_TIMEOUT_S: one structured() call, its retries included
@@ -57,10 +65,6 @@ class Config:
     def effort_of(reasoning: str) -> bool | str:
         """What structured() takes: False for off, else the effort."""
         return False if reasoning in ("", "off") else reasoning
-
-    @property
-    def tasks_file(self) -> Path:
-        return self.brain_dir / "tasks.json"
 
     @property
     def lock_file(self) -> Path:
@@ -120,6 +124,10 @@ def load(env: dict[str, str] | None = None) -> Config:
         plan_reasoning=get("VFG_PLAN_REASONING", "off"),
         plan_providers=names("VFG_PLAN_PROVIDERS", FAST),
         plan_check=get("VFG_PLAN_CHECK", "off").lower() in ("on", "1", "true", "yes"),
+        orchestrator_model=get("VFG_ORCHESTRATOR_MODEL", ORCHESTRATOR),
+        orchestrator_reasoning=get("VFG_ORCHESTRATOR_REASONING", "low"),
+        orchestrator_providers=names("VFG_ORCHESTRATOR_PROVIDERS"),
+        orchestrator_timeout_s=number("VFG_ORCHESTRATOR_TIMEOUT_S", 15.0, float, 1),
         checkpoint=number("VFG_BRAIN_CHECKPOINT", 5, int, 1),
         history_hours=number("VFG_BRAIN_HISTORY_HOURS", 6.0, float, 0),
         timeout_s=number("VFG_BRAIN_TIMEOUT_S", 20.0, float, 1),

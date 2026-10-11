@@ -17,14 +17,16 @@ def test_feed_lines_become_rows_and_unknown_types_stay_text():
     game = parse("GAME#814 18:22:40 death Steve | Steve was slain by Zombie", now=NOW)
     assert (game.kind, game.who, game.show()) == ("death", "Steve", "18:22:40 game, death: Steve was slain by Zombie")
     assert parse("SYS#816 18:25:00 | jev unavailable", now=NOW).show() == "18:25:00 system: jev unavailable"
-    ai = parse("AI#817 18:25:02 action T7 | command: give Steve diamond_pickaxe — ok: Gave 1", now=NOW)
-    assert ai.processed and ai.task == "T7"  # the brain's own rows are read as they are written
-    assert ai.show() == "18:25:02 AI action [T7]: command: give Steve diamond_pickaxe — ok: Gave 1"
-    assert parse("AI#818 18:25:03 result T7 | T7 done: castle up", now=NOW).show() == \
-        "18:25:03 AI result: T7 done: castle up"
-    assert parse("AI#819 18:25:04 say - | (to Steve) hey", now=NOW).show() == "18:25:04 AI: (to Steve) hey"
-    orch = parse("ORCH#815 18:24:02 T7 done | castle built", now=NOW)
-    assert (orch.type, orch.seq, orch.show()) == ("", 815, "ORCH#815 18:24:02 T7 done | castle built")
+    ai = parse("AI#817 18:25:02 task galick_gun_styrk | new: A Galick Gun for Styrkaeopteryx", now=NOW)
+    assert ai.processed and ai.task == "galick_gun_styrk"  # the brain's own rows are read as they are written
+    assert ai.show() == "18:25:02 AI task [galick_gun_styrk]: new: A Galick Gun for Styrkaeopteryx"
+    assert parse("AI#818 18:25:03 result castle_steve | castle_steve done: castle up", now=NOW).show() == \
+        "18:25:03 AI result: castle_steve done: castle up"
+    action = parse("AI#819 18:25:03 action - | command: give Steve diamond_pickaxe — ok: Gave 1", now=NOW)
+    assert (action.task, action.show()) == ("", "18:25:03 AI action: command: give Steve diamond_pickaxe — ok: Gave 1")
+    assert parse("AI#820 18:25:04 say - | (to Steve) hey", now=NOW).show() == "18:25:04 AI: (to Steve) hey"
+    orch = parse("ORCH#815 18:24:02 castle done | castle built", now=NOW)
+    assert (orch.type, orch.seq, orch.show()) == ("", 815, "ORCH#815 18:24:02 castle done | castle built")
     assert parse("SYS#0 18:26:00 | vfg watch: reconnected", now=NOW).seq == 0
     assert parse("not a feed line", now=NOW) is None and parse("garbage", seq=9, at="x").text == "garbage"
     # a line from just before midnight, read just after it, is yesterday's
