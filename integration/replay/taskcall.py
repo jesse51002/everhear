@@ -44,11 +44,21 @@ This replays it on the 2026-10-08 playtest, model calls only, nothing run:
   lines). A task's status is open while a T<n> of its chain has no report yet, else its last
   report's; unknown when its chain has none.
 
+THE BUILT ORCHESTRATOR (`--built`): the same replay through brain/brain/orchestrator.py as built,
+its opening, its tail and its answer's checks, with its prompt (brain/prompts/orchestrator.md) and,
+unless given, the model, reasoning, providers and timeout of the brain's orchestrator settings. Its
+head is the line as the brain core gives it (`THE LINE #<n>, …`), its TASKS each task as a row of
+the tasks table (what it made not known, null), and RUNNING NOW none. The conversation's task rows
+read as the brain posts them: `AI task [<name>]: new: …` and `follow-up: …`. An answer is a `kind`
+(new, follow_up, edit, stop or reply) with the fields the brain gets; a reply only names no task,
+and taskcall_score.py counts it apart. The brain's route `orchestrator` is read as `implementer` is.
+
     (cd brain && uv sync --frozen --inexact)
     PY=brain/.venv/bin/python
     $PY integration/replay/taskcall.py --db DIR/vfg/vfg.db --lines FULL/lines.jsonl --out OUT \\
         --model deepseek/deepseek-v4-flash --reasoning off --limit 15   # a pilot: the first 15 parts
     $PY integration/replay/taskcall.py --db … --lines … --out OUT --model …   # every part
+    $PY integration/replay/taskcall.py --db … --lines … --out OUT --built --limit 3   # the built one
     python3 integration/replay/taskcall_score.py OUT
 
 A second run into the same OUT goes on after the last line recorded, the tasks rebuilt from the
@@ -70,9 +80,10 @@ import re
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -82,8 +93,8 @@ from playtest import RESULT_MAX, BRIEF_MAX, Playtest, short  # noqa: E402
 
 import httpx  # noqa: E402
 import vfg_llm  # noqa: E402
-from brain import actions, config  # noqa: E402
-from brain.call import IMPLEMENTER, library  # noqa: E402
+from brain import actions, config, names  # noqa: E402
+from brain.call import Event, library  # noqa: E402
 from brain.context import Context, Row  # noqa: E402
 from pydantic import BaseModel, Field, model_validator  # noqa: E402
 
@@ -91,7 +102,8 @@ PROMPTS = HERE / "taskcall_prompts"
 NAME = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 TID = re.compile(r"\bT(\d+)\b")
 FOLLOW_UP = re.compile(r"^\W*(change\s+to|cancel)\s+(T\d+)", re.I)
-NEW, STOP, EDIT = "new", "stop", "edit"
+NEW, STOP, EDIT, REPLY = "new", "stop", "edit", "reply"
+ROUTED = ("implementer", "orchestrator")  # the brain's route to this call, before and since named tasks
 REPLY_MAX = 300  # as the brain's: aim under 80 characters, never over 200, refused past 300
 PROMPT_EVERY = 40
 ACTION_WHAT = 70  # characters of an action's words before its result, in an `AI action` result row
@@ -204,8 +216,10 @@ def heads(text: str) -> tuple[str, list[str], str]:
 class Replay:
     """The tasks, the attribution of the conversation's T ids, and the context as it grows."""
 
-    def __init__(self, pt: Playtest):
+    def __init__(self, pt: Playtest, built: bool = False, banned: frozenset[str] = frozenset()):
         self.pt = pt
+        self.built = built                # rows as the built brain posts them (--built)
+        self.banned = banned              # names a new task never takes: the library's and names.RESERVED
         self.tasks: dict[str, Task] = {}
         self.owner: dict[str, str] = {}   # T id -> name
         self.entries = pt.entries()
@@ -230,7 +244,9 @@ class Replay:
         if row.kind == "task":
             kind, _, rest = heads(self.pt.task_by_id[tid]["task"])
             rest = self.sub(short(rest, BRIEF_MAX))
-            if name:
+            if name and self.built:  # as act.py posts them: `AI task <name> | new: …`, `follow-up: …`
+                row.text, row.task = f"{'new' if kind == 'fresh' else 'follow-up'}: {rest}", name
+            elif name:
                 row.text, row.task = f"{name}: {'new' if kind == 'fresh' else kind}: {rest}", name
             else:
                 row.text, row.kind, row.task = rest, "action", ""
@@ -279,18 +295,37 @@ class Replay:
                 "result; what each made is not known in this replay):\n" + "\n".join(rows))
 
     def unique(self, name: str) -> str:
-        if name not in self.tasks:
-            return name
-        k = 2
-        while f"{name}_{k}" in self.tasks:
-            k += 1
-        return f"{name}_{k}"
+        return names.unique(name, set(self.tasks) | self.banned)
+
+    def rows(self, at: str) -> list[dict]:
+        """Every task at `at` as a row of the tasks table (Prototype_Named_Tasks), for the built
+        orchestrator's TASKS: its status and last result from the playtest's reports on its chain;
+        what it made not known in this replay (null)."""
+        out = []
+        for t in self.tasks.values():
+            status, _ = self.status(t, at)
+            reports = sorted(self.pt.closed[x] for x in t.chain if x in self.pt.closed and self.pt.closed[x][0] <= at)
+            result = (f"{t.name} {reports[-1][1]}: {self.sub(short(reports[-1][2], RESULT_MAX))}" if reports else "")
+            brief = t.history[-1]["brief"] if t.history else ""
+            out.append({"name": t.name, "description": t.description, "player": t.player or None,
+                        "status": status, "line": t.line, "brief": brief, "made": None, "variables": None,
+                        "session": None, "result": result or None, "created_at": t.made, "updated_at": t.asked,
+                        "closed_at": None})
+        return out
 
     def apply(self, answer: dict, who: str, words: str, at: str) -> tuple[str, str]:
         """(kind, name): a new task made, a task's description rewritten, or an edit or a stop, which
         change no task; their name is the copy's when that is a task's (a copy carries its task's
-        name)."""
-        task = answer["task"].strip()
+        name). A built answer (one with `kind`) may also be a reply only, which names nothing."""
+        if "kind" in answer:
+            kind = answer["kind"]
+            if kind in (STOP, EDIT, REPLY):
+                return {STOP: (STOP, next((c for c in answer.get("copies", []) if c in self.tasks), "")),
+                        EDIT: (EDIT, answer.get("copy", "") if answer.get("copy", "") in self.tasks else ""),
+                        REPLY: (REPLY, "")}[kind]
+            task = NEW if kind == NEW else answer["task"].strip()
+        else:
+            task = answer["task"].strip()
         if task == STOP:
             return STOP, next((c for c in answer.get("stop", []) if c in self.tasks), "")
         if task == EDIT:
@@ -395,33 +430,64 @@ def tail(rp: Replay, at: str, who: str, words: str, parts: list[dict], k: int, g
             f"(the part of the line it covers: \"{p['part']}\"){more}\n")
 
 
+def given_text(g: dict) -> str:
+    """What an earlier part of the line came to, as the built orchestrator's tail gives it."""
+    a = g.get("answer")
+    if a is None:
+        return "failed"
+    kind = a.get("kind")
+    if kind == NEW:
+        return f"new {g.get('name') or a.get('name', '')}"
+    if kind == EDIT:
+        return f"edit {a.get('copy', '')}"
+    if kind == STOP:
+        return "stop " + ", ".join(a.get("copies", []))
+    if kind == REPLY:
+        return "reply only"
+    return f"follow_up {a.get('task', '')}"
+
+
+def part_of(q: dict) -> SimpleNamespace:
+    """A brain part as the built orchestrator takes it: `.part`, `.to`, `.instruction` (its T<n>
+    taken out) and `.drop`."""
+    return SimpleNamespace(part=q["part"], to=q["to"], instruction=neutral(q.get("instruction") or ""),
+                           drop=q.get("drop") or "")
+
+
 async def run(args) -> None:
     out = Path(args.out)
     (out / "prompts").mkdir(parents=True, exist_ok=True)
-    prompt_file = Path(args.prompt) if args.prompt else PROMPTS / f"{args.version}.md"
     pt = Playtest(Path(args.db))
     cfg = config.load()
     catalog = actions.load(cfg.repo, cfg.server)
     banned = set(library(catalog))
-    rules = prompt_file.read_text(encoding="utf-8").rstrip("\n").replace("{owner}", cfg.owner or "not named")
-    opening = (f"{rules}\n\nTHE CONVERSATION SO FAR (oldest first; each row: its time in UTC, who, and for a "
-               "player's line Jev's class):\n")
     ask = functools.partial(vfg_llm.structured, model=args.model, reasoning=config.Config.effort_of(args.reasoning),
                             providers=[x for x in args.providers.split(",") if x] or None, timeout=args.timeout)
+    if args.built:
+        from brain.orchestrator import PROMPT as BUILT_PROMPT, Orchestrator
+        prompt_file = BUILT_PROMPT
+        when = {"at": datetime.now(UTC)}  # the line's time: TASKS shows a time of its day without a date
+        orch = Orchestrator(catalog, ask, owner=cfg.owner, checkpoint=args.checkpoint, now=lambda: when["at"])
+        opening = orch.opening()
+    else:
+        prompt_file = Path(args.prompt) if args.prompt else PROMPTS / f"{args.version}.md"
+        rules = prompt_file.read_text(encoding="utf-8").rstrip("\n").replace("{owner}", cfg.owner or "not named")
+        opening = (f"{rules}\n\nTHE CONVERSATION SO FAR (oldest first; each row: its time in UTC, who, and for a "
+                   "player's line Jev's class):\n")
 
     brain = {r["n"]: r for r in (json.loads(x) for x in Path(args.lines).read_text().splitlines() if x.strip())}
-    rp = Replay(pt)
+    rp = Replay(pt, built=args.built, banned=frozenset(banned | names.RESERVED) if args.built else frozenset())
     asks = [e for e in rp.entries if e.row.type == "LINE" and e.n in brain
-            and any(p["to"] == IMPLEMENTER for p in brain[e.n].get("parts", []))]
+            and any(p["to"] in ROUTED for p in brain[e.n].get("parts", []))]
     rows_file = out / "taskcall.jsonl"
     done = {}
     if rows_file.exists():
         done = {r["n"]: r for r in (json.loads(x) for x in rows_file.read_text().splitlines() if x.strip())}
-    total_parts = sum(sum(p["to"] == IMPLEMENTER for p in brain[e.n]["parts"]) for e in asks)
+    total_parts = sum(sum(p["to"] in ROUTED for p in brain[e.n]["parts"]) for e in asks)
     meta = {"started": datetime.now(UTC).isoformat(timespec="seconds"), "db": str(args.db), "lines": str(args.lines),
             "head": git_head(), "model": args.model, "reasoning": args.reasoning, "providers": args.providers,
             "timeout_s": args.timeout, "checkpoint": args.checkpoint, "owner": cfg.owner,
-            "prompt": str(prompt_file), "version": prompt_file.stem,
+            "prompt": str(prompt_file), "version": "built" if args.built else prompt_file.stem,
             "prompt_sha": hashlib.sha256(prompt_file.read_bytes()).hexdigest()[:12],
             "lines_with_parts": len(asks), "parts": total_parts, "already": len(done)}
     (out / "meta.json").write_text(json.dumps(meta, indent=1))
@@ -437,8 +503,9 @@ async def run(args) -> None:
                 rp.until(e.seen)
                 truth = rp.truth(br, e.seen)
                 parts = [{"part": p["part"], "instruction": p["instruction"],
-                          "shown": neutral(p["instruction"]), "brain_task": p["task"]}
-                         for p in br["parts"] if p["to"] == IMPLEMENTER]
+                          "shown": neutral(p["instruction"]), "brain_task": p.get("task", "")}
+                         for p in br["parts"] if p["to"] in ROUTED]
+                rest = [q for q in br["parts"] if q["to"] not in ROUTED]
                 if args.limit and count_parts >= args.limit and e.n not in done:
                     break
                 given: list[dict] = []
@@ -450,31 +517,49 @@ async def run(args) -> None:
                             g["kind"], g["name"] = rp.apply(g["answer"], br["who"], br["words"], e.seen)
                         given.append(g)
                         continue
-                    names = set(rp.tasks)
+                    names_now = set(rp.tasks)
                     blocks = rp.ctx.cached(opening, args.checkpoint)
-                    text = tail(rp, e.seen, br["who"], br["words"], parts, k, given,
-                                [q for q in br["parts"] if q["to"] != IMPLEMENTER])
+                    if args.built:
+                        when["at"] = datetime.fromisoformat(e.seen.replace("Z", "+00:00"))
+                        head = "THE " + Event("LINE", replace(e.row, seq=e.n)).show()
+                        shape = dict(head=head, parts=[SimpleNamespace(part=q["part"], instruction=q["shown"])
+                                                       for q in parts],
+                                     k=k, given=[given_text(x) for x in given], others=[part_of(q) for q in rest],
+                                     replying=k == 0, tasks=rp.rows(e.seen), copies={})
+                        text = orch.tail(**shape)
+                    else:
+                        text = tail(rp, e.seen, br["who"], br["words"], parts, k, given, rest)
                     if calls % PROMPT_EVERY == 0:
                         (out / "prompts" / f"{e.n}-{k}.txt").write_text(
                             "".join(f"{'[MARK] ' if m else ''}{t}" for t, m in blocks) + text, encoding="utf-8")
                     g = dict(p)
                     t0 = time.perf_counter()
                     try:
-                        a = await ask(text, answer_type(names, banned, None, replying=k == 0), cached=blocks)
+                        if args.built:
+                            a = await orch.answer(rp.ctx, **shape)
+                        else:
+                            a = await ask(text, answer_type(names_now, banned, None, replying=k == 0), cached=blocks)
                     except vfg_llm.LlmError as err:
                         g.update(error=str(err)[:500], ms=int((time.perf_counter() - t0) * 1000))
                     else:
                         v = a.value
-                        g.update(answer={"task": v.task.strip(), "name": v.name.strip(),
-                                         "description": v.description.strip(), "brief": v.brief.strip(),
-                                         "reply": v.reply.strip() if k == 0 else "",
-                                         "stop": [c.strip() for c in v.stop if c.strip()], "copy": v.copy.strip(),
-                                         "values": [{"key": x.key, "value": x.value} for x in v.values]},
-                                 ms=a.ms, cost=a.cost, prompt_tokens=a.prompt_tokens, cached_tokens=a.cached_tokens,
+                        if args.built:
+                            copies = list(v.copies)
+                            g["answer"] = {"kind": v.kind, "task": v.task, "name": v.name,
+                                           "description": v.description, "brief": v.brief, "copy": v.copy,
+                                           "values": [{"key": x.key, "value": x.value} for x in v.values],
+                                           "copies": copies, "reply": v.reply, "stop": copies}
+                        else:
+                            g["answer"] = {"task": v.task.strip(), "name": v.name.strip(),
+                                           "description": v.description.strip(), "brief": v.brief.strip(),
+                                           "reply": v.reply.strip() if k == 0 else "",
+                                           "stop": [c.strip() for c in v.stop if c.strip()], "copy": v.copy.strip(),
+                                           "values": [{"key": x.key, "value": x.value} for x in v.values]}
+                        g.update(ms=a.ms, cost=a.cost, prompt_tokens=a.prompt_tokens, cached_tokens=a.cached_tokens,
                                  completion_tokens=a.completion_tokens)
                         g["kind"], g["name"] = rp.apply(g["answer"], br["who"], br["words"], e.seen)
                         spent += a.cost
-                    g["tasks_before"] = len(names)
+                    g["tasks_before"] = len(names_now)
                     calls += 1
                     given.append(g)
                     rate = g.get("cached_tokens", 0) / g["prompt_tokens"] if g.get("prompt_tokens") else 0
@@ -504,16 +589,39 @@ def main() -> None:
     ap.add_argument("--db", required=True, help="the playtest's vfg.db")
     ap.add_argument("--lines", required=True, help="the brain's full raw-line replay, lines.py's lines.jsonl")
     ap.add_argument("--out", required=True, help="where taskcall.jsonl, tasks.json and meta.json go")
-    ap.add_argument("--model", required=True, help="the orchestrator's model, an OpenRouter id")
-    ap.add_argument("--reasoning", default="low", help="off, or an effort (low)")
-    ap.add_argument("--providers", default="", help="OpenRouter providers to try first, comma-separated")
-    ap.add_argument("--version", default="v3", help="the prompt, taskcall_prompts/<version>.md (v3)")
-    ap.add_argument("--prompt", default="", help="a prompt file instead of --version")
+    ap.add_argument("--built", action="store_true",
+                    help="the built orchestrator (brain/brain/orchestrator.py and its prompt) instead of --version")
+    ap.add_argument("--model", default=None, help="the orchestrator's model, an OpenRouter id (required without "
+                                                  "--built; with it, VFG_ORCHESTRATOR_MODEL's)")
+    ap.add_argument("--reasoning", default=None, help="off, or an effort (low; with --built, "
+                                                      "VFG_ORCHESTRATOR_REASONING's)")
+    ap.add_argument("--providers", default=None, help="OpenRouter providers to try first, comma-separated (with "
+                                                      "--built, VFG_ORCHESTRATOR_PROVIDERS')")
+    ap.add_argument("--version", default="v3", help="the prompt, taskcall_prompts/<version>.md (v3), without --built")
+    ap.add_argument("--prompt", default="", help="a prompt file instead of --version, without --built")
     ap.add_argument("--checkpoint", type=int, default=5, help="a cache mark every this many minute-blocks (5)")
-    ap.add_argument("--timeout", type=float, default=60.0, help="seconds a call may take, retries included (60)")
+    ap.add_argument("--timeout", type=float, default=None, help="seconds a call may take, retries included (60; "
+                                                                "with --built, VFG_ORCHESTRATOR_TIMEOUT_S's)")
     ap.add_argument("--limit", type=int, default=0, help="stop after the line that reaches this many parts")
     ap.add_argument("--budget", type=float, default=1.0, help="stop once this many dollars are spent (1)")
-    asyncio.run(run(ap.parse_args()))
+    args = ap.parse_args()
+    if args.built:
+        # The brain's settings for its orchestrator call; read with defaults, so --help works before
+        # config.py has them.
+        cfg = config.load()
+        args.model = args.model or getattr(cfg, "orchestrator_model", "google/gemini-3.8-flash")
+        args.reasoning = args.reasoning or getattr(cfg, "orchestrator_reasoning", "low")
+        if args.providers is None:
+            args.providers = ",".join(getattr(cfg, "orchestrator_providers", ()))
+        if args.timeout is None:
+            args.timeout = float(getattr(cfg, "orchestrator_timeout_s", 15.0))
+    else:
+        if not args.model:
+            ap.error("--model is required without --built")
+        args.reasoning = args.reasoning or "low"
+        args.providers = args.providers or ""
+        args.timeout = 60.0 if args.timeout is None else args.timeout
+    asyncio.run(run(args))
 
 
 if __name__ == "__main__":
