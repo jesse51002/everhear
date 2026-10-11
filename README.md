@@ -31,7 +31,9 @@ flowchart TB
       Run -->|"RCON · one lock"| MC
       MC -->|"command storage"| Places
     end
+    Tasks["🗄️ tasks<br/>vfg.db"]
     Game -->|"console.log"| Listen
+    Listen -.->|"bridge creates"| Tasks
   end
 
   subgraph Owner["🖥️ THE OWNER'S PC"]
@@ -39,9 +41,11 @@ flowchart TB
     subgraph Agents["agents"]
       Brain["brain<br/>one call per event"]
       Respond["Respond<br/>the cheap mode"]
+      Orch["orchestrator<br/>one call per part"]
       Impl["implementers"]
       Respond -->|"hand up"| Brain
-      Brain -->|"brief · EXAMPLES"| Impl
+      Brain -->|"orchestrator part"| Orch
+      Brain -->|"named task · brief"| Impl
       Impl -->|"report"| Brain
     end
     Vfg["🔒 vfg"]
@@ -58,7 +62,7 @@ flowchart TB
     end
     Agents -->|"every call to the box"| Vfg
     Agents -.->|"load actions · the library · write made/"| Repo
-    Agents -->|"tasks · command refs"| Home
+    Agents -->|"command refs"| Home
     Vfg -->|"writes through"| Home
   end
 
@@ -71,7 +75,7 @@ flowchart TB
   Box -->|"feed · vfg watch"| Owner
   Owner -->|"vfg over SSH"| Box
   Box -->|"judge each line · pick scripts"| TypeSafe
-  Owner -->|"brain · Respond · structured()"| OpenRouter
+  Owner -->|"brain · orchestrator · Respond"| OpenRouter
   Owner -->|"implementers · Agent SDK"| Claude
   Owner -->|"command pages, once"| Wiki
 
@@ -81,8 +85,8 @@ flowchart TB
   classDef ext    fill:#ffd9a8,stroke:#d2691e,color:#4a2c08;
   classDef tool   fill:#fdf6d8,stroke:#caab2f,color:#4a3d08;
   class Mod client;
-  class Bridge,Jev,Brain,Respond,Impl,Vfg svc;
-  class Feed,MC,Places,Cache,Refs,TypeSafe,OpenRouter,Claude,Wiki ext;
+  class Bridge,Jev,Brain,Respond,Orch,Impl,Vfg svc;
+  class Feed,Tasks,MC,Places,Cache,Refs,TypeSafe,OpenRouter,Claude,Wiki ext;
   class Run,Actions,Library,Made,Lib tool;
   style Player fill:#eaf2ff,stroke:#2f6fb0,stroke-width:3px;
   style Box fill:#f7fafc,stroke:#2f8f53,stroke-width:3px;
@@ -95,7 +99,7 @@ flowchart TB
   style Vfg stroke-width:4px;
 ```
 
-*Legend: read top-down, from a player's voice to the game. The three big boxes are the machines everything runs on; an arrow between two of them stands for every call that crosses, with the contract on its label. Blue runs on each player's PC; green is Everhear's own services; orange is data, the game and third parties; yellow is code and scripts the agents load or write. Solid arrows are live calls, the dashed one loads and writes files. An arrow only joins two boxes with the same parent. `vfg` is drawn on its own because every call from the owner's PC to the box goes through it.*
+*Legend: read top-down, from a player's voice to the game. The three big boxes are the machines everything runs on; an arrow between two of them stands for every call that crosses, with the contract on its label. Blue runs on each player's PC; green is Everhear's own services; orange is data, the game and third parties; yellow is code and scripts the agents load or write. Solid arrows are live calls; dashed ones load, write or create files and tables. An arrow only joins two boxes with the same parent. `vfg` is drawn on its own because every call from the owner's PC to the box goes through it.*
 
 - The **client mod** turns speech into text on the player's own PC (no audio leaves it) and posts
   each line to the **bridge** on the server's EC2 box. The bridge also tails the Minecraft console
@@ -107,15 +111,21 @@ flowchart TB
   line is one call to a fast OpenRouter model (`structured()`), its own task, so no line waits for
   another. That one call routes each part of the line and does it in the same answer: an
   **action** written in full (an item, an effect, a teleport, a saved place, a castle, a weapon:
-  one action over each script, and every one implementers make), which runs at once; a brief for an
-  **implementer**; or talk. It writes the player's reply in the same call.
+  one action over each script, and every one implementers make), which runs at once; an
+  instruction for the **orchestrator**; or talk. It writes the player's reply in the same call.
+- The **orchestrator** is one more small call per part the brain sends it: anything new no action
+  does, a change to something that exists, or a stop. It opens a task under a name of its own
+  (`galick_gun_styrk`) for an implementer, follows one up, changes a running copy's values or
+  stops it, and writes the line's reply in place of the brain's. Each task is a row in the box's
+  `vfg.db`, which only the brain writes.
 - **Respond**, the brain's cheap mode, answers a conversational line on a cheaper model, or hands it
   up to the brain when it asks for something to happen.
-- **Implementers** are started by code from the brain's brief, one per task, each with the scripts
-  and presets Jev picks for the job (`vfg route`), whole, and the server's state. They act through
-  actions (`vfg action run`): they run one, change a running copy's values, or copy presets into a
-  new script and its action with `vfg script new` in `made/<server>/`. The library in `scripts/`
-  and `actions/` is read-only during play. Each reports to the brain, which tells the player.
+- **Implementers** are started by code from the orchestrator's brief, one per task, each with the
+  scripts and presets Jev picks for the job (`vfg route`), whole, and the server's state. They act
+  through actions (`vfg action run`): they run one, change a running copy's values, or copy presets
+  into a new script and its action with `vfg script new` in `made/<server>/`, all named after their
+  task. The library in `scripts/` and `actions/` is read-only during play. Each reports to the
+  brain, which tells the player.
 - The **shared context** is the feed itself: every kept line, every game event and what the brain
   did, in order, read whole on every call; the lines Jev files as context are kept but shown to no
   model yet. What arrives between calls is read by the next one.
@@ -136,7 +146,7 @@ What each part takes in and puts out is in [docs/CONTRACTS.md](docs/CONTRACTS.md
 | [`bridge/`](bridge/README.md) | on the box: the speech endpoint, the console tail, the feed; `deploy/` launches, provisions and retires the box |
 | [`jev/`](jev/README.md) | on the box: the Jev filter |
 | [`toolkit/`](toolkit/README.md) | `vfg`, and [`config.example`](toolkit/config.example), every setting with its default |
-| [`brain/`](brain/README.md) | the brain, Respond and the implementers it starts: one call per event, its [prompts](brain/prompts/), the implementers' guard |
+| [`brain/`](brain/README.md) | the brain, its orchestrator call, Respond and the implementers it starts: one call per event, its [prompts](brain/prompts/), the implementers' guard |
 | [`actions/`](actions/README.md) | what anything can run on the server: one pydantic class per file, naming the script it runs and the values it takes; no code |
 | [`scripts/`](scripts/README.md) | the script library: the kit every script imports, presets copied into scripts, and the scripts the actions run, which implementers copy |
 | `made/` | what implementers make during play, one folder per server (`VFG_SERVER`); gitignored |
@@ -149,7 +159,7 @@ What each part takes in and puts out is in [docs/CONTRACTS.md](docs/CONTRACTS.md
 - Claude Code, logged in with a Claude subscription, for the implementers, and
   [uv](https://docs.astral.sh/uv/) for the brain's Python. Implementers never run on an API key.
 - A TypeSafe API key, for Jev.
-- An [OpenRouter](https://openrouter.ai) API key, for the brain and Respond.
+- An [OpenRouter](https://openrouter.ai) API key, for the brain, its orchestrator and Respond.
 - Minecraft Java 26.3 with Fabric, for every player (the installer sets Fabric up).
 - bash, ssh, rsync and curl on the owner's PC; `uv` runs everything there on Python 3.12, as on the box.
 - JDK 25 to build the mod (Gradle downloads one if there is none).
@@ -227,9 +237,10 @@ Rough guidance from list prices; check the current ones for your region and plan
 - **Players ask; they do not command.** Only the owner (`VFG_OWNER`) may ask for op or deop, kicks,
   bans, the whitelist, gamemode, difficulty or gamerule changes, stopping the server or resetting
   the world. A line claiming to speak for the owner counts as the player who said it.
-- **The brain and Respond run nothing but actions.** They are model calls with no tools: the brain
-  answers with actions, whose values `vfg` checks against each action's class before anything is
-  sent, and Respond only replies or hands up.
+- **The brain, the orchestrator and Respond run nothing but actions.** They are model calls with no
+  tools: the brain answers with actions, whose values `vfg` checks against each action's class
+  before anything is sent; the orchestrator with a task's brief for an implementer, or an edit or
+  stop of a running copy, checked the same way; and Respond only replies or hands up.
 - **The implementers' guard** ([`brain/brain/implementers/guard.py`](brain/brain/implementers/guard.py)),
   a hook on every tool call, and their allow rules refuse:
   - `stop`, `op`, `deop`, `ban`, `ban-ip`, `pardon`, `pardon-ip`, `whitelist`, `kick` and `save-off`
