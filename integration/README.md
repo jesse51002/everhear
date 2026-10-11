@@ -13,8 +13,9 @@ folder and every port is on 127.0.0.1, so nothing touches `~/.vfg`, `~/.ssh` or 
 
 For the brain itself, end to end on this PC with real model calls: [`brain_e2e.py`](#the-brain-end-to-end).
 For a real Minecraft 26.3 server instead of the fake one, with the same kind of stand-in box
-around it, several side by side and Carpet's fake players: [realmc/](realmc/README.md), and the
-brain live on it, [`brain_live.py`](#the-brain-live-on-realmc).
+around it, several side by side and Carpet's fake players: [realmc/](realmc/README.md), the
+brain live on it, [`brain_live.py`](#the-brain-live-on-realmc), and Jev's gather call live on it
+with the real TypeSafe API, [`jev_live.py`](#jevs-gather-call-live-on-realmc).
 
 ## Run it
 
@@ -108,6 +109,43 @@ About 5 minutes: the brain and Respond about $0.12 of OpenRouter, the implemente
 the subscription's usage; `--no-implementer` leaves the task out. It copies a complete
 `refs/26.3/` from another server's stand-in when one has it, and leaves the server down unless
 `--keep-up`. See [realmc/README.md](realmc/README.md) for the server and its owner's rules.
+
+## Jev's gather call live, on realmc
+
+```sh
+REALMC_ROOT=… python3 integration/jev_live.py [--name jr] [--keep-up] [--no-brain]
+```
+
+The Jev routing spec's live test: an ask said in two pieces arrives at the brain as one group, and
+another player's lines never join it. A real 26.3 server with Steve and Alex, the real bridge, the
+real Jev filter calling the TypeSafe API with the key in the stand-in's `.env` (REALMC_ROOT's
+`shared/env`, which only the filter reads), and the brain (`vfg brain start`, OpenRouter). Each
+line is posted to the bridge as the mod posts it, a second or two after the one before. Three
+scenarios, each an ask in two pieces with the other player saying something about the same thing
+between them: "the cave over there is pitch black" … "AI, give me something so I can see in
+there"; a broken pickaxe and "can you give me a new one"; an ocean monument and "I need to be able
+to breathe down there". Per scenario it checks the feed has one `LINE` for the ask, under the
+ask's fields and time, its text both pieces in order; the gather call never asked about the other
+player's line, and no group holds it; the brain's call is for that line (its usage row, its
+`brain.log` line, the task it opened, whose line is the group), and none is for the first piece
+alone; and, a bonus not counted, what the brain did is in the world (night vision or torches, a
+diamond pickaxe, water breathing). Jev is not deterministic: it prints every line's verdict with
+D2's two answers, each gather answer with its confidence, the time from the end of the ask to
+Jev's verdict, to the feed and to the brain's reply, the gather call's and the brain call's ms,
+and the money. A scenario whose first piece Jev sent to the AI on its own, or whose ask it did
+not send, is Jev's routing, not the gather's: it is reported and skipped. The run fails on any
+failed check, or when every scenario was skipped. Each run starts a new transcript, as a new box: the last run's `vfg.db`, feed,
+lookout, menu and logs move to `vfg/runs/<time>/`. `--no-brain` checks Jev alone (the groups on
+the feed, no OpenRouter), setting the lookout and menu the brain would.
+
+About 1.5 minutes. On 2026-10-11, three runs with the brain passed every check and the three
+bonus: Jev's verdict 0.2–0.4 s after the end of the ask, the gather call 180–250 ms, the line fed
+0.4–0.6 s after, the brain's reply 5.7–8.7 s after (its call 2.3–3.3 s). A run costs about $0.002
+of TypeSafe (9 routing calls, 3 gather calls) and $0.014 of OpenRouter, or $0.075 when the brain's
+opening is not cached yet. In eight runs, five of them `--no-brain`, the gather call said yes to
+every first piece and no to every other line it was asked about; in the seven that printed its
+confidence, the yes was 0.42–0.58 for the cave and 0.54–0.76 for the monument, against 0.90–0.96
+for the pickaxe, and every no 1.00.
 
 ## Contracts
 
