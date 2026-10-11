@@ -56,7 +56,9 @@ judge <id> Steve voice action_oriented 0.91 · act 0.91, let down 0.88 · 230ms 
 gather <ask id> Steve · 3 asked, 1 yes: <id> 0.91 · no: <id> 0.80, <id> 0.77 · 210ms 7400tok
 ```
 
-Every call writes a `usage` row; the gather call's `ref` is `gather:<ask id>`.
+A routing call Jev answers writes one `usage` row, `ref` the line's id, one row for both calls when
+it was refused once first; a call that fails, or is refused twice, writes none. An answered gather
+call writes one with `ref` `gather:<ask id>`, and the probe that finds Jev back one with `ref` `probe`.
 
 ## Run it
 
