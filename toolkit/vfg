@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script --quiet
 # /// script
 # requires-python = ">=3.12,<3.13"
-# dependencies = ["pydantic>=2.14"]
+# dependencies = ["pydantic>=2.14", "httpx>=0.28.1"]
 # ///
 """vfg: the one command every agent on the owner's PC uses to reach the EC2 box.
 
@@ -1616,13 +1616,15 @@ def action_words(words):
 
 def run_named(cfg, a, name, given, as_=None, task=None):
     """Any action, as vfg action run and its shortcuts run it: edit through run_edit and stop
-    through run_stop, which write the copy they name through to running.json; the rest
-    through run_action."""
+    through run_stop, which write the copy they name through to running.json; the incantation
+    actions through run_incantation; the rest through run_action."""
     if name == "edit":
         copy, changes = edit_words(given)
         return run_edit(cfg, a, copy, changes, task)
     if name == "stop" and set(given) == {"copy"} and isinstance(given["copy"], str):
         return run_stop(cfg, a, given["copy"], as_, task)
+    if name in INCANT_ACTIONS:
+        return run_incantation(cfg, a, name, given, as_, task)
     return run_action(cfg, a, name, given, as_, task)
 
 
@@ -2533,6 +2535,428 @@ def cmd_place(cfg, a):
     return 0
 
 
+# ----------------------------------------------------------- incantations
+
+# A player's incantations: phrases of two words or more, each bound to an action and its values,
+# which fire the moment that player says one, with no model on the path (the spec
+# Specs/2026-10-10-Prototype_Voice_Triggers). They live in the box's store, the kit's
+# incantations.Store (<vfg>/incantations.json), which the bridge reads as players cast. The
+# incantation_create, _edit and _remove actions change it through their box script,
+# scripts/incantations/, once run_incantation has checked everything here. This PC keeps the
+# store for everyone who asks, the brain's world context first: $VFG_HOME/incantations.json,
+# {"fetched_at": <epoch s>, "version", "incantations": [its entries]}, written atomically under
+# incantations.lock. `vfg incantation list` answers from it while it is younger than
+# VFG_INCANT_TTL_S (30 s), else fetches the store (remote/incantations.py); every incantation_*
+# run writes through.
+INCANT_ACTIONS = ("incantation_create", "incantation_edit", "incantation_remove")
+INCANT_TTL_S = 30.0
+INCANT_STANDIN = "Caster"  # what a caster field holds while its values are checked: any valid name
+# The alias call: one structured() call as an incantation is made, on the model the dispatcher's
+# planner uses, through its providers, fastest first (dispatcher/dispatcher/config.py, DEFAULT_MODEL
+# and DEFAULT_PROVIDERS), unless VFG_INCANT_ALIAS_MODEL names another (off: no call). Reasoning
+# off: on 2026-10-10 "low" took 18 s and $0.0019 for "fire ball", off about 1 s and $0.00005. Its
+# prompt is this one.
+INCANT_ALIAS_MODEL = "~deepseek/deepseek-v4-flash-latest"
+INCANT_ALIAS_PROVIDERS = ["parasail", "wafer", "phala", "together", "venice"]
+INCANT_ALIAS_TIMEOUT_S = 8.0
+INCANT_ALIAS_PROMPT = """\
+In a voice-controlled game a player casts a spell by saying a phrase. A keyword spotter listens \
+for it in their microphone, and speech to text writes down what they say. List the other ways \
+the phrase is likely to be heard or written down:
+- an ordinary English word: what speech to text may write in its place, real words that sound \
+alike ("ice glass" or "nice blast" for ice blast), and the words run together or split apart;
+- a made-up or foreign word, such as a spell's or an anime attack's name: respellings of how it \
+is said, in plain English syllables, as "kah meh hah meh hah" for kamehameha, and the English \
+words speech to text may split it into, as "come a hammer ha".
+
+A few variants, the likeliest first, at most six: lowercase words and spaces, no punctuation; \
+never the phrase itself, never a phrase that means the same but sounds different.
+
+The phrase: "%s"
+"""
+_INCANT = []
+
+
+def incantations_module():
+    """scripts/_lib/incantations.py, loaded once by its path: the store, the phrase rules, the
+    aliases and the bind checks, this PC's and the box's alike."""
+    if not _INCANT:
+        import importlib.util
+        path = os.path.join(KIT_LIB, "incantations.py")
+        if not os.path.isfile(path):
+            raise Fail(3, "not configured: there is no scripts/_lib/incantations.py")
+        spec = importlib.util.spec_from_file_location("vfg_incantations", path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = mod
+        spec.loader.exec_module(mod)
+        _INCANT.append(mod)
+    return _INCANT[0]
+
+
+def incant_cache_path(cfg):
+    return os.path.join(cfg.home, "incantations.json")
+
+
+def read_incant_cache(cfg):
+    """(the cache, its age in seconds), or None when there is no readable one."""
+    try:
+        with open(incant_cache_path(cfg), encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data.get("incantations"), list):
+            return None
+        return data, time.time() - float(data["fetched_at"])
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def write_incant_cache(cfg, version, rows, fetched_at):
+    cfg.ensure_home()
+    atomic_write(incant_cache_path(cfg), json.dumps({"fetched_at": fetched_at, "version": version,
+                                                     "incantations": rows}, ensure_ascii=False) + "\n")
+
+
+def incant_ttl(cfg):
+    raw = cfg.get("VFG_INCANT_TTL_S")
+    try:
+        return max(0.0, float(raw)) if raw else INCANT_TTL_S
+    except ValueError:
+        raise Fail(3, "not configured: VFG_INCANT_TTL_S must be a number of seconds")
+
+
+def fetch_incantations(cfg, a, stamps=None):
+    """The box's store, written to the cache, and of `stamps` ([{"root", "stamps"}], as
+    stamps_for makes them) the folders the box does not have as stamped: (store, stale). One
+    SSH call."""
+    rc, o, e = remote(cfg, a, "incantations.py", {"op": "list", "stamps": stamps or []}, 30)
+    if rc != 0:
+        finish(rc, b"", e)  # raises Fail with the remote's one line
+    try:
+        got = json.loads(o.decode("utf-8").strip().splitlines()[-1])
+        store = got["store"]
+        rows, stale = store["incantations"], got["stale"]
+        if not (isinstance(rows, list) and isinstance(stale, list)):
+            raise TypeError
+    except (ValueError, KeyError, IndexError, TypeError):
+        raise Fail(1, "the box's incantation store is not JSON")
+    cfg.ensure_home()
+    with flocked(os.path.join(cfg.home, "incantations.lock")):
+        write_incant_cache(cfg, store.get("version") or 0, rows, time.time())
+    return store, stale
+
+
+def note_incantations(cfg, put=(), drop=(), version=None):
+    """Write a run through to the cache, keeping its age: the entries it stored or changed, by
+    id, and the ids it removed. No cache, nothing to update: a few entries would pass for the
+    whole store."""
+    try:
+        cfg.ensure_home()
+        with flocked(os.path.join(cfg.home, "incantations.lock")):
+            cached = read_incant_cache(cfg)
+            if cached is None:
+                return
+            data, age = cached
+            gone = set(drop) | set(e.get("id") for e in put)
+            rows = [e for e in data["incantations"] if e.get("id") not in gone] + list(put)
+            write_incant_cache(cfg, data.get("version") if version is None else version, rows, time.time() - age)
+    except OSError as e:
+        warn("incantations.json not written: %s" % e)
+
+
+def incant_whose(player):
+    return "everyone's" if player == "@a" else player + "'s"
+
+
+def incant_find(inc, rows, player, phrase):
+    """The entry of `player` (its exact key, in any case) for the normalised phrase, or None."""
+    for e in rows:
+        if str(e.get("player") or "").lower() == player.lower() and inc.normalize(e.get("phrase") or "") == phrase:
+            return e
+    return None
+
+
+def incant_warnings(inc, phrase, aliases, players, rows, skip=None):
+    """bind_warnings for each player against that player's other incantations (everyone's, for
+    @a): a warning every player gets is said once, the others with the player's name first."""
+    per = []
+    for p in players:
+        others = [e for e in rows if e is not skip and not incant_find(inc, [e], p, phrase)
+                  and (p == "@a" or inc.applies_to(e, p))]
+        per.append((p, inc.bind_warnings(phrase, aliases, others)))
+    common = [w for w in per[0][1] if all(w in ws for _, ws in per)] if per else []
+    out_ = list(common)
+    for p, ws in per:
+        out_ += [("%s: %s" % (p, w) if len(per) > 1 else w) for w in ws if w not in common]
+    return list(dict.fromkeys(out_))
+
+
+def incant_alias_call(cfg, phrase):
+    """How `phrase` is likely said or misheard, from one structured() call: (variants, a note
+    when the call failed, {"model", "cost", "ms"} when it answered). A failure is a note, never
+    a refusal: the code's aliases stand."""
+    model = (cfg.get("VFG_INCANT_ALIAS_MODEL") or INCANT_ALIAS_MODEL).strip()
+    if model.lower() == "off":
+        return [], None, None
+    try:
+        actions_lib()  # lib/py on sys.path
+        import asyncio
+        import logging
+        import vfg_llm
+        from pydantic import BaseModel, Field
+        logging.getLogger("vfg_llm").addHandler(logging.NullHandler())
+        logging.getLogger("vfg_llm").propagate = False
+
+        class Variants(BaseModel):
+            variants: list[str] = Field(description="how the phrase is likely said or misheard, the likeliest "
+                                                    "first, at most six")
+
+        got = asyncio.run(vfg_llm.structured(INCANT_ALIAS_PROMPT % phrase, Variants, model=model, reasoning=False,
+                                             providers=INCANT_ALIAS_PROVIDERS, timeout=INCANT_ALIAS_TIMEOUT_S))
+    except Exception as e:  # noqa: BLE001 — an LlmError, no key, no httpx: the code's aliases stand
+        return [], "aliases from code only: the alias call failed (%s)" % (str(e) or type(e).__name__), None
+    return [x for x in got.value.variants if isinstance(x, str)], None, \
+        {"model": model, "cost": round(got.cost, 6), "ms": got.ms}
+
+
+def incant_player_fields(va, cls):
+    """The fields of an action a caster can fill: its player and players fields it does not fix."""
+    T = va._types(cls)
+    return [k for k, f in cls.model_fields.items()
+            if k not in cls.fixed and T.kind(f.annotation, f.metadata) in ("player", "players")]
+
+
+def incant_blank(x):
+    return x is None or (isinstance(x, str) and not x.strip())
+
+
+def incant_bound(cfg, name):
+    """The action a phrase may fire: (vfg_actions, its catalog, its class); exit 2 for one that
+    is not on the menu, or one an incantation cannot fire."""
+    if not name:
+        raise Fail(2, "which action does it fire? action=<its name on the menu> — vfg action list")
+    if name in ("edit", "stop") or name.startswith("incantation_"):
+        raise Fail(2, "action=%s: an incantation fires an action that does something in the game, not %s" % (name, name))
+    try:
+        return action_class(cfg, name)
+    except Fail as f:
+        raise Fail(2, "action=%s: %s" % (name, f.msg))
+
+
+def incant_deploy(cfg, a, home, folders):
+    """The bound script and the kit, deployed as a run of its action would send them (tars_for)."""
+    rc, o, e = remote(cfg, a, "scripts.py", {"op": "deploy", "tars": tars_for(cfg, home, folders)}, 30,
+                      libs=SCRIPTS_LIBS)
+    if rc != 0:
+        finish(rc, b"", e)
+
+
+def incant_given(given):
+    """values= as a JSON object, as the dispatcher and the brain give a dict on the command line."""
+    vals = given.get("values")
+    if isinstance(vals, str):
+        try:
+            vals = json.loads(vals) if vals.strip() else {}
+        except ValueError:
+            raise Fail(2, "values= is a JSON object of the action's values, such as values='{\"power\": 4}'")
+        given = dict(given, values=vals)
+    return given
+
+
+def run_incantation(cfg, a, name, given, as_=None, task=None):
+    """The incantation_create, _edit and _remove actions: everything checked here (the phrase,
+    the players, the bound action and its values, the aliases, the bind warnings), then the
+    incantations script run on the box with {"op", "entries"}, and the store written through to
+    the cache. The JSON line's dict, its notes carrying the clamps, the warnings and any failed
+    alias call."""
+    cfg.require_ssh()
+    inc = incantations_module()
+    va, cat, cls = action_class(cfg, name)
+    given = incant_given(given)
+    try:
+        own = va.check_values(cls, given)
+    except ValueError as e:
+        raise Fail(2, str(e))
+    v = own.values
+    if incant_blank(v["player"]):
+        raise Fail(2, "whose incantation? player=<the player who asked> (several separated by commas, "
+                      "or @a when someone asks for everyone)")
+    try:
+        players = inc.split_players(v["player"])
+    except ValueError as e:
+        raise Fail(2, "player=%s: %s" % (v["player"], e))
+    try:
+        phrase = inc.check_phrase(v["phrase"])
+    except ValueError as e:
+        raise Fail(2, "phrase=%s: %s" % (v["phrase"], e))
+    mine = {"player": ",".join(players), "phrase": phrase}
+    if name == "incantation_remove":
+        line = run_action(cfg, a, name, mine, as_, task,
+                          extra={"op": "remove", "entries": [{"player": p, "phrase": phrase} for p in players]})
+        if line["ok"]:
+            note_incantations(cfg, drop=line["facts"].get("ids") or [], version=line["facts"].get("version"))
+        return line
+    if name == "incantation_edit":
+        return edit_incantation(cfg, a, inc, va, given, v, players, phrase, mine, own.notes, as_, task)
+
+    # create: the bound action and its values, checked as a run of it would check them, every
+    # player field left out or empty filled with a stand-in: the caster's, as it is cast.
+    _, bcat, bcls = incant_bound(cfg, v["action"])
+    caster = [k for k in incant_player_fields(va, bcls) if incant_blank(v["values"].get(k))]
+    try:
+        checked = checked_values(cfg, a, va, bcls, dict(v["values"], **dict((k, INCANT_STANDIN) for k in caster)))
+    except Fail as f:
+        raise Fail(f.code, "values for %s: %s" % (v["action"], f.msg))
+    notes = own.notes + checked.notes
+    home = script_home(cfg, bcat.source(v["action"]), bcls.script)
+    # The bound script with the kit; a library one with this action's own script too, so a box
+    # that needs them all gets them in one deploy.
+    folders = [bcls.script] + (["incantations"] if home == "library" else [])
+    # The alias call (about 1 s) runs in a thread while the store and the stamps are read, so
+    # neither waits for the other; a daemon, so a failed read is not held up by it.
+    import threading
+    answer = []
+    caller = threading.Thread(target=lambda: answer.append(incant_alias_call(cfg, phrase)), daemon=True)
+    caller.start()
+    store, stale = fetch_incantations(cfg, a, stamps_for(cfg, home, folders))
+    caller.join()
+    variants, why, call = answer[0] if answer else ([], "aliases from code only: the alias call failed", None)
+    if why:
+        notes.append(why)
+    aliases = inc.merge_aliases(phrase, inc.code_aliases(phrase), variants)
+    rows = store["incantations"]
+    notes += incant_warnings(inc, phrase, aliases, players, rows)
+    for p in players:
+        old = incant_find(inc, rows, p, phrase)
+        if old:
+            notes.append('replaces %s "%s", which fired %s' % (incant_whose(old["player"]), phrase, old.get("action")))
+    if stale:
+        incant_deploy(cfg, a, home, folders)
+    stored = dict(checked.values, **dict((k, "") for k in caster))
+    made = now_iso()
+    entries = [{"player": p, "phrase": phrase, "aliases": aliases, "action": v["action"], "script": bcls.script,
+                "source": home, "server": server_name(cfg) if home == "made" else "", "values": stored,
+                "live": list(checked.live), "runs": bcls.runs, "caster_fields": caster,
+                "cooldown_s": float(v["cooldown_s"]), "created": made, "by": task or ""} for p in players]
+    line = run_action(cfg, a, name, dict(mine, action=v["action"], values=v["values"], cooldown_s=v["cooldown_s"]),
+                      as_, task, extra={"op": "put", "entries": entries})
+    line["notes"] = notes + line["notes"]
+    if call:
+        line["facts"]["alias_call"] = call
+    ids = line["facts"].get("ids") or []
+    if line["ok"] and len(ids) == len(entries):
+        note_incantations(cfg, put=[dict(e, id=i) for e, i in zip(entries, ids)], version=line["facts"].get("version"))
+    return line
+
+
+def edit_incantation(cfg, a, inc, va, given, v, players, phrase, mine, notes, as_, task):
+    """incantation_edit: each player's entry read from the box (never the cache: two edits close
+    together must both see what the other did), its values checked against its action over the
+    ones it has, its aliases normalised and bind-checked again; then the box updates what
+    changed, the values as only the keys given, merged over what the store holds as it writes,
+    so two edits of different values both land."""
+    change = [k for k in ("cooldown_s", "aliases") if k in given] + (["values"] if given.get("values") else [])
+    if not change:
+        raise Fail(2, "nothing to change: give values=, cooldown_s= or aliases=")
+    rows = fetch_incantations(cfg, a)[0]["incantations"]
+    found = [incant_find(inc, rows, p, phrase) for p in players]
+    missing = [p for p, e in zip(players, found) if e is None]
+    if missing:
+        raise Fail(1, 'no incantation "%s" for %s — vfg incantation list'
+                   % (phrase, " and ".join("everyone (@a)" if p == "@a" else p for p in missing)))
+    notes, entries, after = list(notes), [], []
+    for e in found:
+        sets = {}
+        if "values" in change:
+            _, _, bcls = incant_bound(cfg, e.get("action") or "")
+            # A player field given empty becomes the caster's; one given a name is not any more.
+            was = [k for k in e.get("caster_fields") or [] if k in bcls.model_fields]
+            caster = [k for k in incant_player_fields(va, bcls)
+                      if (incant_blank(v["values"][k]) if k in v["values"] else k in was)]
+            now = dict(e.get("values") or {}, **dict((k, INCANT_STANDIN) for k in was))
+            new = dict(v["values"], **dict((k, INCANT_STANDIN) for k in caster if k in v["values"]))
+            try:
+                ed = with_places(cfg, a, lambda places: va.check_edit(bcls, now, new, places=places))
+            except Fail as f:
+                raise Fail(f.code, "values for %s: %s" % (e.get("action"), f.msg))
+            notes += [n for n in ed.notes if n not in notes]
+            sets["values"] = dict((k, "" if k in caster else ed.values[k]) for k in v["values"])
+            sets["caster_fields"] = caster
+        if "cooldown_s" in change:
+            sets["cooldown_s"] = float(v["cooldown_s"])
+        if "aliases" in change:
+            sets["aliases"] = inc.merge_aliases(phrase, v["aliases"])
+            left = [x for x in dict.fromkeys(inc.normalize(x) for x in v["aliases"]) if x and x not in sets["aliases"]]
+            if left and not [n for n in notes if n.startswith("left out of the aliases")]:
+                notes.append("left out of the aliases (the phrase itself, too short to tell apart, or past 12): "
+                             + ", ".join(left))
+            notes += [w for w in incant_warnings(inc, phrase, sets["aliases"], [e["player"]], rows, skip=e)
+                      if w not in notes]
+        entries.append({"player": e["player"], "phrase": e["phrase"], "set": sets})
+        after.append(dict(e, **dict(sets, values=dict(e.get("values") or {}, **sets["values"])))
+                     if "values" in sets else dict(e, **sets))
+    line = run_action(cfg, a, "incantation_edit", dict(mine, **dict((k, v[k]) for k in change)), as_, task,
+                      extra={"op": "update", "entries": entries})
+    line["notes"] = notes + line["notes"]
+    if line["ok"]:
+        note_incantations(cfg, put=after, version=line["facts"].get("version"))
+    return line
+
+
+def incant_shown(e, acts):
+    """An entry's values as a list shows them: those that differ from its action's when nothing
+    is given (all of them when the action is not in the actions cache), its caster fields left out."""
+    info = acts.get(e.get("action")) or {}
+    values = e.get("values") or {}
+    if info:
+        base = dict((f, d.get("default")) for f, d in (info.get("fields") or {}).items())
+        base.update(info.get("defaults") or {})
+        base.update(info.get("fixed") or {})
+        values = differs(base, values)
+    caster = set(e.get("caster_fields") or [])
+    return dict((k, x) for k, x in values.items() if k not in caster)
+
+
+def incant_line(e, acts):
+    """`Steve: "fire ball" → command {"commands":[...]} cooldown 3s; aliases fireball, fire bowl`,
+    a caster field as player=<caster>."""
+    text = '%s: "%s" → %s %s' % (e.get("player"), e.get("phrase"), e.get("action"),
+                                 json.dumps(incant_shown(e, acts), ensure_ascii=False, separators=(",", ":")))
+    for k in e.get("caster_fields") or []:
+        text += " %s=<caster>" % k
+    text += " cooldown %ss" % fmt_s(float(e.get("cooldown_s") or 0))
+    return text + "; " + ("aliases " + ", ".join(e["aliases"]) if e.get("aliases") else "no aliases")
+
+
+def cmd_incantation(cfg, a):
+    """vfg incantation list [--player P] [--json] [--fresh]: from the cache while it is younger
+    than VFG_INCANT_TTL_S, else fetched; a failed fetch with any cache prints it, warns, exits 0."""
+    if a.player is not None and not PLAYER_RE.match(a.player):
+        raise Fail(2, "--player must be a player name (letters, digits, _; at most 16)")
+    cached = read_incant_cache(cfg)
+    if cached is not None and not a.fresh and 0 <= cached[1] < incant_ttl(cfg):
+        rows = cached[0]["incantations"]
+    else:
+        try:
+            rows = fetch_incantations(cfg, a)[0]["incantations"]
+        except Fail as f:
+            if cached is None:
+                raise
+            warn("incantations from %d s ago: %s" % (max(0, round(cached[1])), f.msg))
+            rows = cached[0]["incantations"]
+    rows = [e for e in rows if isinstance(e, dict)]
+    if a.player is not None:
+        inc = incantations_module()
+        rows = [e for e in rows if inc.applies_to(e, a.player)]
+    rows.sort(key=lambda e: (e.get("player") == "@a", str(e.get("player") or "").lower(), e.get("phrase") or ""))
+    acts = actions_cache(cfg).get("actions") or {}
+    if a.json:
+        out(json.dumps([{"player": e.get("player"), "phrase": e.get("phrase"), "action": e.get("action"),
+                         "values": incant_shown(e, acts), "cooldown_s": e.get("cooldown_s"),
+                         "aliases": e.get("aliases") or []} for e in rows], ensure_ascii=False))
+    else:
+        out("\n".join(incant_line(e, acts) for e in rows) if rows else "none")
+    return 0
+
+
 # ------------------------------------------------------------------- made
 
 # What this server's implementers made, made/<server>/ (scripts, presets, actions), is kept out
@@ -3283,6 +3707,19 @@ def build_parser():
     w = ps.add_parser("forget", help="remove a place; exit 1 if there was none")
     w.add_argument("name")
 
+    s = sub.add_parser("incantation", help="list the players' incantations, the phrases that fire an action "
+                       "the moment they are said (made, changed and removed by the incantation_create, "
+                       "incantation_edit and incantation_remove actions)")
+    ins = s.add_subparsers(dest="op", metavar="list")
+    ins.required = True
+    w = ins.add_parser("list", help="one line per incantation: player, phrase, action, its values, cooldown, "
+                       "aliases; or none. From the cache in $VFG_HOME/incantations.json while it is younger "
+                       "than VFG_INCANT_TTL_S")
+    w.add_argument("--player", metavar="P", help="only those P can cast: P's own and everyone's (@a)")
+    w.add_argument("--json", action="store_true", help="a JSON list of {player, phrase, action, values, "
+                   "cooldown_s, aliases}")
+    w.add_argument("--fresh", action="store_true", help="fetch from the box, whatever the cache's age")
+
     s = sub.add_parser("usage", help="write a usage row; queued locally when EC2 is down")
     us = s.add_subparsers(dest="op", metavar="add")
     us.required = True
@@ -3392,6 +3829,8 @@ def run(argv, started):
         return cmd_action(cfg, a)
     if a.command == "place":
         return cmd_place(cfg, a)
+    if a.command == "incantation":
+        return cmd_incantation(cfg, a)
     if a.command == "preset":
         return cmd_preset(cfg, a)
     if a.command == "made":
@@ -3408,7 +3847,7 @@ def run(argv, started):
 
 
 # The commands that may load the actions (pydantic).
-NEEDS_ACTIONS = ("action", "cmd", "script", "place", "state", "preset")
+NEEDS_ACTIONS = ("action", "cmd", "script", "place", "state", "preset", "incantation")
 
 
 def under_uv(argv):

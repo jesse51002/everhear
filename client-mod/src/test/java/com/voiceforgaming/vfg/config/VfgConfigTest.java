@@ -26,8 +26,8 @@ class VfgConfigTest {
 		assertTrue(Files.exists(file));
 		JsonObject o = JsonParser.parseString(Files.readString(file)).getAsJsonObject();
 		assertEquals(List.of("server_address", "bridge_url", "client_token", "mic_device", "model", "icon_corner", "muted",
-			"turn_model", "turn_threshold", "silence_seconds", "vad_threshold", "stt_threads", "log_text"),
-			List.copyOf(o.keySet()));
+			"turn_model", "turn_threshold", "silence_seconds", "vad_threshold", "stt_threads", "log_text", "incantations",
+			"incantation_threshold", "incantation_boost"), List.copyOf(o.keySet()));
 		assertEquals("parakeet-110m-en", o.get("model").getAsString());
 		assertEquals("top_left", o.get("icon_corner").getAsString());
 		assertEquals(3, o.get("silence_seconds").getAsInt());
@@ -243,6 +243,68 @@ class VfgConfigTest {
 		assertTrue(c.toString().contains("turn_model=turn-1-mini"), c.toString());
 		assertTrue(c.toString().contains("turn_threshold=0.42"), c.toString());
 		assertTrue(new VfgConfig().toString().contains("turn_threshold=(the model's own)"));
+	}
+
+	@Test
+	void theSpotterIsOnAtThreshold025AndBoost15ByDefault() throws Exception {
+		Path file = dir.resolve("vfg-client.json");
+		VfgConfig c = VfgConfig.load(file);
+		assertTrue(c.incantations);
+		assertEquals(0.25, c.incantationThreshold);
+		assertEquals(1.5, c.incantationBoost);
+		JsonObject o = JsonParser.parseString(Files.readString(file)).getAsJsonObject();
+		assertTrue(o.get("incantations").getAsBoolean());
+		assertEquals(0.25, o.get("incantation_threshold").getAsDouble());
+		assertEquals(1.5, o.get("incantation_boost").getAsDouble());
+	}
+
+	@Test
+	void incantationSettingsInRangeAreKeptAndOthersFallBack() throws Exception {
+		Path file = dir.resolve("vfg-client.json");
+		Files.writeString(file, """
+			{ "turn_model": "smart-turn-v3.2", "incantations": false, "incantation_threshold": 0.1,
+			  "incantation_boost": 2 }
+			""");
+		VfgConfig c = VfgConfig.load(file);
+		assertFalse(c.incantations);
+		assertEquals(0.1, c.incantationThreshold);
+		assertEquals(2.0, c.incantationBoost);
+		Files.writeString(file, """
+			{ "turn_model": "smart-turn-v3.2", "incantations": "no", "incantation_threshold": 0.99,
+			  "incantation_boost": 9 }
+			""");
+		VfgConfig bad = VfgConfig.load(file);
+		assertTrue(bad.incantations);
+		assertEquals(0.25, bad.incantationThreshold);
+		assertEquals(1.5, bad.incantationBoost);
+	}
+
+	@Test
+	void copyAndToStringCarryTheIncantationKeys() {
+		VfgConfig c = new VfgConfig();
+		c.incantations = false;
+		c.incantationThreshold = 0.2;
+		c.incantationBoost = 2.0;
+		VfgConfig copy = c.copy();
+		assertFalse(copy.incantations);
+		assertEquals(0.2, copy.incantationThreshold);
+		assertEquals(2.0, copy.incantationBoost);
+		assertTrue(c.toString().contains("incantations=false, incantation_threshold=0.2, incantation_boost=2.0"),
+			c.toString());
+	}
+
+	@Test
+	void theCastAndListEndpointsAreOnTheSameBridge() {
+		VfgConfig c = new VfgConfig().withEnv(Map.of());
+		c.serverAddress = "play.example.com";
+		assertEquals("http://play.example.com:8787/v1/casts", c.castsUrl());
+		assertEquals("http://play.example.com:8787/v1/incantations", c.incantationsUrl());
+		c.bridgeUrl = "http://10.0.0.5:9000/";
+		assertEquals("http://10.0.0.5:9000/v1/casts", c.castsUrl());
+		assertEquals("http://10.0.0.5:9000/v1/incantations", c.incantationsUrl());
+		c.bridgeUrl = "";
+		c.serverAddress = "";
+		assertNull(c.castsUrl());
 	}
 
 	@Test

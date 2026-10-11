@@ -43,7 +43,7 @@ BUSY_TIMEOUT_MS = 10000
 UTC = _dt.timezone.utc
 
 # Section 7's field grammar, per type.
-GAME_RE = re.compile(r"^(join|leave|death|advancement|server|raw) ([A-Za-z0-9_]{1,16}|-)$")
+GAME_RE = re.compile(r"^(join|leave|death|advancement|server|raw|cast) ([A-Za-z0-9_]{1,16}|-)$")
 ORCH_RE = re.compile(r"^T\d+ (progress|done|failed)$")
 LINE_RE = re.compile(
     r"^[A-Za-z0-9_]{1,16} (voice|chat) (direct_ask|context) (\d\.\d\d|-) (-?\d+dB|-)( was=not_useful)?$"

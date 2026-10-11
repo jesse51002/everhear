@@ -40,6 +40,26 @@ Path 8 needs a JDK and the mod's compiled classes (`cd client-mod && ./gradlew b
 | 8 | the client mod's real `BridgeClient` and `LinePayload` against the real bridge |
 | 9 | the conversation's test fixtures against what the real feed writer produces |
 
+## Incantations, on a real server
+
+`integration/incantations_e2e.py` is the voice-triggers spec's live test, on realmc: a server
+with a fake player Steve, the real bridge against its stand-in box, and two incantations made with
+`vfg action run incantation_create` ("fire ball", a scoreboard point; "ice wall", a teleport whose
+player is whoever casts it). Casts and lines are posted as the mod posts them, and each check is
+checked in the world or in `vfg.db`: the list and its long poll, a cast to its effect, the
+duplicate window, the incantation's cooldown and the 1 s between a player's casts, another
+player's phrase, the drop rule, a caster field, Layer 2 from a transcript, and the events and
+feed lines. `--speech` also has the mod's `castCheck` say "Fire ball!" (Kokoro) through its real
+speech pipeline and spotter against that bridge, and times the end of the phrase to the effect.
+
+```sh
+REALMC_ROOT=<a realmc .server with the jar> integration/incantations_e2e.py [--name vt] [--keep] [--speech]
+```
+
+About 25 s, most of it the server's start and stop; `--speech` adds about 15 s, the mod's
+models loading. On 2026-10-10: a posted cast's effect landed 31–46 ms after the post, a
+transcript cast's 39–57 ms after its line, and "Fire ball!" spoken 0.53 s after the phrase ended.
+
 ## Settings
 
 | Key | Used for |
