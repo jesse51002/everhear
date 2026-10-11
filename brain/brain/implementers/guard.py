@@ -775,17 +775,31 @@ def record(g: GuardContext, kind: str, name: str) -> None:
         names.append(name)
 
 
+def taken_here(g: GuardContext, kind: str, name: str) -> bool:
+    """Is `name` already a script folder, an action or a preset in made/<server>/? vfg script new,
+    vfg script save and vfg preset save refuse a name that is, and make nothing."""
+    base = os.path.join(g.repo, "made", g.server)
+    path = {"scripts": os.path.join(base, "scripts", name), "actions": os.path.join(base, "actions", name + ".py"),
+            "presets": os.path.join(base, "presets", name + ".py")}.get(kind)
+    return path is not None and os.path.lexists(path)
+
+
 def note_made(call: dict, g: GuardContext) -> None:
     """After an implementer's Bash call is let through: what each of its commands makes, in order
-    (made_by), is recorded; and a script its vfg script new or vfg script save is about to make in
-    made/<server>/scripts/ (with its action) is its own to change."""
+    (made_by), is recorded, unless a name it would make is already in made/<server>/, which vfg
+    refuses (so another task's script is never reported as this one's); and a script its vfg script
+    new or vfg script save is about to make in made/<server>/scripts/ (with its action) is its own to
+    change."""
     command = str((call.get("tool_input") or {}).get("command") or "")
     for cmd in split_shell(command):
         name = new_script_name(cmd.words)
         if name and not os.path.exists(os.path.join(g.repo, "made", g.server, "scripts", name)):
             g.own.add(name)
-        for kind, made in made_by(cmd.words):
-            record(g, kind, made)
+        made = made_by(cmd.words)
+        if any(taken_here(g, kind, n) for kind, n in made):
+            continue
+        for kind, n in made:
+            record(g, kind, n)
 
 
 def note_written(call: dict, g: GuardContext) -> None:

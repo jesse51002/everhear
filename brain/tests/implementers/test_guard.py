@@ -351,6 +351,13 @@ async def test_the_hook_records_what_the_calls_it_lets_through_make_in_order_and
     # a call the guard denies records nothing, even the commands in it that would run alone
     assert (await run("vfg script new other_ring && curl x"))["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert (await run("vfg action run torch_ring as=ring_9"))["hookSpecificOutput"]["permissionDecision"] == "deny"
+    # a name already in made/main/ is another's, and vfg refuses it: nothing of that command is recorded
+    (tmp_path / "made" / "main" / "scripts" / "beam_alex").mkdir(parents=True)
+    for kind, name in (("actions", "railgun_steve"), ("presets", "crater")):
+        (tmp_path / "made" / "main" / kind).mkdir(parents=True, exist_ok=True)
+        (tmp_path / "made" / "main" / kind / (name + ".py")).write_text("")
+    assert await run("vfg script new beam_alex --from beam; vfg script save railgun_2 railgun_steve; "
+                     "vfg preset save torch_ring_steve dig crater") == {}
     assert g.made == {"scripts": ["torch_ring_steve"], "actions": ["torch_ring_steve"], "presets": ["follow"],
                       "copies": ["torch_ring_steve"]}
 
