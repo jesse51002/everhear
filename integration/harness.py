@@ -60,7 +60,7 @@ FEED_RE = re.compile(r"^(LINE|GAME|AI|SYS)#(\d+) (\d\d:\d\d:\d\d) (?:([^|]*?) )?
 C_LINE = re.compile(r"^[A-Za-z0-9_]{1,16} (voice|chat) (action_oriented|conversational|context) (\d\.\d\d|-) "
                     r"(-?\d+dB|-)( was=not_relevant)?$")
 C_GAME = re.compile(r"^[a-z_]+ ([A-Za-z0-9_]{1,16}|-)$")
-C_AI = re.compile(r"^(say|action|task|result|note) (T\d+|-)$")
+C_AI = re.compile(r"^(say|action|task|result|note) ([a-z][a-z0-9_]{1,31}|-)$")   # a task's name, or -
 # vfg history's output (toolkit/remote/history.py)
 H_LINE = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \S+ (voice|chat|ai) "
                     r"(?:(?:action_oriented|conversational|context|not_relevant) (?:\d\.\d\d|-)|-) \| .*$")
@@ -751,9 +751,9 @@ def path2(box, rep, ctx):
 def path3(box, rep, ctx):
     rep.path("3", "vfg say: an ai line Jev never judges, and an AI say row in the feed; Jev's state (§4 §5 §7 §8)")
     t0 = iso(now() - dt.timedelta(seconds=1))
-    r1 = box.vfg("say", "on it — castle coming up", "--task", "T7")
+    r1 = box.vfg("say", "on it — castle coming up", "--task", "castle_steve")
     r2 = box.vfg("say", "your base is ready", "--to", "Steve")
-    rep.check(r1.returncode == 0 and r2.returncode == 0, "vfg say --task T7 and vfg say --to exit 0",
+    rep.check(r1.returncode == 0 and r2.returncode == 0, "vfg say --task castle_steve and vfg say --to exit 0",
               r1.stderr + r2.stderr)
     cmds = box.rcon_commands()
     want1 = 'tellraw @a [{"text":""},{"text":"[AI] ","color":"aqua"},{"text":"on it — castle coming up"}]'
@@ -766,19 +766,20 @@ def path3(box, rep, ctx):
               and all(ISO_RE.match(a["at"]) for a in ai),
               "stored as source=ai, player AI, no uuid, text without prefix, whisper as (to Steve) …", "%r" % ai)
     ctx["ai_ids"] = [a["id"] for a in ai]
-    g1 = box.wait_watch(ai_regex("say", "T7", "on it — castle coming up"), 6)
+    g1 = box.wait_watch(ai_regex("say", "castle_steve", "on it — castle coming up"), 6)
     g2 = box.wait_watch(ai_regex("say", "-", "(to Steve) your base is ready"), 6)
     rep.check(g1 and g2 and len(g1) == len(g2) == 1,
-              "each say is fed once, in the same SSH call: AI say T7 | … and AI say - | (to Steve) …",
+              "each say is fed once, in the same SSH call: AI say castle_steve | … and AI say - | (to Steve) …",
               "%r" % box.watch_lines()[-4:])
     if g1 and ai:
         row = box.sql("SELECT at FROM feed WHERE seq = ?", (int(FEED_RE.match(g1[0]).group(2)),))
         rep.check(row and row[0]["at"] == ai[0]["at"], "the AI say row's at is the ai line's at",
                   "%r vs %r" % (row, ai[0]["at"]))
-    # The brain's records of what it did: Jev's history takes action, task and result, not note.
-    records = [("action", "T7", "command: give Steve diamond_pickaxe — ok: Gave 1 [Diamond Pickaxe] to Steve"),
-               ("task", "T8", "T8: a castle at spawn, about 40x40, stone and oak"),
-               ("result", "T8", "T8 done: castle built at spawn, 40x40"),
+    # The brain's records of what it did: Jev's history takes action, task and result, not note. An
+    # action never carries a task; a task's rows carry its name.
+    records = [("action", "-", "command: give Steve diamond_pickaxe — ok: Gave 1 [Diamond Pickaxe] to Steve"),
+               ("task", "castle_steve", "new: a castle at spawn for Steve, about 40x40, stone and oak"),
+               ("result", "castle_steve", "castle_steve done: castle built at spawn, 40x40"),
                ("note", "-", "a note Jev never sees")]
     for kind, task, text in records:
         box.vfg("feed", "post", "AI", "%s %s" % (kind, task), text)
@@ -892,9 +893,10 @@ def path5(box, rep, ctx):
         return ok, "want %r; watch %r; row %r" % (want, got, rows)
 
     posted = []
-    for kind, task, text in (("action", "T9", "command: time set night — ok: Set the time to 13000"),
-                             ("task", "T10", "T10: an ice trail behind Steve as he walks"),
-                             ("result", "T10", "T10 done: ice trail running as ice_trail"),
+    for kind, task, text in (("action", "-", "command: time set night — ok: Set the time to 13000"),
+                             ("task", "ice_trail_steve", "new: an ice trail behind Steve as he walks"),
+                             ("result", "ice_trail_steve", "ice_trail_steve done: an ice trail runs behind Steve"),
+                             ("note", "ice_trail_steve", "stopped ice_trail_steve"),
                              ("note", "-", "Steve and Alex agreed on a truce")):
         r, seq = post("AI", "%s %s" % (kind, task), text)
         ok, why = seen(seq, "AI", "%s %s" % (kind, task), text) if seq else (False, r.stderr)
@@ -915,9 +917,12 @@ def path5(box, rep, ctx):
     ok, why = seen(seq, "AI", "note -", cut) if seq else (False, r.stderr)
     rep.check(ok and len(cut) == 500, "text over 500 characters is cut at 500 with …", why)
     n = len(box.feed_rows())
-    for args, what in ((("AI", "done T7", "x"), "AI fields of a kind not in §7"),
-                       (("AI", "say 7", "x"), "AI fields without a task id or -"),
-                       (("ORCH", "T1 done", "x"), "ORCH, which is retired"),
+    for args, what in ((("AI", "done castle_steve", "x"), "AI fields of a kind not in §7"),
+                       (("AI", "say 7", "x"), "AI fields without a task's name or -"),
+                       (("AI", "task T7", "x"), "AI fields with a task number, retired for its name"),
+                       (("AI", "say Galick", "x"), "AI fields with a name that is not a task's"),
+                       (("AI", "task " + "a" * 33, "x"), "AI fields with a name past 32 characters"),
+                       (("ORCH", "castle_steve done", "x"), "ORCH, which is retired"),
                        (("SYS", "x", "x"), "SYS with fields")):
         r, seq = post(*args)
         rep.check(r.returncode != 0 and len(r.stderr.strip().splitlines()) == 1 and len(box.feed_rows()) == n,
@@ -928,12 +933,12 @@ def path5(box, rep, ctx):
     table = box.feed_rows()
     since = [t for t in table if t["at"] >= iso(now() - dt.timedelta(hours=6))]
     rep.check(r.returncode == 0 and [(o.get("seq"), o.get("at"), o.get("line"), o.get("processed_at"))
-                                     for o in objs[:-1]] == [(t["seq"], t["at"], t["line"], t["processed_at"])
+                                     for o in objs[:-2]] == [(t["seq"], t["at"], t["line"], t["processed_at"])
                                                              for t in since]
-              and objs[-1] == {"last_seq": max(t["seq"] for t in table)},
+              and objs[-2:] == [{"tasks": []}, {"last_seq": max(t["seq"] for t in table)}],
               "vfg context --json: every feed row of the last VFG_BRAIN_HISTORY_HOURS, oldest first, "
-              "{seq, at, line, processed_at}, then {last_seq}", "%d objects vs %d rows; %s"
-              % (len(objs), len(since), r.stderr))
+              "{seq, at, line, processed_at}, then {tasks} (none yet: path 10 writes them), then {last_seq}",
+              "%d objects vs %d rows; last two %r; %s" % (len(objs), len(since), objs[-2:], r.stderr))
     plain = box.vfg("context", "--since", "-1m")
     recent = [t["line"] for t in table if t["at"] >= iso(now() - dt.timedelta(seconds=55))]
     rep.check(plain.returncode == 0 and all(l in plain.stdout.splitlines() for l in recent),
@@ -1303,7 +1308,8 @@ def path7(box, rep, ctx):
 
 
 def path6(box, rep, ctx):
-    rep.path("6", "usage rows: one per Jev call for component jev; the brain's, Respond's and an implementer's")
+    rep.path("6", "usage rows: one per Jev call for component jev; the brain's, Respond's, the orchestrator's "
+                  "and an implementer's")
     judged = box.sql("SELECT id, text, jev_confidence FROM lines WHERE source != 'ai' AND jev_class IS NOT NULL")
     bad = []
     for r in judged:
@@ -1324,7 +1330,8 @@ def path6(box, rep, ctx):
               "usage row (ref=probe)", "%r" % probes)
     stray = box.sql("SELECT u.ref FROM usage u JOIN lines l ON l.id = u.ref WHERE l.source = 'ai'")
     rep.check(not stray, "no usage row points at an ai line")
-    # Each as its writer writes it: brain/loop.py's usage() and brain/implementers/usage.py's usage_args().
+    # Each as its writer writes it: brain/loop.py's usage() (the orchestrator's too, for its line's #seq,
+    # or a report's task) and brain/implementers/usage.py's usage_args(), for the task's name.
     rows = [
         (["--component", "brain", "--model", "openai/gpt-6.1-sol", "--in", "9512", "--out", "210", "--cost",
           "0.001834", "--cache-read", "9216", "--ref", "#812"],
@@ -1335,9 +1342,15 @@ def path6(box, rep, ctx):
         (["--component", "respond", "--model", "google/gemini-3.8-flash", "--in", "7100", "--out", "30", "--cost",
           "0.000410", "--cache-read", "6900", "--ref", "#813"],
          ("respond", "google/gemini-3.8-flash", 7100, 30, 0.00041, 6900, None, "#813")),
+        (["--component", "orchestrator", "--model", "google/gemini-3.8-flash", "--in", "3120", "--out", "96",
+          "--cost", "0.000690", "--cache-read", "2880", "--ref", "#812"],
+         ("orchestrator", "google/gemini-3.8-flash", 3120, 96, 0.00069, 2880, None, "#812")),
+        (["--component", "orchestrator", "--model", "google/gemini-3.8-flash", "--in", "3400", "--out", "40",
+          "--cost", "0.000300", "--cache-read", "3200", "--ref", "castle_steve"],
+         ("orchestrator", "google/gemini-3.8-flash", 3400, 40, 0.0003, 3200, None, "castle_steve")),
         (["--component", "implementer", "--model", "claude-haiku-5-5", "--in", "48000", "--out", "2100", "--cost",
-          "0.081000", "--cache-read", "41000", "--cache-write", "6000", "--ref", "T7"],
-         ("implementer", "claude-haiku-5-5", 48000, 2100, 0.081, 41000, 6000, "T7")),
+          "0.081000", "--cache-read", "41000", "--cache-write", "6000", "--ref", "castle_steve"],
+         ("implementer", "claude-haiku-5-5", 48000, 2100, 0.081, 41000, 6000, "castle_steve")),
     ]
     for args, want in rows:
         r = box.vfg("usage", "add", *args)
@@ -1350,6 +1363,146 @@ def path6(box, rep, ctx):
     r = box.vfg("usage", "add", "--component", "dispatcher", "--model", "x", "--in", "1", "--out", "1")
     rep.check(r.returncode == 2 and len(box.sql("SELECT id FROM usage")) == n,
               "a component that is not §4's (dispatcher) is refused, nothing written", r.stderr)
+
+
+TASK_COLUMNS = ("name", "description", "player", "status", "line", "brief", "made", "variables", "session",
+                "result", "created_at", "updated_at", "closed_at")
+
+
+def path10(box, rep, ctx):
+    rep.path("10", "vfg task set and vfg task list on the real vfg.db, as the brain writes its tasks; the tasks in "
+                   "vfg context --json and vfg brain status (§4 §8)")
+
+    def task_set(row, stdin=False):
+        text = row if isinstance(row, str) else json.dumps(row, ensure_ascii=False)
+        return box.vfg("task", "set", "-", input=text) if stdin else box.vfg("task", "set", text)
+
+    def stored():
+        """The tasks table as the brain reads it back: oldest first, made and variables decoded."""
+        rows = box.sql("SELECT * FROM tasks ORDER BY created_at, name")
+        for t in rows:
+            for k in ("made", "variables"):
+                t[k] = None if t[k] is None else json.loads(t[k])
+        return rows
+
+    have = box.sql("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tasks'")
+    rep.check(have, "the bridge made the tasks table in vfg.db (its ADDED, run at every start)")
+    if not have:
+        return
+    cols = [c["name"] for c in box.sql("PRAGMA table_info(tasks)")]
+    rep.check(tuple(cols) == TASK_COLUMNS, "its columns are the spec's, in order", "%r" % cols)
+
+    # The rows as the brain's Tasks sends them: the whole row on every write, made with all four kinds.
+    t0 = now()
+    ago = lambda s: iso(t0 - dt.timedelta(seconds=s))  # noqa: E731
+    empty = {"scripts": [], "actions": [], "presets": [], "copies": []}
+    castle = {"name": "castle_steve", "description": "A stone castle at spawn for Steve, about 40×40 — oak doors",
+              "player": "Steve", "status": "open", "line": "build me a castle",
+              "brief": "a stone castle at spawn, about 40x40, stone and oak", "made": empty, "variables": None,
+              "session": None, "result": None, "created_at": ago(90), "updated_at": ago(90), "closed_at": None}
+    r = task_set(castle)
+    rep.check(r.returncode == 0 and r.stdout.strip() == "added castle_steve" and stored() == [castle],
+              "vfg task set '<the whole row>' adds castle_steve: every column as given, in one SSH call",
+              r.stdout + r.stderr + "%r" % stored())
+    raw = box.sql("SELECT made, variables FROM tasks WHERE name = 'castle_steve'")
+    rep.check(raw == [{"made": '{"scripts":[],"actions":[],"presets":[],"copies":[]}', "variables": None}],
+              "made is stored as compact JSON text, variables null until they are read", "%r" % raw)
+
+    done = dict(castle, status="done", description="A stone castle at spawn for Steve, 40x40, with a keep",
+                made={"scripts": ["castle_steve"], "actions": ["castle_steve"], "presets": [],
+                      "copies": ["castle_steve"]},
+                variables=[{"name": "size", "type": "number", "default": 40, "ge": 8, "le": 64, "choices": None,
+                            "live": False, "fixed": False, "description": "the castle's width in blocks"}],
+                session="5b0c6c1e-6f43-4a51-9d0e-2b8f1f0b9c11",
+                result="castle_steve done: castle built at spawn, 40x40",
+                updated_at=ago(30), closed_at=ago(30))
+    r = task_set(done)
+    rep.check(r.returncode == 0 and r.stdout.strip() == "updated castle_steve" and stored() == [done],
+              "its report's write updates it: done, its description, made, variables, session, result, closed_at; "
+              "created_at kept", r.stdout + r.stderr + "%r" % stored())
+    r = task_set(dict(done, status="failed", result="castle_steve failed: an older write", updated_at=ago(60)))
+    rep.check(r.returncode == 0 and r.stdout.strip() == "kept castle_steve: a newer write is there"
+              and stored() == [done], "a write with an older updated_at changes nothing, and exits 0",
+              r.stdout + r.stderr + "%r" % stored())
+
+    trail = {"name": "ice_trail_steve", "description": "An ice trail behind Steve as he walks", "player": "Steve",
+             "status": "open", "line": "leave a trail of ice behind me", "brief": "ice under Steve's feet as he walks",
+             "made": empty, "variables": None, "session": None, "result": None, "created_at": ago(20),
+             "updated_at": ago(20), "closed_at": None}
+    r = task_set(trail, stdin=True)
+    rep.check(r.returncode == 0 and r.stdout.strip() == "added ice_trail_steve" and stored() == [done, trail],
+              "vfg task set - reads the row from stdin", r.stdout + r.stderr + "%r" % stored())
+
+    def listed(*args):
+        r = box.vfg("task", "list", *args)
+        return r, r.stdout.splitlines()
+
+    r, out = listed()
+    lines = ["castle_steve done Steve: A stone castle at spawn for Steve, 40x40, with a keep",
+             "ice_trail_steve open Steve: An ice trail behind Steve as he walks"]
+    rep.check(r.returncode == 0 and out == lines, "vfg task list: one line a task, oldest first, "
+              "<name> <status> <player>: <description>", r.stdout + r.stderr)
+    r, out = listed("--open")
+    rep.check(r.returncode == 0 and out == lines[1:], "--open: the open one alone", r.stdout + r.stderr)
+    r, out = listed("--name", "castle_steve")
+    rep.check(r.returncode == 0 and out == lines[:1], "--name castle_steve: that one alone", r.stdout + r.stderr)
+    r = box.vfg("task", "list", "--json")
+    try:
+        got = json.loads(r.stdout)
+    except ValueError:
+        got = None
+    rep.check(r.returncode == 0 and got == [done, trail], "--json: the rows, made and variables decoded",
+              r.stdout[-800:] + r.stderr)
+    for bad in ("Galick", "cast"):
+        r = box.vfg("task", "list", "--name", bad)
+        rep.check(r.returncode == 2 and len(r.stderr.strip().splitlines()) == 1,
+                  "vfg task list --name %s is refused before any SSH call" % bad, r.stdout + r.stderr)
+
+    objs, r = box.context_json()
+    rep.check(r.returncode == 0 and len(objs) >= 2 and objs[-2] == {"tasks": [done, trail]}
+              and set(objs[-1]) == {"last_seq"},
+              "vfg context --json: the rows, then {tasks: every task, oldest first}, then {last_seq}",
+              "last two %r; %s" % (objs[-2:], r.stderr))
+    r = box.vfg("brain", "status")
+    out = r.stdout.splitlines()
+    rep.check(r.returncode == 1 and "brain  stopped" in out
+              and [l for l in out if l.startswith("open ")] == ["open   ice_trail_steve Steve: An ice trail behind "
+                                                                 "Steve as he walks"],
+              "vfg brain status: brain stopped (exit 1), and the box's open task, read from vfg.db",
+              r.stdout + r.stderr)
+
+    # A write of the keys it changes alone: the rest kept, closed_at following the status.
+    r = task_set({"name": "castle_steve", "status": "open", "brief": "make the keep taller"})
+    t = (stored() or [{}])[0]
+    rep.check(r.returncode == 0 and r.stdout.strip() == "updated castle_steve"
+              and t == dict(done, status="open", brief="make the keep taller", closed_at=None,
+                            updated_at=t.get("updated_at"))
+              and ISO_RE.match(t.get("updated_at") or "") and t["updated_at"] > done["updated_at"],
+              "a write of status open and a brief alone: only those change, closed_at goes, updated_at is now",
+              r.stdout + r.stderr + "%r" % t)
+    r = task_set({"name": "castle_steve", "status": "done", "result": "castle_steve done: the keep is taller"})
+    t2 = (stored() or [{}])[0]
+    rep.check(r.returncode == 0 and t2.get("status") == "done" and ISO_RE.match(t2.get("closed_at") or "")
+              and t2["closed_at"] >= t["updated_at"],
+              "done again with no closed_at given: closed_at is now", r.stdout + r.stderr + "%r" % t2)
+
+    before = box.sql("SELECT * FROM tasks ORDER BY name")
+    for row, code, said, what in (
+            ({"name": "railgun", "description": "a railgun for Steve", "player": "Steve"}, 1,
+             "railgun is a library action's name", "a new task named as a library action"),
+            ({"name": "frost_bow_alex", "player": "Alex"}, 1, "a new task needs a description",
+             "a new task with no description"),
+            ({"name": "cast", "description": "x"}, 2, "cast is the bridge's task", "cast, the bridge's task"),
+            ({"name": "Galick", "description": "x"}, 2, "", "a name that is not a task's"),
+            ({"name": "castle_steve", "colour": "red"}, 2, "", "a key that is not a column"),
+            ({"name": "castle_steve", "status": "running"}, 2, "", "a status not open, done or failed"),
+            ({"name": "castle_steve", "made": {"weapons": []}}, 2, "", "made with a kind not its four"),
+            ("[1, 2]", 2, "", "JSON that is not one object"),
+            ("{not json", 2, "", "text that is not JSON")):
+        r = task_set(row)
+        rep.check(r.returncode == code and len(r.stderr.strip().splitlines()) == 1 and said in r.stderr
+                  and box.sql("SELECT * FROM tasks ORDER BY name") == before,
+                  "%s: exit %d, one stderr line, nothing written" % (what, code), r.stdout + r.stderr)
 
 
 def final_checks(box, rep, ctx):
@@ -1403,7 +1556,7 @@ def main():
         box.start_bridge()
         box.start_jev()
         box.watch_tail_thread()
-        for fn in (path0, path1, path2, path3, path4, path5, path8, path7, path9, path6, final_checks):
+        for fn in (path0, path1, path2, path3, path4, path5, path8, path7, path9, path6, path10, final_checks):
             try:
                 fn(box, rep, ctx)
             except Exception:
