@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.sun.net.httpserver.HttpServer;
+import com.voiceforgaming.vfg.kws.Spotter;
 import com.voiceforgaming.vfg.turn.TurnDetectors;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -323,6 +324,45 @@ class AssetInstallerTest {
 		assertThrows(IllegalArgumentException.class, () -> Assets.turn("smart-turn-v4"));
 		assertEquals(Assets.BASE_URL + "asr-models/silero_vad.onnx", Assets.vad().url(Assets.BASE_URL),
 			"a path without a scheme is below the base URL");
+	}
+
+	/** The keyword model's archive: its five files, of more than twice that many, into models/kws/<archive name>. */
+	@Test
+	void theKeywordModelIsPinnedAndUnpacksItsFiveFiles() throws Exception {
+		Assets.Asset pinned = Assets.kws();
+		assertEquals(Assets.Kind.KWS, pinned.kind());
+		assertEquals(17626723L, pinned.bytes());
+		assertEquals("f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a", pinned.sha256());
+		assertEquals(Assets.BASE_URL + "kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2",
+			pinned.url(Assets.BASE_URL));
+		assertEquals(Path.of("r/models/kws/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"),
+			Assets.folder(Path.of("r"), pinned));
+
+		ByteArrayOutputStream b = new ByteArrayOutputStream();
+		try (TarArchiveOutputStream tar = new TarArchiveOutputStream(new BZip2CompressorOutputStream(b))) {
+			tar.setLongFileMode(TarArchiveOutputStream.LONGFILE_GNU); // as GNU tar wrote the real one
+			String top = "sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01/";
+			List<String> names = new ArrayList<>(Spotter.FILES);
+			names.addAll(List.of("encoder-epoch-12-avg-2-chunk-16-left-64.onnx", "keywords.txt", "test_wavs/0.wav",
+				"README.md"));
+			for (String name : names) {
+				byte[] data = ("content of " + name).getBytes(StandardCharsets.UTF_8);
+				TarArchiveEntry e = new TarArchiveEntry(top + name);
+				e.setSize(data.length);
+				tar.putArchiveEntry(e);
+				tar.write(data);
+				tar.closeArchiveEntry();
+			}
+		}
+		Assets.Asset model = serve(Assets.Kind.KWS, Assets.KWS_GIGASPEECH,
+			"kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2", b.toByteArray());
+		Path folder = installer().install(model);
+		assertEquals(dir.resolve("vfg/models/kws/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"), folder);
+		for (String f : Spotter.FILES) {
+			assertEquals("content of " + f, Files.readString(folder.resolve(f)));
+		}
+		assertFalse(Files.exists(folder.resolve("keywords.txt")), "only the model's files");
+		assertEquals(model.sha256(), Files.readString(folder.resolve(".ok")).trim());
 	}
 
 	@Test

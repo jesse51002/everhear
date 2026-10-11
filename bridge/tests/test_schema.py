@@ -49,6 +49,7 @@ class TestSchema(Box):
         self.assertEqual(names, {
             ("table", "lines"), ("table", "events"), ("table", "feed"), ("table", "usage"),
             ("index", "lines_at"), ("index", "lines_player_at"), ("index", "events_at"),
+            ("table", "casts"), ("index", "casts_player_started"),
         })
         self.assertEqual(self.query("PRAGMA journal_mode"), [("wal",)])
         self.assertEqual(self.query("PRAGMA user_version"), [(3,)])
@@ -56,6 +57,15 @@ class TestSchema(Box):
         self.assertEqual(columns[-2:], ["cache_read_tokens", "cache_write_tokens"])
         self.assertEqual([row[1] for row in self.query("PRAGMA table_info(feed)")],
                          ["seq", "at", "line", "processed_at"])
+        columns = [row[1] for row in self.query("PRAGMA table_info(lines)")]
+        self.assertEqual(columns[-2:], ["dropped", "cast_id"])
+        columns = [row[1] for row in self.query("PRAGMA table_info(casts)")]
+        self.assertEqual(columns, ["id", "at", "started_at", "ended_at", "player_name", "phrase",
+                                   "heard", "layer", "incantation_id", "action", "copy", "status",
+                                   "error", "line_id", "client_cast_id"])
+        unique = {self.query("PRAGMA index_info(%s)" % row[1])[0][2]
+                  for row in self.query("PRAGMA index_list(casts)") if row[2]}
+        self.assertIn("client_cast_id", unique)
 
     def test_a_history_from_before_the_brain_is_rebuilt_once_keeping_every_column(self):
         conn = sqlite3.connect(self.db_path, isolation_level=None)

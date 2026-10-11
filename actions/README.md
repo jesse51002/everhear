@@ -100,3 +100,5 @@ cd lib/py && uv run --group dev python -m pytest
 ## The core actions
 
 `command`, `teleport`, `summon_around` and `save_place` are the dispatcher's first actions, each a class over a script of its own name; `stop` and `edit` end and change a running copy, by its name (`CopyName`): `edit`'s `values` are the values to change, checked against the copy's own action. A script runs only through an action. Their tests: [`tests/test_core_actions.py`](tests/test_core_actions.py).
+
+`incantation_create`, `incantation_edit` and `incantation_remove` make, change and remove a player's incantations, the phrases that fire an action the moment they are said: one script, `incantations`, writes the box's store, after vfg has checked the phrase, the players, the bound action and its values (`toolkit/README.md`, Incantations).

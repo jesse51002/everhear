@@ -10,6 +10,7 @@ so `vfg action run`, `vfg script list --fresh` and `vfg state` use this code too
     box = instances.Box("/opt/vfg", "/opt/mc", owner="Steve", poll=0.5, rcon=rcon)
 
     name, pid, proc = box.start(meta, as_=None)   # picks the copy's name and starts it
+    box.start(meta, wait=1.5)              # Busy (a CopyError) when copies.lock stays held 1.5 s
     box.wait(name, proc, 20)               # {"running", "code", "result"}: ended, timed out or reported
     box.stop(name)                         # True when it was running; everything tagged goes
     box.edit(name, {"cooldown": 0})        # live fields into the live file, else a restart
@@ -51,6 +52,9 @@ STOP_WAIT = 5.0       # SIGTERM, then SIGKILL after this many seconds
 # A copy runs on the Python this runs on: the box's 3.12, /opt/vfg/python/bin/python3.
 PYTHON = sys.executable or "python3"
 CHECK_S = 2.0         # an until-stopped copy is checked this long after its start
+# The box's secrets (/opt/vfg/.env, Contracts §11): a copy started by the bridge for a cast would
+# inherit them from its environment, and no script needs them.
+SECRETS = ("VFG_CLIENT_TOKEN", "TYPESAFE_API_KEY")
 
 
 class CopyError(Exception):
@@ -59,6 +63,11 @@ class CopyError(Exception):
 
 class NotDeployed(CopyError):
     """The copy's script is not on the box."""
+
+
+class Busy(CopyError):
+    """run/copies.lock stayed held (another copy starting, or one stopping for an edit) past a
+    start's wait."""
 
 
 def now_iso(t=None):
@@ -229,10 +238,11 @@ class Box(object):
 
     # ---- start
 
-    def lock(self):
-        """run/copies.lock, held while a name is picked and its copy started."""
+    def lock(self, wait=None):
+        """run/copies.lock, held while a name is picked and its copy started; with `wait`, Busy
+        once it has stayed held that many seconds."""
         os.makedirs(self.run, exist_ok=True)
-        return _Flock(os.path.join(self.run, "copies.lock"))
+        return _Flock(os.path.join(self.run, "copies.lock"), wait)
 
     def pick(self, action, as_=None):
         """The name for a new copy of `action` (call under lock())."""
@@ -248,11 +258,12 @@ class Box(object):
             n += 1
         return copy_name(action, n)
 
-    def start(self, meta, as_=None):
+    def start(self, meta, as_=None, wait=None):
         """Name a copy and start it, detached: (name, pid, the Popen to wait on).
 
         `meta` holds action, script, source (and server for a made script), values, live,
-        runs and task; its copy's earlier files (live edits, result, error) go."""
+        runs and task; its copy's earlier files (live edits, result, error) go. With `wait`,
+        it waits at most that many seconds for copies.lock, then raises Busy."""
         for k in ("action", "script"):
             if not NAME_RE.match(meta.get(k) or ""):
                 raise CopyError("%s is not a name: %r" % (k, meta.get(k)))
@@ -261,7 +272,7 @@ class Box(object):
         main_py = os.path.join(self.folder(meta), "main.py")
         if not os.path.isfile(main_py):
             raise NotDeployed("%s is not deployed (no %s)" % (meta["script"], main_py))
-        with self.lock():
+        with self.lock(wait):
             name = self.pick(meta["action"], as_)
             for ext in (".values.json", ".result.json", ".error"):
                 remove(self.path(name, ext))
@@ -276,7 +287,7 @@ class Box(object):
         log = self.path(name, ".log")
         with open(log, "w", encoding="utf-8") as f:
             f.write("--- %s run %s (%s) ---\n" % (now_iso(), name, meta["action"]))
-        env = dict(os.environ)
+        env = dict((k, v) for k, v in os.environ.items() if k not in SECRETS)
         # VFG_SCRIPT marks the process as this copy's (pid()); mc.py names its tag vfg_<copy> from it.
         env["VFG_SCRIPT"] = name
         env["VFG_INSTANCE"] = name
@@ -432,13 +443,25 @@ class Box(object):
 
 
 class _Flock(object):
-    def __init__(self, path):
+    def __init__(self, path, wait=None):
         self.path = path
+        self.wait = wait
 
     def __enter__(self):
         self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
-        fcntl.flock(self.fd, fcntl.LOCK_EX)
-        return self
+        if self.wait is None:
+            fcntl.flock(self.fd, fcntl.LOCK_EX)
+            return self
+        deadline = time.monotonic() + self.wait
+        while True:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    os.close(self.fd)
+                    raise Busy("%s stayed held for %.1f s" % (os.path.basename(self.path), self.wait))
+                time.sleep(0.005)
 
     def __exit__(self, *exc):
         fcntl.flock(self.fd, fcntl.LOCK_UN)

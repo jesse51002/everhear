@@ -1,5 +1,6 @@
 package com.voiceforgaming.vfg.setup;
 
+import com.voiceforgaming.vfg.kws.Spotter;
 import com.voiceforgaming.vfg.turn.TurnDetectors;
 import java.nio.file.Path;
 import java.util.List;
@@ -14,7 +15,7 @@ public final class Assets {
 	public static final String SHERPA_VERSION = "1.13.8";
 	public static final String MODEL_DATE = "2026-02-27";
 
-	public enum Kind { NATIVES, VAD, MODEL, TURN }
+	public enum Kind { NATIVES, VAD, MODEL, TURN, KWS }
 
 	/**
 	 * One pinned file: {@code path} is relative to {@link #BASE_URL}, or a whole URL when it
@@ -31,6 +32,9 @@ public final class Assets {
 			return path.contains("://") ? path : baseUrl + path;
 		}
 	}
+
+	/** The keyword spotter's model: icefall's English GigaSpeech zipformer, 3.3M parameters (Apache-2.0). */
+	public static final String KWS_GIGASPEECH = "gigaspeech-3.3m";
 
 	public static final List<Asset> PINNED = List.of(
 		new Asset(Kind.NATIVES, "win-x64", "v1.13.8/sherpa-onnx-native-lib-win-x64-1.13.8.jar", 8277046L,
@@ -55,7 +59,10 @@ public final class Assets {
 			"00cd131551e8d1e9011f31345edb632a26116dd83e159782c4ddff610718ea31"),
 		new Asset(Kind.TURN, TurnDetectors.TURN_1_MINI, "https://huggingface.co/p99lab/turn-1-mini/resolve/"
 			+ "076c86d1744a231d3a4cce31f3bbbd1211b4c281/onnx/turn-1-mini.step.int8dyn.onnx", 7000932L,
-			"a59a5b627190e7bf52a46dd25026ec8d4d0b01e1b0146643bb39161808c0619e"));
+			"a59a5b627190e7bf52a46dd25026ec8d4d0b01e1b0146643bb39161808c0619e"),
+		new Asset(Kind.KWS, KWS_GIGASPEECH,
+			"kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2", 17626723L,
+			"f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a"));
 
 	/** The config's {@code model} values, the default first. */
 	public static final String PARAKEET_110M = "parakeet-110m-en";
@@ -128,9 +135,17 @@ public final class Assets {
 		return model.kind() == Kind.MODEL && model.variant().startsWith("parakeet");
 	}
 
-	/** The files to take from a model archive. */
+	/** The files to take from a model archive (or the keyword model's). */
 	public static List<String> modelFiles(Asset model) {
+		if (model.kind() == Kind.KWS) {
+			return Spotter.FILES;
+		}
 		return isParakeet(model) ? PARAKEET_FILES : MOONSHINE_FILES;
+	}
+
+	/** The keyword spotter's model. */
+	public static Asset kws() {
+		return find(Kind.KWS, KWS_GIGASPEECH);
 	}
 
 	private static Asset find(Kind kind, String variant) {
@@ -174,6 +189,13 @@ public final class Assets {
 				? "parakeet-tdt-110m-en-36000-int8"
 				: "moonshine-" + a.variant() + "-en-" + MODEL_DATE);
 			case TURN -> vfgRoot.resolve("models").resolve("turn").resolve(a.variant());
+			case KWS -> vfgRoot.resolve("models").resolve("kws").resolve(kwsFolder(a));
 		};
+	}
+
+	/** The keyword model's folder name: its archive's name without {@code .tar.bz2}. */
+	private static String kwsFolder(Asset a) {
+		String name = a.fileName();
+		return name.endsWith(".tar.bz2") ? name.substring(0, name.length() - ".tar.bz2".length()) : name;
 	}
 }

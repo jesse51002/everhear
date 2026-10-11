@@ -26,12 +26,14 @@ import org.junit.jupiter.api.Test;
 
 /**
  * The mod's real request bytes against {@code tools/fake_bridge.py}, which checks every
- * rule of §2. Skipped where there is no {@code python3}. Loopback only.
+ * rule of §2, and the incantation invoke's and list's bodies. Skipped where there is no
+ * {@code python3}. Loopback only.
  */
 class FakeBridgeContractTest {
 	private static final String TOKEN = "test";
 	private Process bridge;
 	private String url;
+	private String base;
 	private final List<String> printed = Collections.synchronizedList(new ArrayList<>());
 
 	@BeforeEach
@@ -43,7 +45,8 @@ class FakeBridgeContractTest {
 		try (ServerSocket s = new ServerSocket(0)) {
 			port = s.getLocalPort();
 		}
-		ProcessBuilder pb = new ProcessBuilder("python3", script.toString(), "--port", Integer.toString(port));
+		ProcessBuilder pb = new ProcessBuilder("python3", script.toString(), "--port", Integer.toString(port),
+			"--incantation", "fire ball=fireball,fire bowl");
 		pb.environment().put("VFG_CLIENT_TOKEN", TOKEN);
 		pb.redirectErrorStream(true);
 		bridge = pb.start();
@@ -63,6 +66,7 @@ class FakeBridgeContractTest {
 		reader.setDaemon(true);
 		reader.start();
 		url = "http://127.0.0.1:" + port + "/v1/lines";
+		base = "http://127.0.0.1:" + port;
 	}
 
 	@AfterEach
@@ -136,6 +140,61 @@ class FakeBridgeContractTest {
 		assertEquals(400, post(http, LinePayload.create(UUID.randomUUID(), "Steve", "hi", 2_000, 1_000, -1, -2).toJson()));
 		assertEquals(400, post(http, new LinePayload(UUID.nameUUIDFromBytes(new byte[] {1}).toString(), "u", "Steve",
 			"hi", 1_000, 2_000, -1, -2).toJson()));
+	}
+
+	@Test
+	void theFakeBridgeAcceptsTheModsCastAndRepeatsTheAnswerForARetry() throws Exception {
+		List<String> answers = new ArrayList<>();
+		CastClient client = new CastClient(() -> new CastClient.Target(base + "/v1/casts", TOKEN),
+			System::currentTimeMillis, ms -> {}, new CastClient.Listener() {
+				@Override
+				public void attempted(CastPayload cast, int attempt, int status, String body) {
+					answers.add(status + " " + body);
+				}
+			});
+		long t = System.currentTimeMillis();
+		CastPayload cast = CastPayload.create(UUID.randomUUID(), "Steve", "fire ball", "fireball", t - 900, t - 300);
+		assertEquals("fired", client.deliver(cast, t).castStatus());
+		assertEquals("fired", client.deliver(cast, t).castStatus(), "a repeated client_cast_id");
+		assertEquals(answers.get(0), answers.get(1));
+		CastPayload noHeard = CastPayload.create(null, "Steve", "fire ball", null, t, t);
+		assertEquals(202, client.deliver(noHeard, t).status(), "heard is optional");
+		assertEquals(404, client.deliver(CastPayload.create(UUID.randomUUID(), "Steve", "ice wall", null, t, t), t)
+			.status(), "not bound for the player");
+		Thread.sleep(200);
+		assertEquals(2, printed.stream().filter(l -> l.contains("cast \"fire ball\"")).count(), String.valueOf(printed));
+	}
+
+	@Test
+	void theFakeBridgeRejectsCastBodiesThatBreakTheContract() throws Exception {
+		HttpClient http = HttpClient.newHttpClient();
+		String good = CastPayload.create(UUID.randomUUID(), "Steve", "fire ball", "fireball", 1_000, 2_000).toJson();
+		assertEquals(202, post(http, base + "/v1/casts", good));
+		assertEquals(400, post(http, base + "/v1/casts", good.replace("\"ended_at\":\"1970-01-01T00:00:02.000Z\"",
+			"\"ended_at\":\"1970-01-01T00:00:00.500Z\"")), "ended before it started");
+		assertEquals(400, post(http, base + "/v1/casts", good.replace("\"phrase\"", "\"extra\":1,\"phrase\"")));
+		assertEquals(400, post(http, base + "/v1/casts", good.replace("\"Steve\"", "\"Steve Jobs\"")));
+		assertEquals(401, HttpClient.newHttpClient().send(HttpRequest.newBuilder(URI.create(base + "/v1/casts"))
+			.header("Authorization", "Bearer wrong").POST(HttpRequest.BodyPublishers.ofString(good)).build(),
+			HttpResponse.BodyHandlers.discarding()).statusCode());
+	}
+
+	@Test
+	void theFakeBridgeListsTheIncantationsAndHoldsAnUnchangedList() throws Exception {
+		List<List<com.voiceforgaming.vfg.kws.Incantation>> lists = new ArrayList<>();
+		IncantationClient client = new IncantationClient(() -> new IncantationClient.Target(base + "/v1/incantations",
+			TOKEN), 0, ms -> {}, (version, list) -> lists.add(list));
+		assertEquals(IncantationClient.Poll.UPDATED, client.poll("Steve"));
+		assertEquals(1, client.version());
+		assertEquals(List.of(List.of(new com.voiceforgaming.vfg.kws.Incantation("fire ball",
+			List.of("fireball", "fire bowl"), 3.0))), lists);
+		assertEquals(IncantationClient.Poll.UNCHANGED, client.poll("Steve"), "after=1 and wait=0: 304 at once");
+	}
+
+	private int post(HttpClient http, String url, String body) throws Exception {
+		HttpRequest r = HttpRequest.newBuilder(URI.create(url)).header("Authorization", "Bearer " + TOKEN)
+			.header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body)).build();
+		return http.send(r, HttpResponse.BodyHandlers.discarding()).statusCode();
 	}
 
 	private int post(HttpClient http, String body) throws Exception {

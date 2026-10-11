@@ -60,7 +60,7 @@ PC_ONLY = ("actions", "pydantic")
 # What scripts/_lib deploys on the box beside the standard library: the kit, mc, and the
 # saved places, the refused commands and the copies (the core scripts' places, commands and
 # instances).
-ON_THE_BOX = ("kit", "mc", "places", "commands", "instances")
+ON_THE_BOX = ("kit", "mc", "places", "commands", "instances", "incantations")
 
 
 # ------------------------------------------------------------------ reading

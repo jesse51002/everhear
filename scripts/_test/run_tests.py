@@ -18,7 +18,8 @@ vfg_<name>: no entity, bossbar, forceload or objective. A seed (README.md beside
 README checked too, and must end as its README says; one that ends by itself runs to its end,
 on a clock ten times as fast (fast_clock/). The scripts under the six core actions (CORE) need
 values their defaults leave empty, so test_core.py runs them instead. The kit's tests
-(test_kit.py), instances.py's (test_instances.py), test_core.py and every test_presets_*.py and
+(test_kit.py), instances.py's (test_instances.py), incantations.py's (test_incantations.py),
+test_core.py and every test_presets_*.py and
 test_examples_*.py beside this file run with them. A script that ends by itself cleans up at
 once, without mc's 0.4 s grace for a last blast (VFG_EXIT_GRACE_S=0).
 """
@@ -268,11 +269,14 @@ class McTests(unittest.TestCase):
 # command, a place, a running copy), so test_core.py runs them, with those values, on a fake world.
 CORE = ("command", "edit", "save_place", "stop", "summon_around", "teleport")
 FAST_CLOCK = os.path.join(HERE, "fast_clock")
+# The incantation actions' script writes the incantation store from the entries vfg sends, and
+# sends no command: toolkit/tests/test_incantations.py runs it, as a copy, with those entries.
+STORE = ("incantations",)
 
 
 def script_names():
     return sorted(d for d in os.listdir(SCRIPTS) if not d.startswith("_") and not d.startswith(".")
-                  and d not in CORE and os.path.isdir(os.path.join(SCRIPTS, d)))
+                  and d not in CORE + STORE and os.path.isdir(os.path.join(SCRIPTS, d)))
 
 
 def readme(name):
@@ -568,7 +572,7 @@ def _add_kit_and_preset_tests():
     import glob
     import importlib
     for path in [os.path.join(HERE, "test_kit.py"), os.path.join(HERE, "test_instances.py"),
-                 os.path.join(HERE, "test_core.py")] \
+                 os.path.join(HERE, "test_incantations.py"), os.path.join(HERE, "test_core.py")] \
             + sorted(glob.glob(os.path.join(HERE, "test_presets_*.py"))) \
             + sorted(glob.glob(os.path.join(HERE, "test_examples_*.py"))):
         mod = importlib.import_module(os.path.basename(path)[:-3])

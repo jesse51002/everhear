@@ -73,6 +73,14 @@ class InstancesTests(unittest.TestCase):
         self.assertEqual(instances.copy_name("a" * 48, 2), "a" * 46 + "_2")
         self.assertEqual(sorted(c["copy"] for c in self.box.copies()), ["mine", "nap", "nap_2", "nap_3"])
 
+    def test_a_start_with_a_wait_gives_up_on_a_held_lock(self):
+        with self.box.lock():
+            began = time.monotonic()
+            with self.assertRaises(instances.Busy):
+                self.box.start(self.meta(), wait=0.05)
+            self.assertLess(time.monotonic() - began, 1)
+        self.assertEqual(self.start()[0], "nap")  # and nothing was left held
+
     def test_a_copy_gets_its_meta_and_waits_end_or_result(self):
         name, pid, proc = self.start(cooldown=2)
         got = self.box.wait(name, proc, 0.3)

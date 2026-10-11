@@ -56,6 +56,10 @@ public final class VfgConfig {
 	public static final double OLD_SILENCE_SECONDS = 5;
 	public static final double DEFAULT_VAD_THRESHOLD = 0.5;
 	public static final int DEFAULT_STT_THREADS = 2;
+	/** The keyword spotter's threshold: sherpa-onnx's default, which the spec starts from. */
+	public static final double DEFAULT_INCANTATION_THRESHOLD = 0.25;
+	/** The keyword spotter's per-token boost. */
+	public static final double DEFAULT_INCANTATION_BOOST = 1.5;
 
 	public String serverAddress = "";
 	public String bridgeUrl = "";
@@ -71,6 +75,10 @@ public final class VfgConfig {
 	public double vadThreshold = DEFAULT_VAD_THRESHOLD;
 	public int sttThreads = DEFAULT_STT_THREADS;
 	public boolean logText = false;
+	/** Whether the keyword spotter listens for the player's incantations. */
+	public boolean incantations = true;
+	public double incantationThreshold = DEFAULT_INCANTATION_THRESHOLD;
+	public double incantationBoost = DEFAULT_INCANTATION_BOOST;
 
 	private transient Map<String, String> env = System.getenv();
 
@@ -89,6 +97,9 @@ public final class VfgConfig {
 		c.vadThreshold = vadThreshold;
 		c.sttThreads = sttThreads;
 		c.logText = logText;
+		c.incantations = incantations;
+		c.incantationThreshold = incantationThreshold;
+		c.incantationBoost = incantationBoost;
 		c.env = env;
 		return c;
 	}
@@ -134,8 +145,23 @@ public final class VfgConfig {
 		return linesUrl(effectiveBridgeUrl(), effectiveServerAddress());
 	}
 
+	/** The full {@code …/v1/casts} URL, the incantation invoke, or {@code null}. */
+	public String castsUrl() {
+		return endpoint(effectiveBridgeUrl(), effectiveServerAddress(), "/v1/casts");
+	}
+
+	/** The full {@code …/v1/incantations} URL, the player's list, or {@code null}. */
+	public String incantationsUrl() {
+		return endpoint(effectiveBridgeUrl(), effectiveServerAddress(), "/v1/incantations");
+	}
+
 	/** An empty bridge URL means {@code http://<host of server address>:8787}. */
 	public static String linesUrl(String bridgeUrl, String serverAddress) {
+		return endpoint(bridgeUrl, serverAddress, "/v1/lines");
+	}
+
+	/** {@code path} on the bridge; an empty bridge URL means {@code http://<host of server address>:8787}. */
+	public static String endpoint(String bridgeUrl, String serverAddress, String path) {
 		String base = bridgeUrl == null ? "" : bridgeUrl.trim();
 		if (base.isEmpty()) {
 			String host = ServerAddressMatch.host(serverAddress);
@@ -147,7 +173,7 @@ public final class VfgConfig {
 		while (base.endsWith("/")) {
 			base = base.substring(0, base.length() - 1);
 		}
-		return base + "/v1/lines";
+		return base + path;
 	}
 
 	/** Whether a non-empty bridge URL is http or https with a host. An empty one is valid. */
@@ -248,6 +274,9 @@ public final class VfgConfig {
 		}
 		c.sttThreads = (int) threads;
 		c.logText = bool(o, "log_text", false);
+		c.incantations = bool(o, "incantations", true);
+		c.incantationThreshold = number(o, "incantation_threshold", DEFAULT_INCANTATION_THRESHOLD, 0.05, 0.95);
+		c.incantationBoost = number(o, "incantation_boost", DEFAULT_INCANTATION_BOOST, 0.5, 5);
 		return c;
 	}
 
@@ -333,6 +362,9 @@ public final class VfgConfig {
 		o.addProperty("vad_threshold", vadThreshold);
 		o.addProperty("stt_threads", sttThreads);
 		o.addProperty("log_text", logText);
+		o.addProperty("incantations", incantations);
+		o.addProperty("incantation_threshold", incantationThreshold);
+		o.addProperty("incantation_boost", incantationBoost);
 		return o;
 	}
 
@@ -364,6 +396,8 @@ public final class VfgConfig {
 			+ (clientToken.isEmpty() ? "(empty)" : "(set)") + ", mic_device=" + micDevice + ", model=" + model
 			+ ", icon_corner=" + iconCorner + ", muted=" + muted + ", turn_model=" + turnModel + ", turn_threshold="
 			+ (turnThreshold == null ? "(the model's own)" : turnThreshold) + ", silence_seconds=" + silenceSeconds
-			+ ", vad_threshold=" + vadThreshold + ", stt_threads=" + sttThreads + ", log_text=" + logText + "]";
+			+ ", vad_threshold=" + vadThreshold + ", stt_threads=" + sttThreads + ", log_text=" + logText
+			+ ", incantations=" + incantations + ", incantation_threshold=" + incantationThreshold
+			+ ", incantation_boost=" + incantationBoost + "]";
 	}
 }

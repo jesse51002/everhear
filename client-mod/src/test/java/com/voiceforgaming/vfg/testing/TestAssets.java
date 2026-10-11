@@ -1,5 +1,6 @@
 package com.voiceforgaming.vfg.testing;
 
+import com.voiceforgaming.vfg.kws.Spotter;
 import com.voiceforgaming.vfg.setup.AssetInstaller;
 import com.voiceforgaming.vfg.setup.Assets;
 import com.voiceforgaming.vfg.speech.SpeechEngine;
@@ -103,6 +104,16 @@ public final class TestAssets {
 	 */
 	public static TurnDetector turnDetector(String turnModel) throws Exception {
 		return TurnDetectors.load(turnModel, nativesDir(), turnModel(turnModel));
+	}
+
+	/** Installs (once) the keyword spotter's model through the mod's installer, and returns its folder. */
+	public static Path kwsModelDir() throws Exception {
+		return installer().install(Assets.kws());
+	}
+
+	/** Installs (once) and loads the keyword spotter's model as the mod does; load the engine first, as the mod does. */
+	public static Spotter spotter() throws Exception {
+		return Spotter.load(nativesDir(), kwsModelDir());
 	}
 
 	/** A pinned extra file, fetched once into {@code downloads/} through the mod's installer. */
