@@ -57,6 +57,8 @@ FEED_RE = re.compile(r"^([A-Z]+)#(\d+) (\d\d:\d\d:\d\d) (?:([^|]*?) )?\| (.*)$")
 # A model call in brain.log: the brain's, Respond's or the orchestrator's, for a line (#seq) or a
 # report (the task's name).
 LOG_CALL = re.compile(r"^(\S+) (brain|respond|orchestrator) (#\d+|[a-z][a-z0-9_]{1,31}) (\d+) ms \$([\d.]+), (\d+) in")
+# The brain's decision for a line in brain.log: its parts, each `<to>: <instruction>`, joined by " | ".
+LOG_DECISION = r"^\S+ brain %s \S+: .*? -> (.*?) \|\| reply: "
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")   # a task's name
 
 
@@ -405,12 +407,27 @@ class Run:
         return wait_for(rows, timeout) or []
 
     def calls(self, ref):
+        """The model calls for `ref` in this run's brain.log: brain.log outlives a run, and the
+        next run's line refs (#2, #5, …) are the same."""
         out = []
-        for line in self.live.log().splitlines():
+        for line in self.live.log_since(self.live.mark).splitlines():
             m = LOG_CALL.match(line)
             if m and m.group(3) == ref:
                 out.append((m.group(2), int(m.group(4)), float(m.group(5)), parse_iso(m.group(1))))
         return out
+
+    def handed(self, seq, timeout=30):
+        """Once every orchestrator call for line #seq is in brain.log, how many there were: the
+        brain may split a line into several orchestrator parts, one call each, one after another."""
+        def done():
+            log = self.live.log_since(self.live.mark)
+            m = re.search(LOG_DECISION % ("#%d" % seq), log, re.M)
+            if not m:
+                return None
+            n = sum(1 for part in m.group(1).split(" | ") if part.startswith("orchestrator: "))
+            calls = len(re.findall(r"^\S+ orchestrator #%d part \d+ " % seq, log, re.M))
+            return [n] if calls >= n else None
+        return (wait_for(done, timeout) or [None])[0]
 
     def table(self):
         print("\nLATENCY: a line fed -> its reply said (the feed rows' times); the model calls from brain.log, "
@@ -581,7 +598,8 @@ def implementer(run):
     rep.note("Steve stands at %s" % " ".join("%.1f" % c for c in centre))
     mark = len(live.log())
     a = run.ask("Steve", "put a ring of eight torches on the ground around me, three blocks out", timeout=90)
-    opened = [r for r in live.ai(a["seq"], ("task",)) if r["text"].startswith("new: ")]
+    # The AI task row and the reply are both written with nobody waiting: either may land first.
+    opened = wait_for(lambda: [r for r in live.ai(a["seq"], ("task",)) if r["text"].startswith("new: ")], 10) or []
     tid = opened[0]["fields"].split()[1] if opened else None
     library = tid and os.path.exists(os.path.join(REPO, "actions", tid + ".py"))
     rep.check(tid and NAME_RE.match(tid) and not library and len(opened) == 1,
@@ -645,7 +663,12 @@ def implementer(run):
     # The follow-up, by its name, which no value covers: to the same task's implementer, which
     # resumes its session.
     b = run.ask("Steve", "make those soul torches, and keep the ring round me as I walk until I say stop", timeout=90)
-    fu = [r for r in live.ai(b["seq"], ("task",), tid) if r["text"].startswith("follow-up: ")]
+    # The brain's prompt splits a line into its parts, so this one may be two orchestrator parts,
+    # each a follow-up to the task, the second run once the first has reported: all of them are
+    # waited for before the copy and the stop are checked.
+    parts = run.handed(b["seq"])
+    fu = wait_for(lambda: [r for r in live.ai(b["seq"], ("task",), tid) if r["text"].startswith("follow-up: ")], 10) or []
+    rep.note("the brain gave the line %s orchestrator part(s); %d follow-up(s) to %s" % (parts, len(fu), tid))
     other = [r for r in live.ai(b["seq"], ("task",)) if r["fields"] != "task %s" % tid]
     rep.check(fu and not other, "the orchestrator sent it to %s: a second AI task %s row, %r"
               % (tid, tid, fu and short(fu[0]["text"], 120)),
@@ -654,14 +677,17 @@ def implementer(run):
     rep.check(resumed, "the implementer resumed %s's session (%s; its row's %s)"
               % (tid, resumed and resumed.group(1), row.get("session")))
     t1 = fu[0]["at"] if fu else None
-    res2 = wait_for(lambda: len(live.ai(a["seq"], ("result",), tid)) >= 2, TASK_S, 1.0)
-    rep.check(res2, "the follow-up reported, and the brain recorded it", short(live.log_since(mark)[-2000:]))
+    want = max(1, len(fu))
+    res2 = wait_for(lambda: len(live.ai(b["seq"], ("result",), tid)) >= want
+                    and (live.task_row(tid) or {}).get("status") != "open", TASK_S * want, 1.0)
+    rep.check(res2, "the follow-up%s reported, and the brain recorded %s" % (("s", "them") if want > 1 else ("", "it")),
+              short(live.log_since(mark)[-2000:]))
     if res2:
         time.sleep(3)
         results = live.ai(b["seq"], ("result",), tid)
         said = [r for r in live.ai(b["seq"], ("say",), tid) if r["seq"] > (b.get("reply_seq") or 0)]
-        rep.check(len(said) == 1 and len(results) == 1, "again one chat line (%r) and one AI result row (%r)"
-                  % (said and said[0]["text"], results and results[0]["text"]))
+        rep.check(len(said) == want and len(results) == want, "again one chat line and one AI result row a "
+                  "follow-up: %r; %r" % ([r["text"] for r in said], [r["text"] for r in results]))
         reports = re.findall(r"^\S+ implementer %s (done|failed): (.*)$" % tid, live.log_since(mark), re.M)
         tms = re.findall(r"^\S+ implementer %s (?:ended|error) \((\w+), (\d+) turns, (\d+) s\)" % tid,
                          live.log_since(mark), re.M)
