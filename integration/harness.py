@@ -1066,7 +1066,8 @@ def path9(box, rep, ctx):
     box.voice("Alex", "is that the big one?", -12.0)
     a, b = box.wait_judged("the big one", 6), box.wait_judged("is that the big one?", 6)
     if not rep.check(a and b and a["jev_class"] == b["jev_class"] == "not_relevant",
-                     "setup: Steve's 'the big one' and Alex's 'is that the big one?' judged not_relevant", "%r %r" % (a, b)):
+                     "setup: Steve's 'the big one' and Alex's 'is that the big one?' judged not_relevant",
+                     "%r %r" % (a, b)):
         return
     # the ask's routing call, canned in D2's terms: act, and let down -> action_oriented, d_what's confidence
     box.fake_jev_api("/next", {"answers": {
@@ -1081,7 +1082,8 @@ def path9(box, rep, ctx):
               "one LINE for the ask, under its fields and time, its text the group: "
               "'Steve voice action_oriented 0.87 -9dB | %s'" % group, "%r" % box.watch_lines()[-4:])
     calls = [c["body"] for c in box.fake_jev_api("/calls")
-             if any("part_of_the_ask" in (q.get("criteria") or {}) and "“make it bigger”" in q.get("instructions", "")
+             if any("part_of_the_ask" in (q.get("criteria") or {})
+                    and "“make it bigger”" in q.get("instructions", "")
                     for q in ((c["body"] or {}).get("questions") or {}).values())]
     asked = [q["instructions"] for q in calls[-1]["questions"].values()] if calls else []
     use = box.sql("SELECT * FROM usage WHERE ref = ?", ("gather:%s" % (d or {}).get("id"),))
