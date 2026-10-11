@@ -76,8 +76,9 @@ class PartBase(BaseModel):
 
     def values(self) -> dict[str, Any]:
         """The action as `vfg action run` takes it: {field: value}; for edit, the copy and the
-        values to change, {"copy": …, "values": {…}}. A Value cannot hold an object, so a field
-        that holds another action's values (incantation_create's) comes as `values.<name>` keys,
+        values to change, {"copy": …, "values": {…}}, whether each came as a key of its own or
+        as `values.<name>`, or some each way. A Value cannot hold an object, so a field that
+        holds another action's values (incantation_create's) comes as `values.<name>` keys,
         gathered here into {"values": {…}}."""
         given = {v.key.strip(): v.value for v in self.action or []}
         inner = {k.split(".", 1)[1].strip(): given.pop(k) for k in list(given) if k.startswith("values.")}
@@ -87,7 +88,7 @@ class PartBase(BaseModel):
             return given
         copy = given.pop("copy", "")
         nested = given.pop("values", None)
-        return {"copy": copy, "values": nested if isinstance(nested, dict) else given}
+        return {"copy": copy, "values": {**given, **nested} if isinstance(nested, dict) else given}
 
 
 class DecisionBase(BaseModel):

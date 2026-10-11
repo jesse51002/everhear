@@ -1557,7 +1557,9 @@ def action_words(words):
 def run_named(cfg, a, name, given, as_=None, task=None):
     """Any action, as vfg action run and its shortcuts run it: edit through run_edit and stop
     through run_stop, which write the copy they name through to running.json; the incantation
-    actions through run_incantation; the rest through run_action."""
+    actions through run_incantation; the rest through run_action, and after a run that went
+    well, which deployed the action's script as it is here, the incantations bound to it made
+    to follow it (refresh_incantations, its notes the line's)."""
     if name == "edit":
         copy, changes = edit_words(given)
         return run_edit(cfg, a, copy, changes, task)
@@ -1623,8 +1625,6 @@ def cmd_action_check(cfg, a):
         out("\n".join("%s: %s" % (action_rel(cfg, cat, a.name), p) for p in problems))
         raise Fail(1, "%d problem%s in %s" % (len(problems), "" if len(problems) == 1 else "s", a.name))
     out("ok: " + action_rel(cfg, cat, a.name))
-    for note in refresh_incantations(cfg, a, a.name):
-        out(note)
     return 0
 
 
@@ -2735,8 +2735,8 @@ def incant_deploy(cfg, a, home, folders):
 
 def incant_given(given):
     """values= as a JSON object, as the dispatcher and the brain give a dict on the command line,
-    and values.<name>=<value> words gathered into it, each value read as JSON (6, true,
-    '["give Steve bread"]') or else kept as text."""
+    and values.<name>=<value> words gathered into it as their text: (given, the names given as
+    words), read once the bound action's fields are known (incant_typed)."""
     vals = given.get("values")
     if isinstance(vals, str):
         try:
@@ -2748,18 +2748,43 @@ def incant_given(given):
     if inner:
         if vals is not None and not isinstance(vals, dict):
             raise Fail(2, "values= is a JSON object of the action's values")
-        vals = dict(vals or {}, **dict((k, incant_word(x)) for k, x in inner.items()))
+        vals = dict(vals or {}, **inner)
     if vals is not given.get("values") or inner:
         given = dict(((k, x) for k, x in given.items() if not k.startswith("values.")), values=vals)
-    return given
+    return given, set(inner)
 
 
 def incant_word(x):
-    """A values.<name>= word's value: JSON when it reads as JSON, else the text itself."""
+    """A values.<name>= word's value for a field that does not take text: JSON when it reads as
+    JSON (6, true, ["give Steve bread"]), else the text itself, for the field to read (a,b,c)."""
     try:
         return json.loads(x)
     except ValueError:
         return x
+
+
+def incant_takes_text(va, cls, f):
+    """Whether field `f` of action `cls` takes text as it is: text, a kind of text (a player, a
+    block, a command ...), or one of some words."""
+    T = va._types(cls)
+    t, _ = T.unwrap(f.annotation, f.metadata)
+    if t is str:
+        return True
+    opts = T.choices(f.annotation, f.metadata)
+    return T.kind(f.annotation, f.metadata) == "enum" and bool(opts) and all(isinstance(o, str) for o in opts)
+
+
+def incant_typed(va, cls, vals, words):
+    """The values for bound action `cls`, those given as values.<name>= words read now that its
+    fields are known: a field that takes text keeps the word as it is (values.title=1 is the
+    text "1"), any other gets it read as JSON (incant_word). A name it has no field for stays,
+    for the check to refuse."""
+    out = dict(vals)
+    for k in words:
+        f = cls.model_fields.get(k)
+        if k in out and isinstance(out[k], str) and f is not None and not incant_takes_text(va, cls, f):
+            out[k] = incant_word(out[k])
+    return out
 
 
 def run_incantation(cfg, a, name, given, as_=None, task=None):
@@ -2771,7 +2796,7 @@ def run_incantation(cfg, a, name, given, as_=None, task=None):
     cfg.require_ssh()
     inc = incantations_module()
     va, cat, cls = action_class(cfg, name)
-    given = incant_given(given)
+    given, words = incant_given(given)
     try:
         own = va.check_values(cls, given)
     except ValueError as e:
@@ -2796,11 +2821,12 @@ def run_incantation(cfg, a, name, given, as_=None, task=None):
             note_incantations(cfg, drop=line["facts"].get("ids") or [], version=line["facts"].get("version"))
         return line
     if name == "incantation_edit":
-        return edit_incantation(cfg, a, inc, va, given, v, players, phrase, mine, own.notes, as_, task)
+        return edit_incantation(cfg, a, inc, va, given, words, v, players, phrase, mine, own.notes, as_, task)
 
     # create: the bound action and its values, checked as a run of it would check them, every
     # player field left out or empty filled with a stand-in: the caster's, as it is cast.
     _, bcat, bcls = incant_bound(cfg, v["action"])
+    v = dict(v, values=incant_typed(va, bcls, v["values"], words))
     caster = [k for k in incant_player_fields(va, bcls) if incant_blank(v["values"].get(k))]
     try:
         checked = checked_values(cfg, a, va, bcls, dict(v["values"], **dict((k, INCANT_STANDIN) for k in caster)))
@@ -2851,41 +2877,68 @@ def run_incantation(cfg, a, name, given, as_=None, task=None):
     return line
 
 
-def refresh_incantations(cfg, a, name):
-    """The incantations bound to action `name`, after it changed: each one's values made again
-    from what was asked ("asked") over the action's defaults as they are now, and the box's
-    entry updated where they differ, so a fix to the action reaches the phrase too. An entry
-    from before "asked" was kept stays as it is. Its notes; never raises, the run or check that
-    called it stands."""
+def incant_remade(va, bcls, e):
+    """An entry made again from what was asked ("asked") over its action's defaults as they are
+    now, its caster fields kept the caster's: (what changes, {"values", "live", "asked"} whole,
+    or None when the entry holds them already; why it keeps its values, or None). No SSH: a
+    saved place in what was asked was checked when it was asked, and a fixed field asked for
+    by an edit, which may change one, stays asked."""
+    caster = [k for k in e.get("caster_fields") or [] if k in bcls.model_fields]
+    asked = dict((k, x) for k, x in (e.get("asked") or {}).items() if k in bcls.model_fields and k not in caster)
     try:
-        cached = read_incant_cache(cfg)
-        rows = cached[0]["incantations"] if cached else []
-        if not any(e.get("action") == name and "asked" in e for e in rows):
-            return []
-        va, _, _ = action_class(cfg, "incantation_edit")
+        checked = va.check_values(bcls, dict(asked, **dict((k, INCANT_STANDIN) for k in caster)), allow_fixed=True)
+    except ValueError as err:
+        return None, '"%s" for %s keeps its values: %s' % (e.get("phrase"), e.get("player"), err)
+    sets = {"values": dict(checked.values, **dict((k, "") for k in caster)), "live": list(checked.live),
+            "asked": asked}
+    if sets == {"values": e.get("values"), "live": list(e.get("live") or []), "asked": e.get("asked")}:
+        return None, None
+    return sets, None
+
+
+def refresh_incantations(cfg, a, name):
+    """After a run of action `name` that went well (vfg action run has just deployed its script
+    as it is here): each incantation bound to it made again from what was asked over the
+    action's defaults as they are now (incant_remade), so a fix to the action reaches the
+    phrase too. Decided from the cache alone: while every binding of it there holds what it
+    would be made again, nothing is sent. When one would change, the store is read (one SSH
+    call), each binding of the action made again from the box's own entry, and each that
+    changes updated, its values, live and asked replaced whole, so a value the action no longer
+    has goes from the box and the cache alike. An entry from before "asked" was kept stays as
+    it is. Its notes, one when there is no cache to decide from; never raises: the run that
+    called it stands."""
+    cached = read_incant_cache(cfg)
+    if cached is None:
+        return ["incantations of %s not checked: no cache of them on this PC (vfg incantation list --fresh)"
+                % name]
+    mine = [e for e in cached[0]["incantations"] if isinstance(e, dict) and e.get("action") == name and "asked" in e]
+    if not mine:
+        return []
+    try:
+        va = actions_lib()
         _, _, bcls = incant_bound(cfg, name)
+    except Fail as f:
+        return ["incantations of %s not refreshed: %s" % (name, f.msg)]
+    local = [incant_remade(va, bcls, e) for e in mine]
+    if not any(sets for sets, _ in local):
+        return [why for _, why in local if why]
+    try:
         rows = fetch_incantations(cfg, a)[0]["incantations"]
     except Fail as f:
         return ["incantations of %s not refreshed: %s" % (name, f.msg)]
     notes = []
     for e in rows:
-        if e.get("action") != name or "asked" not in e:
+        if not isinstance(e, dict) or e.get("action") != name or "asked" not in e:
             continue
-        caster = [k for k in e.get("caster_fields") or [] if k in bcls.model_fields]
-        asked = dict((k, x) for k, x in (e.get("asked") or {}).items() if k in bcls.model_fields and k not in caster)
-        try:
-            checked = checked_values(cfg, a, va, bcls, dict(asked, **dict((k, INCANT_STANDIN) for k in caster)))
-        except Fail as f:
-            notes.append('"%s" for %s keeps its values: %s' % (e.get("phrase"), e.get("player"), f.msg))
+        sets, why = incant_remade(va, bcls, e)
+        if why:
+            notes.append(why)
+        if not sets:
             continue
-        stored = dict(checked.values, **dict((k, "") for k in caster))
-        if stored == e.get("values") and list(checked.live) == list(e.get("live") or []):
-            continue
-        sets = {"values": stored, "live": list(checked.live), "asked": asked}
         try:
             line = run_action(cfg, a, "incantation_edit", {"player": e["player"], "phrase": e["phrase"]},
                               extra={"op": "update", "entries": [{"player": e["player"], "phrase": e["phrase"],
-                                                                   "set": sets}]})
+                                                                   "set": sets, "replace": True}]})
         except Fail as f:
             notes.append('"%s" for %s not refreshed: %s' % (e.get("phrase"), e.get("player"), f.msg))
             continue
@@ -2897,12 +2950,15 @@ def refresh_incantations(cfg, a, name):
     return notes
 
 
-def edit_incantation(cfg, a, inc, va, given, v, players, phrase, mine, notes, as_, task):
+def edit_incantation(cfg, a, inc, va, given, words, v, players, phrase, mine, notes, as_, task):
     """incantation_edit: each player's entry read from the box (never the cache: two edits close
-    together must both see what the other did), its values checked against its action over the
-    ones it has, its aliases normalised and bind-checked again; then the box updates what
-    changed, the values as only the keys given, merged over what the store holds as it writes,
-    so two edits of different values both land."""
+    together must both see what the other did), its values (values.<name>= words read for its
+    action, incant_typed) checked against its action over the ones it has, its aliases
+    normalised and bind-checked again; then the box updates what changed. The values and what
+    was asked go as only the keys given, with the keys that became the caster's to drop from
+    asked, and the caster fields only when they change, all merged over what the store holds as
+    it writes, so two edits of different values both land; the cache gets each entry as the box
+    makes it (incantations.updated)."""
     change = [k for k in ("cooldown_s", "aliases") if k in given] + (["values"] if given.get("values") else [])
     if not change:
         raise Fail(2, "nothing to change: give values=, cooldown_s= or aliases=")
@@ -2914,25 +2970,27 @@ def edit_incantation(cfg, a, inc, va, given, v, players, phrase, mine, notes, as
                    % (phrase, " and ".join("everyone (@a)" if p == "@a" else p for p in missing)))
     notes, entries, after = list(notes), [], []
     for e in found:
-        sets = {}
+        sets, drop = {}, []
         if "values" in change:
             _, _, bcls = incant_bound(cfg, e.get("action") or "")
+            vals = incant_typed(va, bcls, v["values"], words)
             # A player field given empty becomes the caster's; one given a name is not any more.
             was = [k for k in e.get("caster_fields") or [] if k in bcls.model_fields]
             caster = [k for k in incant_player_fields(va, bcls)
-                      if (incant_blank(v["values"][k]) if k in v["values"] else k in was)]
+                      if (incant_blank(vals[k]) if k in vals else k in was)]
             now = dict(e.get("values") or {}, **dict((k, INCANT_STANDIN) for k in was))
-            new = dict(v["values"], **dict((k, INCANT_STANDIN) for k in caster if k in v["values"]))
+            new = dict(vals, **dict((k, INCANT_STANDIN) for k in caster if k in vals))
             try:
                 ed = with_places(cfg, a, lambda places: va.check_edit(bcls, now, new, places=places))
             except Fail as f:
                 raise Fail(f.code, "values for %s: %s" % (e.get("action"), f.msg))
             notes += [n for n in ed.notes if n not in notes]
-            sets["values"] = dict((k, "" if k in caster else ed.values[k]) for k in v["values"])
-            sets["caster_fields"] = caster
+            sets["values"] = dict((k, "" if k in caster else ed.values[k]) for k in vals)
+            if caster != list(e.get("caster_fields") or []):
+                sets["caster_fields"] = caster
             if "asked" in e:
-                sets["asked"] = dict(((k, x) for k, x in (e.get("asked") or {}).items() if k not in caster),
-                                     **dict((k, ed.values[k]) for k in v["values"] if k not in caster))
+                sets["asked"] = dict((k, ed.values[k]) for k in vals if k not in caster)
+                drop = [k for k in vals if k in caster]
         if "cooldown_s" in change:
             sets["cooldown_s"] = float(v["cooldown_s"])
         if "aliases" in change:
@@ -2943,9 +3001,9 @@ def edit_incantation(cfg, a, inc, va, given, v, players, phrase, mine, notes, as
                              + ", ".join(left))
             notes += [w for w in incant_warnings(inc, phrase, sets["aliases"], [e["player"]], rows, skip=e)
                       if w not in notes]
-        entries.append({"player": e["player"], "phrase": e["phrase"], "set": sets})
-        after.append(dict(e, **dict(sets, values=dict(e.get("values") or {}, **sets["values"])))
-                     if "values" in sets else dict(e, **sets))
+        entries.append(dict({"player": e["player"], "phrase": e["phrase"], "set": sets},
+                            **({"drop_asked": drop} if drop else {})))
+        after.append(inc.updated(e, sets, merge=True, drop_asked=drop))
     line = run_action(cfg, a, "incantation_edit", dict(mine, **dict((k, v[k]) for k in change)), as_, task,
                       extra={"op": "update", "entries": entries})
     line["notes"] = notes + line["notes"]

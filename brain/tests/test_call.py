@@ -115,3 +115,11 @@ def test_values_keys_are_gathered_into_the_values_an_incantation_binds():
         "values.commands": ["give Steve minecraft:cooked_beef 64"]}))
     assert p.values() == {"player": "Steve", "phrase": "juicy steak", "action": "command",
                           "values": {"commands": ["give Steve minecraft:cooked_beef 64"]}}
+
+
+def test_an_edit_keeps_its_flat_keys_beside_its_values_keys():
+    p = PartBase.model_validate(part("edit", "no cooldown and a longer railgun for Alex", {
+        "copy": "railgun_2", "values.cooldown": 0, "length": 80}))
+    assert p.values() == {"copy": "railgun_2", "values": {"cooldown": 0, "length": 80}}
+    p = PartBase.model_validate(part("edit", "a longer railgun for Alex", {"copy": "railgun_2", "length": 80}))
+    assert p.values() == {"copy": "railgun_2", "values": {"length": 80}}

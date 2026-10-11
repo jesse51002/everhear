@@ -78,6 +78,14 @@ TABLE = [
     (bash("vfg history --source ai --since -10m"), None),
     (bash("vfg --timeout 30 cmd 'time set day'"),
      "Refused: vfg takes no option before its command: vfg cmd '<command>', vfg action run ..., as it is."),
+    # key={...,...}, a JSON object of two keys or more in one word, which Claude Code's own check
+    # refuses: values.<name>= words instead; an object as a word of its own, or NBT in vfg cmd, passes
+    (bash("""vfg action run x values='{"a":1,"b":2}'"""), DENY.json_object),
+    (bash("""vfg action run incantation_edit player=Steve phrase='fire ball' values={"a":1,"b":2} --task T7"""),
+     DENY.json_object),
+    (bash("vfg action run x values.a=1 values.b=2 --task T7"), None),
+    (bash("""vfg action run x values='{"a":1}' --task T7"""), None),
+    (bash("""vfg cmd 'summon zombie ~ ~ ~ {CustomName:"x",Glowing:1b}'"""), None),
     (bash("vfg say 'hi'"), not_ours("say")),
     (bash("vfg route --task T7"), not_ours("route")),
     # the shapes that run: joined, 2>&1 and /dev/null, piped into head, tail and grep

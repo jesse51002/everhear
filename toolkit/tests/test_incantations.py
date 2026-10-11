@@ -29,6 +29,37 @@ from harness import REPO, Box, BoxCase, FakeRcon  # noqa: E402
 import standins  # noqa: E402
 
 FIRE = ["say fire"]
+# The tests' own action for following one: TestFollow writes it again with a default changed and
+# a field gone. Its script reads none of its values.
+ZAP = '''from pydantic import Field
+
+from actions._types import Action, Players
+
+
+class Zap(Action):
+    """Zap someone (a test's stand-in)."""
+
+    script = "zap"
+    runs = "once"
+    takes = ["player", "power"]
+
+    player: Players = "@a"
+    """who is zapped"""
+    power: int = Field(2, ge=1, le=10)
+    """how hard"""
+    speed: int = 1
+    """how fast"""
+    title: str = ""
+    """what it is called"""
+    extra: bool = False
+    """a value the action drops later"""
+'''
+ZAP_SCRIPT = '''"""Zap: says it zapped, and ends."""
+from kit import result, values
+
+values()
+result("zapped")
+'''
 
 
 def install(repo):
@@ -323,6 +354,110 @@ class TestList(Case):
         self.assertEqual(self.calls(), before)  # answered from the cache
         self.listed(fresh=True)
         self.assertEqual(self.calls(), before + 1)
+
+
+class TestFollow(Case):
+    """What was asked ("asked"), kept beside the values, and a binding made again from it over its
+    action's defaults after a run of the action: decided from the cache, with no SSH while
+    nothing changed."""
+
+    def setUp(self):
+        Case.setUp(self)
+        self.zap(ZAP)
+
+    def zap(self, text):
+        self.box.write("actions/zap.py", text)
+        self.box.write("scripts/zap/main.py", ZAP_SCRIPT)
+        self.vfg.catalog(self.cfg)[1].refresh()
+
+    def ops(self, since):
+        """The remote programs run since call `since`, by op."""
+        return [c["args"].get("op") for c in self.box.calls[since:] if "args" in c]
+
+    def test_what_was_asked_is_kept_without_the_caster_fields(self):
+        self.create(phrase="zap it", action="zap", values={"power": 4, "title": "bolt", "player": ""})
+        e = self.entry("steve.zap_it")
+        self.assertEqual((e["asked"], e["caster_fields"]), ({"power": 4, "title": "bolt"}, ["player"]))
+        self.assertEqual(e["values"], {"player": "", "power": 4, "speed": 1, "title": "bolt", "extra": False})
+        self.assertEqual(self.cache()["incantations"], [e])
+
+    def test_values_words_are_read_as_the_bound_actions_fields_take_them(self):
+        line = self.run_("incantation_create", player="Steve", phrase="zap it", action="zap",
+                         **{"values.title": "1", "values.power": "4", "values.extra": "true"})
+        self.assertTrue(line["ok"], line)
+        e = self.entry("steve.zap_it")
+        self.assertEqual(e["asked"], {"title": "1", "power": 4, "extra": True})  # text stays text
+        self.run_("incantation_edit", player="Steve", phrase="zap it", **{"values.title": "2.5", "values.speed": "2"})
+        e = self.entry("steve.zap_it")
+        self.assertEqual((e["values"]["title"], e["values"]["speed"], e["asked"]["title"]), ("2.5", 2, "2.5"))
+        # A list: JSON, else the field's own reading of the words.
+        self.run_("incantation_create", player="Steve", phrase="say it", action="command",
+                  **{"values.commands": '["say a, b"]'})
+        self.run_("incantation_create", player="Steve", phrase="say more", action="command",
+                  **{"values.commands": "say a, say b"})
+        self.assertEqual((self.entry("steve.say_it")["values"]["commands"],
+                          self.entry("steve.say_more")["values"]["commands"]), (["say a, b"], ["say a", "say b"]))
+
+    def test_edits_merge_what_was_asked_and_a_field_made_the_casters_leaves_it(self):
+        self.create(phrase="zap it", action="zap", values={"power": 4})
+        read_before = copy.deepcopy(self.vfg.fetch_incantations(self.cfg, self.a))
+        self.run_("incantation_edit", player="Steve", phrase="zap it", **{"values.title": "bolt"})
+        # The second edit read the entry before the first landed: no title asked, to it.
+        with mock.patch.object(self.vfg, "fetch_incantations", lambda cfg, a, stamps=None: read_before):
+            self.run_("incantation_edit", player="Steve", phrase="zap it", **{"values.speed": "3",
+                                                                              "values.player": "Alex"})
+        e = self.entry("steve.zap_it")
+        self.assertEqual(e["asked"], {"power": 4, "title": "bolt", "speed": 3, "player": "Alex"})
+        self.assertEqual((e["values"]["title"], e["values"]["player"], e["caster_fields"]), ("bolt", "Alex", []))
+        line = self.run_("incantation_edit", player="Steve", phrase="zap it", **{"values.player": ""})
+        self.assertTrue(line["ok"], line)
+        e = self.entry("steve.zap_it")
+        self.assertEqual(e["asked"], {"power": 4, "title": "bolt", "speed": 3})
+        self.assertEqual((e["values"]["player"], e["caster_fields"]), ("", ["player"]))
+        self.assertEqual(self.cache()["incantations"], [e])  # the cache's, as the box made it
+
+    def test_a_run_sends_nothing_more_while_its_bindings_hold_what_they_would_be_made(self):
+        self.create(phrase="zap it", action="zap", values={"power": 4})
+        before = len(self.box.calls)
+        line = self.run_("zap")
+        self.assertTrue(line["ok"], line)
+        self.assertEqual((line["notes"], self.ops(before)), ([], ["run"]))
+        self.assertEqual(self.vfg.refresh_incantations(self.cfg, self.a, "zap"), [])
+        self.assertEqual(self.ops(before), ["run"])
+        # No cache: nothing to decide from, and a note says so, with no SSH either.
+        os.remove(os.path.join(self.box.vhome, "incantations.json"))
+        self.assertEqual(self.vfg.refresh_incantations(self.cfg, self.a, "zap"),
+                         ["incantations of zap not checked: no cache of them on this PC (vfg incantation list --fresh)"])
+        self.assertEqual(self.ops(before), ["run"])
+
+    def test_after_the_action_changed_a_run_makes_its_bindings_again_replacing_their_values(self):
+        self.create(phrase="zap it", action="zap", values={"power": 4})
+        self.create(phrase="zap old", action="zap", values={"power": 5})
+        # A binding made before "asked" was kept stays as it is.
+        for path in (self.store_path(), os.path.join(self.box.vhome, "incantations.json")):
+            with open(path) as f:
+                data = json.load(f)
+            data["incantations"][1].pop("asked")
+            with open(path, "w") as f:
+                json.dump(data, f)
+        old = self.entry("steve.zap_old")
+        self.zap(ZAP.replace("speed: int = 1", "speed: int = 3").replace(
+            '    extra: bool = False\n    """a value the action drops later"""\n', ""))
+        before = len(self.box.calls)
+        r = self.box.vfg("action", "check", "zap")
+        self.assertEqual((r.returncode, r.stdout, self.ops(before)), (0, "ok: actions/zap.py\n", []))  # a check sends nothing
+        line = self.run_("zap")
+        self.assertTrue(line["ok"], line)
+        self.assertEqual(line["notes"], ['"zap it" for Steve now follows zap as it is'])
+        self.assertEqual(self.ops(before), ["run", "list", "run"])  # the run, the store read, the update
+        e = self.entry("steve.zap_it")
+        self.assertEqual((e["values"], e["asked"]), ({"player": "", "power": 4, "speed": 3, "title": ""}, {"power": 4}))
+        self.assertEqual(self.entry("steve.zap_old"), old)
+        self.assertEqual(sorted(self.cache()["incantations"], key=lambda x: x["id"]),
+                         sorted(self.store()["incantations"], key=lambda x: x["id"]))
+        before = len(self.box.calls)
+        line = self.run_("zap")
+        self.assertEqual((line["notes"], self.ops(before)), ([], ["run"]))  # the cache holds them as the box does
 
 
 class TestCli(BoxCase):

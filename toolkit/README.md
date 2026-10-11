@@ -200,6 +200,7 @@ on the PC; the router reads them through it too. A name is a script in one place
 vfg action run incantation_create player=Steve phrase='fire ball' action=command \
     values='{"commands": ["effect give Steve speed 10 2"]}' cooldown_s=5 --task T7
 vfg action run incantation_edit player=Steve phrase='fire ball' cooldown_s=10   # or values='{…}', aliases='fireball,fire bowl'
+vfg action run incantation_edit player=Steve phrase='beam me' values.length=80 values.player=   # a value a word of its own
 vfg action run incantation_remove player=Steve phrase='fire ball'
 vfg incantation list                        # Steve: "fire ball" → command {…} cooldown 5s; aliases fireball, fire bowl
 vfg incantation list --player Steve --json  # what Steve can cast, his own and @a's: [{player, phrase, action, values, cooldown_s, aliases}]
@@ -215,20 +216,35 @@ once vfg has checked everything here (`run_incantation`):
   binding `edit`, `stop` or an `incantation_*` action. The bound action's values are checked as
   a run of it checks them (a clamp is a note, a place against the cache); every player field
   left out or empty is a caster field, checked with a stand-in name, stored empty and filled
-  by the bridge with whoever casts. The aliases are the code's (the phrase joined, compound
-  words split) and one `structured()` call's, 12 at most: `VFG_INCANT_ALIAS_MODEL`, by default
-  the dispatcher's planner's model and providers, reasoning off, 8 s at most (about 1 s and
-  $0.00005); `off` skips it, and a failure is a note. Its prompt is `INCANT_ALIAS_PROMPT` in
-  `vfg`. The call is made while one SSH call reads the store and the bound script's stamps: the
-  bind warnings (a short phrase; one that sounds like, or starts like, another of the player's)
-  and a replaced one are notes, and the bound script and `_lib` are deployed when their stamps
-  say so, as a run would.
+  by the bridge with whoever casts. The entry keeps what was asked, `asked` (the values given,
+  caster fields apart), beside `values`, every value a cast runs with. The aliases are the
+  code's (the phrase joined, compound words split) and one `structured()` call's, 12 at most:
+  `VFG_INCANT_ALIAS_MODEL`, by default the dispatcher's planner's model and providers,
+  reasoning off, 8 s at most (about 1 s and $0.00005); `off` skips it, and a failure is a note.
+  Its prompt is `INCANT_ALIAS_PROMPT` in `vfg`. The call is made while one SSH call reads the
+  store and the bound script's stamps: the bind warnings (a short phrase; one that sounds like,
+  or starts like, another of the player's) and a replaced one are notes, and the bound script
+  and `_lib` are deployed when their stamps say so, as a run would.
 - **Edit** reads each player's entry from the box (never the cache), by its player and phrase,
   and changes what is given: the values, checked against its action over the stored ones (a
-  player field set empty becomes a caster's, one given a name stops being one) and sent as only
-  the keys given, which the box merges over what the store holds as it writes, so two edits of
-  different values both land; the cooldown; the aliases, normalised, capped and bind-checked
-  again.
+  player field set empty becomes a caster's, one given a name stops being one) and sent, with
+  what was asked, as only the keys given (and the caster fields only when they change), which
+  the box merges over what the store holds as it writes, so two edits of different values both
+  land; the cooldown; the aliases, normalised, capped and bind-checked again.
+- **Values as words**: `values='{…}'` takes a JSON object, and `values.<name>=<value>` one value,
+  a word of its own (Claude Code's permission check refuses a JSON object of two keys or more in
+  one word). A word is read once the bound action is known: a field that takes text keeps it as
+  it is (`values.title=1` is the text "1"), any other reads it as JSON (6, true, `["say hi"]`),
+  else as its field reads words (`a,b`).
+- **Following the action**: after a `vfg action run` of an action that went well (it has just
+  deployed the action's script as it is here), each binding of it is made again from what was
+  asked over the action's defaults as they are now (`refresh_incantations`), so a fix to the
+  action reaches the phrase. It is decided from the cache alone, with no SSH while every binding
+  there holds what it would be made; when one would change, the store is read and each binding
+  that changes is updated, its values, `live` and `asked` replaced whole (a value the action no
+  longer has goes), a note each. With no cache a note says they were not checked (`vfg
+  incantation list --fresh`). `vfg action check` writes nothing to the box. A binding made
+  before `asked` was kept stays as it is.
 - **Remove** removes each player's entry; one nobody had is `"ok": false`.
 - **`vfg incantation list`** answers from `$VFG_HOME/incantations.json`, `{"fetched_at",
   "version", "incantations": [entries]}`, while it is younger than `VFG_INCANT_TTL_S` (30 s),
@@ -294,7 +310,8 @@ names one, with `vfg_llm` mocked, and no OpenRouter key passes in.
 - `test_route.py`: the router, `remote/jev.py` against `fake_jev_route.py`, `vfg prefix`.
 - `test_library.py`: `vfg script new` and `check`, `vfg preset save`, five real presets in one script.
 - `test_incantations.py`: the incantation actions writing the box's store through their real
-  script, the alias call, and `vfg incantation list` with its cache; one box for a class.
+  script, the alias call, `values.<name>=` words, a binding following its action after a run,
+  and `vfg incantation list` with its cache; one box for a class.
 - `test_e2e.py`: a handful with vfg as a process, through `tests/fake_ssh`, which runs the remote
   command here with bash: a command and its SSH options, closed descriptors, and watches
   following the feed.
