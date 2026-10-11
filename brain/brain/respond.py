@@ -1,12 +1,15 @@
 """Respond, the brain's cheap mode: a line Jev classes conversational gets one structured() call
-on a cheap model (Gemini 3.8 Flash, low reasoning) over the same context, which keeps up the
-personality and the banter and replies. It can do one other thing: hand the line up to the
-brain, which runs the same line on GPT-6.1 Sol. It never acts on the game.
+on a cheap model (DeepSeek V4 Flash, reasoning off: config.py) over the same context, which keeps
+up the personality and the banter and replies. It can do one other thing: hand the line up to
+the brain, which runs the same line on GPT-6.1 Sol. It never acts on the game.
 
-It hands up anything that asks for something to happen in the game, and anything it is unsure
-of: a wrong hand-up costs about a second and a fraction of a cent, a missed ask the player's
-ask. Handing up replaces its reply, never adds to it, so a player never gets two answers: a
-hand-up's reply is dropped here, whatever the model wrote.
+It decides first: its answer is {reason, hand_up, reply}, in that order, and handing up is the
+default unless the line is clearly pure talk. A model with no reasoning writes the fields in
+order, and with the reply first it committed to answering before it weighed handing up: on the
+2026-10-08 lines it handed up 31% of the asks, and 77.5% deciding first
+(integration/replay/gate_bench.md). A wrong hand-up costs about a second and a fraction of a
+cent, a missed ask the player's ask. Handing up replaces its reply, never adds to it, so a player
+never gets two answers: a hand-up's reply is dropped here, whatever the model wrote.
 
 Its prompt is laid out as the brain's: the opening (its rules, the owner, the menu's lines,
 marked), the conversation in the same minute-blocks, then the world as last fetched (no items),
@@ -27,11 +30,12 @@ from .world import Seen
 PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "respond.md"
 
 
-class Response(BaseModel):
-    reply: str = Field("", description="your one chat line, or empty to say nothing; always empty when you hand up")
-    hand_up: bool = Field(False, description="true when the line, or a context line under NEW, asks for something "
-                                             "to happen in the game, or when you are unsure: the brain answers it")
-    reason: str = Field("", description="a few words: why you hand it up, or why not")
+class Response(BaseModel):  # decide first: a model writes the fields in this order
+    reason: str = Field("", description="first, a few words: what any part of the line wants, if anything, "
+                                        "and so whether it is pure talk")
+    hand_up: bool = Field(True, description="true unless the line is clearly pure talk: the brain answers it")
+    reply: str = Field("", description="your one chat line when you do not hand up, or empty to say nothing; "
+                                       "always empty when you hand up")
 
 
 class Respond:

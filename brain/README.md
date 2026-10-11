@@ -22,10 +22,12 @@ apart each get a call at once.
 | `REPORT` | an implementer ending (`Implementers`' `on_report`) | the player's chat line, one record for the context (`T183 done: …`), the task's status; when the call gives no record or no line, or fails, both are written in code from the task's brief, never the implementer's words; while a follow-up to the task already runs, the task stays open with the record as its result so far, and the call is told so |
 | `BATCH` | the timer: `VFG_BRAIN_BATCH_S` (60 s) with no read of any kind and something unread | usually nothing; acts where something clearly needs it |
 
-**Respond** ([`respond.py`](brain/respond.py)) takes a `conversational` line: a cheap model (Gemini
-3.8 Flash, low) on the same context that keeps up the banter and replies, or hands the line up to
-the brain when it asks for something to happen or Respond is unsure. A hand-up replaces its reply,
-so a player never gets two. Respond never acts on the game. A `context` line, a game event, a
+**Respond** ([`respond.py`](brain/respond.py)) takes a `conversational` line: a cheap model (DeepSeek
+V4 Flash, reasoning off) on the same context that keeps up the banter and replies, or hands the
+line up to the brain when it asks for something to happen or Respond is unsure. It decides first
+(`reason`, `hand_up`, then `reply`), and handing up is the default unless the line is clearly pure
+talk ([`gate_bench.md`](../integration/replay/gate_bench.md)). A hand-up replaces its reply, so a
+player never gets two. Respond never acts on the game. A `context` line, a game event, a
 system notice and the brain's own rows are context only. A line already in the feed when the brain
 read its context, said more than two minutes before that, is history: never acted on. A line that
 arrives on the watch is live, whatever its time (the box's clock may be a minute off the PC's).
