@@ -12,6 +12,7 @@ it no longer runs on this branch and **needs rewriting for the brain** (below).
 | `playtest.py` | the playtest's data as the brain would have had it: the context row by row in the order it would have arrived, the world, the open tasks, the batch timer, and what the conversation did with each line |
 | `lines.py`, `lines_score.py` | the raw-line replay: every direct ask through the brain's one call, with the whole conversation |
 | `classes.py`, `classes_score.py` | Jev's four classes on every line, against TypeSafe, then Respond on every line Jev classes `conversational` |
+| `taskcall.py`, `taskcall_score.py`, `taskcall_prompts/` | the named-tasks orchestrator, one `structured()` call per implementer part, before it is built: every part the brain's full `lines.py` run sent to an implementer, through it, two models compared; results in `taskcall.md`, every miss in `taskcall_scores/` |
 | `run.py`, `measure.py`, `tasks.jsonl` | the live task replay against the orchestrator: gone with it |
 
 ## The data
@@ -52,6 +53,12 @@ $PY integration/replay/lines.py --db $DB --out OUT --limit 20             # a pi
 $PY integration/replay/lines.py --db $DB --out OUT                        # all 357 direct asks
 python3 integration/replay/lines_score.py OUT                             # OUT/score.md, score.json
 
+$PY integration/replay/taskcall.py --db $DB --lines OUT/lines.jsonl --out OUT3 \
+    --model google/gemini-3.8-flash --reasoning low --limit 15          # the orchestrator: a 15-part pilot
+$PY integration/replay/taskcall.py --db $DB --lines OUT/lines.jsonl --out OUT3 \
+    --model google/gemini-3.8-flash --reasoning low                     # goes on to all 168 parts
+python3 integration/replay/taskcall_score.py OUT3                         # OUT3/score.md, score.json
+
 $PY integration/replay/classes.py jev --db $DB --out OUT2                 # 843 lines, one TypeSafe call each
 $PY integration/replay/classes.py respond --db $DB --out OUT2             # every line now conversational
 python3 integration/replay/classes_score.py OUT2                          # OUT2/classes.md, classes.json
@@ -68,6 +75,14 @@ $0.27, and the Respond step 9 minutes and $1.01 for the first 322 of the 382 lin
 `conversational`, where its $1 budget stopped it: all of them would be about $1.2. A window of
 lines, `--only`, costs a cold first call (about $0.10) and then what the full run's calls do.
 
+`taskcall.py` needs a full `lines.py` run first: its `lines.jsonl` gives the implementer parts.
+`--model` is any OpenRouter id, `--reasoning` off or an effort, `--version` the prompt in
+`taskcall_prompts/` (v3, the one to ship, is the default); `--budget` (1 dollar) stops it. A run
+into an OUT that has rows goes on after the last line, the tasks rebuilt from the answers there.
+On 2026-10-10 the full 168 parts took about 9 minutes and $1.18 on Gemini 3.8 Flash at low
+reasoning (a call: median 3.0 s, p90 5.0 s), and 11 minutes and $0.16 on DeepSeek V4 Flash with
+reasoning off (3.6 s, 5.0 s); at low reasoning DeepSeek took 7.7 s, p90 26 s.
+
 ### What it leaves in OUT
 
 | Path | Is |
@@ -77,6 +92,7 @@ lines, `--only`, costs a cold first call (about $0.10) and then what the full ru
 | `prompts/<n>.txt` | the whole prompt of every 50th call, `[MARK]` where the cache is marked |
 | `jev.jsonl`, `jev-meta.json`, `menu.md` | per line: Jev's class then and now, its confidence, what the conversation did, and what fit in the state (the menu, the history, the AI records); a `flip` row when a `not_relevant` line asked about again flipped |
 | `respond.jsonl`, `respond-meta.json` | per conversational line: hand-up or reply as the model gave them and after Respond's code, the reason, ms, cost, tokens |
+| `taskcall.jsonl`, `tasks.json`, `meta.json` | the orchestrator's run: per line, each implementer part's answer (task, name, description, brief, reply, any edit or stop), the name it got, ms, cost, tokens, and the conversation's tasks for the line with the names that held their targets; every task at the end with its chain of T ids and every description it had |
 
 ## How it is scored
 
@@ -90,6 +106,15 @@ those whose T<n> was written after the line reached the brain; it is right when 
 part names T<n>, or a task of its chain. For Jev, a line was **answered in chat** when an AI chat
 line followed within 60 s with no task and no result between: a heuristic, so `chat` holds
 declined asks as well as talk.
+
+For the orchestrator (`taskcall_score.py`), each of the conversation's T ids is given to the name
+its line's parts answered, so a follow-up is right when it names the task whose chain holds its
+target. Two truths: **by script**, from the run's own record in `tasks.jsonl` (a task that wrote a
+new script is new; one that edited an earlier task's script follows that task up), which comes
+first; and **by the labels** (`Change to T<x>` is a follow-up, anything else fresh), which counts
+many right follow-ups as new tasks taken, since the conversation often wrote a fix as a fresh
+task. Since the chains are the replay's own, **one thing, one task** checks each task against the
+scripts its T ids touched: lumped tasks and split scripts.
 
 ## The live task replay: gone with the orchestrator
 
