@@ -54,7 +54,7 @@ async def test_the_cache_unreadable_or_slow_the_brief_still_goes_and_says_so(tmp
     head, _, acts, files = parts(await r.block())
     assert acts == ("ACTIONS: unavailable (RuntimeError: no pydantic). vfg action list names every action, and vfg "
                     "action list --json gives each one's values; run one with vfg action run <action> key=value ... "
-                    "--task T7.")
+                    "--task ice_beam_steve.")
     assert head.split("\n")[1].startswith("ice_beam runs this job: run its action with the values the job needs.")
     assert files.startswith("=== scripts/ice_beam/main.py ===")
     # a cache that does not answer is cut off at its own limit
@@ -72,12 +72,19 @@ def test_copies_show_only_the_values_that_differ_from_their_actions_own():
                                                "fire": {"default": "click"}, "spare": {"default": []}},
                                     "fixed": {"fire": "click"}}}}
     copy = {"action": "railgun", "values": {"player": "Alex", "cooldown": 2.0, "fire": "hold", "spare": ["Bob"]},
-            "task": "T5"}
+            "task": "sniper_nest_alex"}
     assert actions.copy_line("railgun_2", copy, data) == (
-        'railgun_2 (railgun, player=Alex, fire=hold, spare=["Bob"], T5)')
+        'railgun_2 (railgun, player=Alex, fire=hold, spare=["Bob"], sniper_nest_alex)')
     assert actions.copy_line("railgun", {"action": "railgun", "values": {"cooldown": 2}}, data) == "railgun"
     assert actions.copy_line("x", {"action": "gone", "values": {"a": True, "b": 0.5}}, data) == (
         "x (gone, a=true, b=0.5)")
+    # a task's copy named as the task, of the action named so too, is its name alone
+    assert actions.copy_line("torch_ring_steve", {"action": "torch_ring_steve", "values": {},
+                                                  "task": "torch_ring_steve"}, data) == "torch_ring_steve"
+    assert actions.copy_line("railgun_steve", {"action": "railgun", "values": {"player": "Steve"}, "task": None},
+                             data) == "railgun_steve (railgun, player=Steve)"
+    assert actions.copy_line("fireball_2", {"action": "fireball", "values": {}, "task": "cast"}, data) == (
+        "fireball_2 (fireball, cast)")
 
 
 def test_the_actions_go_library_first_and_a_scripts_namesake_first():
@@ -88,6 +95,7 @@ def test_the_actions_go_library_first_and_a_scripts_namesake_first():
     assert actions.describe("x", {"line": "Do x.", "script": "x", "runs": "until_stopped"}) == (
         "x — Do x.\nscript x · runs until stopped")
     text = actions.section({"actions": {}}, None, "main", None)
+    assert "--task <your task>;" in text.split("\n")[0]
     assert text.split("\n")[2:] == ["The library has no action.", "",
                                     "Made on this server (made/main/actions/): none yet.", ""]
 
@@ -97,5 +105,6 @@ def test_what_runs_is_running_json_else_the_states_instances(tmp_path):
     assert actions.read_running(str(tmp_path)) is None
     (tmp_path / "running.json").write_text('{"copies": []}')
     assert actions.read_running(str(tmp_path)) is None
-    assert actions.from_state(STATE["instances"] + ["junk", {}])["galick-alex"] == {
-        "action": "galick_gun", "script": "galick_gun", "values": {"player": "Alex", "cooldown": 0}, "task": "T5"}
+    assert actions.from_state(STATE["instances"] + ["junk", {}])["galick_gun_alex"] == {
+        "action": "galick_gun", "script": "galick_gun", "values": {"player": "Alex", "cooldown": 0},
+        "task": "galick_duel_alex"}

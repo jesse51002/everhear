@@ -93,8 +93,8 @@ class ImplementerConfig:
     # vfg's own folder, VFG_HOME (~/.vfg): the actions cache and running.json that vfg keeps,
     # which every implementer's brief is read from.
     home: str
-    # The brain's folder, VFG_BRAIN_DIR (VFG_HOME/brain): py_compile's cache goes in it. The brain
-    # alone writes its tasks.json.
+    # The brain's folder, VFG_BRAIN_DIR (VFG_HOME/brain): py_compile's cache and the implementer's
+    # system prompt file go in it.
     brain_dir: str
     # brain/prompts/implementer.md: the implementer's rules.
     prompt: str
