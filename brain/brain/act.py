@@ -37,6 +37,7 @@ from .world import Seen
 
 SAY_TIMEOUT_S = 30
 BROKE = "sorry, something broke on my side and that one didn't finish"
+TOLD = "the player was told"  # a note on an exception already said in chat, so it is never said twice
 LINE_MAX = 200    # a chat line written here
 ROW_MAX = 400     # an AI row's text
 BRIEF_SHORT = 160  # a brief in an `AI task` row
@@ -155,6 +156,7 @@ class Acts:
         except Exception as e:  # raised on, for the event's own log: the task closes, the player hears so
             self.cut(tid, f"{tid} failed: it broke ({type(e).__name__}: {short(str(e), 120)})")
             await self.say(BROKE, task)
+            e.add_note(TOLD)
             raise
         finally:  # cancelled: the brain stopped while it ran
             self.cut(tid, f"{tid} failed: cut off, the brain stopped while it ran")

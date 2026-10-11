@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
@@ -34,7 +35,7 @@ from vfg_actions import menu_line
 from vfg_llm import LlmError
 
 from . import actions
-from .act import Acts, short
+from .act import TOLD, Acts, short
 from .call import Call, Event, describe
 from .config import log
 from .context import LIVE, Context, Row, parse
@@ -45,7 +46,16 @@ from .world import World
 
 HISTORY_S = 120  # a line older than this when it arrives is history
 MARK_CHUNK = 500  # seqs in one `vfg context mark`
-SORRY = "sorry, I lost that one — say it again?"
+ERRORED_MAX = 180  # the error line's reason, in characters
+
+
+def errored(who: str, e: Exception) -> str:
+    """The chat line for a brain call that failed for good: that it errored out, and why, short.
+    A schema mismatch keeps its last reason, without the field path and the part's words."""
+    lines = [x.strip() for x in str(e).splitlines() if x.strip()] or ["no reason given"]
+    why = re.sub(r"^- [^:]*: (Value error, )?", "", lines[-1])
+    why = re.sub(r"^the \S+ part (['\"]).*?\1: ", "", why)
+    return f"{who}: that errored out — {short(why, ERRORED_MAX)}"
 WATCH_AGAIN_S = 2.0  # after `vfg watch` exits, or the feed restarted, before it is followed again
 RESTARTED = "feed restarted"  # in vfg watch's notice of a new feed.log
 RECONNECTED = "reconnected"  # vfg watch's notice once EC2 answers again after a drop
@@ -87,8 +97,9 @@ class Brain:
 
     # ------------------------------------------------------------- rows in
 
-    def spawn(self, coro, name: str) -> asyncio.Task:
-        """An event as its own task, kept until it ends; what it raises is logged, never lost."""
+    def spawn(self, coro, name: str, who: str = "") -> asyncio.Task:
+        """An event as its own task, kept until it ends; what it raises is logged, never lost, and
+        told in chat to `who`, the player whose line it was."""
         async def guarded() -> None:
             try:
                 await coro
@@ -96,6 +107,9 @@ class Brain:
                 raise
             except Exception as e:  # noqa: BLE001 — one event's bug never stops the others
                 log("error", f"{name} failed: {type(e).__name__}: {e} | {traceback.format_exc(limit=-4)}")
+                if who and TOLD not in getattr(e, "__notes__", ()):
+                    with contextlib.suppress(Exception):
+                        await self.acts.say(errored(who, e))
 
         t = asyncio.create_task(guarded(), name=name)
         self.inflight.add(t)
@@ -138,8 +152,8 @@ class Brain:
             log("line", f"#{row.seq} {row.who} from {row.hms} is history, not acted on: {row.text[:120]!r}")
             return None
         if row.cls == "action_oriented":
-            return self.spawn(self.line(row), f"line #{row.seq}")
-        return self.spawn(self.conversational(row), f"respond #{row.seq}")
+            return self.spawn(self.line(row), f"line #{row.seq}", row.who)
+        return self.spawn(self.conversational(row), f"respond #{row.seq}", row.who)
 
     def position(self) -> int:
         """Where the watch follows from: the context's last row, or the feed's highest seq when the
@@ -199,7 +213,7 @@ class Brain:
                                             [r for r in new if r.seq != row.seq], self.refs)
         except LlmError as e:
             log("brain", f"#{row.seq} FAILED: {e}")
-            await self.acts.say(f"{row.who}: {SORRY}")
+            await self.acts.say(errored(row.who, e))
             return
         self.usage("brain", self.model, answer, f"#{row.seq}")
         log("brain", f"#{row.seq} {row.who}: {row.text[:80]!r} -> {describe(answer.value)}")

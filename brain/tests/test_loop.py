@@ -239,3 +239,26 @@ async def test_respond_sees_each_players_place_and_state_but_no_items(kit):
     assert ("- Steve at 10 64 -20 in overworld: 14.5/20 health, 18/20 food, armor 12, level 5, survival; "
             "effects: speed II 0:30, night vision ∞\n") in prompt
     assert "items, by slot" not in prompt
+
+
+async def test_a_brain_call_that_fails_tells_the_player_it_errored_out_and_why(kit):
+    k = kit(Decision=LlmError("openai/gpt-6.1-sol twice failed to match Decision:\n- parts.0: Value error, the "
+                              "incantation_create part 'juicy steak': incantation_create has no value commands; "
+                              "its values: player, phrase, action, values, cooldown_s"))
+    k.brain.feed("LINE#7 18:29:59 Steve voice action_oriented 0.9 - | make juicy steak give me 64 steak")
+    await k.settle()
+    assert k.vfg.said() == [["Steve: that errored out — incantation_create has no value commands; its values: "
+                             "player, phrase, action, values, cooldown_s"]]
+    assert loop.errored("Alex", LlmError("no answer from m within 30 s")) == \
+        "Alex: that errored out — no answer from m within 30 s"
+
+
+async def test_a_line_whose_event_breaks_tells_the_player_it_errored_out(kit):
+    k = kit(Decision=GIVE)
+
+    async def broken(*a, **kw):
+        raise RuntimeError("the world broke")
+    k.brain.world.seen = broken
+    k.brain.feed("LINE#7 18:29:59 Steve voice action_oriented 0.9 - | give me a diamond pickaxe")
+    await k.settle()
+    assert k.vfg.said() == [["Steve: that errored out — the world broke"]]

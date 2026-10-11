@@ -76,8 +76,13 @@ class PartBase(BaseModel):
 
     def values(self) -> dict[str, Any]:
         """The action as `vfg action run` takes it: {field: value}; for edit, the copy and the
-        values to change, {"copy": …, "values": {…}}."""
+        values to change, {"copy": …, "values": {…}}. A Value cannot hold an object, so a field
+        that holds another action's values (incantation_create's) comes as `values.<name>` keys,
+        gathered here into {"values": {…}}."""
         given = {v.key.strip(): v.value for v in self.action or []}
+        inner = {k.split(".", 1)[1].strip(): given.pop(k) for k in list(given) if k.startswith("values.")}
+        if inner:
+            given["values"] = {**(given["values"] if isinstance(given.get("values"), dict) else {}), **inner}
         if self.to != "edit":
             return given
         copy = given.pop("copy", "")
