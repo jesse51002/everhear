@@ -188,7 +188,8 @@ class TestQuestions(unittest.TestCase):
         self.assertEqual(list(qs), ["line_1", "line_2"])
         self.assertEqual(qs["line_2"], {
             "type": "choice",
-            "instructions": "Steve's line [ask] at 18:22:31, “make it bigger”, goes to the AI. Line [2], said by Steve"
+            "instructions": "Steve's line [ask] at 18:22:31, “make it bigger”, goes to the AI. Speech-to-text cuts a"
+                            " player at every pause, so one ask can arrive as several lines. Line [2], said by Steve"
                             " before it at 18:22:21: “the big one”. Is line [2] part of that ask?",
             "criteria": GATHER_CRITERIA})
         self.assertIn("Line [1], said by Steve before it at 18:22:01: “the castle by the river”. Is line [1] part",

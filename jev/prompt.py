@@ -109,12 +109,17 @@ SHORT = {"the_ai_must_act": "act", "the_ai_should_answer": "answer", "remember_i
          "fine_a_reply_is_all": "fine", "let_down_wanted_something_done": "let down",
          "not_talking_to_the_ai": "wouldn't notice"}
 
+# g3 of integration/replay/gather_bench.md: each side says what the line is, and nothing says whether
+# the ask stands alone, which a short ask read alone nearly always does (the first wording leaned on
+# that, and took 1 of 7 clear pieces on 2026-10-08; this one 6).
 GATHER_CRITERIA = {
-    "part_of_the_ask": "Part of the ask: it says what, where, who or how for the ask, or the ask doesn't make sense "
-                       "without it.",
-    "not_part_of_it": "Not part of the ask: it is about something else, or the ask makes full sense without it.",
+    "part_of_the_ask": "Part of the ask: a piece of the same sentence or request, cut off by a pause, or it says what, "
+                       "where, who or how for the ask.",
+    "not_part_of_it": "Not part of the ask: something else: a reaction, a remark, talk to a player, or another "
+                      "subject or ask.",
 }
 PART_OF_IT = "part_of_the_ask"
+GATHER_WHY = "Speech-to-text cuts a player at every pause, so one ask can arrive as several lines. "
 
 LOOKOUT_MAX_CHARS = 8000
 MENU_FIELD = len(json.dumps({"actions": ""})) - 2 + 2   # `"actions": ""` and the `, ` before it
@@ -269,9 +274,11 @@ def in_short(answers):
 def gather_questions(ask, window):
     """One `choice` question per line of the gather window, `line_1` … `line_n`
     oldest first, whether it is part of the ask: `Steve's line [ask] at
-    18:22:31, “…”, goes to the AI. Line [2], said by Steve before it at
-    18:22:01: “…”. Is line [2] part of that ask?`"""
-    head = "%s's line [ask] at %s, “%s”, goes to the AI. " % (ask["player_name"], when(ask["at"]), quote(ask))
+    18:22:31, “…”, goes to the AI. Speech-to-text cuts a player at every
+    pause, … Line [2], said by Steve before it at 18:22:01: “…”. Is line [2]
+    part of that ask?`"""
+    head = "%s's line [ask] at %s, “%s”, goes to the AI. %s" % (ask["player_name"], when(ask["at"]), quote(ask),
+                                                                GATHER_WHY)
     return {
         "line_%d" % k: {
             "type": "choice",

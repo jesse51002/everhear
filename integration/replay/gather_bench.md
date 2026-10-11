@@ -282,6 +282,11 @@ numbers barely move, because the windows rarely hold a piece. The change is two 
 `jev/prompt.py`: `GATHER_CRITERIA`, and the instruction head in `gather_questions` (`BALANCED` and
 `PIECES` in `gather_bench.py`). The jev builder owns that file.
 
+**g3 went into production on 2026-10-11**, the orchestrator's call: `jev/prompt.py`'s `GATHER_CRITERIA`
+and `GATHER_WHY`. Every "production" row on this page is the first wording, recorded before that; in
+`gather_bench.py` it is now `FIRST`, and `prod` and `repeat` ask it, so they reproduce. `run` asks
+whatever production's wording is, g3 since.
+
 ## Respond's hand-ups
 
 Counted as `whole_asks_score.py` counts them, from the gate bench's recorded Respond B run on single

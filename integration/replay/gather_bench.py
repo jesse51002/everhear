@@ -96,6 +96,12 @@ BALANCED = {
                       "subject or ask.",
 }
 PIECES = "Speech-to-text cuts a player at every pause, so one ask can arrive as several lines. "
+# The wording production had when `run` recorded `prod/` (2026-10-11), before g3 replaced it.
+FIRST = {
+    "part_of_the_ask": "Part of the ask: it says what, where, who or how for the ask, or the ask doesn't make sense "
+                       "without it.",
+    "not_part_of_it": "Not part of the ask: it is about something else, or the ask makes full sense without it.",
+}
 
 
 def gather_wording(criteria: dict, why: str = ""):
@@ -112,17 +118,18 @@ def gather_wording(criteria: dict, why: str = ""):
     return qs
 
 
-# name -> (what it changes, the questions function); `prod` is jev/prompt.py's own, unchanged.
+# name -> (what it changes, the questions function). `prod` is the first wording (FIRST), which `run`
+# recorded; g3 has been jev/prompt.py's own since, so `run` now asks g3.
 WORDINGS = {
-    "prod": ("production: prompt.gather_questions, GATHER_CRITERIA", prompt.gather_questions),
-    "repeat": ("production's wording asked again, for run-to-run noise", prompt.gather_questions),
+    "prod": ("the first wording: FIRST, production's when `run` recorded it", gather_wording(FIRST)),
+    "repeat": ("the first wording asked again, for run-to-run noise", gather_wording(FIRST)),
     "g2": ("the criteria balanced (BALANCED), the instruction production's", gather_wording(BALANCED)),
     "g3": ("g2, and the instruction says speech-to-text cuts a player at every pause (PIECES)",
            gather_wording(BALANCED, PIECES)),
 }
 _row = {"id": "x", "at": "2026-10-08T06:00:00.000Z", "player_name": "Steve", "source": "voice", "text": "the big one",
         "peak_dbfs": None}
-assert gather_wording(prompt.GATHER_CRITERIA)(_row, [_row]) == prompt.gather_questions(_row, [_row])
+assert gather_wording(BALANCED, PIECES)(_row, [_row]) == prompt.gather_questions(_row, [_row])   # g3 is production
 
 
 # ------------------------------------------------------------------ the stand-ins around production
