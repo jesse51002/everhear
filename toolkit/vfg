@@ -1223,6 +1223,9 @@ def remote_json(cfg, a, args, timeout=30):
 SCRIPTS_LIBS = ("instances.py",)
 COPY_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,47}$")
 KEY_RE = re.compile(r"^[a-z_][a-z0-9_]{0,47}$")
+# values.<name>=<value>: one of the values an incantation binds, a word of its own, since a JSON
+# object of two keys or more in one word is refused by the implementers' Bash permission check.
+INNER_KEY_RE = re.compile(r"^values\.[a-z_][a-z0-9_]{0,47}$")
 CHECK_S = 2.0          # an until-stopped copy answers with its first result() or after this check
 ACTION_TIMEOUT = 20.0  # VFG_DISPATCH_ACTION_TIMEOUT_S's default: how long a once action is waited for
 LIB_PY = os.path.join(os.path.dirname(HERE), "lib", "py")
@@ -1511,7 +1514,7 @@ def action_words(words):
             k, v = w.split("=", 1)
             if k == "as":
                 as_ = v
-            elif not KEY_RE.match(k):
+            elif not (KEY_RE.match(k) or INNER_KEY_RE.match(k)):
                 raise Fail(2, "%r is not key=value" % w)
             elif k in given:
                 raise Fail(2, "%s is given twice" % k)
@@ -1543,7 +1546,10 @@ def run_named(cfg, a, name, given, as_=None, task=None):
         return run_stop(cfg, a, given["copy"], as_, task)
     if name in INCANT_ACTIONS:
         return run_incantation(cfg, a, name, given, as_, task)
-    return run_action(cfg, a, name, given, as_, task)
+    line = run_action(cfg, a, name, given, as_, task)
+    if line["ok"]:
+        line["notes"] = line["notes"] + refresh_incantations(cfg, a, name)
+    return line
 
 
 def cmd_action_run(cfg, a):
@@ -1598,6 +1604,8 @@ def cmd_action_check(cfg, a):
         out("\n".join("%s: %s" % (action_rel(cfg, cat, a.name), p) for p in problems))
         raise Fail(1, "%d problem%s in %s" % (len(problems), "" if len(problems) == 1 else "s", a.name))
     out("ok: " + action_rel(cfg, cat, a.name))
+    for note in refresh_incantations(cfg, a, a.name):
+        out(note)
     return 0
 
 
@@ -2700,15 +2708,32 @@ def incant_deploy(cfg, a, home, folders):
 
 
 def incant_given(given):
-    """values= as a JSON object, as the dispatcher and the brain give a dict on the command line."""
+    """values= as a JSON object, as the dispatcher and the brain give a dict on the command line,
+    and values.<name>=<value> words gathered into it, each value read as JSON (6, true,
+    '["give Steve bread"]') or else kept as text."""
     vals = given.get("values")
     if isinstance(vals, str):
         try:
             vals = json.loads(vals) if vals.strip() else {}
         except ValueError:
-            raise Fail(2, "values= is a JSON object of the action's values, such as values='{\"power\": 4}'")
-        given = dict(given, values=vals)
+            raise Fail(2, "values= is a JSON object of the action's values, such as values='{\"power\": 4}', "
+                          "or give each as values.<name>=<value>")
+    inner = dict((k.split(".", 1)[1], given[k]) for k in given if k.startswith("values."))
+    if inner:
+        if vals is not None and not isinstance(vals, dict):
+            raise Fail(2, "values= is a JSON object of the action's values")
+        vals = dict(vals or {}, **dict((k, incant_word(x)) for k, x in inner.items()))
+    if vals is not given.get("values") or inner:
+        given = dict(((k, x) for k, x in given.items() if not k.startswith("values.")), values=vals)
     return given
+
+
+def incant_word(x):
+    """A values.<name>= word's value: JSON when it reads as JSON, else the text itself."""
+    try:
+        return json.loads(x)
+    except ValueError:
+        return x
 
 
 def run_incantation(cfg, a, name, given, as_=None, task=None):
@@ -2781,9 +2806,12 @@ def run_incantation(cfg, a, name, given, as_=None, task=None):
     if stale:
         incant_deploy(cfg, a, home, folders)
     stored = dict(checked.values, **dict((k, "") for k in caster))
+    # What was asked, apart from the caster fields: the rest follows the action's defaults when
+    # they change (refresh_incantations).
+    asked = dict((k, checked.values[k]) for k in v["values"] if k not in caster and k in checked.values)
     made = now_iso()
     entries = [{"player": p, "phrase": phrase, "aliases": aliases, "action": v["action"], "script": bcls.script,
-                "source": home, "server": server_name(cfg) if home == "made" else "", "values": stored,
+                "source": home, "server": server_name(cfg) if home == "made" else "", "values": stored, "asked": asked,
                 "live": list(checked.live), "runs": bcls.runs, "caster_fields": caster,
                 "cooldown_s": float(v["cooldown_s"]), "created": made, "by": task or ""} for p in players]
     line = run_action(cfg, a, name, dict(mine, action=v["action"], values=v["values"], cooldown_s=v["cooldown_s"]),
@@ -2795,6 +2823,52 @@ def run_incantation(cfg, a, name, given, as_=None, task=None):
     if line["ok"] and len(ids) == len(entries):
         note_incantations(cfg, put=[dict(e, id=i) for e, i in zip(entries, ids)], version=line["facts"].get("version"))
     return line
+
+
+def refresh_incantations(cfg, a, name):
+    """The incantations bound to action `name`, after it changed: each one's values made again
+    from what was asked ("asked") over the action's defaults as they are now, and the box's
+    entry updated where they differ, so a fix to the action reaches the phrase too. An entry
+    from before "asked" was kept stays as it is. Its notes; never raises, the run or check that
+    called it stands."""
+    try:
+        cached = read_incant_cache(cfg)
+        rows = cached[0]["incantations"] if cached else []
+        if not any(e.get("action") == name and "asked" in e for e in rows):
+            return []
+        va, _, _ = action_class(cfg, "incantation_edit")
+        _, _, bcls = incant_bound(cfg, name)
+        rows = fetch_incantations(cfg, a)[0]["incantations"]
+    except Fail as f:
+        return ["incantations of %s not refreshed: %s" % (name, f.msg)]
+    notes = []
+    for e in rows:
+        if e.get("action") != name or "asked" not in e:
+            continue
+        caster = [k for k in e.get("caster_fields") or [] if k in bcls.model_fields]
+        asked = dict((k, x) for k, x in (e.get("asked") or {}).items() if k in bcls.model_fields and k not in caster)
+        try:
+            checked = checked_values(cfg, a, va, bcls, dict(asked, **dict((k, INCANT_STANDIN) for k in caster)))
+        except Fail as f:
+            notes.append('"%s" for %s keeps its values: %s' % (e.get("phrase"), e.get("player"), f.msg))
+            continue
+        stored = dict(checked.values, **dict((k, "") for k in caster))
+        if stored == e.get("values") and list(checked.live) == list(e.get("live") or []):
+            continue
+        sets = {"values": stored, "live": list(checked.live), "asked": asked}
+        try:
+            line = run_action(cfg, a, "incantation_edit", {"player": e["player"], "phrase": e["phrase"]},
+                              extra={"op": "update", "entries": [{"player": e["player"], "phrase": e["phrase"],
+                                                                   "set": sets}]})
+        except Fail as f:
+            notes.append('"%s" for %s not refreshed: %s' % (e.get("phrase"), e.get("player"), f.msg))
+            continue
+        if line["ok"]:
+            note_incantations(cfg, put=[dict(e, **sets)], version=line["facts"].get("version"))
+            notes.append('"%s" for %s now follows %s as it is' % (e.get("phrase"), e.get("player"), name))
+        else:
+            notes.append('"%s" for %s not refreshed: %s' % (e.get("phrase"), e.get("player"), line.get("error")))
+    return notes
 
 
 def edit_incantation(cfg, a, inc, va, given, v, players, phrase, mine, notes, as_, task):
@@ -2830,6 +2904,9 @@ def edit_incantation(cfg, a, inc, va, given, v, players, phrase, mine, notes, as
             notes += [n for n in ed.notes if n not in notes]
             sets["values"] = dict((k, "" if k in caster else ed.values[k]) for k in v["values"])
             sets["caster_fields"] = caster
+            if "asked" in e:
+                sets["asked"] = dict(((k, x) for k, x in (e.get("asked") or {}).items() if k not in caster),
+                                     **dict((k, ed.values[k]) for k in v["values"] if k not in caster))
         if "cooldown_s" in change:
             sets["cooldown_s"] = float(v["cooldown_s"])
         if "aliases" in change:
