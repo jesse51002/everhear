@@ -112,8 +112,8 @@ From the environment, then `~/.vfg/config`:
 | `VFG_OWNER` | none: the owner's Minecraft name, named in the opening; the owner's word wins |
 | `VFG_BRAIN_MODEL`, `VFG_BRAIN_REASONING` | `openai/gpt-6.1-sol`, `low` |
 | `VFG_BRAIN_PROVIDERS` | OpenRouter's choice; comma-separated providers to try first, for the brain's call |
-| `VFG_RESPOND_MODEL`, `VFG_RESPOND_REASONING` | `google/gemini-3.8-flash`, `low` |
-| `VFG_PLAN_MODEL`, `VFG_PLAN_REASONING`, `VFG_PLAN_CHECK` | `google/gemini-3.8-flash`, `low`, `off` |
+| `VFG_RESPOND_MODEL`, `VFG_RESPOND_REASONING`, `VFG_RESPOND_PROVIDERS` | `~deepseek/deepseek-v4-flash-latest`, `off`, `parasail,wafer,phala,together,venice` (tried first, fastest first; `none`: OpenRouter's choice) |
+| `VFG_PLAN_MODEL`, `VFG_PLAN_REASONING`, `VFG_PLAN_PROVIDERS`, `VFG_PLAN_CHECK` | `google/gemini-3.8-flash`, `low`, OpenRouter's choice, `off`: it read every item listing right where DeepSeek misread 2 of 6 |
 | `VFG_BRAIN_BATCH_S` | `60` s with no read of any kind, and something unread, before a batch call |
 | `VFG_BRAIN_CHECKPOINT` | `5` minute-blocks between cache marks |
 | `VFG_BRAIN_HISTORY_HOURS` | `6`: how much of the feed the context starts with |

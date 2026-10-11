@@ -195,11 +195,11 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
     copies = running.Refresher(vfg, cfg.running_ttl_s)
     world = World(vfg, cfg.running_file, catalog, refresher=copies)
     tasks = Tasks(cfg.tasks_file)
-    planner = Planner(plan_ask or asker(cfg.plan_model, cfg.plan_reasoning, cfg.timeout_s), cfg.plan_model,
+    planner = Planner(plan_ask or asker(cfg.plan_model, cfg.plan_reasoning, cfg.timeout_s, cfg.plan_providers), cfg.plan_model,
                       None if refs is LOAD else refs, hidden=hidden, check=cfg.plan_check)
     call = Call(catalog, ask or asker(cfg.model, cfg.reasoning, cfg.timeout_s, cfg.providers), owner=cfg.owner,
                 hidden=hidden, checkpoint=cfg.checkpoint)
-    respond = Respond(catalog, respond_ask or asker(cfg.respond_model, cfg.respond_reasoning, cfg.timeout_s),
+    respond = Respond(catalog, respond_ask or asker(cfg.respond_model, cfg.respond_reasoning, cfg.timeout_s, cfg.respond_providers),
                       owner=cfg.owner, checkpoint=cfg.checkpoint)
 
     loaded = await load_context(vfg, cfg.history_hours, stop)

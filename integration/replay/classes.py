@@ -234,7 +234,7 @@ async def run_respond(args) -> None:
     entries = pt.entries({i: (c, fed) for i, (c, fed, _, _) in classes.items()})
     clock = Clock(entries, cfg.batch_s)
     chat = pt.answered()
-    base = asker(cfg.respond_model, cfg.respond_reasoning, cfg.timeout_s)
+    base = asker(cfg.respond_model, cfg.respond_reasoning, cfg.timeout_s, cfg.respond_providers)
     raw: dict = {}
 
     async def ask(*a, **k):

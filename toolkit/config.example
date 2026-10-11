@@ -71,11 +71,16 @@ VFG_OPENROUTER_KEY=
 VFG_BRAIN_MODEL=openai/gpt-6.1-sol
 VFG_BRAIN_REASONING=low
 # Respond, the brain's cheap mode, which answers a conversational line or hands it up.
-VFG_RESPOND_MODEL=google/gemini-3.8-flash
-VFG_RESPOND_REASONING=low
-# The planner, kept only to retry a command Minecraft refused.
+# DeepSeek V4 Flash with reasoning off: at low it thinks ~900 tokens, about 7.7 s a call.
+VFG_RESPOND_MODEL=~deepseek/deepseek-v4-flash-latest
+VFG_RESPOND_REASONING=off
+# OpenRouter providers to try first, fastest first; none lets OpenRouter choose.
+VFG_RESPOND_PROVIDERS=parasail,wafer,phala,together,venice
+# The planner, kept only to retry a command Minecraft refused: Gemini 3.8 Flash, which read every
+# item listing right where DeepSeek V4 Flash misread 2 of 6.
 VFG_PLAN_MODEL=google/gemini-3.8-flash
 VFG_PLAN_REASONING=low
+VFG_PLAN_PROVIDERS=
 # Seconds with no read of the context, and something unprocessed, before one batch call.
 VFG_BRAIN_BATCH_S=60
 # Hours of the feed the brain reads as its context; vfg context's default. Default: 6
