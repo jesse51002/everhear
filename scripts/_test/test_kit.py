@@ -332,7 +332,7 @@ class PlaceTests(KitCase):
     """world.place: a Place value (a saved name, x y z [dim], a player) to where it is now."""
 
     def test_a_saved_place_coordinates_and_a_player(self):
-        self.world.storage["castle"] = {"pos": [197, 68, 251], "dim": "minecraft:overworld", "by": "T23"}
+        self.world.storage["castle"] = {"pos": [197, 68, 251], "dim": "minecraft:overworld", "by": "castle_steve"}
         self.world.storage["hell"] = {"pos": [1, 70, -2], "dim": "minecraft:the_nether", "by": ""}
         p = world.place("castle")
         self.assertEqual((tuple(p), p.dim), ((197.0, 68.0, 251.0), None))
@@ -383,6 +383,18 @@ class McKitTests(KitCase):
             out = subprocess.run([sys.executable, "-c", code], env=env, cwd=folder, stdout=subprocess.PIPE,
                                  universal_newlines=True).stdout.strip()
             self.assertEqual(out, want, inst)
+
+    def test_task_is_the_name_of_the_task_that_started_the_copy_never_cast(self):
+        """mc.task(): VFG_TASK when it is a task's name; "" for no task, for `cast` (the bridge's
+        task for an incantation's copies) and for anything that is not a task's name."""
+        code = "import mc; print(repr((mc.TASK, mc.task())))"
+        for given, want in (("galick_gun_styrk", "galick_gun_styrk"), (" castle_steve ", "castle_steve"),
+                            ("cast_steve", "cast_steve"), ("x" * 32, "x" * 32), ("", ""), ("cast", ""),
+                            ("Galick", ""), ("7gun", ""), ("a", ""), ("x" * 33, ""), ("castle-steve", "")):
+            env = dict(os.environ, PYTHONPATH=LIB, VFG_TASK=given)
+            out = subprocess.run([sys.executable, "-c", code], env=env, cwd=TMP, stdout=subprocess.PIPE,
+                                 universal_newlines=True).stdout.strip()
+            self.assertEqual(out, repr((given.strip(), want)), given)
 
     def test_every_command_holds_the_rcon_lock(self):
         """26.3 answers every RCON client from one buffer: two clients at once get each

@@ -14,23 +14,23 @@ def test_save_list_get_forget_against_the_fake():
     w = FakeWorld()
     rcon = w.respond
     assert places.all(rcon) == {}
-    assert places.save(rcon, "castle", (197.9, 68.0, 251.2), "overworld", "T23") == \
-        {"pos": [197, 68, 251], "dim": "minecraft:overworld", "by": "T23"}
+    assert places.save(rcon, "castle", (197.9, 68.0, 251.2), "overworld", "castle_steve") == \
+        {"pos": [197, 68, 251], "dim": "minecraft:overworld", "by": "castle_steve"}
     assert w.sent[-1] == 'data modify storage everhear:places castle set value ' \
-                         '{pos:[197,68,251],dim:"minecraft:overworld",by:"T23"}'
+                         '{pos:[197,68,251],dim:"minecraft:overworld",by:"castle_steve"}'
     # Saving the same place again is "Nothing changed", and still a save.
-    assert places.save(rcon, "castle", (197, 68, 251), "minecraft:overworld", "T23")["pos"] == [197, 68, 251]
+    assert places.save(rcon, "castle", (197, 68, 251), "minecraft:overworld", "castle_steve")["pos"] == [197, 68, 251]
     places.save(rcon, "home", (-368.5, 70, 912), "overworld")
-    places.save(rcon, "1st_base", (1, -5, 2), "nether", "T7")
+    places.save(rcon, "1st_base", (1, -5, 2), "nether", "base_alex")
     assert places.get(rcon, "home") == {"pos": [-369, 70, 912], "dim": "minecraft:overworld", "by": ""}
     assert places.get(rcon, "nope") is None
     assert places.all(rcon) == {
-        "castle": {"pos": [197, 68, 251], "dim": "minecraft:overworld", "by": "T23"},
+        "castle": {"pos": [197, 68, 251], "dim": "minecraft:overworld", "by": "castle_steve"},
         "home": {"pos": [-369, 70, 912], "dim": "minecraft:overworld", "by": ""},
-        "1st_base": {"pos": [1, -5, 2], "dim": "minecraft:the_nether", "by": "T7"},
+        "1st_base": {"pos": [1, -5, 2], "dim": "minecraft:the_nether", "by": "base_alex"},
     }
     # Overwrite moves it.
-    places.save(rcon, "castle", (198, 68, 251), by="T24")
+    places.save(rcon, "castle", (198, 68, 251), by="castle_alex")
     assert places.get(rcon, "castle")["pos"] == [198, 68, 251]
     assert places.forget(rcon, "home") is True
     assert places.forget(rcon, "home") is False
@@ -41,24 +41,24 @@ def test_all_reads_the_real_storage_reply():
     got = places.all(lambda c: R.STORAGE_THREE)
     assert got == {
         "123": {"pos": [1, 2, 3], "dim": "minecraft:overworld", "by": ""},
-        "castle": {"pos": [198, 68, 251], "dim": "minecraft:overworld", "by": "T24"},
-        "1st_base": {"pos": [1, -5, 2], "dim": "minecraft:the_nether", "by": "T7"},
+        "castle": {"pos": [198, 68, 251], "dim": "minecraft:overworld", "by": "castle_alex"},
+        "1st_base": {"pos": [1, -5, 2], "dim": "minecraft:the_nether", "by": "base_alex"},
     }
     assert places.all(lambda c: R.STORAGE_EMPTY) == {}
     assert places.get(lambda c: R.STORAGE_ONE, "castle") == \
-        {"pos": [197, 68, 251], "dim": "minecraft:overworld", "by": "T23"}
+        {"pos": [197, 68, 251], "dim": "minecraft:overworld", "by": "castle_steve"}
     assert places.get(lambda c: R.NO_ELEMENTS % "castle", "castle") is None
     assert places.forget(lambda c: R.STORAGE_MODIFIED, "castle") is True
     assert places.forget(lambda c: R.NOTHING_CHANGED, "castle") is False
 
 
 def test_line():
-    assert places.line("castle", {"pos": [197, 68, 251], "dim": "minecraft:overworld", "by": "T23"}) == \
-        "castle 197 68 251 overworld (T23)"
+    assert places.line("castle", {"pos": [197, 68, 251], "dim": "minecraft:overworld", "by": "castle_steve"}) == \
+        "castle 197 68 251 overworld (castle_steve)"
     assert places.line("home", {"pos": [-368, 70, 912], "dim": "minecraft:overworld", "by": ""}) == \
         "home -368 70 912 overworld"
-    assert places.line("base", {"pos": [1, -5, 2], "dim": "minecraft:the_nether", "by": "T7"}) == \
-        "base 1 -5 2 the_nether (T7)"
+    assert places.line("base", {"pos": [1, -5, 2], "dim": "minecraft:the_nether", "by": "base_alex"}) == \
+        "base 1 -5 2 the_nether (base_alex)"
 
 
 def test_refusals_and_failures():
@@ -71,7 +71,7 @@ def test_refusals_and_failures():
     with pytest.raises(ValueError):
         places.save(w.respond, "home", (0, 0))
     with pytest.raises(ValueError):
-        places.save(w.respond, "home", (0, 0, 0), by='T1"}')
+        places.save(w.respond, "home", (0, 0, 0), by='castle_steve"}')
     with pytest.raises(ValueError):
         places.save(w.respond, "home", (0, 0, 0), dim="the moon")
     assert w.sent == []
@@ -102,7 +102,7 @@ def test_norm_dim():
                          {"id": "minecraft:scale", "base": 2.0}]),
     (R.STRING_SNBT, "minecraft:overworld"),
     (R.GLOWING_SNBT, 1),
-    (R.TAGS_SNBT, ["vfg_summon_T7_new", "vfg", "vfg_summon_T7"]),
+    (R.TAGS_SNBT, ["vfg_summon_zombies_steve_new", "vfg", "vfg_summon_zombies_steve"]),
     (R.POS, [0.5, 100.0, 0.5]),
     (R.POS_AFTER_SPREAD, [-1408.5, 68.0, 1410.5]),
     ("{}", {}),

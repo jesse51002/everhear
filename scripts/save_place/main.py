@@ -4,7 +4,6 @@ ASKS = ["save this spot as the castle", "remember where I am as home"]
 # conversation hands on for one.
 from kit import values, result, world
 import math
-import re
 import sys
 import mc
 import places
@@ -30,8 +29,9 @@ else:
     spot = world.place(at)
     if spot is None:
         fail("%s is nowhere: not x y z, a saved place or a player online" % at)
-# by: the task that saved it, as the places list shows it (castle 197 68 251 overworld (T23)).
-by = mc.TASK if re.match(r"^[A-Za-z0-9_-]{0,32}$", mc.TASK) else ""
+# by: the task that saved it, by its name, as the places list shows it (castle 197 68 251
+# overworld (castle_steve)); "" when no task did (the brain's own copy, or a cast's).
+by = mc.task()
 try:
     p = places.save(mc.rcon, name, tuple(spot), spot.dim or world.OVERWORLD, by)
 except (places.PlaceError, ValueError) as e:

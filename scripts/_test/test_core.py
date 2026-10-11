@@ -117,13 +117,13 @@ class Box(object):
     def nap(self, values=None, live=("cooldown",), as_=None):
         """A copy of nap, running: its name."""
         meta = {"action": "nap", "script": "nap", "source": "library", "values": dict(values or {}),
-                "live": list(live), "runs": "until_stopped", "task": "T4"}
+                "live": list(live), "runs": "until_stopped", "task": "nap_steve"}
         name, pid, proc = self.box.start(meta, as_)
         self.procs.append(proc)
         self.box.wait(name, proc, 5, on_result=True)
         return name
 
-    def run(self, action, given=None, raw=None, task="T7", extra=None, timeout=60):
+    def run(self, action, given=None, raw=None, task="galick_gun_styrk", extra=None, timeout=60):
         """A copy of `action`, run to its end: its values checked as vfg action run checks
         them (`given`), or sent as they are (`raw`, as from a vfg that checked nothing), with
         `extra` added (what vfg adds to an edit's values)."""
@@ -459,7 +459,7 @@ class TeleportTests(BoxTest):
 
     def test_a_saved_place_is_reached_exactly_when_the_spot_is_safe(self):
         w = one_player()
-        w.save_place("castle", [197, 68, 251], by="T23")
+        w.save_place("castle", [197, 68, 251], by="castle_steve")
         r = self.tp(w, player="Steve", to="place", target="castle")
         self.assertEqual(r.summary, "teleported Steve to castle at 197 68 251")
         self.assertEqual((r.facts["target"], r.facts["ring"]), ("castle", 0))
@@ -478,7 +478,7 @@ class TeleportTests(BoxTest):
         for block, at in (("minecraft:lava", 0), ("minecraft:water", 1), ("minecraft:magma_block", -1),
                           ("minecraft:air", -1)):
             w = one_player()
-            w.save_place("castle", [197, 68, 251], by="T23")
+            w.save_place("castle", [197, 68, 251], by="castle_steve")
             w.block(OW, 197, 68 + at, 251, block)
             w.block(OW, 197, 69 + at, 251, block)   # the spot one block up is no better
             w.landings = [(199, 68, 253)]
@@ -625,7 +625,7 @@ class TeleportTests(BoxTest):
 # ------------------------------------------------------------------ summon_around
 
 class SummonAroundTests(BoxTest):
-    def summon(self, w, task="T7", **given):
+    def summon(self, w, task="zombies_steve", **given):
         b = self.box(w)
         r = b.run("summon_around", given, task=task)
         self.assertIn(r.code, (0, 1), r.out)
@@ -637,12 +637,13 @@ class SummonAroundTests(BoxTest):
         r = self.summon(w, players="Steve", mob="zombie", count=25)
         self.assertEqual(r.code, 0, r.out)
         self.assertEqual(r.summary, "summoned 25 zombies round Steve at 197 68 251")
-        self.assertEqual((r.facts["summoned"], r.facts["standing"], r.facts["tag"]), (25, 25, "vfg_summon_T7"))
+        self.assertEqual((r.facts["summoned"], r.facts["standing"], r.facts["tag"]),
+                         (25, 25, "vfg_summon_zombies_steve"))
         summons = sent(w, "summon")
         self.assertEqual(len(summons), 25)
         self.assertEqual(summons[0], 'execute in minecraft:overworld positioned 197.500 68.000 251.500 run summon '
-                                     'minecraft:zombie ~ ~ ~ {Tags:["vfg","vfg_summon_T7","vfg_summon_around_new"],'
-                                     'PersistenceRequired:1b}')
+                                     'minecraft:zombie ~ ~ ~ {Tags:["vfg","vfg_summon_zombies_steve",'
+                                     '"vfg_summon_around_new"],PersistenceRequired:1b}')
         spreads = sent(w, "spreadplayers")
         self.assertEqual(spreads, ["execute in minecraft:overworld run spreadplayers 197.500 251.500 2 16 under 76 "
                                    "false @e[tag=vfg_summon_around_new]"] * 3)
@@ -652,7 +653,7 @@ class SummonAroundTests(BoxTest):
         self.assertEqual(sent(w, "tag "), ["tag @e[tag=vfg_summon_around_new] remove vfg_summon_around_new"] * 3)
         # A tag of their own, never the copy's: they outlast it, and a later copy named the same
         # never removes them.
-        self.assertTrue(all(e["tags"] == {"vfg", "vfg_summon_T7"} for e in w.entities))
+        self.assertTrue(all(e["tags"] == {"vfg", "vfg_summon_zombies_steve"} for e in w.entities))
 
     def test_summon_a_hundred(self):
         w = FakeWorld()
@@ -743,16 +744,34 @@ class SummonAroundTests(BoxTest):
         r = self.summon(w, task=None, players="Alex", mob="cow", count=1)
         self.assertEqual(r.facts["tag"], "vfg_summon_summon_around")
 
+    def test_a_cast_or_a_task_that_is_no_name_keeps_the_copys_tag(self):
+        """`cast` is the bridge's task for an incantation's copies, never a task's name."""
+        for task in ("cast", "Galick", "7gun"):
+            w = FakeWorld()
+            w.add("Alex", (0.5, 64.0, 0.5))
+            r = self.summon(w, task=task, players="Alex", mob="cow", count=1)
+            self.assertEqual(r.facts["tag"], "vfg_summon_summon_around", task)
+            self.assertTrue(all(e["tags"] == {"vfg", "vfg_summon_summon_around"} for e in w.entities), task)
+
 
 # ------------------------------------------------------------------ save_place
 
 class SavePlaceTests(BoxTest):
     def test_where_a_player_stands(self):
         w = FakeWorld(players={"Steve": (197.9, 68.0, 251.2)})
-        r = self.box(w).run("save_place", {"name": "castle", "player": "Steve"}, task="T23")
+        r = self.box(w).run("save_place", {"name": "castle", "player": "Steve"}, task="castle_steve")
         self.assertEqual((r.code, r.summary), (0, "saved castle at 197 68 251 in overworld"))
-        self.assertEqual(r.facts, {"name": "castle", "pos": [197, 68, 251], "dim": OW, "by": "T23"})
-        self.assertEqual(w.storage["castle"], {"pos": [197, 68, 251], "by": "T23", "dim": OW})
+        self.assertEqual(r.facts, {"name": "castle", "pos": [197, 68, 251], "dim": OW, "by": "castle_steve"})
+        self.assertEqual(w.storage["castle"], {"pos": [197, 68, 251], "by": "castle_steve", "dim": OW})
+
+    def test_by_is_empty_with_no_task_and_for_a_cast(self):
+        """The brain's own copy runs with no task, an incantation's with `cast`: neither is a
+        task, so the place is saved by nobody."""
+        for task in (None, "cast", "Castle Steve"):
+            w = FakeWorld(players={"Steve": (197.9, 68.0, 251.2)})
+            r = self.box(w).run("save_place", {"name": "castle", "player": "Steve"}, task=task)
+            self.assertEqual((r.code, r.facts["by"]), (0, ""), task)
+            self.assertEqual(w.storage["castle"], {"pos": [197, 68, 251], "by": "", "dim": OW}, task)
 
     def test_coordinates_in_the_nether(self):
         w = FakeWorld()
@@ -762,7 +781,7 @@ class SavePlaceTests(BoxTest):
 
     def test_another_place_or_a_player_as_at(self):
         w = FakeWorld(players={"Alex": (30.5, 65.0, -30.5)})
-        w.save_place("castle", [197, 68, 251], by="T23")
+        w.save_place("castle", [197, 68, 251], by="castle_steve")
         b = self.box(w)
         self.assertEqual(b.run("save_place", {"name": "gate", "at": "castle"}).summary,
                          "saved gate at 197 68 251 in overworld")
@@ -797,14 +816,15 @@ class StopTests(BoxTest):
         self.assertTrue(pid)
         w.entities.append({"type": "zombie", "tags": {"vfg", "vfg_nap"}, "pos": [0, 64, 0], "dim": OW, "name": None,
                            "nbt": ""})
-        w.entities.append({"type": "zombie", "tags": {"vfg", "vfg_summon_T7"}, "pos": [0, 64, 0], "dim": OW,
+        w.entities.append({"type": "zombie", "tags": {"vfg", "vfg_summon_zombies_steve"}, "pos": [0, 64, 0], "dim": OW,
                            "name": None, "nbt": ""})
         r = b.run("stop", {"copy": "nap"})
         self.assertEqual((r.code, r.summary), (0, "stopped nap; took away 1 thing it left"))
         self.assertEqual(r.facts, {"copy": "nap", "action": "nap", "was_running": True, "removed": 1})
         self.assertIsNone(b.box.pid("nap"))
         self.assertTrue(instances.gone(pid))
-        self.assertEqual([e["tags"] for e in w.entities], [{"vfg", "vfg_summon_T7"}])   # what was made to stay
+        # What was made to stay.
+        self.assertEqual([e["tags"] for e in w.entities], [{"vfg", "vfg_summon_zombies_steve"}])
 
     def test_one_copy_of_two(self):
         b = self.box(FakeWorld())
@@ -826,7 +846,7 @@ class StopTests(BoxTest):
 
         def run(name, nap):
             meta = {"action": "horde", "script": "horde", "source": "library", "values": {"name": name, "nap": nap},
-                    "live": [], "runs": "once", "task": "T7"}
+                    "live": [], "runs": "once", "task": "horde_steve"}
             copy, pid, proc = b.box.start(meta, "horde")
             b.procs.append(proc)
             return copy, proc
@@ -907,7 +927,7 @@ class EditTests(BoxTest):
             f.write(NAP.replace("# ready\n", 'import mc\nif meta["values"]["player"] == "Bob":\n'
                                               '    raise ValueError("Bob is not welcome")\n'))
         meta = {"action": "picky", "script": "picky", "source": "library", "values": {"player": "Alex"},
-                "live": [], "runs": "until_stopped", "task": "T4"}
+                "live": [], "runs": "until_stopped", "task": "picky_alex"}
         name, pid, proc = b.box.start(meta)
         b.procs.append(proc)
         b.box.wait(name, proc, 5, on_result=True)
