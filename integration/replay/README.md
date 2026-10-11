@@ -13,6 +13,7 @@ it no longer runs on this branch and **needs rewriting for the brain** (below).
 | `lines.py`, `lines_score.py` | the raw-line replay: every direct ask through the brain's one call, with the whole conversation |
 | `classes.py`, `classes_score.py` | Jev's four classes on every line, against TypeSafe, then Respond on every line Jev classes `conversational` |
 | `taskcall.py`, `taskcall_score.py`, `taskcall_prompts/` | the named-tasks orchestrator, one `structured()` call per implementer part, before it is built: every part the brain's full `lines.py` run sent to an implementer, through it, two models compared; results in `taskcall.md`, every miss in `taskcall_scores/` |
+| `gate_bench.py`, `gate_score.py`, `gate_set.jsonl`, `gate_prompts/` | the gate bench: six ways to decide whether a line needs the brain or is talk (Respond as it was, Respond deciding first on DeepSeek and on Gemini, the Jev council in one call and in four), every one on the same fixed set of 592 lines; results and the commands in `gate_bench.md` |
 | `run.py`, `measure.py`, `tasks.jsonl` | the live task replay against the orchestrator: gone with it |
 
 ## The data
