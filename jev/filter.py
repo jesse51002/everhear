@@ -254,11 +254,12 @@ class Filter:
         return True
 
     def _gather(self, ask, said):
-        """The gather call: is each of the speaker's unsent lines since their last
-        line to the AI, 3 minutes back at most, part of `ask`? The yes lines wait
-        in `groups` and go with the ask when it is fed. No lines, no call. A call
-        that fails leaves the ask to go alone; it is not Jev failing to judge a
-        line, so the failing clock is left as it is."""
+        """The gather call: is each of the speaker's unsent lines judged since their
+        last line to the AI, said 3 minutes before `ask` at most, part of it
+        (`store.gather_window`)? The yes lines wait in `groups` and go with the
+        ask when it is fed. No lines, no call. A call that fails leaves the ask to
+        go alone; it is not Jev failing to judge a line, so the failing clock is
+        left as it is."""
         window = self.store.gather_window(ask, iso(said - GATHER_LOOKBACK), GATHER_MAX)
         if not window:
             return

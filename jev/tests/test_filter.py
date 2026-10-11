@@ -388,6 +388,27 @@ class TestGather(Base):
         self.assertEqual(len(self.jev.calls), 3)
         self.assertEqual([u["ref"] for u in self.lines.usage()], ids)
 
+    def test_a_line_gathered_into_one_ask_is_never_gathered_into_another(self):
+        self.lines.add(T0 - 20, "Steve", "chat", "the big one by the river")
+        self.step()
+        self.lines.add(T0 + 2, "Steve", "chat", "make it bigger")
+        self.step(3)
+        # a voice line is stored once its speech is text: this one was said before the typed ask
+        self.lines.add(T0, "Steve", "voice", "and make a moat")
+        self.step(1)
+        self.assertEqual([e[2] for e in self.fed()], ["the big one by the river … make it bigger", "and make a moat"])
+        self.assertEqual(len(self.jev.calls), 4)   # three lines, and the first ask's gather call
+
+    def test_a_piece_stored_after_the_ask_it_was_said_before_goes_with_the_next(self):
+        self.lines.add(T0 + 2, "Steve", "chat", "make it bigger")
+        self.step(3)
+        self.lines.add(T0, "Steve", "voice", "the big one by the river")
+        self.step(1)
+        self.lines.add(T0 + 30, "Steve", "chat", "and make it taller")
+        self.step(30)
+        self.assertEqual([e[2] for e in self.fed()],
+                         ["make it bigger", "the big one by the river … and make it taller"])
+
     def test_a_failing_gather_call_feeds_the_ask_alone_and_leaves_failing_open_alone(self):
         for n, err in enumerate((JevDown("timeout"), JevRefused("413 too large"))):
             with self.subTest(err=err):

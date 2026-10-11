@@ -18,17 +18,21 @@ whether the speaker would be fine, let down, or not notice. The answers walk ont
 The confidence stored and fed is the first answer's. An answer without the first question counts as
 Jev failing.
 
-**The gather call.** Speech-to-text cuts a player at every pause, so one ask can arrive in pieces.
-A line classed `action_oriented` or `conversational` gets one more call before it is fed, over its
-speaker's lines since their last line to the AI, 3 minutes back at most, that were classed
-`context` or `not_relevant` (the newest 10): is each part of this ask? The yes lines go with the ask
-as one feed line, in the order said, the ask last, joined with ` … ` —
+**The gather call.** Speech-to-text cuts a player at every pause, so one ask can arrive in pieces. A
+line classed `action_oriented` or `conversational` gets one more call before it is fed, over its
+speaker's lines that Jev classed `context` or `not_relevant` after it judged their last line to the
+AI, said before this one and 3 minutes before it at most (the newest 10): is each part of this ask?
+That is judge order, not the order said, because a voice line is stored only once its speech is
+text, after a line typed later may have been judged: each line is offered to the speaker's next line
+to the AI judged after it, and to no other. A line passed as `context` with no confidence, while Jev
+failed open or after it refused the line twice, is never gathered. The yes lines go with the ask as
+one feed line, in the order said, the ask last, joined with ` … ` —
 `the castle by the river … the big one … make it bigger` — with the ask's fields and time, the
 oldest dropped first when it would be over the feed's 500 characters. A gathered line keeps its own
-class and is fed, or not, as before. No such lines, no call. A gather call that fails leaves the ask to go
-alone, and does not count towards failing open. The group is held in memory until the ask is fed,
-so a crash between the two feeds the ask alone; a restart finds a group already fed by the ask at
-its end.
+class and is fed, or not, as before. No such lines, no call. A gather call that fails leaves the ask
+to go alone, and does not count towards failing open. The group is held in memory until the ask is
+fed, so a crash between the two feeds the ask alone; a restart finds a group already fed by the ask
+at its end.
 
 An `action_oriented` or `conversational` line flushes the batch at once, since both get a live
 answer; otherwise a batch goes `VFG_BATCH_SECONDS` after its first line. If Jev fails for 10 s the

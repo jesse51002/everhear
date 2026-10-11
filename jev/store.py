@@ -100,24 +100,32 @@ class Store:
             "ORDER BY at, id LIMIT ?" % (COLUMNS, self._live()), (limit,)).fetchall()
 
     def gather_window(self, ask, since, limit=10):
-        """The gather call's lines for `ask`: the same speaker's lines said before
-        it (by `at`, then `id`) and since `since`, not the AI's, not dropped, not
-        blank, classed `context` or `not_relevant`, and said after that speaker's
-        last line classed `action_oriented` or `conversational` before the ask.
-        The newest `limit` of them, oldest first."""
-        before = "player_name = ? AND source != 'ai' AND (at < ? OR (at = ? AND id < ?))"
-        params = [ask["player_name"], ask["at"], ask["at"], ask["id"]]
+        """The gather call's lines for `ask`: the same speaker's lines, not the
+        AI's and not dropped, said before the ask (by `at`, then `id`) and since
+        `since`, that Jev classed `context` or `not_relevant` with a confidence
+        (so never a blank line, nor one passed as context while Jev failed open
+        or after it refused twice), judged after that speaker's last line classed
+        `action_oriented` or `conversational` was judged (by `jev_judged_at`, then
+        `id`). The newest `limit` of them, oldest first.
+
+        Judge order, not the order said, because a voice line is stored when its
+        speech is turned into text, after a line typed later may have been judged:
+        each line is offered to the speaker's next line to the AI judged after it
+        and to no other, so a line gathered into one ask is never gathered again,
+        and a piece stored after the ask it was said before reaches the next."""
         last = self.conn.execute(
-            "SELECT at, id FROM lines WHERE %s AND jev_class IN ('action_oriented', 'conversational') "
-            "ORDER BY at DESC, id DESC LIMIT 1" % before, params).fetchone()
+            "SELECT jev_judged_at, id FROM lines WHERE player_name = ? AND source != 'ai' AND id != ? "
+            "AND jev_class IN ('action_oriented', 'conversational') ORDER BY jev_judged_at DESC, id DESC LIMIT 1",
+            (ask["player_name"], ask["id"])).fetchone()
+        params = [ask["player_name"], ask["at"], ask["at"], ask["id"], since]
         after = ""
         if last is not None:
-            after = " AND (at > ? OR (at = ? AND id > ?))"
-            params += [last["at"], last["at"], last["id"]]
-        rows = self.conn.execute(
-            "SELECT %s FROM lines WHERE %s%s AND jev_class IN ('context', 'not_relevant') AND at >= ?%s "
-            "ORDER BY at DESC, id DESC" % (COLUMNS, before, after, self._live()), params + [since]).fetchall()
-        return [r for r in rows if r["text"].strip()][:limit][::-1]
+            after = " AND (jev_judged_at > ? OR (jev_judged_at = ? AND id > ?))"
+            params += [last["jev_judged_at"], last["jev_judged_at"], last["id"]]
+        return self.conn.execute(
+            "SELECT %s FROM lines WHERE player_name = ? AND source != 'ai' AND (at < ? OR (at = ? AND id < ?)) "
+            "AND at >= ? AND jev_class IN ('context', 'not_relevant') AND jev_confidence IS NOT NULL%s%s "
+            "ORDER BY at DESC, id DESC LIMIT ?" % (COLUMNS, after, self._live()), params + [limit]).fetchall()[::-1]
 
     def history(self, since, exclude=(), limit=2000):
         """Every line said since `since`, the AI's included, newest first,
