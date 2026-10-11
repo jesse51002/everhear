@@ -18,7 +18,7 @@ from pydantic import TypeAdapter, ValidationError
 
 import vfg_actions as A
 from vfg_actions import Catalog, cache, check_action, check_edit, check_values, describe, edit_model, menu_line, \
-    planner_model
+    planner_model, variables
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -888,3 +888,59 @@ def test_cache_writes_every_action_and_rebuilds_only_when_a_file_is_newer(repo, 
     assert "zoo" not in cache(repo, "main", home)["actions"]
     bump(repo / "actions" / "railgun.py", (repo / "actions" / "railgun.py").read_text().replace('"Railgun"', '"Rail"'))
     assert cache(repo, "main", home)["actions"]["railgun"]["fields"]["item"]["default"] == "Rail"
+
+
+# ------------------------------------------------------------------ a task's variables
+
+def test_variables_lists_every_field_takes_first_with_its_limits_choices_live_and_fixed(lib):
+    rail, gat = lib.get("railgun"), lib.get("gatling_gun")
+    got = variables(gat)
+    names = [v["name"] for v in got]
+    assert names[:3] == gat.takes and set(names) == set(gat.model_fields) and len(names) == len(gat.model_fields)
+    assert names[3:] == [k for k in gat.model_fields if k not in gat.takes]  # the rest in the class's order
+    by = {v["name"]: v for v in got}
+    assert by["cooldown"] == {"name": "cooldown", "type": "number", "default": 0.1, "ge": 0, "le": 60,
+                              "choices": None, "live": True, "fixed": True, "description": "seconds between shots"}
+    assert by["damage_what"]["choices"] == ["all", "mobs", "hostile", "players"] and by["damage_what"]["type"] == "enum"
+    assert by["damage_what"]["fixed"] is False and by["damage_what"]["live"] is True
+    assert by["player"]["live"] is False and by["player"]["type"] == "players"  # a restart, not live
+    assert by["damage_spare"] == {**by["damage_spare"], "type": "list of player", "default": []}
+    # The railgun's own: the fixed field is only fire, and cooldown is its default, not the variant's.
+    rail_by = {v["name"]: v for v in variables(rail)}
+    assert [k for k, v in rail_by.items() if v["fixed"]] == ["fire"]
+    assert rail_by["cooldown"]["default"] == 2 and rail_by["cooldown"]["fixed"] is False
+    # The same keys as an actions.json field, plus the name and whether it is fixed.
+    e = A.entry("gatling_gun", gat, "library", "actions/gatling_gun.py")["fields"]
+    for v in got:
+        assert {k: x for k, x in v.items() if k not in ("name", "fixed")} == json.loads(json.dumps(e[v["name"]]))
+    assert json.loads(json.dumps(got)) == got  # JSON-able, as the tasks row stores it
+
+
+def test_variables_follow_a_variants_defaults_descriptions_and_a_field_written_again(repo):
+    write(repo / "actions" / "soft_gatling_gun.py", SOFT)
+    write(repo / "actions" / "big_gatling_gun.py", '''
+        from actions._types import Field, Live
+        from actions.soft_gatling_gun import SoftGatlingGun
+
+
+        class BigGatlingGun(SoftGatlingGun):
+            """Give a player a gatling gun that can hurt more."""
+
+            damage_amount: Live[float] = Field(30, ge=0, le=200000)
+            """damage to each thing hit, in half-hearts, up to twice what a gun may"""
+    ''')
+    cat = Catalog(repo, None)
+    soft = {v["name"]: v for v in variables(cat.get("soft_gatling_gun"))}
+    assert soft["damage_amount"]["default"] == 2
+    assert soft["damage_amount"]["description"] == "how soft each shot is, in half-hearts"
+    assert (soft["damage_amount"]["ge"], soft["damage_amount"]["le"]) == (0, 100000)
+    big = {v["name"]: v for v in variables(cat.get("big_gatling_gun"))}
+    # Its own limits and words; the soft parent's defaults still give it its default.
+    assert (big["damage_amount"]["le"], big["damage_amount"]["default"], big["damage_amount"]["live"]) == (200000, 2, True)
+    assert big["damage_amount"]["description"].endswith("up to twice what a gun may")
+    write(repo / "made" / "main" / "actions" / "zoo.py", ZOO)
+    made = Catalog(repo, "main").get("zoo")
+    assert [v["name"] for v in variables(made)] == ["player", "count", "mob"]
+    assert [v["live"] for v in variables(made)] == [False, True, False]
+    assert variables(made)[1] == {"name": "count", "type": "int", "default": 10, "ge": 1, "le": 100, "choices": None,
+                                  "live": True, "fixed": False, "description": "how many"}

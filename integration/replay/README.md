@@ -63,6 +63,9 @@ $PY integration/replay/taskcall.py --db $DB --lines OUT/lines.jsonl --out OUT3 \
 $PY integration/replay/taskcall.py --db $DB --lines OUT/lines.jsonl --out OUT3 \
     --model google/gemini-3.8-flash --reasoning low                     # goes on to all 168 parts
 python3 integration/replay/taskcall_score.py OUT3                         # OUT3/score.md, score.json
+$PY integration/replay/taskcall.py --db $DB --lines OUT/lines.jsonl --out OUT4 --built --limit 3   # the built one: a smoke
+$PY integration/replay/taskcall.py --db $DB --lines OUT/lines.jsonl --out OUT4 --built --budget 1.5  # all 168 parts
+python3 integration/replay/taskcall_score.py OUT4                         # scored as OUT3, reply-only parts apart
 
 $PY integration/replay/classes.py jev --db $DB --out OUT2                 # 843 lines, one TypeSafe call each
 $PY integration/replay/classes.py respond --db $DB --out OUT2             # every line now conversational
@@ -87,6 +90,16 @@ into an OUT that has rows goes on after the last line, the tasks rebuilt from th
 On 2026-10-10 the full 168 parts took about 9 minutes and $1.18 on Gemini 3.8 Flash at low
 reasoning (a call: median 3.0 s, p90 5.0 s), and 11 minutes and $0.16 on DeepSeek V4 Flash with
 reasoning off (3.6 s, 5.0 s); at low reasoning DeepSeek took 7.7 s, p90 26 s.
+
+`taskcall.py --built` asks the orchestrator as it is built (Prototype_Named_Tasks): `brain/brain/
+orchestrator.py`'s opening, tail and checks, its prompt `brain/prompts/orchestrator.md`, and the
+model, reasoning, providers and timeout of the brain's `VFG_ORCHESTRATOR_*` settings unless given.
+It reads the routes `implementer` and `orchestrator` alike, so an earlier `lines.jsonl` still
+serves. Its TASKS shows each task as a row of the tasks table, what it made not known (null), and
+RUNNING NOW is none, so an edit or a stop cannot be answered; the conversation's task rows read
+as the brain posts them (`AI task [<name>]: new: …`, `follow-up: …`). Its answers are a `kind`
+(new, follow_up, edit, stop or reply) with the fields the brain gets; a reply only is counted on
+its own line by `taskcall_score.py`. Without `--built`, `--version v3` runs as before.
 
 ### What it leaves in OUT
 

@@ -13,6 +13,7 @@ and Jev's router all go through here:
     check_edit(cls, current, {"cooldown": "0"})       -> Edit(values, changed, live_only, notes)
     menu_line(name, cls), describe(name, cls, current=None)
     planner_model(cls), edit_model(cls)       the models structured() answers in
+    variables(cls)                            its fields as a task's `variables`: [{name, type, ...}]
     cache(repo, server, home)                 home/actions.json, built again when it is stale
 
 Loading. The repo goes first on sys.path and a library action is imported as actions.<name>,
@@ -606,6 +607,24 @@ def entry(name: str, cls, source: str, file: str) -> dict:
             "defaults": to_jsonable_python(cls.defaults), "descriptions": dict(cls.descriptions),
             "timeout_s": cls.timeout_s, "source": source,
             "file": file, "fields": fields, "describe": describe(name, cls)}
+
+
+def variables(cls) -> list[dict]:
+    """The action's fields as a task's `variables` (Prototype_Named_Tasks): one per field, those it
+    takes first, then the rest in the class's order, each with the keys actions.json's fields have,
+    plus its name and whether it is fixed."""
+    T = _types(cls)
+    order = [k for k in cls.takes if k in cls.model_fields] + [k for k in cls.model_fields if k not in cls.takes]
+    out = []
+    for key in order:
+        f = cls.model_fields[key]
+        lo, hi = T.limits(f.annotation, f.metadata)
+        out.append({"name": key, "type": T.kind(f.annotation, f.metadata),
+                    "default": to_jsonable_python(f.get_default(call_default_factory=True)),
+                    "ge": lo, "le": hi, "choices": to_jsonable_python(T.choices(f.annotation, f.metadata)),
+                    "live": T.is_live(f.metadata), "fixed": key in cls.fixed,
+                    "description": (f.description or "").strip()})
+    return out
 
 
 def cache(repo: Path, server: str, home: Path, *, catalog: Catalog | None = None) -> dict:

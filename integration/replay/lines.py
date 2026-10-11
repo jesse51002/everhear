@@ -76,7 +76,7 @@ def git_head() -> str:
 
 
 def part_dict(p) -> dict:
-    return {"part": p.part, "to": p.to, "task": p.task, "instruction": p.instruction, "drop": p.drop,
+    return {"part": p.part, "to": p.to, "task": getattr(p, "task", ""), "instruction": p.instruction, "drop": p.drop,
             "action": [{"key": v.key, "value": v.value} for v in p.action] if p.action is not None else None}
 
 
