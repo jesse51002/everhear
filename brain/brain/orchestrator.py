@@ -39,7 +39,8 @@ import vfg_actions
 from pydantic import BaseModel, Field, model_validator
 from vfg_actions import check_edit
 
-from . import call, names
+from . import call
+from .names import NAME, RESERVED
 from .actions import word
 from .context import Context
 
@@ -94,11 +95,11 @@ class AnswerBase(BaseModel):
         return out
 
 
-def answer_type(names_: set[str], banned: set[str], copies: dict[str, dict], catalog,
+def answer_type(names: set[str], banned: set[str], copies: dict[str, dict], catalog,
                 replying: bool) -> type[AnswerBase]:
     """A subclass named "TaskAnswer" (its __name__, the schema's name), with one model_validator
-    checking an answer against the tasks there are (`names_`), the names a new task may not take
-    (`banned`: the library's actions and names.RESERVED), the copies running now and their actions,
+    checking an answer against the tasks there are (`names`), the names a new task may not take
+    (`banned`: the library's actions and RESERVED), the copies running now and their actions,
     and whether the line's reply is this call's. Its JSON schema is the same for every input."""
 
     class TaskAnswer(AnswerBase):
@@ -152,16 +153,16 @@ def answer_type(names_: set[str], banned: set[str], copies: dict[str, dict], cat
             if kind == NEW:
                 if task:
                     raise ValueError("a new task follows up no task: leave task empty, or answer follow_up")
-                if not names.NAME.match(name):
+                if not NAME.match(name):
                     raise ValueError(f"name {name!r}: lowercase letters, digits and underscores, starting with a "
                                      "letter, 2 to 32 characters")
-                if name in names.RESERVED:
+                if name in RESERVED:
                     raise ValueError(f"{name} is the bridge's task for an incantation's copies, never a task's "
                                      "name: name the thing, then whose")
                 if name in banned:
                     raise ValueError(f"{name} is a library action's name: add whose it is, as frost_bow_alex")
                 return self
-            if task not in names_:
+            if task not in names:
                 raise ValueError(f"task {task!r} is not on TASKS: a follow-up names one of its tasks; work no "
                                  "task made is new")
             if name and name != task:
@@ -349,7 +350,7 @@ class Orchestrator:
                      replying: bool, tasks: list[dict], copies: dict[str, dict]):
         """One call: an Answer whose value is a TaskAnswer, every string stripped and the reply
         emptied when it is not this call's and the answer is not a reply only. Raises LlmError."""
-        output = answer_type({str(t.get("name")) for t in tasks}, set(call.library(self.catalog)) | names.RESERVED,
+        output = answer_type({str(t.get("name")) for t in tasks}, set(call.library(self.catalog)) | RESERVED,
                              copies, self.catalog, replying)
         got = await self.ask(self.tail(head=head, parts=parts, k=k, given=given, others=others, replying=replying,
                                        tasks=tasks, copies=copies),
