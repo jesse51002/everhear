@@ -42,8 +42,10 @@ from datetime import datetime, timedelta, timezone
 
 
 def _under_uv():
-    """Start the run again under uv with pydantic, when this Python has none."""
-    if importlib.util.find_spec("pydantic") is not None or os.environ.get("VFG_TESTS_UNDER_UV"):
+    """Start the run again under uv with pydantic and httpx, vfg's own dependencies, when this
+    Python lacks either (the usage tests import lib/py/vfg_llm.py, which needs both)."""
+    if os.environ.get("VFG_TESTS_UNDER_UV") or all(importlib.util.find_spec(m) is not None
+                                                   for m in ("pydantic", "httpx")):
         return
     argv = list(sys.argv)
     rest = [argv[0]] + argv[1:] if argv and argv[0].endswith(".py") else ["-m", "unittest"] + argv[1:]
@@ -51,7 +53,7 @@ def _under_uv():
     sys.stderr.flush()
     try:
         os.execvpe("uv", ["uv", "run", "--quiet", "--no-project", "--python", "3.12", "--with", "pydantic>=2.14",
-                          "python"] + rest, dict(os.environ, VFG_TESTS_UNDER_UV="1"))
+                          "--with", "httpx>=0.28.1", "python"] + rest, dict(os.environ, VFG_TESTS_UNDER_UV="1"))
     except OSError:
         pass   # no uv: what loads the actions fails, saying pydantic is missing
 
@@ -86,7 +88,7 @@ CREATE TABLE feed (seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, line
   processed_at TEXT);
 CREATE TABLE usage (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,
   component TEXT NOT NULL CHECK (component IN ('jev','conversation','orchestrator','implementer',
-                                               'brain','respond')),
+                                               'brain','respond','planner','alias')),
   model TEXT, input_tokens INTEGER, output_tokens INTEGER, cost_usd REAL, ref TEXT);
 """
 

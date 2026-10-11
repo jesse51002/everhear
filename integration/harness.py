@@ -1324,7 +1324,8 @@ def path6(box, rep, ctx):
               "usage row (ref=probe)", "%r" % probes)
     stray = box.sql("SELECT u.ref FROM usage u JOIN lines l ON l.id = u.ref WHERE l.source = 'ai'")
     rep.check(not stray, "no usage row points at an ai line")
-    # Each as its writer writes it: brain/loop.py's usage() and brain/implementers/usage.py's usage_args().
+    # Rows as `vfg usage add` takes them: brain/implementers/usage.py's usage_args() and the like (the brain's
+    # and Respond's own rows are structured()'s, below).
     rows = [
         (["--component", "brain", "--model", "openai/gpt-6.1-sol", "--in", "9512", "--out", "210", "--cost",
           "0.001834", "--cache-read", "9216", "--ref", "#812"],
@@ -1346,6 +1347,26 @@ def path6(box, rep, ctx):
                        row[0]["cost_usd"], row[0]["cache_read_tokens"], row[0]["cache_write_tokens"], row[0]["ref"])
         rep.check(r.returncode == 0 and got == want, "vfg usage add --component %s … --ref %r writes the §4 row, "
                   "its cached tokens too, and prints its id" % (want[0], want[-1]), r.stdout + r.stderr + "%r" % (got,))
+    # structured()'s rows (lib/py/vfg_llm.py usage_row and record): queued on the PC, a failed call's with its cost,
+    # sent by vfg usage flush into the columns the bridge added on start
+    queued = [dict(at=iso(now()), component=c, model="~deepseek/deepseek-v4-flash-latest",
+                   input_tokens=i, output_tokens=o, cost_usd=cost, ref=ref, cache_read_tokens=0,
+                   cache_write_tokens=None, ok=ok, error=err, ms=ms)
+              for c, i, o, cost, ref, ok, err, ms in (
+                  ("planner", 2400, 60, 0.00031, "T7 #1", 0, "no answer from ~deepseek/deepseek-v4-flash-latest "
+                                                             "within 20 s", 20012),
+                  ("alias", 300, 20, 0.00005, "fire ball", 1, None, 840))]
+    with open(os.path.join(box.vhome, "usage.pending.jsonl"), "a") as f:
+        f.write("".join(json.dumps(q) + "\n" for q in queued))
+    r = box.vfg("usage", "flush")
+    got = box.sql("SELECT component, cost_usd, ref, ok, error, ms FROM usage WHERE ref IN ('T7 #1', 'fire ball')"
+                  " ORDER BY id")
+    rep.check(r.returncode == 0 and [tuple(g.values()) for g in got] == [
+        (q["component"], q["cost_usd"], q["ref"], q["ok"], q["error"], q["ms"]) for q in queued],
+        "vfg usage flush sends structured()'s queued rows, a failed call's with its cost, ok, error and ms",
+        r.stdout + r.stderr + "%r" % (got,))
+    r = box.vfg("usage", "flush")
+    rep.check(r.returncode == 0 and r.stdout == "", "nothing queued: vfg usage flush sends nothing", r.stdout + r.stderr)
     n = len(box.sql("SELECT id FROM usage"))
     r = box.vfg("usage", "add", "--component", "dispatcher", "--model", "x", "--in", "1", "--out", "1")
     rep.check(r.returncode == 2 and len(box.sql("SELECT id FROM usage")) == n,

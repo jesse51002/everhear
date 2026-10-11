@@ -50,7 +50,10 @@ settings are its own (`brain/brain/config.py`: the environment, then `~/.vfg/con
 model, the reasoning and `VFG_OWNER` are what a live brain on this PC would use. The OpenRouter
 key as `structured()` reads it; the TypeSafe key as `TYPESAFE_API_KEY`, else from `--env FILE`
 (default: realmc's stand-in box's `integration/realmc/.server/shared/env`, here or in the
-`script-library` worktree), never printed.
+`script-library` worktree), never printed. Every model call is a row of the one usage log, as a
+live call is (`docs/CONTRACTS.md` §4): the component of what it replays (`brain`, `respond`, or
+`orchestrator` for `taskcall.py`) and a call_id that starts `replay `, queued in
+`$VFG_HOME/usage.pending.jsonl` for the next `vfg usage flush`.
 
 ```sh
 PY=brain/.venv/bin/python; DB=DIR/vfg/vfg.db

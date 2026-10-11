@@ -42,7 +42,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import playtest  # noqa: E402  (puts brain/ on the path)
-from playtest import Clock, Playtest  # noqa: E402
+from playtest import Clock, Playtest, replayed  # noqa: E402
 
 import httpx  # noqa: E402
 import vfg_llm  # noqa: E402
@@ -104,7 +104,7 @@ async def run(args) -> None:
     catalog = actions.load(cfg.repo, cfg.server)
     hidden = actions.hidden_commands()
     refs, refs_dir = load_refs()
-    call = Call(catalog, asker(cfg.model, cfg.reasoning, cfg.timeout_s, cfg.providers), owner=cfg.owner,
+    call = Call(catalog, replayed(asker(cfg.model, cfg.reasoning, cfg.timeout_s, cfg.providers)), owner=cfg.owner,
                 hidden=hidden, checkpoint=cfg.checkpoint)
     rows_file = out / "lines.jsonl"
     done = set()

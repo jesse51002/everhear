@@ -68,9 +68,11 @@ class Respond:
                 f"THE LINE #{row.seq}, {row.hms}: {row.who} {how}: {row.text}\n")
 
     async def answer(self, row: Row, ctx: Context, seen: Seen, tasks: str, new: list[Row]):
-        """An Answer whose value is a Response, never with both a reply and a hand-up; raises LlmError."""
+        """An Answer whose value is a Response, never with both a reply and a hand-up; raises LlmError.
+        Its usage row is structured()'s: component respond, `#<seq>`."""
         answer = await self.ask(self.tail(row, seen, tasks, new), Response,
-                                cached=ctx.cached(self.opening(), self.checkpoint))
+                                cached=ctx.cached(self.opening(), self.checkpoint),
+                                component="respond", call_id=f"#{row.seq}")
         if answer.value.hand_up and answer.value.reply:
             answer.value.reply = ""
         return answer

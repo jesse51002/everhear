@@ -41,6 +41,7 @@ from typing import Any, ClassVar, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, Field, PrivateAttr, create_model, model_validator
 from vfg_actions import check_edit, check_values, describe, edit_model, planner_model
+from vfg_llm import LlmError
 
 from .actions import command_fields, commands_in, doc, named, view
 from .config import log as default_log
@@ -187,7 +188,8 @@ class Unchecked(Exception):
 
 @dataclass
 class Spent:
-    """The model calls one task made, for its log line."""
+    """The model calls one task made, for its log line; a failed one counts too (an LlmError
+    carries what it spent). Each call's usage row is structured()'s own."""
     calls: int = 0
     ms: int = 0
     cost: float = 0.0
@@ -289,7 +291,13 @@ class Planner:
     # ------------------------------------------------------------------ calls
 
     async def _call(self, step: str, prompt: str, output: type[BaseModel], p: Pick):
-        answer = await self.ask(prompt, output, system=self.system, model=self.model)
+        """One planner call: its usage row is structured()'s, component planner, `<task> #<part>`."""
+        try:
+            answer = await self.ask(prompt, output, system=self.system, model=self.model, component="planner",
+                                    call_id=f"{p.task_id} #{p.index + 1}"[:64])
+        except LlmError as e:
+            p.spent.add(e)
+            raise
         p.spent.add(answer)
         self.log("plan", f"{p.task_id} #{p.index + 1} {step} {answer.ms} ms ${answer.cost:.6f}: {outcome(answer.value)}")
         return answer.value

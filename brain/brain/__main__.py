@@ -12,7 +12,8 @@ context line unread with it, a line from the last two minutes still unread answe
 the greeting, skipped when nobody is on. A read of the context that fails is tried again, never
 followed from 0.
 Stop (SIGTERM or SIGINT): read nothing new, let the calls in flight finish for up to 10 s, stop
-the implementers and fail their tasks as stopped, save, exit 0.
+the implementers and fail their tasks as stopped, send the usage rows still queued, save, exit 0.
+The start sends the queue too (`vfg usage flush`), for the rows of calls made while it was down.
 """
 
 from __future__ import annotations
@@ -51,7 +52,7 @@ LOAD = object()      # serve(refs=LOAD): load them, as a real start does
 REFS_RETRY_S = 300   # a failed load of the references is tried again this often, until it works
 CONTEXT_RETRY_S = 5.0  # a failed read of the context is tried again this often, until it works
 IMPLEMENTERS_GRACE_S = 2.0
-DRAIN_S = 1.5        # for the rows and usage still being written, at the very end
+DRAIN_S = 1.5        # for the rows still being written and the usage sent, at the very end
 
 
 class _LogLines(logging.Handler):
@@ -95,7 +96,8 @@ def implementers(on_report, on_session=None):
 
 
 def asker(model: str, reasoning: str, timeout: float, providers: tuple[str, ...] = ()):
-    """structured() with one model's settings; a call past `timeout` is an LlmError."""
+    """structured() with one model's settings; a call past `timeout` is an LlmError. Each caller
+    names the call's component and call_id, and structured() queues its usage row."""
     return functools.partial(vfg_llm.structured, model=model, reasoning=Config.effort_of(reasoning),
                              providers=list(providers) or None, timeout=timeout)
 
@@ -191,6 +193,7 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
 
     catalog = actions.load(cfg.repo, cfg.server) if catalog is None else catalog
     later("jev", "menu", "set", jev_menu(catalog))
+    later("usage", "flush")  # the usage rows queued while the brain was down
     hidden = actions.hidden_commands()
     copies = running.Refresher(vfg, cfg.running_ttl_s)
     world = World(vfg, cfg.running_file, catalog, refresher=copies)
@@ -218,7 +221,7 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
                 world=world, action_timeout_s=cfg.action_timeout_s)
     brain = Brain(ctx=ctx, call=call, respond=respond, acts=acts, world=world, tasks=tasks, implementers=impl,
                   later=later, catalog=catalog, refs=None if refs is LOAD else refs,
-                  start=start, load=lambda: load_context(vfg, cfg.history_hours), model=cfg.model, respond_model=cfg.respond_model,
+                  start=start, load=lambda: load_context(vfg, cfg.history_hours),
                   menu=lambda text: later("jev", "menu", "set", text))
 
     for t in tasks.open_ones():  # their implementers went with the last run
@@ -248,6 +251,7 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
     await brain.stop(cfg.stop_grace_s, IMPLEMENTERS_GRACE_S)
     await copies.stop()
     await world.close()
+    later("usage", "flush")  # the rows of the calls the stop cut short; any not sent go with the next start's
     await later.drain(DRAIN_S)
     tasks.save()
     log("stop", "stopped")

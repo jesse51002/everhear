@@ -23,7 +23,7 @@ CREATE TABLE events (id TEXT PRIMARY KEY, at TEXT NOT NULL, kind TEXT NOT NULL,
 CREATE INDEX events_at ON events(at);
 CREATE TABLE feed (seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, line TEXT NOT NULL);  -- line: the whole line, exactly as in feed.log
 CREATE TABLE usage (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,
-  component TEXT NOT NULL CHECK (component IN ('jev','conversation','orchestrator','implementer','brain','respond')),
+  component TEXT NOT NULL CHECK (component IN ('jev','conversation','orchestrator','implementer','brain','respond','planner','alias')),
   model TEXT, input_tokens INTEGER, output_tokens INTEGER, cost_usd REAL, ref TEXT);
 """
 
@@ -31,7 +31,14 @@ CREATE TABLE usage (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,
 OLD_DDL = (CONTRACT_DDL
            .replace("'action_oriented','conversational','context','not_relevant'",
                     "'direct_ask','context','not_useful'")
-           .replace(",'brain','respond'", ""))
+           .replace(",'brain','respond','planner','alias'", ""))
+
+# usage as the brain's box made it, before the one log: six components, the cache columns added.
+BRAIN_USAGE = ("CREATE TABLE usage (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,\n"
+               "  component TEXT NOT NULL CHECK (component IN "
+               "('jev','conversation','orchestrator','implementer','brain','respond')),\n"
+               "  model TEXT, input_tokens INTEGER, output_tokens INTEGER, cost_usd REAL, ref TEXT, "
+               "cache_read_tokens INTEGER, cache_write_tokens INTEGER)")
 
 AT = "2026-10-08T05:00:00.000Z"
 
@@ -54,7 +61,7 @@ class TestSchema(Box):
         self.assertEqual(self.query("PRAGMA journal_mode"), [("wal",)])
         self.assertEqual(self.query("PRAGMA user_version"), [(3,)])
         columns = [row[1] for row in self.query("PRAGMA table_info(usage)")]
-        self.assertEqual(columns[-2:], ["cache_read_tokens", "cache_write_tokens"])
+        self.assertEqual(columns[-5:], ["cache_read_tokens", "cache_write_tokens", "ok", "error", "ms"])
         self.assertEqual([row[1] for row in self.query("PRAGMA table_info(feed)")],
                          ["seq", "at", "line", "processed_at"])
         columns = [row[1] for row in self.query("PRAGMA table_info(lines)")]
@@ -117,6 +124,35 @@ class TestSchema(Box):
         conn.execute("INSERT INTO usage (at, component) VALUES (?, 'respond')", (AT,))
         self.assertEqual(self.query("SELECT id, component FROM usage ORDER BY id"),
                          [(7, "orchestrator"), (10, "brain"), (11, "respond")])
+
+    def test_usage_from_before_the_one_log_gets_the_call_columns_and_the_new_components(self):
+        conn = sqlite3.connect(self.db_path, isolation_level=None)
+        conn.executescript(CONTRACT_DDL.replace(CONTRACT_DDL[CONTRACT_DDL.index("CREATE TABLE usage"):],
+                                                BRAIN_USAGE + ";\n"))
+        conn.execute("INSERT INTO usage (id, at, component, model, cost_usd, ref, cache_read_tokens)"
+                     " VALUES (4, ?, 'brain', 'openai/gpt-6.1-sol', 0.0123, '#5', 9000)", (AT,))
+        with self.assertRaises(sqlite3.IntegrityError):
+            conn.execute("INSERT INTO usage (at, component) VALUES (?, 'planner')", (AT,))
+        conn.close()
+
+        database = self.make_db()
+        for table, column, values, renamed in db.CHECKS:  # a second start changes nothing more
+            self.assertFalse(db.rebuild_check(database.conn, table, column, values, renamed))
+        self.assertEqual([row[1] for row in self.query("PRAGMA table_info(usage)")],
+                         ["id", "at", "component", "model", "input_tokens", "output_tokens", "cost_usd", "ref",
+                          "cache_read_tokens", "cache_write_tokens", "ok", "error", "ms"])
+        conn = sqlite3.connect(self.db_path, isolation_level=None)
+        self.addCleanup(conn.close)
+        for component, ok, error in (("planner", 0, "no answer from m within 20 s"), ("alias", 1, None)):
+            conn.execute("INSERT INTO usage (at, component, model, cost_usd, ref, ok, error, ms)"
+                         " VALUES (?, ?, 'm', 0.001, 'r', ?, ?, 840)", (AT, component, ok, error))
+        with self.assertRaises(sqlite3.IntegrityError):
+            conn.execute("INSERT INTO usage (at, component) VALUES (?, 'dispatcher')", (AT,))
+        self.assertEqual(self.query("SELECT id, component, cost_usd, cache_read_tokens, ok, error, ms FROM usage"
+                                    " ORDER BY id"),
+                         [(4, "brain", 0.0123, 9000, None, None, None),
+                          (5, "planner", 0.001, None, 0, "no answer from m within 20 s", 840),
+                          (6, "alias", 0.001, None, 1, None, 840)])
 
     def test_a_fresh_history_is_never_rebuilt(self):
         database = self.make_db()

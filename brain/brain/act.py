@@ -213,8 +213,9 @@ class Acts:
             log("action", f"{tid} #{i + 1} {p.to} {state} in {time.perf_counter() - t0:.1f} s: {o.summary[:200]}")
             if p.to in ("stop", "edit") or (o.ok and getattr(self.catalog.get(p.to), "runs", "") == "until_stopped"):
                 self.world.refetch_running()
-        if spent.calls:
+        if spent.calls:  # their usage rows, structured()'s, sent nobody waiting
             log("plan", f"{tid} retries: {spent.calls} planner call(s), {spent.ms} ms, ${spent.cost:.6f}")
+            self.later("usage", "flush")
         return outcomes
 
     def values(self, name: str, cls, given: dict[str, Any], seen: Seen) -> tuple[dict[str, Any], list[str]]:

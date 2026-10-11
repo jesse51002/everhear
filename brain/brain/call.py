@@ -169,6 +169,12 @@ class Event:
     report: str = ""                # REPORT: the implementer's report, which never reaches the context
     following: bool = False         # REPORT: a follow-up to the task already runs, so it stays open
 
+    def ref(self) -> str:
+        """The call's id in its usage row: `#<seq>` for a line, the task's id for a report."""
+        if self.kind == "LINE":
+            return f"#{self.row.seq}"
+        return str((self.task or {}).get("id") or "report")[:64]
+
     def show(self) -> str:
         if self.kind == "LINE":
             r = self.row
@@ -250,8 +256,10 @@ class Call:
         return ctx.cached(self.opening(refs), self.checkpoint)
 
     async def decide(self, event: Event, ctx: Context, seen: Seen, tasks: str, new: list[Row], refs):
-        """An Answer whose value is a Decision; raises LlmError."""
-        return await self.ask(self.tail(event, seen, tasks, new), self.Decision, cached=self.cached(ctx, refs))
+        """An Answer whose value is a Decision; raises LlmError. Its usage row is structured()'s:
+        component brain, the event's ref."""
+        return await self.ask(self.tail(event, seen, tasks, new), self.Decision, cached=self.cached(ctx, refs),
+                              component="brain", call_id=event.ref())
 
 
 def describe(decision) -> str:

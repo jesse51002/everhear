@@ -460,7 +460,8 @@ async def run(args) -> None:
                     g = dict(p)
                     t0 = time.perf_counter()
                     try:
-                        a = await ask(text, answer_type(names, banned, None, replying=k == 0), cached=blocks)
+                        a = await ask(text, answer_type(names, banned, None, replying=k == 0), cached=blocks,
+                                      component="orchestrator", call_id=f"replay taskcall #{e.n}.{k}")
                     except vfg_llm.LlmError as err:
                         g.update(error=str(err)[:500], ms=int((time.perf_counter() - t0) * 1000))
                     else:

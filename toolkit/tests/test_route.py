@@ -12,7 +12,7 @@ import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from harness import TOOLKIT, BoxCase, Result, vfg_module, wait_for, write  # noqa: E402
+from harness import ISO_RE, REPO, TOOLKIT, BoxCase, Result, vfg_module, wait_for, write  # noqa: E402
 import fake_jev_route  # noqa: E402
 
 sys.path.insert(0, os.path.join(TOOLKIT, "lib"))
@@ -588,6 +588,67 @@ class TestUsageCache(BoxCase):
             r = self.vfg("usage", "add", "--component", "jev", "--model", "m", "--in", "1", "--out", "1",
                              flag, "-1")
             self.assertOneLine(r, 2)
+
+
+class TestCallRows(BoxCase):
+    """The row lib/py/vfg_llm.py queues for every structured() call: the row `vfg usage add`
+    queues, with ok, error and ms after it, sent by `vfg usage flush`."""
+
+    def llm(self):
+        lib = os.path.join(REPO, "lib", "py")
+        if lib not in sys.path:
+            sys.path.insert(0, lib)
+        import vfg_llm
+        return vfg_llm
+
+    def columns(self, *names):
+        con = __import__("sqlite3").connect(self.box.db)
+        for name, kind in (("cache_read_tokens", "INTEGER"), ("cache_write_tokens", "INTEGER"), ("ok", "INTEGER"),
+                           ("error", "TEXT"), ("ms", "INTEGER")):
+            if name in names:
+                con.execute("ALTER TABLE usage ADD COLUMN %s %s" % (name, kind))
+        con.commit()
+        con.close()
+
+    def queue(self):
+        """Two calls' rows, as structured() writes them: a failed planner call and an alias call."""
+        llm = self.llm()
+        with self.box.environ() as vfg:
+            a = __import__("argparse").Namespace(component="brain", model="m", in_=1, out=2, cost=0.5, ref="T7",
+                                                 cache_read=None, cache_write=None)
+            added = vfg.usage_row(a, time.time())
+            failed = llm.usage_row("planner", "T7 #2", "~deepseek/x", 0.0031, 2400, 900, 0, 40,
+                                   error="~deepseek/x twice failed to match Planned_command: - action: …")
+            answered = llm.usage_row(llm.Component.ALIAS, "fire ball", "~deepseek/x", 0.00005, 800, 300, 256, 20,
+                                     error=None)
+            self.assertEqual(list(failed), list(added) + ["ok", "error", "ms"])
+            self.assertRegex(failed["at"], ISO_RE)
+            llm.record(failed)
+            llm.record(answered)
+        self.assertEqual(self.box.calls, [])  # queued: nothing reached the box
+
+    def test_flushed_with_every_column(self):
+        self.columns("cache_read_tokens", "cache_write_tokens", "ok", "error", "ms")
+        self.queue()
+        r = self.vfg("usage", "flush")
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "2\n", ""))
+        self.assertEqual(self.box.query("SELECT component, model, input_tokens, output_tokens, cost_usd, ref, "
+                                        "cache_read_tokens, cache_write_tokens, ok, error, ms FROM usage ORDER BY id"), [
+            ("planner", "~deepseek/x", 900, 40, 0.0031, "T7 #2", 0, None, 0,
+             "~deepseek/x twice failed to match Planned_command: - action: …", 2400),
+            ("alias", "~deepseek/x", 300, 20, 0.00005, "fire ball", 256, None, 1, None, 800)])
+
+    def test_before_the_bridge_adds_the_columns_the_rows_still_land(self):
+        self.queue()
+        r = self.vfg("usage", "flush")
+        self.assertEqual((r.returncode, r.stdout), (0, "2\n"))
+        self.assertEqual(r.stderr.splitlines(), [
+            "vfg: cache counts of 2 row(s) not stored: usage has no cache columns yet "
+            "— restart vfg-bridge, which adds them",
+            "vfg: call outcomes of 2 row(s) not stored: usage has no ok, error and ms columns yet "
+            "— restart vfg-bridge, which adds them"])
+        self.assertEqual(self.box.query("SELECT component, cost_usd FROM usage ORDER BY id"),
+                         [("planner", 0.0031), ("alias", 0.00005)])
 
 
 if __name__ == "__main__":

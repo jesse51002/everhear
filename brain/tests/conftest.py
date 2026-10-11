@@ -264,7 +264,7 @@ class Kit:
                          implementers=self.impl, world=self.world)
         self.brain = Brain(ctx=self.ctx, call=self.call, respond=self.respond, acts=self.acts, world=self.world,
                            tasks=self.tasks, implementers=self.impl, later=self.later, catalog=self.cat,
-                           refs=FakeRefs(), model="brain-model", respond_model="respond-model", now=lambda: NOW)
+                           refs=FakeRefs(), now=lambda: NOW)
 
     def running(self, copies: dict[str, dict]) -> None:
         (self.world.running_file).write_text(json.dumps({"fetched_at": 0, "copies": copies}))

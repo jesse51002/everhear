@@ -36,9 +36,9 @@ async def test_each_row_goes_where_its_class_says_and_a_read_marks_what_it_took(
     # the context line marked as it came, nobody waiting; the line's read took the game events and the line
     assert k.vfg.of("context", "mark") == [["context", "mark", "4"], ["context", "mark", "1", "3", "5"],
                                            ["context", "mark", "6"]]
-    usage = k.vfg.of("usage", "add")
-    assert ["usage", "add", "--component", "brain", "--model", "brain-model", "--in", "1000", "--out", "40",
-            "--cost", "0.002000", "--cache-read", "900", "--ref", "#5"] in usage and any("respond" in u for u in usage)
+    # each call names its usage row, which structured() queues; the brain only sends the queue, per call
+    assert sorted((c["component"], c["call_id"]) for c in k.ask.calls) == [("brain", "#5"), ("respond", "#6")]
+    assert k.vfg.of("usage", "add") == [] and k.vfg.of("usage") == [["usage", "flush"]] * 2
     assert k.ctx.unprocessed() == [] and k.ctx.last_seq == 6
 
 
@@ -241,14 +241,20 @@ async def test_respond_sees_each_players_place_and_state_but_no_items(kit):
     assert "items, by slot" not in prompt
 
 
-async def test_a_brain_call_that_fails_tells_the_player_it_errored_out_and_why(kit):
-    k = kit(Decision=LlmError("openai/gpt-6.1-sol twice failed to match Decision:\n- parts.0: Value error, the "
-                              "incantation_create part 'juicy steak': incantation_create has no value commands; "
-                              "its values: player, phrase, action, values, cooldown_s"))
+async def test_a_brain_call_that_fails_tells_the_player_it_errored_out_and_why(kit, capsys):
+    failed = LlmError("openai/gpt-6.1-sol twice failed to match Decision:\n- parts.0: Value error, the "
+                      "incantation_create part 'juicy steak': incantation_create has no value commands; "
+                      "its values: player, phrase, action, values, cooldown_s")
+    failed.cost, failed.ms, failed.prompt_tokens, failed.cached_tokens, failed.completion_tokens = \
+        0.031, 9400, 18000, 0, 900  # two uncached Sol attempts
+    k = kit(Decision=failed)
     k.brain.feed("LINE#7 18:29:59 Steve voice action_oriented 0.9 - | make juicy steak give me 64 steak")
     await k.settle()
     assert k.vfg.said() == [["Steve: that errored out — incantation_create has no value commands; its values: "
                              "player, phrase, action, values, cooldown_s"]]
+    # what it cost in the log line; its row, structured()'s, sent all the same
+    assert "brain #7 FAILED (9400 ms $0.031000, 18000 in, 0% cached, 900 out): openai/" in capsys.readouterr().out
+    assert k.vfg.of("usage") == [["usage", "flush"]]
     assert loop.errored("Alex", LlmError("no answer from m within 30 s")) == \
         "Alex: that errored out — no answer from m within 30 s"
 

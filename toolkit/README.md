@@ -73,6 +73,7 @@ vfg place list                                 # castle 197 68 251 overworld (T7
 vfg place forget castle                        # forgot castle; exit 1 if there was none
 vfg usage add --component brain --model openai/gpt-6.1-sol --in 9000 --out 120 --cost 0.0016 --ref T7
 vfg usage add --component implementer --model haiku --in 900 --out 120 --cache-read 15000 --cache-write 2000
+vfg usage flush                                # the queued rows, every structured() call's among them; none, nothing sent
 ```
 
 Exit codes: 0 done, 1 refused or failed, 2 bad arguments, 3 not configured, 4 EC2
@@ -259,6 +260,12 @@ once vfg has checked everything here (`run_incantation`):
 - **`--cache-read N` and `--cache-write N`** on `vfg usage add` are the input tokens read from
   and written to the prompt cache, in two columns of `usage` that the bridge adds on start;
   until it has, the row goes in without them and one line on stderr says so.
+- **`vfg usage flush`** sends `$VFG_HOME/usage.pending.jsonl` and writes no row of its own. Every
+  `structured()` call (`lib/py/vfg_llm.py`) appends its row there under `usage.pending.lock`, in
+  the format `vfg usage add` queues its own, plus `ok`, `error` and `ms`, the bridge's added
+  columns (a box without them gets the rest, and one line on stderr says so). The brain runs it
+  after its calls, and vfg after an incantation's alias call (component `alias`, the phrase its
+  ref), each in its own session, nobody waiting.
 
 ## Tests
 
@@ -266,8 +273,8 @@ once vfg has checked everything here (`run_incantation`):
 python3 -m unittest discover -s toolkit/tests      # from the repo's root; about 7 s
 ```
 
-No EC2 and no network, and where `python3` has no pydantic the run starts itself again under
-`uv`, as vfg does. `tests/harness.py` makes each test a box in a temp folder: the PC (`HOME`,
+No EC2 and no network, and where `python3` has no pydantic or httpx the run starts itself again
+under `uv`, as vfg does. `tests/harness.py` makes each test a box in a temp folder: the PC (`HOME`,
 `VFG_HOME`, a repo) and the EC2 box (`vfg.db`, `feed.log`, `tests/fake_vfg_feed.py` as the
 feed's writer). vfg's `main()` runs in the test's process, and so does every remote program it
 sends: the harness replaces `Ssh`'s one subprocess call and nothing else, and gives the program

@@ -14,6 +14,15 @@ What goes before the prompt can be cached: `cached` is a fixed opening, or sever
 prompt cache or not. A model that bills cache writes, GPT-6.1 Sol among them, caches nothing
 unless a block is marked, and caches up to the last mark it finds again.
 
+Every call is in the one usage log (Specs/2026-10-11-Prototype_Central_LLM_Log): it names its
+`component`, one of Component, and a `call_id` (the row's ref, at most 64 characters), and
+records exactly one row, answered or failed: its tokens and cost summed over every attempt, how
+long it took, `ok` and, when it failed, `error`, the reason, short. The row is appended to
+$VFG_HOME/usage.pending.jsonl under usage.pending.lock, in the format `vfg usage add` queues
+its own, so `vfg usage flush` (or the next `vfg usage add`) sends it to the box; no SSH here,
+and a row that cannot be written is a warning, never an error of the call's. An LlmError
+carries what the call spent, as an Answer does.
+
 The key: OPEN_ROUTER_API from the environment; else the file VFG_OPENROUTER_KEY
 names (environment, then ~/.vfg/config; default ~/.vfg/openrouter.key), which holds
 the key alone.
@@ -21,10 +30,15 @@ the key alone.
 
 import asyncio
 import contextlib
+import fcntl
+import json
 import logging
 import os
+import re
 import time
 from collections.abc import Sequence
+from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Generic, TypeVar
 
@@ -36,6 +50,9 @@ logger = logging.getLogger(__name__)
 ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 RETRY_WAIT = 1.0  # seconds
 MAX_MARKS = 4     # cache_control marks one request may carry (Anthropic's limit; OpenRouter passes it on)
+REF_MAX = 64      # a call_id, as `vfg usage add --ref`
+ERROR_MAX = 300   # a failed call's reason in its row, in characters
+QUEUE, QUEUE_LOCK = "usage.pending.jsonl", "usage.pending.lock"  # in $VFG_HOME: toolkit/vfg's Pending
 
 # Sent through instead of a fresh client per call: a long-running caller sets it to
 # keep one connection pool warm, and the tests set it to a MockTransport client.
@@ -55,8 +72,27 @@ class Answer(BaseModel, Generic[T]):
     completion_tokens: int = 0
 
 
+class Component(StrEnum):
+    """Who made a call: a usage row's `component`. The same list as `vfg usage add --component`
+    (toolkit/vfg COMPONENTS) and the usage table's CHECK (bridge/vfg_bridge/db.py)."""
+    JEV = "jev"
+    BRAIN = "brain"
+    RESPOND = "respond"
+    IMPLEMENTER = "implementer"    # the Agent SDK's runs, recorded by the brain, not here
+    PLANNER = "planner"            # the action planner
+    ALIAS = "alias"                # the incantation alias call
+    CONVERSATION = "conversation"  # this one and the next: valid only for old rows
+    ORCHESTRATOR = "orchestrator"
+
+
 class LlmError(Exception):
-    """The call failed for good. Safe to log: the message never holds the key."""
+    """The call failed for good. Safe to log: the message never holds the key. What it spent
+    before it failed, summed over every attempt as an Answer's is, is on it too."""
+    cost: float = 0.0
+    ms: int = 0
+    prompt_tokens: int = 0
+    cached_tokens: int = 0
+    completion_tokens: int = 0
 
 
 def strict_schema(schema: dict) -> dict:
@@ -81,6 +117,8 @@ async def structured(
     prompt: str,
     output: type[T],
     *,
+    component: Component | str,
+    call_id: str,
     system: str | None = None,
     model: str = "~deepseek/deepseek-v4-flash-latest",
     reasoning: bool | str = False,
@@ -96,8 +134,13 @@ async def structured(
     `cached`: what the user message holds before `prompt`: one fixed opening, marked for the
     prompt cache (cache_control), or blocks as (text, marked), at most MAX_MARKS marked. A
     cached 9K-token opening cost $0.0015 a Sol call instead of $0.023, and a conversation
-    marked every five minute-blocks kept 98% of a batch call's prompt cached."""
-    key = _key()
+    marked every five minute-blocks kept 98% of a batch call's prompt cached.
+    `component` and `call_id` name the call's usage row, which it records whatever happens; a
+    component not on the list, or a call_id empty or over REF_MAX, is a ValueError, before
+    anything is asked."""
+    component = Component(component)
+    if not 0 < len(call_id) <= REF_MAX:
+        raise ValueError(f"call_id is 1 to {REF_MAX} characters, not {len(call_id)}")
     messages = [{"role": "system", "content": system}] if system else []
     messages.append({"role": "user", "content": user_content(prompt, cached)})
     schema = output.model_json_schema()
@@ -120,36 +163,94 @@ async def structured(
     elif not reasoning:
         body["reasoning"] = {"enabled": False}
     t0, cost, tokens = time.perf_counter(), 0.0, [0, 0, 0]
+    key, failed, error = "", None, "cancelled"  # the row's reason when the call ends any other way
     try:
-        async with asyncio.timeout(timeout), _session() as http:
-            for attempt in (1, 2):
-                got = await _post(http, body, key, timeout)
-                usage = got.get("usage") or {}
-                cost += float(usage.get("cost") or 0)
-                tokens[0] += int(usage.get("prompt_tokens") or 0)
-                tokens[1] += int((usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
-                tokens[2] += int(usage.get("completion_tokens") or 0)
-                text = _content(got)
-                try:
-                    value = output.model_validate_json(text)
-                    break
-                except ValidationError as e:
-                    errors = "\n".join(
-                        f"- {'.'.join(map(str, x['loc'])) or 'the answer'}: {x['msg']}"
-                        for x in e.errors(include_url=False)
-                    )
-                if attempt == 2:
-                    raise LlmError(f"{model} twice failed to match {output.__name__}:\n{errors}")
-                logger.warning("%s did not match %s; asking once more", model, output.__name__)
-                messages += [
-                    {"role": "assistant", "content": text},
-                    {"role": "user", "content": f"That answer does not match the schema:\n{errors}\n"
-                                                "Answer again with the corrected JSON only."},
-                ]
-    except TimeoutError:
-        raise LlmError(f"no answer from {model} within {timeout:g} s") from None
-    return Answer[output](value=value, cost=cost, ms=int((time.perf_counter() - t0) * 1000),
+        try:
+            key = _key()
+            async with asyncio.timeout(timeout), _session() as http:
+                for attempt in (1, 2):
+                    got = await _post(http, body, key, timeout)
+                    usage = got.get("usage") or {}
+                    cost += float(usage.get("cost") or 0)
+                    tokens[0] += int(usage.get("prompt_tokens") or 0)
+                    tokens[1] += int((usage.get("prompt_tokens_details") or {}).get("cached_tokens") or 0)
+                    tokens[2] += int(usage.get("completion_tokens") or 0)
+                    text = _content(got)
+                    try:
+                        value = output.model_validate_json(text)
+                        break
+                    except ValidationError as e:
+                        errors = "\n".join(
+                            f"- {'.'.join(map(str, x['loc'])) or 'the answer'}: {x['msg']}"
+                            for x in e.errors(include_url=False)
+                        )
+                    if attempt == 2:
+                        raise LlmError(f"{model} twice failed to match {output.__name__}:\n{errors}")
+                    logger.warning("%s did not match %s; asking once more", model, output.__name__)
+                    messages += [
+                        {"role": "assistant", "content": text},
+                        {"role": "user", "content": f"That answer does not match the schema:\n{errors}\n"
+                                                    "Answer again with the corrected JSON only."},
+                    ]
+        except TimeoutError:
+            raise LlmError(f"no answer from {model} within {timeout:g} s") from None
+        error = None
+    except LlmError as e:
+        failed, error = e, str(e)
+        raise
+    except Exception as e:  # not the model's failure but a bug: in the row all the same, and raised as it was
+        error = f"{type(e).__name__}: {e}"
+        raise
+    finally:
+        ms = int((time.perf_counter() - t0) * 1000)
+        if failed is not None:
+            failed.cost, failed.ms = cost, ms
+            failed.prompt_tokens, failed.cached_tokens, failed.completion_tokens = tokens
+        record(usage_row(component, call_id, model, cost, ms, *tokens,
+                         error=None if error is None else _short(error.replace(key, "<key>") if key else error)))
+    return Answer[output](value=value, cost=cost, ms=ms,
                           prompt_tokens=tokens[0], cached_tokens=tokens[1], completion_tokens=tokens[2])
+
+
+def usage_row(component: Component | str, call_id: str, model: str, cost: float, ms: int, prompt_tokens: int,
+              cached_tokens: int, completion_tokens: int, *, error: str | None) -> dict:
+    """One call's usage row as `vfg usage add` queues one (toolkit/vfg usage_row), its time now,
+    with what only a call knows: `ok` (1 answered, 0 failed), `error` (None when ok) and `ms`.
+    No cache writes: OpenRouter's usage does not say them."""
+    return {"at": datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "component": str(component), "model": model, "input_tokens": prompt_tokens,
+            "output_tokens": completion_tokens, "cost_usd": round(cost, 9), "ref": call_id,
+            "cache_read_tokens": cached_tokens, "cache_write_tokens": None,
+            "ok": int(error is None), "error": error, "ms": ms}
+
+
+def record(row: dict) -> None:
+    """Append `row` to $VFG_HOME/usage.pending.jsonl, under usage.pending.lock as toolkit/vfg's
+    Pending takes it, in one O_APPEND write: the queue `vfg usage flush` sends. Never raises and
+    never waits on the box: a row that cannot be written is a warning that holds it."""
+    try:
+        home = _home()
+        home.mkdir(mode=0o700, parents=True, exist_ok=True)
+        line = (json.dumps(row) + "\n").encode("utf-8")
+        lock = os.open(home / QUEUE_LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            fd = os.open(home / QUEUE, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            try:
+                os.write(fd, line)
+            finally:
+                os.close(fd)
+        finally:
+            os.close(lock)  # and the lock with it
+    except Exception as e:  # noqa: BLE001 — the call's answer, or its own error, goes on up as it is
+        with contextlib.suppress(Exception):
+            logger.warning("usage row not queued (%s: %s): %s", type(e).__name__, e, json.dumps(row, default=str))
+
+
+def _short(text: str) -> str:
+    """A failed call's reason as its row keeps it: one line, at most ERROR_MAX characters."""
+    text = re.sub(r"\s+", " ", text).strip() or "no reason given"
+    return text if len(text) <= ERROR_MAX else text[:ERROR_MAX - 1] + "…"
 
 
 def user_content(prompt: str, cached: str | Sequence[tuple[str, bool]] | None) -> str | list[dict]:
@@ -199,10 +300,14 @@ def _content(got: dict) -> str:
         raise LlmError(f"OpenRouter sent no answer: {str(got.get('error') or got)[:500]}") from None
 
 
+def _home() -> Path:
+    return Path(os.environ.get("VFG_HOME") or "~/.vfg").expanduser()
+
+
 def _key() -> str:
     if key := os.environ.get("OPEN_ROUTER_API", "").strip():
         return key
-    home = Path(os.environ.get("VFG_HOME") or "~/.vfg").expanduser()
+    home = _home()
     path = Path(
         os.environ.get("VFG_OPENROUTER_KEY")
         or _config(home / "config").get("VFG_OPENROUTER_KEY")

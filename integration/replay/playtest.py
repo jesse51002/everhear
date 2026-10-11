@@ -81,6 +81,15 @@ def short(text: str, n: int) -> str:
     return text if len(text) <= n else text[:n - 1] + "…"
 
 
+def replayed(ask):
+    """An asker (structured() with a model's settings) whose calls' usage rows say they are a
+    replay's: the component the brain gives, the call_id `replay <its own>`."""
+    async def asked(*args, **kw):
+        kw["call_id"] = f"replay {kw['call_id']}"[:64]
+        return await ask(*args, **kw)
+    return asked
+
+
 @dataclass
 class Entry:
     """One row of the context and when the brain would first have had it."""

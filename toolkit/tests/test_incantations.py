@@ -133,7 +133,9 @@ class Case(unittest.TestCase):
 
 class TestCreate(Case):
     def test_one_entry_per_named_player_with_the_codes_aliases(self):
-        line = self.create(player="Steve, Alex", phrase="Fire  Ball!")
+        with mock.patch.object(self.vfg, "flush_usage_later") as flush:
+            line = self.create(player="Steve, Alex", phrase="Fire  Ball!")
+        flush.assert_not_called()  # the alias model is off: no call, no row to send
         self.assertTrue(line["ok"], line)
         self.assertEqual(line["action"], "incantation_create")
         got = self.store()["incantations"]
@@ -192,8 +194,10 @@ class TestCreate(Case):
                                                                   "one two three four five six seven eight nine ten eleven".split()],
                        after=reading)
         self.model("test/m")
-        with mock.patch.dict(sys.modules, {"vfg_llm": llm}), mock.patch.object(self.vfg, "fetch_incantations", fetch_and_say):
+        with mock.patch.dict(sys.modules, {"vfg_llm": llm}), mock.patch.object(self.vfg, "fetch_incantations", fetch_and_say), \
+                mock.patch.object(self.vfg, "flush_usage_later") as flush:
             line = self.create()
+        flush.assert_called_once_with(self.cfg)  # the call's own usage row, sent nobody waiting
         aliases = self.entry("steve.fire_ball")["aliases"]
         self.assertEqual(aliases[:3], ["fireball", "fire bowl", "variant number one"])
         self.assertEqual(len(aliases), 12)
@@ -201,13 +205,15 @@ class TestCreate(Case):
         self.assertFalse(any("alias call" in n for n in line["notes"]), line["notes"])
         call = llm.calls[0]
         self.assertEqual((call["model"], call["reasoning"], call["timeout"]), ("test/m", False, 8.0))
+        self.assertEqual((call["component"], call["call_id"]), ("alias", "fire ball"))
         self.assertIn('The phrase: "fire ball"', call["prompt"])
 
     def test_a_failed_alias_call_is_a_note(self):
         llm = fake_llm(fail=RuntimeError("no answer from test/m within 8 s"))
         self.model("test/m")
-        with mock.patch.dict(sys.modules, {"vfg_llm": llm}):
+        with mock.patch.dict(sys.modules, {"vfg_llm": llm}), mock.patch.object(self.vfg, "flush_usage_later") as flush:
             line = self.create()
+        flush.assert_called_once_with(self.cfg)  # a failed call's row is queued too
         self.assertTrue(line["ok"], line)
         self.assertIn("aliases from code only: the alias call failed (no answer from test/m within 8 s)", line["notes"])
         self.assertEqual(self.entry("steve.fire_ball")["aliases"], ["fireball"])

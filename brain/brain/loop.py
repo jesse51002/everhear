@@ -18,8 +18,9 @@ at or below the one it follows from), the context is read again and followed fro
 Every call (a line's, a report's, Respond's) takes in what no call has read yet and marks it
 processed (`vfg context mark`, nobody waiting), so the game's events since the last call are its
 NEW rows. There is no call of its own for what nobody reads: it waits for the next one. An
-implementer's report is a brain call of its own. Every model call writes a `usage` row, its
-cached tokens included, nobody waiting.
+implementer's report is a brain call of its own. Every model call's `usage` row, answered or
+failed, its cached tokens included, is structured()'s own, queued on this PC; after each call
+the brain logs what it spent and sends the queue (`vfg usage flush`), nobody waiting.
 """
 
 from __future__ import annotations
@@ -49,6 +50,12 @@ MARK_CHUNK = 500  # seqs in one `vfg context mark`
 ERRORED_MAX = 180  # the error line's reason, in characters
 
 
+def spent(got) -> str:
+    """What a call spent, from its Answer or its LlmError: `840 ms $0.001234, 9000 in, 96% cached, 40 out`."""
+    rate = f", {got.cached_tokens / got.prompt_tokens:.0%} cached" if got.prompt_tokens else ""
+    return f"{got.ms} ms ${got.cost:.6f}, {got.prompt_tokens} in{rate}, {got.completion_tokens} out"
+
+
 def errored(who: str, e: Exception) -> str:
     """The chat line for a brain call that failed for good: that it errored out, and why, short.
     A schema mismatch keeps its last reason, without the field path and the part's words."""
@@ -72,7 +79,7 @@ def iso(t: datetime) -> str:
 class Brain:
     def __init__(self, *, ctx: Context, call: Call, respond: Respond, acts: Acts, world: World, tasks: Tasks,
                  implementers, later: Later, catalog, refs=None,
-                 model: str = "", respond_model: str = "", now: Callable[[], datetime] = utc_now,
+                 now: Callable[[], datetime] = utc_now,
                  menu: Callable[[str], object] | None = None, start: int = 0,
                  load: Callable[[], Awaitable[tuple[Context, int]]] | None = None):
         self.ctx = ctx
@@ -86,7 +93,6 @@ class Brain:
         self.later = later
         self.catalog = catalog
         self.refs = refs              # the command references, once loaded (None until then)
-        self.model, self.respond_model = model, respond_model
         self.now = now
         self.menu = menu              # sets Jev's menu again when the actions change
         self.load = load              # reads the context again, (ctx, start), after the feed restarted
@@ -180,13 +186,14 @@ class Brain:
             self.later("context", "mark", *(str(r.seq) for r in new))
         return new
 
-    def usage(self, component: str, model: str, answer, ref: str) -> None:
-        rate = f", {answer.cached_tokens / answer.prompt_tokens:.0%} cached" if answer.prompt_tokens else ""
-        log(component, f"{ref} {answer.ms} ms ${answer.cost:.6f}, {answer.prompt_tokens} in{rate}, "
-                       f"{answer.completion_tokens} out")
-        self.later("usage", "add", "--component", component, "--model", model, "--in", str(answer.prompt_tokens),
-                   "--out", str(answer.completion_tokens), "--cost", f"{answer.cost:.6f}",
-                   "--cache-read", str(answer.cached_tokens), "--ref", ref[:64])
+    def usage(self, component: str, answer, ref: str) -> None:
+        """A call's log line, from its Answer; its usage row structured() queued, sent here."""
+        log(component, f"{ref} {spent(answer)}")
+        self.flush()
+
+    def flush(self) -> None:
+        """The usage rows structured() queued, this call's among them, sent nobody waiting."""
+        self.later("usage", "flush")
 
     def reload(self) -> None:
         """Before each brain call: every action file that changed is loaded again, so an action an
@@ -212,10 +219,11 @@ class Brain:
             answer = await self.call.decide(event, self.ctx, seen, self.open_tasks(),
                                             [r for r in new if r.seq != row.seq], self.refs)
         except LlmError as e:
-            log("brain", f"#{row.seq} FAILED: {e}")
+            log("brain", f"#{row.seq} FAILED ({spent(e)}): {e}")
+            self.flush()
             await self.acts.say(errored(row.who, e))
             return
-        self.usage("brain", self.model, answer, f"#{row.seq}")
+        self.usage("brain", answer, f"#{row.seq}")
         log("brain", f"#{row.seq} {row.who}: {row.text[:80]!r} -> {describe(answer.value)}")
         await self.acts.run(answer.value, player=row.who, line=row.text, seen=seen)
 
@@ -227,9 +235,10 @@ class Brain:
             answer = await self.respond.answer(row, self.ctx, seen, self.open_tasks(),
                                                [r for r in new if r.seq != row.seq])
         except LlmError as e:
-            log("respond", f"#{row.seq} FAILED ({e}): handed up")
+            log("respond", f"#{row.seq} FAILED ({spent(e)}; {e}): handed up")
+            self.flush()
             return await self.line(row, new, handed_up="Respond could not answer")
-        self.usage("respond", self.respond_model, answer, f"#{row.seq}")
+        self.usage("respond", answer, f"#{row.seq}")
         said = answer.value
         if said.hand_up:
             log("respond", f"#{row.seq} handed up: {said.reason}")
@@ -254,12 +263,13 @@ class Brain:
             try:
                 answer = await self.call.decide(event, self.ctx, seen, self.open_tasks(), new, self.refs)
             except LlmError as e:
-                log("brain", f"{tid} report FAILED: {e}")
+                log("brain", f"{tid} report FAILED ({spent(e)}): {e}")
+                self.flush()
                 kept = self.result(tid, status, self.written(tid, status), following)
                 recorded = True
                 await self.acts.say(self.line_for(tid, status, kept), tid)
                 return
-            self.usage("brain", self.model, answer, tid)
+            self.usage("brain", answer, tid)
             d = answer.value
             log("brain", f"{tid} report ({status}) -> {describe(d)}")
             final = d.status or status

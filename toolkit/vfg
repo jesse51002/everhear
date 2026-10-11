@@ -48,8 +48,10 @@ KINDS = ["join", "leave", "death", "advancement", "server"]
 TYPES = ["LINE", "GAME", "AI", "SYS"]
 AI_KINDS = ["say", "action", "task", "result", "note"]
 CLASSES = ["action_oriented", "conversational", "context", "not_relevant", "unjudged"]
-# brain and respond are the brain's; the old components stay valid for the rows that have them.
-COMPONENTS = ["jev", "brain", "respond", "implementer", "conversation", "orchestrator"]
+# lib/py/vfg_llm.py's Component, and the usage table's CHECK (bridge/vfg_bridge/db.py): brain,
+# respond and planner are the brain's, alias the incantation alias call's; the old components
+# stay valid for the rows that have them.
+COMPONENTS = ["jev", "brain", "respond", "implementer", "planner", "alias", "conversation", "orchestrator"]
 PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 TASK_RE = re.compile(r"^T[1-9][0-9]*$")
@@ -746,6 +748,14 @@ def cmd_feed(cfg, a):
 
 
 def cmd_usage(cfg, a, started):
+    if a.op == "flush":
+        return send_usage(cfg, a, [])
+    return send_usage(cfg, a, [usage_row(a, started)])
+
+
+def usage_row(a, started):
+    """`vfg usage add`'s row, checked. lib/py/vfg_llm.py's usage_row() queues each model call's
+    in this format, with ok, error and ms after it."""
     if a.component not in COMPONENTS:
         raise Fail(2, "--component is one of %s" % ", ".join(COMPONENTS))
     if not a.model.strip() or len(a.model) > 200:
@@ -758,12 +768,20 @@ def cmd_usage(cfg, a, started):
         raise Fail(2, "--cost is a number, 0 or more")
     if a.ref is not None and len(a.ref) > 64:
         raise Fail(2, "--ref is at most 64 characters")
-    row = {"at": now_iso(started), "component": a.component, "model": a.model.strip(),
-           "input_tokens": a.in_, "output_tokens": a.out, "cost_usd": a.cost, "ref": a.ref,
-           "cache_read_tokens": a.cache_read, "cache_write_tokens": a.cache_write}
+    return {"at": now_iso(started), "component": a.component, "model": a.model.strip(),
+            "input_tokens": a.in_, "output_tokens": a.out, "cost_usd": a.cost, "ref": a.ref,
+            "cache_read_tokens": a.cache_read, "cache_write_tokens": a.cache_write}
+
+
+def send_usage(cfg, a, rows):
+    """The queue, usage.pending.jsonl (structured()'s own rows among them), then `rows`, to the
+    box in one SSH call; queued again when they do not get there. Nothing queued and no row:
+    nothing sent, exit 0."""
     cfg.ensure_home()
     pending = Pending(cfg.home)
-    rows = pending.claim() + [row]
+    rows = pending.claim() + rows
+    if not rows:
+        return 0
     try:
         timeout = a.timeout if a.timeout is not None else 15
         rc, o, e = Ssh(cfg).call(program("usage.py", {"vfg": cfg.rvfg, "rows": rows}), timeout)
@@ -778,7 +796,8 @@ def cmd_usage(cfg, a, started):
 
 
 class Pending(object):
-    """usage.pending.jsonl: rows that could not reach EC2, inserted next time.
+    """usage.pending.jsonl: rows that could not reach EC2, and every structured() call's row
+    (lib/py/vfg_llm.py appends them under the same lock), inserted next time.
 
     A call claims the queue by moving it into usage.sending.<pid>.jsonl, so two
     calls never insert the same row; a crashed caller's file is claimed again."""
@@ -2650,10 +2669,12 @@ def incant_warnings(inc, phrase, aliases, players, rows, skip=None):
 def incant_alias_call(cfg, phrase):
     """How `phrase` is likely said or misheard, from one structured() call: (variants, a note
     when the call failed, {"model", "cost", "ms"} when it answered). A failure is a note, never
-    a refusal: the code's aliases stand."""
+    a refusal: the code's aliases stand. The call queues its own usage row, component alias and
+    the phrase its ref, and `vfg usage flush` sends it, nobody waiting."""
     model = (cfg.get("VFG_INCANT_ALIAS_MODEL") or INCANT_ALIAS_MODEL).strip()
     if model.lower() == "off":
         return [], None, None
+    asked = False
     try:
         actions_lib()  # lib/py on sys.path
         import asyncio
@@ -2667,10 +2688,15 @@ def incant_alias_call(cfg, phrase):
             variants: list[str] = Field(description="how the phrase is likely said or misheard, the likeliest "
                                                     "first, at most six")
 
-        got = asyncio.run(vfg_llm.structured(INCANT_ALIAS_PROMPT % phrase, Variants, model=model, reasoning=False,
+        asked = True
+        got = asyncio.run(vfg_llm.structured(INCANT_ALIAS_PROMPT % phrase, Variants, component="alias",
+                                             call_id=phrase[:64], model=model, reasoning=False,
                                              providers=INCANT_ALIAS_PROVIDERS, timeout=INCANT_ALIAS_TIMEOUT_S))
     except Exception as e:  # noqa: BLE001 — an LlmError, no key, no httpx: the code's aliases stand
+        if asked:
+            flush_usage_later(cfg)
         return [], "aliases from code only: the alias call failed (%s)" % (str(e) or type(e).__name__), None
+    flush_usage_later(cfg)
     return [x for x in got.value.variants if isinstance(x, str)], None, \
         {"model": model, "cost": round(got.cost, 6), "ms": got.ms}
 
@@ -3159,19 +3185,31 @@ def jev_ask(cfg, state, questions, budget):
     return got
 
 
+def vfg_later(args, what):
+    """`vfg <args>` in its own session, nobody waiting for it; `what` names it in the one warning
+    when it cannot start."""
+    try:
+        subprocess.Popen([sys.executable, os.path.join(HERE, "vfg")] + list(args), stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                         close_fds=True)
+    except OSError as e:
+        warn("%s: cannot run vfg (%s)" % (what, e.strerror))
+
+
 def usage_later(cfg, ref, tokens):
     """The router's usage row, by `vfg usage add` in its own session: the picks
     are printed without waiting for it, and it queues the row if EC2 is down."""
     cost = "%.9f" % (tokens * 0.000000042)   # $42 per billion input tokens, output free
-    argv = [sys.executable, os.path.join(HERE, "vfg"), "usage", "add", "--component", "jev",
-            "--model", "jev-latest", "--in", str(tokens), "--out", "0", "--cost", cost]
+    args = ["usage", "add", "--component", "jev", "--model", "jev-latest", "--in", str(tokens), "--out", "0",
+            "--cost", cost]
     if ref:
-        argv += ["--ref", ref]
-    try:
-        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
-    except OSError as e:
-        warn("usage row not written: cannot run vfg (%s)" % e.strerror)
+        args += ["--ref", ref]
+    vfg_later(args, "usage row not written")
+
+
+def flush_usage_later(cfg):
+    """`vfg usage flush` in its own session: the rows structured() queued, sent to the box."""
+    vfg_later(["usage", "flush"], "usage rows not sent")
 
 
 def cmd_route(cfg, a):
@@ -3539,7 +3577,7 @@ def build_parser():
                "124 vfg action run's call out of time (it may still have happened).")
     p.add_argument("--version", action="version", version="vfg " + VERSION)
     p.add_argument("--timeout", type=float, metavar="S",
-                   help="seconds to wait for EC2 (default 30; vfg up 120, usage add 15, action refs 300)")
+                   help="seconds to wait for EC2 (default 30; vfg up 120, usage add and flush 15, action refs 300)")
     sub = p.add_subparsers(dest="command", metavar="<command>", title="commands")
     sub.required = True
 
@@ -3771,10 +3809,11 @@ def build_parser():
                    "cooldown_s, aliases}")
     w.add_argument("--fresh", action="store_true", help="fetch from the box, whatever the cache's age")
 
-    s = sub.add_parser("usage", help="write a usage row; queued locally when EC2 is down")
-    us = s.add_subparsers(dest="op", metavar="add")
+    s = sub.add_parser("usage", help="write a usage row, or send the queued ones; queued locally when EC2 is down")
+    us = s.add_subparsers(dest="op", metavar="add|flush")
     us.required = True
-    w = us.add_parser("add")
+    us.add_parser("flush", help="send the queued rows, structured()'s own among them; none queued, nothing sent")
+    w = us.add_parser("add", help="write one row, after the queued ones")
     w.add_argument("--component", required=True, choices=COMPONENTS)
     w.add_argument("--model", required=True)
     w.add_argument("--in", dest="in_", type=int, required=True, metavar="N")
