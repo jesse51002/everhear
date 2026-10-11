@@ -2,9 +2,9 @@
 gets in full, picked by Jev (or by words when Jev is slow or down). examples.py calls it and logs
 the picks, with the router's own log line, into the brain's log.
 
-`vfg route --task T7` reads the task's words and the player's line from the brain's tasks.json
-itself, so only the brief goes on its stdin. It never takes longer than VFG_ROUTE_TIMEOUT_S, and
-writes its own usage row."""
+`vfg route --task galick_gun_styrk` reads the task's row from the box itself (what the task is, and
+the player's line), so only the brief goes on its stdin. It never takes longer than
+VFG_ROUTE_TIMEOUT_S, that read included, and writes its own usage row."""
 import json
 
 from .config import log

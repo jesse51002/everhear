@@ -3,10 +3,10 @@ runner (brief.compose) so it never spends a turn looking. Its static part — it
 first lines of the library's presets and scripts — is in its system prompt (prefix.py); this is
 the part that changes:
 
-    EXAMPLES, picked for T7 by Jev in 0.3 s.
+    EXAMPLES, picked for ice_beam_steve by Jev in 0.3 s.
     ice_beam runs this job: run its action, ice_beam, with the values the job needs. galick_gun is close.
     Presets to copy: crater and replace_blocks. Already in a loaded script: beam_clash (in galick_gun).
-    Running: galick_gun_2 (galick_gun, player=Alex, cooldown=0, T5), horror_mode (T2).
+    Running: galick_gun_alex (galick_gun, player=Alex, cooldown=0), horror_mode (spooky_night).
     Online: Steve 120 64 -40 overworld, Alex 98 70 -12 overworld. Night, clear.
     That is the server now, read for you by vfg state: act on it, with no vfg state or vfg script list first.
 
@@ -30,7 +30,7 @@ names, and the script of every running copy the brief names, with that copy's va
 the block says what is missing and the brief still goes, never more than VFG_ROUTE_TIMEOUT_S and a
 second after the runner asked for the router and the state, and ACTIONS_TIMEOUT_S for the actions
 (a fresh cache is one file read; a rebuild after an action file changed loads that file). The
-picks go into the brain's log, never into its tasks.json, which the brain alone writes."""
+picks go into the brain's log, never into the task's row, which the brain alone writes."""
 import asyncio
 import importlib.util
 import json
@@ -208,16 +208,20 @@ class Gathered:
 
 
 def changing_line(g: Gathered, name: str, copy: dict, item) -> str:
-    """`Your brief names galick-alex, a copy of galick_gun running for T5 with player=Alex: …`"""
+    """`Your brief names galick_gun_alex, a copy of galick_gun running with player=Alex: …`"""
     diff = actions.changed(g.acts, copy)
     action = copy.get("action") or copy.get("script") or "?"
     where = "its script is below" if item is not None else "its script is not on this PC"
-    # Another task's: its code stays as it is while it runs (the guard refuses an edit).
-    mine = g.task and copy.get("task") == g.task
-    code = "" if mine else "; to change its code, copy it: vfg script new <new_name> --from %s" % (
-        copy.get("script") or action)
+    # Another task's, or the brain's own copy of an action: its code stays as it is while it runs (the
+    # guard refuses an edit), except the task's own script, named as the task. The copy takes the
+    # task's name while the task has no script of that name yet.
+    mine = g.task and (copy.get("task") == g.task or copy.get("script") == g.task)
+    new = g.task if g.task and not any(it.kind == "script" and it.name == g.task for it in g.made) else "<new_name>"
+    code = "" if mine else "; to change its code, copy it: vfg script new %s --from %s" % (
+        new, copy.get("script") or action)
+    task = copy.get("task")
     return "Your brief names %s, a copy of %s running%s with %s: vfg script set %s key=value changes it; %s%s." % (
-        name, action, " for " + copy["task"] if copy.get("task") else "",
+        name, action, " for " + task if task and task != name else "",
         actions.pairs(diff) if diff else "its action's values", name, where, code)
 
 

@@ -3,7 +3,7 @@ import asyncio
 import inspect
 from collections import deque
 
-from claude_agent_sdk import ResultMessage, SystemMessage
+from claude_agent_sdk import AssistantMessage, ResultMessage, SystemMessage, ToolUseBlock
 
 from brain.implementers.vfg import VfgResult
 
@@ -63,6 +63,16 @@ def result(text: str | None = "Done: it is built.", session: str = "s1", subtype
                          session_id=session, result=text, errors=errors, model_usage=model_usage)
 
 
+def tool(name: str, **inp) -> AssistantMessage:
+    """An assistant turn that calls one tool: the client puts it through the PreToolUse hook."""
+    return AssistantMessage(content=[ToolUseBlock(id="t%d" % id(inp), name=name, input=inp)],
+                            model="claude-haiku-5-5")
+
+
+def bash(command: str) -> AssistantMessage:
+    return tool("Bash", command=command)
+
+
 def haiku(inp: int, out: int, cost: float, read: int = 0, write: int = 0) -> dict:
     """A modelUsage entry, Haiku 5.5's: the session's totals."""
     return {"claude-haiku-5-5": {"inputTokens": inp, "outputTokens": out, "cacheReadInputTokens": read,
@@ -70,19 +80,26 @@ def haiku(inp: int, out: int, cost: float, read: int = 0, write: int = 0) -> dic
 
 
 class FakeClient:
-    """One SDK client: its scripted messages after query(). With a gate, it holds the last message
-    until the gate opens; interrupt() opens it, unless told to ignore interrupts. `raises` is
-    raised by connect()."""
+    """One SDK client: its scripted messages after query(). Each tool an assistant turn calls goes
+    through the options' PreToolUse hook first, as the CLI sends it, and `effect(name, input)` does
+    what an allowed one would (writes the files vfg script new makes, say). With a gate, it holds
+    the last message until the gate opens; interrupt() opens it, unless told to ignore interrupts.
+    `raises` is raised by connect(), and `breaks` once the messages are out."""
 
-    def __init__(self, options, messages, gate: asyncio.Event | None, raises: Exception | None, deaf: bool):
+    def __init__(self, options, messages, gate: asyncio.Event | None, raises: Exception | None, deaf: bool,
+                 effect=None, breaks: Exception | None = None):
         self.options = options
         self.messages = list(messages)
         self.gate = gate
         self.raises = raises
         self.deaf = deaf
+        self.effect = effect
+        self.breaks = breaks
         self.prompt: str | None = None
         self.interrupted = False
         self.disconnected = False
+        # (tool, input, the deny reason or None), for every tool call put through the hook
+        self.verdicts: list[tuple[str, dict, str | None]] = []
 
     async def connect(self):
         if self.raises:
@@ -95,9 +112,27 @@ class FakeClient:
         for i, m in enumerate(self.messages):
             if self.gate is not None and i == len(self.messages) - 1:
                 await self.gate.wait()
+            if isinstance(m, AssistantMessage):
+                await self._tools(m)
             yield m
             if isinstance(m, ResultMessage):
                 return
+        if self.breaks is not None:
+            raise self.breaks
+
+    async def _tools(self, m: AssistantMessage) -> None:
+        hooks = [h for matcher in (self.options.hooks or {}).get("PreToolUse", []) for h in matcher.hooks]
+        for b in m.content:
+            if not isinstance(b, ToolUseBlock):
+                continue
+            reason = None
+            for hook in hooks:
+                out = await hook({"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": b.name,
+                                  "tool_input": b.input}, b.id, None)
+                reason = reason or (out.get("hookSpecificOutput") or {}).get("permissionDecisionReason")
+            self.verdicts.append((b.name, b.input, reason))
+            if reason is None and self.effect is not None:
+                self.effect(b.name, b.input)
 
     async def interrupt(self):
         self.interrupted = True
@@ -117,13 +152,12 @@ class Clients:
         self.made: list[FakeClient] = []
 
     def add(self, *messages, gate: asyncio.Event | None = None, raises: Exception | None = None,
-            deaf: bool = False) -> "Clients":
-        self.scripts.append((messages or (init(), result()), gate, raises, deaf))
+            deaf: bool = False, effect=None, breaks: Exception | None = None) -> "Clients":
+        self.scripts.append((messages or (init(), result()), gate, raises, deaf, effect, breaks))
         return self
 
     def __call__(self, options) -> FakeClient:
-        script = self.scripts.popleft() if self.scripts else ((init(), result()), None, None, False)
-        messages, gate, raises, deaf = script
-        c = FakeClient(options, messages, gate, raises, deaf)
+        script = self.scripts.popleft() if self.scripts else ((init(), result()), None, None, False, None, None)
+        c = FakeClient(options, *script)
         self.made.append(c)
         return c
