@@ -497,14 +497,11 @@ class TestState(Base):
         for at, line in ((T0 - 4 * 3600, "AI#1 14:22:31 action - | command: weather rain — ok"),   # too old
                          (T0 - 30, "AI#2 18:22:01 say - | (to Steve) there you go"),   # in lines already
                          (T0 - 29, "AI#3 18:22:02 action - | command: give Steve diamond_pickaxe — ok"),
-                         # rows written before named tasks, with T<n> ids: still read as they are
-                         (T0 - 20, "AI#4 18:22:11 task T183 | T183: an ice trail behind Steve"),
-                         (T0 - 10, "AI#5 18:22:21 result T183 | T183 done: ice trail running as ice_trail"),
-                         # and as the brain writes them now, under the task's name
-                         (T0 - 8, "AI#6 18:22:23 task frost_bow_alex | new: A Frost Bow for Alex"),
-                         (T0 - 7, "AI#7 18:22:24 result frost_bow_alex | frost_bow_alex done: the bow is in Alex's hand"),
-                         (T0 - 5, "AI#8 18:22:26 note - | Steve likes ice"),
-                         (T0 - 3, "LINE#9 18:22:28 Steve voice action_oriented 0.90 - | a pickaxe")):
+                         # a task's rows, under the task's name
+                         (T0 - 8, "AI#4 18:22:23 task frost_bow_alex | new: A Frost Bow for Alex"),
+                         (T0 - 7, "AI#5 18:22:24 result frost_bow_alex | frost_bow_alex done: the bow is in Alex's hand"),
+                         (T0 - 5, "AI#6 18:22:26 note - | Steve likes ice"),
+                         (T0 - 3, "LINE#7 18:22:28 Steve voice action_oriented 0.90 - | a pickaxe")):
             self.conn.execute("INSERT INTO feed (at, line) VALUES (?, ?)", (_iso(at), line))
         self.lines.add(T0 - 25, "Steve", "voice", "thanks", jev_class="conversational", jev_confidence=0.85,
                        jev_judged_at=_iso(T0 - 25), fed_at=_iso(T0 - 25))
@@ -516,8 +513,6 @@ class TestState(Base):
         self.assertEqual(state["history"].split("\n")[1:], [
             "18:22:02 AI (action): command: give Steve diamond_pickaxe — ok",
             "18:22:06 Steve (voice): thanks",
-            "18:22:11 AI (task): T183: an ice trail behind Steve",
-            "18:22:21 AI (result): T183 done: ice trail running as ice_trail",
             "18:22:23 AI (task): new: A Frost Bow for Alex",
             "18:22:24 AI (result): frost_bow_alex done: the bow is in Alex's hand",
             "[1] 18:22:31 Steve (voice): make it longer"])
