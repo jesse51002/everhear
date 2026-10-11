@@ -31,6 +31,7 @@ THE LINES go in production's order, `Store.unjudged`: by `at`, then `id`. A blan
     $PY $L/gather_bench.py run --db $DB --out OUT --limit 30 --env ENV      # a pilot
     $PY $L/gather_bench.py run --db $DB --out OUT --env ENV                 # goes on to all 843
     $PY $L/gather_bench.py regather g2 --db $DB --out OUT --half first --env ENV   # a candidate wording
+    $PY $L/gather_bench.py ten --db $DB --out OUT --env ENV                 # 10-question calls
 
 `run` writes OUT/prod/rows.jsonl, one row a line, in order: its label and whole-ask input, the class
 the filter stored, every routing call (each answer as Jev gave it, [choice, confidence,
@@ -42,7 +43,9 @@ them: the database is built again with the recorded verdicts.
 
 `regather NAME` asks the gather call again with a candidate wording (WORDINGS) on every recorded
 window of a half, the state built the same way at the same moment: the windows are D's and do not
-depend on the gather's answers. Into OUT/NAME/rows.jsonl. Production's wording is `prod`.
+depend on the gather's answers. Into OUT/NAME/rows.jsonl. `repeat` is production's wording asked again.
+
+`ten` asks production's gather call with all 10 questions, on windows made full (see `ten`).
 
 The TypeSafe key as classes.py reads it (`--env`), never printed. No OpenRouter calls.
 """
@@ -112,6 +115,7 @@ def gather_wording(criteria: dict, why: str = ""):
 # name -> (what it changes, the questions function); `prod` is jev/prompt.py's own, unchanged.
 WORDINGS = {
     "prod": ("production: prompt.gather_questions, GATHER_CRITERIA", prompt.gather_questions),
+    "repeat": ("production's wording asked again, for run-to-run noise", prompt.gather_questions),
     "g2": ("the criteria balanced (BALANCED), the instruction production's", gather_wording(BALANCED)),
     "g3": ("g2, and the instruction says speech-to-text cuts a player at every pause (PIECES)",
            gather_wording(BALANCED, PIECES)),
@@ -370,12 +374,42 @@ def run(args) -> None:
 # ------------------------------------------------------------------ regather: a candidate wording
 
 
+def gather_call(b: Bench, history: History, lookout: str, ask: dict, window: list[dict], judged: str, qfun) -> dict:
+    """One gather call on `window` for `ask`, the state built as the filter's at `judged`: {answers, ms,
+    tokens, yes, group, missing, estimate, history_kept, tries}. Refused, or failed five times: `failed`."""
+    marked = [("ask", ask)] + list(enumerate(window, 1))
+    others = history.others(parse_iso(judged), [r["id"] for _, r in marked])
+    state, kept = build_state(lookout, marked, others, STATE_TOKENS, 1.0, b.menu, GATHER_RULES, GATHER_HEADING)
+    qs = qfun(ask, window)
+    row = {"window": [r["id"] for r in window], "estimate": estimate(state), "history_kept": kept, "tries": []}
+    for _ in range(TRIES):
+        try:
+            res = b.jev.ask(state, qs, required=None)
+        except JevRefused as e:
+            row["tries"].append({"refused": str(e)})
+            break
+        except JevDown as e:
+            row["tries"].append({"down": str(e)})
+            time.sleep(1.0)
+            continue
+        a = raw_answers(b.jev.last_body, qs)
+        yes = [r for k, r in enumerate(window, 1) if (a.get(f"line_{k}") or [None])[0] == PART_OF_IT]
+        row.update(answers=a, ms=res.ms, tokens=res.input_tokens or 0, yes=[r["id"] for r in yes],
+                   group=[r["id"] for r in fit_group(yes, ask)], missing=sorted(set(qs) - set(res.answers)))
+        break
+    if "answers" not in row:   # refused, or failed five times: the ask goes alone
+        row.update(failed=True, tokens=0, yes=[], group=[])
+    return row
+
+
 def regather(args) -> None:
-    b = Bench(args)
     name = args.wording
+    if name == "prod":
+        sys.exit("prod's answers are run's own (OUT/prod/rows.jsonl); ask production's wording again as `repeat`")
+    b = Bench(args)
     _, qfun = WORDINGS[name]
     prod = [r for r in read_rows(Path(args.out) / "prod" / "rows.jsonl")
-            if r.get("gather") and (args.half == "all" or r["half"] == args.half)]
+            if r.get("gather") and r["gather"]["window"] and (args.half == "all" or r["half"] == args.half)]
     out = Path(args.out) / name
     out.mkdir(parents=True, exist_ok=True)
     rows_file = out / "rows.jsonl"
@@ -393,29 +427,9 @@ def regather(args) -> None:
         for p in todo:
             if p["id"] in done:
                 continue
-            ask = b.said_by_id[p["id"]]
             window = [b.said_by_id[i] for i in p["gather"]["window"]]
-            marked = [("ask", ask)] + list(enumerate(window, 1))
-            began = parse_iso(p["judged"])
-            others = history.others(began, [r["id"] for _, r in marked])
-            state, kept = build_state(lookout, marked, others, STATE_TOKENS, 1.0, b.menu, GATHER_RULES, GATHER_HEADING)
-            qs = qfun(ask, window)
-            row = {"id": p["id"], "half": p["half"], "window": p["gather"]["window"], "estimate": estimate(state),
-                   "history_kept": kept, "tries": []}
-            for _ in range(TRIES):
-                try:
-                    res = b.jev.ask(state, qs, required=None)
-                except (JevDown, JevRefused) as e:
-                    row["tries"].append({"refused" if isinstance(e, JevRefused) else "down": str(e)})
-                    time.sleep(1.0)
-                    continue
-                a = raw_answers(b.jev.last_body, qs)
-                yes = [r for k, r in enumerate(window, 1) if (a.get(f"line_{k}") or [None])[0] == PART_OF_IT]
-                row.update(answers=a, ms=res.ms, tokens=res.input_tokens or 0, yes=[r["id"] for r in yes],
-                           group=[r["id"] for r in fit_group(yes, ask)], missing=sorted(set(qs) - set(res.answers)))
-                break
-            else:
-                row.update(failed=True, tokens=0, yes=[], group=[])
+            row = {"id": p["id"], "half": p["half"],
+                   **gather_call(b, history, lookout, b.said_by_id[p["id"]], window, p["judged"], qfun)}
             tokens += row["tokens"]
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
             f.flush()
@@ -427,23 +441,66 @@ def regather(args) -> None:
     print(f"{name}: {tokens:,} Jev input tokens, ${tokens * PRICE_PER_INPUT_TOKEN:.4f} in this file")
 
 
+def ten(args) -> None:
+    """Production's gather call with all 10 questions: no window of the replay reached the cap, so this
+    asks it on windows made full, the speaker's 10 newest unsent lines before a line to the AI, with
+    neither the 180 s nor the last-sent bound. Into OUT/ten/rows.jsonl."""
+    b = Bench(args)
+    rows = read_rows(Path(args.out) / "prod" / "rows.jsonl")
+    out = Path(args.out) / "ten"
+    out.mkdir(parents=True, exist_ok=True)
+    rows_file = out / "rows.jsonl"
+    have = read_rows(rows_file)
+    done = {r["id"] for r in have}
+    eligible = []
+    for k, r in enumerate(rows):
+        if r["class"] not in ("action_oriented", "conversational"):
+            continue
+        unsent = [x for x in rows[:k] if x["who"] == r["who"] and x["class"] in ("context", "not_relevant")
+                  and x["text"].strip()]
+        if len(unsent) >= GATHER_MAX:
+            eligible.append((r, unsent[-GATHER_MAX:]))
+    n = args.limit or 12
+    todo = [eligible[round(i * (len(eligible) - 1) / max(1, n - 1))] for i in range(min(n, len(eligible)))]
+    lookout, _ = prompt.read_lookout(str(LOOKOUT))
+    history = History(b)
+    meta(b, out / "meta.json", eligible=len(eligible), asked=len(todo))
+    tokens = sum(r.get("tokens", 0) for r in have)
+    with rows_file.open("a", encoding="utf-8") as f:
+        for r, unsent in todo:
+            if r["id"] in done:
+                continue
+            window = [b.said_by_id[x["id"]] for x in unsent]
+            row = {"id": r["id"], "half": r["half"], "spans_s": round(parse_iso(r["at"]) - parse_iso(unsent[0]["at"])),
+                   **gather_call(b, history, lookout, b.said_by_id[r["id"]], window, r["judged"],
+                                 prompt.gather_questions)}
+            tokens += row["tokens"]
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            f.flush()
+            print(f"{r['at'][11:19]} 10 asked over {row['spans_s']} s, {10 - len(row.get('missing', []))} answered, "
+                  f"yes {len(row['yes'])}, {row.get('ms', 0)} ms, {row['tokens']} tok", flush=True)
+    print(f"ten: {tokens:,} Jev input tokens, ${tokens * PRICE_PER_INPUT_TOKEN:.4f} in this file")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name, about in (("run", "the production filter on every line"),
-                        ("regather", "the gather call again with a candidate wording, on the recorded windows")):
+                        ("regather", "the gather call again with a candidate wording, on the recorded windows"),
+                        ("ten", "production's gather call with all 10 questions, on windows made full")):
         s = sub.add_parser(name, help=about)
         if name == "regather":
             s.add_argument("wording", choices=sorted(WORDINGS))
             s.add_argument("--half", choices=("first", "second", "all"), default="first")
         s.add_argument("--db", required=True, help="the playtest's vfg.db")
         s.add_argument("--out", required=True)
-        s.add_argument("--limit", type=int, default=0, help="the first N lines (run) or windows (regather) only")
+        s.add_argument("--limit", type=int, default=0,
+                       help="the first N lines (run) or windows (regather) only; ten: how many calls (12)")
         s.add_argument("--env", help="the file that holds TYPESAFE_API_KEY")
         s.add_argument("--jev-timeout", type=float, default=10.0, help="a Jev call's timeout, s")
         s.add_argument("--jev-budget", type=float, default=0.6, help="stop past this many dollars of Jev in the file")
     args = ap.parse_args()
-    run(args) if args.cmd == "run" else regather(args)
+    {"run": run, "regather": regather, "ten": ten}[args.cmd](args)
 
 
 if __name__ == "__main__":

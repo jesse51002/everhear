@@ -4,7 +4,7 @@
 
     python3 integration/replay/gather_score.py --rows OUT/prod/rows.jsonl \
         --inputs integration/replay/whole_asks_2026-10-08.jsonl --gate-b GATE_OUT/B/rows.jsonl \
-        [--alt g2=OUT/g2/rows.jsonl ...] --to OUT/score.md --json OUT/score.json
+        [--alt g2=OUT/g2/rows.jsonl ...] [--ten OUT/ten/rows.jsonl] --to OUT/score.md --json OUT/score.json
 
 Standard library only.
 
@@ -234,6 +234,7 @@ def gather_stats(rt: Routing, half: str | None) -> dict:
             "tokens_median": st.median(tk) if tk else 0}
     tok = sum(call_tokens(c) for _, c in calls)
     groups = [len(rt.events[r["id"]]) - 1 for r, _ in calls]
+    both = [sum(x.get("ms", 0) for x in r["route"]) + c["ms"] for r, c in answered]   # the line's Jev time
     return {
         "lines_to_ai": len(tried), "empty": sum(1 for r in tried if not r["gather"]["window"]),
         "calls": len(calls), "sizes": {str(k): sizes[k] for k in sorted(sizes)},
@@ -244,6 +245,7 @@ def gather_stats(rt: Routing, half: str | None) -> dict:
         "fit_dropped": sum(len(r["gather"].get("yes", [])) - (len(rt.events[r["id"]]) - 1) for r, _ in calls),
         "ms_median": st.median(ms) if ms else 0, "ms_p90": p90(ms), "ms_max": max(ms) if ms else 0,
         "over_timeout": sum(1 for x in ms if x > TIMEOUT_MS), "by_size": by_size,
+        "both_ms_median": st.median(both) if both else 0, "both_ms_p90": p90(both),
         "tokens": tok, "tokens_median": st.median([c["tokens"] for _, c in answered]) if answered else 0,
         "usd": tok * JEV_USD,
         "tries_down": sum(sum(1 for t in c.get("tries", []) if "down" in t) for _, c in calls),
@@ -397,7 +399,16 @@ SUMMARY_HEAD = ("| | Ask lines reach the brain | direct + via B | Lost: chat / c
 # ------------------------------------------------------------------ the report
 
 
-def report(d: Data, alts: dict[str, dict[str, dict]], w) -> dict:
+def alt_routing(d: Data, name: str, rows: dict[str, dict], groups: dict, gather_calls: dict) -> Routing:
+    """Production's routing with a candidate wording's groups and calls where it was asked."""
+    g2, calls2 = dict(groups), dict(gather_calls)
+    for i, r in rows.items():
+        g2[i] = r["group"]
+        calls2[i] = {**r, "questions": len(r["window"])}
+    return Routing(d, name, g2, calls2)
+
+
+def report(d: Data, alts: dict[str, dict[str, dict]], ten: list[dict], w) -> dict:
     gather_calls = {r["id"]: r["gather"]["call"] for r in d.rows if r.get("gather") and r["gather"].get("call")}
     groups = {r["id"]: r["gather"]["group"] for r in d.rows if r.get("gather")}
     without = Routing(d, "without", None, {})
@@ -406,6 +417,15 @@ def report(d: Data, alts: dict[str, dict[str, dict]], w) -> dict:
     s = {"rate": d.rate, "without": {h: tally(without, v) for h, v in halves.items()},
          "with": {h: tally(with_, v) for h, v in halves.items()},
          "gather": {h: gather_stats(with_, v) for h, v in halves.items()}}
+    # a candidate asked on every window of both halves is scored whole, as production is
+    full = {}
+    windows = {r["id"] for r in d.rows if r.get("gather") and r["gather"]["window"]}
+    for name, rows in alts.items():
+        if windows <= set(rows):
+            rt = alt_routing(d, name, rows, groups, gather_calls)
+            full[name] = rt
+            s[f"with {name}"] = {h: tally(rt, v) for h, v in halves.items()}
+            s[f"gather {name}"] = {h: gather_stats(rt, v) for h, v in halves.items()}
 
     n_ask = sum(1 for r in d.rows if r["label"] in ASKS)
     c = Counter(r["label"] for r in d.rows)
@@ -428,6 +448,8 @@ def report(d: Data, alts: dict[str, dict[str, dict]], w) -> dict:
     for h, name in (("all", "all"), ("second", "second half")):
         w(summary_row(f"D, without gather, {name}", s["without"][h]))
         w(summary_row(f"**D, with gather, {name}**", s["with"][h]))
+        for alt in full:
+            w(summary_row(f"D, with gather worded {alt}, {name}", s[f"with {alt}"][h]))
 
     for h in ("all", "second"):
         tw, tg, g = s["without"][h], s["with"][h], s["gather"][h]
@@ -474,7 +496,8 @@ def report(d: Data, alts: dict[str, dict[str, dict]], w) -> dict:
           f"{g['groups']} asks got a group, {g['grouped_lines']} lines in all; {g['fit_dropped']} yes lines dropped "
           f"to fit 500 characters; {g['missing']} questions with no well-formed answer.")
         w(f"- **Jev ms per call: {g['ms_median']:.0f} median, {g['ms_p90']:.0f} p90, {g['ms_max']} at most**; "
-          f"{g['over_timeout']} over {TIMEOUT_MS} ms. By window size: "
+          f"{g['over_timeout']} over {TIMEOUT_MS} ms. On a line with a gather call, the routing call and the gather "
+          f"call together: {g['both_ms_median']:.0f} median, {g['both_ms_p90']:.0f} p90. By window size: "
           + "; ".join(f"{k}: {v['calls']} calls, {v['ms_median']:.0f} / {v['ms_p90']:.0f} ms, "
                       f"{v['tokens_median']:,.0f} tokens median" for k, v in g["by_size"].items() if v["calls"]) + ".")
         w(f"- **Cost: {g['tokens']:,} tokens, ${g['usd']:.4f}** ({g['tokens_median']:,.0f} tokens a call at the "
@@ -533,11 +556,31 @@ def report(d: Data, alts: dict[str, dict[str, dict]], w) -> dict:
             w(f"  - `{p['at'][11:19]}` [{p['label']}, D: {OUT_NAMES[p['place']]}] {p['why']}: {clean(p['text'], 140)}")
 
     # Respond B on events the gather changed
-    changed = [a for a in with_.events if with_.dest[a] == "respond" and with_.hu[a] != without.hu[a]]
-    w(f"\n**Respond events whose hand-up changed because a gathered line was handed up by B: {len(changed)}.**")
-    for a in changed:
-        r = d.by_id[a]
-        w(f"- `{r['at'][11:19]}` [{r['label']}] {clean(r['text'], 120)}: {without.hu[a]} → {with_.hu[a]}")
+    for name, rt in [("production's wording", with_)] + [(f"wording {k}", v) for k, v in full.items()]:
+        changed = [a for a in rt.events if rt.dest[a] == "respond" and rt.hu[a] != without.hu[a]]
+        w(f"\n**Respond events whose hand-up changed because a gathered line was handed up by B, {name}: "
+          f"{len(changed)}.**")
+        for a in changed:
+            r = d.by_id[a]
+            w(f"- `{r['at'][11:19]}` [{r['label']}] {clean(r['text'], 120)}: {without.hu[a]} → {rt.hu[a]}")
+
+    # the ten-question check
+    if ten:
+        ok = [r for r in ten if "answers" in r]
+        full_ = [r for r in ok if not r.get("missing") and len(r["answers"]) == 10]
+        ms = [r["ms"] for r in ok]
+        tk = [r["tokens"] for r in ok]
+        s["ten"] = {"calls": len(ten), "answered": len(ok), "in_full": len(full_), "ms_median": st.median(ms) if ms
+                    else 0, "ms_p90": p90(ms), "ms_max": max(ms) if ms else 0,
+                    "tokens_median": st.median(tk) if tk else 0, "yes": sum(len(r["yes"]) for r in ok),
+                    "usd": sum(tk) * JEV_USD}
+        t = s["ten"]
+        w("\n## The gather call with all 10 questions\n")
+        w(f"No window in the replay reached the cap. Production's gather call, asked {t['calls']} times on windows made "
+          "full (the speaker's 10 newest unsent lines before a line to the AI, with neither the 180 s nor the last-sent "
+          f"bound): {t['answered']} answered, {t['in_full']} with all 10 answers well formed; {t['ms_median']:.0f} ms "
+          f"median, {t['ms_p90']:.0f} p90, {t['ms_max']} at most; {t['tokens_median']:,.0f} tokens a call at the "
+          f"median; {t['yes']} yes; ${t['usd']:.4f}.")
 
     # candidate wordings
     if alts:
@@ -547,8 +590,8 @@ def report(d: Data, alts: dict[str, dict[str, dict]], w) -> dict:
           "same windows beside them.\n")
         w("| Wording | Half | Calls | Yes of asked | Gathered lines | In the ask's input | Wrong joins | Noise joined | "
           "Ask pieces from context or dropped | Ask inputs arrive whole | Split ask inputs arrive whole | Ask lines "
-          "reach | Jev ms median / p90 | Tokens |")
-        w("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+          "reach | Talk and noise lines to the brain | Jev ms median / p90 | Tokens | Cost of the half |")
+        w("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
         s["alts"], lists = {}, []
         for name, rows in [("prod", None)] + list(alts.items()):
             for h in ("first", "second"):
@@ -560,13 +603,9 @@ def report(d: Data, alts: dict[str, dict[str, dict]], w) -> dict:
                     if not have:
                         continue
                     if have != ids:
-                        w(f"| {name} | {h} | incomplete: {len(have)} of {len(ids)} windows | | | | | | | | | | | |")
+                        w(f"| {name} | {h} | incomplete: {len(have)} of {len(ids)} windows |" + " |" * 13)
                         continue
-                    g2, calls2 = dict(groups), dict(gather_calls)
-                    for i in have:
-                        g2[i] = rows[i]["group"]
-                        calls2[i] = {**rows[i], "questions": len(rows[i]["window"])}
-                    rt = Routing(d, name, g2, calls2)
+                    rt = alt_routing(d, name, {i: rows[i] for i in have}, groups, gather_calls)
                 t, g = tally(rt, h), gather_stats(rt, h)
                 jj = [j for j in joins(rt) if j["half"] == h]
                 row = {"calls": g["calls"], "yes": g["yes"], "asked": g["asked"], "joined": len(jj),
@@ -575,12 +614,14 @@ def report(d: Data, alts: dict[str, dict[str, dict]], w) -> dict:
                        "pieces": sum(1 for j in jj if j["label"] in ASKS and j["line_place"] in ("context", "dropped")),
                        "whole": t["whole"], "inputs": t["ask_inputs"], "multi_whole": t["multi_whole"],
                        "multi": t["multi"], "reach": t["asks"]["reach"], "ask_lines": t["asks"]["n"],
-                       "ms": g["ms_median"], "ms90": g["ms_p90"], "tokens": g["tokens"]}
+                       "ms": g["ms_median"], "ms90": g["ms_p90"], "tokens": g["tokens"],
+                       "talk_brain": t["talk"].get("brain", 0), "talk": t["talk"]["n"], "usd": t["usd"]}
                 s["alts"][f"{name}/{h}"] = row
                 w(f"| {name} | {h} | {row['calls']} | {row['yes']} of {row['asked']} | {row['joined']} | "
                   f"{row['same']} | {row['wrong']} | {row['noise']} | {row['pieces']} | {row['whole']} of "
                   f"{row['inputs']} | {row['multi_whole']} of {row['multi']} | {row['reach']} of "
-                  f"{row['ask_lines']} | {row['ms']:.0f} / {row['ms90']:.0f} | {row['tokens']:,} |")
+                  f"{row['ask_lines']} | {row['talk_brain']} of {row['talk']} | {row['ms']:.0f} / {row['ms90']:.0f} | "
+                  f"{row['tokens']:,} | ${row['usd']:.2f} |")
                 lists.append((name, h, jj))
         for name, h, jj in lists:
             w(f"\n**{name}, {h} half**: its wrong joins, and the ask pieces from context or dropped it gathered.\n")
@@ -597,6 +638,7 @@ def main() -> None:
     ap.add_argument("--inputs", required=True, help="whole_asks_2026-10-08.jsonl")
     ap.add_argument("--gate-b", required=True, help="the gate bench's B/rows.jsonl: Respond B's hand-ups")
     ap.add_argument("--alt", action="append", default=[], help="NAME=OUT/NAME/rows.jsonl, a candidate wording")
+    ap.add_argument("--ten", help="gather_bench.py ten's OUT/ten/rows.jsonl: 10-question calls")
     ap.add_argument("--to", required=True, help="the report (.md)")
     ap.add_argument("--json", help="its numbers, as JSON")
     args = ap.parse_args()
@@ -613,7 +655,7 @@ def main() -> None:
       "line, through jev/filter.py itself (gather_bench.py), without and with the gather call.\n")
     if len(rows) != 843:
         w(f"**{len(rows)} of 843 lines in the rows.**\n")
-    summary = report(d, alts, w)
+    summary = report(d, alts, read(Path(args.ten)) if args.ten else [], w)
     Path(args.to).write_text("\n".join(md) + "\n", encoding="utf-8")
     if args.json:
         Path(args.json).write_text(json.dumps(summary, indent=1, default=str))
