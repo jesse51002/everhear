@@ -245,14 +245,16 @@ class TaskAnswer(BaseModel):
     reply: str = ""
 
     def edits(self) -> dict[str, Any]:
-        """An edit's values as check_edit takes them: a JSON list or object decoded, the rest text."""
+        """An edit's values as check_edit takes them, as the real answer's edits() gives them: a
+        JSON list, object or quoted text decoded, the rest kept as text."""
         out: dict[str, Any] = {}
         for v in self.values:
+            text = str(v["value"]).strip()
             try:
-                got = json.loads(v["value"])
+                got = json.loads(text)
             except ValueError:
                 got = None
-            out[v["key"]] = got if isinstance(got, (list, dict)) else v["value"]
+            out[str(v["key"]).strip()] = got if isinstance(got, (list, dict, str)) else text
         return out
 
 
