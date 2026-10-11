@@ -14,6 +14,7 @@ it no longer runs on this branch and **needs rewriting for the brain** (below).
 | `classes.py`, `classes_score.py` | Jev's four classes on every line, against TypeSafe, then Respond on every line Jev classes `conversational` |
 | `taskcall.py`, `taskcall_score.py`, `taskcall_prompts/` | the named-tasks orchestrator, one `structured()` call per implementer part, before it is built: every part the brain's full `lines.py` run sent to an implementer, through it, two models compared; results in `taskcall.md`, every miss in `taskcall_scores/` |
 | `gate_bench.py`, `gate_score.py`, `gate_set.jsonl`, `gate_prompts/` | the gate bench: six ways to decide whether a line needs the brain or is talk (Respond as it was, Respond deciding first on DeepSeek and on Gemini, the Jev council in one call and in four), every one on the same fixed set of 592 lines; results and the commands in `gate_bench.md` |
+| `tree_bench.py`, `tree_score.py`, `tree_questions.py` | the tree bench: Jev routing each line by a decision tree of class questions (who it is said to; worth keeping; what the speaker wants), all asked in one Jev call, with and without a council of three questions a level, against Jev today on all 843 lines; results and the commands in `tree_bench.md` |
 | `run.py`, `measure.py`, `tasks.jsonl` | the live task replay against the orchestrator: gone with it |
 
 ## The data
