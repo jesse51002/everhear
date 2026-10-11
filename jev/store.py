@@ -99,13 +99,25 @@ class Store:
             "SELECT %s FROM lines WHERE jev_class IS NULL AND source != 'ai'%s "
             "ORDER BY at, id LIMIT ?" % (COLUMNS, self._live()), (limit,)).fetchall()
 
-    def ask_again(self, judged_since, limit=5):
-        """Jev's own `not_relevant` verdicts (a confidence, so not a blank line)
-        judged since `judged_since`, newest `at` first."""
-        return self.conn.execute(
-            "SELECT %s FROM lines WHERE jev_class = 'not_relevant' AND jev_confidence IS NOT NULL "
-            "AND jev_judged_at >= ? ORDER BY at DESC, id DESC LIMIT ?" % COLUMNS,
-            (judged_since, limit)).fetchall()
+    def gather_window(self, ask, since, limit=10):
+        """The gather call's lines for `ask`: the same speaker's lines said before
+        it (by `at`, then `id`) and since `since`, not the AI's, not dropped, not
+        blank, classed `context` or `not_relevant`, and said after that speaker's
+        last line classed `action_oriented` or `conversational` before the ask.
+        The newest `limit` of them, oldest first."""
+        before = "player_name = ? AND source != 'ai' AND (at < ? OR (at = ? AND id < ?))"
+        params = [ask["player_name"], ask["at"], ask["at"], ask["id"]]
+        last = self.conn.execute(
+            "SELECT at, id FROM lines WHERE %s AND jev_class IN ('action_oriented', 'conversational') "
+            "ORDER BY at DESC, id DESC LIMIT 1" % before, params).fetchone()
+        after = ""
+        if last is not None:
+            after = " AND (at > ? OR (at = ? AND id > ?))"
+            params += [last["at"], last["at"], last["id"]]
+        rows = self.conn.execute(
+            "SELECT %s FROM lines WHERE %s%s AND jev_class IN ('context', 'not_relevant') AND at >= ?%s "
+            "ORDER BY at DESC, id DESC" % (COLUMNS, before, after, self._live()), params + [since]).fetchall()
+        return [r for r in rows if r["text"].strip()][:limit][::-1]
 
     def history(self, since, exclude=(), limit=2000):
         """Every line said since `since`, the AI's included, newest first,
@@ -151,21 +163,14 @@ class Store:
 
     # -- writing ---------------------------------------------------------------
 
-    def judge(self, line_id, cls, confidence, judged_at, flips=(), usage=None):
-        """One transaction: the new line's verdict, each flip of a line asked
-        about again, and the call's `usage` row. Answers the ids that flipped."""
+    def judge(self, line_id, cls, confidence, judged_at, usage=None):
+        """One transaction: the line's verdict and the call's `usage` row."""
         statements = [(
             "UPDATE lines SET jev_class = ?, jev_confidence = ?, jev_judged_at = ? "
             "WHERE id = ? AND jev_class IS NULL", (cls, confidence, judged_at, line_id))]
-        flips = list(flips)
-        for fid, fcls, fconf in flips:
-            statements.append((
-                "UPDATE lines SET jev_class = ?, jev_confidence = ?, jev_judged_at = ? "
-                "WHERE id = ? AND jev_class = 'not_relevant'", (fcls, fconf, judged_at, fid)))
         if usage is not None:
             statements.append(self._usage_sql(**usage))
-        counts = self._tx(statements)
-        return [fid for (fid, _, _), n in zip(flips, counts[1:]) if n]
+        self._tx(statements)
 
     def set_class(self, line_id, cls, confidence, judged_at):
         """A verdict written without Jev's answer (a blank line, a refusal)."""

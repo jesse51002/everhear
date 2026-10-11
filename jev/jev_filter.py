@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""vfg-jev: asks Jev whether each line a player says or types asks the AI for
-something to happen (action_oriented), talks to it (conversational), is context,
-or is not relevant; writes the verdict back to the transcript history; feeds the
-lines it keeps to the brain in batches.
+"""vfg-jev: asks Jev what should become of each line a player says or types —
+the brain acts on it (action_oriented), Respond answers it (conversational), it
+is kept as context, or it is not relevant — and, for a line to the AI, which of
+the speaker's earlier lines go with it; writes the verdict back to the
+transcript history; feeds the lines it keeps to the brain in batches.
 
     python3 -u /opt/vfg/jev/jev_filter.py              the service (systemd unit vfg-jev)
     python3 /opt/vfg/jev/jev_filter.py --judge "<text>"  judge one text, write nothing
@@ -28,7 +29,7 @@ if HERE not in sys.path:
 from filter import Config, Filter                   # noqa: E402
 from jev_api import Jev, JevDown, JevRefused          # noqa: E402
 from jev_clock import SystemClock, iso                # noqa: E402
-from prompt import Lookout, Menu, build_state, questions   # noqa: E402
+from prompt import Lookout, Menu, build_state, in_short, questions, route   # noqa: E402
 from store import Store                               # noqa: E402
 
 KEY_NAME = "TYPESAFE_API_KEY"
@@ -65,16 +66,18 @@ def setup_logging():
 
 def judge_once(cfg, key, text, raw=False):
     """`--judge`: one text as a chat line from `tester` said now, the current
-    lookout and menu, no history, nothing asked again. Prints, writes nothing. With
-    `raw`, also prints the response body exactly as Jev sent it — the way to
-    check, on the first live run, the answer's shape this code assumes."""
+    lookout and menu, no history, no gather call. Prints the class with both
+    answers — `action_oriented 0.91 · act 0.91, let down 0.88 · 230ms · 7012tok`
+    — and writes nothing. With `raw`, also prints the response body exactly as
+    Jev sent it — the way to check, on the first live run, the answer's shape
+    this code assumes."""
     jev = Jev(key, url=cfg.jev_url, model=cfg.model, timeout=cfg.timeout)
     row = {"id": "judge", "at": iso(time.time()), "player_name": "tester", "source": "chat",
            "text": text, "peak_dbfs": None}
-    state, _ = build_state(Lookout(cfg.lookout).text(), [row], [], cfg.state_tokens,
+    state, _ = build_state(Lookout(cfg.lookout).text(), [(1, row)], [], cfg.state_tokens,
                            menu=Menu(cfg.menu).text())
     try:
-        result = jev.ask(state, questions([row]))
+        result = jev.ask(state, questions(row), required="d_what")
     except (JevDown, JevRefused) as e:
         print("jev %s: %s" % ("refused" if isinstance(e, JevRefused) else "failed", e), file=sys.stderr)
         if raw and jev.last_body is not None:
@@ -82,9 +85,9 @@ def judge_once(cfg, key, text, raw=False):
         return 1
     if raw:
         print(jev.last_body.decode("utf-8", errors="replace").replace(key, "***"))
-    cls, conf = result.answers["line_1"]
+    cls, conf = route(result.answers)
     tokens = "?" if result.input_tokens is None else result.input_tokens
-    print("%s %.2f · %dms · %stok" % (cls, conf, result.ms, tokens))
+    print("%s %.2f · %s · %dms · %stok" % (cls, conf, in_short(result.answers), result.ms, tokens))
     return 0
 
 
