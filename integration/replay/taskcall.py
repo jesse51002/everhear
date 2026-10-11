@@ -398,6 +398,7 @@ def tail(rp: Replay, at: str, who: str, words: str, parts: list[dict], k: int, g
 async def run(args) -> None:
     out = Path(args.out)
     (out / "prompts").mkdir(parents=True, exist_ok=True)
+    playtest.queue_usage(out)
     prompt_file = Path(args.prompt) if args.prompt else PROMPTS / f"{args.version}.md"
     pt = Playtest(Path(args.db))
     cfg = config.load()

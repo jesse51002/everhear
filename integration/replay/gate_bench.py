@@ -281,6 +281,7 @@ def build(pt: Playtest, srow: dict, row, new, clock: Clock, respond: Respond, mo
 async def run_respond(name: str, opt: dict, args) -> None:
     out = Path(args.out) / name
     out.mkdir(parents=True, exist_ok=True)
+    playtest.queue_usage(out)
     pt = Playtest(Path(args.db))
     cfg = config.load()
     catalog = actions.load(cfg.repo, cfg.server)

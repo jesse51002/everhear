@@ -42,7 +42,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import playtest  # noqa: E402  (puts brain/ on the path)
-from playtest import Clock, Playtest, replayed  # noqa: E402
+from playtest import Clock, Playtest, queue_usage, replayed  # noqa: E402
 
 import httpx  # noqa: E402
 import vfg_llm  # noqa: E402
@@ -92,6 +92,7 @@ def truth(pt: Playtest, ln) -> list[dict]:
 async def run(args) -> None:
     out = Path(args.out)
     (out / "prompts").mkdir(parents=True, exist_ok=True)
+    queue_usage(out)
     pt = Playtest(Path(args.db))
     cfg = config.load()
     entries = pt.entries()

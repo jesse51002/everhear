@@ -276,12 +276,17 @@ once vfg has checked everything here (`run_incantation`):
 - **`--cache-read N` and `--cache-write N`** on `vfg usage add` are the input tokens read from
   and written to the prompt cache, in two columns of `usage` that the bridge adds on start;
   until it has, the row goes in without them and one line on stderr says so.
-- **`vfg usage flush`** sends `$VFG_HOME/usage.pending.jsonl` and writes no row of its own. Every
+- **`vfg usage flush`** sends `usage.pending.jsonl` and writes no row of its own. Every
   `structured()` call (`lib/py/vfg_llm.py`) appends its row there under `usage.pending.lock`, in
   the format `vfg usage add` queues its own, plus `ok`, `error` and `ms`, the bridge's added
-  columns (a box without them gets the rest, and one line on stderr says so). The brain runs it
-  after its calls, and vfg after an incantation's alias call (component `alias`, the phrase its
-  ref), each in its own session, nobody waiting.
+  columns (a box without them gets the rest, and one line on stderr says so); `cost_usd` is null
+  for a call cut off with an attempt in flight. The brain runs it after its calls, never two at
+  once, and vfg after an incantation's alias call (component `alias`, the phrase its ref), each
+  in its own session, nobody waiting.
+- **The queue's folder** is `VFG_USAGE_QUEUE` from the environment, else `$VFG_HOME`; `vfg usage`
+  and `structured()` read it alike. The replays (`integration/replay/`) point it at their own
+  output, so their rows never reach the box unless sent on purpose: `VFG_USAGE_QUEUE=OUT vfg usage
+  flush`.
 
 ## Tests
 

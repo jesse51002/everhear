@@ -1347,23 +1347,27 @@ def path6(box, rep, ctx):
                        row[0]["cost_usd"], row[0]["cache_read_tokens"], row[0]["cache_write_tokens"], row[0]["ref"])
         rep.check(r.returncode == 0 and got == want, "vfg usage add --component %s … --ref %r writes the §4 row, "
                   "its cached tokens too, and prints its id" % (want[0], want[-1]), r.stdout + r.stderr + "%r" % (got,))
-    # structured()'s rows (lib/py/vfg_llm.py usage_row and record): queued on the PC, a failed call's with its cost,
-    # sent by vfg usage flush into the columns the bridge added on start
+    # structured()'s rows (lib/py/vfg_llm.py usage_row and record): queued on the PC, a failed call's with its cost
+    # (NULL for one that timed out with an attempt in flight), sent by vfg usage flush into the columns the bridge
+    # added on start
     queued = [dict(at=iso(now()), component=c, model="~deepseek/deepseek-v4-flash-latest",
                    input_tokens=i, output_tokens=o, cost_usd=cost, ref=ref, cache_read_tokens=0,
                    cache_write_tokens=None, ok=ok, error=err, ms=ms)
               for c, i, o, cost, ref, ok, err, ms in (
-                  ("planner", 2400, 60, 0.00031, "T7 #1", 0, "no answer from ~deepseek/deepseek-v4-flash-latest "
-                                                             "within 20 s", 20012),
+                  ("planner", 2400, 60, None, "T7 #1", 0, "no answer from ~deepseek/deepseek-v4-flash-latest "
+                   "within 20 s; $0.000310 spent before it, the attempt in flight not counted", 20012),
+                  ("planner", 2400, 60, 0.00062, "T7 #2", 0, "~deepseek/deepseek-v4-flash-latest twice failed to "
+                   "match Planned_command: - action: Field required", 3100),
                   ("alias", 300, 20, 0.00005, "fire ball", 1, None, 840))]
     with open(os.path.join(box.vhome, "usage.pending.jsonl"), "a") as f:
         f.write("".join(json.dumps(q) + "\n" for q in queued))
     r = box.vfg("usage", "flush")
-    got = box.sql("SELECT component, cost_usd, ref, ok, error, ms FROM usage WHERE ref IN ('T7 #1', 'fire ball')"
-                  " ORDER BY id")
+    got = box.sql("SELECT component, cost_usd, ref, ok, error, ms FROM usage WHERE ref IN ('T7 #1', 'T7 #2', "
+                  "'fire ball') ORDER BY id")
     rep.check(r.returncode == 0 and [tuple(g.values()) for g in got] == [
         (q["component"], q["cost_usd"], q["ref"], q["ok"], q["error"], q["ms"]) for q in queued],
-        "vfg usage flush sends structured()'s queued rows, a failed call's with its cost, ok, error and ms",
+        "vfg usage flush sends structured()'s queued rows, a failed call's with its cost (NULL when not known), ok, "
+        "error and ms",
         r.stdout + r.stderr + "%r" % (got,))
     r = box.vfg("usage", "flush")
     rep.check(r.returncode == 0 and r.stdout == "", "nothing queued: vfg usage flush sends nothing", r.stdout + r.stderr)

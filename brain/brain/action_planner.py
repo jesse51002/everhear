@@ -189,15 +189,18 @@ class Unchecked(Exception):
 @dataclass
 class Spent:
     """The model calls one task made, for its log line; a failed one counts too (an LlmError
-    carries what it spent). Each call's usage row is structured()'s own."""
+    carries what it spent; `known` False once one timed out with an attempt in flight, whose cost
+    is not in it). Each call's usage row is structured()'s own."""
     calls: int = 0
     ms: int = 0
     cost: float = 0.0
+    known: bool = True
 
     def add(self, answer) -> None:
         self.calls += 1
         self.ms += answer.ms
         self.cost += answer.cost
+        self.known = self.known and getattr(answer, "cost_known", True)
 
 
 @dataclass

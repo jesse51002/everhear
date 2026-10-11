@@ -1,10 +1,12 @@
 """Running a decision: actions in order under one task, the one retry of a refused command,
 implementers started and followed up, and a reply that never claims what failed."""
 
+import asyncio
 import json
 
 from vfg_llm import LlmError
 
+from brain.vfg import VfgResult
 from brain.world import Seen
 
 from conftest import cmd, decision, part, ran
@@ -61,8 +63,34 @@ async def test_a_failed_planner_call_counts_what_it_spent(kit, capsys):
                             reply="there you go"))
     await k.acts.run(d, player="Steve", line="diamond pickaxe pls", seen=SEEN)
     await k.settle()
-    assert "T1 retries: 1 planner call(s), 20000 ms, $0.000400" in capsys.readouterr().out
+    assert "T1 retries: 1 planner call(s), 20000 ms, $0.000400\n" in capsys.readouterr().out
     assert k.vfg.of("usage") == [["usage", "flush"]]
+    failed.cost_known = False  # cut off with an attempt in flight: what it spent is a floor
+    await k.acts.run(d, player="Steve", line="diamond pickaxe pls", seen=SEEN)
+    await k.settle()
+    assert "T2 retries: 1 planner call(s), 20000 ms, $0.000400+\n" in capsys.readouterr().out
+
+
+async def test_the_planners_usage_flush_waits_for_the_one_running(kit):
+    k = kit(Planned_command={"action": cmd("give Steve minecraft:diamond_pickaxe 1"), "hand_on": "", "drop": "",
+                             "say": "a pickaxe for Steve"})
+    k.vfg.on("action", "run", answer=[ran(False, "Unknown item 'minecraft:diamond_pickax'"), ran(True, "Gave 1")])
+    down = asyncio.Event()
+
+    async def flush(argv):
+        await down.wait()
+        return VfgResult(0, "", "")
+
+    k.vfg.on("usage", "flush", answer=flush)
+    k.later.flush_usage()  # a brain call's, still running
+    await asyncio.sleep(0)
+    d = decided(k, decision(part("command", "give Steve a diamond pickaxe", cmd("give Steve diamond_pickax")),
+                            reply="there you go"))
+    await k.acts.run(d, player="Steve", line="diamond pickaxe pls", seen=SEEN)
+    assert len(k.ask.of("Planned_command")) == 1 and k.vfg.of("usage") == [["usage", "flush"]]
+    down.set()
+    await k.settle()
+    assert k.vfg.of("usage") == [["usage", "flush"]] * 2  # the planner's row, in the one after it
 
 
 async def test_a_failed_action_is_never_claimed_a_code_line_says_so_instead(kit):

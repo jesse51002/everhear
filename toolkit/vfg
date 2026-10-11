@@ -774,9 +774,10 @@ def usage_row(a, started):
 
 
 def send_usage(cfg, a, rows):
-    """The queue, usage.pending.jsonl (structured()'s own rows among them), then `rows`, to the
-    box in one SSH call; queued again when they do not get there. Nothing queued and no row:
-    nothing sent, exit 0."""
+    """The queue, usage.pending.jsonl (structured()'s own rows among them, VFG_USAGE_QUEUE's
+    folder: Pending), then `rows`, to the box in one SSH call; queued again when they do not get
+    there. Nothing queued and no row: nothing sent, exit 0. A row's cost_usd may be null: a call
+    cut off with an attempt in flight, whose cost nobody told."""
     cfg.ensure_home()
     pending = Pending(cfg.home)
     rows = pending.claim() + rows
@@ -797,16 +798,20 @@ def send_usage(cfg, a, rows):
 
 class Pending(object):
     """usage.pending.jsonl: rows that could not reach EC2, and every structured() call's row
-    (lib/py/vfg_llm.py appends them under the same lock), inserted next time.
+    (lib/py/vfg_llm.py appends them under the same lock), inserted next time. Its folder is
+    VFG_USAGE_QUEUE from the environment, as vfg_llm's record() reads it, else $VFG_HOME: a
+    replay points it at its own folder, so its rows reach the box only when sent on purpose
+    (`VFG_USAGE_QUEUE=<that folder> vfg usage flush`).
 
     A call claims the queue by moving it into usage.sending.<pid>.jsonl, so two
     calls never insert the same row; a crashed caller's file is claimed again."""
 
     def __init__(self, home):
-        self.home = home
-        self.queue = os.path.join(home, "usage.pending.jsonl")
-        self.lock = os.path.join(home, "usage.pending.lock")
-        self.mine = os.path.join(home, "usage.sending.%d.jsonl" % os.getpid())
+        self.home = os.path.expanduser(os.environ.get("VFG_USAGE_QUEUE") or home)
+        os.makedirs(self.home, mode=0o700, exist_ok=True)
+        self.queue = os.path.join(self.home, "usage.pending.jsonl")
+        self.lock = os.path.join(self.home, "usage.pending.lock")
+        self.mine = os.path.join(self.home, "usage.sending.%d.jsonl" % os.getpid())
 
     def claim(self):
         rows = []

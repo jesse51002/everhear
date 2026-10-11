@@ -20,7 +20,8 @@ processed (`vfg context mark`, nobody waiting), so the game's events since the l
 NEW rows. There is no call of its own for what nobody reads: it waits for the next one. An
 implementer's report is a brain call of its own. Every model call's `usage` row, answered or
 failed, its cached tokens included, is structured()'s own, queued on this PC; after each call
-the brain logs what it spent and sends the queue (`vfg usage flush`), nobody waiting.
+the brain logs what it spent and sends the queue (`vfg usage flush`), nobody waiting, never two
+at once: one asked for while another runs runs once when it ends.
 """
 
 from __future__ import annotations
@@ -51,9 +52,11 @@ ERRORED_MAX = 180  # the error line's reason, in characters
 
 
 def spent(got) -> str:
-    """What a call spent, from its Answer or its LlmError: `840 ms $0.001234, 9000 in, 96% cached, 40 out`."""
+    """What a call spent, from its Answer or its LlmError: `840 ms $0.001234, 9000 in, 96% cached, 40 out`,
+    the cost `$0.001234+` when it timed out with an attempt in flight, whose cost is not in it."""
     rate = f", {got.cached_tokens / got.prompt_tokens:.0%} cached" if got.prompt_tokens else ""
-    return f"{got.ms} ms ${got.cost:.6f}, {got.prompt_tokens} in{rate}, {got.completion_tokens} out"
+    more = "" if getattr(got, "cost_known", True) else "+"
+    return f"{got.ms} ms ${got.cost:.6f}{more}, {got.prompt_tokens} in{rate}, {got.completion_tokens} out"
 
 
 def errored(who: str, e: Exception) -> str:
@@ -192,8 +195,10 @@ class Brain:
         self.flush()
 
     def flush(self) -> None:
-        """The usage rows structured() queued, this call's among them, sent nobody waiting."""
-        self.later("usage", "flush")
+        """The usage rows structured() queued, this call's among them, sent nobody waiting: never
+        two `vfg usage flush` at once, one more after the one running when asked meanwhile
+        (Later.flush_usage), so a burst of calls with the box down is one SSH attempt, then one."""
+        self.later.flush_usage()
 
     def reload(self) -> None:
         """Before each brain call: every action file that changed is loaded again, so an action an

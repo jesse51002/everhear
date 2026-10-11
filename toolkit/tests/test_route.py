@@ -650,6 +650,34 @@ class TestCallRows(BoxCase):
         self.assertEqual(self.box.query("SELECT component, cost_usd FROM usage ORDER BY id"),
                          [("planner", 0.0031), ("alias", 0.00005)])
 
+    def test_vfg_usage_queue_is_the_queue_both_sides_use_and_a_cost_may_be_unknown(self):
+        """A replay's rows queue in its own folder: `vfg usage flush` sends them only with the same
+        VFG_USAGE_QUEUE, and never from $VFG_HOME. A call cut off with an attempt in flight has no
+        cost: NULL in the table, and what came back said in its error."""
+        self.columns("cache_read_tokens", "cache_write_tokens", "ok", "error", "ms")
+        llm = self.llm()
+        out = os.path.join(self.box.home, "replay", "out")
+        cut = llm.usage_row("brain", "replay #812", "openai/gpt-6.1-sol", None, 30004, 9000, 8800, 0,
+                            error="no answer from openai/gpt-6.1-sol within 30 s; $0.002100 spent before it, "
+                                  "the attempt in flight not counted")
+        with self.box.environ(VFG_USAGE_QUEUE=out):
+            llm.record(cut)
+        self.assertEqual([n for n in os.listdir(self.box.vhome) if n.startswith("usage.")], [])
+        self.assertTrue(os.path.exists(os.path.join(out, "usage.pending.jsonl")))
+        r = self.vfg("usage", "flush")  # the live queue: nothing there, nothing sent
+        self.assertEqual((r.returncode, r.stdout, r.stderr, self.box.calls), (0, "", "", []))
+        self.box.down = True
+        self.assertOneLine(self.vfg("usage", "flush", VFG_USAGE_QUEUE=out), 4, "cannot reach EC2")
+        with open(os.path.join(out, "usage.pending.jsonl")) as f:
+            self.assertEqual(len(f.read().splitlines()), 1)  # kept there
+        self.box.down = False
+        r = self.vfg("usage", "flush", VFG_USAGE_QUEUE=out)
+        self.assertEqual((r.returncode, r.stdout), (0, "1\n"), r.stderr)
+        self.assertEqual(self.box.query("SELECT component, cost_usd, ref, ok, error, ms FROM usage"), [
+            ("brain", None, "replay #812", 0, "no answer from openai/gpt-6.1-sol within 30 s; $0.002100 spent "
+                                               "before it, the attempt in flight not counted", 30004)])
+        self.assertEqual([n for n in os.listdir(out) if n.startswith("usage.") and n != "usage.pending.lock"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

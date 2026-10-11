@@ -1,9 +1,12 @@
 """structured() against an httpx.MockTransport: no network, no real key."""
 
 import asyncio
+import fcntl
 import json
 import logging
+import os
 import re
+import threading
 from typing import Literal
 
 import httpx
@@ -57,6 +60,7 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("OPEN_ROUTER_API", KEY)
     monkeypatch.setenv("VFG_HOME", str(tmp_path))
     monkeypatch.delenv("VFG_OPENROUTER_KEY", raising=False)
+    monkeypatch.delenv("VFG_USAGE_QUEUE", raising=False)
     monkeypatch.setattr(vfg_llm, "RETRY_WAIT", 0)
     monkeypatch.setattr(vfg_llm, "client", None)
 
@@ -277,22 +281,122 @@ async def test_a_timeout_and_a_missing_key_are_rows_too(monkeypatch, tmp_path):
         await ask("Name two mobs.", Mobs, timeout=0.01)
     assert e.value.ms >= 10
     monkeypatch.delenv("OPEN_ROUTER_API")
-    with pytest.raises(LlmError, match="no OpenRouter key"):
+    with pytest.raises(LlmError, match="no OpenRouter key") as e:
         await ask("Name two mobs.", Mobs, call_id="#6")
-    assert [(r["ref"], r["ok"], r["error"][:22]) for r in queued(tmp_path)] == [
-        ("#5", 0, "no answer from ~deepse"), ("#6", 0, "no OpenRouter key: put")]
+    assert (e.value.cost, e.value.cost_known) == (0, True)
+    assert [(r["ref"], r["ok"], r["cost_usd"], r["error"][:22]) for r in queued(tmp_path)] == [
+        ("#5", 0, None, "no answer from ~deepse"), ("#6", 0, 0, "no OpenRouter key: put")]
+
+
+def hanging(monkeypatch, *replies):
+    """Answer each request with the next reply, as serve() does; past the last, never answer."""
+    seen, queue = [], list(replies)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if not queue:
+            await asyncio.sleep(5)
+        return queue.pop(0)
+
+    monkeypatch.setattr(vfg_llm, "client", httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    return seen
+
+
+async def test_a_timeout_with_an_attempt_in_flight_leaves_its_cost_unknown(monkeypatch, tmp_path):
+    # The first attempt came back (and cost), the second was cut off in flight: OpenRouter bills it,
+    # at a price nobody told. The row's cost is NULL, its error says what came back cost.
+    seen = hanging(monkeypatch, ok(BAD, cost=0.0012))
+    with pytest.raises(LlmError, match=r"^no answer from ~deepseek/deepseek-v4-flash-latest within 0.2 s$") as e:
+        await ask("Name two mobs.", Mobs, timeout=0.2)
+    assert len(seen) == 2
+    assert (e.value.cost, e.value.cost_known, e.value.prompt_tokens) == (pytest.approx(0.0012), False, 20)
+    [row] = queued(tmp_path)
+    assert (row["ok"], row["cost_usd"], row["input_tokens"], row["ms"]) == (0, None, 20, e.value.ms)
+    assert row["error"] == ("no answer from ~deepseek/deepseek-v4-flash-latest within 0.2 s; "
+                            "$0.001200 spent before it, the attempt in flight not counted")
+
+
+async def test_a_timeout_between_attempts_counts_what_came_back(monkeypatch, tmp_path):
+    # The second attempt's first try came back a 503, and the timeout hit while it waited to send
+    # it again: nothing was in flight, so what came back is the whole cost.
+    monkeypatch.setattr(vfg_llm, "RETRY_WAIT", 5)
+    seen = serve(monkeypatch, ok(BAD, cost=0.0012), httpx.Response(503, text="upstream busy"))
+    with pytest.raises(LlmError, match=r"within 0.2 s$") as e:
+        await ask("Name two mobs.", Mobs, timeout=0.2)
+    assert len(seen) == 2
+    assert (e.value.cost, e.value.cost_known) == (pytest.approx(0.0012), True)
+    [row] = queued(tmp_path)
+    assert (row["ok"], row["cost_usd"]) == (0, pytest.approx(0.0012))
+    assert row["error"] == "no answer from ~deepseek/deepseek-v4-flash-latest within 0.2 s"
 
 
 async def test_a_cancelled_call_is_a_row(monkeypatch, tmp_path):
-    async def slow(request):
-        await asyncio.sleep(5)
-    monkeypatch.setattr(vfg_llm, "client", httpx.AsyncClient(transport=httpx.MockTransport(slow)))
+    hanging(monkeypatch)
     call = asyncio.create_task(ask("Name two mobs.", Mobs))
     await asyncio.sleep(0.01)
     call.cancel()
     with pytest.raises(asyncio.CancelledError):
         await call
-    assert [(r["ok"], r["error"]) for r in queued(tmp_path)] == [(0, "cancelled")]
+    assert [(r["ok"], r["cost_usd"], r["error"]) for r in queued(tmp_path)] == [
+        (0, None, "cancelled; $0.000000 spent before it, the attempt in flight not counted")]
+
+
+async def test_the_row_is_written_off_the_event_loop(monkeypatch, tmp_path):
+    # `vfg usage flush` holding the queue's lock: the loop runs on while the row waits for it.
+    serve(monkeypatch, ok(GOOD))
+    held, release = os.open(tmp_path / "usage.pending.lock", os.O_RDWR | os.O_CREAT, 0o600), threading.Event()
+    fcntl.flock(held, fcntl.LOCK_EX)
+
+    def holder():
+        release.wait(2)  # let go at last all the same: a write on the loop would block it, failing, not hanging
+        os.close(held)
+
+    holding = threading.Thread(target=holder)
+    holding.start()
+    try:
+        call = asyncio.create_task(ask("Name two mobs.", Mobs))
+        for _ in range(10):
+            await asyncio.sleep(0.005)
+        assert not call.done() and queued(tmp_path) == []
+    finally:
+        release.set()
+        holding.join()
+    answer = await call
+    assert [r["ms"] for r in queued(tmp_path)] == [answer.ms]
+
+
+async def test_a_cancel_while_the_row_is_written_neither_loses_nor_repeats_it(monkeypatch, tmp_path):
+    serve(monkeypatch, ok(GOOD))
+    writing, go, real = threading.Event(), threading.Event(), vfg_llm.record
+
+    def slow(row):
+        writing.set()
+        go.wait(5)
+        real(row)
+
+    monkeypatch.setattr(vfg_llm, "record", slow)
+    call = asyncio.create_task(ask("Name two mobs.", Mobs))
+    assert await asyncio.to_thread(writing.wait, 5)
+    call.cancel()
+    await asyncio.sleep(0.01)
+    assert not call.done()  # it waits for its row, then is cancelled
+    go.set()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    assert [(r["ok"], r["error"]) for r in queued(tmp_path)] == [(1, None)]
+
+
+async def test_vfg_usage_queue_moves_the_queue_and_nothing_else(monkeypatch, tmp_path):
+    # A replay's rows in its own folder; VFG_HOME still finds the key.
+    monkeypatch.delenv("OPEN_ROUTER_API")
+    (tmp_path / "openrouter.key").write_text("sk-or-from-home\n")
+    monkeypatch.setenv("VFG_USAGE_QUEUE", str(tmp_path / "replay" / "out"))
+    seen = serve(monkeypatch, ok(GOOD))
+    await ask("Name two mobs.", Mobs, call_id="replay #812")
+    assert seen[0].headers["authorization"] == "Bearer sk-or-from-home"
+    assert queued(tmp_path) == [] and not (tmp_path / "usage.pending.lock").exists()
+    assert [r["ref"] for r in queued(tmp_path / "replay" / "out")] == ["replay #812"]
+    assert (tmp_path / "replay" / "out" / "usage.pending.lock").exists()
 
 
 async def test_a_component_off_the_list_or_a_bad_call_id_asks_nothing(monkeypatch, tmp_path):

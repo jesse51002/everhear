@@ -17,11 +17,18 @@ unless a block is marked, and caches up to the last mark it finds again.
 Every call is in the one usage log (Specs/2026-10-11-Prototype_Central_LLM_Log): it names its
 `component`, one of Component, and a `call_id` (the row's ref, at most 64 characters), and
 records exactly one row, answered or failed: its tokens and cost summed over every attempt, how
-long it took, `ok` and, when it failed, `error`, the reason, short. The row is appended to
-$VFG_HOME/usage.pending.jsonl under usage.pending.lock, in the format `vfg usage add` queues
-its own, so `vfg usage flush` (or the next `vfg usage add`) sends it to the box; no SSH here,
-and a row that cannot be written is a warning, never an error of the call's. An LlmError
-carries what the call spent, as an Answer does.
+long it took, `ok` and, when it failed, `error`, the reason, short. A call that timed out or was
+cancelled with an attempt in flight has no cost in its row (None, NULL in the table): OpenRouter
+bills that attempt at a price it never told, so `error` says what the attempts that came back
+cost instead. The row is appended to usage.pending.jsonl under usage.pending.lock in the folder
+VFG_USAGE_QUEUE names in the environment (default $VFG_HOME, which also finds the key and so
+stays put), in the format `vfg usage add` queues its own, so `vfg usage flush` (or the next
+`vfg usage add`) with the same VFG_USAGE_QUEUE sends it to the box; a replay points it at its
+own folder, so its rows reach the box only when sent on purpose. No SSH here; the row is written
+in a worker thread, so the lock never holds up the event loop, once whatever happens to the call
+meanwhile; a row that cannot be written is a warning, never an error of the call's. An LlmError
+carries what the call spent, as an Answer does, and `cost_known` False when an attempt cut off
+in flight is not in it.
 
 The key: OPEN_ROUTER_API from the environment; else the file VFG_OPENROUTER_KEY
 names (environment, then ~/.vfg/config; default ~/.vfg/openrouter.key), which holds
@@ -52,7 +59,7 @@ RETRY_WAIT = 1.0  # seconds
 MAX_MARKS = 4     # cache_control marks one request may carry (Anthropic's limit; OpenRouter passes it on)
 REF_MAX = 64      # a call_id, as `vfg usage add --ref`
 ERROR_MAX = 300   # a failed call's reason in its row, in characters
-QUEUE, QUEUE_LOCK = "usage.pending.jsonl", "usage.pending.lock"  # in $VFG_HOME: toolkit/vfg's Pending
+QUEUE, QUEUE_LOCK = "usage.pending.jsonl", "usage.pending.lock"  # in $VFG_USAGE_QUEUE: toolkit/vfg's Pending
 
 # Sent through instead of a fresh client per call: a long-running caller sets it to
 # keep one connection pool warm, and the tests set it to a MockTransport client.
@@ -87,8 +94,11 @@ class Component(StrEnum):
 
 class LlmError(Exception):
     """The call failed for good. Safe to log: the message never holds the key. What it spent
-    before it failed, summed over every attempt as an Answer's is, is on it too."""
+    before it failed, summed over every attempt as an Answer's is, is on it too. `cost_known` is
+    False when it timed out with an attempt in flight, which OpenRouter bills all the same: `cost`
+    is then what the attempts that came back cost, the least it spent (its row's cost is None)."""
     cost: float = 0.0
+    cost_known: bool = True
     ms: int = 0
     prompt_tokens: int = 0
     cached_tokens: int = 0
@@ -162,14 +172,14 @@ async def structured(
         body["reasoning"] = {"effort": reasoning}
     elif not reasoning:
         body["reasoning"] = {"enabled": False}
-    t0, cost, tokens = time.perf_counter(), 0.0, [0, 0, 0]
+    t0, cost, tokens, flight = time.perf_counter(), 0.0, [0, 0, 0], _Flight()
     key, failed, error = "", None, "cancelled"  # the row's reason when the call ends any other way
     try:
         try:
             key = _key()
             async with asyncio.timeout(timeout), _session() as http:
                 for attempt in (1, 2):
-                    got = await _post(http, body, key, timeout)
+                    got = await _post(http, body, key, timeout, flight)
                     usage = got.get("usage") or {}
                     cost += float(usage.get("cost") or 0)
                     tokens[0] += int(usage.get("prompt_tokens") or 0)
@@ -204,32 +214,36 @@ async def structured(
     finally:
         ms = int((time.perf_counter() - t0) * 1000)
         if failed is not None:
-            failed.cost, failed.ms = cost, ms
+            failed.cost, failed.cost_known, failed.ms = cost, not flight.out, ms
             failed.prompt_tokens, failed.cached_tokens, failed.completion_tokens = tokens
-        record(usage_row(component, call_id, model, cost, ms, *tokens,
-                         error=None if error is None else _short(error.replace(key, "<key>") if key else error)))
+        if flight.out:  # cut off with an attempt in flight: billed, at a price nobody told this call
+            error = f"{error}; ${cost:.6f} spent before it, the attempt in flight not counted"
+        await _queued(usage_row(component, call_id, model, None if flight.out else cost, ms, *tokens,
+                                error=None if error is None else _short(error.replace(key, "<key>") if key else error)))
     return Answer[output](value=value, cost=cost, ms=ms,
                           prompt_tokens=tokens[0], cached_tokens=tokens[1], completion_tokens=tokens[2])
 
 
-def usage_row(component: Component | str, call_id: str, model: str, cost: float, ms: int, prompt_tokens: int,
-              cached_tokens: int, completion_tokens: int, *, error: str | None) -> dict:
+def usage_row(component: Component | str, call_id: str, model: str, cost: float | None, ms: int,
+              prompt_tokens: int, cached_tokens: int, completion_tokens: int, *, error: str | None) -> dict:
     """One call's usage row as `vfg usage add` queues one (toolkit/vfg usage_row), its time now,
     with what only a call knows: `ok` (1 answered, 0 failed), `error` (None when ok) and `ms`.
+    `cost` None is not known (an attempt cut off in flight), as `vfg usage add` without --cost.
     No cache writes: OpenRouter's usage does not say them."""
     return {"at": datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
             "component": str(component), "model": model, "input_tokens": prompt_tokens,
-            "output_tokens": completion_tokens, "cost_usd": round(cost, 9), "ref": call_id,
+            "output_tokens": completion_tokens, "cost_usd": None if cost is None else round(cost, 9), "ref": call_id,
             "cache_read_tokens": cached_tokens, "cache_write_tokens": None,
             "ok": int(error is None), "error": error, "ms": ms}
 
 
 def record(row: dict) -> None:
-    """Append `row` to $VFG_HOME/usage.pending.jsonl, under usage.pending.lock as toolkit/vfg's
-    Pending takes it, in one O_APPEND write: the queue `vfg usage flush` sends. Never raises and
-    never waits on the box: a row that cannot be written is a warning that holds it."""
+    """Append `row` to usage.pending.jsonl in the queue's folder (_queue_dir), under
+    usage.pending.lock as toolkit/vfg's Pending takes it, in one O_APPEND write: the queue `vfg
+    usage flush` sends. Never raises and never waits on the box: a row that cannot be written is a
+    warning that holds it. It waits on the lock, so structured() runs it in a thread (_queued)."""
     try:
-        home = _home()
+        home = _queue_dir()
         home.mkdir(mode=0o700, parents=True, exist_ok=True)
         line = (json.dumps(row) + "\n").encode("utf-8")
         lock = os.open(home / QUEUE_LOCK, os.O_RDWR | os.O_CREAT, 0o600)
@@ -245,6 +259,32 @@ def record(row: dict) -> None:
     except Exception as e:  # noqa: BLE001 — the call's answer, or its own error, goes on up as it is
         with contextlib.suppress(Exception):
             logger.warning("usage row not queued (%s: %s): %s", type(e).__name__, e, json.dumps(row, default=str))
+
+
+async def _queued(row: dict) -> None:
+    """record(row) in a worker thread, so the queue's lock never holds up the event loop. The row
+    is written once whatever happens meanwhile: a cancel while it is written (shielded from it)
+    waits for the write, which is quick, and is raised once it is done, never losing the row nor
+    writing it twice; without a thread to write it in (the loop shutting down), it is written here."""
+    write = asyncio.ensure_future(asyncio.to_thread(record, row))
+    cancelled = None
+    while not write.done():
+        try:
+            await asyncio.shield(write)
+        except asyncio.CancelledError as e:
+            cancelled = e
+        except Exception:  # noqa: BLE001 — record() never raises: no thread could be had for it
+            break
+    if not write.cancelled() and write.exception() is not None:
+        record(row)
+    if cancelled is not None:
+        raise cancelled
+
+
+class _Flight:
+    """Whether a call has an attempt out, sent and its answer not back; _post keeps it. A call cut
+    off so (its timeout, a cancel) is billed for that attempt, at a price nobody told it."""
+    out = False
 
 
 def _short(text: str) -> str:
@@ -273,16 +313,22 @@ def _session():
     return contextlib.nullcontext(client) if client else httpx.AsyncClient()
 
 
-async def _post(http: httpx.AsyncClient, body: dict, key: str, timeout: float) -> dict:
+async def _post(http: httpx.AsyncClient, body: dict, key: str, timeout: float, flight: _Flight) -> dict:
+    """One attempt's request, sent again once after a 429, a 5xx or a dropped connection.
+    `flight` is out from the moment a request goes until something comes back: not while it waits
+    to send it again, when nothing is in flight."""
     headers = {"Authorization": f"Bearer {key}", "X-Title": "EverHear"}
     for attempt in (1, 2):
         try:
+            flight.out = True
             r = await http.post(ENDPOINT, json=body, headers=headers, timeout=timeout)
+            flight.out = False
             if r.status_code == 200:
                 return r.json()
             why = f"OpenRouter {r.status_code}: {r.text[:500]}"
             again = r.status_code == 429 or r.status_code >= 500
         except httpx.TransportError as e:
+            flight.out = False  # nothing came back, nor will: nothing to count
             why, again = f"OpenRouter unreachable: {type(e).__name__} {e}", True
         except ValueError:
             why, again = "OpenRouter sent a 200 that is not JSON", True
@@ -302,6 +348,12 @@ def _content(got: dict) -> str:
 
 def _home() -> Path:
     return Path(os.environ.get("VFG_HOME") or "~/.vfg").expanduser()
+
+
+def _queue_dir() -> Path:
+    """The usage queue's folder: VFG_USAGE_QUEUE from the environment, as toolkit/vfg's `vfg usage`
+    reads it, else $VFG_HOME."""
+    return Path(os.environ.get("VFG_USAGE_QUEUE") or _home()).expanduser()
 
 
 def _key() -> str:

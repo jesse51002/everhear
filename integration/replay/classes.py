@@ -48,7 +48,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import playtest  # noqa: E402  (puts brain/ on the path)
-from playtest import Clock, Playtest, iso, replayed, when  # noqa: E402
+from playtest import Clock, Playtest, iso, queue_usage, replayed, when  # noqa: E402
 
 sys.path.insert(0, str(playtest.REPO / "jev"))
 import httpx  # noqa: E402
@@ -227,6 +227,7 @@ def final_classes(out: Path) -> dict[str, tuple[str, str, float | None, bool]]:
 
 async def run_respond(args) -> None:
     out = Path(args.out)
+    queue_usage(out)
     pt = Playtest(Path(args.db))
     cfg = config.load()
     catalog = actions.load(cfg.repo, cfg.server)

@@ -87,7 +87,7 @@ def _no_real_home(tmp_path, monkeypatch):
     monkeypatch.setenv("VFG_HOME", str(tmp_path / "vfg-home"))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     for key in ("VFG_BRAIN_DIR", "VFG_REPO", "OPEN_ROUTER_API", "VFG_OPENROUTER_KEY", "VFG_SERVER", "VFG_OWNER",
-                "VFG_BRAIN_MODEL", "VFG_RUNNING_TTL_S", "VFG_PLAN_CHECK"):
+                "VFG_BRAIN_MODEL", "VFG_RUNNING_TTL_S", "VFG_PLAN_CHECK", "VFG_USAGE_QUEUE"):
         monkeypatch.delenv(key, raising=False)
 
 
