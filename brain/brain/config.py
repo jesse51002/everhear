@@ -46,7 +46,6 @@ class Config:
     plan_reasoning: str = "off"                     # VFG_PLAN_REASONING
     plan_providers: tuple[str, ...] = FAST          # VFG_PLAN_PROVIDERS
     plan_check: bool = False        # VFG_PLAN_CHECK: on checks a retried command against its references again
-    batch_s: float = 60.0           # VFG_BRAIN_BATCH_S: this long with no read and something unread: a batch call
     checkpoint: int = 5             # VFG_BRAIN_CHECKPOINT: a cache mark every this many minute-blocks
     history_hours: float = 6.0      # VFG_BRAIN_HISTORY_HOURS: how much of the feed the context starts with
     timeout_s: float = 20.0         # VFG_BRAIN_TIMEOUT_S: one structured() call, its retries included
@@ -121,7 +120,6 @@ def load(env: dict[str, str] | None = None) -> Config:
         plan_reasoning=get("VFG_PLAN_REASONING", "off"),
         plan_providers=names("VFG_PLAN_PROVIDERS", FAST),
         plan_check=get("VFG_PLAN_CHECK", "off").lower() in ("on", "1", "true", "yes"),
-        batch_s=number("VFG_BRAIN_BATCH_S", 60.0, float, 1),
         checkpoint=number("VFG_BRAIN_CHECKPOINT", 5, int, 1),
         history_hours=number("VFG_BRAIN_HISTORY_HOURS", 6.0, float, 0),
         timeout_s=number("VFG_BRAIN_TIMEOUT_S", 20.0, float, 1),

@@ -1,13 +1,14 @@
-"""The world as a call sees it: every online player's place and items by slot, the time and the
-weather (one `vfg state --json --items`), the running copies (running.json, kept fresh by
-running.Refresher), the saved places (`vfg place list`) and the incantations (`vfg incantation
-list --json`).
+"""The world as a call sees it: every online player's place, state (health, food, armor, XP
+level, game mode, effects) and items by slot, the time and the weather (one `vfg state --json
+--items`), the running copies (running.json, kept fresh by running.Refresher), the saved places
+(`vfg place list`) and the incantations (`vfg incantation list --json`).
 
 A live brain call wants the world as it is now, so it fetches the state, unless a snapshot
 younger than STATE_FRESH_S is there to share; past STATE_WAIT_S it goes on with the last good
 one, and the fetch finishes for the next call. Respond takes the last snapshot without waiting:
-banter needs no fresh position. The incantations change rarely and are fetched at most every
-INCANTATIONS_TTL_S; until `vfg incantation` exists they are "none".
+banter needs no fresh position. Respond's players have their place and state, no items. The
+incantations change rarely and are fetched at most every INCANTATIONS_TTL_S; until `vfg
+incantation` exists they are "none".
 """
 
 from __future__ import annotations
@@ -47,8 +48,54 @@ class Seen:
         return "\n".join(x for x in parts if x)
 
 
+ROMAN = ("I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X")
+
+
+def number(x: Any) -> str | None:
+    """20.0 as `20`, 14.5 as `14.5`; None for anything that is not a number."""
+    if isinstance(x, bool) or not isinstance(x, (int, float)):
+        return None
+    return f"{x:.1f}".removesuffix(".0")
+
+
+def ticks(t: Any) -> str:
+    """An effect's duration: 600 ticks as `0:30`, an hour or more as `1:00:00`, -1 as `∞`."""
+    if not isinstance(t, int) or isinstance(t, bool):
+        return ""
+    if t < 0:
+        return "∞"
+    m, sec = divmod(t // 20, 60)
+    return f"{m // 60}:{m % 60:02d}:{sec:02d}" if m >= 60 else f"{m}:{sec:02d}"
+
+
+def effect(e: dict) -> str:
+    """`speed II 0:30`: the effect's name, its level past I, and the time left."""
+    name = str(e.get("id") or "?").removeprefix("minecraft:").replace("_", " ")
+    amp = e.get("amplifier")
+    level = (ROMAN[amp] if amp < len(ROMAN) else str(amp + 1)) if isinstance(amp, int) and amp > 0 else ""
+    return " ".join(x for x in (name, level, ticks(e.get("duration"))) if x)
+
+
+def condition(p: dict) -> str:
+    """`14/20 health, 18/20 food, armor 12, level 5, survival; effects: speed II 0:30`: what
+    Minecraft answered for one player, and nothing it did not (vfg state's null)."""
+    health, most = number(p.get("health")), number(p.get("max_health"))
+    food, armor = number(p.get("food")), number(p.get("armor"))
+    level = number(p.get("xp_level"))
+    bits = [f"{health}/{most} health" if health and most else f"{health} health" if health else "",
+            f"{food}/20 food" if food else "", f"armor {armor}" if armor else "",
+            f"level {level}" if level else "", str(p.get("game_mode") or "")]
+    out = ", ".join(b for b in bits if b)
+    got = p.get("effects")
+    if isinstance(got, list):
+        on = ", ".join(effect(e) for e in got if isinstance(e, dict))
+        out += ("; " if out else "") + (f"effects: {on}" if on else "no effects")
+    return out
+
+
 def players(world: dict[str, Any] | None, items: bool = True) -> str:
-    """PLAYERS ONLINE, each with where they are and, with `items`, their items by slot."""
+    """PLAYERS ONLINE, each with where they are, their state and, with `items`, their items by
+    slot: `- Steve at 197 68 251 in overworld: 14/20 health, …; Steve's items, by slot: …`."""
     if not isinstance(world, dict):
         return "PLAYERS ONLINE: unknown (the server's state could not be read)"
     if world.get("rcon"):
@@ -56,10 +103,11 @@ def players(world: dict[str, Any] | None, items: bool = True) -> str:
     rows = []
     for p in world.get("online") or []:
         where = " ".join(str(c) for c in p["pos"]) if p.get("pos") else "?"
-        row = f"- {p.get('name')} at {where} in {p.get('dimension') or '?'}"
+        said = [condition(p)]
         if items:
-            row += ": " + (readable([str(x) for x in p.get("items") or []]) or "items unknown")
-        rows.append(row)
+            said.append(readable([str(x) for x in p.get("items") or []]) or "items unknown")
+        said = "; ".join(x for x in said if x)
+        rows.append(f"- {p.get('name')} at {where} in {p.get('dimension') or '?'}" + (f": {said}" if said else ""))
     return "PLAYERS ONLINE:\n" + ("\n".join(rows) or "nobody")
 
 

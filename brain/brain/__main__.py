@@ -5,8 +5,8 @@ lookout (prompts/lookout.md) and menu (every action's line, set again when the a
 the actions, which each brain call reloads where a file changed; the command references in the
 background (about 95 s the first time on a server version), tried again every 5 minutes until
 they load; the context from `vfg context --json`, the last VFG_BRAIN_HISTORY_HOURS, what is
-older than two minutes and unread marked processed (history is never acted on), a line from the
-last two minutes still unread answered; the tasks a crash left open failed as interrupted; then
+older than two minutes and unread marked processed (history is never acted on), and every
+context line unread with it, a line from the last two minutes still unread answered; the tasks a crash left open failed as interrupted; then
 `vfg watch --after <seq>` followed for good, from the feed's highest seq when the context was read
 (`vfg context --json` gives it last, with rows or none), so nothing older is ever read as new; and
 the greeting, skipped when nobody is on. A read of the context that fails is tried again, never
@@ -217,7 +217,7 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
     acts = Acts(vfg=vfg, later=later, catalog=catalog, planner=planner, tasks=tasks, implementers=impl,
                 world=world, action_timeout_s=cfg.action_timeout_s)
     brain = Brain(ctx=ctx, call=call, respond=respond, acts=acts, world=world, tasks=tasks, implementers=impl,
-                  later=later, catalog=catalog, refs=None if refs is LOAD else refs, batch_s=cfg.batch_s,
+                  later=later, catalog=catalog, refs=None if refs is LOAD else refs,
                   start=start, load=lambda: load_context(vfg, cfg.history_hours), model=cfg.model, respond_model=cfg.respond_model,
                   menu=lambda text: later("jev", "menu", "set", text))
 
@@ -231,15 +231,14 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
     if refs is LOAD:
         background.append(asyncio.create_task(
             keep_loading_refs(cfg, vfg, http, brain, planner, REFS_RETRY_S), name="refs"))
-    brain.timer.start()
     copies.start()
     greeting = await vfg("say", GREETING, timeout=30)
     if greeting.code != 0 and "nobody" not in (greeting.stderr + greeting.stdout).lower():
         log("start", f"the greeting failed: {(greeting.stderr or greeting.stdout).strip()[-200:]}")
     log("start", f"pid {os.getpid()}; {len(ctx.rows)} rows of context, following from #{brain.position()} "
                  f"({len(history)} history marked read); {len(catalog.names())} actions; brain {cfg.model} "
-                 f"{cfg.reasoning}; respond {cfg.respond_model}; planner {cfg.plan_model}; batch after "
-                 f"{cfg.batch_s:g} s; owner {cfg.owner or '(not set)'}; server {cfg.server}")
+                 f"{cfg.reasoning}; respond {cfg.respond_model}; planner {cfg.plan_model}; "
+                 f"owner {cfg.owner or '(not set)'}; server {cfg.server}")
 
     await stop.wait()
     log("stop", "stopping: nothing new is read")

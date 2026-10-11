@@ -718,6 +718,7 @@ class TestState(BoxCase):
                                                  "time      night (18000), day 3", "weather   rain",
                                                  "running   nothing"])
         self.assertNotIn("Inventory", "".join(self.box.rcon_commands()))
+        self.assertNotIn("Health", "".join(self.box.rcon_commands()))   # a player's state comes with --items
         got = json.loads(self.vfg("state", "--json", "--items").stdout)
         steve, alex = got["online"]
         self.assertEqual((steve["name"], steve["pos"], steve["dimension"]), ("Steve", [120, 64, -41], "overworld"))
@@ -733,6 +734,48 @@ class TestState(BoxCase):
         self.assertEqual([p["items"] for p in self.box.programs("state")], [False, True])
         r = self.vfg("state", "--items")
         self.assertIn("items     Steve: Steve has the following entity data: [{Slot: 4b", r.stdout)
+
+    @unittest.skipUnless(os.path.isfile(os.path.join(SCRIPTS_TEST, "mc_26_3.py")), "no scripts/_test/mc_26_3.py")
+    def test_items_bring_each_players_health_food_armor_level_game_mode_and_effects(self):
+        """Read from 26.3's replies (mc_26_3.py): Steve's speed II hides a weaker speed, which is
+        not his; Alex has no effect on; Sam's server answered nothing it could read."""
+        R = load_module("scripts_test_mc_26_3", os.path.join(SCRIPTS_TEST, "mc_26_3.py"))
+        data = {"Steve": {"Health": R.HEALTH_SNBT, "foodLevel": R.FOOD_SNBT, "XpLevel": R.XP_LEVEL_SNBT,
+                          "playerGameType": R.GAME_TYPE_SNBT, "active_effects": R.EFFECTS_SNBT},
+                "Alex": {"Health": "20.0f", "foodLevel": "20", "XpLevel": "0", "playerGameType": "1"}}
+        attributes = {"Steve": {"armor": "12.0", "max_health": "20.0"}, "Alex": {"armor": "0.0", "max_health": "24.0"}}
+
+        def respond(cmd):
+            m = re.match(r"^data get entity (\w+) (Health|foodLevel|XpLevel|playerGameType|active_effects)$", cmd)
+            if m and m.group(1) in data:
+                got = data[m.group(1)].get(m.group(2))
+                return R.ENTITY_DATA % (m.group(1), got) if got is not None else R.NO_ELEMENTS % m.group(2)
+            m = re.match(r"^attribute (\w+) minecraft:(\w+) get$", cmd)
+            if m and m.group(1) in attributes:
+                return R.ATTRIBUTE_GOT % (R.ATTRIBUTE_NAMES[m.group(2)], m.group(1), attributes[m.group(1)][m.group(2)])
+            if cmd.startswith(("data get entity Sam ", "attribute Sam ")) and not cmd.endswith((" Pos", " Dimension")):
+                return R.NO_ENTITY
+            return None
+
+        self.rcon.world = {"players": {"Steve": {"pos": [197.5, 68.0, 251.5]}, "Alex": {}, "Sam": {}}}
+        self.rcon.responder = respond
+        steve, alex, sam = json.loads(self.vfg("state", "--json", "--items").stdout)["online"]
+        self.assertEqual((steve["pos"], steve["dimension"]), ([197, 68, 251], "overworld"))
+        self.assertEqual({k: steve[k] for k in ("health", "max_health", "food", "xp_level", "armor", "game_mode")},
+                         {"health": 14.5, "max_health": 20.0, "food": 18, "xp_level": 5, "armor": 12.0,
+                          "game_mode": "survival"})
+        self.assertEqual(steve["effects"], [{"id": "minecraft:speed", "amplifier": 1, "duration": 600},
+                                            {"id": "minecraft:night_vision", "amplifier": 0, "duration": -1}])
+        self.assertEqual((alex["health"], alex["max_health"], alex["game_mode"], alex["effects"]),
+                         (20.0, 24.0, "creative", []))
+        self.assertEqual([sam[k] for k in ("health", "max_health", "food", "xp_level", "armor", "game_mode",
+                                           "effects")], [None] * 7)
+        self.assertIn("attribute Steve minecraft:armor get", self.box.rcon_commands())
+        r = self.vfg("state", "--items")
+        self.assertIn("player    Steve: 14.5/20 health, 18/20 food, armor 12, level 5, survival; effects: "
+                      "speed 2 0:30, night_vision ∞\n", r.stdout)
+        self.assertIn("player    Alex: 20/24 health, 20/20 food, armor 0, level 0, creative; no effects\n", r.stdout)
+        self.assertIn("player    Sam: unknown\n", r.stdout)
 
     def test_minecraft_down_exits_5_with_what_it_knows(self):
         self.box.rcon_down()

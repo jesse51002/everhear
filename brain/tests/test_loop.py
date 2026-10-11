@@ -1,13 +1,14 @@
-"""The loop: each row routed by its class, Respond's hand-up, history, two lines at once, a
-report, and the batch timer on a clock moved by hand."""
+"""The loop: each row routed by its class, a context line no model is shown, Respond's
+hand-up, history, two lines at once, a report, and no batch."""
 
 import asyncio
+import importlib.util
 
 from vfg_llm import LlmError
 
-from brain import loop
+from brain import config, loop
 from brain.act import BROKE
-from brain.timer import Timer
+from brain.call import PROMPT
 
 from conftest import cmd, decision, part, rows
 
@@ -18,17 +19,23 @@ GIVE = decision(part("command", "give Steve a diamond pickaxe", cmd("give Steve 
 
 
 async def test_each_row_goes_where_its_class_says_and_a_read_marks_what_it_took(kit):
-    k = kit(rows("LINE#1 18:29:40 Alex voice context 0.8 - | I'm by the lava", "AI#2 18:29:41 say - | hi"),
+    k = kit(rows("GAME#1 18:29:40 join Alex | Alex joined the game", "AI#2 18:29:41 say - | hi"),
             Decision=GIVE, Response={"reply": "anytime!", "hand_up": False, "reason": "thanks"})
     for line in ("GAME#3 18:29:50 death Alex | Alex tried to swim in lava", "SYS#0 18:29:51 | vfg watch: reconnected",
-                 "LINE#4 18:29:52 Alex voice context 0.7 - | ouch", ASK.format(seq=5), TALK.format(seq=6)):
+                 "LINE#4 18:29:52 Alex voice context 0.7 - | ouch, I'm by the lava", ASK.format(seq=5),
+                 TALK.format(seq=6)):
         k.brain.feed(line)
         await asyncio.sleep(0)  # as `vfg watch` gives them: one line at a time
     await k.settle()
     assert sorted(c["output"] for c in k.ask.calls) == ["Decision", "Response"]
-    assert "Alex tried to swim in lava" in k.ask.of("Decision")[0]["prompt"]  # the live read took in what waited
+    tail = k.ask.of("Decision")[0]["prompt"].split("NEW SINCE")[1]
+    assert "Alex joined the game" in tail and "Alex tried to swim in lava" in tail  # every game event since
+    for c in k.ask.calls:                  # the context line: in no prompt, cached or not, of any call
+        assert "by the lava" not in c["prompt"] + "".join(text for text, _ in c["cached"])
     assert sorted(k.vfg.said()) == [["anytime!"], ["there you go", "--task", "T1"]]
-    assert k.vfg.of("context", "mark") == [["context", "mark", "1", "3", "4", "5"], ["context", "mark", "6"]]
+    # the context line marked as it came, nobody waiting; the line's read took the game events and the line
+    assert k.vfg.of("context", "mark") == [["context", "mark", "4"], ["context", "mark", "1", "3", "5"],
+                                           ["context", "mark", "6"]]
     usage = k.vfg.of("usage", "add")
     assert ["usage", "add", "--component", "brain", "--model", "brain-model", "--in", "1000", "--out", "40",
             "--cost", "0.002000", "--cache-read", "900", "--ref", "#5"] in usage and any("respond" in u for u in usage)
@@ -50,11 +57,12 @@ async def test_respond_replies_or_hands_up_never_both(kit):
 
 
 async def test_history_is_the_old_feed_at_the_start_and_a_line_on_the_watch_is_live_whatever_its_time(kit):
-    k = kit(rows("LINE#9 18:20:00 Steve voice action_oriented 0.9 - | give me a diamond pickaxe"), Decision=GIVE)
+    k = kit(rows("LINE#8 18:29:50 Alex voice context 0.9 - | so hungry",
+                 "LINE#9 18:20:00 Steve voice action_oriented 0.9 - | give me a diamond pickaxe"), Decision=GIVE)
     k.brain.start = 9
-    assert k.brain.catch_up()[0].seq == 9                 # ten minutes old as the brain starts: history
-    await k.settle()
-    assert k.ask.calls == [] and k.vfg.of("context", "mark") == [["context", "mark", "9"]]
+    assert [r.seq for r in k.brain.catch_up()] == [9]      # ten minutes old as the brain starts: history
+    await k.settle()                                      # and a context line unread, whatever its age, read
+    assert k.ask.calls == [] and k.vfg.of("context", "mark") == [["context", "mark", "8", "9"]]
     # the box's clock 90 s ahead of the PC's: a line said now reads as yesterday's 18:31:30, and is live
     k.brain.feed("LINE#10 18:31:30 Steve voice action_oriented 0.9 - | give me a diamond pickaxe")
     await k.settle()
@@ -86,13 +94,16 @@ async def test_two_lines_at_once_neither_waits_for_the_other(kit):
 
 
 async def test_a_report_closes_its_task_with_one_record_and_one_chat_line(kit):
-    k = kit(Decision=decision(reply="Steve, your ice trail is on: just walk", record="T1 done: ice trail as ice_trail",
+    k = kit(rows("GAME#1 18:29:50 death Steve | Steve fell from a high place"),
+            Decision=decision(reply="Steve, your ice trail is on: just walk", record="T1 done: ice trail as ice_trail",
                               status="done"))
     tid = k.tasks.open("Steve", "make me an ice trail", "an ice trail behind Steve")
     k.impl.session = lambda tid: "sess-1"
     await k.brain.on_report(tid, "done", "Done: an ice trail follows Steve, running as ice_trail.")
     await k.settle()
     assert "ITS REPORT:\nDone: an ice trail follows Steve" in k.ask.calls[0]["prompt"]
+    assert "Steve fell from a high place" in k.ask.calls[0]["prompt"].split("NEW SINCE")[1]  # a report reads NEW
+    assert k.vfg.of("context", "mark") == [["context", "mark", "1"]]
     t = k.tasks.get("T1")
     assert (t["status"], t["result"], t["session"]) == ("done", "T1 done: ice trail as ice_trail", "sess-1")
     assert t["closed_at"]
@@ -204,47 +215,27 @@ async def test_after_the_feed_restarts_the_context_is_read_again_and_the_new_fee
     assert k.vfg.said() == [["there you go", "--task", "T1"]]
 
 
-class Finished:
-    """A batch call that is over at once."""
-
-    def done(self) -> bool:
-        return True
-
-
-async def test_the_batch_fires_after_a_quiet_minute_with_something_unread():
-    now, unread, fired = [1000.0], [False], []
-    timer = Timer(60, lambda: unread[0], lambda: fired.append(now[0]) or Finished(), clock=lambda: now[0])
-    now[0] += 90
-    assert not timer.check()          # a quiet spell with nothing unread: nothing to catch up
-    unread[0] = True
-    assert timer.check() and fired == [1090.0]  # something arrives after the minute: at once
-    now[0] += 30
-    assert not timer.check()          # the batch was a read: the minute starts again
-    now[0] += 20
-    timer.read()                      # a live read pushes it back
-    now[0] += 59
-    assert not timer.check()
-    now[0] += 1
-    assert timer.check() and fired == [1090.0, 1200.0]
+async def test_there_is_no_batch_whatever_waits_unread_waits_for_the_next_call(kit):
+    assert importlib.util.find_spec("brain.timer") is None
+    assert not hasattr(config.load({"VFG_BRAIN_BATCH_S": "60"}), "batch_s")
+    assert "batch" not in PROMPT.read_text().lower()
+    k = kit(Decision=GIVE)
+    k.brain.feed("GAME#1 18:29:50 death Alex | Alex tried to swim in lava")
+    k.brain.feed("LINE#2 18:29:52 Alex voice context 0.7 - | ouch")
+    await k.settle()
+    assert k.ask.calls == [] and not hasattr(k.brain, "timer") and not hasattr(k.brain, "batch")
+    assert [r.seq for r in k.ctx.unprocessed()] == [1]    # the game event waits for the next call; the context line not
+    k.brain.feed(ASK.format(seq=3))
+    await k.settle()
+    assert "Alex tried to swim in lava" in k.ask.calls[0]["prompt"].split("NEW SINCE")[1]
 
 
-async def test_while_a_batch_runs_past_its_minute_the_timer_waits_on_it_not_the_clock():
-    now, checked, fired = [1000.0], [], []
-    batch = asyncio.get_running_loop().create_future()
-    timer = Timer(60, lambda: checked.append(now[0]) or True, lambda: fired.append(now[0]) or batch,
-                  clock=lambda: now[0])
-    now[0] += 61
-    timer.start()
-    await asyncio.sleep(0)
-    assert fired == [1061.0]
-    now[0] += 61                      # the batch runs past its own minute, and rows keep arriving
-    n = len(checked)
-    for _ in range(5):
-        timer.arrived()
-        await asyncio.sleep(0)
-    assert len(checked) == n          # asleep on the batch: nothing woke it
-    batch.set_result(None)
-    for _ in range(3):
-        await asyncio.sleep(0)
-    assert fired == [1061.0, 1122.0]  # it ended: due long since, with something unread
-    await timer.stop()
+async def test_respond_sees_each_players_place_and_state_but_no_items(kit):
+    k = kit(Response={"reply": "anytime!", "hand_up": False, "reason": "thanks"})
+    await k.world.fresh_state()                           # Respond never waits: the last state there is
+    k.brain.feed(TALK.format(seq=1))
+    await k.settle()
+    prompt = k.ask.of("Response")[0]["prompt"]
+    assert ("- Steve at 10 64 -20 in overworld: 14.5/20 health, 18/20 food, armor 12, level 5, survival; "
+            "effects: speed II 0:30, night vision ∞\n") in prompt
+    assert "items, by slot" not in prompt

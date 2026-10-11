@@ -1,7 +1,7 @@
 """The shared context, built by hand: feed lines read into rows, the processed marks, and the
 minute-blocks the prompt cache depends on."""
 
-from brain.context import Context, Row, parse
+from brain.context import Context, Row, parse, show
 
 from conftest import NOW, rows
 
@@ -68,3 +68,17 @@ def test_the_conversation_is_minute_blocks_marked_at_stable_checkpoints():
     third = ctx.cached("OPENING", 5)
     assert [i for i, (_, marked) in enumerate(third) if marked] == [0, 15, 20, 25]
     assert [text for text, _ in third[:22]] == [text for text, _ in first[:22]]
+
+
+def test_a_context_line_is_kept_but_never_shown_to_a_model():
+    ctx = rows("LINE#1 18:20:00 Alex voice context 0.8 - | I'm by the lava pool",
+               "GAME#2 18:20:01 death Alex | Alex tried to swim in lava",
+               "LINE#3 18:21:00 Alex voice context 0.8 - | anyway",
+               "LINE#4 18:22:00 Steve voice conversational 0.9 - | rip Alex")
+    assert [r.seq for r in ctx.rows] == [1, 2, 3, 4] and [r.shown for r in ctx.rows] == [False, True, False, True]
+    conversation = "".join(text for text, _ in ctx.cached("OPENING", 5))
+    assert "lava pool" not in conversation and "anyway" not in conversation
+    assert [[r.seq for r in b] for b in ctx.blocks()] == [[2], [4]]  # 18:21's block was the context line alone
+    assert [r.seq for r in ctx.take_quiet()] == [1, 3] and ctx.take_quiet() == []  # marked processed
+    assert show(ctx.rows) == "18:20:01 game, death: Alex tried to swim in lava\n18:22:00 Steve (conversational): rip Alex"
+    assert [r.seq for r in ctx.take_unprocessed()] == [2, 4]

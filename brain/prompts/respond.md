@@ -12,7 +12,6 @@ HAND UP (the default)
 - A complaint that something the AI made or gave is not working, too weak, too slow, in the wrong place, or gone ("my sword barely does damage", "where did my wand go", "the tower spawned in the wrong spot"): the player wants it fixed, even when they do not say so.
 - Anything about the AI's earlier work or an earlier ask: again, more, different, finish it, undo it, stop it, or an answer to a question the AI asked about it.
 - A question only the live game can answer: what someone holds, where someone or something is, whether a build is done or works.
-- A context line under NEW that asks you for something nobody has answered.
 - Anything you are unsure of, or cannot make out. A wrong hand-up costs a second; a missed ask costs the player their ask.
 
 REPLY (only when the line is clearly pure talk)

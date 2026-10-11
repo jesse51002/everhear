@@ -51,12 +51,11 @@ SCRIPTS_TEST = os.path.join(REPO, "scripts", "_test")
 FIXTURES = os.path.join(REPO, "brain", "tests", "fixtures", "refs")
 UTC = dt.timezone.utc
 KEY = "OPEN_ROUTER_API"
-BATCH_S = 5          # VFG_BRAIN_BATCH_S for the run: the batch call is checked, not waited a minute for
 BUDGET = 0.10        # dollars of OpenRouter a full run may spend
 WIKI = "https://minecraft.wiki/w/"
 
 FEED_RE = re.compile(r"^([A-Z]+)#(\d+) (\d\d:\d\d:\d\d) (?:([^|]*?) )?\| (.*)$")
-LOG_CALL = re.compile(r"^(\S+) (brain|respond) (#\d+|T\d+|batch #\d+-#\d+) (\d+) ms \$([\d.]+), (\d+) in")
+LOG_CALL = re.compile(r"^(\S+) (brain|respond) (#\d+|T\d+) (\d+) ms \$([\d.]+), (\d+) in")
 
 # Each player's items as 26.3 prints them (`data get entity <p> Inventory`, equipment,
 # SelectedItemSlot): Steve holds a diamond sword in hotbar.4, carries an iron sword and diamond
@@ -351,7 +350,7 @@ class Box:
         env.update(self.uv_env)
         env.update({
             "HOME": self.home, "VFG_HOME": self.vhome, "VFG_REPO": self.repo, "FAKE_UNITS": self.units,
-            "PYTHONDONTWRITEBYTECODE": "1", "VFG_BRAIN_BATCH_S": str(BATCH_S), "VFG_RUNNING_TTL_S": "0",
+            "PYTHONDONTWRITEBYTECODE": "1", "VFG_RUNNING_TTL_S": "0",
             "PATH": os.pathsep.join([self.bin, os.path.join(TOOLKIT, "tests", "bin")] + path),
         })
         if with_key:
@@ -572,7 +571,7 @@ def ask_action(run):
               "each action it ran is an AI action row, ok", "%r" % [x["text"] for x in actions])
     marks = {x["seq"]: x["processed_at"] for x in box.rows(ctx_seq - 1) if x["seq"] in (ctx_seq, a["seq"])}
     rep.check(len(marks) == 2 and all(marks.values()),
-              "the context line waiting before it and the line itself are marked processed by the call's read",
+              "the context line waiting before it is marked processed as it came, the line by the call's read",
               "%r" % marks)
     t = box.tasks().get(tid) or {}
     rep.check(t.get("status") == "done" and t.get("player") == "Steve", "%s is done in tasks.json" % tid, "%r" % t)
@@ -658,35 +657,28 @@ def ask_two_at_once(run):
         rep.check(False, "both brain calls are in the log", "%r %r" % (c1, c2))
 
 
-def batch(run):
+def quiet(run):
     rep, box = run.rep, run.box
-    rep.head("6. The batch call: %d s after the last read, with something unread" % BATCH_S)
-    # A live read first (a conversational line, Respond's), so the wait is counted from it.
-    a = run.line("Alex", "conversational", "nice, thanks!")
-    run.reply(a, timeout=30)
-    written = time.time()
-    before = box.last_seq()
+    rep.head("6. A context line and a game event: no call for either; the context line marked read at once, "
+             "the game event read by the next call")
+    time.sleep(1)                                    # the last step's usage rows, written nobody waiting
+    calls, before = len(box.usage()), box.last_seq()
     box.writer.append_batch([("LINE", "Steve voice context 0.71 -11dB", "ugh these zombies keep getting me", None),
                              ("GAME", "death Steve", "Steve was slain by Zombie", None)])
-    rows = [x["seq"] for x in box.rows(before)]
+    seqs = {x["type"]: x["seq"] for x in box.rows(before)}
 
-    def fired():
-        return [u for u in box.usage() if (u["ref"] or "").startswith("batch #")
-                and int(re.match(r"batch #(\d+)", u["ref"]).group(1)) > before]
-    got = wait_for(fired, BATCH_S + 30, 0.2)
-    rep.check(got, "a batch call ran (usage ref %r)" % (got and got[0]["ref"]), short(box.log()[-1500:]))
-    m = re.search(r"^\S+ brain batch of (\d+) -> (.*)$", box.log(), re.M)
-    if m:
-        rep.note("the batch: %s" % short(m.group(0)[25:], 200))
-    marks = {x["seq"]: x["processed_at"] for x in box.rows(before) if x["seq"] in rows}
-    rep.check(marks and all(marks.values()), "the rows it read are marked processed", "%r" % marks)
-    read = [x["processed_at"] for x in box.rows(a["seq"] - 1) if x["seq"] == a["seq"]]
-    if read and read[0] and marks and all(marks.values()):
-        after_read = parse_iso(min(marks.values())).timestamp() - parse_iso(read[0]).timestamp()
-        after_rows = parse_iso(min(marks.values())).timestamp() - written
-        rep.check(BATCH_S - 0.5 <= after_read <= BATCH_S + 10 and after_rows > 0.5,
-                  "it read them %.1f s after the last live read, %.1f s after they came: it waited" % (after_read,
-                                                                                                     after_rows))
+    def marked(kind):
+        return [x["processed_at"] for x in box.rows(before) if x["seq"] == seqs.get(kind) and x["processed_at"]]
+    rep.check(wait_for(lambda: marked("LINE"), 10, 0.2), "the context line is marked processed as it arrives",
+              "%r" % box.rows(before))
+    time.sleep(3)
+    rep.check(len(box.usage()) == calls, "no model call for either: there is no batch call",
+              "%r" % box.usage()[calls:])
+    rep.check(not marked("GAME"), "the game event waits, unread, for the next call", "%r" % box.rows(before))
+    a = run.line("Alex", "conversational", "nice, thanks!")
+    run.reply(a, timeout=30)
+    rep.check(wait_for(lambda: marked("GAME"), 10, 0.2), "the next call (Respond's) read the game event",
+              "%r" % box.rows(before))
 
 
 def end(run):
@@ -754,11 +746,11 @@ def main():
     run = Run(box, rep)
     run.started = time.time()
     print("brain e2e: temp folder %s\n  key from %s; the box's side on %s; refs/26.3/ seeded from "
-          "brain/tests/fixtures/refs; VFG_BRAIN_BATCH_S=%d" % (root, where, box_py, BATCH_S))
+          "brain/tests/fixtures/refs" % (root, where, box_py))
     try:
         box.deploy({"Steve": (197.5, 68.0, 251.5), "Alex": (180.5, 70.0, 240.5)})
         if start(run):
-            for step in (ask_action, ask_item, ask_talk, ask_handed_up, ask_two_at_once, batch):
+            for step in (ask_action, ask_item, ask_talk, ask_handed_up, ask_two_at_once, quiet):
                 try:
                     step(run)
                 except Exception:
