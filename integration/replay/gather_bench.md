@@ -287,6 +287,96 @@ and `GATHER_WHY`. Every "production" row on this page is the first wording, reco
 `gather_bench.py` it is now `FIRST`, and `prod` and `repeat` ask it, so they reproduce. `run` asks
 whatever production's wording is, g3 since.
 
+### Round two: the live runs
+
+**The live realmc test showed g3's weakness.** Asked again on the gather states of the live runs, g3
+gave the scenario's first piece "I'm going down into that ocean monument" 0.55 to 0.70 for "AI, I need
+to be able to breathe down there". The first wording gave it 0.77 to 0.86. The final live run, with
+g3 in production, said no to it at 0.50. That line tells where "there" is. Two candidates were written
+from the playtest's first half and the live states, and a third from the spec's own words:
+
+| Wording | `part_of_the_ask` | `not_part_of_it` | The instruction |
+|---|---|---|---|
+| g4 | the first wording's | the first wording's | g3's |
+| **g5** | Part of the ask: a piece of the same sentence, cut off by a pause, or it says what, where, who or how for the ask, such as what "it", "there" or "one" in the ask points at. | Not part of the ask: it is about something else, such as another subject, another ask or a reaction, and the ask needs nothing from it. | g3's |
+| g6 | Part of the ask: it says what, where, who or how for the ask, such as what "it", "there" or "one" in the ask points at, or it is a piece of the same sentence, cut off by a pause. | Not part of the ask: anything else: another subject, another ask, or a reaction. | g3's |
+
+g4 tests g3's sentence on pauses alone. g5 drops the form-based names in g3's `not_part_of_it` ("a
+remark", "talk to a player"), which also describe a line like the monument one, and says what each
+side is about instead. Its `part_of_the_ask` names what the ask's own words point at, the role every
+live piece plays. g6 is g5 in the spec's own order and words ("anything else", named).
+
+**The live states.** `gather_bench.py live` rebuilds each gather state of the 9 live transcripts (the
+earlier runs under `vfg/runs/` and the last): production's `Store` on a copy of the run's database cut
+at the ask, and the state the filter builds then. That gives 27 states, each scenario's ask in each
+run. 24 windows can be checked against the run's own `jev.log`, and all 24 match; the first run has no
+log. Each window holds the scenario's first piece, and for two of the scenarios also one line about
+another scenario. P(part), lowest to highest over the 9 runs, and how many said yes:
+
+| Wording | “the cave over there is pitch black” | “my diamond pickaxe just broke” | “I'm going down into that ocean monument” | the other lines (18) |
+|---|---|---|---|---|
+| first | 0.72–0.79, 9 of 9 | 0.96–0.98, 9 of 9 | 0.77–0.86, 9 of 9 | 0.00, 0 yes |
+| g3 (production) | 0.66–0.78, 9 of 9 | 0.85–0.90, 9 of 9 | 0.55–0.70, 9 of 9 | 0.00, 0 yes |
+| g4 | 0.68–0.85, 9 of 9 | 0.95–0.98, 9 of 9 | 0.60–0.81, 9 of 9 | 0.00, 0 yes |
+| **g5** | **0.91–0.95**, 9 of 9 | **0.97–0.99**, 9 of 9 | **0.82–0.90**, 9 of 9 | 0.00, 0 yes |
+| g6 | 0.92–0.96, 9 of 9 | 0.96–0.98, 9 of 9 | 0.80–0.91, 9 of 9 | 0.00, 0 yes |
+
+The orchestrator's own script, asking first and g3 on states built the same way, gave ranges up to
+0.10 apart from these (first: cave 0.62–0.77; g3: monument 0.50–0.71, with one no), which puts the
+run-to-run noise on these states at about 0.10.
+
+**The playtest.** The same recorded windows as above. *Clear pieces*, *arguable* and *joins I would
+not make* are the hand reading of _6_, now a table in `gather_score.py` (`READ`), so any wording is
+counted the same way. No wording gathered a line outside it.
+
+| Wording | Half | Yes of asked | Clear pieces taken | Joins I would not make | Arguable joins | Gathered lines outside the ask's input (grouping) | Ask lines reach the brain | Jev ms median / p90 | Tokens |
+|---|---|---|---|---|---|---|---|---|---|
+| first | first | 1 of 196 | 0 of 3 | 1 | 0 | 1 | 143 of 160 | 216 / 248 | 645,974 |
+| g3 | first | 3 of 196 | 2 of 3 | 1 | 0 | 2 | 145 of 160 | 221 / 247 | 651,854 |
+| g4 | first | 2 of 196 | 1 of 3 | 1 | 0 | 2 | 144 of 160 | 220 / 252 | 649,698 |
+| **g5** | first | 3 of 196 | **2 of 3** | 1 | 0 | 2 | 145 of 160 | 217 / 241 | 656,166 |
+| g6 | first | 3 of 196 | 1 of 3 | 2 | 0 | 3 | 144 of 160 | 221 / 247 | 654,206 |
+| first | second | 1 of 212 | 1 of 4 | 0 | 0 | 1 | 124 of 138 | 220 / 244 | 710,182 |
+| g3 | second | 5 of 212 | 4 of 4 | 1 | 0 | 5 | 124 of 138 | 228 / 255 | 716,542 |
+| **g5, held out** | second | 6 of 212 | **4 of 4** | **0** | 2 | 5 | 125 of 138 | 219 / 244 | 721,206 |
+
+- **g4**, g3's sentence on pauses with the first wording's criteria: on the live states it is between
+  the first wording and g3 (monument 0.60–0.81), so the sentence on pauses pulls that line down too,
+  not only "a remark". On the first half it took 1 of the 3 clear pieces.
+- **g5** took the same lines as g3 on the first half: "My castle." … "it built yet." (0.77), "totally
+  give us a bunch of cool stuff" (0.50, a coin toss), and the garble "Do." into "me" (0.57). On the
+  live states it and g6 are the highest of the five on every piece, within 0.01 of each other, and
+  0.00 on every other line.
+- **g6**, the spec's order and words, scored as g5 on the live states. On the first half it lost
+  "totally give us a bunch of cool stuff" (0.48), and it joined the ask "can we like stay together"
+  into a reaction to it (0.53), the first wording's join I would not make.
+- **g5 on the held-out half**, asked once, took the 4 clear pieces at 0.56 to 0.72, where g3 had them
+  at 0.53 to 0.61. It left out g3's garble join ("But those" into "Fine.", 0.46). It joined two lines I
+  read as arguable: "I'm sorry. That claw made Gallic gun destroy everything in the map." into "Did you
+  fix Gallic gun killing everyone no matter which way I look?" (0.54), in the ask's own whole-ask
+  input, so that split ask arrives whole, and "I think it's a three hundred by three hundred block
+  deletion." into the ask to lower it to one hundred by one hundred (0.70).
+
+**On all 843 lines, g5** reaches the brain with 270 of 298 ask lines (the first wording 267, g3 269);
+1 of the 50 split ask inputs arrives whole (0 for the others); 20 talk and noise lines go to the brain
+(19, 21); $3.03 a session; 9 yes of 408 lines asked; 219 / 243 ms a call. No Respond event's hand-up
+changes.
+
+**I would put g5 into production.** It keeps g3's gains on the playtest (the same 2 of 3 clear pieces
+on the first half, all 4 held out) and is above the first wording on every live piece (cave 0.91–0.95
+against 0.72–0.79, pickaxe 0.97–0.99 against 0.96–0.98, monument 0.82–0.90 against 0.77–0.86), with
+the other lines at 0.00. It costs 0.7% more tokens than g3. The change is `GATHER_CRITERIA` in
+`jev/prompt.py`; `GATHER_WHY` stays as it is:
+
+```python
+GATHER_CRITERIA = {
+    "part_of_the_ask": "Part of the ask: a piece of the same sentence, cut off by a pause, or it says what, where, who "
+                       "or how for the ask, such as what \"it\", \"there\" or \"one\" in the ask points at.",
+    "not_part_of_it": "Not part of the ask: it is about something else, such as another subject, another ask or a "
+                      "reaction, and the ask needs nothing from it.",
+}
+```
+
 ## Respond's hand-ups
 
 Counted as `whole_asks_score.py` counts them, from the gate bench's recorded Respond B run on single
@@ -316,6 +406,12 @@ talk_to_ai 17%, context 10%, noise 6%).
 - The history is the bench's (the lines and records visible when the line was judged), not
   `store.history`; it is the same rows as `classes.py` and the trees benches use.
 - The cost leaves out the few extra tokens a group adds to the brain's or Respond's prompt.
+- **The windows are the ones recorded at 215c8fa.** Since then (151041c) the window follows judge
+  order. Replayed with the old run's judge times, 11 of the 382 windows would differ, most by one
+  line. Every wording here was asked on the same recorded windows, so they compare fairly.
+- **Round two is small.** The live states are 9 runs of one script, 3 pieces and 2 other lines; the
+  playtest's first half holds 3 clear pieces. g5 was tuned on both and asked once on the held-out
+  half; its "totally give us a bunch of cool stuff" is a yes at 0.50.
 
 ## Cost and commands
 
@@ -325,6 +421,10 @@ g3 on the second half $0.0301. The repeat: $0.0271. The 10-question calls: $0.00
 factored `regather` gives the recorded answers (3 calls): $0.0006. A bug in the first `regather` asked
 Jev with no questions on 101 empty windows; each was refused (422) with no tokens, and those rows were
 removed. **No OpenRouter calls.** About 7,300 input tokens and 220 ms a call.
+
+**Round two: $0.1286, 3,061,866 input tokens.** The live states, 27 calls a wording: first, g3, g4,
+g5 and g6, $0.0031 to $0.0032 each ($0.0159). The playtest's first half: g4 $0.0273, g5 $0.0276, g6
+$0.0275. g5 on the held-out half: $0.0303.
 
 ```sh
 (cd brain && uv sync --frozen --inexact)
@@ -338,7 +438,15 @@ done
 $PY $L/gather_bench.py regather g3 --db $DB --out OUT --half second --env $ENV   # the chosen one, held out
 $PY $L/gather_bench.py regather repeat --db $DB --out OUT --half first --env $ENV
 $PY $L/gather_bench.py ten --db $DB --out OUT --env $ENV
+# round two
+RUNS=integration/realmc/.server/jr/vfg   # jev_live.py's transcripts: vfg/runs/* and the last run
+$PY $L/gather_bench.py live first g3 g4 g5 g6 --runs $RUNS --out OUT --env $ENV
+for W in g4 g5 g6; do
+  $PY $L/gather_bench.py regather $W --db $DB --out OUT --half first --env $ENV
+done
+$PY $L/gather_bench.py regather g5 --db $DB --out OUT --half second --env $ENV   # the chosen one, held out
 python3 $L/gather_score.py --rows OUT/prod/rows.jsonl --inputs $L/whole_asks_2026-10-08.jsonl \
     --gate-b GATE_OUT/B/rows.jsonl --alt repeat=OUT/repeat/rows.jsonl --alt g2=OUT/g2/rows.jsonl \
-    --alt g3=OUT/g3/rows.jsonl --ten OUT/ten/rows.jsonl --to OUT/score.md --json OUT/score.json
+    --alt g3=OUT/g3/rows.jsonl --alt g4=OUT/g4/rows.jsonl --alt g5=OUT/g5/rows.jsonl \
+    --alt g6=OUT/g6/rows.jsonl --ten OUT/ten/rows.jsonl --live OUT/live --to OUT/score.md --json OUT/score.json
 ```
