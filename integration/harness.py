@@ -903,12 +903,15 @@ def path5(box, rep, ctx):
         rep.check(ok, "vfg feed post AI '%s %s' … prints the seq; once in vfg watch, feed table and feed.log"
                   % (kind, task), why)
         posted.append(seq)
+    unread = []  # the rows no read has marked: the brain's AI rows are written processed (vfg_feed.py)
     r, seq = post("GAME", "cast Steve", "Steve cast fireball")
     ok, why = seen(seq, "GAME", "cast Steve", "Steve cast fireball") if seq else (False, r.stderr)
     rep.check(ok, "GAME takes any kind the bridge may feed: GAME cast Steve | …", why)
+    unread.append(seq)
     r, seq = post("SYS", "", "smoke test")
     ok, why = seen(seq, "SYS", "", "smoke test") if seq else (False, r.stderr)
     rep.check(ok, "vfg feed post SYS '' 'smoke test' -> SYS#n HH:MM:SS | smoke test", why)
+    unread.append(seq)
     r, seq = post("SYS", "", "two\nlines")
     ok, why = seen(seq, "SYS", "", "two lines") if seq else (False, r.stderr)
     rep.check(ok, "a newline in the text becomes a space", why)
@@ -940,7 +943,10 @@ def path5(box, rep, ctx):
     recent = [t["line"] for t in table if t["at"] >= iso(now() - dt.timedelta(seconds=55))]
     rep.check(plain.returncode == 0 and all(l in plain.stdout.splitlines() for l in recent),
               "vfg context --since -1m prints the lines themselves", plain.stdout[-600:] + plain.stderr)
-    seqs = [str(s) for s in posted if s]
+    ai = box.sql("SELECT seq, processed_at FROM feed WHERE seq IN (%s)" % ",".join(str(s) for s in posted if s))
+    rep.check(len(ai) == len(posted) and all(ISO_RE.match(m["processed_at"] or "") for m in ai),
+              "the brain's AI rows are written processed: no read has to mark them", "%r" % ai)
+    seqs = [str(s) for s in unread if s]
     r = box.vfg("context", "mark", *seqs)
     marked = box.sql("SELECT seq, processed_at FROM feed WHERE seq IN (%s)" % ",".join(seqs))
     rep.check(r.returncode == 0 and r.stdout.strip() == str(len(seqs))
@@ -1166,7 +1172,8 @@ def path9(box, rep, ctx):
               "%r" % sorted(unread)[:20])
     blocks = c.blocks()
     cached = c.cached("OPENING", 5)
-    rep.check(sum(len(b) for b in blocks) == len(c.rows) and all(len({x.minute for x in b}) == 1 for b in blocks)
+    rep.check(sum(len(b) for b in blocks) == sum(1 for x in c.rows if x.shown)
+              and all(len({x.minute for x in b}) == 1 for b in blocks)
               and len(cached) == len(blocks) + 1 and sum(1 for _, mark in cached if mark) <= 4,
               "it shows them in %d minute-blocks for the prompt cache, at most four marks" % len(blocks))
 
@@ -1344,7 +1351,8 @@ def path7(box, rep, ctx):
               "the watched death fed once", "rc=%r refused=%r posts=%r/%r chat=%d events=%d voice=%d game=%r"
               % (rc, refused, s1, s2, n_chat, n_ev, n_voice, g))
     marks = box.sql("SELECT seq FROM feed WHERE processed_at IS NOT NULL")
-    rep.check(sorted(m["seq"] for m in marks) == sorted(ctx.get("marked") or []),
+    written = {t["seq"] for t in box.feed_rows() if t["line"].startswith("AI#")}  # written processed
+    rep.check(sorted(m["seq"] for m in marks) == sorted(set(ctx.get("marked") or []) | written),
               "the bridge's restarts kept the processed marks, and set none of their own", "%r" % marks)
 
 
