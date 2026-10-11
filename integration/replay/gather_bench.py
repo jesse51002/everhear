@@ -1,0 +1,420 @@
+#!/usr/bin/env python3
+"""D with and without the gather call: Jev's production routing (jev/), line by line, on the 843 lines
+of the 2026-10-08 playtest, and the gather call on every line it sends to the brain or Respond.
+gather_score.py scores it.
+
+THE FILTER IS PRODUCTION'S. Each line goes through `filter.Filter._judge_one` itself: the routing call
+(`prompt.questions`, D2's two, on the production state `prompt.build_state`: the neutral rules, the
+lookout the brain sets, `brain/prompts/lookout.md`, the examples block, the brain's menu), walked by
+`prompt.route`; a refused call asked once more with half the history, then passed as context; and,
+for a line classed `action_oriented` or `conversational`, `Filter._gather`: the window from
+`store.Store.gather_window`, one call with `prompt.gather_questions` on the gather state
+(`GATHER_RULES`, `GATHER_HEADING`), the yes lines fitted by `filter.fit_group`. The window is read
+from a sqlite database built from §4's schema (`jev/tests/schema.sql`), holding every line of the
+playtest with THIS replay's verdicts so far, so the window's rule is production's own.
+
+Two things are the bench's:
+- THE HISTORY. `Filter._state` is replaced by one that builds the same state from what Jev had when
+  it judged the line then (tree_bench.Bench's rows: the lines and the brain's records visible by
+  the line's `judged` time, three hours back), since the database holds every line, said or not
+  yet said. The clock stands at the line's `judged` time.
+- RETRIES. A call that fails (`JevDown`: a timeout, no connection, a 5xx, `d_what` missing) is
+  tried again, a second apart, five times, before the filter sees it fail, as the other benches
+  do; production would retry the routing call on the next step and send the ask alone on a failed
+  gather call. Every failed try is in the row. A refusal goes straight to the filter.
+
+THE LINES go in production's order, `Store.unjudged`: by `at`, then `id`. A blank line is
+`not_relevant` with no call, as `Filter._judge_new` does.
+
+    (cd brain && uv sync --frozen --inexact)
+    PY=brain/.venv/bin/python; DB=DIR/vfg/vfg.db; L=integration/replay
+    $PY $L/gather_bench.py run --db $DB --out OUT --limit 30 --env ENV      # a pilot
+    $PY $L/gather_bench.py run --db $DB --out OUT --env ENV                 # goes on to all 843
+    $PY $L/gather_bench.py regather g2 --db $DB --out OUT --half first --env ENV   # a candidate wording
+
+`run` writes OUT/prod/rows.jsonl, one row a line, in order: its label and whole-ask input, the class
+the filter stored, every routing call (each answer as Jev gave it, [choice, confidence,
+{option: probability}], its ms, input tokens, the state's estimate and the history lines kept,
+failed tries), and for a line to the AI its gather: the window's ids, how many lines the window
+holds without the cap of 10, the call as above, the yes and no ids, the group fed with the ask
+(after fit_group), and the filter's journal lines. A run into a file that has rows goes on after
+them: the database is built again with the recorded verdicts.
+
+`regather NAME` asks the gather call again with a candidate wording (WORDINGS) on every recorded
+window of a half, the state built the same way at the same moment: the windows are D's and do not
+depend on the gather's answers. Into OUT/NAME/rows.jsonl. Production's wording is `prod`.
+
+The TypeSafe key as classes.py reads it (`--env`), never printed. No OpenRouter calls.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sqlite3
+import subprocess
+import sys
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+from tree_bench import Bench, raw_answers, read_rows  # noqa: E402  (puts brain/ and jev/ on the path)
+from classes import HISTORY_H, STATE_TOKENS, TRIES  # noqa: E402
+import prompt  # noqa: E402  (jev/prompt.py)
+from filter import GATHER_LOOKBACK, GATHER_MAX, Config, Filter, fit_group  # noqa: E402  (jev/filter.py)
+from jev_api import MODEL, PRICE_PER_INPUT_TOKEN, JevDown, JevRefused  # noqa: E402
+from jev_clock import iso, parse_iso  # noqa: E402
+from prompt import GATHER_HEADING, GATHER_RULES, PART_OF_IT, build_state, estimate  # noqa: E402
+from store import Store  # noqa: E402
+
+REPO = HERE.parents[1]
+SCHEMA = REPO / "jev" / "tests" / "schema.sql"     # §4's DDL, verbatim
+LOOKOUT = REPO / "brain" / "prompts" / "lookout.md"   # what the brain sets with `vfg lookout set`
+LABELS = HERE / "labels_2026-10-08.jsonl"
+INPUTS = HERE / "whole_asks_2026-10-08.jsonl"
+FAR = 10 ** 9   # a window's limit with no cap
+
+
+# ------------------------------------------------------------------ the wordings of the gather call
+
+def prod_questions(ask, window):
+    return prompt.gather_questions(ask, window)
+
+
+# name -> (what it changes, the questions function); `prod` is jev/prompt.py's, unchanged.
+WORDINGS = {
+    "prod": ("production: prompt.gather_questions and GATHER_CRITERIA", prod_questions),
+}
+
+
+# ------------------------------------------------------------------ the stand-ins around production
+
+
+class Clock:
+    """Stands where the bench puts it: the line's `judged` time."""
+
+    def __init__(self):
+        self.t = 0.0
+
+    def time(self):
+        return self.t
+
+
+class ReplayStore(Store):
+    """Production's store on the replay database, noting each gather window it reads, and how many
+    lines that window holds without the cap."""
+
+    def __init__(self, path):
+        super().__init__(path)
+        self.windows = []
+
+    def gather_window(self, ask, since, limit=10):
+        rows = super().gather_window(ask, since, limit)
+        every = super().gather_window(ask, since, FAR)
+        self.windows.append({"ask": ask["id"], "since": since, "ids": [r["id"] for r in rows], "all": len(every)})
+        return rows
+
+
+class Recorder:
+    """The Jev client as the filter calls it, keeping every call: the answers as Jev gave them (with
+    their probabilities), ms, input tokens, the state's estimate and history kept, and failed tries.
+    A `JevDown` is tried again, a second apart, TRIES times in all; a refusal goes to the filter."""
+
+    def __init__(self, jev, flt_ref):
+        self.jev = jev
+        self.flt = flt_ref   # a one-item list holding the filter, for the history kept by its `_state`
+        self.calls = []
+        self.tokens = 0
+
+    def _used(self):
+        try:
+            got = json.loads((self.jev.last_body or b"").decode("utf-8"))
+            n = (got.get("usage") or {}).get("input_tokens")
+            return int(n) if isinstance(n, (int, float)) and not isinstance(n, bool) else 0
+        except (ValueError, AttributeError):
+            return 0
+
+    def ask(self, state, questions, required="line_1"):
+        call = {"kind": "route" if required else "gather", "questions": len(questions), "estimate": estimate(state),
+                "history_kept": self.flt[0].kept, "tries": []}
+        self.calls.append(call)
+        for _ in range(TRIES):
+            try:
+                res = self.jev.ask(state, questions, required=required)
+            except JevRefused as e:
+                call["tries"].append({"refused": str(e), "tokens": self._used()})
+                self.tokens += call["tries"][-1]["tokens"]
+                raise
+            except JevDown as e:
+                call["tries"].append({"down": str(e), "tokens": self._used()})
+                self.tokens += call["tries"][-1]["tokens"]
+                time.sleep(1.0)
+                continue
+            call.update(answers=raw_answers(self.jev.last_body, questions), ms=res.ms,
+                        tokens=res.input_tokens or 0, missing=sorted(set(questions) - set(res.answers)))
+            self.tokens += call["tokens"]
+            return res
+        call["failed"] = True
+        raise JevDown(call["tries"][-1]["down"])
+
+
+class Journal(logging.Handler):
+    def __init__(self):
+        super().__init__(logging.INFO)
+        self.lines = []
+
+    def emit(self, record):
+        self.lines.append(record.getMessage())
+
+
+class History:
+    """What Jev had when it judged a line then: the bench's lines and the brain's records visible by
+    `began`, three hours back, newest first, leaving out the lines asked about."""
+
+    def __init__(self, b: Bench):
+        self.rows = b.said + b.records
+
+    def others(self, began: float, exclude) -> list[dict]:
+        since, now, skip = iso(began - HISTORY_H * 3600), iso(began), set(exclude)
+        return sorted([r for r in self.rows if r["id"] not in skip and since <= r["at"] and r["visible"] <= now],
+                      key=lambda r: (r["at"], r["id"]), reverse=True)
+
+
+def replay_filter(history: History):
+    class ReplayFilter(Filter):
+        """Production's filter with `_state` building the history as it was then (see above)."""
+
+        kept = None
+
+        def _state(self, marked, began, share=1.0, rules=prompt.RULES, heading=prompt.HISTORY_HEADING):
+            others = history.others(began, [r["id"] for _, r in marked])
+            menu = self.menu.text()
+            state, self.kept = build_state(self.lookout.text(), marked, others, self.cfg.state_tokens, share, menu,
+                                           rules, heading)
+            return state
+
+    return ReplayFilter
+
+
+# ------------------------------------------------------------------ the replay database
+
+
+def make_db(path: Path, b: Bench, verdicts: dict[str, tuple]) -> None:
+    """§4's schema with every line of the playtest, the AI's included, unjudged but for `verdicts`
+    ({id: (class, confidence, judged at)}, an earlier run's)."""
+    if path.exists():
+        path.unlink()
+    con = sqlite3.connect(path, isolation_level=None)
+    con.executescript(SCHEMA.read_text(encoding="utf-8"))
+    for ln in b.pt.lines:
+        cls, conf, judged = verdicts.get(ln.id, (None, None, None))
+        con.execute("INSERT INTO lines (id, at, ended_at, player_name, source, text, peak_dbfs, jev_class, "
+                    "jev_confidence, jev_judged_at) VALUES (?, ?, ?, ?, 'voice', ?, ?, ?, ?, ?)",
+                    (ln.id, ln.at, ln.ended, ln.who, ln.text, ln.peak, cls, conf, judged))
+    for a in b.pt.ai:
+        con.execute("INSERT INTO lines (id, at, player_name, source, text) VALUES (?, ?, 'AI', 'ai', ?)",
+                    (a["id"], a["at"], a["text"]))
+    con.close()
+
+
+def facts():
+    """The clean label and whole-ask input of every line."""
+    labels = {r["id"]: r for r in read_rows(LABELS)}
+    of_input = {i: inp["id"] for inp in read_rows(INPUTS) for i in inp["lines"]}
+    return labels, of_input
+
+
+def commit() -> str:
+    try:
+        return subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"], capture_output=True,
+                              text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "?"
+
+
+def meta(b: Bench, path: Path, **more) -> None:
+    path.write_text(json.dumps({
+        "started": datetime.now(UTC).isoformat(timespec="seconds"), "commit": commit(), "model": MODEL,
+        "state_tokens": STATE_TOKENS, "history_hours": HISTORY_H, "jev_timeout": b.jev.timeout,
+        "lookout": str(LOOKOUT), "lookout_is_default": LOOKOUT.read_text(encoding="utf-8").strip()
+        == prompt.DEFAULT_LOOKOUT, "menu_lines": len(b.menu.splitlines()), "gather_lookback": GATHER_LOOKBACK,
+        "gather_max": GATHER_MAX, "rules": prompt.RULES, "gather_rules": GATHER_RULES, "examples": prompt.EXAMPLES,
+        "gather_criteria": prompt.GATHER_CRITERIA, **more}, indent=1, ensure_ascii=False))
+
+
+# ------------------------------------------------------------------ run: the production filter, line by line
+
+
+def run(args) -> None:
+    b = Bench(args)
+    labels, of_input = facts()
+    out = Path(args.out) / "prod"
+    out.mkdir(parents=True, exist_ok=True)
+    rows_file = out / "rows.jsonl"
+    have = read_rows(rows_file)
+    verdicts = {r["id"]: (r["class"], r["confidence"], r["judged_at"]) for r in have}
+    db = out / "replay.db"
+    make_db(db, b, verdicts)
+    store = ReplayStore(str(db))
+    assert store.ready()
+    clock = Clock()
+    cfg = Config(db=str(db), lookout=str(LOOKOUT), menu=str(Path(args.out) / "menu.md"), model=MODEL,
+                 state_tokens=STATE_TOKENS, history_hours=HISTORY_H)
+    ref = [None]
+    rec = Recorder(b.jev, ref)
+    flt = replay_filter(History(b))(store, rec, None, clock, cfg)
+    ref[0] = flt
+    journal = Journal()
+    log = logging.getLogger("vfg-jev")
+    log.setLevel(logging.INFO)
+    log.propagate = False
+    log.addHandler(journal)
+    tokens = sum(c.get("tokens", 0) + sum(t.get("tokens", 0) for t in c.get("tries", []))
+                 for r in have for c in r["route"] + ([r["gather"]["call"]] if r.get("gather") and
+                                                       r["gather"].get("call") else []))
+    meta(b, out / f"meta{'-limit' if args.limit else ''}.json", lines=len(b.lines), already=len(have),
+         limit=args.limit)
+    print(f"prod: {len(b.lines)} lines, {len(have)} already, ${tokens * PRICE_PER_INPUT_TOKEN:.4f}", flush=True)
+    done = 0
+    with rows_file.open("a", encoding="utf-8") as f:
+        while True:
+            nxt = store.unjudged(1)
+            if not nxt or (args.limit and len(have) + done >= args.limit):
+                break
+            row = nxt[0]
+            ln = b.pt.by_id[row["id"]]
+            clock.t = parse_iso(ln.judged)
+            rec.calls, rec.tokens, store.windows, journal.lines = [], 0, [], []
+            lab = labels[ln.id]
+            out_row = {"id": ln.id, "n": ln.n, "at": ln.at, "who": ln.who, "text": ln.text, "judged": ln.judged,
+                       "label": lab["label"], "disputed": lab["disputed"], "half": b.half[ln.id],
+                       "input": of_input[ln.id]}
+            if not row["text"].strip():
+                store.set_class(row["id"], "not_relevant", None, iso(clock.time()))
+                out_row["blank"] = True
+            elif not flt._judge_one(row):
+                # failed five times: the filter would fail open and pass it as context
+                store.set_class(row["id"], "context", None, iso(clock.time()))
+                out_row["failed"] = True
+            got = store.conn.execute("SELECT jev_class, jev_confidence, jev_judged_at FROM lines WHERE id = ?",
+                                     (row["id"],)).fetchone()
+            out_row.update({"class": got[0], "confidence": got[1], "judged_at": got[2]})
+            out_row["route"] = [c for c in rec.calls if c["kind"] == "route"]
+            gathers = [c for c in rec.calls if c["kind"] == "gather"]
+            if store.windows:
+                w = store.windows[0]
+                group = flt.groups.pop(row["id"], [])
+                call = gathers[0] if gathers else None
+                g = {"window": w["ids"], "window_all": w["all"], "since": w["since"], "call": call}
+                if call is not None and "answers" in call:
+                    a = call["answers"]
+                    yes = [i for k, i in enumerate(w["ids"], 1) if (a.get(f"line_{k}") or [None])[0] == PART_OF_IT]
+                    g.update(yes=yes, no=[i for i in w["ids"] if i not in yes], group=[r["id"] for r in group])
+                else:
+                    g.update(yes=[], no=[], group=[])
+                out_row["gather"] = g
+            out_row["journal"] = journal.lines
+            f.write(json.dumps(out_row, ensure_ascii=False) + "\n")
+            f.flush()
+            done += 1
+            tokens += rec.tokens
+            r0 = (out_row["route"] or [{}])[0]
+            gtxt = ""
+            if out_row.get("gather"):
+                g = out_row["gather"]
+                c = g["call"] or {}
+                gtxt = f" | gather {len(g['window'])}/{g['window_all']} yes {len(g['yes'])} {c.get('ms', 0)} ms"
+            print(f"{ln.at[11:19]} {lab['label']:12} {out_row['class']:15} {r0.get('ms', 0):4} ms "
+                  f"{r0.get('tokens', 0):5} tok{gtxt} | {ln.text[:50]!r}"
+                  f"{' FAILED' if out_row.get('failed') else ''}", flush=True)
+            if tokens * PRICE_PER_INPUT_TOKEN > args.jev_budget:
+                print(f"stopping: ${tokens * PRICE_PER_INPUT_TOKEN:.3f} of Jev, over --jev-budget {args.jev_budget}")
+                break
+    print(f"prod: {tokens:,} Jev input tokens, ${tokens * PRICE_PER_INPUT_TOKEN:.4f} in this file")
+
+
+# ------------------------------------------------------------------ regather: a candidate wording
+
+
+def regather(args) -> None:
+    b = Bench(args)
+    name = args.wording
+    _, qfun = WORDINGS[name]
+    prod = [r for r in read_rows(Path(args.out) / "prod" / "rows.jsonl")
+            if r.get("gather") and (args.half == "all" or r["half"] == args.half)]
+    out = Path(args.out) / name
+    out.mkdir(parents=True, exist_ok=True)
+    rows_file = out / "rows.jsonl"
+    have = read_rows(rows_file)
+    done = {r["id"] for r in have}
+    tokens = sum(r.get("tokens", 0) for r in have)
+    lookout, _ = prompt.read_lookout(str(LOOKOUT))
+    history = History(b)
+    todo = prod[:args.limit] if args.limit else prod
+    meta(b, out / f"meta-{args.half}.json", wording=name, about=WORDINGS[name][0], windows=len(todo),
+         already=len(done))
+    print(f"{name}: {len(todo)} windows ({args.half}), {len(done)} already, ${tokens * PRICE_PER_INPUT_TOKEN:.4f}",
+          flush=True)
+    with rows_file.open("a", encoding="utf-8") as f:
+        for p in todo:
+            if p["id"] in done:
+                continue
+            ask = b.said_by_id[p["id"]]
+            window = [b.said_by_id[i] for i in p["gather"]["window"]]
+            marked = [("ask", ask)] + list(enumerate(window, 1))
+            began = parse_iso(p["judged"])
+            others = history.others(began, [r["id"] for _, r in marked])
+            state, kept = build_state(lookout, marked, others, STATE_TOKENS, 1.0, b.menu, GATHER_RULES, GATHER_HEADING)
+            qs = qfun(ask, window)
+            row = {"id": p["id"], "half": p["half"], "window": p["gather"]["window"], "estimate": estimate(state),
+                   "history_kept": kept, "tries": []}
+            for _ in range(TRIES):
+                try:
+                    res = b.jev.ask(state, qs, required=None)
+                except (JevDown, JevRefused) as e:
+                    row["tries"].append(str(e))
+                    time.sleep(1.0)
+                    continue
+                a = raw_answers(b.jev.last_body, qs)
+                yes = [r for k, r in enumerate(window, 1) if (a.get(f"line_{k}") or [None])[0] == PART_OF_IT]
+                row.update(answers=a, ms=res.ms, tokens=res.input_tokens or 0, yes=[r["id"] for r in yes],
+                           group=[r["id"] for r in fit_group(yes, ask)], missing=sorted(set(qs) - set(res.answers)))
+                break
+            else:
+                row.update(failed=True, tokens=0, yes=[], group=[])
+            tokens += row["tokens"]
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+            f.flush()
+            print(f"{p['at'][11:19]} {len(window):2} asked, yes {len(row['yes'])} (prod {len(p['gather']['yes'])}) "
+                  f"{row.get('ms', 0):4} ms | {p['text'][:60]!r}", flush=True)
+            if tokens * PRICE_PER_INPUT_TOKEN > args.jev_budget:
+                print(f"stopping: ${tokens * PRICE_PER_INPUT_TOKEN:.3f} of Jev, over --jev-budget {args.jev_budget}")
+                break
+    print(f"{name}: {tokens:,} Jev input tokens, ${tokens * PRICE_PER_INPUT_TOKEN:.4f} in this file")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    for name, about in (("run", "the production filter on every line"),
+                        ("regather", "the gather call again with a candidate wording, on the recorded windows")):
+        s = sub.add_parser(name, help=about)
+        if name == "regather":
+            s.add_argument("wording", choices=sorted(WORDINGS))
+            s.add_argument("--half", choices=("first", "second", "all"), default="first")
+        s.add_argument("--db", required=True, help="the playtest's vfg.db")
+        s.add_argument("--out", required=True)
+        s.add_argument("--limit", type=int, default=0, help="the first N lines (run) or windows (regather) only")
+        s.add_argument("--env", help="the file that holds TYPESAFE_API_KEY")
+        s.add_argument("--jev-timeout", type=float, default=10.0, help="a Jev call's timeout, s")
+        s.add_argument("--jev-budget", type=float, default=0.6, help="stop past this many dollars of Jev in the file")
+    args = ap.parse_args()
+    run(args) if args.cmd == "run" else regather(args)
+
+
+if __name__ == "__main__":
+    main()
