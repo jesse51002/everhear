@@ -56,6 +56,12 @@ _DO = rf"(?:{'|'.join(_STEMS)})(?:e|es|s|ed|\w?ing|\w?in'?)?\b(?!(?<=give) you t
 _ING = rf"(?:{'|'.join(_STEMS)})\w?(?:ing|in'?)\b"
 _I_WILL = r"(?:i'll|i will|i shall|i'm gonna|i am gonna|i'm going to|i am going to|imma|i'ma)"
 _START = r"(?:^|[.!?,;:—–-]\s*)"    # the start of the reply or of a clause
+# What an -ing verb is done to, for it to read as the AI doing something: "spawning some cows",
+# "getting you a sword", never "doing great", "getting hungry" or "making no promises".
+_OBJECT = r"(?:you|your|it|that|them|those|one|some|a|an|the)\b"
+# The AI's own talk, which it may promise (a rule for later is Respond's to acknowledge):
+# "I'll keep quiet", "I'll stop talking", "I'll turn the chatter down", "I'll change my style".
+_OWN_TALK = r"(?! (?:quiet|talking|chatting|(?:the )?chatter|my |it (?:short|brief|down|clean|quiet)))"
 # An offer or a promise, whatever is going on: the AI proposes or says it will do something.
 OFFERS = tuple(re.compile(p) for p in (
     r"\b(?<!don't )(?<!not )want me to\b", r"\bshall i\b", rf"\bshould i {_DO}", r"\bsay the word\b",
@@ -68,12 +74,13 @@ OFFERS = tuple(re.compile(p) for p in (
     r"\b(has|have|got) your name on it\b", r"\bwhenever you want it\b"))
 PROMISES = tuple(re.compile(p) for p in (
     rf"\b{_I_WILL} (?:(?:just|also|go|be|now|then|quickly|happily|gladly|personally|totally|definitely) )*"
-    rf"(?:{_DO}|take care of|see (it|to it|that)|call out|point you|ping you|announce)",
-    rf"{_START}gonna {_DO}", rf"\b(i'm|i am|we're|we are) (?:(?:just|now|already|busy) )?{_ING}",
-    rf"{_START}{_ING}\b[^.!?]*\bnow\b(?! on)",
+    rf"(?:{_DO}|take care of|see (it|to it|that)|call out|point you|ping you|announce){_OWN_TALK}",
+    rf"{_START}gonna {_DO}", rf"\b(i'm|i am|we're|we are) (?:(?:just|now|already|busy) )?{_ING} {_OBJECT}",
+    rf"{_START}{_ING} {_OBJECT}[^.!?]*\bnow\b(?! on)",
     rf"(?:{_START}|\b(?:i'm|i am|we're|yep|yes|yeah|sure|sure thing|ok|okay|aye|got it|you got it|no problem|"
     rf"alright|right) +)(?:already |right )?on it\b",
-    rf"{_START}(?:will do|consider it done|leave it to me|(all )?done)\b", r"\bright away\b",
+    rf"{_START}(?:will do|consider it done|leave it to me)\b", rf"{_START}(?:all )?done(?=\s*(?:[.!,]|$))",
+    r"\bright away\b(?!\s*\?)",
     r"\b(i'll|i will|i've got|i got) (watch )?your back\b", r"\bgive me a (sec|second|minute|moment)\b"))
 # Work under way: a status when the line's speaker has a task open, a promise when not.
 UNDER_WAY = tuple(re.compile(p) for p in (

@@ -81,7 +81,7 @@ GUARD = {  # reply -> what promises() says, no task open (the reviewer's probes 
     "I'm going to build that for you.": "a promise", "Okay, making it rain now!": "a promise",
     "I'll take care of it.": "a promise", "I'll make sure you get a netherite sword.": "a promise",
     "Aye, I'll be makin' it rain, matey!": "a promise", "One storm, coming right at ya!": "a promise",
-    "Done! Enjoy the sword.": "a promise", "Arr, I'll turn the chatter down.": "a promise",  # an ack, still up
+    "Done! Enjoy the sword.": "a promise", "Sure thing, spawning some cows now.": "a promise",
     "I can do that.": "an offer", "Let me do that for you.": "an offer", "Want it stopped?": "an offer",
     "Yeah, I can add theme music. Want distinct tracks for each?": "an offer",
     "Put a sign on it and click on it.": "", "Aye aye! I could get used to this pirate life.": "",
@@ -91,6 +91,11 @@ GUARD = {  # reply -> what promises() says, no task open (the reviewer's probes 
     "Hang on, you lost everything in lava? Rip.": "", "Night's coming up, find a bed soon.": "",
     "Grab some food on the way back.": "", "The sun will be up soon, hold out.": "",
     "I mean, that was a pretty good one, I'll give you that.": "", "Aye aye, Captain Riley.": "",
+    # small talk and the AI's own talk: said, not handed up
+    "I'm doing great, thanks for asking!": "", "We're doing great as a team.": "",
+    "Getting dark now, better find shelter.": "", "Haha, I'm making no promises about the creepers.": "",
+    "Done already? That was fast.": "", "Right away? Patience, my friend.": "",
+    "Okay, I'll stop talking now.": "", "Sure, I'll keep quiet for a bit.": "", "Arr, I'll turn the chatter down.": "",
 }
 
 

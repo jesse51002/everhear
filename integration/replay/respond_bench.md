@@ -33,7 +33,7 @@ Prototype_Jev_Routing's _Test_ asks for this: "Respond's rewritten prompt, on th
 
 - Measured on every reply the runs recorded, with no new call.
 - It catches 41 of the 42 promises and offers judged by hand across all versions, and all 21 of a reviewer's probe promises.
-- It fires on 12 of the 680 replies I had judged fine. 7 are status lines about another player's task, which by design pass only for the speaker's own.
+- It fires on 11 of the 680 replies I had judged fine. 7 are status lines about another player's task, which by design pass only for the speaker's own.
 - v5 with the guard keeps none of its 8.
 - It hands up 2 more asks: 20 of 33 and 17 of 18.
 - Its other hand-ups are about 3 brain calls a session.
@@ -94,7 +94,7 @@ Prototype_Jev_Routing's _Test_ asks for this: "Respond's rewritten prompt, on th
   - all 17 of old's on the playtest;
   - all 5 of v1's, both of v2's, both of v3's, all 8 of v4's and all 8 of v5's.
 - **Missed: 1.** Old's invented "Rules are rules. Lava's off the hook from now on.": no first person, no offer, no phrase.
-- **Fires on 12 of the 680 replies I had judged fine.** 7 are status lines, now handed up because the open task was another player's. 5 are first-person banter:
+- **Fires on 11 of the 680 replies I had judged fine.** 7 are status lines, now handed up because the open task was another player's. 4 are first-person banter:
   - "The castle's coming up over east, give it a minute. And congrats on the seer gig…" (old, XNZSZH): Eclipszr asked; the castle was Styrkaeopteryx's.
   - "Seer of the east, I like it. Castle's still going up, give it a sec." (v1, XNZSZH): the same.
   - "Castle's still rising, give it a minute. Seer of what, exactly?" (v4, XNZSZH): the same.
@@ -103,7 +103,6 @@ Prototype_Jev_Routing's _Test_ asks for this: "Respond's rewritten prompt, on th
   - "No worries, Styrk — castle's coming, just give it a sec." (old, V5TWND): Krown's ice castle, Styrkaeopteryx speaking.
   - "Hey, it's coming along — don't be sorry." (v5, V5TWND): the same.
   - "Probably because the mountain builder was churning through blocks, but I'm on it now." (old, 4YF56H): the spec's own "on it", and Respond claims to be doing it.
-  - "It's the withers we're clearing — hang tight, they're going down." (v5, 7EGRQ9): "we're clearing" claims the AI is acting.
   - "Krown, you're the main character. Just keep the chaos coming and I'll keep up." (v4, EEEHXQ): "I'll keep".
   - "…but you're the one I'm keeping an eye on." (old, EEEHXQ): "I'm keeping".
   - "No copyright claims are here, but I can send a very scary legal letter to whoever pressed record." (old, M82VE3): "I can send".
@@ -121,6 +120,8 @@ Prototype_Jev_Routing's _Test_ asks for this: "Respond's rewritten prompt, on th
   - The acknowledgements: "I'll clear it with you first…", "I'll get your okay…", "I'll set that as the rule…", "Aye, I'll keep it going, matey!", "Arr, I'll turn pirate from here on", "Sure, I'll turn the chatter down", "I'll change my style to shorter lines".
   - The joke: "I could fix you a pep talk, but you're doing great." It has the shape of a real offer, "I could <verb> you a …".
 
+**Small talk, after the orchestrator's probe of 30 everyday replies** (2026-10-11): the first tuning handed up 11 of them, among them "I'm doing great, thanks for asking!", "Getting dark now, better find shelter.", "Done already? That was fast." and "Okay, I'll stop talking now.". So an -ing verb counts only when it is done to something ("spawning some cows now", "getting you a sword"), "done" only on its own ("Done!"), "right away" never as a question, and the AI's own talk is never a promise ("I'll keep quiet", "I'll stop talking", "I'll turn the chatter down", "I'll change my style"). Those replies are in `brain/tests/test_loop.py`'s table. On the recorded replies this changed one: "It's the withers we're clearing — hang tight…" (v5, 7EGRQ9) is said now.
+
 **The cost to watch is persona speech.** Under a standing pirate persona, "Arr, I'll …" replies with an action verb go up and the brain answers them. The recorded session had no persona, so it does not measure this.
 
 **v5 with the guard**, its three runs pooled, against v5 alone:
@@ -128,14 +129,14 @@ Prototype_Jev_Routing's _Test_ asks for this: "Respond's rewritten prompt, on th
 | Half | Asks handed up | Wanted a change, handed up | All hand-ups | The guard's hand-ups | Promises and offers left |
 |---|---|---|---|---|---|
 | first | 19 → **20 of 33** | 21 → **22 of 30** | 55 → 58 of 132 | 3 | 3 → **0** |
-| second (held out) | 16 → **17 of 18** | 19 → **20 of 21** | 57 → 64 of 144 | 7 | 5 → **0** |
+| second (held out) | 16 → **17 of 18** | 19 → **20 of 21** | 57 → 63 of 144 | 6 | 5 → **0** |
 
 - **The asks now handed up** are TFJFMK ("Is it possible to increase the lightning's damage?") and 9BE9TH ("Can make music for each of the attacks?"). v5 had answered each with an offer.
 - **v5 still misses 4 asks**, none with a promise.
-- **The extra hand-ups:** 10 over three runs, 3.3 a session.
+- **The extra hand-ups:** 9 over three runs, 3 a session.
   - 8 are the hand-judged promises and offers (2 of them on those asks).
-  - 2 are status lines about another player's task, which the guard now hands up by design.
-  - In all, about 2.7 brain calls and $0.02 a session beyond the asks.
+  - 1 is a status line about another player's task, which the guard now hands up by design.
+  - In all, about 2.3 brain calls and $0.02 a session beyond the asks.
 
 **Every version with the guard**, pooled over its runs (without → with):
 
@@ -149,7 +150,7 @@ Prototype_Jev_Routing's _Test_ asks for this: "Respond's rewritten prompt, on th
 | v4 | first | 2 | 11 → 11 of 22 | 13 → 13 of 20 | 34 → 37 of 88 | 3 | 0 |
 | v4 | second | 2 | 10 → 10 of 12 | 10 → 10 of 14 | 34 → 41 of 96 | 7 | 0 |
 | v5 | first | 3 | 19 → 20 of 33 | 21 → 22 of 30 | 55 → 58 of 132 | 3 | 0 |
-| v5 | second | 3 | 16 → 17 of 18 | 19 → 20 of 21 | 57 → 64 of 144 | 7 | 0 |
+| v5 | second | 3 | 16 → 17 of 18 | 19 → 20 of 21 | 57 → 63 of 144 | 6 | 0 |
 
 **What a replay of recorded answers cannot show:**
 
