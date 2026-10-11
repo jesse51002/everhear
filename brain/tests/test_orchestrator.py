@@ -313,10 +313,11 @@ async def test_the_reply_is_emptied_when_it_is_not_this_calls_and_every_string_i
     got = await orch(ask).answer(rows(LINE), head=HEAD, parts=PARTS, k=1, given=["failed"], others=[],
                                  replying=False, tasks=TASKS, copies=COPIES)
     assert got.value.reply == "more damage, or no cooldown?"  # a reply only keeps its reply
-    ask = FakeAsk(TaskAnswer=a(STOP, copies=[" railgun_steve ", ""], reply="stopped"))
+    ask = FakeAsk(TaskAnswer=a(STOP, copies=[" railgun_steve ", "", "summon_around", "railgun_steve"],
+                               reply="stopped"))
     got = await orch(ask).answer(rows(LINE), head=HEAD, parts=PARTS, k=0, given=[], others=[], replying=True,
                                  tasks=TASKS, copies=COPIES)
-    assert got.value.copies == ["railgun_steve"] and got.value.reply == "stopped"
+    assert got.value.copies == ["railgun_steve", "summon_around"] and got.value.reply == "stopped"  # each once
 
 
 async def test_a_failed_call_raises_llm_error_and_the_answer_is_checked_against_the_tasks_given():

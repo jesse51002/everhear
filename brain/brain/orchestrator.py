@@ -361,7 +361,7 @@ class Orchestrator:
         v.task, v.name, v.copy = v.task.strip(), v.name.strip(), v.copy.strip()
         v.description, v.brief, v.reply = v.description.strip(), v.brief.strip(), v.reply.strip()
         v.values = [EditValue(key=x.key.strip(), value=x.value.strip()) for x in v.values]
-        v.copies = [c.strip() for c in v.copies if c.strip()]
+        v.copies = list(dict.fromkeys(c.strip() for c in v.copies if c.strip()))  # a copy named twice stops once
         if v.kind == FOLLOW_UP:
             v.name = ""
         if not replying and v.kind != REPLY:
