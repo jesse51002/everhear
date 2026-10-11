@@ -44,7 +44,8 @@ class TestAppend(FeedCase):
         ])
         self.assertEqual(self.feed_rows(), [
             (1, "2026-10-07T18:22:40.123Z", "GAME#1 18:22:40 death Steve | Steve was slain by Zombie"),
-            (2, "2026-10-07T18:24:02.000Z", "AI#2 18:24:02 result ice_trail_steve | ice_trail_steve done: ice trail running"),
+            (2, "2026-10-07T18:24:02.000Z",
+             "AI#2 18:24:02 result ice_trail_steve | ice_trail_steve done: ice trail running"),
         ])
 
     def test_only_the_brains_rows_are_written_processed(self):
@@ -153,8 +154,9 @@ class TestFieldRules(FeedCase):
     def test_bad_fields_raise_and_write_nothing(self):
         for type_, fields in (("GAME", "death"), ("GAME", "Death Steve"), ("GAME", "death Ste ve"),
                               ("AI", "done galick_gun"), ("AI", "say 7"), ("AI", "say"), ("AI", "task galick x"),
-                              ("AI", "task " + RETIRED), ("AI", "say Galick"), ("AI", "task 7gun"), ("AI", "task a"),
-                              ("AI", "task " + "a" * 33), ("AI", "task galick-gun"), ("AI", "task _gun"),
+                              ("AI", "task " + RETIRED), ("AI", "say Galick"), ("AI", "task 7gun"),
+                              ("AI", "task a"), ("AI", "task " + "a" * 33), ("AI", "task galick-gun"),
+                              ("AI", "task _gun"),
                               ("SYS", "extra")):
             with self.assertRaises(ValueError, msg="%s %r" % (type_, fields)):
                 vfg_feed.append(type_, fields, "no")
