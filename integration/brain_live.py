@@ -263,6 +263,15 @@ class Live:
         except (OSError, ValueError):
             return None
 
+    def copy_pid(self, copy):
+        """A running copy's pid, from its pid file in the stand-in's run/ (vfg script list leaves
+        the pid out); None when there is none."""
+        try:
+            with open(os.path.join(self.dir, "vfg", "run", copy + ".pid"), encoding="utf-8") as f:
+                return int(f.read().strip())
+        except (OSError, ValueError):
+            return None
+
     # -- the feed and the database
     def sql(self, query, params=()):
         con = sqlite3.connect("file:%s?mode=ro" % self.db, uri=True, timeout=10)
@@ -641,7 +650,7 @@ def implementer(run):
     rep.check(fu and not other, "the orchestrator sent it to %s: a second AI task %s row, %r"
               % (tid, tid, fu and short(fu[0]["text"], 120)),
               "%r; %s" % ([r["line"] for r in other], short(live.log_since(mark)[-1500:])))
-    resumed = wait_for(lambda: re.search(r"^\S+ implementer %s resumed (\S+)" % tid, live.log_since(mark), re.M), 30)
+    resumed = wait_for(lambda: re.search(r"^\S+ implementer %s resumed ([^\s:]+)" % tid, live.log_since(mark), re.M), 30)
     rep.check(resumed, "the implementer resumed %s's session (%s; its row's %s)"
               % (tid, resumed and resumed.group(1), row.get("session")))
     t1 = fu[0]["at"] if fu else None
@@ -665,14 +674,15 @@ def implementer(run):
         rep.check(soul >= 6, "in the world: %d soul torches round Steve" % soul)
         nothing_from_it(run, b["seq"], tid, reports[-1][1] if reports else "", mark)
         copy = live.copies().get(tid) or {}
+        pid = live.copy_pid(tid)
         environ = b""
         try:
-            with open("/proc/%d/environ" % int(copy.get("pid") or 0), "rb") as f:
+            with open("/proc/%d/environ" % (pid or 0), "rb") as f:
                 environ = f.read()
-        except (OSError, ValueError):
+        except OSError:
             pass
         rep.check(copy and ("VFG_TASK=%s" % tid).encode() in environ.split(b"\0"),
-                  "vfg script list --fresh shows %s running (pid %s), with VFG_TASK=%s" % (tid, copy.get("pid"), tid),
+                  "vfg script list --fresh shows %s running (pid %s), with VFG_TASK=%s" % (tid, pid, tid),
                   "copy %r; environ has VFG_TASK: %r" % (copy, [e for e in environ.split(b"\0")
                                                                  if e.startswith(b"VFG_TASK=")]))
 
