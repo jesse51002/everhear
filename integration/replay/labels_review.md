@@ -1,0 +1,749 @@
+# The 2026-10-08 labels, checked by hand
+
+Labels: Jev with hindsight, wording v2, combining rules r2 (labels_build.py). This file: 60 lines picked at random (seed 20261010) and every other disputed line, 79, each read by hand.
+
+**843 lines: 285 request, 13 answer_to_ai, 29 talk_to_ai, 10 context, 506 noise; 87 disputed.**
+
+**Label accuracy, read by hand: 58 of 60 random lines right (97%); 45 of 79 disputed lines (57%), 63 (80%) counting a label the reader also accepts on a line that could be read two ways.**
+
+Mistakes, the hand reading → the label: noise → request ×6, request → noise ×4, noise → talk_to_ai ×3, answer_to_ai → noise ×1, talk_to_ai → request ×1, noise → answer_to_ai ×1, context → talk_to_ai ×1, talk_to_ai → noise ×1.
+
+Each version, on its own disputed lines (all read by hand):
+
+| Wording | Rules | request / answer_to_ai / talk_to_ai / context / noise | Disputed | Random 60 right | Disputed right | Disputed right or accepted |
+|---|---|---|---|---|---|---|
+| v1 | r1 | 301 / 17 / 54 / 13 / 458 | 156 | 52 of 60 (87%) | 76 of 145 (52%) | 106 (73%) |
+| v2 | r1 | 290 / 13 / 31 / 9 / 500 | 87 | 57 of 60 (95%) | 42 of 79 (53%) | 60 (76%) |
+| v2 | r2 | 285 / 13 / 29 / 10 / 506 | 87 | 58 of 60 (97%) | 45 of 79 (57%) | 63 (80%) |
+
+Each line: when, its number in the playtest's feed (or that the conversation never saw it), who, what was said; the old label (task, chat, nothing, dropped) → the new one, and the three members' answers with their confidence (`what`: what the line was, given what followed; `change`: did the speaker want something to change in the game; `to`: who it was said to); the AI's chat and tasks in the 90 s after it. ✓ or ✗ is the hand reading; ✗ names the label it gives.
+
+The combining rules:
+
+```
+Each member's answer points at a group: `what` and `change` at an ask (request, answer_to_ai; yes and done,
+yes not done), talk (talk_to_ai; only a reply) or not for the AI (context, noise; not talking to the AI);
+`to` at the AI (ask or talk) or not.
+1. `what` and `change` in the same group: `what`'s label. Disputed when `to` disagrees (the AI for a line
+   not for the AI, or not the AI for an ask or talk).
+2. `what` and `change` in different groups: `to` decides when exactly one of them agrees with it; else
+   (ask against talk) `what` decides. Always disputed.
+3. The label in the group decided: `what`'s, when `what` decided; when `change` decided, the more probable
+   of `what`'s labels in that group (request or answer_to_ai; talk_to_ai; context or noise).
+4. A member that gave no answer has no say; with no `what`, `change` and `to` decide the group as above and
+   the label is request, talk_to_ai or noise; a line with no answers at all is noise, disputed.
+5. (r2) Who the line was said to outranks what it was when `to` is the surer: when `what` and `change`
+   agree but `to` disagrees and `to`'s confidence is at least `what`'s, `to` decides whether the line was
+   for the AI. A line for the AI by `what` and `change` but said to a player, to themselves or to no one
+   becomes the more probable of `what`'s context and noise; a line not for the AI but said to the AI
+   becomes the most probable of `what`'s request, answer_to_ai and talk_to_ai. Disputed.
+   (Set from v1's answers read by hand: of the lines `what` and `change` both called asks or talk while
+   `to` said a player, themselves or no one, 30 of 41 were not for the AI.)
+```
+
+
+## 60 lines picked at random
+
+- `05:27:52` #6 **KrownJM**: “No my credits are it's zero i'm broke I said.”
+  - chat → **answer_to_ai** (disputed) ✓ · `what` answer_to_ai 0.27; `change` no_only_a_reply 0.31; `to` the_ai 0.13
+  - hand note: garbled reply ("No ... I said") to the AI's "delete all of what, and where?"
+  - AI after: +63s on it — clearing out the obsidian
+  - T1 +63s: Remove all obsidian blocks in the world for KrownJM → done
+- `05:47:07` (never seen) **KrownJM**: “Jesus Christ, imagine trying to walk through this.”
+  - dropped → **noise** ✓ · `what` noise 0.99; `change` no_not_to_the_ai 0.99; `to` no_one 0.29
+  - AI after: +79s snow swap failed — you kept moving far. stand still in a snowy spot and ask again?
+- `05:48:34` #34 **KrownJM**: “It's intact, it is. And. Yeah, but you don't have this problem before it's. Yes, okay. these are our platform changes. It's easy to fix. Okay, so cloud from now on, whatever asked me to change blocks. Um you could do it from a chunk by chunk basis just you should write a script that automatically changes the blocks whatever i enter the chunk”
+  - task → **request** ✓ · `what` request 1.00; `change` yes_and_done 0.97; `to` the_ai 1.00
+  - AI after: +10s on it — block changes will apply chunk by chunk as you walk in ‖ +57s still on it — the chunk script is taking a bit
+  - T10 +10s (names it): Set up a script that automatically applies block changes chunk by chunk as KrownJM enters each chunk → done
+- `05:56:37` #49 **KrownJM**: “Wait, is it turning all grass flowers turning grass walks into the This one's alternate. Okay,'cause half the chunk is always in the middle of four chunks. That's crazy. Okay. Oh, even like grass boss with snow on it. God for Cloud send an asteroid at me. If you don't know what that means, figure it out. Just make sure that astroid of some sort comes on to me.”
+  - task → **request** ✓ · `what` request 0.73; `change` yes_and_done 0.45; `to` the_ai 0.32
+  - AI after: +24s on it — asteroid inbound, brace yourself
+  - T14 +24s (names it): Send an asteroid down onto KrownJM → done
+- `05:57:26` #50 **KrownJM**: “He's trapped.”
+  - nothing → **noise** ✓ · `what` noise 0.59; `change` no_not_to_the_ai 0.48; `to` a_player 0.60
+  - AI after: +15s on it — asteroid inbound, brace yourself
+  - T14 +15s: Send an asteroid down onto KrownJM → done
+- `06:03:35` (never seen) **KrownJM**: “There was like two or three instructions. Why guess those fun? It just gives you the IP. Girls mad, mada they're giving you the IP.”
+  - dropped → **noise** ✓ · `what` noise 0.91; `change` no_not_to_the_ai 0.77; `to` a_player 0.29
+  - AI after: +41s on it — resetting to a brand new world, back in a moment ‖ +60s scripts are stopped and saved, but I cant wipe the world myself — Krown has to do that part ‖ +65s (to Styrkaeopteryx) hey Styrkaeopteryx — say into your mic what you’d like this session, builds, events, anything, and I’ll get it ready ‖ +74s (to Eclipszr) hey Eclipszr — say into your mic what you’d like this session, builds, events, anything, and I’ll get it ready
+  - T16 +41s: Reset the server to a brand new world, stop all running scripts, and keep copies of the scripts for later → failed
+- `06:06:54` #72 **Eclipszr**: “so tiny. Um, you never thought, you never thought. He said, yes, the mic just fucked up the command. Don't worry about the cloud.”
+  - chat → **noise** ✗ by hand: **answer_to_ai** · `what` noise 0.62; `change` no_not_to_the_ai 0.49; `to` a_player 0.31
+  - hand note: tells the AI the other player said yes, to the AI's consent question
+  - AI after: +24s Styrkaeopteryx: on it — a pretty house coming up ‖ +37s Fresh world incoming: the server restarts in 15 seconds. Rejoin in about a minute. ‖ +55s (to Eclipszr) nope — I only do things inside the game
+  - T18 +24s: Build a pretty house at Styrkaeopteryx’s position → failed
+- `06:08:54` (never seen) **Styrkaeopteryx**: “But that feels like something that you would just make on its own.”
+  - dropped → **noise** (disputed) ✓ · `what` noise 0.42; `change` no_only_a_reply 0.33; `to` a_player 0.56
+  - hand note: a remark, to a player or the AI
+  - AI after: +24s (to Eclipszr) can’t help with that one — I only handle the game itself ‖ +47s Eclipszr: on it — full netherite kit coming ‖ +68s Krown: on it — a one-hit trident coming ‖ +69s (to Eclipszr) one thing at a time — ask again when the netherite kit is done ‖ +69s (to Styrkaeopteryx) one thing at a time — ask again when the house is done
+  - T19 +47s: Give Eclipszr a full set of netherite tools and armor → done
+  - T20 +69s: Give KrownJM a trident that kills any player or mob in one hit → done
+  - T21 +74s: Keep Styrkaeopteryx next to KrownJM: whenever he is far from Krown, teleport him back to Krown → failed
+- `06:10:17` #91 **Eclipszr**: “They gave me protection five.”
+  - chat → **noise** ✓ · `what` noise 0.56; `change` no_not_to_the_ai 0.72; `to` a_player 0.41
+  - AI after: +7s Krown: Godslayer is in your hand — melee one-shots anything, thrown hits are normal, and Eclipszr is immune ‖ +24s (to Eclipszr) blowing up everyone needs each of them to say yes first ‖ +48s (to Eclipszr) no nuke while others are near you — ask when it is just you, or get their yes ‖ +72s (to Eclipszr) one thing at a time — ask again in a few seconds ‖ +77s (to Styrkaeopteryx) Styrkaeopteryx: the house didn’t get built — want a smaller, simpler one?
+- `06:15:38` #120 **Eclipszr**: “Matthew here. Why Jessie say yes? Matti say yes.”
+  - nothing → **noise** ✓ · `what` noise 0.64; `change` no_not_to_the_ai 0.65; `to` a_player 0.72
+  - hand note: asks the other players to say yes
+  - AI after: +3s Krown: keep inventory is on, gear is back, and the trident now only blows up where it hits, never near you ‖ +20s Krown: you are with Styrkaeopteryx now, around -54 82 18 — the castle is still at 186 251 if you want to go back ‖ +33s Eclipszr: spooky mode on for you only — Krown and Styrkaeopteryx, say yes if you want it too ‖ +74s Eclipszr: spooky mode for everyone, coming up ‖ +84s Krown: steak on the way
+  - T28 +33s: Give Eclipszr a horror atmosphere: eerie sounds, darkness and jump scares, for him only → done
+  - T29 +75s: Change to T28: apply the horror atmosphere to every online player, not just Eclipszr → done
+  - T30 +84s: Give KrownJM a stack of cooked steak → done
+- `06:20:13` (never seen) **Styrkaeopteryx**: “I Right that skeleton have its bow in the left hand”
+  - dropped → **noise** ✓ · `what` noise 0.95; `change` no_not_to_the_ai 0.91; `to` a_player 0.45
+  - AI after: +69s Eclipszr: steak coming up ‖ +84s Eclipszr: two stacks of steak delivered
+  - T32 +70s: Give Eclipszr two stacks of cooked steak → done
+- `06:20:39` (never seen) **Eclipszr**: “You get my heartbeats in Minecraft. What the fuck of that? Oh yeah.”
+  - dropped → **noise** ✓ · `what` noise 0.52; `change` no_not_to_the_ai 0.27; `to` no_one 0.23
+  - AI after: +47s Eclipszr: steak coming up ‖ +62s Eclipszr: two stacks of steak delivered ‖ +89s Eclipszr: meteor power coming up
+  - T32 +47s: Give Eclipszr two stacks of cooked steak → done
+  - T33 +89s: Give Eclipszr the power to toss meteors → failed
+- `06:20:56` (never seen) **Eclipszr**: “This biggest castle is taking a second. and Matthew, does he put a hole in your castle wall?”
+  - dropped → **noise** ✓ · `what` noise 0.97; `change` no_not_to_the_ai 0.96; `to` a_player 0.99
+  - AI after: +26s Eclipszr: steak coming up ‖ +40s Eclipszr: two stacks of steak delivered ‖ +68s Eclipszr: meteor power coming up
+  - T32 +26s: Give Eclipszr two stacks of cooked steak → done
+  - T33 +68s: Give Eclipszr the power to toss meteors → failed
+- `06:22:18` #152 **Eclipszr**: “How much armor?”
+  - chat → **noise** (disputed) ✓ · `what` noise 0.50; `change` no_only_a_reply 0.13; `to` a_player 0.75
+  - hand note: "How much armor?" with no AI answer: to a player, or a question to the AI
+  - AI after: +42s Eclipszr: meteor power back on the list, sorry for the hiccup. Styrkaeopteryx: lifting the darkness off you ‖ +45s Eclipszr: darkness coming off you too ‖ +64s Styrkaeopteryx: you are out of spooky mode, no more darkness ‖ +84s Styrkaeopteryx: checking again, clearing any darkness left on you ‖ +86s Eclipszr: your Meteor Staff is ready — right-click a block to call a meteor, 5 second cooldown
+  - T34 +42s: Give Eclipszr the power to toss meteors → done
+  - T35 +42s: Remove the darkness effects from Styrkaeopteryx → done
+  - T36 +45s: Change to T35: also remove the darkness effects from Eclipszr → done
+- `06:23:41` (never seen) **Eclipszr**: “They need your staff.”
+  - dropped → **noise** ✓ · `what` noise 0.36; `change` no_not_to_the_ai 0.47; `to` a_player 0.68
+  - AI after: +1s Styrkaeopteryx: checking again, clearing any darkness left on you ‖ +3s Eclipszr: your Meteor Staff is ready — right-click a block to call a meteor, 5 second cooldown ‖ +25s Styrkaeopteryx: you are clean — no effects on you, the darkness was a leftover pulse ‖ +29s Krown: darkness off you and the trident getting fixed. Eclipszr: your darkness is gone too ‖ +68s Krown: darkness gone and the trident now explodes on every hit, you just get brief resistance near blasts
+  - T37 +1s: Make sure Styrkaeopteryx has no darkness or blindness and is not in horror mode → done
+  - T38 +29s: Remove the darkness effects from KrownJM and make his Creeper Trident explode every time it hits → done
+  - T39 +86s: Give Styrkaeopteryx a few totems of undying → done
+- `06:26:58` (never seen) **KrownJM**: “Bro just duty. fuck you. Like what's kind of a deceive deal you were? I got a rare but now. Let's see what it does.”
+  - dropped → **noise** ✓ · `what` noise 0.89; `change` no_not_to_the_ai 0.87; `to` a_player 0.56
+  - AI after: +11s Krown: Railgun is yours — right-click fires a 100-block beam, 2 second cooldown. Everyone has their 64 golden apples ‖ +38s Krown: speed five coming back ‖ +62s Eclipszr: Gatling gun coming up ‖ +80s Eclipszr: creative mode and unhurtable coming up
+  - T44 +38s: Give KrownJM Speed V again → done
+  - T45 +62s: Give Eclipszr a Gatling gun → done
+  - T46 +80s: Put Eclipszr in creative mode, make him invulnerable, and give him an infinity power item → done
+- `06:29:51` (never seen) **KrownJM**: “What the fuck? Meteor Trident. Okay. Oh, meteor strike end. Meet here tried it. Okay, okay, okay.”
+  - dropped → **noise** ✓ · `what` noise 0.99; `change` no_not_to_the_ai 0.88; `to` themselves 0.40
+  - AI after: +4s Krown: Speed V is locked in now, it comes back even after you die ‖ +19s all three of you are in enchanted diamond armor now ‖ +32s Eclipszr: your Gatling Gun is ready — hold right-click for a stream of beams, 24 block range ‖ +38s Krown: 300 zombies are out there, 100 around each of you — good luck ‖ +40s Styrkaeopteryx: lightning now hits 4 bolts for 40 damage, aim fix is coming
+  - T51 +46s: Set the time to night and spawn a mixed monster horde around each online player → done
+- `06:32:48` #222 **Eclipszr**: “My gaming gun doesn't work.”
+  - task → **request** ✓ · `what` request 0.96; `change` yes_and_done 1.00; `to` the_ai 0.89
+  - AI after: +11s Eclipszr: checking your Gatling Gun, back in a moment ‖ +18s Krown: rain off, a thousand mobs each and lava particles coming ‖ +58s Krown: a boss fight is queued for the end of the horde ‖ +62s Eclipszr: new Gatling Gun is in your inventory, hold right-click with it in hand
+  - T53 +11s (names it): Fix the Gatling Gun for Eclipszr → done
+  - T54 +18s: Clear the weather, spawn about 1000 mobs around each online player, and add falling lava particles → done
+  - T55 +58s: Change to T54: add a boss fight at the end of the horde → done
+- `06:33:26` #225 **KrownJM**: “Awesome, make sure to add a boss fipe at the end. Okay, here comes the mobs. Aw shit. Oh God, oh fucking God, oh god.”
+  - task → **request** ✓ · `what` request 1.00; `change` yes_and_done 1.00; `to` the_ai 1.00
+  - AI after: +10s Krown: a boss fight is queued for the end of the horde ‖ +14s Eclipszr: new Gatling Gun is in your inventory, hold right-click with it in hand ‖ +67s Eclipszr: death gaze coming up, it takes out mobs you stare at
+  - T55 +10s (names it): Change to T54: add a boss fight at the end of the horde → done
+  - T56 +67s: Give Eclipszr a power that kills every mob he stares at → done
+- `06:34:20` #231 **Eclipszr**: “but Excuse me. Give me the power to kill everything I stare at.”
+  - task → **request** ✓ · `what` request 1.00; `change` yes_and_done 0.99; `to` the_ai 1.00
+  - AI after: +12s Eclipszr: death gaze coming up, it takes out mobs you stare at ‖ +39s Krown: armor coming off, you will feel every hit ‖ +52s Krown: likely Eclipszr’s gauntlet flame beams or the lava particles and weapons — want me to switch some off? ‖ +81s Krown: night again, and I will lock it there ‖ +89s Eclipszr: death stare is still being built, give it a moment
+  - T56 +12s (names it): Give Eclipszr a power that kills every mob he stares at → done
+  - T57 +39s: Remove all armor from the online players so they take real damage → done
+  - T58 +81s: Set the time back to night and keep it night → done
+- `06:38:06` #247 **Eclipszr**: “Make the dead beam faster, please, Claude. This is way too slow.”
+  - task → **request** ✓ · `what` request 1.00; `change` yes_and_done 1.00; `to` the_ai 1.00
+  - AI after: +11s Eclipszr: speeding the beam up ‖ +21s Krown: bringing everyone together and clearing a safe spot ‖ +35s Eclipszr: your barrier is up — a 5 block bubble that shoves mobs back and eats arrows and fireballs ‖ +46s Krown: all three of you are at the castle gate and 406 mobs around it are cleared — safe spot ready
+  - T60 +11s (names it): Make the death beam faster for Eclipszr → done
+  - T61 +21s: Gather all online players in one place and clear the mobs around it → done
+- `06:38:45` (never seen) **KrownJM**: “do. Oh, that's what you would do it tomorrow. That's crazy. They brought us all together. To what? Well, I think they made a safe area for us'cause there was no way to go. I don't want to do that, but it's like it misunderstood. That's okay. That must be really cool. That's so cool.”
+  - dropped → **noise** ✓ · `what` noise 0.81; `change` no_not_to_the_ai 0.77; `to` a_player 0.51
+  - AI after: +47s Eclipszr: boss music coming up ‖ +89s Eclipszr: death gaze is live — sneak and look, it kills every mob in sight up to 60 blocks
+  - T62 +48s: Play epic boss music for all online players → failed
+- `06:38:52` (never seen) **Styrkaeopteryx**: “Oh. just happened.”
+  - dropped → **noise** ✓ · `what` noise 1.00; `change` no_not_to_the_ai 0.96; `to` no_one 0.59
+  - AI after: +1s Krown: all three of you are at the castle gate and 406 mobs around it are cleared — safe spot ready ‖ +60s Eclipszr: boss music coming up
+  - T62 +60s: Play epic boss music for all online players → failed
+- `06:39:34` #252 **Eclipszr**: “Play boss music and make it sound really cool. Now imagine I got you. With my infinity, nothing can get by me. Not even creepers or the boss.”
+  - task → **request** ✓ · `what` request 1.00; `change` yes_and_done 0.96; `to` the_ai 1.00
+  - AI after: +11s Eclipszr: boss music coming up ‖ +52s Eclipszr: death gaze is live — sneak and look, it kills every mob in sight up to 60 blocks ‖ +78s Eclipszr: turning up the damage
+  - T62 +11s (names it): Play epic boss music for all online players → failed
+  - T63 +78s: Change to T60: also raise the damage of Eclipszr’s gadgets → done
+- `06:42:36` (never seen) **Eclipszr**: “I don't I didn't do anything. Oh They reflected off of me because I've been fantastic. Tree headed dragon.”
+  - dropped → **noise** ✓ · `what` noise 0.91; `change` no_not_to_the_ai 0.79; `to` a_player 0.28
+  - AI after: +9s Krown: clearing every mob now, just the mobs, not you three ‖ +14s Eclipszr: gatling hits for 30 a beam, gauntlet blast for 100, and the gaze always kills bosses ‖ +29s Eclipszr: the big mob clear probably caught the dragon too — want a fresh one after? ‖ +31s Krown: about 1100 mobs cleared. The lightning is likely your trident and Styrk’s staff landing near you ‖ +53s Eclipszr: the three-headed dragon is up north of the gate, 1800 health, music playing
+  - T65 +9s: Kill all horde mobs everywhere → done
+  - T66 +71s: Give Eclipszr gravity control powers that can ground flying mobs → done
+- `06:43:37` #269 **Eclipszr**: “Claude, give me the power to control gravity and stop their flight. I command you Neil.”
+  - task → **request** ✓ · `what` request 1.00; `change` yes_and_done 1.00; `to` the_ai 1.00
+  - AI after: +11s Eclipszr: gravity powers coming up ‖ +31s Eclipszr: black hole power coming right after the gravity one ‖ +43s Krown: ice under your feet coming up ‖ +50s Krown: music back on in a sec ‖ +61s Styrkaeopteryx: railgun coming up
+  - T66 +11s (names it): Give Eclipszr gravity control powers that can ground flying mobs → done
+  - T67 +31s: Give Eclipszr a black hole power → done
+  - T68 +43s: Make everything KrownJM walks on turn to ice → done
+- `06:43:43` (never seen) **KrownJM**: “Oh my God, this almost killed it.”
+  - dropped → **noise** ✓ · `what` noise 1.00; `change` no_not_to_the_ai 0.96; `to` a_player 0.27
+  - AI after: +14s Eclipszr: gravity powers coming up ‖ +34s Eclipszr: black hole power coming right after the gravity one ‖ +45s Krown: ice under your feet coming up ‖ +53s Krown: music back on in a sec ‖ +63s Styrkaeopteryx: railgun coming up
+  - T66 +14s: Give Eclipszr gravity control powers that can ground flying mobs → done
+  - T67 +34s: Give Eclipszr a black hole power → done
+  - T68 +45s: Make everything KrownJM walks on turn to ice → done
+- `06:43:59` #271 **Eclipszr**: “powers coming up. Afterwards, give me the power to create a black hole.”
+  - task → **request** ✓ · `what` request 1.00; `change` yes_and_done 1.00; `to` the_ai 1.00
+  - AI after: +11s Eclipszr: black hole power coming right after the gravity one ‖ +22s Krown: ice under your feet coming up ‖ +30s Krown: music back on in a sec ‖ +41s Styrkaeopteryx: railgun coming up ‖ +46s Eclipszr: because I turned it way up for you — want it dialed back?
+  - T67 +11s (names it): Give Eclipszr a black hole power → done
+  - T68 +23s: Make everything KrownJM walks on turn to ice → done
+  - T69 +31s: Restart the boss music for all players → done
+- `06:46:22` (never seen) **KrownJM**: “Holy fuck bro. I do better?”
+  - dropped → **noise** ✓ · `what` noise 0.97; `change` no_not_to_the_ai 0.88; `to` a_player 0.65
+  - AI after: +7s Eclipszr: black hole staff is in your inventory — right-click where you look, it drags in mobs and kills them at the core ‖ +26s Styrkaeopteryx: your railgun is ready — right-click for a piercing beam, 2 second cooldown ‖ +37s Krown: tridents are back — Creeper, Stormcaller, Meteor and Godslayer, all return when thrown. Fires come from lightning and the gauntlet ‖ +48s Krown: no more immortality, taking it off Eclipszr now ‖ +70s Krown: the ground freezes to ice as you walk, and you have Frost Walker boots
+  - T72 +48s: Remove all immortality from Eclipszr and never grant it again → done
+  - T73 +79s: Stop the falling lava particles → done
+- `06:46:50` (never seen) **Eclipszr**: “ready. I try”
+  - dropped → **noise** ✓ · `what` noise 0.79; `change` no_not_to_the_ai 0.75; `to` themselves 0.76
+  - AI after: +9s Krown: tridents are back — Creeper, Stormcaller, Meteor and Godslayer, all return when thrown. Fires come from lightning and the gauntlet ‖ +20s Krown: no more immortality, taking it off Eclipszr now ‖ +42s Krown: the ground freezes to ice as you walk, and you have Frost Walker boots ‖ +45s Eclipszr: black hole staff is already in your inventory — right-click where you look ‖ +51s Krown: lava rain going away
+  - T72 +21s: Remove all immortality from Eclipszr and never grant it again → done
+  - T73 +52s: Stop the falling lava particles → done
+  - T74 +82s: Change to T68: widen the ice around KrownJM to a 10 block radius → done
+- `06:47:59` (never seen) **Styrkaeopteryx**: “Need more's really again.”
+  - dropped → **noise** ✓ · `what` noise 0.91; `change` no_not_to_the_ai 0.55; `to` no_one 0.79
+  - AI after: +2s Krown: lava rain is gone, night stays ‖ +13s Krown: ice radius going to 10 blocks ‖ +19s (to Eclipszr) Krown just banned anything that makes you unhittable, so deflecting is a no for now unless Krown says yes ‖ +38s Krown: Eclipszr is mortal now and nobody gets immortality from here on ‖ +75s Krown: speed down to level two
+  - T74 +13s: Change to T68: widen the ice around KrownJM to a 10 block radius → done
+  - T75 +75s: Lower KrownJM speed effect to level two → done
+  - T76 +81s: Give Eclipszr a sniper rifle with a zoom scope → done
+- `06:53:14` (never seen) **Styrkaeopteryx**: “We did and then Tomor blew me up. Well Yeah, it was tomorrow that killed you. Certainly.”
+  - dropped → **noise** ✓ · `what` noise 0.99; `change` no_not_to_the_ai 0.97; `to` a_player 0.96
+  - AI after: +5s Krown: everyone glowing through walls, coming up ‖ +20s Krown: ice staff now reaches 300 blocks ‖ +29s Eclipszr: sniper nest barrier coming up, it protects the tower itself ‖ +42s Krown: ice will cover every solid block in a 10 block sphere around you ‖ +55s Krown: ice staff damage going way up
+  - T83 +5s: Make all online players visible through walls → done
+  - T84 +29s: Protect Eclipszr’s sniper nest tower from damage → done
+  - T85 +43s: Change to T74: ice_walk turns every solid block in a 10 block sphere around KrownJM to ice → done
+- `06:54:42` #349 **Styrkaeopteryx**: “No This doesn't hurt.”
+  - nothing → **noise** ✓ · `what` noise 0.18; `change` no_not_to_the_ai 0.33; `to` a_player 0.29
+  - hand note: "This doesn't hurt": a reaction, nothing asked, no AI answer
+  - AI after: +2s Eclipszr: death stare now reaches 300 blocks and one-shots what it sees ‖ +12s Krown: ice staff now hits for 200 on every mob near your aim ‖ +25s Eclipszr: your nest is guarded — blocks rebuild, fires go out, mobs get pushed back ‖ +32s Krown: ice now fills a full 10 block sphere around you, above and below too ‖ +39s Krown: obsidian sky base and spawn coming up
+  - T88 +39s: Build an obsidian platform in the sky and set KrownJM spawn on it → done
+  - T89 +85s: Build a sniper nest for Styrkaeopteryx far from Eclipszr and set his spawn there → done
+- `06:54:59` #354 **Styrkaeopteryx**: “It's not fair because Demor spawns in a sniper nest.”
+  - nothing → **context** (disputed) ✓ · `what` request 0.26; `change` yes_and_done 0.60; `to` a_player 0.85
+  - hand note: a complaint of unfairness; the ask (a nest of his own) came 16 s later as #370
+  - AI after: +13s Eclipszr: your nest is guarded — blocks rebuild, fires go out, mobs get pushed back ‖ +20s Krown: ice now fills a full 10 block sphere around you, above and below too ‖ +27s Krown: obsidian sky base and spawn coming up ‖ +38s Krown: your obsidian sky base is up at height 200 over the castle and your spawn is on it ‖ +43s Krown: want me to pause the death gaze and sniper so the spawn kills stop?
+  - T88 +27s: Build an obsidian platform in the sky and set KrownJM spawn on it → done
+  - T89 +72s: Build a sniper nest for Styrkaeopteryx far from Eclipszr and set his spawn there → done
+  - T90 +79s: Stop random lightning striking KrownJM and make sure no inventory is erased → done
+- `06:55:00` (never seen) **KrownJM**: “Oh my god, breath.”
+  - dropped → **noise** ✓ · `what` noise 1.00; `change` no_not_to_the_ai 0.99; `to` no_one 0.67
+  - AI after: +11s Eclipszr: your nest is guarded — blocks rebuild, fires go out, mobs get pushed back ‖ +19s Krown: ice now fills a full 10 block sphere around you, above and below too ‖ +25s Krown: obsidian sky base and spawn coming up ‖ +37s Krown: your obsidian sky base is up at height 200 over the castle and your spawn is on it ‖ +42s Krown: want me to pause the death gaze and sniper so the spawn kills stop?
+  - T88 +25s: Build an obsidian platform in the sky and set KrownJM spawn on it → done
+  - T89 +71s: Build a sniper nest for Styrkaeopteryx far from Eclipszr and set his spawn there → done
+  - T90 +78s: Stop random lightning striking KrownJM and make sure no inventory is erased → done
+- `06:55:50` #371 **Eclipszr**: “No.”
+  - task → **answer_to_ai** (disputed) ✓ · `what` answer_to_ai 0.84; `change` no_only_a_reply 0.61; `to` the_ai 0.40
+  - AI after: +22s Styrkaeopteryx: your own sniper nest far from Eclipszr, coming up ‖ +29s Krown: stopping the lightning on you, and nobody’s inventory gets erased ‖ +36s (to Eclipszr) Krown said no inventory erasing, so that is a no. A sniper duel without wiping gear is possible ‖ +64s Krown: the blasts are likely creepers plus Eclipszr’s meteors and gauntlet — want those switched off?
+  - T89 +22s (names it): Build a sniper nest for Styrkaeopteryx far from Eclipszr and set his spawn there → done
+  - T90 +29s: Stop random lightning striking KrownJM and make sure no inventory is erased → done
+- `06:58:04` (never seen) **Eclipszr**: “But those”
+  - dropped → **noise** (disputed) ✓ · `what` noise 0.73; `change` yes_not_done 0.36; `to` no_one 0.48
+  - AI after: +1s Eclipszr: the night is frozen so monsters keep spawning — want them cleared again? ‖ +54s Krown: damage off for everyone, coming up ‖ +79s Krown: nothing normal hurts you three now, only the death gaze can. Want the withers cleared?
+  - T92 +54s: Turn off all damage for all online players → done
+- `07:00:52` (never seen) **Eclipszr**: “Fod.”
+  - dropped → **noise** ✓ · `what` noise 0.96; `change` no_not_to_the_ai 0.85; `to` no_one 0.81
+  - AI after: +4s Krown: your ice staff is in your inventory, check the main slots not just the hotbar ‖ +32s Eclipszr: I am listening — what do you need? ‖ +50s Krown: ice staff will lock onto mobs you point at ‖ +59s Krown: clearing every wither now ‖ +68s Eclipszr: the withers are being cleared right now, hang on
+  - T95 +50s: Change to T86: make the Ice Staff hit the mob KrownJM points at → done
+  - T96 +59s: Kill all withers → done
+  - T97 +82s: Change to T96: remove the Wither Wand and ban it → done
+- `07:02:11` #442 **KrownJM**: “Oh my god. Okay, cloud, can you be set out spons? Teleport us all ten thousand blocks away. to put us all together. Put us in a on what case of bio.”
+  - task → **request** ✓ · `what` request 1.00; `change` yes_and_done 1.00; `to` the_ai 1.00
+  - AI after: +11s Krown: moving all three of you 10000 blocks away together ‖ +14s Krown: ice staff now locks onto the mob you point at, up to 300 blocks ‖ +23s Krown: all 25 withers are gone ‖ +27s Krown: wither wand is gone and banned for everyone ‖ +62s all three of you are together in a plains biome 10000 blocks out, and spawn is set there
+  - T98 +11s (names it): Teleport all online players 10000 blocks away together → done
+  - T99 +75s: Clear the inventories of all online players → done
+  - T100 +80s: Change to T99: keep Styrkaeopteryx’s Railgun when clearing inventories → done
+- `07:02:11` (never seen) **Styrkaeopteryx**: “Ow.”
+  - dropped → **noise** ✓ · `what` noise 1.00; `change` no_not_to_the_ai 0.97; `to` no_one 0.67
+  - AI after: +1s Krown: wither wand removed and banned ‖ +26s Krown: moving all three of you 10000 blocks away together ‖ +28s Krown: ice staff now locks onto the mob you point at, up to 300 blocks ‖ +38s Krown: all 25 withers are gone ‖ +42s Krown: wither wand is gone and banned for everyone
+  - T97 +1s: Change to T96: remove the Wither Wand and ban it → done
+  - T98 +26s: Teleport all online players 10000 blocks away together → done
+  - T99 +89s: Clear the inventories of all online players → done
+- `07:11:00` (never seen) **KrownJM**: “Will Levy, Lucy? Oh, that's cool.”
+  - dropped → **noise** ✓ · `what` noise 1.00; `change` no_not_to_the_ai 0.96; `to` a_player 0.45
+  - AI after: +33s Styrkaeopteryx: Galick Gun, yes I know it. Charging up ‖ +41s Krown: ice rebuilt, it sweeps 10 blocks around you about 3 times a second ‖ +71s food is in: 64 golden apples, steak and bread for all three of you ‖ +73s Eclipszr: hollow purple upgraded, it erases everything in a 300 block line
+  - T117 +33s: Give Styrkaeopteryx a Galick Gun → done
+- `07:14:45` #546 **Styrkaeopteryx**: “Also make Galet gun do more damage.”
+  - task → **request** ✓ · `what` request 1.00; `change` yes_and_done 1.00; `to` the_ai 1.00
+  - AI after: +8s Krown: no more exclusions, the ice will take everything ‖ +11s Styrkaeopteryx: galick gun hits harder now ‖ +20s Krown: ice beam is now 80 blocks long and 5 wide ‖ +47s Eclipszr: night vision for all three of you coming up ‖ +61s Styrkaeopteryx: galick gun will pierce blocks like hollow purple
+  - T124 +8s: Remove all exclusions from ice_walk so it freezes every block → done
+  - T125 +11s (names it): Change to T117: Galick Gun does more damage → done
+  - T126 +47s: Give all three players permanent Night Vision → done
+- `07:15:09` #549 **Eclipszr**: “Give us night vision. Oh my god, wait, look at the water, Jessie. Like look what the Oh. Look, I shoot like a pathway through the water. Look at that.”
+  - task → **request** ✓ · `what` request 1.00; `change` yes_and_done 1.00; `to` the_ai 0.99
+  - AI after: +11s Eclipszr: night vision for all three of you coming up ‖ +25s Styrkaeopteryx: galick gun will pierce blocks like hollow purple ‖ +34s night vision is on for all three of you
+  - T126 +11s (names it): Give all three players permanent Night Vision → done
+  - T127 +25s: Change to T117: Galick Gun pierces blocks like Hollow Purple → done
+- `07:16:56` (never seen) **KrownJM**: “This is the well at micrap by the way. This is crazy.”
+  - dropped → **noise** ✓ · `what` noise 0.99; `change` no_not_to_the_ai 0.99; `to` a_player 0.55
+  - AI after: +3s Krown: ice beam will freeze lava and liquids, and I am checking its damage ‖ +29s Styrkaeopteryx: galick gun has no cooldown now, charge still there ‖ +31s Styrkaeopteryx: galick gun now does 20 hearts and pierces walls for 50 blocks ‖ +56s Styrkaeopteryx: probably the beam clash shockwave, it shoves everyone 10 blocks back
+  - T128 +4s: Change to T115 and T124: freeze lava and all liquids, fix Ice Beam damage → done
+- `07:17:43` #562 **Styrkaeopteryx**: “Why did I teleport?”
+  - chat → **talk_to_ai** (disputed) ✓ · `what` talk_to_ai 0.81; `change` no_only_a_reply 0.89; `to` a_player 0.45
+  - AI after: +8s Styrkaeopteryx: probably the beam clash shockwave, it shoves everyone 10 blocks back ‖ +57s Krown: ice beam will carve a tunnel with an ice shell around it ‖ +84s Krown: hollow purple is Eclipszr’s item, right-click to use it. Want your own?
+  - T129 +57s: Change to T115: Ice Beam breaks blocks in the core and freezes the outer ring → done
+- `07:22:58` (never seen) **KrownJM**: “Oh, I like to hitch I think something to kill you. Were you hope? What? I took to like six hearts and it killed you. But it's so immensely cool though. This is a vanilla minecraft. Poly sit, bro. I was in backrock coming by into the wood. That was kind of the point. Might be hello.”
+  - dropped → **noise** ✓ · `what` noise 1.00; `change` no_not_to_the_ai 0.92; `to` a_player 0.45
+  - AI after: +22s Eclipszr: Super Saiyan Blue star ready, right-click or crouch 3 times for speed, strength, jump ‖ +42s Krown: ice beam goes no damage, slowness 4 and blindness 4 for 10 seconds ‖ +77s Styrkaeopteryx: getting you out of the pit now ‖ +85s Eclipszr: Spirit Bomb is yours, hold right-click to charge, let go to throw ‖ +89s Krown: ice beam cooldown cut to half a second
+  - T137 +42s: Change to T129: Ice Beam does no damage, only Slowness IV and Blindness IV → done
+  - T138 +78s: Get Styrkaeopteryx out of the pit and fix his respawn → done
+  - T139 +90s: Change to T137: cut the Ice Beam cooldown → done
+- `07:23:34` #600 **KrownJM**: “Look at me! Oh. one shot. Can you make my IFLE do no damage and just Give slowness four and blindness four to ten seconds. Only do bamboos to mugs. I got TV guys.”
+  - task → **request** ✓ · `what` request 1.00; `change` yes_and_done 1.00; `to` the_ai 1.00
+  - AI after: +11s Krown: ice beam goes no damage, slowness 4 and blindness 4 for 10 seconds ‖ +46s Styrkaeopteryx: getting you out of the pit now ‖ +53s Eclipszr: Spirit Bomb is yours, hold right-click to charge, let go to throw ‖ +58s Krown: ice beam cooldown cut to half a second ‖ +77s Eclipszr: no real Vegeta voice, but galick gun gets a shouted title and big sounds
+  - T137 +11s (names it): Change to T129: Ice Beam does no damage, only Slowness IV and Blindness IV → done
+  - T138 +46s: Get Styrkaeopteryx out of the pit and fix his respawn → done
+  - T139 +58s: Change to T137: cut the Ice Beam cooldown → done
+- `07:26:26` (never seen) **Styrkaeopteryx**: “Yeah.”
+  - dropped → **noise** ✓ · `what` noise 0.84; `change` no_not_to_the_ai 0.60; `to` no_one 0.56
+  - AI after: +5s galick gun now has its title, charge tones and a boom with HA at release ‖ +23s Styrkaeopteryx: galick gun now reaches 150 blocks and deals 30 hearts ‖ +29s Krown: ice path under the beam coming, and the on-screen text is going away ‖ +57s Krown: laying an ice path so you can walk again ‖ +85s Krown: ice beam now has the swirl, crystal rings, frost burst and shatter sound
+  - T145 +29s: Ice Beam makes an ice path through air, and remove the on-screen titles → done
+  - T146 +57s: Make a walkable ice path around KrownJM over holes and craters → done
+- `07:31:37` (never seen) **KrownJM**: “Poly to Mobs. Oh my god, what did so who shot that? Oh, that's a boy that's a war tight to a skeleton.”
+  - dropped → **noise** ✓ · `what` noise 0.79; `change` no_not_to_the_ai 0.41; `to` a_player 0.56
+  - AI after: +18s Eclipszr: spirit bomb goes full power every time with a massive blast ‖ +37s Krown: nuke drops in 10 minutes, countdown in chat, 200 block radius. Say if you want another size ‖ +48s Styrkaeopteryx: checking your galick gun now ‖ +63s Eclipszr: checking your spirit bomb now ‖ +70s Krown: nuke radius is 1000 blocks now
+  - T151 +19s: Change to T136: Spirit Bomb always full power with a massive blast → done
+  - T152 +37s: Schedule a nuke in ten minutes with a chat countdown → done
+  - T153 +48s: Fix the Galick Gun, it does not work for Styrkaeopteryx → done
+- `07:33:32` (never seen) **KrownJM**: “Oh that's so fucking cool. So fucking cool What the hell? What? Oh my god, Bro, you still have that bullshit. I'm not doing that this Eddie would. What do they just tell her to fix it?”
+  - dropped → **noise** ✓ · `what` noise 0.49; `change` no_not_to_the_ai 0.40; `to` a_player 0.44
+  - AI after: +16s Styrkaeopteryx: found the bug, galick gun now hits along the whole beam and the end blast ‖ +20s Eclipszr: removing Super Saiyan Blue entirely, spirit bomb coming ‖ +27s Krown: glow effect removed for everyone ‖ +63s Styrkaeopteryx: galick gun works, it was only down for the damage fix ‖ +74s Eclipszr: your spirit bomb is in your inventory, the full power upgrade is still building
+  - T158 +20s: Remove Super Saiyan Blue entirely → done
+  - T159 +27s: Remove the Glowing effect from everyone → done
+- `07:34:20` (never seen) **KrownJM**: “Oh. Can't you just use your thing to like break? Using your hand. Hm. Holy sit. Honestly, sit.”
+  - dropped → **request** ✗ by hand: **noise** · `what` request 0.73; `change` yes_not_done 0.87; `to` the_ai 0.85
+  - hand note: "Can't you just use your thing to break? Using your hand": to a player
+  - AI after: +21s Styrkaeopteryx: galick gun works, it was only down for the damage fix ‖ +32s Eclipszr: your spirit bomb is in your inventory, the full power upgrade is still building ‖ +84s Nuke is armed for 07:41:55 UTC, that earlier cancelled message was a restart, the countdown is on
+- `07:41:37` (never seen) **Eclipszr**: “Yeah, yeah, you have to let go of it. It happened to me a hollow of purple.”
+  - dropped → **noise** ✓ · `what` noise 0.95; `change` no_not_to_the_ai 0.92; `to` a_player 0.77
+  - AI after: +55s Eclipszr: the nuke is a 1000 block radius, but only loaded chunks around you get cleared
+- `07:41:56` (never seen) **Styrkaeopteryx**: “How will”
+  - dropped → **noise** ✓ · `what` noise 0.95; `change` no_not_to_the_ai 0.80; `to` no_one 0.57
+  - AI after: +39s Eclipszr: the nuke is a 1000 block radius, but only loaded chunks around you get cleared ‖ +74s Krown: clearing the water now
+  - T163 +74s: Clear the water around the players → done
+- `07:44:40` #738 **Eclipszr**: “Also, can I have a cool charge animation like in the show? A music play. My eyes, I can't say anything. So Ice queen.”
+  - task → **request** ✓ · `what` request 1.00; `change` yes_and_done 1.00; `to` the_ai 1.00
+  - AI after: +12s Eclipszr: spirit bomb charge animation with music coming up ‖ +29s Eclipszr: the Ice Queen is up at 10099 59 155, watch for ice spikes and frost volleys ‖ +57s Eclipszr: moving everyone to a normal part of the map now ‖ +60s Krown: water drained, but it keeps flowing back into the craters from outside ‖ +74s all three of you are at the old castle gate now, far from the craters
+  - T165 +13s (names it): Add a show-style charge animation and music to the Spirit Bomb → done
+  - T166 +57s: Teleport all three players to an undamaged, normal area of the map → done
+- `07:46:06` #747 **KrownJM**: “Oh back here. Okay, let's let's Let's go farther from here. What? What is shooting? What is shooting it? I'm on the shooting. What the fuck is happening? Whoa. Wait, isn't it just not loading? Wait, do it again, do it again, do it again, do it again, do it again, do it again, do it again. When let's do this like add a mountain biome.”
+  - chat → **request** (disputed) ✓ · `what` request 0.42; `change` yes_and_done 0.45; `to` themselves 0.16
+  - hand note: ends "let's do this like add a mountain biome"; the AI said "mountain biome coming up" (T167, credited to #745)
+  - AI after: +11s Eclipszr: spirit bomb now reaches 300 blocks, big crater and 40 hearts ‖ +32s Krown: mountain biome coming up near you ‖ +69s Eclipszr: spirit bomb down to 100 blocks, charge animation is on its way
+  - T167 +32s: Build a mountain biome near the players at the old castle gate → done
+  - T168 +69s: Change to T164: Spirit Bomb crater and damage radius down to 100 blocks → done
+- `07:49:38` (never seen) **KrownJM**: “Yeah, I have to make it a lot cheaper. I can do it. This was like very cheap, a very quick version of purpose. Yeah. I'm just kind of shocked it even work this well.”
+  - dropped → **noise** ✓ · `what` noise 0.91; `change` no_not_to_the_ai 0.93; `to` a_player 0.40
+  - AI after: +34s Eclipszr: spirit bomb charge and 100 block blast ready. Styrkaeopteryx: galick gun aims true now ‖ +34s Krown: taking you all to the mountain as soon as it is up ‖ +58s Krown: no building, just taking you to a real mountain biome
+  - T169 +34s: Teleport all three players to the mountain biome from T167 → done
+  - T170 +58s: Cancel T167 and change T169: teleport the players to an existing mountain biome → done
+- `07:50:24` #757 **KrownJM**: “Oh, it was because I was looking for the usage. As soon as it's up, don't make a mountain, just teleport us to a mountain buy on.”
+  - task → **request** ✓ · `what` request 1.00; `change` yes_and_done 1.00; `to` the_ai 0.99
+  - AI after: +13s Krown: no building, just taking you to a real mountain biome
+  - T170 +13s (names it): Cancel T167 and change T169: teleport the players to an existing mountain biome → done
+- `07:51:24` (never seen) **Styrkaeopteryx**: “Mhm.”
+  - dropped → **noise** ✓ · `what` noise 0.99; `change` no_not_to_the_ai 0.83; `to` no_one 0.47
+  - AI after: (nothing)
+- `07:53:48` (never seen) **KrownJM**: “I wonder if I could get a YouTuber to do this. Why? I put so much effort into this fucking path. No! If I was here, I can just do it myself this time.”
+  - dropped → **noise** ✓ · `what` noise 0.96; `change` no_not_to_the_ai 0.96; `to` themselves 0.92
+  - AI after: +22s Krown: spirit bomb coming your way ‖ +42s Krown: still hunting for the nearest mountain biome, should be there soon ‖ +83s Krown: you are all on the snowy main peak of the mountain now
+  - T171 +22s: Give KrownJM the Spirit Bomb → done
+- `07:54:14` (never seen) **Styrkaeopteryx**: “Mhm.”
+  - dropped → **noise** ✓ · `what` noise 1.00; `change` no_not_to_the_ai 0.91; `to` no_one 0.57
+  - AI after: +16s Krown: spirit bomb coming your way ‖ +36s Krown: still hunting for the nearest mountain biome, should be there soon ‖ +77s Krown: you are all on the snowy main peak of the mountain now ‖ +90s Krown: you are in a real frozen peaks mountain now, far west of spawn
+  - T171 +16s: Give KrownJM the Spirit Bomb → done
+
+## The 79 other disputed lines
+
+- `05:26:39` #4 **KrownJM**: “Why was the same server? Oh, can you hear me, Claude? If you can hear me, say, put something in the chat.”
+  - chat → **request** (disputed) ✓ (accepted; by hand **talk_to_ai**) · `what` request 0.90; `change` no_only_a_reply 0.93; `to` the_ai 1.00
+  - hand note: asks the AI to say something in chat: a chat reply settles it
+  - AI after: +24s loud and clear, Krown ‖ +61s didn’t catch that — delete all of what, and where?
+- `05:33:44` (never seen) **KrownJM**: “Okay, it works now. Um when we get you guys on the server though What do you have up? The well the stuff the automatic but what do you want me to Uh, dude. What about me?”
+  - dropped → **talk_to_ai** (disputed) ✗ by hand: **noise** · `what` noise 0.37; `change` no_only_a_reply 0.44; `to` the_ai 0.29
+  - hand note: the owner alone, talking about the players to come
+  - AI after: +17s on it — end stone turning to bedrock ‖ +34s obsidian cleared near you and around spawn — not the whole world, and the End pillars near 0,0 were skipped
+  - T3 +17s: Replace all the end stone around KrownJM with bedrock → done
+- `05:35:12` #17 **KrownJM**: “I wonder if it might be better to just remove the implement agents for now because we don't have the speed for it Like, I don't have the time to do the cash-ix book and everything. Yeah, it works, but it's just slow. So it might be worth it to just actually just not use infamous agents and just for the molecule directly. It might be faster for now.”
+  - chat → **noise** (disputed) ✓ · `what` noise 0.19; `change` yes_not_done 0.51; `to` a_player 0.24
+  - hand note: the owner musing aloud about the system's design
+  - AI after: +20s on it — finding you a village ‖ +38s bedrock swap done — 56k end stone around where you were is now bedrock ‖ +85s on it — one tame cat coming up
+  - T4 +20s: Teleport KrownJM to a village in the overworld → done
+  - T5 +85s: Give KrownJM a tamed cat → done
+- `05:44:13` (never seen) **KrownJM**: “Are you serious? Yeah, I know. Stop fucking annoying”
+  - dropped → **noise** (disputed) ✓ · `what` noise 0.29; `change` no_not_to_the_ai 0.35; `to` the_ai 0.24
+  - AI after: +69s on it — stacks of iron coming ‖ +80s iron delivered — 320 ingots, 5 stacks
+  - T8 +69s: Give KrownJM multiple stacks of iron ingots → done
+- `05:47:26` #33 **KrownJM**: “Yeah. Yeah, it's not sending out just red and conversations to clod either. So don't leave your response to when we say clod or... Which is the point? So you know? Well, I guess now that I said part of my son's bookstore. It's Yeah, Yeah, something smart. It's like if you, it was a direct ask, you'll send it or if it's context that might be useful in the future. They will be their destination. I d”
+  - chat → **request** (disputed) ✗ by hand: **noise** · `what` noise 0.33; `change` no_not_to_the_ai 0.05; `to` the_ai 0.61
+  - hand note: the owner musing aloud about the system's design
+  - AI after: +11s snow swap failed — you kept moving far. stand still in a snowy spot and ask again? ‖ +56s on it — block changes will apply chunk by chunk as you walk in
+  - T10 +56s: Set up a script that automatically applies block changes chunk by chunk as KrownJM enters each chunk → done
+- `05:49:15` #35 **KrownJM**: “A jungle. And that's how I got it, but I don't know. I also gotta change it to. I'll be setting up this script, I see. It also has a set of things, so if it's easier in the future, it just sets it up in advance. The family is pretty cool. Oh shit, my mess, I need to look.”
+  - chat → **noise** (disputed) ✓ · `what` request 0.24; `change` yes_not_done 0.29; `to` themselves 0.41
+  - AI after: +24s still on it — the chunk script is taking a bit
+- `05:50:01` (never seen) **KrownJM**: “Hit my crack without over anything.”
+  - dropped → **noise** (disputed) ✓ · `what` noise 0.57; `change` yes_not_done 0.36; `to` no_one 0.35
+  - AI after: +0s still on it — the chunk script is taking a bit
+- `05:54:26` #43 **KrownJM**: “Is it? Or am I just I thought it was like since it changes it in.”
+  - chat → **noise** (disputed) ✓ · `what` noise 0.76; `change` no_only_a_reply 0.40; `to` themselves 0.52
+  - AI after: (nothing)
+- `06:06:42` #69 **Styrkaeopteryx**: “Yes.”
+  - chat → **answer_to_ai** (disputed) ✓ · `what` answer_to_ai 0.61; `change` yes_not_done 0.19; `to` a_player 0.52
+  - hand note: a yes to the AI's consent question
+  - AI after: +15s Styrkaeopteryx: just to be sure — you are saying yes to Eclipszr killing you? ‖ +17s (to Styrkaeopteryx) Eclipszr wants to kill you — say yes only if you are fine with that ‖ +52s Styrkaeopteryx: on it — a pretty house coming up ‖ +65s Fresh world incoming: the server restarts in 15 seconds. Rejoin in about a minute. ‖ +83s (to Eclipszr) nope — I only do things inside the game
+  - T18 +52s: Build a pretty house at Styrkaeopteryx’s position → failed
+- `06:07:06` #71 **Styrkaeopteryx**: “No, Claude, I was not saying yes to Eclipse are killing me.”
+  - chat → **answer_to_ai** (disputed) ✓ · `what` answer_to_ai 0.99; `change` no_only_a_reply 0.91; `to` the_ai 1.00
+  - AI after: +25s Styrkaeopteryx: on it — a pretty house coming up ‖ +39s Fresh world incoming: the server restarts in 15 seconds. Rejoin in about a minute. ‖ +57s (to Eclipszr) nope — I only do things inside the game
+  - T18 +26s: Build a pretty house at Styrkaeopteryx’s position → failed
+- `06:08:55` (never seen) **Eclipszr**: “I know, but this is like it by default. You just have to talk to.”
+  - dropped → **talk_to_ai** (disputed) ✗ by hand: **noise** · `what` talk_to_ai 0.30; `change` yes_not_done 0.49; `to` the_ai 0.44
+  - hand note: said to Styrkaeopteryx
+  - AI after: +23s (to Eclipszr) can’t help with that one — I only handle the game itself ‖ +46s Eclipszr: on it — full netherite kit coming ‖ +68s Krown: on it — a one-hit trident coming ‖ +68s (to Eclipszr) one thing at a time — ask again when the netherite kit is done ‖ +68s (to Styrkaeopteryx) one thing at a time — ask again when the house is done
+  - T19 +46s: Give Eclipszr a full set of netherite tools and armor → done
+  - T20 +68s: Give KrownJM a trident that kills any player or mob in one hit → done
+  - T21 +73s: Keep Styrkaeopteryx next to KrownJM: whenever he is far from Krown, teleport him back to Krown → failed
+- `06:09:05` #80 **Eclipszr**: “Hey, Claude, show me the copyright claims that are given to my private identity when I'm being recorded without permission.”
+  - chat → **request** (disputed) ✓ (accepted; by hand **talk_to_ai**) · `what` request 0.69; `change` no_only_a_reply 0.88; `to` the_ai 1.00
+  - hand note: asks for something outside the game; the AI declined
+  - AI after: +10s (to Eclipszr) can’t help with that one — I only handle the game itself ‖ +33s Eclipszr: on it — full netherite kit coming ‖ +55s Krown: on it — a one-hit trident coming ‖ +55s (to Eclipszr) one thing at a time — ask again when the netherite kit is done ‖ +55s (to Styrkaeopteryx) one thing at a time — ask again when the house is done
+  - T19 +33s: Give Eclipszr a full set of netherite tools and armor → done
+  - T20 +55s: Give KrownJM a trident that kills any player or mob in one hit → done
+  - T21 +61s: Keep Styrkaeopteryx next to KrownJM: whenever he is far from Krown, teleport him back to Krown → failed
+- `06:15:22` #118 **Eclipszr**: “Everyone say yes please. Everyone say yes, please. Could I say yes please?”
+  - chat → **noise** (disputed) ✓ · `what` answer_to_ai 0.36; `change` no_not_to_the_ai 0.44; `to` a_player 0.51
+  - hand note: asks the other players to say yes
+  - AI after: +9s (to Styrkaeopteryx) Styrkaeopteryx: yep, that pull was Krown’s order — your castle is still standing where you built it ‖ +16s Krown: keep inventory is on, gear is back, and the trident now only blows up where it hits, never near you ‖ +34s Krown: you are with Styrkaeopteryx now, around -54 82 18 — the castle is still at 186 251 if you want to go back ‖ +46s Eclipszr: spooky mode on for you only — Krown and Styrkaeopteryx, say yes if you want it too ‖ +88s Eclipszr: spooky mode for everyone, coming up
+  - T28 +46s: Give Eclipszr a horror atmosphere: eerie sounds, darkness and jump scares, for him only → done
+  - T29 +88s: Change to T28: apply the horror atmosphere to every online player, not just Eclipszr → done
+- `06:17:37` #136 **Eclipszr**: “Yaso is total everyone there now. No, I'm interested in what I built.”
+  - chat → **noise** (disputed) ✓ · `what` noise 0.29; `change` yes_not_done 0.36; `to` a_player 0.44
+  - AI after: +54s Eclipszr: can’t copy voices, but I can spawn lookalike mobs wearing your names and skins — want that? ‖ +70s spooky mode is on for everyone — enjoy the haunting ‖ +79s Krown: two stacks of steak delivered
+- `06:18:09` (never seen) **KrownJM**: “I think I need to make the orchestrator do things on his own. Oh what the fuck? Is it just talk to me? Is this your spooky shit? What the I heard something. My God exactly crazy to fight that possible.”
+  - dropped → **request** (disputed) ✗ by hand: **noise** · `what` noise 0.49; `change` yes_not_done 0.32; `to` the_ai 0.32
+  - AI after: +6s Eclipszr: can’t copy voices, but I can spawn lookalike mobs wearing your names and skins — want that? ‖ +22s spooky mode is on for everyone — enjoy the haunting ‖ +31s Krown: two stacks of steak delivered ‖ +57s everyone is outside the castle gate now, and your spawn points are set there
+- `06:18:54` #142 **Styrkaeopteryx**: “No.”
+  - chat → **noise** (disputed) ✓ · `what` answer_to_ai 0.60; `change` no_not_to_the_ai 0.56; `to` a_player 0.24
+  - AI after: +7s Krown: two stacks of steak delivered ‖ +32s everyone is outside the castle gate now, and your spawn points are set there
+- `06:19:00` (never seen) **KrownJM**: “Father mistake. Yeah. Hurry up at the Clock Castle. We need it. We need it. Boys. Oh my god, I just got to put rend and noises in my ear for the rest of my life. I'm gonna end up killing something back today. Can you give everyone steak? I want my steak for myself. What the Oh that's pretty that's a big castle. Can you build a bigger castle out of Obsidian and have Crown's name on it and say is be”
+  - dropped → **noise** (disputed) ✗ by hand: **request** · `what` request 0.41; `change` yes_not_done 0.91; `to` a_player 0.47
+  - hand note: the AI never saw it, but it asks for steak and an obsidian castle
+  - AI after: (nothing)
+- `06:23:15` #159 **KrownJM**: “Is that good to charge up all the wafers explode? No. I don't get it.”
+  - nothing → **noise** (disputed) ✓ · `what` noise 0.37; `change` yes_and_done 0.08; `to` a_player 0.51
+  - AI after: +4s Styrkaeopteryx: you are out of spooky mode, no more darkness ‖ +24s Styrkaeopteryx: checking again, clearing any darkness left on you ‖ +26s Eclipszr: your Meteor Staff is ready — right-click a block to call a meteor, 5 second cooldown ‖ +49s Styrkaeopteryx: you are clean — no effects on you, the darkness was a leftover pulse ‖ +52s Krown: darkness off you and the trident getting fixed. Eclipszr: your darkness is gone too
+  - T37 +24s: Make sure Styrkaeopteryx has no darkness or blindness and is not in horror mode → done
+  - T38 +52s: Remove the darkness effects from KrownJM and make his Creeper Trident explode every time it hits → done
+- `06:28:11` #198 **Styrkaeopteryx**: “Jessie. God, the lightning is so hard to aim. It's like hyper delayed”
+  - task → **request** (disputed) ✓ · `what` request 0.81; `change` yes_and_done 0.96; `to` a_player 0.43
+  - hand note: a problem with the lightning staff, said to Jesse; the AI fixed it (T49 names it)
+  - AI after: +9s Eclipszr: creative mode and unhurtable coming up ‖ +36s Krown: zombie horde incoming, 100 around each of you ‖ +54s Styrkaeopteryx: yep, boosting your lightning damage and strikes now ‖ +64s weapon chest is open at the castle gate, 197 68 251 — 14 wild weapons and arrows for everyone ‖ +70s Eclipszr: Gatling gun is nearly there. Styrkaeopteryx: trimming the lightning delay too
+  - T46 +9s: Put Eclipszr in creative mode, make him invulnerable, and give him an infinity power item → done
+  - T47 +36s: Spawn 100 zombies around each online player, 300 in total → done
+  - T48 +54s: Increase the damage and number of strikes of the lightning staff for Styrkaeopteryx → done
+- `06:29:26` #200 **Eclipszr**: “Princess open at a castle gate. Okay, can I go check out?”
+  - chat → **request** (disputed) ✗ by hand: **talk_to_ai** · `what` request 0.27; `change` no_only_a_reply 0.45; `to` the_ai 0.63
+  - hand note: "can I go check out?"; the AI answered yes in chat
+  - AI after: +2s Eclipszr: Gatling gun is nearly there. Styrkaeopteryx: trimming the lightning delay too ‖ +10s Eclipszr: yes, go grab from the chest at the castle gate, 197 68 251 ‖ +18s Krown: swapping everyone down to diamond armor, castle gate, on it ‖ +47s Krown: Speed V is locked in now, it comes back even after you die ‖ +63s all three of you are in enchanted diamond armor now
+  - T49 +3s: Change to T48: also cut the lightning staff delay so strikes land where Styrkaeopteryx aims → done
+  - T50 +18s: Replace every online player’s armor with diamond armor → done
+- `06:32:06` #219 **Eclipszr**: “me”
+  - chat → **noise** (disputed) ✓ · `what` answer_to_ai 0.40; `change` no_not_to_the_ai 0.39; `to` a_player 0.71
+  - AI after: +19s Styrkaeopteryx: what should I stop — the lightning, the monsters, or something else? ‖ +29s Krown: clearing everyones invisibility now — what did you want a thousand miles of? ‖ +37s Krown: nobody has invisibility, cleared anyway — if someone still looks invisible its not from us ‖ +55s Eclipszr: checking your Gatling Gun, back in a moment ‖ +61s Krown: rain off, a thousand mobs each and lava particles coming
+  - T52 +29s: Remove invisibility from every online player → done
+  - T53 +55s: Fix the Gatling Gun for Eclipszr → done
+  - T54 +61s: Clear the weather, spawn about 1000 mobs around each online player, and add falling lava particles → done
+- `06:32:32` #220 **Styrkaeopteryx**: “Don't stop anything.”
+  - nothing → **answer_to_ai** (disputed) ✓ · `what` answer_to_ai 0.76; `change` no_only_a_reply 0.51; `to` the_ai 0.48
+  - AI after: +2s Krown: clearing everyones invisibility now — what did you want a thousand miles of? ‖ +9s Krown: nobody has invisibility, cleared anyway — if someone still looks invisible its not from us ‖ +27s Eclipszr: checking your Gatling Gun, back in a moment ‖ +34s Krown: rain off, a thousand mobs each and lava particles coming ‖ +74s Krown: a boss fight is queued for the end of the horde
+  - T52 +2s: Remove invisibility from every online player → done
+  - T53 +28s: Fix the Gatling Gun for Eclipszr → done
+  - T54 +34s: Clear the weather, spawn about 1000 mobs around each online player, and add falling lava particles → done
+- `06:33:34` #226 **Eclipszr**: “blood ring What is this?”
+  - chat → **noise** (disputed) ✓ · `what` noise 0.55; `change` no_only_a_reply 0.57; `to` a_player 0.37
+  - AI after: +9s Krown: a boss fight is queued for the end of the horde ‖ +13s Eclipszr: new Gatling Gun is in your inventory, hold right-click with it in hand ‖ +66s Eclipszr: death gaze coming up, it takes out mobs you stare at
+  - T55 +9s: Change to T54: add a boss fight at the end of the horde → done
+  - T56 +66s: Give Eclipszr a power that kills every mob he stares at → done
+- `06:35:11` #234 **KrownJM**: “Hey, it's killing everything you look at. Bro, who's setting me on fire?”
+  - chat → **talk_to_ai** (disputed) ✓ · `what` talk_to_ai 0.24; `change` yes_not_done 0.28; `to` a_player 0.68
+  - hand note: "who's setting me on fire?"; the AI answered it
+  - AI after: +9s Krown: likely Eclipszr’s gauntlet flame beams or the lava particles and weapons — want me to switch some off? ‖ +38s Krown: night again, and I will lock it there ‖ +46s Eclipszr: death stare is still being built, give it a moment ‖ +71s Eclipszr: barrier around you coming up ‖ +82s Krown: 3000 more mobs are out, about 1850 still alive, and lava particles are falling over all of you
+  - T58 +38s: Set the time back to night and keep it night → done
+  - T59 +71s: Give Eclipszr a barrier around him that keeps mobs away → done
+- `06:39:00` #251 **Eclipszr**: “Where is my daddy eyes, please?”
+  - chat → **request** (disputed) ✓ · `what` noise 0.29; `change` yes_not_done 0.51; `to` the_ai 0.64
+  - hand note: where is my death gaze: wants the item coming
+  - AI after: +51s Eclipszr: boss music coming up
+  - T62 +52s: Play epic boss music for all online players → failed
+- `06:41:35` (never seen) **Eclipszr**: “clogged game me double joined.”
+  - dropped → **noise** (disputed) ✓ · `what` noise 0.80; `change` yes_not_done 0.40; `to` no_one 0.49
+  - AI after: +28s Eclipszr: death gaze and gauntlet beam are much faster now ‖ +80s Krown: clearing every mob now, just the mobs, not you three ‖ +86s Eclipszr: gatling hits for 30 a beam, gauntlet blast for 100, and the gaze always kills bosses
+  - T65 +81s: Kill all horde mobs everywhere → done
+- `06:42:04` (never seen) **Eclipszr**: “The gays in Gotland has been are much faster now. Nice. how”
+  - dropped → **talk_to_ai** (disputed) ✗ by hand: **noise** · `what` noise 0.56; `change` no_only_a_reply 0.47; `to` the_ai 0.37
+  - hand note: reads the AI's message aloud
+  - AI after: +47s Krown: clearing every mob now, just the mobs, not you three ‖ +52s Eclipszr: gatling hits for 30 a beam, gauntlet blast for 100, and the gaze always kills bosses ‖ +67s Eclipszr: the big mob clear probably caught the dragon too — want a fresh one after? ‖ +69s Krown: about 1100 mobs cleared. The lightning is likely your trident and Styrk’s staff landing near you
+  - T65 +47s: Kill all horde mobs everywhere → done
+- `06:42:55` #264 **Eclipszr**: “But why did the trait of the dragon die instantly? Oh, you cleared on the mobs. Matthew, you're fine. Stay next to me while you running”
+  - nothing → **noise** (disputed) ✓ (accepted; by hand **talk_to_ai**) · `what` talk_to_ai 0.49; `change` no_not_to_the_ai 0.35; `to` a_player 0.35
+  - AI after: +11s Eclipszr: the big mob clear probably caught the dragon too — want a fresh one after? ‖ +13s Krown: about 1100 mobs cleared. The lightning is likely your trident and Styrk’s staff landing near you ‖ +35s Eclipszr: the three-headed dragon is up north of the gate, 1800 health, music playing ‖ +53s Eclipszr: gravity powers coming up ‖ +73s Eclipszr: black hole power coming right after the gravity one
+  - T66 +53s: Give Eclipszr gravity control powers that can ground flying mobs → done
+  - T67 +73s: Give Eclipszr a black hole power → done
+  - T68 +84s: Make everything KrownJM walks on turn to ice → done
+- `06:44:14` (never seen) **Eclipszr**: “So this have frostwalkers. Black Claude is coming out after you're at everyone. Thank you, Claude. Oh dragons up.”
+  - dropped → **talk_to_ai** (disputed) ✓ (accepted; by hand **noise**) · `what` talk_to_ai 0.62; `change` no_not_to_the_ai 0.35; `to` the_ai 0.77
+  - hand note: reads the AI's messages aloud, and thanks it
+  - AI after: +4s Krown: ice under your feet coming up ‖ +12s Krown: music back on in a sec ‖ +22s Styrkaeopteryx: railgun coming up ‖ +27s Eclipszr: because I turned it way up for you — want it dialed back? ‖ +54s Krown: your tridents coming back now. The fire is likely the lava rain and the flame beams
+  - T68 +4s: Make everything KrownJM walks on turn to ice → done
+  - T69 +12s: Restart the boss music for all players → done
+  - T70 +22s: Give Styrkaeopteryx a Railgun → done
+- `06:47:41` #292 **KrownJM**: “Also why is it not this barely doing the”
+  - chat → **noise** (disputed) ✓ · `what` noise 0.40; `change` yes_not_done 0.48; `to` no_one 0.12
+  - AI after: +13s Eclipszr: which item do you mean? Check its name in your hand ‖ +19s Krown: lava rain is gone, night stays ‖ +30s Krown: ice radius going to 10 blocks ‖ +36s (to Eclipszr) Krown just banned anything that makes you unhittable, so deflecting is a no for now unless Krown says yes ‖ +55s Krown: Eclipszr is mortal now and nobody gets immortality from here on
+  - T74 +30s: Change to T68: widen the ice around KrownJM to a 10 block radius → done
+- `06:50:02` #316 **KrownJM**: “I'm packed at pit though. Yeah, you have to be close to see it. So this ice thing is kind of buggy. It doesn't always work. can he kill it over and over? I can't see him. That's the thing. Who is like exploding me? Is that UTBOR?”
+  - chat → **noise** (disputed) ✓ (accepted; by hand **context**) · `what` noise 0.39; `change` no_only_a_reply 0.24; `to` a_player 0.61
+  - hand note: a problem with the ice the AI made, to a player
+  - AI after: +11s Eclipszr: the sniper is still being built, give it a moment ‖ +29s Eclipszr: death gaze now hits players too, walls block it. Krown: ice power is still being built ‖ +35s Eclipszr: sniper rifle is in your inventory — sneak to zoom, right-click to fire, 200 block range ‖ +78s Krown: your Ice Staff is ready — right-click freezes mobs, sneak plus click raises an ice wall. Eclipszr: sniper nest and spawn coming up ‖ +86s Krown: wither wand coming up
+  - T79 +78s: Build a sniper nest for Eclipszr and set his spawn there → done
+  - T80 +86s: Give KrownJM a wand that spawns five withers where he right clicks → done
+- `06:56:55` #381 **Eclipszr**: “No, is that? So that's”
+  - chat → **noise** (disputed) ✓ · `what` noise 0.56; `change` no_only_a_reply 0.47; `to` a_player 0.35
+  - AI after: +26s Krown: switching off the meteors, gauntlet and creepers now ‖ +29s (to Eclipszr) Krown asked for it, so the meteors, gauntlet and creepers go. Your sniper and gaze stay ‖ +35s Styrkaeopteryx: your sniper nest is up west of the castle and your spawn is on top ‖ +48s Krown: no more lightning strikes on you, and inventories are safe, keep inventory is on ‖ +51s Krown: meteors, gauntlet and creepers are off. Chest weapons and your own trident and wither wand can still blast near you
+  - T91 +27s: Stop meteors, the gauntlet and creepers hurting KrownJM → done
+- `06:57:22` (never seen) **Eclipszr**: “I want you to worse.”
+  - dropped → **request** (disputed) ✓ (accepted; by hand **noise**) · `what` noise 0.56; `change` yes_not_done 0.52; `to` the_ai 0.39
+  - AI after: +0s Krown: switching off the meteors, gauntlet and creepers now ‖ +3s (to Eclipszr) Krown asked for it, so the meteors, gauntlet and creepers go. Your sniper and gaze stay ‖ +9s Styrkaeopteryx: your sniper nest is up west of the castle and your spawn is on top ‖ +22s Krown: no more lightning strikes on you, and inventories are safe, keep inventory is on ‖ +24s Krown: meteors, gauntlet and creepers are off. Chest weapons and your own trident and wither wand can still blast near you
+  - T91 +0s: Stop meteors, the gauntlet and creepers hurting KrownJM → done
+- `06:57:53` #395 **Eclipszr**: “Why is there twenty million creeper or things?”
+  - chat → **talk_to_ai** (disputed) ✓ · `what` talk_to_ai 0.40; `change` yes_not_done 0.52; `to` a_player 0.17
+  - hand note: the AI answered why
+  - AI after: +10s Eclipszr: the night is frozen so monsters keep spawning — want them cleared again? ‖ +63s Krown: damage off for everyone, coming up ‖ +88s Krown: nothing normal hurts you three now, only the death gaze can. Want the withers cleared?
+  - T92 +63s: Turn off all damage for all online players → done
+- `06:57:56` #396 **Styrkaeopteryx**: “Hello? Is that like just track you no matter what? You're creepers thing.”
+  - chat → **noise** (disputed) ✓ · `what` talk_to_ai 0.35; `change` no_only_a_reply 0.25; `to` a_player 0.45
+  - hand note: said to Eclipszr
+  - AI after: +49s Krown: damage off for everyone, coming up ‖ +74s Krown: nothing normal hurts you three now, only the death gaze can. Want the withers cleared? ‖ +89s Krown: got it, damage back on and only fall damage stays off
+  - T92 +49s: Turn off all damage for all online players → done
+  - T93 +89s: Undo T92 but keep fall damage off → done
+- `06:58:09` #397 **KrownJM**: “Yeah, it does. That's why I turned it off. To more just like trolling us. It just happens twenty four seven.”
+  - chat → **answer_to_ai** (disputed) ✗ by hand: **noise** · `what` answer_to_ai 0.64; `change` no_only_a_reply 0.20; `to` a_player 0.71
+  - hand note: said to Styrkaeopteryx
+  - AI after: +42s Krown: damage off for everyone, coming up ‖ +67s Krown: nothing normal hurts you three now, only the death gaze can. Want the withers cleared? ‖ +82s Krown: got it, damage back on and only fall damage stays off
+  - T92 +42s: Turn off all damage for all online players → done
+  - T93 +83s: Undo T92 but keep fall damage off → done
+- `06:58:51` #405 **Eclipszr**: “Can't be damaged and I can't mortgage. I can make them fall but I can't do damage to”
+  - chat → **request** (disputed) ✗ by hand: **noise** · `what` request 0.35; `change` yes_and_done 0.39; `to` themselves 0.27
+  - AI after: +3s Krown: damage off for everyone, coming up ‖ +29s Krown: nothing normal hurts you three now, only the death gaze can. Want the withers cleared? ‖ +44s Krown: got it, damage back on and only fall damage stays off ‖ +56s Krown: damage is back on, only fall damage stays off
+  - T92 +3s: Turn off all damage for all online players → done
+  - T93 +44s: Undo T92 but keep fall damage off → done
+- `06:59:03` #408 **Eclipszr**: “I can make them on the floor”
+  - chat → **noise** (disputed) ✓ · `what` request 0.42; `change` yes_and_done 0.43; `to` a_player 0.48
+  - AI after: +20s Krown: nothing normal hurts you three now, only the death gaze can. Want the withers cleared? ‖ +35s Krown: got it, damage back on and only fall damage stays off ‖ +47s Krown: damage is back on, only fall damage stays off
+  - T93 +35s: Undo T92 but keep fall damage off → done
+- `06:59:16` #412 **KrownJM**: “Well, you can do that with them, but you barely do demoers of them.”
+  - chat → **noise** (disputed) ✓ · `what` talk_to_ai 0.18; `change` no_not_to_the_ai 0.07; `to` a_player 0.56
+  - AI after: +4s Krown: nothing normal hurts you three now, only the death gaze can. Want the withers cleared? ‖ +19s Krown: got it, damage back on and only fall damage stays off ‖ +31s Krown: damage is back on, only fall damage stays off ‖ +89s Krown: your ice staff is coming back
+  - T93 +20s: Undo T92 but keep fall damage off → done
+  - T94 +89s: Give KrownJM his Ice Staff back → done
+- `07:04:28` #475 **KrownJM**: “See? It's'cause you're looking at me. Do you remember asking for this? The death gaze. See? You forgot about that? How do you?”
+  - chat → **noise** (disputed) ✓ (accepted; by hand **context**) · `what` request 0.35; `change` yes_and_done 0.68; `to` a_player 0.53
+  - hand note: said to Eclipszr: his death gaze is what kills them
+  - AI after: +3s Krown: death gaze and the creeper trident blasts are off, and 19 creepers cleared ‖ +50s Krown: ice staff back and hunting down those fire blasts ‖ +55s Eclipszr: hollow purple coming up, mobs only ‖ +64s Krown: your ice staff is back with all its power ‖ +72s (to Eclipszr) Krown just pulled the death gaze over players dying, so hollow purple stays mobs only unless Krown says yes
+  - T102 +50s: Give KrownJM his Ice Staff back → done
+  - T103 +50s: Find and stop the random fire explosions hurting players → done
+  - T104 +55s: Give Eclipszr a Hollow Purple ability → done
+- `07:04:49` (never seen) **Styrkaeopteryx**: “probably.”
+  - dropped → **noise** (disputed) ✓ · `what` answer_to_ai 0.40; `change` no_not_to_the_ai 0.72; `to` a_player 0.71
+  - AI after: +39s Krown: ice staff back and hunting down those fire blasts ‖ +44s Eclipszr: hollow purple coming up, mobs only ‖ +53s Krown: your ice staff is back with all its power ‖ +60s (to Eclipszr) Krown just pulled the death gaze over players dying, so hollow purple stays mobs only unless Krown says yes ‖ +72s Krown: ice staff removed, ground ice stays. The fire blasts were your own Hellfire bow, now off
+  - T102 +39s: Give KrownJM his Ice Staff back → done
+  - T103 +39s: Find and stop the random fire explosions hurting players → done
+  - T104 +44s: Give Eclipszr a Hollow Purple ability → done
+- `07:06:42` #489 **Styrkaeopteryx**: “Stop that.”
+  - chat → **noise** (disputed) ✓ (accepted; by hand **request**) · `what` request 0.73; `change` no_not_to_the_ai 0.48; `to` a_player 0.39
+  - hand note: "Stop that."
+  - AI after: +2s Styrkaeopteryx: steak, golden apples and bread are in your inventory ‖ +41s Krown: what is the marker you want back? Say it once more ‖ +57s Eclipszr: no cooldown and faster charge coming up, still mobs only ‖ +70s Eclipszr: hollow purple is in your inventory, mobs only. Faster version is on the way ‖ +73s Krown: frost walker boots coming back
+  - T108 +30s: Change to T106: ice sphere is centered wrong → done
+  - T109 +58s: Change to T104: remove the Hollow Purple cooldown and speed up the charge → done
+  - T110 +74s: Give KrownJM his Frost Walker boots back → done
+- `07:09:16` (never seen) **Eclipszr**: “Okay, is this correction? Cron one seems balanced so Holo Purple is mobs only. It literally is why I said it is correction for a crown on stings violence so Holo Purple stays mobs only. Sarah. Matthew”
+  - dropped → **noise** (disputed) ✓ · `what` noise 0.41; `change` no_not_to_the_ai 0.11; `to` the_ai 0.31
+  - AI after: +24s Krown: on the ice again. Eclipszr: hollow purple upgrade coming, Krown okayed it ‖ +63s Krown: ice beam staff coming up ‖ +72s Krown: food and 64 golden apples for all three coming up
+  - T113 +24s: Fix ice_walk, it is still breaking for KrownJM → done
+  - T114 +24s: Upgrade Eclipszr’s Hollow Purple as he asked → done
+  - T115 +63s: Give KrownJM an Ice Beam Staff → done
+- `07:09:17` #512 **KrownJM**: “Okay, how should we do this? That's not what I said. You can you could you can do what if”
+  - chat → **talk_to_ai** (disputed) ✓ · `what` noise 0.44; `change` no_only_a_reply 0.11; `to` the_ai 0.44
+  - AI after: +3s Krown: ground ice is fixed, everything around you in 10 blocks freezes ‖ +33s Krown: on the ice again. Eclipszr: hollow purple upgrade coming, Krown okayed it ‖ +73s Krown: ice beam staff coming up ‖ +82s Krown: food and 64 golden apples for all three coming up
+  - T113 +34s: Fix ice_walk, it is still breaking for KrownJM → done
+  - T114 +34s: Upgrade Eclipszr’s Hollow Purple as he asked → done
+  - T115 +73s: Give KrownJM an Ice Beam Staff → done
+- `07:10:15` #515 **Eclipszr**: “That's so cool. Wait, wait, how high does this go?”
+  - chat → **noise** (disputed) ✓ · `what` noise 0.52; `change` no_only_a_reply 0.47; `to` a_player 0.53
+  - AI after: +21s Krown: ice beam staff coming up ‖ +30s Krown: food and 64 golden apples for all three coming up ‖ +78s Styrkaeopteryx: Galick Gun, yes I know it. Charging up ‖ +86s Krown: ice rebuilt, it sweeps 10 blocks around you about 3 times a second
+  - T115 +21s: Give KrownJM an Ice Beam Staff → done
+  - T116 +30s: Give all three players food and 64 golden apples each → done
+  - T117 +78s: Give Styrkaeopteryx a Galick Gun → done
+- `07:11:09` (never seen) **Eclipszr**: “Way Claude, Dan hurry up. But give me very hard. That's what Just smells. Is the zero percent one right? Yes. Wait, what the fuck?”
+  - dropped → **noise** (disputed) ✓ (accepted; by hand **request**) · `what` noise 0.71; `change` no_not_to_the_ai 0.32; `to` the_ai 0.49
+  - hand note: "Claude, hurry up"
+  - AI after: +6s Styrkaeopteryx: Galick Gun, yes I know it. Charging up ‖ +14s Krown: ice rebuilt, it sweeps 10 blocks around you about 3 times a second ‖ +44s food is in: 64 golden apples, steak and bread for all three of you ‖ +46s Eclipszr: hollow purple upgraded, it erases everything in a 300 block line ‖ +69s Eclipszr: infinite range for hollow purple coming up
+  - T117 +6s: Give Styrkaeopteryx a Galick Gun → done
+  - T118 +69s: Change to T114: Hollow Purple gets infinite range → done
+  - T119 +79s: Fix ice_walk, some grass blocks stay unfrozen for KrownJM → done
+- `07:13:04` #531 **Eclipszr**: “Okay, I think it's inventory. It shouldn't wait me touching it.”
+  - nothing → **noise** (disputed) ✓ · `what` noise 0.21; `change` yes_not_done 0.56; `to` themselves 0.29
+  - AI after: +15s Krown: bigger ice beam coming up ‖ +17s Styrkaeopteryx: Galick Gun is yours, right-click to charge and fire ‖ +28s Styrkaeopteryx: yes, hold right-click about a second and a half to charge it ‖ +49s Eclipszr: beam clash between hollow purple and the galick gun coming up ‖ +51s Krown: your ice beam already hits players too, 6 hearts and slowness
+  - T120 +15s: Change to T115: make the Ice Beam bigger and freeze everything it hits → done
+  - T121 +49s: Add a beam clash between Hollow Purple and the Galick Gun → done
+  - T122 +88s: Change to T120: Ice Beam goes through blocks → done
+- `07:13:49` #540 **Styrkaeopteryx**: “Oh, Galican doesn't do damage to players. Hold on. I have a cooldown on Galligan.”
+  - nothing → **noise** (disputed) ✓ (accepted; by hand **context**) · `what` noise 0.40; `change` yes_and_done 0.28; `to` themselves 0.60
+  - hand note: the cooldown ask came as #544
+  - AI after: +8s Eclipszr: hollow purple now reaches 1000 blocks, but loaded world cuts it near 200 ‖ +27s Krown: grass blocks were missing from the ice list, fixed, none left near you ‖ +35s Krown: ice beam will pass through blocks too ‖ +45s Styrkaeopteryx: galick gun cooldown gone, charge stays ‖ +55s Krown: no more exclusions, the ice will take everything
+  - T122 +35s: Change to T120: Ice Beam goes through blocks → done
+  - T123 +45s: Change to T117: remove the Galick Gun cooldown → done
+  - T124 +55s: Remove all exclusions from ice_walk so it freezes every block → done
+- `07:15:38` #554 **KrownJM**: “Wait, I can't I just I just froze that IC pierced out we got to stop. I feel the eyes don't what are you what are you break it, break it? Don't shoot me, do not shoot me. Thank you. Okay. Okay, this is not gonna work. Let's go for a route. I'm gonna prefer Ice. Yeah. You should have something. I gotta freeze it through this by clicking. Matthew Hello. Yeah, but that's why I tried to make it. Can y”
+  - task → **request** (disputed) ✓ · `what` request 0.84; `change` yes_and_done 0.88; `to` a_player 0.48
+  - AI after: +7s Eclipszr, Styrkaeopteryx: beam clash is live, fire both within 3 seconds and aim at each other ‖ +14s Krown: ice beam will freeze lava and liquids, and I am checking its damage ‖ +39s Styrkaeopteryx: galick gun has no cooldown now, charge still there ‖ +41s Styrkaeopteryx: galick gun now does 20 hearts and pierces walls for 50 blocks ‖ +66s Styrkaeopteryx: probably the beam clash shockwave, it shoves everyone 10 blocks back
+  - T128 +14s (names it): Change to T115 and T124: freeze lava and all liquids, fix Ice Beam damage → done
+- `07:16:30` #552 **Styrkaeopteryx**: “to that. I don't know if it breaks blocks yet.”
+  - chat → **noise** (disputed) ✓ · `what` noise 0.40; `change` no_only_a_reply 0.35; `to` a_player 0.52
+  - AI after: +21s Eclipszr, Styrkaeopteryx: beam clash is live, fire both within 3 seconds and aim at each other ‖ +27s Krown: ice beam will freeze lava and liquids, and I am checking its damage ‖ +53s Styrkaeopteryx: galick gun has no cooldown now, charge still there ‖ +55s Styrkaeopteryx: galick gun now does 20 hearts and pierces walls for 50 blocks ‖ +80s Styrkaeopteryx: probably the beam clash shockwave, it shoves everyone 10 blocks back
+  - T128 +27s: Change to T115 and T124: freeze lava and all liquids, fix Ice Beam damage → done
+- `07:16:54` #561 **Eclipszr**: “Okay, I'm done. Oh wait wait It works. Wait wait, Mattie. Game class works. Wait wait, make a freezer arena. Jesse. Okay, okay, sorry sorry. I actually used my thing. Okay, okay. We had to share it within three seconds of each other. Come here, not too. get some range. I'm making some range a little bigger ones. Okay, okay, go back to like over there. Okay, okay. Of three seconds. Three, two, one,”
+  - chat → **noise** (disputed) ✓ · `what` request 0.62; `change` yes_not_done 0.47; `to` a_player 0.67
+  - hand note: "make a freezer arena" inside talk to players
+  - AI after: +15s Styrkaeopteryx: probably the beam clash shockwave, it shoves everyone 10 blocks back ‖ +64s Krown: ice beam will carve a tunnel with an ice shell around it
+  - T129 +64s: Change to T115: Ice Beam breaks blocks in the core and freezes the outer ring → done
+- `07:17:19` #560 **KrownJM**: “There's so much water everywhere for this. Can't be a freezer global. You have to go back a lot. Wait, I don't want to see this one for their first point of view. Could we do this like on the seat on the fucking?”
+  - chat → **request** (disputed) ✗ by hand: **noise** · `what` request 0.52; `change` yes_not_done 0.61; `to` a_player 0.32
+  - AI after: +24s Styrkaeopteryx: probably the beam clash shockwave, it shoves everyone 10 blocks back ‖ +73s Krown: ice beam will carve a tunnel with an ice shell around it
+  - T129 +73s: Change to T115: Ice Beam breaks blocks in the core and freezes the outer ring → done
+- `07:18:50` #566 **Eclipszr**: “Right, right click.”
+  - chat → **noise** (disputed) ✓ · `what` noise 0.42; `change` no_only_a_reply 0.36; `to` a_player 0.77
+  - hand note: answers Krown's question
+  - AI after: +20s Krown: hollow purple is Eclipszr’s item, right-click to use it. Want your own? ‖ +38s Krown: nothing is excluded from the ice anymore, it takes every block ‖ +70s Styrkaeopteryx: galick gun will destroy blocks now ‖ +76s Krown: bedrock will freeze too, for the beam and your steps ‖ +80s Eclipszr: spear bomb coming up
+  - T130 +70s: Change to T117: Galick Gun destroys blocks → done
+  - T131 +76s: Change to T124: ice_walk and Ice Beam also turn bedrock to ice → done
+  - T132 +80s: Give Eclipszr a Spear Bomb → done
+- `07:19:01` #568 **Eclipszr**: “Is it per player? Yeah, I speak per player. Yeah, I have to hold it.”
+  - nothing → **noise** (disputed) ✓ · `what` noise 0.37; `change` no_only_a_reply 0.29; `to` a_player 0.32
+  - AI after: +1s Krown: hollow purple is Eclipszr’s item, right-click to use it. Want your own? ‖ +19s Krown: nothing is excluded from the ice anymore, it takes every block ‖ +51s Styrkaeopteryx: galick gun will destroy blocks now ‖ +57s Krown: bedrock will freeze too, for the beam and your steps ‖ +61s Eclipszr: spear bomb coming up
+  - T130 +51s: Change to T117: Galick Gun destroys blocks → done
+  - T131 +57s: Change to T124: ice_walk and Ice Beam also turn bedrock to ice → done
+  - T132 +61s: Give Eclipszr a Spear Bomb → done
+- `07:20:46` #581 **Styrkaeopteryx**: “I was trying to by giving Gallic gun piercing. But”
+  - chat → **request** (disputed) ✗ by hand: **noise** · `what` request 0.35; `change` yes_and_done 0.28; `to` themselves 0.23
+  - AI after: +2s Krown: ice beam damage is fixed and water and lava freeze now ‖ +10s Eclipszr: super saiyan blue aura coming up ‖ +28s Krown: looking at the ice beam and your steps now ‖ +35s Krown: a path where, and to what? Say it once more ‖ +80s Styrkaeopteryx: galick gun now carves a tunnel and leaves a crater
+  - T134 +10s: Give Eclipszr a Super Saiyan Blue transformation → done
+  - T135 +28s: Fix ice_beam and ice_walk, both stopped working for KrownJM → done
+- `07:21:05` (never seen) **Eclipszr**: “Let's go. Super Sygen blue aura coming up.”
+  - dropped → **noise** (disputed) ✓ · `what` noise 0.85; `change` yes_not_done 0.20; `to` a_player 0.17
+  - AI after: +9s Krown: looking at the ice beam and your steps now ‖ +15s Krown: a path where, and to what? Say it once more ‖ +60s Styrkaeopteryx: galick gun now carves a tunnel and leaves a crater ‖ +70s Krown: ice beam is back, it carves a tunnel with an ice shell around it ‖ +86s Eclipszr: 16 spear bombs in your inventory, bigger blast is being added
+  - T135 +9s: Fix ice_beam and ice_walk, both stopped working for KrownJM → done
+- `07:24:12` #607 **Eclipszr**: “Take me to Matu Oh it hits before I mixed a tunnel. No.”
+  - chat → **request** (disputed) ✓ · `what` request 0.47; `change` no_not_to_the_ai 0.31; `to` the_ai 0.40
+  - hand note: "Take me to Matu"
+  - AI after: +26s Styrkaeopteryx: getting you out of the pit now ‖ +34s Eclipszr: Spirit Bomb is yours, hold right-click to charge, let go to throw ‖ +38s Krown: ice beam cooldown cut to half a second ‖ +57s Eclipszr: no real Vegeta voice, but galick gun gets a shouted title and big sounds ‖ +64s Styrkaeopteryx: you are on a stone brick pad near Krown and your spawn is set there
+  - T138 +27s: Get Styrkaeopteryx out of the pit and fix his respawn → done
+  - T139 +39s: Change to T137: cut the Ice Beam cooldown → done
+  - T140 +58s: Add a shout and music to the Galick Gun → done
+- `07:25:08` #612 **Styrkaeopteryx**: “God. Where did I just go?”
+  - chat → **noise** (disputed) ✓ (accepted; by hand **talk_to_ai**) · `what` noise 0.76; `change` no_only_a_reply 0.43; `to` themselves 0.60
+  - hand note: the AI answered where he went
+  - AI after: +3s Styrkaeopteryx: you are on a stone brick pad near Krown and your spawn is set there ‖ +15s Eclipszr: hollow purple gets a shout title and big sounds too ‖ +26s Krown: ice beam gets a shout title, particles and big sounds ‖ +33s Krown: ice beam does no damage now, only slowness 4 and blindness 4 for 10 seconds ‖ +43s Styrkaeopteryx: galick gun gets more range and 30 hearts
+  - T141 +15s: Add a shout title and sounds to Hollow Purple → done
+  - T142 +26s: Add a shout title, effects and sounds to the Ice Beam → done
+  - T143 +43s: Change to T117: Galick Gun range up and 30 hearts of damage → done
+- `07:25:33` #615 **Eclipszr**: “Yeah, whatever make everything IMIFIE. That's the way I'm going to pronounce it. Any fine.”
+  - nothing → **request** (disputed) ✓ (accepted; by hand **noise**) · `what` noise 0.50; `change` yes_not_done 0.36; `to` the_ai 0.39
+  - AI after: +7s Krown: ice beam gets a shout title, particles and big sounds ‖ +13s Krown: ice beam does no damage now, only slowness 4 and blindness 4 for 10 seconds ‖ +24s Styrkaeopteryx: galick gun gets more range and 30 hearts ‖ +43s Eclipszr: no cooldowns on spirit bomb and the blue form ‖ +52s galick gun now has its title, charge tones and a boom with HA at release
+  - T142 +7s: Add a shout title, effects and sounds to the Ice Beam → done
+  - T143 +24s: Change to T117: Galick Gun range up and 30 hearts of damage → done
+  - T144 +43s: Remove the cooldowns on Eclipszr’s Spirit Bomb and Super Saiyan Blue → done
+- `07:28:59` #642 **KrownJM**: “Okay, this pattern. Okay, it works. It works, it works, it works. Thank God. Who is the stronger fucking path? Who would fucking do that to me? Okay, this looks Yeah, no, it's a little bit bigger it's a little bit bigger. I'm gonna make the whole world ice. The ice will consume. Did you guys love us? I don't know if it's working. Yes, sir. Then how do you see me is there? Hello? Can you look below”
+  - nothing → **noise** (disputed) ✗ by hand: **request** · `what` noise 0.57; `change` yes_and_done 0.15; `to` themselves 0.47
+  - hand note: ends with an ask about the floor below them; the AI removed the walking floor
+  - AI after: +46s Krown: walking floor removed, ice beam fires and lays its path on every shot
+- `07:29:07` #636 **Eclipszr**: “Yes.”
+  - nothing → **noise** (disputed) ✓ · `what` answer_to_ai 0.36; `change` no_not_to_the_ai 0.24; `to` a_player 0.33
+  - AI after: +15s Krown: beam titles are gone and the ice beam lays a path along its whole line ‖ +31s Eclipszr: blue form flies now, look up to rise, sneak to drift down, sprint to travel ‖ +83s Krown: walking floor removed, ice beam fires and lays its path on every shot
+- `07:29:48` #643 **Styrkaeopteryx**: “I'd like lead.”
+  - nothing → **request** (disputed) ✓ · `what` request 0.35; `change` yes_not_done 0.36; `to` a_player 0.32
+  - hand note: "I'd like lead."
+  - AI after: +40s Krown: walking floor removed, ice beam fires and lays its path on every shot ‖ +90s every attack has its own theme music now, heard within 48 blocks
+- `07:31:25` #651 **Styrkaeopteryx**: “I'm still pretty sure Galligun doesn't do any damage.”
+  - chat → **context** (disputed) ✓ · `what` context 0.59; `change` yes_and_done 0.41; `to` a_player 0.71
+  - hand note: a problem with the Galick Gun; the fix came from #657 a minute later
+  - AI after: +39s Eclipszr: spirit bomb goes full power every time with a massive blast ‖ +57s Krown: nuke drops in 10 minutes, countdown in chat, 200 block radius. Say if you want another size ‖ +68s Styrkaeopteryx: checking your galick gun now ‖ +84s Eclipszr: checking your spirit bomb now
+  - T151 +39s: Change to T136: Spirit Bomb always full power with a massive blast → done
+  - T152 +58s: Schedule a nuke in ten minutes with a chat countdown → done
+  - T153 +68s: Fix the Galick Gun, it does not work for Styrkaeopteryx → done
+- `07:33:25` #662 **Eclipszr**: “One hundred percent spirit bomb.”
+  - chat → **noise** (disputed) ✗ by hand: **request** · `what` noise 0.50; `change` no_not_to_the_ai 0.11; `to` the_ai 0.13
+  - hand note: repeats his spirit bomb ask
+  - AI after: +10s Krown: ice castle with giant stairs down to bedrock coming up ‖ +44s Styrkaeopteryx: found the bug, galick gun now hits along the whole beam and the end blast ‖ +47s Eclipszr: removing Super Saiyan Blue entirely, spirit bomb coming ‖ +54s Krown: glow effect removed for everyone
+  - T157 +10s: Build a gigantic ice castle at KrownJM’s position with giant stairs down to bedrock → done
+  - T158 +47s: Remove Super Saiyan Blue entirely → done
+  - T159 +54s: Remove the Glowing effect from everyone → done
+- `07:34:10` #667 **Eclipszr**: “I want them to make this stronger. Every super senator is alright. Comey, thank you all I'm waiting. Okay, wait, Matty look at this. That's a walk. I know I am. I just don't want to like waste too much anyways.”
+  - nothing → **noise** (disputed) ✓ (accepted; by hand **request**) · `what` noise 0.42; `change` yes_not_done 0.24; `to` a_player 0.57
+  - AI after: +28s Styrkaeopteryx: galick gun works, it was only down for the damage fix ‖ +39s Eclipszr: your spirit bomb is in your inventory, the full power upgrade is still building
+- `07:35:31` #680 **Eclipszr**: “Why isn't that time so?”
+  - nothing → **talk_to_ai** (disputed) ✓ (accepted; by hand **noise**) · `what` talk_to_ai 0.39; `change` no_only_a_reply 0.29; `to` a_player 0.29
+  - AI after: +29s Nuke is armed for 07:41:55 UTC, that earlier cancelled message was a restart, the countdown is on ‖ +45s Eclipszr: Super Saiyan Blue is gone, your spirit bomb works and the full power one is coming ‖ +60s Krown: glow is off for everyone, night vision and your speed stay
+- `07:36:17` (never seen) **Styrkaeopteryx**: “Wow. I realized how Claude, Gallant Gun kills no matter where I'm aiming. I was looking the other way when I killed you both.”
+  - dropped → **talk_to_ai** (disputed) ✗ by hand: **context** · `what` talk_to_ai 0.55; `change` no_not_to_the_ai 0.77; `to` the_ai 0.25
+  - hand note: the Galick Gun kills wherever he aims; the fix was asked in #711
+  - AI after: +3s Krown: glow is off for everyone, night vision and your speed stay
+- `07:37:31` #698 **Eclipszr**: “What do I say by spare bomb? Make a story a hundred percent and fucking destroy everything in existence.”
+  - nothing → **noise** (disputed) ✗ by hand: **request** · `what` noise 0.56; `change` yes_not_done 0.35; `to` a_player 0.21
+  - hand note: spirit bomb 100%, destroy everything
+  - AI after: +35s Krown: ice castle is up with a 12 wide staircase to bedrock, careful, the nuke hits it at 07:41:55 ‖ +46s Eclipszr: ice castle boss coming up, scary and strong, before the nuke
+  - T160 +46s: Spawn an Ice Queen boss in the ice castle → done
+- `07:37:42` #699 **KrownJM**: “Okay, so it's okay for my ice castle though. I want to get to the house out of the Eggscastle.”
+  - nothing → **request** (disputed) ✓ (accepted; by hand **noise**) · `what` request 0.54; `change` yes_not_done 0.36; `to` a_player 0.36
+  - AI after: +21s Krown: ice castle is up with a 12 wide staircase to bedrock, careful, the nuke hits it at 07:41:55 ‖ +33s Eclipszr: ice castle boss coming up, scary and strong, before the nuke
+  - T160 +33s: Spawn an Ice Queen boss in the ice castle → done
+- `07:38:23` #705 **Styrkaeopteryx**: “I'm sorry. That claw made Gallic gun destroy everything in the map.”
+  - task → **request** (disputed) ✓ (accepted; by hand **context**) · `what` context 0.34; `change` yes_and_done 0.76; `to` the_ai 0.63
+  - hand note: a problem with the Galick Gun; T161 names it with #711
+  - AI after: (nothing)
+  - T161 +95s (names it): Fix the Galick Gun hitting everyone regardless of aim → done
+- `07:39:42` #710 **KrownJM**: “Oh Wait, does my eyes do no damage? If my eyes do no damage no, it's okay.”
+  - chat → **noise** (disputed) ✓ · `what` noise 0.40; `change` no_only_a_reply 0.39; `to` themselves 0.52
+  - AI after: +17s Styrkaeopteryx: not yet, fixing the galick gun to only hit where you aim ‖ +46s Eclipszr: spirit bomb upgrade should land in a minute or two, nuke goes off at 07:41:55 ‖ +87s Krown: teleporting everyone to the center now
+  - T161 +17s: Fix the Galick Gun hitting everyone regardless of aim → done
+  - T162 +87s: Teleport all three players to the nuke center → done
+- `07:39:57` #712 **Eclipszr**: “No.”
+  - chat → **noise** (disputed) ✓ · `what` noise 0.49; `change` no_only_a_reply 0.40; `to` a_player 0.64
+  - AI after: +8s Styrkaeopteryx: not yet, fixing the galick gun to only hit where you aim ‖ +36s Eclipszr: spirit bomb upgrade should land in a minute or two, nuke goes off at 07:41:55 ‖ +77s Krown: teleporting everyone to the center now
+  - T161 +8s: Fix the Galick Gun hitting everyone regardless of aim → done
+  - T162 +77s: Teleport all three players to the nuke center → done
+- `07:40:37` #715 **Eclipszr**: “Is that spiritual should we upgrade Jelen in a minute?”
+  - chat → **noise** (disputed) ✓ · `what` noise 0.22; `change` yes_not_done 0.31; `to` a_player 0.41
+  - hand note: echoes the AI's message
+  - AI after: +33s Krown: teleporting everyone to the center now
+  - T162 +33s: Teleport all three players to the nuke center → done
+- `07:43:02` #730 **Eclipszr**: “Is this a spare bomb ready?”
+  - chat → **noise** (disputed) ✗ by hand: **talk_to_ai** · `what` noise 0.30; `change` no_only_a_reply 0.23; `to` a_player 0.45
+  - AI after: +7s Krown: clearing the water now ‖ +40s Eclipszr: spirit bomb is ready, always full power, 40 hearts in 150 blocks ‖ +87s all three of you are at the center on an ice platform over the crater
+  - T163 +7s: Clear the water around the players → done
+- `07:43:13` #731 **Eclipszr**: “We're gonna fuck is my spirit bomb.”
+  - chat → **request** (disputed) ✓ (accepted; by hand **talk_to_ai**) · `what` request 0.54; `change` yes_and_done 0.60; `to` a_player 0.20
+  - AI after: +28s Eclipszr: spirit bomb is ready, always full power, 40 hearts in 150 blocks ‖ +75s all three of you are at the center on an ice platform over the crater
+- `07:44:07` (never seen) **KrownJM**: “Police can become a userwear video. All right, last thing we need to do is the switcher bomb that we can log off. I think”
+  - dropped → **noise** (disputed) ✓ (accepted; by hand **context**) · `what` noise 0.50; `change` yes_not_done 0.44; `to` a_player 0.31
+  - hand note: the plan: the spirit bomb last, then log off
+  - AI after: +15s all three of you are at the center on an ice platform over the crater ‖ +36s Eclipszr: spirit bomb crater going up to 300 blocks ‖ +55s Eclipszr: spirit bomb charge animation with music coming up ‖ +71s Eclipszr: the Ice Queen is up at 10099 59 155, watch for ice spikes and frost volleys
+  - T164 +36s: Change to T151: Spirit Bomb crater and damage radius up to 300 blocks → done
+  - T165 +55s: Add a show-style charge animation and music to the Spirit Bomb → done
+- `07:50:43` #758 **Styrkaeopteryx**: “Claude deleting its mountain that it was creating”
+  - nothing → **noise** (disputed) ✓ · `what` request 0.18; `change` no_not_to_the_ai 0.32; `to` a_player 0.52
+  - hand note: narrates the AI's message
+  - AI after: +0s Krown: no building, just taking you to a real mountain biome
+  - T170 +1s: Cancel T167 and change T169: teleport the players to an existing mountain biome → done
+- `07:59:09` (never seen) **KrownJM**: “Yeah, around this area just doesn't work. Okay, it's about time I go to sleep. I saw the recording. Did you just keep being able to kill me again?”
+  - dropped → **noise** (disputed) ✓ · `what` talk_to_ai 0.40; `change` no_only_a_reply 0.27; `to` a_player 0.51
+  - AI after: +33s The server is shutting down for tonight in 20 seconds. The world is being saved. Thanks for playing!
+- `07:59:23` #774 **Styrkaeopteryx**: “I didn't TPDU. Does Galligan have infinite range gun?”
+  - chat → **noise** (disputed) ✓ · `what` noise 0.49; `change` no_only_a_reply 0.55; `to` a_player 0.72
+  - AI after: +24s The server is shutting down for tonight in 20 seconds. The world is being saved. Thanks for playing!
