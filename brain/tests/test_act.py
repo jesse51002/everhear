@@ -78,3 +78,12 @@ async def test_implementers_start_and_follow_up_and_the_reply_goes_out_at_once(k
     saved = json.loads(k.tasks.path.read_text())
     assert saved["next"] == 3 and saved["tasks"]["T2"]["status"] == "open" and saved["tasks"]["T2"]["player"] == "Steve"
     assert not k.vfg.of("action")
+
+
+async def test_a_clarify_part_runs_nothing_opens_no_task_and_its_question_goes_out_at_once(kit):
+    k = kit()
+    d = decided(k, decision(part("clarify", said="make a patu"), reply="a path to where, the surface?"))
+    await k.acts.run(d, player="Krown", line="can you make a patu, please?", seen=SEEN)
+    await k.settle()
+    assert k.vfg.of("action", "run") == [] and k.tasks.tasks == {}
+    assert k.vfg.said() == [["a path to where, the surface?"]]

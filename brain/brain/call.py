@@ -39,7 +39,7 @@ from .context import Context, Row, show
 from .world import Seen
 
 PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "brain.md"
-IMPLEMENTER, TALK = "implementer", "talk"
+IMPLEMENTER, TALK, CLARIFY = "implementer", "talk", "clarify"
 TASK_ID = re.compile(r"^T\d+$")
 REPLY_MAX = 300
 
@@ -104,7 +104,7 @@ def decision_type(catalog: Catalog) -> type[DecisionBase]:
         @model_validator(mode="after")
         def _checked(self):
             said = self.instruction.strip()
-            if self.to in (IMPLEMENTER, TALK):
+            if self.to in (IMPLEMENTER, TALK, CLARIFY):
                 if self.action is not None:
                     raise ValueError(f"the {self.to} part {self.part!r} carries an action: leave it null")
                 if self.to == IMPLEMENTER and not said:
@@ -218,7 +218,9 @@ class Call:
                     f"actions are at the end, after the conversation):\n{menu_lines(self.catalog, names)}\n"
                     f"- {IMPLEMENTER} — a coding implementer: anything new no action does, or a follow-up "
                     "to its task\n"
-                    f"- {TALK} — talk: answered by your reply alone\n\n"
+                    f"- {TALK} — talk: answered by your reply alone\n"
+                    f"- {CLARIFY} — an ask too unclear to do without guessing: nothing runs, and your reply "
+                    "asks one short question\n\n"
                     f"THE ACTIONS IN FULL:\n{full}\n"
                     f"MINECRAFT COMMANDS (name — what it does):\n{commands}\n\n"
                     "THE CONVERSATION SO FAR (oldest first; each row: its time in UTC, who, and for a "
@@ -256,6 +258,8 @@ def describe(decision) -> str:
             return f"implementer{' ' + p.task if p.task else ''}: {p.instruction[:120]}"
         if p.to == TALK:
             return f"talk: {p.part[:80]}"
+        if p.to == CLARIFY:
+            return f"clarify: {p.part[:80]}"
         return f"{p.to}{' [dropped: ' + p.drop + ']' if p.drop else ''}: {p.instruction}"
     parts = " | ".join(one(p) for p in decision.parts) or "no parts"
     tail = "".join(f" || {k}: {v}" for k, v in (("reply", decision.reply), ("record", decision.record),

@@ -28,7 +28,7 @@ from vfg_llm import LlmError
 
 from .action_planner import Checked, Final, Pick, Planner, Spent, Unchecked
 from .actions import Catalog, command_fields
-from .call import IMPLEMENTER, TALK
+from .call import CLARIFY, IMPLEMENTER, TALK
 from .config import log
 from .executor import Ran, execute
 from .tasks import Tasks
@@ -132,7 +132,7 @@ class Acts:
     async def run(self, decision, *, player: str, line: str, seen: Seen) -> None:
         """Every part of `decision`, then its reply. `player` and `line` are what the tasks it
         opens are for."""
-        actions = distinct([p for p in decision.parts if p.to not in (IMPLEMENTER, TALK)])
+        actions = distinct([p for p in decision.parts if p.to not in (IMPLEMENTER, TALK, CLARIFY)])
         tid = self.tasks.open(player, line, "; ".join(p.instruction for p in actions)) if actions else ""
         handed = [p for p in decision.parts if p.to == IMPLEMENTER]
         task = tid
