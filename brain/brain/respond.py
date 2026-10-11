@@ -59,6 +59,9 @@ UNDER_WAY = tuple(re.compile(p) for p in (
     r"\bcoming (right )?up\b", r"\bgive (it|her|him|them) a (sec|second|minute|moment|beat)\b",
     r"\bhang (tight|on\b(?! tight))", r"\bone sec\b", r"\bon (its|the|their) way\b", r"\bit's coming\b",
     r"\b(should|will) be (done|ready|up) (in|soon)\b"))
+# An open task in the tasks text, as tasks.py writes it: `- T183 for Steve, since 18:22:31, open: …`,
+# or `…, an implementer is on it: …`; on the named-tasks branch, `- castle_steve for Steve, open: …`.
+OPEN_TASK = re.compile(r"^- \S+ for \S+, (since \d\d:\d\d:\d\d, )?(open|an implementer is on it): ", re.M)
 
 
 def promises(reply: str, tasks: str = "") -> str:
@@ -66,7 +69,7 @@ def promises(reply: str, tasks: str = "") -> str:
     reply that offers or promises something there is never said: the line goes up instead
     (Prototype_Jev_Routing, Respond's point 1). The prompt says so, and still about one reply in 20
     on 2026-10-08 did (integration/replay/respond_bench.md, "The guard"). Saying that work under way
-    is coming is a status when OPEN TASKS (`tasks`) lists a task, and a promise when it lists none.
+    is coming is a status when the tasks text (`tasks`) has an open task, and a promise when it has none.
     Acknowledging a rule for later ("I'll ask before giving Alex anything", "aye, pirate it is") is
     neither."""
     text = " ".join(reply.lower().replace("\u2019", "'").split())
@@ -74,7 +77,7 @@ def promises(reply: str, tasks: str = "") -> str:
         return "an offer"
     if any(p.search(text) for p in PROMISES):
         return "a promise"
-    if tasks.rstrip().endswith("none") and any(p.search(text) for p in UNDER_WAY):
+    if not OPEN_TASK.search(tasks) and any(p.search(text) for p in UNDER_WAY):
         return "a promise"
     return ""
 

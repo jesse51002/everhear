@@ -3,6 +3,7 @@ hand-up and the order it answers in, history, two lines at once, a report, and n
 
 import asyncio
 import importlib.util
+from pathlib import Path
 
 from vfg_llm import LlmError
 
@@ -10,6 +11,7 @@ from brain import config, loop
 from brain.act import BROKE
 from brain.call import PROMPT
 from brain.respond import Response, promises
+from brain.tasks import Tasks
 
 from conftest import cmd, decision, part, rows
 
@@ -72,7 +74,14 @@ async def test_respond_never_says_an_offer_or_a_promise_it_hands_the_line_up_ins
     assert [c["output"] for c in k.ask.calls] == ["Response"] and k.vfg.said() == [[ack]]
     # work under way: a status while a task is open, a promise when none is
     status = "castle's coming up, give it a sec"
-    assert promises(status, "OPEN TASKS:\nnone") and not promises(status, "OPEN TASKS:\n- T1 for Steve: a castle")
+    opened = Tasks(Path("/nonexistent/tasks.json"))
+    assert promises(status, opened.show())
+    opened.tasks["T1"] = {"id": "T1", "at": "2026-10-08T18:22:31.000Z", "player": "Steve", "task": "a castle",
+                          "status": "open"}
+    assert not promises(status, opened.show()) and not promises(status, opened.show(["T1"]))
+    # named tasks list closed ones too: only an open one makes it a status
+    assert promises(status, "TASKS (…):\n- castle_steve for Steve, done: a castle")
+    assert not promises(status, "TASKS (…):\n- castle_steve for Steve, open: a castle")
 
 
 def test_respond_decides_first_and_always_writes_its_reason():
