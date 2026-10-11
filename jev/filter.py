@@ -37,7 +37,9 @@ STALE_LOOKBACK = 3600.0    # how far back the feed looks for kept lines to repor
 JUDGE_PER_STEP = 32
 FAILURE_PAUSE = 1.0
 NO_DB_PAUSE = 2.0
-MAX_STATE_TOKENS = 28000   # under Jev's 32k for the state plus the longest question
+# The cap on VFG_JEV_STATE_TOKENS: the state plus the gather call's ten questions at their largest,
+# quotes of 4-byte characters (about 7,300 tokens by the same estimate), stays under Jev's 32k.
+MAX_STATE_TOKENS = 24000
 
 SYS_OPEN = "jev unavailable — passing every line as context"
 SYS_BACK = "jev back — filtering again"

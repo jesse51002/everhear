@@ -8,9 +8,9 @@ from unittest import mock
 from fake_jev import asked_about, choose
 from support import T0, FakeClock, Lines, load_fake_feed, make_db, tempdir
 
-from filter import SYS_BACK, SYS_OPEN, Config, Filter
+from filter import GATHER_MAX, MAX_STATE_TOKENS, SYS_BACK, SYS_OPEN, Config, Filter
 from jev_api import JevDown, JevRefused, Result
-from prompt import EXAMPLES, GATHER_HEADING, GATHER_RULES, estimate, state_json
+from prompt import EXAMPLES, GATHER_HEADING, GATHER_RULES, estimate, gather_questions, state_json
 from store import Store
 
 
@@ -469,6 +469,13 @@ class TestGather(Base):
             dropped = [l for l in logs.output if "dropped to fit 500 characters" in l]
             self.assertEqual(len(dropped), 0 if n == 0 else 1)
         self.assertIn("the oldest 1 dropped", "\n".join(dropped))
+
+    def test_the_state_cap_leaves_room_for_ten_gather_questions_at_their_largest(self):
+        line = {"id": "x", "at": _iso(T0), "player_name": "P" * 16, "source": "chat", "text": "😀" * 300,
+                "peak_dbfs": None}
+        self.assertLess(MAX_STATE_TOKENS + estimate(gather_questions(line, [line] * GATHER_MAX)), 32000)
+        self.assertEqual(Config(state_tokens=10 ** 6).state_tokens, MAX_STATE_TOKENS)
+        self.assertEqual(Config().state_tokens, 8000)
 
 
 class TestState(Base):
