@@ -93,7 +93,7 @@ class TestEndToEnd(BoxCase):
                 return None
         person = Watch(self.box)
         self.assertTrue(wait_for(lambda: at() == 3))              # no cursor: nothing old, from seq 3 on
-        self.box.post("AI", "say T7", "on it")
+        self.box.post("AI", "say castle_steve", "on it")
         self.assertEqual(person.texts(1), ["on it"])
         brain = Watch(self.box, "--after", "2")                   # no lock: the person's watch runs on
         self.assertEqual(brain.texts(2), ["seeded line 3", "on it"])

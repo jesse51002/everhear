@@ -10,6 +10,7 @@ so `vfg action run`, `vfg script list --fresh` and `vfg state` use this code too
     box = instances.Box("/opt/vfg", "/opt/mc", owner="Steve", poll=0.5, rcon=rcon)
 
     name, pid, proc = box.start(meta, as_=None)   # picks the copy's name and starts it
+    box.start(meta, base="railgun_steve")  # the brain's own copy: railgun_steve, then railgun_steve_2
     box.start(meta, wait=1.5)              # Busy (a CopyError) when copies.lock stays held 1.5 s
     box.wait(name, proc, 20)               # {"running", "code", "result"}: ended, timed out or reported
     box.stop(name)                         # True when it was running; everything tagged goes
@@ -20,19 +21,21 @@ A copy's files in run/ (VFG_RUN_DIR):
     <copy>.pid          the pid of its process group, while it runs
     <copy>.log          what it printed
     <copy>.json         its meta: {"copy", "action", "script", "source", "server", "values" (every
-                        field, checked on the PC), "live" (the Live fields' names), "runs", "task",
-                        "started"}
+                        field, checked on the PC), "live" (the Live fields' names), "runs", "task"
+                        (a task's name, null, or cast for an incantation's), "started"}
     <copy>.values.json  live edits, {field: value}: the kit reads it again every VFG_LIVE_POLL_S
     <copy>.result.json  what kit.result() wrote last: {"summary", "facts", "at"}
     <copy>.error        a crash's last line (NameError: name 'x' is not defined), which mc.py
                         writes as it cleans up after an error nothing caught
 
-A copy's name is `as=` when the run gives one (refused while that copy runs), else the action's
-name, else the next free <action>_2, _3 ...; it is picked, and the copy started, under
-run/copies.lock, so two runs at once never take one name. Everything a copy makes carries the
-tag vfg_<copy>: mc.py kills it when the copy is stopped (or fails), and a stop that had to
-SIGKILL sends that kill itself; a copy that ends by itself hands it over to vfg_left_<copy>,
-so the next copy under its name, which is free again, never takes it with its stop.
+A copy's name is `as=` when the run gives one (refused while that copy runs), else its stem:
+the base the run gives (`vfg action run … --for Steve`: the brain's own copy,
+<action>_<player>), else the action's name; the stem itself, else the next free <stem>_2,
+_3 ...; it is picked, and the copy started, under run/copies.lock, so two runs at once never
+take one name. Everything a copy makes carries the tag vfg_<copy>: mc.py kills it when the
+copy is stopped (or fails), and a stop that had to SIGKILL sends that kill itself; a copy
+that ends by itself hands it over to vfg_left_<copy>, so the next copy under its name, which
+is free again, never takes it with its stop.
 """
 import fcntl
 import json
@@ -244,8 +247,9 @@ class Box(object):
         os.makedirs(self.run, exist_ok=True)
         return _Flock(os.path.join(self.run, "copies.lock"), wait)
 
-    def pick(self, action, as_=None):
-        """The name for a new copy of `action` (call under lock())."""
+    def pick(self, action, as_=None, base=None):
+        """The name for a new copy of `action` (call under lock()): `as_`, else the first free of
+        `base` (cut to 48 characters), `base`_2, _3 ..., else of the action's name."""
         if as_:
             if not COPY_RE.match(as_):
                 raise CopyError("as=%s is not a copy name (a-z, 0-9 and _, at most 48)" % as_)
@@ -253,16 +257,20 @@ class Box(object):
             if pid:
                 raise CopyError("%s is running (pid %d): stop it first, or run it as another name" % (as_, pid))
             return as_
+        if base is not None and not COPY_RE.match(base[:48]):
+            raise CopyError("%s is not a copy name (a-z, 0-9 and _)" % base)
+        stem = base or action
         n = 1
-        while self.pid(copy_name(action, n)):
+        while self.pid(copy_name(stem, n)):
             n += 1
-        return copy_name(action, n)
+        return copy_name(stem, n)
 
-    def start(self, meta, as_=None, wait=None):
+    def start(self, meta, as_=None, wait=None, base=None):
         """Name a copy and start it, detached: (name, pid, the Popen to wait on).
 
         `meta` holds action, script, source (and server for a made script), values, live,
-        runs and task; its copy's earlier files (live edits, result, error) go. With `wait`,
+        runs and task; its copy's earlier files (live edits, result, error) go. `base` is the
+        name the copy takes in place of the action's, then with _2, _3 ... (pick). With `wait`,
         it waits at most that many seconds for copies.lock, then raises Busy."""
         for k in ("action", "script"):
             if not NAME_RE.match(meta.get(k) or ""):
@@ -273,7 +281,7 @@ class Box(object):
         if not os.path.isfile(main_py):
             raise NotDeployed("%s is not deployed (no %s)" % (meta["script"], main_py))
         with self.lock(wait):
-            name = self.pick(meta["action"], as_)
+            name = self.pick(meta["action"], as_, base)
             for ext in (".values.json", ".result.json", ".error"):
                 remove(self.path(name, ext))
             meta = dict(meta, copy=name)

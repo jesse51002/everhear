@@ -1,13 +1,16 @@
-# context.py: vfg context and vfg context mark, the brain's reads of the feed table. ARGS:
+# context.py: vfg context and vfg context mark, the brain's reads of the feed table (and with
+# --json, of the tasks table). ARGS:
 #   {"vfg": "/opt/vfg", "op": "read", "since": iso, "json": false}
 #   {"vfg": "/opt/vfg", "op": "mark", "seqs": [812, 813]}
 # read prints the feed rows at or after `since`, oldest first: each line as it is, or with
-# json one {"seq", "at", "line", "processed_at"} object per line, then {"last_seq": N}, the
-# feed's highest seq (0 for an empty feed), read first, so every row past it is a row the
+# json one {"seq", "at", "line", "processed_at"} object per line, then {"tasks": [every row of the
+# tasks table, oldest created first, as tasks.py's list --json prints them]}, then {"last_seq": N},
+# the feed's highest seq (0 for an empty feed), read first, so every row past it is a row the
 # brain's `vfg watch --after N` prints, and none is missed or read twice. mark sets processed_at to
 # now on the rows named whose processed_at is NULL, in one transaction, and prints how many.
-# processed_at is the bridge's column (it migrates feed on start); until it is there, both
-# exit 1 saying so.
+# processed_at is the bridge's column (it migrates feed on start), and so is the tasks table; until
+# the column is there, both exit 1 saying so, and until the table is, a json read does (a plain one
+# needs no table).
 import sqlite3
 
 MARK_CHUNK = 500   # seqs per UPDATE: well inside SQLite's limit on bound values
@@ -37,16 +40,20 @@ def main():
                     n += cur.rowcount
             print(n)
             return
+        if ARGS.get("json") and not has_tasks(con):
+            die(1, NO_TASKS)
         top = con.execute("SELECT MAX(seq) FROM feed").fetchone()[0] or 0
         rows = con.execute("SELECT seq, at, line, processed_at FROM feed WHERE at >= ? AND seq <= ? ORDER BY seq",
                            (ARGS["since"], top)).fetchall()
+        tasks = task_rows(con) if ARGS.get("json") else None
     except sqlite3.Error as e:
         die(1, "cannot %s %s: %s" % ("mark" if mark else "read", db, e))
     finally:
         con.close()
     if ARGS.get("json"):
         out = [json.dumps({"seq": s, "at": a, "line": l, "processed_at": p}, ensure_ascii=False)
-               for s, a, l, p in rows] + [json.dumps({"last_seq": top})]
+               for s, a, l, p in rows] + [json.dumps({"tasks": tasks}, ensure_ascii=False),
+                                          json.dumps({"last_seq": top})]
     else:
         out = [" ".join((l or "").splitlines()) for _s, _a, l, _p in rows]
     if out:

@@ -43,9 +43,9 @@ BUSY_TIMEOUT_MS = 10000
 UTC = _dt.timezone.utc
 
 # Section 7's field grammar, per type.  GAME takes any kind: the bridge's, and
-# what else posts one.
+# what else posts one.  AI's second field is a task's name (galick_gun_styrk), or -.
 GAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31} ([A-Za-z0-9_]{1,16}|-)$")
-AI_RE = re.compile(r"^(say|action|task|result|note) (T\d+|-)$")
+AI_RE = re.compile(r"^(say|action|task|result|note) ([a-z][a-z0-9_]{1,31}|-)$")
 LINE_RE = re.compile(
     r"^[A-Za-z0-9_]{1,16} (voice|chat) (action_oriented|conversational|context) (\d\.\d\d|-) (-?\d+dB|-)"
     r"( was=not_relevant)?$"

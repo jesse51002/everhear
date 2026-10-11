@@ -35,6 +35,10 @@ OLD_DDL = (CONTRACT_DDL
 
 AT = "2026-10-08T05:00:00.000Z"
 
+# The tasks table, the spec's (Prototype_Named_Tasks): the brain's, which the bridge only creates.
+TASK_COLUMNS = ["name", "description", "player", "status", "line", "brief", "made", "variables", "session",
+                "result", "created_at", "updated_at", "closed_at"]
+
 
 class TestSchema(Box):
     def test_ddl_is_the_contract_with_if_not_exists(self):
@@ -49,10 +53,10 @@ class TestSchema(Box):
         self.assertEqual(names, {
             ("table", "lines"), ("table", "events"), ("table", "feed"), ("table", "usage"),
             ("index", "lines_at"), ("index", "lines_player_at"), ("index", "events_at"),
-            ("table", "casts"), ("index", "casts_player_started"),
+            ("table", "casts"), ("index", "casts_player_started"), ("table", "tasks"),
         })
         self.assertEqual(self.query("PRAGMA journal_mode"), [("wal",)])
-        self.assertEqual(self.query("PRAGMA user_version"), [(3,)])
+        self.assertEqual(self.query("PRAGMA user_version"), [(4,)])
         columns = [row[1] for row in self.query("PRAGMA table_info(usage)")]
         self.assertEqual(columns[-2:], ["cache_read_tokens", "cache_write_tokens"])
         self.assertEqual([row[1] for row in self.query("PRAGMA table_info(feed)")],
@@ -66,6 +70,24 @@ class TestSchema(Box):
         unique = {self.query("PRAGMA index_info(%s)" % row[1])[0][2]
                   for row in self.query("PRAGMA index_list(casts)") if row[2]}
         self.assertIn("client_cast_id", unique)
+        tasks = self.query("PRAGMA table_info(tasks)")
+        self.assertEqual([row[1] for row in tasks], TASK_COLUMNS)
+        self.assertEqual({row[1] for row in tasks if row[3]}, {"description", "status", "created_at", "updated_at"})
+        self.assertEqual([row[1] for row in tasks if row[5]], ["name"])        # the primary key
+
+    def test_a_tasks_status_is_open_done_or_failed_and_its_name_is_unique(self):
+        self.make_db()
+        conn = sqlite3.connect(self.db_path)
+        self.addCleanup(conn.close)
+        row = "INSERT INTO tasks (name, description, status, created_at, updated_at) VALUES (?, 'a gun', ?, ?, ?)"
+        for n, status in enumerate(("open", "done", "failed")):
+            conn.execute(row, ("galick_gun_%d" % n, status, AT, AT))
+        for name, status in (("galick_gun_9", "running"), ("galick_gun_9", None), ("galick_gun_0", "open")):
+            with self.assertRaises(sqlite3.IntegrityError, msg=status):
+                conn.execute(row, (name, status, AT, AT))
+        with self.assertRaises(sqlite3.IntegrityError):    # a task always says what it is
+            conn.execute("INSERT INTO tasks (name, status, created_at, updated_at) VALUES ('x_y', 'open', ?, ?)",
+                         (AT, AT))
 
     def test_a_history_from_before_the_brain_is_rebuilt_once_keeping_every_column(self):
         conn = sqlite3.connect(self.db_path, isolation_level=None)
@@ -99,8 +121,10 @@ class TestSchema(Box):
         self.assertEqual({n for (n,) in self.query("SELECT name FROM sqlite_master WHERE type = 'index'"
                                                    " AND tbl_name = 'lines' AND sql IS NOT NULL")},
                          {"lines_at", "lines_player_at", "lines_cast"})
-        self.assertEqual(self.query("PRAGMA user_version"), [(3,)])
+        self.assertEqual(self.query("PRAGMA user_version"), [(4,)])
         self.assertEqual(self.query("SELECT seq, processed_at FROM feed"), [(1, None)])
+        self.assertEqual([row[1] for row in self.query("PRAGMA table_info(tasks)")], TASK_COLUMNS)
+        self.assertEqual(self.query("SELECT COUNT(*) FROM tasks"), [(0,)])
 
         conn = sqlite3.connect(self.db_path, isolation_level=None)
         self.addCleanup(conn.close)
@@ -117,6 +141,23 @@ class TestSchema(Box):
         conn.execute("INSERT INTO usage (at, component) VALUES (?, 'respond')", (AT,))
         self.assertEqual(self.query("SELECT id, component FROM usage ORDER BY id"),
                          [(7, "orchestrator"), (10, "brain"), (11, "respond")])
+
+    def test_a_history_from_before_named_tasks_gains_the_table_and_keeps_everything(self):
+        database = self.make_db()
+        database.conn.execute("DROP TABLE tasks")
+        database.conn.execute("PRAGMA user_version=3")
+        database.conn.execute("INSERT INTO feed (at, line) VALUES (?, 'SYS#1 05:00:00 | up')", (AT,))
+        self.make_db()                                   # the bridge starting again, or --init-db
+        self.assertEqual([row[1] for row in self.query("PRAGMA table_info(tasks)")], TASK_COLUMNS)
+        self.assertEqual(self.query("PRAGMA user_version"), [(4,)])
+        self.assertEqual(self.query("SELECT seq, line FROM feed"), [(1, "SYS#1 05:00:00 | up")])
+        conn = sqlite3.connect(self.db_path)
+        self.addCleanup(conn.close)
+        with conn:
+            conn.execute("INSERT INTO tasks (name, description, status, created_at, updated_at)"
+                         " VALUES ('castle_steve', 'A castle', 'open', ?, ?)", (AT, AT))
+        self.make_db()                                   # and again: the rows stay
+        self.assertEqual(self.query("SELECT name, status FROM tasks"), [("castle_steve", "open")])
 
     def test_a_fresh_history_is_never_rebuilt(self):
         database = self.make_db()

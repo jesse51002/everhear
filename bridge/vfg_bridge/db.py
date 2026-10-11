@@ -1,7 +1,8 @@
 """The transcript history, /opt/vfg/vfg.db: section 4's schema, verbatim, and the bridge's inserts.
 
 The bridge writes ``voice`` and ``chat`` rows of ``lines`` (never the jev_*
-or fed_at columns), ``events``, ``casts``, and ``feed`` only through vfg_feed.
+or fed_at columns), ``events``, ``casts``, and ``feed`` only through vfg_feed. It
+creates ``tasks``, the brain's, and never writes it.
 Every write in the process goes through one connection behind one lock.
 """
 
@@ -31,14 +32,22 @@ CREATE TABLE IF NOT EXISTS usage (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT 
   model TEXT, input_tokens INTEGER, output_tokens INTEGER, cost_usd REAL, ref TEXT);
 """
 
-# Tables added since section 4's DDL. casts: one row per cast an incantation got, fired or not
-# (status fired, cooldown, duplicate or failed; layer spotter or transcript).
+# Tables added since section 4's DDL, each made by IF NOT EXISTS on every start, so a history made
+# before one gets it then, and nothing else changes.
+# casts: one row per cast an incantation got, fired or not (status fired, cooldown, duplicate or
+# failed; layer spotter or transcript).
+# tasks: the brain's, one row per implementer task, written only through `vfg task set`; the bridge
+# creates it and never writes it.
 ADDED = """\
 CREATE TABLE IF NOT EXISTS casts (id TEXT PRIMARY KEY, at TEXT NOT NULL, started_at TEXT,
   ended_at TEXT, player_name TEXT NOT NULL, phrase TEXT NOT NULL, heard TEXT, layer TEXT NOT NULL,
   incantation_id TEXT, action TEXT, copy TEXT, status TEXT NOT NULL, error TEXT, line_id TEXT,
   client_cast_id TEXT UNIQUE);
 CREATE INDEX IF NOT EXISTS casts_player_started ON casts(player_name, started_at);
+CREATE TABLE IF NOT EXISTS tasks (name TEXT PRIMARY KEY, description TEXT NOT NULL, player TEXT,
+  status TEXT NOT NULL CHECK (status IN ('open','done','failed')), line TEXT, brief TEXT,
+  made TEXT, variables TEXT, session TEXT, result TEXT, created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL, closed_at TEXT);
 """
 
 # Columns added since section 4's DDL, as (table, column, type): a fresh history and
@@ -61,7 +70,7 @@ CHECKS = [
      {}),
 ]
 
-USER_VERSION = 3
+USER_VERSION = 4
 BUSY_TIMEOUT_MS = 10000  # tests patch it low
 
 

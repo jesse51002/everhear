@@ -45,10 +45,10 @@ class InstancesTests(unittest.TestCase):
 
     def meta(self, **values):
         return {"action": "nap", "script": "nap", "source": "library", "values": dict(values),
-                "live": ["cooldown"], "runs": "until_stopped", "task": "T4"}
+                "live": ["cooldown"], "runs": "until_stopped", "task": "castle_steve"}
 
-    def start(self, as_=None, **values):
-        name, pid, proc = self.box.start(self.meta(**values), as_)
+    def start(self, as_=None, base=None, **values):
+        name, pid, proc = self.box.start(self.meta(**values), as_, base=base)
         self.addCleanup(proc.wait)
         self.up(name)
         return name, pid, proc
@@ -73,6 +73,20 @@ class InstancesTests(unittest.TestCase):
         self.assertEqual(instances.copy_name("a" * 48, 2), "a" * 46 + "_2")
         self.assertEqual(sorted(c["copy"] for c in self.box.copies()), ["mine", "nap", "nap_2", "nap_3"])
 
+    def test_a_base_names_the_copy_in_place_of_the_action_then_2_cut_to_48(self):
+        # The brain's own copy of an action for a player (vfg action run … --for Steve): <action>_<player>.
+        self.assertEqual([self.start(base="nap_steve")[0] for _ in range(2)], ["nap_steve", "nap_steve_2"])
+        self.assertEqual(self.start()[0], "nap")                # no base: the action's name, as before
+        self.assertTrue(self.box.stop("nap_steve"))
+        self.assertEqual(self.start(base="nap_steve")[0], "nap_steve")
+        self.assertEqual(self.box.meta("nap_steve")["action"], "nap")
+        long = "nap_" + "styrkaeopteryx" * 4                    # 60 characters: the end of the name goes
+        self.assertEqual([self.start(base=long)[0] for _ in range(2)], [long[:48], long[:46] + "_2"])
+        for bad in ("Nap_steve", "nap-steve", "_nap", ""):
+            with self.assertRaises(instances.CopyError):
+                self.box.start(self.meta(), base=bad)
+        self.assertEqual(self.start(as_="mine", base="nap_alex")[0], "mine")   # as= wins
+
     def test_a_start_with_a_wait_gives_up_on_a_held_lock(self):
         with self.box.lock():
             began = time.monotonic()
@@ -86,7 +100,7 @@ class InstancesTests(unittest.TestCase):
         got = self.box.wait(name, proc, 0.3)
         self.assertEqual((got["running"], got["code"], got["result"]), (True, None, None))
         meta = self.box.copy(name)
-        self.assertEqual((meta["pid"], meta["task"], meta["values"]), (pid, "T4", {"cooldown": 2}))
+        self.assertEqual((meta["pid"], meta["task"], meta["values"]), (pid, "castle_steve", {"cooldown": 2}))
         with open(self.box.path(name, ".result.json"), "w") as f:
             json.dump({"summary": "ready", "facts": {}, "at": time.time()}, f)
         self.assertEqual(self.box.wait(name, proc, 5, on_result=True)["result"]["summary"], "ready")
@@ -94,7 +108,7 @@ class InstancesTests(unittest.TestCase):
         got = self.box.wait(name, proc, 10)
         self.assertEqual((got["running"], got["code"]), (False, 3))
         self.assertFalse(os.path.exists(self.box.path(name, ".pid")))
-        self.assertIn("values {\"end\": 3} task T4", "\n".join(self.box.tail(name)))
+        self.assertIn("values {\"end\": 3} task castle_steve", "\n".join(self.box.tail(name)))
         with self.assertRaises(instances.NotDeployed):
             self.box.start(dict(self.meta(), script="nowhere"))
 

@@ -329,7 +329,7 @@ class TestCli(BoxCase):
             r = self.vfg("action", "check", n)
             self.assertEqual((r.returncode, r.stdout), (0, "ok: actions/%s.py\n" % n), r.stderr)
         r = self.vfg("action", "run", "incantation_create", "player=Steve", "phrase=fire ball", "action=command",
-                     'values={"commands": ["say fire"]}', "--task", "T4")
+                     'values={"commands": ["say fire"]}', "--task", "fire_ball_steve")
         self.assertEqual(r.returncode, 0, r.stderr)
         line = json.loads(r.stdout)
         self.assertEqual((line["ok"], line["summary"]),

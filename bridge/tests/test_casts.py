@@ -46,7 +46,7 @@ def entry(player, phrase, script="zap", **more):
     e = {"id": "%s.%s" % (player.lower(), phrase.replace(" ", "_")), "player": player,
          "phrase": phrase, "aliases": [], "action": script, "script": script, "source": "library",
          "server": "", "values": {}, "live": [], "runs": "once", "caster_fields": [],
-         "cooldown_s": 3.0, "created": "2026-10-10T18:22:31.412Z", "by": "T7"}
+         "cooldown_s": 3.0, "created": "2026-10-10T18:22:31.412Z", "by": "zap_spell_steve"}
     e.update(more)
     return e
 

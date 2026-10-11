@@ -7,12 +7,18 @@
     ... [--only E001,E007] [--limit N] [--misses] [--out results.jsonl]
 
 briefs.jsonl holds each brief as the orchestrator wrote it on 2026-10-08, its
-task and context (given to vfg route as a task in the brain's tasks.json), and its labels: every example script and
-preset that is part of the job, from what the implementer actually did, with
+task (its id of that day, a label here) and the task's text and context, and its labels: every example
+script and preset that is part of the job, from what the implementer actually did, with
 players' names replaced (Steve, Alex, Sam); `values_only` marks the 19 jobs the
 examples now do by their values alone, where the labelled script should come
 back runs_it rather than close. It runs against whatever is in the
 library now (VFG_REPO, default this repo), never this server's made/ folder.
+
+--words gives route.route, in process, the brief with its task's text and context. Live, since named
+tasks (Prototype_Named_Tasks), `vfg route` reads a task from the box's tasks table, which only the
+brain writes, so the eval runs `vfg route --ref <ref>` with no --task: Jev gets the brief alone.
+The live figures since then are not comparable with the earlier runs', which gave Jev the task's
+text and the player's line too.
 
 A brief passes when every labelled script is among the loaded scripts and
 every labelled preset is among the loaded presets or held by a loaded script.
@@ -52,9 +58,11 @@ def pct(xs, p):
 
 
 def call_live(b, repo, home, ref):
+    """`vfg route --ref <ref>` on the brief alone: no --task, as the eval may not write the box's
+    tasks table, where vfg route reads one."""
     env = dict(os.environ, VFG_REPO=repo, VFG_HOME=home, VFG_SERVER=NO_SERVER)
     t0 = time.monotonic()
-    r = subprocess.run([sys.executable, VFG, "route", "--task", b["task"], "--ref", ref],
+    r = subprocess.run([sys.executable, VFG, "route", "--ref", ref],
                        input=b["brief"].encode("utf-8"), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        env=env, timeout=120)
     wall = int((time.monotonic() - t0) * 1000)
@@ -107,20 +115,13 @@ def main():
     n_scripts = sum(1 for c in cards if c["kind"] == "script")
     print("library: %d example scripts, %d presets in %s" % (n_scripts, len(cards) - n_scripts, a.repo))
 
-    # A VFG_HOME of its own, with this PC's config and known hosts, whose brain/tasks.json holds
-    # each brief's task: vfg route --task reads its text there, and the context as the player's line.
+    # A VFG_HOME of its own, with this PC's config and known hosts and no brain/ folder: live, each
+    # brief goes to vfg route alone.
     home = tempfile.mkdtemp(prefix="route-eval-")
     real = os.path.expanduser(os.environ.get("VFG_HOME") or "~/.vfg")
     for name in ("config", "known_hosts"):
         if os.path.exists(os.path.join(real, name)):
             os.symlink(os.path.join(real, name), os.path.join(home, name))
-    os.makedirs(os.path.join(home, "brain"))
-    tasks = {}
-    for b in briefs:
-        tasks.setdefault(b["task"], {"id": b["task"], "at": b["at"], "task": b["task_text"], "line": b["context"],
-                                     "status": "open"})
-    with open(os.path.join(home, "brain", "tasks.json"), "w", encoding="utf-8") as f:
-        json.dump({"tasks": tasks}, f, ensure_ascii=False)
 
     rows, out = [], open(a.out, "w", encoding="utf-8") if a.out else None
     for i, b in enumerate(briefs, 1):

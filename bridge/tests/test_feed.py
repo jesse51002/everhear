@@ -14,6 +14,7 @@ import vfg_feed
 from helpers import FEED_PY, UTC, Box, run
 
 LINE_SHAPE = re.compile(r"^(LINE|GAME|AI|SYS)#(\d+) (\d\d:\d\d:\d\d) (.*)$")
+RETIRED = "T%d" % 7   # a task as it was named before named tasks (Prototype_Named_Tasks): never written now
 
 
 class FeedCase(Box):
@@ -35,15 +36,16 @@ class TestAppend(FeedCase):
     def test_row_mirrors_the_file(self):
         vfg_feed.append("GAME", "death Steve", "Steve was slain by Zombie",
                         "2026-10-07T18:22:40.123Z")
-        vfg_feed.append("AI", "result T183", "T183 done: ice trail running as ice_trail",
+        vfg_feed.append("AI", "result ice_trail_steve", "ice_trail_steve done: ice trail running",
                         "2026-10-07T18:24:02Z")
         self.assertEqual(self.feed_lines(), [
             "GAME#1 18:22:40 death Steve | Steve was slain by Zombie",
-            "AI#2 18:24:02 result T183 | T183 done: ice trail running as ice_trail",
+            "AI#2 18:24:02 result ice_trail_steve | ice_trail_steve done: ice trail running",
         ])
         self.assertEqual(self.feed_rows(), [
             (1, "2026-10-07T18:22:40.123Z", "GAME#1 18:22:40 death Steve | Steve was slain by Zombie"),
-            (2, "2026-10-07T18:24:02.000Z", "AI#2 18:24:02 result T183 | T183 done: ice trail running as ice_trail"),
+            (2, "2026-10-07T18:24:02.000Z",
+             "AI#2 18:24:02 result ice_trail_steve | ice_trail_steve done: ice trail running"),
         ])
 
     def test_only_the_brains_rows_are_written_processed(self):
@@ -143,14 +145,18 @@ class TestFieldRules(FeedCase):
     def test_good_fields_pass(self):
         for type_, fields in (("GAME", "death Steve"), ("GAME", "server -"), ("GAME", "raw -"),
                               ("GAME", "advancement Notch_2"), ("GAME", "cast Steve"),
-                              ("AI", "say -"), ("AI", "action T7"), ("AI", "task T183"),
-                              ("AI", "result T183"), ("AI", "note -"), ("SYS", "")):
+                              ("AI", "say -"), ("AI", "action -"), ("AI", "task galick_gun_styrk"),
+                              ("AI", "result galick_gun_styrk"), ("AI", "note railgun_steve_2"),
+                              ("AI", "say ab"), ("AI", "task " + "a" * 32), ("SYS", "")):
             vfg_feed.append(type_, fields, "ok")
-        self.assertEqual(len(self.feed_lines()), 11)
+        self.assertEqual(len(self.feed_lines()), 13)
 
     def test_bad_fields_raise_and_write_nothing(self):
         for type_, fields in (("GAME", "death"), ("GAME", "Death Steve"), ("GAME", "death Ste ve"),
-                              ("AI", "done T7"), ("AI", "say 7"), ("AI", "say"), ("AI", "task T7 x"),
+                              ("AI", "done galick_gun"), ("AI", "say 7"), ("AI", "say"), ("AI", "task galick x"),
+                              ("AI", "task " + RETIRED), ("AI", "say Galick"), ("AI", "task 7gun"),
+                              ("AI", "task a"), ("AI", "task " + "a" * 33), ("AI", "task galick-gun"),
+                              ("AI", "task _gun"),
                               ("SYS", "extra")):
             with self.assertRaises(ValueError, msg="%s %r" % (type_, fields)):
                 vfg_feed.append(type_, fields, "no")
@@ -298,11 +304,11 @@ class TestCommandLine(FeedCase):
 
     def test_post_as_a_program_prints_the_seq(self):
         vfg_feed.append("SYS", "", "first")
-        result = run([FEED_PY, "post", "AI", "task T183", "T183: an ice trail\nbehind Steve"])
+        result = run([FEED_PY, "post", "AI", "task ice_trail_steve", "new: an ice trail\nbehind Steve"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "2\n")
         self.assertRegex(self.feed_lines()[-1],
-                         r"^AI#2 \d\d:\d\d:\d\d task T183 \| T183: an ice trail behind Steve$")
+                         r"^AI#2 \d\d:\d\d:\d\d task ice_trail_steve \| new: an ice trail behind Steve$")
 
     def test_wrong_arguments_exit_2(self):
         for args in ([], ["post"], ["post", "SYS", ""], ["send", "SYS", "", "x"],
@@ -314,7 +320,8 @@ class TestCommandLine(FeedCase):
 
     def test_bad_type_or_fields_exit_1_with_one_line(self):
         for args in (["post", "CHAT", "", "x"], ["post", "GAME", "death", "x"],
-                     ["post", "ORCH", "T7 done", "x"], ["post", "AI", "said -", "x"],
+                     ["post", "ORCH", "galick_gun done", "x"], ["post", "AI", "said -", "x"],
+                     ["post", "AI", "task " + RETIRED, "x"],
                      ["post", "SYS", "fields", "x"]):
             code, out, err = self.main(*args)
             self.assertEqual(code, 1, args)
