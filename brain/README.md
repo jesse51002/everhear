@@ -38,11 +38,12 @@ answer to the AI's question, and anything it is unsure of. It decides first (`re
 write, then `hand_up`, then `reply`), and handing up is the default
 ([`gate_bench.md`](../integration/replay/gate_bench.md),
 [`respond_bench.md`](../integration/replay/respond_bench.md)). A hand-up replaces its reply, so a
-player never gets two. Respond never acts on the game, and never promises or offers anything there.
-A game event, a system notice and the brain's own rows are context only. A line already in the feed
-when the brain read its context, said more than two minutes before that, is history: never acted on.
-A line that arrives on the watch is live, whatever its time (the box's clock may be a minute off the
-PC's).
+player never gets two. Respond never acts on the game, and never promises or offers anything there:
+a reply that still does, "want me to …?" or "I'll fix it", is handed up in code instead of said
+(`promises()`). A game event, a system notice and the brain's own rows are context only. A line
+already in the feed when the brain read its context, said more than two minutes before that, is
+history: never acted on. A line that arrives on the watch is live, whatever its time (the box's
+clock may be a minute off the PC's).
 
 ## The shared context and the cache
 

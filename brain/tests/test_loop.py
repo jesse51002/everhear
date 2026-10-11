@@ -9,7 +9,7 @@ from vfg_llm import LlmError
 from brain import config, loop
 from brain.act import BROKE
 from brain.call import PROMPT
-from brain.respond import Response
+from brain.respond import Response, promises
 
 from conftest import cmd, decision, part, rows
 
@@ -55,6 +55,24 @@ async def test_respond_replies_or_hands_up_never_both(kit):
     k.brain.feed(TALK.format(seq=8))
     await k.settle()
     assert [c["output"] for c in k.ask.calls] == ["Response", "Decision"]
+
+
+async def test_respond_never_says_an_offer_or_a_promise_it_hands_the_line_up_instead(kit):
+    k = kit(Decision=GIVE, Response={"reason": "a question", "hand_up": False, "reply": "Want me to make it rain?"})
+    k.brain.feed(TALK.format(seq=7))
+    await k.settle()
+    assert [c["output"] for c in k.ask.calls] == ["Response", "Decision"]
+    assert "handed this line up to you: a question · handed up in code: an offer" in k.ask.calls[1]["prompt"]
+    assert k.vfg.said() == [["there you go", "--task", "T1"]]  # the brain's line, never the offer
+
+    ack = "Got it, I'll ask you before giving Alex anything."  # a rule for later: said
+    k = kit(Response={"reason": "a rule for later", "hand_up": False, "reply": ack})
+    k.brain.feed(TALK.format(seq=8))
+    await k.settle()
+    assert [c["output"] for c in k.ask.calls] == ["Response"] and k.vfg.said() == [[ack]]
+    # work under way: a status while a task is open, a promise when none is
+    status = "castle's coming up, give it a sec"
+    assert promises(status, "OPEN TASKS:\nnone") and not promises(status, "OPEN TASKS:\n- T1 for Steve: a castle")
 
 
 def test_respond_decides_first_and_always_writes_its_reason():

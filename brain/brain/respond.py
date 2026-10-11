@@ -8,7 +8,8 @@ It answers talk, and a rule or a preference about the future only, which holds b
 reads the same conversation. It hands up anything that asks for something now, a change to what
 is already going on in the world, a rule the game itself would have to enforce, an answer to the
 AI's question, and anything it is unsure of (Prototype_Jev_Routing, _Respond's prompt_;
-integration/replay/respond_bench.md).
+integration/replay/respond_bench.md). A reply that still offers or promises something in the game
+is handed up in code instead of said (promises()).
 
 It decides first: its answer is {reason, hand_up, reply}, in that order, and handing up is the
 default. A model with no reasoning writes the fields in order, and with the reply first it
@@ -28,6 +29,7 @@ the line.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -38,6 +40,43 @@ from .context import Context, Row, show
 from .world import Seen
 
 PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "respond.md"
+
+# What the AI does in the game: the verbs of Respond's promises and offers on 2026-10-08.
+_DO = (r"(make(?! sure)|give(?! you that)|build|spawn|summon|set|fix|turn|get|put|add|bring|pull|teleport|clear|"
+       r"swap|change|upgrade|boost|beef|toss|drop|hook|sort|redo|layer|handle)")
+# An offer or a promise, whatever is going on: the AI proposes or says it will do something.
+OFFERS = tuple(re.compile(p) for p in (
+    r"\bwant me to\b", r"\bshall i\b", rf"\bshould i {_DO}\b", r"\bsay the word\b",
+    r"(^|[.!?,]\s+|\bor |\byou )want (it|one|them|that|this|the|a|an|some|more|another|extras?|your own)\b[^.!?]*\?",
+    rf"\bi (can|could|might|may)( be able to)? {_DO}\b", rf"\bhappy to {_DO}\b", rf"\blet me {_DO}\b",
+    r"\b(has|have|got) your name on it\b", r"\bwhenever you want it\b"))
+PROMISES = tuple(re.compile(p) for p in (
+    rf"\bi('ll| will) (just |also |go )?{_DO}\b", r"\bi('ll| will) (call out|point you|ping you|announce|see it)\b",
+    r"\bi('ll| will) keep (\w+ )?(alive|away|safe|going|running|an eye)\b", r"\bwatch your back\b",
+    r"(\bi'm |\bi am |^\W*)on it\b", r"\bgive me a (sec|second|minute|moment)\b"))
+# Work under way: a status when a task is open, a promise when none is.
+UNDER_WAY = tuple(re.compile(p) for p in (
+    r"\bcoming (right )?up\b", r"\bgive (it|her|him|them) a (sec|second|minute|moment|beat)\b",
+    r"\bhang (tight|on\b(?! tight))", r"\bone sec\b", r"\bon (its|the|their) way\b", r"\bit's coming\b",
+    r"\b(should|will) be (done|ready|up) (in|soon)\b"))
+
+
+def promises(reply: str, tasks: str = "") -> str:
+    """"an offer" or "a promise" when the reply has one, else "". Respond cannot act on the game, so a
+    reply that offers or promises something there is never said: the line goes up instead
+    (Prototype_Jev_Routing, Respond's point 1). The prompt says so, and still about one reply in 20
+    on 2026-10-08 did (integration/replay/respond_bench.md, "The guard"). Saying that work under way
+    is coming is a status when OPEN TASKS (`tasks`) lists a task, and a promise when it lists none.
+    Acknowledging a rule for later ("I'll ask before giving Alex anything", "aye, pirate it is") is
+    neither."""
+    text = " ".join(reply.lower().replace("\u2019", "'").split())
+    if any(p.search(text) for p in OFFERS):
+        return "an offer"
+    if any(p.search(text) for p in PROMISES):
+        return "a promise"
+    if tasks.rstrip().endswith("none") and any(p.search(text) for p in UNDER_WAY):
+        return "a promise"
+    return ""
 
 
 class Response(BaseModel):  # decide first: a model writes the fields in this order, `reason` always
@@ -78,9 +117,13 @@ class Respond:
                 f"THE LINE #{row.seq}, {row.hms}: {row.who} {how}: {row.text}\n")
 
     async def answer(self, row: Row, ctx: Context, seen: Seen, tasks: str, new: list[Row]):
-        """An Answer whose value is a Response, never with both a reply and a hand-up; raises LlmError."""
+        """An Answer whose value is a Response, never with both a reply and a hand-up, and never a
+        reply that promises or offers (promises()); raises LlmError."""
         answer = await self.ask(self.tail(row, seen, tasks, new), Response,
                                 cached=ctx.cached(self.opening(), self.checkpoint))
-        if answer.value.hand_up and answer.value.reply:
-            answer.value.reply = ""
+        said = answer.value
+        if not said.hand_up and (kind := promises(said.reply, tasks)):
+            said.hand_up, said.reason = True, f"{said.reason} · handed up in code: {kind}"
+        if said.hand_up and said.reply:
+            said.reply = ""
         return answer
