@@ -133,7 +133,7 @@ def run(args) -> None:
         todo = todo[:args.limit]
     b.meta(out / f"meta-{args.half}{'-limit' if args.limit else ''}.json", state=args.state, routing=args.routing,
            half=args.half, inputs=len(todo), already=len(done), inputs_file=str(args.inputs),
-           rules=state_v2.RULES_V2 if args.state == "new" else "prompt.RULES",
+           rules=state_v2.RULES_V2 if args.state == "new" else "state_v1.RULES",
            lookout=state_v2.LOOKOUT_V2 if args.state == "new" else str(b.lookout),
            examples=state_v2.EXAMPLES_V2 if args.state == "new" else "")
     print(f"{args.state} {args.routing}: {len(todo)} inputs ({args.half}), {len(done)} already, "
