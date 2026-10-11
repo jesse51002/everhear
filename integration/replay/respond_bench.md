@@ -29,6 +29,14 @@ Prototype_Jev_Routing's _Test_ asks for this: "Respond's rewritten prompt, on th
 - Each of those lines takes the brain's time on top of Respond's.
 - The spec accepts this: "A wrong hand-up costs about a second; a missed ask costs the player their ask."
 
+**A guard in code now hands up any reply that promises or offers** (`brain.respond.promises()`, under _The guard_):
+
+- Measured on every reply the runs recorded, with no new call.
+- It catches 40 of the 42 promises and offers judged by hand across all versions, and fires on 1 other reply of 680.
+- v5 with the guard keeps none of its 8.
+- It hands up 2 more asks: 20 of 33 and 17 of 18.
+- Its other hand-ups are about 2 brain calls a session.
+
 **`reason` is now required** (`brain/brain/respond.py`):
 
 - Left optional, the model sometimes skipped it, wrote `hand_up` first and decided with no reason at all: 16 of 88 answers in two runs of v3's prompt, and 2 of 44 of v1's.
@@ -39,7 +47,92 @@ Prototype_Jev_Routing's _Test_ asks for this: "Respond's rewritten prompt, on th
 
 - **Offers are most of the promises:** 5 of v5's 8 are offers ("want me to …?", "if you want"), and 3 are promises ("I'll make it happen").
 - **By my reading, v5 failed to hand up a clear ask for something now 6 times in its 3 runs, on 5 inputs; old 17 times.** In each case it read the ask as a question it could answer or as unclear speech, and did not hand it up.
-- A prompt alone does not get a no-reasoning model to zero. Under _What is wrong or risky_, a guard in code is the next step, for Jesse to decide.
+- A prompt alone does not get a no-reasoning model to zero, hence the guard.
+
+## The guard
+
+**`brain.respond.promises(reply, tasks)` runs on every reply Respond means to say.**
+
+- When the reply offers or promises something in the game, the answer becomes a hand-up: the reply is dropped, and `reason` gains ` · handed up in code: an offer` (or `a promise`).
+- The loop's log and the brain's "handed this line up to you" both show it.
+- This is the spec's point 1, "Respond never promises what it can't do itself", in code, as the brain writes its own line when an action fails.
+- A wrong hand-up costs a brain call.
+
+**The patterns**, lower-cased with curly apostrophes made straight. They come from what Respond actually wrote, and "the AI does" is one verb list: make (not "make sure"), give (not "give you that"), build, spawn, summon, set, fix, turn, get, put, add, bring, pull, teleport, clear, swap, change, upgrade, boost, beef, toss, drop, hook, sort, redo, layer, handle.
+
+- **An offer, always:**
+  - "want me to", "shall I", "should I" + the verbs, "say the word";
+  - "want it / one / them / that / the / a / some / more / another / extras / your own … ?" opening a sentence or after "or" or "you";
+  - "I can / could / might / may (be able to)" + the verbs; "happy to" + the verbs; "let me" + the verbs;
+  - "has / got your name on it", "whenever you want it".
+- **A promise, always:**
+  - "I'll / I will (just, also, go)" + the verbs;
+  - "I'll call out / point you / ping you / announce / see it";
+  - "I'll keep … alive / away / safe / going / running / an eye";
+  - "watch your back";
+  - "I'm on it", or a reply opening with "on it";
+  - "give me a sec / second / minute / moment".
+- **A promise only when OPEN TASKS lists none**, a status when a task is open: "coming up", "coming right up", "give it / her / him / them a sec / minute / moment / beat", "hang tight", "hang on" (not "hang on tight"), "one sec", "on its / the / their way", "it's coming", "should / will be done / ready / up in / soon".
+  - A task was open at 82% of these inputs' moments, which is why these phrases are status most of the time.
+
+**What it does not fire on.** Of the replies the runs recorded:
+
+- every acknowledgement of a rule for later ("Got it, Sam. No builds near spawn unless you say so.", "Aye aye, Captain Riley.", "Netherite next time, got it.");
+- every knowledge answer;
+- every status line about an open task ("Spirit bomb upgrade is still cooking, give it a sec.", "Castle's still rising, give it a minute.");
+- and "I'll give you that", "I'll have to listen next time", "I'll let that go to my head", "I'll watch the fireworks from a safe distance", "Keep an eye on chat", "if you want another look", "Want to test it on the dragon".
+
+**On the 722 replies the runs recorded** (all versions, all runs, the invented set; `respond_bench.py guard`):
+
+- **Caught: 40 of the 42 promises and offers judged by hand:**
+  - all 16 of old's on the playtest;
+  - all 8 of v4's and all 8 of v5's;
+  - 4 of v1's 5; v2's 2; v3's 2.
+  - "Give it a sec, Styrka — building takes a minute" is caught because no task was open.
+- **Missed: 2.**
+  - Old's invented "Rules are rules. Lava's off the hook from now on.": no first person and no offer, so beyond a phrase list.
+  - v1's "I'll keep it spooky but not cruel": "I'll keep it" + an adjective is left alone, so that "I'll keep it short" acknowledging a rule is said.
+- **Fires on 1 reply I had not counted:** old's "Probably because the mountain builder was churning through blocks, but I'm on it now." (4YF56H).
+  - A teleport task for the speaker was open, so my reading counted it as status.
+  - "on it" is the spec's own example of what Respond never says, and here Respond claims to be doing it. So the guard keeps "I'm on it" always, and this is its one hand-up I would not have made.
+  - None of the other 679 acceptable replies fires.
+
+**v5 with the guard**, its three runs pooled, against v5 alone:
+
+| Half | Asks handed up | Wanted a change, handed up | All hand-ups | The guard's hand-ups | Promises and offers left |
+|---|---|---|---|---|---|
+| first | 19 → **20 of 33** | 21 → **22 of 30** | 55 → 58 of 132 | 3 | 3 → **0** |
+| second (held out) | 16 → **17 of 18** | 19 → **20 of 21** | 57 → 62 of 144 | 5 | 5 → **0** |
+
+**What the table shows:**
+
+- **The asks now handed up** are TFJFMK ("Is it possible to increase the lightning's damage?") and 9BE9TH ("Can make music for each of the attacks?"). v5 had answered each with an offer.
+- **v5's asks still missed: 4 answers.** 7R3N3G twice (garbled "teleport both of us"), RGPW3X once (it asked back), and HEX1GJ once (a cut-off complaint). None held a promise.
+- **The extra hand-ups:** 8 over three runs, 2.7 a session. 2 are those asks; the other 6 are talk the brain now answers, about 2 brain calls and $0.02 a session.
+
+**Every version with the guard**, pooled over its runs (asks / wanted a change / all hand-ups, without → with):
+
+| Version | Half | Runs | Asks | Wanted a change | All hand-ups | The guard's own | Judged promises left |
+|---|---|---|---|---|---|---|---|
+| old | first | 3 | 16 → 16 of 33 | 14 → 14 of 30 | 31 → 36 of 132 | 5 | 0 |
+| old | second | 3 | 8 → 13 of 18 | 8 → 13 of 21 | 15 → 27 of 144 | 12 | 0 |
+| v1 | first | 1 | 6 → 7 of 11 | 7 → 7 of 10 | 15 → 19 of 44 | 4 | 1 |
+| v2 | first | 1 | 5 → 6 of 11 | 4 → 5 of 10 | 12 → 14 of 44 | 2 | 0 |
+| v3 | first | 2 | 12 → 12 of 22 | 12 → 12 of 20 | 30 → 32 of 88 | 2 | 0 |
+| v4 | first | 2 | 11 → 11 of 22 | 13 → 13 of 20 | 34 → 35 of 88 | 1 | 0 |
+| v4 | second | 2 | 10 → 10 of 12 | 10 → 10 of 14 | 34 → 41 of 96 | 7 | 0 |
+| v5 | first | 3 | 19 → 20 of 33 | 21 → 22 of 30 | 55 → 58 of 132 | 3 | 0 |
+| v5 | second | 3 | 16 → 17 of 18 | 19 → 20 of 21 | 57 → 62 of 144 | 5 | 0 |
+
+**What the guard does to the old prompt:**
+
+- It lifts old's held-out asks from 8 to 13 of 18, because old answered asks with offers ("want me to give each one its own theme?").
+- v5 with the guard still hands up more: 17 of 18 asks, 20 of 21 inputs that wanted a change, against 13 and 13.
+
+**What a replay of recorded answers cannot show:**
+
+- **How the brain answers what the guard hands up.** It answers the line itself, with the guard's note in "handed this line up to you".
+- **Patterns from one session's replies.** A new turn of phrase gets past the list until it is added. The prompt still says the same thing first.
 
 ## The promises, read by hand
 
@@ -312,11 +405,9 @@ The future rules v5 handed up (i02 and i04, once each) cost a brain call, not an
 
 ## What is wrong or risky
 
-- **The spec's bar is not met.** A prompt alone will not get DeepSeek with reasoning off to zero promises.
-  - The next step is a guard in code, not built here.
-  - A reply that matches an offer or a promise ("want me to", "I'll", "say the word", "if you want", "on it", "coming up") would be handed up instead of said.
-  - It is deterministic, and a false match costs one brain call.
-  - It is a design change beyond the spec's prompt rewrite, so it is Jesse's call.
+- **The spec's bar is not met by the prompt alone.**
+  - With the guard, no hand-judged promise is left in v5's recorded runs, but the guard's phrase list comes from one session.
+  - v5 still answered 4 asks in its three runs without handing them up.
 - **More talk goes to the brain**, about 22 calls and $0.19 a session. A `talk_to_ai` line Respond hands up gets the brain's slower answer.
 - **Answers to the AI go up, "no" included.** The brain asked the question, so this is its call to make. It costs a brain call where a "got it" would do.
 - **The model makes up game facts in every version:** coordinates, causes, an "obsidian castle". This is outside the spec's bar. The rule "say that something is done, fixed or on its way only when the conversation or OPEN TASKS shows it" covers only part of it.
@@ -327,7 +418,7 @@ The future rules v5 handed up (i02 and i04, once each) cost a brain call, not an
 
 ## Cost and time
 
-**OpenRouter: $1.71 of the $2 budget**, every call's own `usage.cost`, summed from the rows.
+**OpenRouter: $1.71 of the $2 budget**, every call's own `usage.cost`, summed from the rows. The guard was measured on the recorded rows: no call.
 
 | What | Calls | Cost |
 |---|---|---|
@@ -361,6 +452,7 @@ done
 for V in old v4 v5; do for RUN in runs repeat; do $PY $L/respond_bench.py run $V invented --out OUT/$RUN; done; done
 $PY $L/respond_bench.py run v5 playtest --db $DB --d2 $D2 --out OUT/dry --dry             # the prompts, no calls
 python3 $L/respond_score.py OUT/runs OUT/repeat OUT/third --gate-b GATE_OUT/B/rows.jsonl --to OUT/score.md
+$PY $L/respond_bench.py guard OUT/runs OUT/repeat OUT/third --db $DB --d2 $D2              # the guard, no calls
 ```
 
 **The runs behind this page:**

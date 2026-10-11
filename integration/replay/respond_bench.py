@@ -40,6 +40,12 @@ Writes OUT/<version>/<set>/rows.jsonl, one row an input: the answer as the model
 field it wrote first, ms, tokens and cost. A run into a file that has rows goes on after them;
 `--dry` writes each prompt to OUT/<version>/<set>/prompts/ and calls nothing. The OpenRouter key
 as structured() reads it, never printed.
+
+THE GUARD (`guard`): brain.respond.promises() on every reply the runs recorded, with no call made:
+what it hands up, against the promises and offers judged by hand (JUDGED), and each version's
+hand-ups with it and without it.
+
+    $PY $L/respond_bench.py guard OUT/runs OUT/repeat OUT/third --db $DB --d2 $D2
 """
 
 from __future__ import annotations
@@ -49,6 +55,7 @@ import asyncio
 import json
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -66,7 +73,7 @@ from pydantic import BaseModel, Field  # noqa: E402
 from brain import actions, config, running  # noqa: E402
 from brain.__main__ import asker  # noqa: E402
 from brain.context import LIVE, Context, Row  # noqa: E402
-from brain.respond import Respond  # noqa: E402
+from brain.respond import Respond, promises  # noqa: E402
 from brain.tasks import Tasks  # noqa: E402
 from brain.world import Seen  # noqa: E402
 from trees_questions import route_d  # noqa: E402
@@ -440,6 +447,106 @@ async def run(args) -> None:
     print(f"{args.version} {args.set}: ${spent:.3f} in this file")
 
 
+# ------------------------------------------------------------------ the guard, on the recorded runs
+
+LABELS = HERE / "labels_2026-10-08.jsonl"
+WANTED = ("yes_and_done", "yes_not_done")
+# The promises and offers judged by hand in respond_bench.md, every run: (run, version, input id's
+# end, a piece of the reply that tells it apart).
+JUDGED = (
+    ("repeat", "old", "EEEHXQ", "see it's handled"), ("repeat", "old", "BPDCZ5", "building takes a minute"),
+    ("repeat", "old", "7DZGBF", "has your name on it"), ("repeat", "old", "9W9794", "watch your back"),
+    ("third", "old", "1759JG", "point you"), ("runs", "old", "9BE9TH", "want me to give"),
+    ("repeat", "old", "9BE9TH", "i can add theme"), ("third", "old", "9BE9TH", "epic or goofy"),
+    ("repeat", "old", "6YC3SA", "want me to clear"), ("repeat", "old", "4W6A9A", "sort it"),
+    ("repeat", "old", "71TJRG", "ping you"), ("repeat", "old", "K2KVTB", "announce"),
+    ("repeat", "old", "5DD0BM", "want it stopped"), ("third", "old", "6PNV2F", "stakes raised"),
+    ("third", "old", "QE65VC", "toss one back"), ("third", "old", "RGPW3X", "want me to make you"),
+    ("runs", "old", "i18", "off the hook"),
+    ("runs", "v1", "3JDWFZ", "keep it spooky"), ("runs", "v1", "9W9794", "call out"),
+    ("runs", "v1", "M82VE3", "happy to spawn"), ("runs", "v1", "BRYFSG", "want it tried"),
+    ("runs", "v1", "BPDCZ5", "want extras"), ("runs", "v2", "3JDWFZ", "want me to keep"),
+    ("runs", "v2", "9W9794", "redo it"), ("runs", "v3", "BRYFSG", "hook something"),
+    ("repeat", "v3", "EEEHXQ", "say the word"),
+    ("runs", "v4", "7DZGBF", "whenever you want it"), ("runs", "v4", "4W6A9A", "fix it"),
+    ("runs", "v4", "AEVA7W", "want your own copy"), ("runs", "v4", "DJA4ZC", "say the word"),
+    ("repeat", "v4", "6PNV2F", "beef"), ("repeat", "v4", "9KKTDT", "want one made"),
+    ("repeat", "v4", "71TJRG", "pull you"), ("repeat", "v4", "RQSSB7", "say the word"),
+    ("runs", "v5", "TFJFMK", "hook extra damage"), ("third", "v5", "7DZGBF", "name on it"),
+    ("third", "v5", "9W9794", "keep alive"), ("runs", "v5", "4W6A9A", "make it happen"),
+    ("runs", "v5", "8JXEP2", "pass it along"), ("runs", "v5", "E1PFWX", "blast craters"),
+    ("runs", "v5", "9BE9TH", "want a theme"), ("repeat", "v5", "KEFT7T", "sort out"),
+)
+
+
+def open_tasks(args) -> dict[str, str]:
+    """OPEN TASKS as each input's call showed it: the playtest's at the input's moment, the invented set's own."""
+    out = {}
+    for it in INVENTED:
+        rows = [f"- {tid} for {who}: {brief}" for tid, who, brief in it.get("tasks", [])]
+        out[it["id"]] = "OPEN TASKS:\n" + ("\n".join(rows) or "none")
+    pt = Playtest(Path(args.db))
+    inputs = read_rows(Path(args.inputs))
+    d2 = d2_outcomes(Path(args.d2))
+    want = {i["id"] for i in inputs if d2.get(i["id"], {}).get("out") == "respond"}
+    respond = Respond(actions.load(config.load().repo, config.SERVER), None)
+    for item in playtest_items(pt, inputs, d2, respond, want):
+        out[item.row["id"]] = "OPEN TASKS:" + item.tail.split("\nOPEN TASKS:")[1].split("\n\nNEW SINCE")[0]
+    return out
+
+
+def guard(args) -> None:
+    tasks = open_tasks(args)
+    change = {r["id"]: (r.get("members", {}).get("change") or [""])[0] for r in read_rows(LABELS)}
+    said = []   # (run, version, set, row) for every reply a player would have seen
+    for out in map(Path, args.outs):
+        for f in sorted(out.glob("*/*/rows.jsonl")):
+            said += [(out.name, f.parts[-3], f.parts[-2], r) for r in read_rows(f)
+                     if not r["up"] and r.get("reply", "").strip()]
+    judged = {}
+    for run, v, end, piece in JUDGED:
+        hit = [r for (rn, vv, _, r) in said if (rn, vv) == (run, v) and r["id"].endswith(end)
+               and piece in r["reply"].lower().replace("\u2019", "'")]
+        if len(hit) == 1:
+            judged[(run, v, hit[0]["id"])] = piece
+    fires = {(run, v, r["id"]): promises(r["reply"], tasks.get(r["id"], "")) for run, v, _, r in said}
+    caught = [k for k in judged if fires.get(k)]
+    print(f"{len(said)} replies said; {len(judged)} judged a promise or an offer by hand, of {len(JUDGED)} listed; "
+          f"the guard hands up {sum(1 for k in fires if fires[k])}: {len(caught)} of the judged, "
+          f"{sum(1 for k in fires if fires[k] and k not in judged)} others\n")
+    print("Judged by hand, missed by the guard:")
+    for run, v, _, r in said:
+        if (run, v, r["id"]) in judged and not fires[(run, v, r["id"])]:
+            print(f"- {run} {v} {r['id'][-6:]}: {r['reply']}")
+    print("\nHanded up by the guard, not judged by hand:")
+    for run, v, _, r in said:
+        if fires[(run, v, r["id"])] and (run, v, r["id"]) not in judged:
+            print(f"- {run} {v} {r['id'][-6:]} ({fires[(run, v, r['id'])]}): {r['reply']}")
+    print("\nEach version, its runs pooled: handed up without the guard -> with it")
+    print("| Version | Half | Runs | Asks | Wanted a change | All hand-ups | The guard's own | Judged promises left |")
+    print("|---|---|---|---|---|---|---|---|")
+    for v in sorted({v for _, v, _, _ in said}, key=lambda n: (n != "old", n)):
+        for half in ("first", "second"):
+            rows = [(out.name, r) for out in map(Path, args.outs)
+                    for r in read_rows(out / v / "playtest" / "rows.jsonl") if r["half"] == half]
+            if not rows:
+                continue
+            n, c = len({run for run, _ in rows}), Counter()
+            for run, r in rows:
+                g = bool(fires.get((run, v, r["id"])))
+                ask = r["label"] in ("request", "answer_to_ai")
+                wanted = any(change.get(x) in WANTED for x in r["lines"])
+                for key, on in (("asks", ask), ("wanted", wanted), ("all", True)):
+                    c[key] += on
+                    c[key + "_up"] += on and r["up"]
+                    c[key + "_guard"] += on and (r["up"] or g)
+                c["guard"] += g
+                c["left"] += (run, v, r["id"]) in judged and not g
+            print(f"| {v} | {half} | {n} | {c['asks_up']} -> {c['asks_guard']} of {c['asks']} | {c['wanted_up']} -> "
+                  f"{c['wanted_guard']} of {c['wanted']} | {c['all_up']} -> {c['all_guard']} of {c['all']} | "
+                  f"{c['guard']} | {c['left']} |")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -455,8 +562,16 @@ def main() -> None:
     r.add_argument("--timeout", type=float, default=20.0, help="a call's timeout, s (the brain's own)")
     r.add_argument("--budget", type=float, default=0.6, help="stop past this many dollars in the file")
     r.add_argument("--dry", action="store_true", help="write the prompts, call nothing")
+    g = sub.add_parser("guard", help="brain.respond.promises() on the recorded runs, no call made")
+    g.add_argument("outs", nargs="+", help="the runs' OUTs")
+    g.add_argument("--db", required=True, help="the playtest's vfg.db")
+    g.add_argument("--d2", required=True, help="whole_asks_bench.py's new/D2/rows.jsonl")
+    g.add_argument("--inputs", default=str(INPUTS))
     args = ap.parse_args()
-    asyncio.run(run(args))
+    if args.cmd == "guard":
+        guard(args)
+    else:
+        asyncio.run(run(args))
 
 
 if __name__ == "__main__":
