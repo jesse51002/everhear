@@ -14,11 +14,11 @@ It decides first: its answer is {reason, hand_up, reply}, in that order, and han
 default. A model with no reasoning writes the fields in order, and with the reply first it
 committed to answering before it weighed handing up: on the 2026-10-08 lines it handed up 31% of
 the asks, and 77.5% deciding first (integration/replay/gate_bench.md). `reason` is required: left
-optional, the model sometimes wrote `hand_up` first and decided with no reason at all (7 of 44
-answers in one run, none once required: respond_bench.md). A wrong hand-up costs about a second
-and a fraction of a cent, a missed ask the player's ask. Handing up replaces its reply, never adds
-to it, so a player never gets two answers: a hand-up's reply is dropped here, whatever the model
-wrote.
+optional, the model sometimes wrote `hand_up` first and decided with no reason at all (16 of 88
+answers in two runs of one prompt; none of 460 once required: respond_bench.md). A wrong hand-up
+costs about a second and a fraction of a cent, a missed ask the player's ask. Handing up replaces
+its reply, never adds to it, so a player never gets two answers: a hand-up's reply is dropped
+here, whatever the model wrote.
 
 Its prompt is laid out as the brain's: the opening (its rules, the owner, the menu's lines,
 marked), the conversation in the same minute-blocks (never a context line: context.py), then the
