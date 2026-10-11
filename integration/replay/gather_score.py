@@ -4,7 +4,8 @@
 
     python3 integration/replay/gather_score.py --rows OUT/prod/rows.jsonl \
         --inputs integration/replay/whole_asks_2026-10-08.jsonl --gate-b GATE_OUT/B/rows.jsonl \
-        [--alt g2=OUT/g2/rows.jsonl ...] [--ten OUT/ten/rows.jsonl] --to OUT/score.md --json OUT/score.json
+        [--alt g2=OUT/g2/rows.jsonl ...] [--ten OUT/ten/rows.jsonl] [--live OUT/live] \
+        --to OUT/score.md --json OUT/score.json
 
 Standard library only.
 
@@ -25,7 +26,12 @@ label the strongest of its lines') reaches the brain when any of its lines does,
 when one event that reaches the brain holds all of its lines.
 
 A WRONG JOIN is a gathered line that is not in the same whole-ask input as its ask. A MISSED PIECE is
-a line of an ask input left out of the reaching event that holds most of that input, with why.
+a line of an ask input left out of the reaching event that holds most of that input, with why. The
+candidates are also counted against the hand reading of the window lines (READ): clear pieces taken,
+arguable joins, and joins the reader would not make.
+
+THE LIVE STATES (--live): gather_bench.py live's rows, each wording's P(part) on each live scenario's
+first piece and on the other lines in its windows, lowest to highest over the runs.
 
 COST a 2.5 h session (the 843 lines), as the other replays count it: brain calls x $0.0085 + Respond
 calls x $0.0015 + Jev's input tokens x $42 per billion (every call and every failed try). A brain call
@@ -66,6 +72,31 @@ RESPOND_USD = 0.0015
 JEV_USD = 0.000000042
 TIMEOUT_MS = 3000   # VFG_JEV_TIMEOUT's default: a call slower than this fails in production
 BUCKETS = ((1, 1), (2, 3), (4, 6), (7, 10))
+
+# The hand reading of the window lines that any wording gathered, or that are in their ask's whole-ask
+# input, or that one gave P(part) 0.35 or more (gather_bench.md, _6_): (line, its ask) -> `piece` (a clear
+# piece of the ask), `arguable` (either answer is fine), `no` (a join I would not make). A gathered pair not
+# here is listed as unread.
+READ = {
+    ("01M4D1Y04FYDRRVW9FBRT9PY04", "01M4D1YCBWRGG2ARKDMRMWA94C"): "piece",      # the consent trick's question
+    ("01M4D2NE6MB84E3Z7GERBVY2RV", "01M4D2PJP8K51YD1M0NXBPDCZ5"): "piece",      # "My castle." … "it built yet."
+    ("01M4D2W4BV8NRXM9Q0YC8VXEM9", "01M4D2WMPPRZ935N60XX8E4Q23"): "arguable",
+    ("01M4D30XCBJB1QMQ1E0MGRTQG9", "01M4D3310V4W8W7692A3HQX54Q"): "piece",      # "totally give us a bunch of cool stuff"
+    ("01M4D368CNZ7785BM38M7RNADC", "01M4D376SZM1AP0YKAS6TFJFMK"): "no",         # "How"
+    ("01M4D3BNSCHBZ665ZMTYHS9807", "01M4D3CR9WJZA28E1S17GMP0JJ"): "no",         # "Do." into "me": garble
+    ("01M4D3R4F7EMAKKRNCXAZ6AX89", "01M4D3SHH017DK0SPZS7GX0JSZ"): "no",         # an ask into a reaction to it
+    ("01M4D4T98ZQ0PHHE2PGJRWYCDG", "01M4D4TR3HQ4BCPT6YWBZZPD3F"): "arguable",
+    ("01M4D4WA6DDQQXR0W2924JX0CA", "01M4D4WT4N1BSKS2GVA3HA8SSS"): "no",         # "But those" into "Fine.": garble
+    ("01M4D4XE8ZS3QNZWZ1EF1S2MX4", "01M4D4XV8KMW98PXA106MPG62M"): "arguable",
+    ("01M4D56KKSCC0QD2JPW8CY6BVY", "01M4D57QHCBRNCWXACCXVYCKFG"): "piece",      # "I keep getting killed"
+    ("01M4D5R53KHV9Y82YSQF7ZBH5C", "01M4D5RDBKMQ147TB9VCXJ8J9A"): "piece",      # "The gallegan is like." …
+    ("01M4D5Y7X973BDA54ECDXPDRCQ", "01M4D606KPRTSJZG7ZENEDKYE0"): "arguable",
+    ("01M4D6SG7K482SJ2ZHPEBMZDA6", "01M4D6V5Q143016JER9ZE5NM04"): "piece",      # the Galick gun does no damage
+    ("01M4D6SRK7EVCEEGRNTZGY4RE5", "01M4D6V5Q143016JER9ZE5NM04"): "piece",      # … thirty hearts, only at the end
+    ("01M4D768JCSMT2W3C6BCCGGVTF", "01M4D78T2BMF5AZYAGX1Q28XHW"): "arguable",
+    ("01M4D7P0SS3KPMNH7Z209VY208", "01M4D7Q0PEA8F3N3XM0350QQHD"): "arguable",
+    ("01M4D7QZR891EK2APV9KDCH41E", "01M4D7SBBQ7XNY1KJJNJGXCT9D"): "no",         # talk about the bill
+}
 
 
 def strongest(labels) -> str:
@@ -588,10 +619,13 @@ def report(d: Data, alts: dict[str, dict[str, dict]], ten: list[dict], w) -> dic
         w("Each asked again on the recorded windows of a half (the windows are D's verdicts and do not depend on "
           "the gather's answers), the state built as production's at the same moment. Production's answers on the "
           "same windows beside them.\n")
-        w("| Wording | Half | Calls | Yes of asked | Gathered lines | In the ask's input | Wrong joins | Noise joined | "
-          "Ask pieces from context or dropped | Ask inputs arrive whole | Split ask inputs arrive whole | Ask lines "
-          "reach | Talk and noise lines to the brain | Jev ms median / p90 | Tokens | Cost of the half |")
-        w("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+        w("*Clear pieces*, *arguable* and *joins I would not make* are the hand reading (READ); *wrong joins* are "
+          "gathered lines outside the ask's whole-ask input.\n")
+        w("| Wording | Half | Calls | Yes of asked | Clear pieces taken | Arguable joins | Joins I would not make | "
+          "Unread joins | Gathered lines | In the ask's input | Wrong joins | Noise joined | Ask pieces from context or "
+          "dropped | Ask inputs arrive whole | Split ask inputs arrive whole | Ask lines reach | Talk and noise lines to "
+          "the brain | Jev ms median / p90 | Tokens | Cost of the half |")
+        w("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
         s["alts"], lists = {}, []
         for name, rows in [("prod", None)] + list(alts.items()):
             for h in ("first", "second"):
@@ -603,12 +637,16 @@ def report(d: Data, alts: dict[str, dict[str, dict]], ten: list[dict], w) -> dic
                     if not have:
                         continue
                     if have != ids:
-                        w(f"| {name} | {h} | incomplete: {len(have)} of {len(ids)} windows |" + " |" * 13)
+                        w(f"| {name} | {h} | incomplete: {len(have)} of {len(ids)} windows |" + " |" * 17)
                         continue
                     rt = alt_routing(d, name, {i: rows[i] for i in have}, groups, gather_calls)
                 t, g = tally(rt, h), gather_stats(rt, h)
                 jj = [j for j in joins(rt) if j["half"] == h]
+                read_ = Counter(READ.get((j["line"], j["ask"]), "unread") for j in jj)
+                clear = sum(1 for (line, ask), v in READ.items() if v == "piece" and d.by_id[ask]["half"] == h)
                 row = {"calls": g["calls"], "yes": g["yes"], "asked": g["asked"], "joined": len(jj),
+                       "read_piece": read_["piece"], "clear": clear, "read_arguable": read_["arguable"],
+                       "read_no": read_["no"], "unread": read_["unread"],
                        "same": sum(1 for j in jj if j["same_input"]), "wrong": sum(1 for j in jj if not j["same_input"]),
                        "noise": sum(1 for j in jj if j["label"] == "noise"),
                        "pieces": sum(1 for j in jj if j["label"] in ASKS and j["line_place"] in ("context", "dropped")),
@@ -617,19 +655,58 @@ def report(d: Data, alts: dict[str, dict[str, dict]], ten: list[dict], w) -> dic
                        "ms": g["ms_median"], "ms90": g["ms_p90"], "tokens": g["tokens"],
                        "talk_brain": t["talk"].get("brain", 0), "talk": t["talk"]["n"], "usd": t["usd"]}
                 s["alts"][f"{name}/{h}"] = row
-                w(f"| {name} | {h} | {row['calls']} | {row['yes']} of {row['asked']} | {row['joined']} | "
+                w(f"| {name} | {h} | {row['calls']} | {row['yes']} of {row['asked']} | {row['read_piece']} of "
+                  f"{row['clear']} | {row['read_arguable']} | {row['read_no']} | {row['unread']} | {row['joined']} | "
                   f"{row['same']} | {row['wrong']} | {row['noise']} | {row['pieces']} | {row['whole']} of "
                   f"{row['inputs']} | {row['multi_whole']} of {row['multi']} | {row['reach']} of "
                   f"{row['ask_lines']} | {row['talk_brain']} of {row['talk']} | {row['ms']:.0f} / {row['ms90']:.0f} | "
                   f"{row['tokens']:,} | ${row['usd']:.2f} |")
                 lists.append((name, h, jj))
         for name, h, jj in lists:
-            w(f"\n**{name}, {h} half**: its wrong joins, and the ask pieces from context or dropped it gathered.\n")
+            w(f"\n**{name}, {h} half**: every line it gathered, with the hand reading and whether it is in the ask's "
+              "whole-ask input.\n")
             for j in jj:
-                if not j["same_input"] or (j["label"] in ASKS and j["line_place"] in ("context", "dropped")):
-                    w(f"- {'**wrong** ' if not j['same_input'] else 'piece '}`{j['at'][11:19]}` [{j['label']}] "
-                      f"“{clean(j['text'], 120)}” ({j['p_yes']:.2f}) → [{j['ask_label']}] “{clean(j['ask_text'], 100)}”")
+                w(f"- {READ.get((j['line'], j['ask']), '**unread**')}, {'same input' if j['same_input'] else 'apart'}: "
+                  f"`{j['at'][11:19]}` [{j['label']}] “{clean(j['text'], 120)}” ({j['p_yes']:.2f}) → "
+                  f"[{j['ask_label']}] “{clean(j['ask_text'], 100)}”")
     return s
+
+
+def live_report(folder: Path, w) -> dict:
+    """gather_bench.py live's rows, a wording a folder: each scenario's first piece and each other line in
+    a window, P(part) lowest to highest and how often yes, over the runs."""
+    out = {}
+    names = sorted(x.name for x in folder.iterdir() if (x / "rows.jsonl").exists())
+    w("\n## The live realmc runs' gather states\n")
+    w("Each wording on the gather state of every line a live run (integration/jev_live.py) sent to the AI: "
+      "production's Store on a copy of the run's database cut at the ask. *P* is P(part) lowest–highest over the "
+      "runs, then how many said yes. The first three columns are each scenario's first piece; the last two, the "
+      "other lines in a window.\n")
+    cols, table = [], {}
+    for name in names:
+        rows = read(folder / name / "rows.jsonl")
+        by: dict = {}
+        for r in rows:
+            for k, x in enumerate(r["window"], 1):
+                a = (r.get("answers") or {}).get(f"line_{k}")
+                by.setdefault((not x["piece"], x["text"]), []).append(
+                    (a[2].get("part_of_the_ask", 0.0) if a else 0.0, bool(a) and a[0] == "part_of_the_ask"))
+        table[name] = by
+        cols = sorted(set(cols) | set(by))
+        out[name] = {"states": len(rows), "failed": sum(1 for r in rows if r.get("failed")),
+                     "tokens": sum(r.get("tokens", 0) for r in rows),
+                     "lines": {t: {"piece": not other, "min": min(p for p, _ in v), "max": max(p for p, _ in v),
+                                   "yes": sum(y for _, y in v), "n": len(v)} for (other, t), v in by.items()}}
+    w("| Wording | States | " + " | ".join(f"“{clean(t, 40)}”" for _, t in cols) + " | Tokens |")
+    w("|---|---|" + "---|" * len(cols) + "---|")
+    for name in names:
+        cells = []
+        for c in cols:
+            v = table[name].get(c, [])
+            cells.append(f"{min(p for p, _ in v):.2f}–{max(p for p, _ in v):.2f}, {sum(y for _, y in v)} of {len(v)}"
+                         if v else "-")
+        w(f"| {name} | {out[name]['states']} | " + " | ".join(cells) + f" | {out[name]['tokens']:,} |")
+    return out
 
 
 def main() -> None:
@@ -639,6 +716,7 @@ def main() -> None:
     ap.add_argument("--gate-b", required=True, help="the gate bench's B/rows.jsonl: Respond B's hand-ups")
     ap.add_argument("--alt", action="append", default=[], help="NAME=OUT/NAME/rows.jsonl, a candidate wording")
     ap.add_argument("--ten", help="gather_bench.py ten's OUT/ten/rows.jsonl: 10-question calls")
+    ap.add_argument("--live", help="gather_bench.py live's OUT/live: the live runs' gather states, a wording a folder")
     ap.add_argument("--to", required=True, help="the report (.md)")
     ap.add_argument("--json", help="its numbers, as JSON")
     args = ap.parse_args()
@@ -656,6 +734,8 @@ def main() -> None:
     if len(rows) != 843:
         w(f"**{len(rows)} of 843 lines in the rows.**\n")
     summary = report(d, alts, read(Path(args.ten)) if args.ten else [], w)
+    if args.live:
+        summary["live"] = live_report(Path(args.live), w)
     Path(args.to).write_text("\n".join(md) + "\n", encoding="utf-8")
     if args.json:
         Path(args.json).write_text(json.dumps(summary, indent=1, default=str))
