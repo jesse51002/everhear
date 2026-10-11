@@ -282,6 +282,7 @@ def build(pt: Playtest, srow: dict, row, new, clock: Clock, respond: Respond, mo
 async def run_respond(name: str, opt: dict, args) -> None:
     out = Path(args.out) / name
     out.mkdir(parents=True, exist_ok=True)
+    playtest.queue_usage(out)
     pt = Playtest(Path(args.db))
     cfg = config.load()
     catalog = actions.load(cfg.repo, cfg.server)
@@ -315,7 +316,8 @@ async def run_respond(name: str, opt: dict, args) -> None:
         RAW.set(held)
         t0 = time.perf_counter()
         try:
-            answer = await respond.ask(tail, output, cached=blocks)
+            answer = await respond.ask(tail, output, cached=blocks, component="respond",
+                                       call_id=f"replay gate {name} {srow['id']}"[:64])
         except Exception as err:  # noqa: BLE001 — an LlmError in production; any failure is a hand-up
             row.update(up=True, error=f"{type(err).__name__}: {err}"[:300], ms=int((time.perf_counter() - t0) * 1000),
                        cost=0.0)

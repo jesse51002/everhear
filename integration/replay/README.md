@@ -53,7 +53,14 @@ settings are its own (`brain/brain/config.py`: the environment, then `~/.vfg/con
 model, the reasoning and `VFG_OWNER` are what a live brain on this PC would use. The OpenRouter
 key as `structured()` reads it; the TypeSafe key as `TYPESAFE_API_KEY`, else from `--env FILE`
 (default: realmc's stand-in box's `integration/realmc/.server/shared/env`, here or in the
-`script-library` worktree), never printed.
+`script-library` worktree), never printed. Every model call is a row of the one usage log, as a
+live call is (`docs/CONTRACTS.md` §4): the component of what it replays (`brain`, `respond`, or
+`orchestrator` for `taskcall.py`) and a call_id that starts `replay `, queued in the run's own
+OUT (`gate_bench.py`: OUT/X), never in `$VFG_HOME`, whose queue the brain's next `vfg usage
+flush` sends into the live usage table. Each replay sets `VFG_USAGE_QUEUE`, the folder of the
+queue (`playtest.queue_usage()`), to OUT unless it is set already; `VFG_HOME` stays, since it
+finds the OpenRouter key. A replay's rows reach the box only when sent on purpose:
+`VFG_USAGE_QUEUE=OUT vfg usage flush`.
 
 ```sh
 PY=brain/.venv/bin/python; DB=DIR/vfg/vfg.db
@@ -97,6 +104,7 @@ reasoning off (3.6 s, 5.0 s); at low reasoning DeepSeek took 7.7 s, p90 26 s.
 |---|---|
 | `lines.jsonl` | one row per line: its words, when it was fed, what the conversation did (its tasks and their labels), the size of the context, the brain's decision (every part: `to`, `task`, instruction, action, drop) and reply, ms, cost, prompt, cached and completion tokens |
 | `meta.json` | the settings, the commit and a hash of `brain/prompts/brain.md` |
+| `usage.pending.jsonl`, `usage.pending.lock` | every model call's usage row, queued and not sent (`VFG_USAGE_QUEUE=OUT vfg usage flush` sends them); `classes.py respond`, `taskcall.py` and `gate_bench.py` leave them too |
 | `prompts/<n>.txt` | the whole prompt of every 50th call, `[MARK]` where the cache is marked |
 | `jev.jsonl`, `jev-meta.json`, `menu.md` | per line: Jev's class then and now, its confidence, what the conversation did, and what fit in the state (the menu, the history, the AI records); a `flip` row when a `not_relevant` line asked about again flipped |
 | `respond.jsonl`, `respond-meta.json` | per conversational line: hand-up or reply as the model gave them and after Respond's code, the reason, ms, cost, tokens |

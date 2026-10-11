@@ -1,8 +1,12 @@
 """Running a decision: actions in order under one task, the one retry of a refused command,
 implementers started and followed up, and a reply that never claims what failed."""
 
+import asyncio
 import json
 
+from vfg_llm import LlmError
+
+from brain.vfg import VfgResult
 from brain.world import Seen
 
 from conftest import cmd, decision, part, ran
@@ -42,9 +46,51 @@ async def test_a_refused_command_is_retried_once_by_the_planner_with_its_referen
     await k.acts.run(d, player="Steve", line="diamond pickaxe pls", seen=SEEN)
     plan = k.ask.of("Planned_command")
     assert len(plan) == 1 and plan[0]["model"] == "plan-model"
+    assert (plan[0]["component"], plan[0]["call_id"]) == ("planner", "T1 #1")  # its usage row's
     assert "IT FAILED: Unknown item" in plan[0]["prompt"] and "## give" in plan[0]["prompt"]  # its reference
     assert k.vfg.of("action", "run")[1][3] == 'commands=["give Steve minecraft:diamond_pickaxe 1"]'
     assert k.vfg.said() == [["there you go", "--task", "T1"]]
+    await k.settle()
+    assert k.vfg.of("usage") == [["usage", "flush"]]  # the planner's row, sent nobody waiting
+
+
+async def test_a_failed_planner_call_counts_what_it_spent(kit, capsys):
+    failed = LlmError("no answer from plan-model within 20 s")
+    failed.cost, failed.ms = 0.0004, 20000
+    k = kit(Planned_command=failed)
+    k.vfg.on("action", "run", answer=ran(False, "Unknown item 'minecraft:diamond_pickax'"))
+    d = decided(k, decision(part("command", "give Steve a diamond pickaxe", cmd("give Steve diamond_pickax")),
+                            reply="there you go"))
+    await k.acts.run(d, player="Steve", line="diamond pickaxe pls", seen=SEEN)
+    await k.settle()
+    assert "T1 retries: 1 planner call(s), 20000 ms, $0.000400\n" in capsys.readouterr().out
+    assert k.vfg.of("usage") == [["usage", "flush"]]
+    failed.cost_known = False  # cut off with an attempt in flight: what it spent is a floor
+    await k.acts.run(d, player="Steve", line="diamond pickaxe pls", seen=SEEN)
+    await k.settle()
+    assert "T2 retries: 1 planner call(s), 20000 ms, $0.000400+\n" in capsys.readouterr().out
+
+
+async def test_the_planners_usage_flush_waits_for_the_one_running(kit):
+    k = kit(Planned_command={"action": cmd("give Steve minecraft:diamond_pickaxe 1"), "hand_on": "", "drop": "",
+                             "say": "a pickaxe for Steve"})
+    k.vfg.on("action", "run", answer=[ran(False, "Unknown item 'minecraft:diamond_pickax'"), ran(True, "Gave 1")])
+    down = asyncio.Event()
+
+    async def flush(argv):
+        await down.wait()
+        return VfgResult(0, "", "")
+
+    k.vfg.on("usage", "flush", answer=flush)
+    k.later.flush_usage()  # a brain call's, still running
+    await asyncio.sleep(0)
+    d = decided(k, decision(part("command", "give Steve a diamond pickaxe", cmd("give Steve diamond_pickax")),
+                            reply="there you go"))
+    await k.acts.run(d, player="Steve", line="diamond pickaxe pls", seen=SEEN)
+    assert len(k.ask.of("Planned_command")) == 1 and k.vfg.of("usage") == [["usage", "flush"]]
+    down.set()
+    await k.settle()
+    assert k.vfg.of("usage") == [["usage", "flush"]] * 2  # the planner's row, in the one after it
 
 
 async def test_a_failed_action_is_never_claimed_a_code_line_says_so_instead(kit):

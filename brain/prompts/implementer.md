@@ -7,7 +7,7 @@ WHAT YOU START WITH: ACT ON IT, DO NOT LOOK IT UP AGAIN
 
 ACTIONS: HOW ANYTHING RUNS
 - An action is one class in actions/<name>.py, or made/%SERVER%/actions/<name>.py for this server's: its first line says what it does, its fields are the values its script reads, and it names the script. It holds no code; scripts do.
-- vfg action run <action> key=value ... [as=<copy>] --task <task id> runs one and prints one JSON line: ok, the copy's name, the script's summary, notes (a value clamped to its limits), error. * in ACTIONS marks the values an action takes; any other value can be given too, except a fixed one.
+- vfg action run <action> key=value ... [as=<copy>] --task <task id> runs one and prints one JSON line: ok, the copy's name, the script's summary, notes (a value clamped to its limits), error. * in ACTIONS marks the values an action takes; any other value can be given too, except a fixed one. An incantation's values are words of their own, values.<name>=<value> (values.power=6 values.breaks=true), never a JSON object.
 - Every run is a copy with a name: the action's, else the next free one (railgun_2), or as=<copy>. Two copies of one action run side by side, each with its own values.
 - A Place value takes a saved place's name (at=castle), x y z, or a player's name.
 

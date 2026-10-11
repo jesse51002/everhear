@@ -18,14 +18,17 @@ at or below the one it follows from), the context is read again and followed fro
 Every call (a line's, a report's, Respond's) takes in what no call has read yet and marks it
 processed (`vfg context mark`, nobody waiting), so the game's events since the last call are its
 NEW rows. There is no call of its own for what nobody reads: it waits for the next one. An
-implementer's report is a brain call of its own. Every model call writes a `usage` row, its
-cached tokens included, nobody waiting.
+implementer's report is a brain call of its own. Every model call's `usage` row, answered or
+failed, its cached tokens included, is structured()'s own, queued on this PC; after each call
+the brain logs what it spent and sends the queue (`vfg usage flush`), nobody waiting, never two
+at once: one asked for while another runs runs once when it ends.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
@@ -34,7 +37,7 @@ from vfg_actions import menu_line
 from vfg_llm import LlmError
 
 from . import actions
-from .act import Acts, short
+from .act import TOLD, Acts, short
 from .call import Call, Event, describe
 from .config import log
 from .context import LIVE, Context, Row, parse
@@ -45,7 +48,24 @@ from .world import World
 
 HISTORY_S = 120  # a line older than this when it arrives is history
 MARK_CHUNK = 500  # seqs in one `vfg context mark`
-SORRY = "sorry, I lost that one — say it again?"
+ERRORED_MAX = 180  # the error line's reason, in characters
+
+
+def spent(got) -> str:
+    """What a call spent, from its Answer or its LlmError: `840 ms $0.001234, 9000 in, 96% cached, 40 out`,
+    the cost `$0.001234+` when it timed out with an attempt in flight, whose cost is not in it."""
+    rate = f", {got.cached_tokens / got.prompt_tokens:.0%} cached" if got.prompt_tokens else ""
+    more = "" if getattr(got, "cost_known", True) else "+"
+    return f"{got.ms} ms ${got.cost:.6f}{more}, {got.prompt_tokens} in{rate}, {got.completion_tokens} out"
+
+
+def errored(who: str, e: Exception) -> str:
+    """The chat line for a brain call that failed for good: that it errored out, and why, short.
+    A schema mismatch keeps its last reason, without the field path and the part's words."""
+    lines = [x.strip() for x in str(e).splitlines() if x.strip()] or ["no reason given"]
+    why = re.sub(r"^- [^:]*: (Value error, )?", "", lines[-1])
+    why = re.sub(r"^the \S+ part (['\"]).*?\1: ", "", why)
+    return f"{who}: that errored out — {short(why, ERRORED_MAX)}"
 WATCH_AGAIN_S = 2.0  # after `vfg watch` exits, or the feed restarted, before it is followed again
 RESTARTED = "feed restarted"  # in vfg watch's notice of a new feed.log
 RECONNECTED = "reconnected"  # vfg watch's notice once EC2 answers again after a drop
@@ -62,7 +82,7 @@ def iso(t: datetime) -> str:
 class Brain:
     def __init__(self, *, ctx: Context, call: Call, respond: Respond, acts: Acts, world: World, tasks: Tasks,
                  implementers, later: Later, catalog, refs=None,
-                 model: str = "", respond_model: str = "", now: Callable[[], datetime] = utc_now,
+                 now: Callable[[], datetime] = utc_now,
                  menu: Callable[[str], object] | None = None, start: int = 0,
                  load: Callable[[], Awaitable[tuple[Context, int]]] | None = None):
         self.ctx = ctx
@@ -76,7 +96,6 @@ class Brain:
         self.later = later
         self.catalog = catalog
         self.refs = refs              # the command references, once loaded (None until then)
-        self.model, self.respond_model = model, respond_model
         self.now = now
         self.menu = menu              # sets Jev's menu again when the actions change
         self.load = load              # reads the context again, (ctx, start), after the feed restarted
@@ -87,8 +106,9 @@ class Brain:
 
     # ------------------------------------------------------------- rows in
 
-    def spawn(self, coro, name: str) -> asyncio.Task:
-        """An event as its own task, kept until it ends; what it raises is logged, never lost."""
+    def spawn(self, coro, name: str, who: str = "") -> asyncio.Task:
+        """An event as its own task, kept until it ends; what it raises is logged, never lost, and
+        told in chat to `who`, the player whose line it was."""
         async def guarded() -> None:
             try:
                 await coro
@@ -96,6 +116,9 @@ class Brain:
                 raise
             except Exception as e:  # noqa: BLE001 — one event's bug never stops the others
                 log("error", f"{name} failed: {type(e).__name__}: {e} | {traceback.format_exc(limit=-4)}")
+                if who and TOLD not in getattr(e, "__notes__", ()):
+                    with contextlib.suppress(Exception):
+                        await self.acts.say(errored(who, e))
 
         t = asyncio.create_task(guarded(), name=name)
         self.inflight.add(t)
@@ -138,8 +161,8 @@ class Brain:
             log("line", f"#{row.seq} {row.who} from {row.hms} is history, not acted on: {row.text[:120]!r}")
             return None
         if row.cls == "action_oriented":
-            return self.spawn(self.line(row), f"line #{row.seq}")
-        return self.spawn(self.conversational(row), f"respond #{row.seq}")
+            return self.spawn(self.line(row), f"line #{row.seq}", row.who)
+        return self.spawn(self.conversational(row), f"respond #{row.seq}", row.who)
 
     def position(self) -> int:
         """Where the watch follows from: the context's last row, or the feed's highest seq when the
@@ -166,13 +189,16 @@ class Brain:
             self.later("context", "mark", *(str(r.seq) for r in new))
         return new
 
-    def usage(self, component: str, model: str, answer, ref: str) -> None:
-        rate = f", {answer.cached_tokens / answer.prompt_tokens:.0%} cached" if answer.prompt_tokens else ""
-        log(component, f"{ref} {answer.ms} ms ${answer.cost:.6f}, {answer.prompt_tokens} in{rate}, "
-                       f"{answer.completion_tokens} out")
-        self.later("usage", "add", "--component", component, "--model", model, "--in", str(answer.prompt_tokens),
-                   "--out", str(answer.completion_tokens), "--cost", f"{answer.cost:.6f}",
-                   "--cache-read", str(answer.cached_tokens), "--ref", ref[:64])
+    def usage(self, component: str, answer, ref: str) -> None:
+        """A call's log line, from its Answer; its usage row structured() queued, sent here."""
+        log(component, f"{ref} {spent(answer)}")
+        self.flush()
+
+    def flush(self) -> None:
+        """The usage rows structured() queued, this call's among them, sent nobody waiting: never
+        two `vfg usage flush` at once, one more after the one running when asked meanwhile
+        (Later.flush_usage), so a burst of calls with the box down is one SSH attempt, then one."""
+        self.later.flush_usage()
 
     def reload(self) -> None:
         """Before each brain call: every action file that changed is loaded again, so an action an
@@ -198,10 +224,11 @@ class Brain:
             answer = await self.call.decide(event, self.ctx, seen, self.open_tasks(),
                                             [r for r in new if r.seq != row.seq], self.refs)
         except LlmError as e:
-            log("brain", f"#{row.seq} FAILED: {e}")
-            await self.acts.say(f"{row.who}: {SORRY}")
+            log("brain", f"#{row.seq} FAILED ({spent(e)}): {e}")
+            self.flush()
+            await self.acts.say(errored(row.who, e))
             return
-        self.usage("brain", self.model, answer, f"#{row.seq}")
+        self.usage("brain", answer, f"#{row.seq}")
         log("brain", f"#{row.seq} {row.who}: {row.text[:80]!r} -> {describe(answer.value)}")
         await self.acts.run(answer.value, player=row.who, line=row.text, seen=seen)
 
@@ -213,9 +240,10 @@ class Brain:
             answer = await self.respond.answer(row, self.ctx, seen, self.open_tasks(),
                                                [r for r in new if r.seq != row.seq])
         except LlmError as e:
-            log("respond", f"#{row.seq} FAILED ({e}): handed up")
+            log("respond", f"#{row.seq} FAILED ({spent(e)}; {e}): handed up")
+            self.flush()
             return await self.line(row, new, handed_up="Respond could not answer")
-        self.usage("respond", self.respond_model, answer, f"#{row.seq}")
+        self.usage("respond", answer, f"#{row.seq}")
         said = answer.value
         if said.hand_up:
             log("respond", f"#{row.seq} handed up: {said.reason}")
@@ -240,12 +268,13 @@ class Brain:
             try:
                 answer = await self.call.decide(event, self.ctx, seen, self.open_tasks(), new, self.refs)
             except LlmError as e:
-                log("brain", f"{tid} report FAILED: {e}")
+                log("brain", f"{tid} report FAILED ({spent(e)}): {e}")
+                self.flush()
                 kept = self.result(tid, status, self.written(tid, status), following)
                 recorded = True
                 await self.acts.say(self.line_for(tid, status, kept), tid)
                 return
-            self.usage("brain", self.model, answer, tid)
+            self.usage("brain", answer, tid)
             d = answer.value
             log("brain", f"{tid} report ({status}) -> {describe(d)}")
             final = d.status or status

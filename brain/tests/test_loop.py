@@ -12,6 +12,7 @@ from brain.act import BROKE
 from brain.call import PROMPT
 from brain.respond import Response, promises
 from brain.tasks import Tasks
+from brain.vfg import VfgResult
 
 from conftest import cmd, decision, part, rows
 
@@ -39,9 +40,9 @@ async def test_each_row_goes_where_its_class_says_and_a_read_marks_what_it_took(
     # the context line marked as it came, nobody waiting; the line's read took the game events and the line
     assert k.vfg.of("context", "mark") == [["context", "mark", "4"], ["context", "mark", "1", "3", "5"],
                                            ["context", "mark", "6"]]
-    usage = k.vfg.of("usage", "add")
-    assert ["usage", "add", "--component", "brain", "--model", "brain-model", "--in", "1000", "--out", "40",
-            "--cost", "0.002000", "--cache-read", "900", "--ref", "#5"] in usage and any("respond" in u for u in usage)
+    # each call names its usage row, which structured() queues; the brain only sends the queue, per call
+    assert sorted((c["component"], c["call_id"]) for c in k.ask.calls) == [("brain", "#5"), ("respond", "#6")]
+    assert k.vfg.of("usage", "add") == [] and k.vfg.of("usage") == [["usage", "flush"]] * 2
     assert k.ctx.unprocessed() == [] and k.ctx.last_seq == 6
 
 
@@ -304,3 +305,67 @@ async def test_respond_sees_each_players_place_and_state_but_no_items(kit):
     assert ("- Steve at 10 64 -20 in overworld: 14.5/20 health, 18/20 food, armor 12, level 5, survival; "
             "effects: speed II 0:30, night vision ∞\n") in prompt
     assert "items, by slot" not in prompt
+
+
+async def test_a_brain_call_that_fails_tells_the_player_it_errored_out_and_why(kit, capsys):
+    failed = LlmError("openai/gpt-6.1-sol twice failed to match Decision:\n- parts.0: Value error, the "
+                      "incantation_create part 'juicy steak': incantation_create has no value commands; "
+                      "its values: player, phrase, action, values, cooldown_s")
+    failed.cost, failed.ms, failed.prompt_tokens, failed.cached_tokens, failed.completion_tokens = \
+        0.031, 9400, 18000, 0, 900  # two uncached Sol attempts
+    k = kit(Decision=failed)
+    k.brain.feed("LINE#7 18:29:59 Steve voice action_oriented 0.9 - | make juicy steak give me 64 steak")
+    await k.settle()
+    assert k.vfg.said() == [["Steve: that errored out — incantation_create has no value commands; its values: "
+                             "player, phrase, action, values, cooldown_s"]]
+    # what it cost in the log line; its row, structured()'s, sent all the same
+    assert "brain #7 FAILED (9400 ms $0.031000, 18000 in, 0% cached, 900 out): openai/" in capsys.readouterr().out
+    assert k.vfg.of("usage") == [["usage", "flush"]]
+    assert loop.errored("Alex", LlmError("no answer from m within 30 s")) == \
+        "Alex: that errored out — no answer from m within 30 s"
+    cut = LlmError("no answer from m within 30 s")  # an attempt in flight when it timed out: billed, cost unknown
+    cut.cost, cut.cost_known, cut.ms = 0.0012, False, 30000
+    assert loop.spent(cut) == "30000 ms $0.001200+, 0 in, 0 out"
+
+
+async def test_a_burst_of_calls_sends_the_usage_queue_once_more_never_two_flushes_at_once(kit):
+    """The box down: each `vfg usage flush` is an SSH attempt that waits out its timeout. One runs at a
+    time; the calls that end meanwhile ask for one more, which sends every row they queued, once."""
+    k = kit(Decision=GIVE)
+    down, running, most = asyncio.Event(), [0], [0]
+
+    async def flush(argv):
+        running[0] += 1
+        most[0] = max(most[0], running[0])
+        await down.wait()
+        running[0] -= 1
+        return VfgResult(4, "", "vfg: cannot reach EC2")
+
+    k.vfg.on("usage", "flush", answer=flush)
+    k.brain.feed(ASK.format(seq=5))
+    for _ in range(100):  # the first call's flush, waiting on the box
+        if running[0]:
+            break
+        await asyncio.sleep(0)
+    for seq in range(6, 10):
+        k.brain.feed(ASK.format(seq=seq))
+    while k.brain.inflight:
+        await asyncio.gather(*k.brain.inflight)
+    assert len(k.ask.calls) == 5 and k.vfg.of("usage") == [["usage", "flush"]] and running[0] == 1
+    down.set()
+    await k.settle()
+    assert k.vfg.of("usage") == [["usage", "flush"]] * 2 and most[0] == 1  # one more for the four, after it
+    k.brain.feed(ASK.format(seq=10))  # nothing running: a call's own flush, at once
+    await k.settle()
+    assert len(k.vfg.of("usage")) == 3 and most[0] == 1
+
+
+async def test_a_line_whose_event_breaks_tells_the_player_it_errored_out(kit):
+    k = kit(Decision=GIVE)
+
+    async def broken(*a, **kw):
+        raise RuntimeError("the world broke")
+    k.brain.world.seen = broken
+    k.brain.feed("LINE#7 18:29:59 Steve voice action_oriented 0.9 - | give me a diamond pickaxe")
+    await k.settle()
+    assert k.vfg.said() == [["Steve: that errored out — the world broke"]]

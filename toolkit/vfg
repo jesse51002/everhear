@@ -48,8 +48,10 @@ KINDS = ["join", "leave", "death", "advancement", "server"]
 TYPES = ["LINE", "GAME", "AI", "SYS"]
 AI_KINDS = ["say", "action", "task", "result", "note"]
 CLASSES = ["action_oriented", "conversational", "context", "not_relevant", "unjudged"]
-# brain and respond are the brain's; the old components stay valid for the rows that have them.
-COMPONENTS = ["jev", "brain", "respond", "implementer", "conversation", "orchestrator"]
+# lib/py/vfg_llm.py's Component, and the usage table's CHECK (bridge/vfg_bridge/db.py): brain,
+# respond and planner are the brain's, alias the incantation alias call's; the old components
+# stay valid for the rows that have them.
+COMPONENTS = ["jev", "brain", "respond", "implementer", "planner", "alias", "conversation", "orchestrator"]
 PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 TASK_RE = re.compile(r"^T[1-9][0-9]*$")
@@ -746,6 +748,14 @@ def cmd_feed(cfg, a):
 
 
 def cmd_usage(cfg, a, started):
+    if a.op == "flush":
+        return send_usage(cfg, a, [])
+    return send_usage(cfg, a, [usage_row(a, started)])
+
+
+def usage_row(a, started):
+    """`vfg usage add`'s row, checked. lib/py/vfg_llm.py's usage_row() queues each model call's
+    in this format, with ok, error and ms after it."""
     if a.component not in COMPONENTS:
         raise Fail(2, "--component is one of %s" % ", ".join(COMPONENTS))
     if not a.model.strip() or len(a.model) > 200:
@@ -758,12 +768,21 @@ def cmd_usage(cfg, a, started):
         raise Fail(2, "--cost is a number, 0 or more")
     if a.ref is not None and len(a.ref) > 64:
         raise Fail(2, "--ref is at most 64 characters")
-    row = {"at": now_iso(started), "component": a.component, "model": a.model.strip(),
-           "input_tokens": a.in_, "output_tokens": a.out, "cost_usd": a.cost, "ref": a.ref,
-           "cache_read_tokens": a.cache_read, "cache_write_tokens": a.cache_write}
+    return {"at": now_iso(started), "component": a.component, "model": a.model.strip(),
+            "input_tokens": a.in_, "output_tokens": a.out, "cost_usd": a.cost, "ref": a.ref,
+            "cache_read_tokens": a.cache_read, "cache_write_tokens": a.cache_write}
+
+
+def send_usage(cfg, a, rows):
+    """The queue, usage.pending.jsonl (structured()'s own rows among them, VFG_USAGE_QUEUE's
+    folder: Pending), then `rows`, to the box in one SSH call; queued again when they do not get
+    there. Nothing queued and no row: nothing sent, exit 0. A row's cost_usd may be null: a call
+    cut off with an attempt in flight, whose cost nobody told."""
     cfg.ensure_home()
     pending = Pending(cfg.home)
-    rows = pending.claim() + [row]
+    rows = pending.claim() + rows
+    if not rows:
+        return 0
     try:
         timeout = a.timeout if a.timeout is not None else 15
         rc, o, e = Ssh(cfg).call(program("usage.py", {"vfg": cfg.rvfg, "rows": rows}), timeout)
@@ -778,16 +797,21 @@ def cmd_usage(cfg, a, started):
 
 
 class Pending(object):
-    """usage.pending.jsonl: rows that could not reach EC2, inserted next time.
+    """usage.pending.jsonl: rows that could not reach EC2, and every structured() call's row
+    (lib/py/vfg_llm.py appends them under the same lock), inserted next time. Its folder is
+    VFG_USAGE_QUEUE from the environment, as vfg_llm's record() reads it, else $VFG_HOME: a
+    replay points it at its own folder, so its rows reach the box only when sent on purpose
+    (`VFG_USAGE_QUEUE=<that folder> vfg usage flush`).
 
     A call claims the queue by moving it into usage.sending.<pid>.jsonl, so two
     calls never insert the same row; a crashed caller's file is claimed again."""
 
     def __init__(self, home):
-        self.home = home
-        self.queue = os.path.join(home, "usage.pending.jsonl")
-        self.lock = os.path.join(home, "usage.pending.lock")
-        self.mine = os.path.join(home, "usage.sending.%d.jsonl" % os.getpid())
+        self.home = os.path.expanduser(os.environ.get("VFG_USAGE_QUEUE") or home)
+        os.makedirs(self.home, mode=0o700, exist_ok=True)
+        self.queue = os.path.join(self.home, "usage.pending.jsonl")
+        self.lock = os.path.join(self.home, "usage.pending.lock")
+        self.mine = os.path.join(self.home, "usage.sending.%d.jsonl" % os.getpid())
 
     def claim(self):
         rows = []
@@ -1223,6 +1247,9 @@ def remote_json(cfg, a, args, timeout=30):
 SCRIPTS_LIBS = ("instances.py",)
 COPY_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,47}$")
 KEY_RE = re.compile(r"^[a-z_][a-z0-9_]{0,47}$")
+# values.<name>=<value>: one of the values an incantation binds, a word of its own, since a JSON
+# object of two keys or more in one word is refused by the implementers' Bash permission check.
+INNER_KEY_RE = re.compile(r"^values\.[a-z_][a-z0-9_]{0,47}$")
 CHECK_S = 2.0          # an until-stopped copy answers with its first result() or after this check
 ACTION_TIMEOUT = 20.0  # VFG_DISPATCH_ACTION_TIMEOUT_S's default: how long a once action is waited for
 LIB_PY = os.path.join(os.path.dirname(HERE), "lib", "py")
@@ -1511,7 +1538,7 @@ def action_words(words):
             k, v = w.split("=", 1)
             if k == "as":
                 as_ = v
-            elif not KEY_RE.match(k):
+            elif not (KEY_RE.match(k) or INNER_KEY_RE.match(k)):
                 raise Fail(2, "%r is not key=value" % w)
             elif k in given:
                 raise Fail(2, "%s is given twice" % k)
@@ -1535,7 +1562,9 @@ def action_words(words):
 def run_named(cfg, a, name, given, as_=None, task=None):
     """Any action, as vfg action run and its shortcuts run it: edit through run_edit and stop
     through run_stop, which write the copy they name through to running.json; the incantation
-    actions through run_incantation; the rest through run_action."""
+    actions through run_incantation; the rest through run_action, and after a run that went
+    well, which deployed the action's script as it is here, the incantations bound to it made
+    to follow it (refresh_incantations, its notes the line's)."""
     if name == "edit":
         copy, changes = edit_words(given)
         return run_edit(cfg, a, copy, changes, task)
@@ -1543,7 +1572,10 @@ def run_named(cfg, a, name, given, as_=None, task=None):
         return run_stop(cfg, a, given["copy"], as_, task)
     if name in INCANT_ACTIONS:
         return run_incantation(cfg, a, name, given, as_, task)
-    return run_action(cfg, a, name, given, as_, task)
+    line = run_action(cfg, a, name, given, as_, task)
+    if line["ok"]:
+        line["notes"] = line["notes"] + refresh_incantations(cfg, a, name)
+    return line
 
 
 def cmd_action_run(cfg, a):
@@ -2642,10 +2674,12 @@ def incant_warnings(inc, phrase, aliases, players, rows, skip=None):
 def incant_alias_call(cfg, phrase):
     """How `phrase` is likely said or misheard, from one structured() call: (variants, a note
     when the call failed, {"model", "cost", "ms"} when it answered). A failure is a note, never
-    a refusal: the code's aliases stand."""
+    a refusal: the code's aliases stand. The call queues its own usage row, component alias and
+    the phrase its ref, and `vfg usage flush` sends it, nobody waiting."""
     model = (cfg.get("VFG_INCANT_ALIAS_MODEL") or INCANT_ALIAS_MODEL).strip()
     if model.lower() == "off":
         return [], None, None
+    asked = False
     try:
         actions_lib()  # lib/py on sys.path
         import asyncio
@@ -2659,10 +2693,15 @@ def incant_alias_call(cfg, phrase):
             variants: list[str] = Field(description="how the phrase is likely said or misheard, the likeliest "
                                                     "first, at most six")
 
-        got = asyncio.run(vfg_llm.structured(INCANT_ALIAS_PROMPT % phrase, Variants, model=model, reasoning=False,
+        asked = True
+        got = asyncio.run(vfg_llm.structured(INCANT_ALIAS_PROMPT % phrase, Variants, component="alias",
+                                             call_id=phrase[:64], model=model, reasoning=False,
                                              providers=INCANT_ALIAS_PROVIDERS, timeout=INCANT_ALIAS_TIMEOUT_S))
     except Exception as e:  # noqa: BLE001 — an LlmError, no key, no httpx: the code's aliases stand
+        if asked:
+            flush_usage_later(cfg)
         return [], "aliases from code only: the alias call failed (%s)" % (str(e) or type(e).__name__), None
+    flush_usage_later(cfg)
     return [x for x in got.value.variants if isinstance(x, str)], None, \
         {"model": model, "cost": round(got.cost, 6), "ms": got.ms}
 
@@ -2700,15 +2739,57 @@ def incant_deploy(cfg, a, home, folders):
 
 
 def incant_given(given):
-    """values= as a JSON object, as the dispatcher and the brain give a dict on the command line."""
+    """values= as a JSON object, as the dispatcher and the brain give a dict on the command line,
+    and values.<name>=<value> words gathered into it as their text: (given, the names given as
+    words), read once the bound action's fields are known (incant_typed)."""
     vals = given.get("values")
     if isinstance(vals, str):
         try:
             vals = json.loads(vals) if vals.strip() else {}
         except ValueError:
-            raise Fail(2, "values= is a JSON object of the action's values, such as values='{\"power\": 4}'")
-        given = dict(given, values=vals)
-    return given
+            raise Fail(2, "values= is a JSON object of the action's values, such as values='{\"power\": 4}', "
+                          "or give each as values.<name>=<value>")
+    inner = dict((k.split(".", 1)[1], given[k]) for k in given if k.startswith("values."))
+    if inner:
+        if vals is not None and not isinstance(vals, dict):
+            raise Fail(2, "values= is a JSON object of the action's values")
+        vals = dict(vals or {}, **inner)
+    if vals is not given.get("values") or inner:
+        given = dict(((k, x) for k, x in given.items() if not k.startswith("values.")), values=vals)
+    return given, set(inner)
+
+
+def incant_word(x):
+    """A values.<name>= word's value for a field that does not take text: JSON when it reads as
+    JSON (6, true, ["give Steve bread"]), else the text itself, for the field to read (a,b,c)."""
+    try:
+        return json.loads(x)
+    except ValueError:
+        return x
+
+
+def incant_takes_text(va, cls, f):
+    """Whether field `f` of action `cls` takes text as it is: text, a kind of text (a player, a
+    block, a command ...), or one of some words."""
+    T = va._types(cls)
+    t, _ = T.unwrap(f.annotation, f.metadata)
+    if t is str:
+        return True
+    opts = T.choices(f.annotation, f.metadata)
+    return T.kind(f.annotation, f.metadata) == "enum" and bool(opts) and all(isinstance(o, str) for o in opts)
+
+
+def incant_typed(va, cls, vals, words):
+    """The values for bound action `cls`, those given as values.<name>= words read now that its
+    fields are known: a field that takes text keeps the word as it is (values.title=1 is the
+    text "1"), any other gets it read as JSON (incant_word). A name it has no field for stays,
+    for the check to refuse."""
+    out = dict(vals)
+    for k in words:
+        f = cls.model_fields.get(k)
+        if k in out and isinstance(out[k], str) and f is not None and not incant_takes_text(va, cls, f):
+            out[k] = incant_word(out[k])
+    return out
 
 
 def run_incantation(cfg, a, name, given, as_=None, task=None):
@@ -2720,7 +2801,7 @@ def run_incantation(cfg, a, name, given, as_=None, task=None):
     cfg.require_ssh()
     inc = incantations_module()
     va, cat, cls = action_class(cfg, name)
-    given = incant_given(given)
+    given, words = incant_given(given)
     try:
         own = va.check_values(cls, given)
     except ValueError as e:
@@ -2745,11 +2826,12 @@ def run_incantation(cfg, a, name, given, as_=None, task=None):
             note_incantations(cfg, drop=line["facts"].get("ids") or [], version=line["facts"].get("version"))
         return line
     if name == "incantation_edit":
-        return edit_incantation(cfg, a, inc, va, given, v, players, phrase, mine, own.notes, as_, task)
+        return edit_incantation(cfg, a, inc, va, given, words, v, players, phrase, mine, own.notes, as_, task)
 
     # create: the bound action and its values, checked as a run of it would check them, every
     # player field left out or empty filled with a stand-in: the caster's, as it is cast.
     _, bcat, bcls = incant_bound(cfg, v["action"])
+    v = dict(v, values=incant_typed(va, bcls, v["values"], words))
     caster = [k for k in incant_player_fields(va, bcls) if incant_blank(v["values"].get(k))]
     try:
         checked = checked_values(cfg, a, va, bcls, dict(v["values"], **dict((k, INCANT_STANDIN) for k in caster)))
@@ -2781,9 +2863,12 @@ def run_incantation(cfg, a, name, given, as_=None, task=None):
     if stale:
         incant_deploy(cfg, a, home, folders)
     stored = dict(checked.values, **dict((k, "") for k in caster))
+    # What was asked, apart from the caster fields: the rest follows the action's defaults when
+    # they change (refresh_incantations).
+    asked = dict((k, checked.values[k]) for k in v["values"] if k not in caster and k in checked.values)
     made = now_iso()
     entries = [{"player": p, "phrase": phrase, "aliases": aliases, "action": v["action"], "script": bcls.script,
-                "source": home, "server": server_name(cfg) if home == "made" else "", "values": stored,
+                "source": home, "server": server_name(cfg) if home == "made" else "", "values": stored, "asked": asked,
                 "live": list(checked.live), "runs": bcls.runs, "caster_fields": caster,
                 "cooldown_s": float(v["cooldown_s"]), "created": made, "by": task or ""} for p in players]
     line = run_action(cfg, a, name, dict(mine, action=v["action"], values=v["values"], cooldown_s=v["cooldown_s"]),
@@ -2797,12 +2882,88 @@ def run_incantation(cfg, a, name, given, as_=None, task=None):
     return line
 
 
-def edit_incantation(cfg, a, inc, va, given, v, players, phrase, mine, notes, as_, task):
+def incant_remade(va, bcls, e):
+    """An entry made again from what was asked ("asked") over its action's defaults as they are
+    now, its caster fields kept the caster's: (what changes, {"values", "live", "asked"} whole,
+    or None when the entry holds them already; why it keeps its values, or None). No SSH: a
+    saved place in what was asked was checked when it was asked, and a fixed field asked for
+    by an edit, which may change one, stays asked."""
+    caster = [k for k in e.get("caster_fields") or [] if k in bcls.model_fields]
+    asked = dict((k, x) for k, x in (e.get("asked") or {}).items() if k in bcls.model_fields and k not in caster)
+    try:
+        checked = va.check_values(bcls, dict(asked, **dict((k, INCANT_STANDIN) for k in caster)), allow_fixed=True)
+    except ValueError as err:
+        return None, '"%s" for %s keeps its values: %s' % (e.get("phrase"), e.get("player"), err)
+    sets = {"values": dict(checked.values, **dict((k, "") for k in caster)), "live": list(checked.live),
+            "asked": asked}
+    if sets == {"values": e.get("values"), "live": list(e.get("live") or []), "asked": e.get("asked")}:
+        return None, None
+    return sets, None
+
+
+def refresh_incantations(cfg, a, name):
+    """After a run of action `name` that went well (vfg action run has just deployed its script
+    as it is here): each incantation bound to it made again from what was asked over the
+    action's defaults as they are now (incant_remade), so a fix to the action reaches the
+    phrase too. Decided from the cache alone: while every binding of it there holds what it
+    would be made again, nothing is sent. When one would change, the store is read (one SSH
+    call), each binding of the action made again from the box's own entry, and each that
+    changes updated, its values, live and asked replaced whole, so a value the action no longer
+    has goes from the box and the cache alike. An entry from before "asked" was kept stays as
+    it is. Its notes, one when there is no cache to decide from; never raises: the run that
+    called it stands."""
+    cached = read_incant_cache(cfg)
+    if cached is None:
+        return ["incantations of %s not checked: no cache of them on this PC (vfg incantation list --fresh)"
+                % name]
+    mine = [e for e in cached[0]["incantations"] if isinstance(e, dict) and e.get("action") == name and "asked" in e]
+    if not mine:
+        return []
+    try:
+        va = actions_lib()
+        _, _, bcls = incant_bound(cfg, name)
+    except Fail as f:
+        return ["incantations of %s not refreshed: %s" % (name, f.msg)]
+    local = [incant_remade(va, bcls, e) for e in mine]
+    if not any(sets for sets, _ in local):
+        return [why for _, why in local if why]
+    try:
+        rows = fetch_incantations(cfg, a)[0]["incantations"]
+    except Fail as f:
+        return ["incantations of %s not refreshed: %s" % (name, f.msg)]
+    notes = []
+    for e in rows:
+        if not isinstance(e, dict) or e.get("action") != name or "asked" not in e:
+            continue
+        sets, why = incant_remade(va, bcls, e)
+        if why:
+            notes.append(why)
+        if not sets:
+            continue
+        try:
+            line = run_action(cfg, a, "incantation_edit", {"player": e["player"], "phrase": e["phrase"]},
+                              extra={"op": "update", "entries": [{"player": e["player"], "phrase": e["phrase"],
+                                                                   "set": sets, "replace": True}]})
+        except Fail as f:
+            notes.append('"%s" for %s not refreshed: %s' % (e.get("phrase"), e.get("player"), f.msg))
+            continue
+        if line["ok"]:
+            note_incantations(cfg, put=[dict(e, **sets)], version=line["facts"].get("version"))
+            notes.append('"%s" for %s now follows %s as it is' % (e.get("phrase"), e.get("player"), name))
+        else:
+            notes.append('"%s" for %s not refreshed: %s' % (e.get("phrase"), e.get("player"), line.get("error")))
+    return notes
+
+
+def edit_incantation(cfg, a, inc, va, given, words, v, players, phrase, mine, notes, as_, task):
     """incantation_edit: each player's entry read from the box (never the cache: two edits close
-    together must both see what the other did), its values checked against its action over the
-    ones it has, its aliases normalised and bind-checked again; then the box updates what
-    changed, the values as only the keys given, merged over what the store holds as it writes,
-    so two edits of different values both land."""
+    together must both see what the other did), its values (values.<name>= words read for its
+    action, incant_typed) checked against its action over the ones it has, its aliases
+    normalised and bind-checked again; then the box updates what changed. The values and what
+    was asked go as only the keys given, with the keys that became the caster's to drop from
+    asked, and the caster fields only when they change, all merged over what the store holds as
+    it writes, so two edits of different values both land; the cache gets each entry as the box
+    makes it (incantations.updated)."""
     change = [k for k in ("cooldown_s", "aliases") if k in given] + (["values"] if given.get("values") else [])
     if not change:
         raise Fail(2, "nothing to change: give values=, cooldown_s= or aliases=")
@@ -2814,22 +2975,27 @@ def edit_incantation(cfg, a, inc, va, given, v, players, phrase, mine, notes, as
                    % (phrase, " and ".join("everyone (@a)" if p == "@a" else p for p in missing)))
     notes, entries, after = list(notes), [], []
     for e in found:
-        sets = {}
+        sets, drop = {}, []
         if "values" in change:
             _, _, bcls = incant_bound(cfg, e.get("action") or "")
+            vals = incant_typed(va, bcls, v["values"], words)
             # A player field given empty becomes the caster's; one given a name is not any more.
             was = [k for k in e.get("caster_fields") or [] if k in bcls.model_fields]
             caster = [k for k in incant_player_fields(va, bcls)
-                      if (incant_blank(v["values"][k]) if k in v["values"] else k in was)]
+                      if (incant_blank(vals[k]) if k in vals else k in was)]
             now = dict(e.get("values") or {}, **dict((k, INCANT_STANDIN) for k in was))
-            new = dict(v["values"], **dict((k, INCANT_STANDIN) for k in caster if k in v["values"]))
+            new = dict(vals, **dict((k, INCANT_STANDIN) for k in caster if k in vals))
             try:
                 ed = with_places(cfg, a, lambda places: va.check_edit(bcls, now, new, places=places))
             except Fail as f:
                 raise Fail(f.code, "values for %s: %s" % (e.get("action"), f.msg))
             notes += [n for n in ed.notes if n not in notes]
-            sets["values"] = dict((k, "" if k in caster else ed.values[k]) for k in v["values"])
-            sets["caster_fields"] = caster
+            sets["values"] = dict((k, "" if k in caster else ed.values[k]) for k in vals)
+            if caster != list(e.get("caster_fields") or []):
+                sets["caster_fields"] = caster
+            if "asked" in e:
+                sets["asked"] = dict((k, ed.values[k]) for k in vals if k not in caster)
+                drop = [k for k in vals if k in caster]
         if "cooldown_s" in change:
             sets["cooldown_s"] = float(v["cooldown_s"])
         if "aliases" in change:
@@ -2840,9 +3006,9 @@ def edit_incantation(cfg, a, inc, va, given, v, players, phrase, mine, notes, as
                              + ", ".join(left))
             notes += [w for w in incant_warnings(inc, phrase, sets["aliases"], [e["player"]], rows, skip=e)
                       if w not in notes]
-        entries.append({"player": e["player"], "phrase": e["phrase"], "set": sets})
-        after.append(dict(e, **dict(sets, values=dict(e.get("values") or {}, **sets["values"])))
-                     if "values" in sets else dict(e, **sets))
+        entries.append(dict({"player": e["player"], "phrase": e["phrase"], "set": sets},
+                            **({"drop_asked": drop} if drop else {})))
+        after.append(inc.updated(e, sets, merge=True, drop_asked=drop))
     line = run_action(cfg, a, "incantation_edit", dict(mine, **dict((k, v[k]) for k in change)), as_, task,
                       extra={"op": "update", "entries": entries})
     line["notes"] = notes + line["notes"]
@@ -3082,19 +3248,31 @@ def jev_ask(cfg, state, questions, budget):
     return got
 
 
+def vfg_later(args, what):
+    """`vfg <args>` in its own session, nobody waiting for it; `what` names it in the one warning
+    when it cannot start."""
+    try:
+        subprocess.Popen([sys.executable, os.path.join(HERE, "vfg")] + list(args), stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                         close_fds=True)
+    except OSError as e:
+        warn("%s: cannot run vfg (%s)" % (what, e.strerror))
+
+
 def usage_later(cfg, ref, tokens):
     """The router's usage row, by `vfg usage add` in its own session: the picks
     are printed without waiting for it, and it queues the row if EC2 is down."""
     cost = "%.9f" % (tokens * 0.000000042)   # $42 per billion input tokens, output free
-    argv = [sys.executable, os.path.join(HERE, "vfg"), "usage", "add", "--component", "jev",
-            "--model", "jev-latest", "--in", str(tokens), "--out", "0", "--cost", cost]
+    args = ["usage", "add", "--component", "jev", "--model", "jev-latest", "--in", str(tokens), "--out", "0",
+            "--cost", cost]
     if ref:
-        argv += ["--ref", ref]
-    try:
-        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
-    except OSError as e:
-        warn("usage row not written: cannot run vfg (%s)" % e.strerror)
+        args += ["--ref", ref]
+    vfg_later(args, "usage row not written")
+
+
+def flush_usage_later(cfg):
+    """`vfg usage flush` in its own session: the rows structured() queued, sent to the box."""
+    vfg_later(["usage", "flush"], "usage rows not sent")
 
 
 def cmd_route(cfg, a):
@@ -3462,7 +3640,7 @@ def build_parser():
                "124 vfg action run's call out of time (it may still have happened).")
     p.add_argument("--version", action="version", version="vfg " + VERSION)
     p.add_argument("--timeout", type=float, metavar="S",
-                   help="seconds to wait for EC2 (default 30; vfg up 120, usage add 15, action refs 300)")
+                   help="seconds to wait for EC2 (default 30; vfg up 120, usage add and flush 15, action refs 300)")
     sub = p.add_subparsers(dest="command", metavar="<command>", title="commands")
     sub.required = True
 
@@ -3694,10 +3872,11 @@ def build_parser():
                    "cooldown_s, aliases}")
     w.add_argument("--fresh", action="store_true", help="fetch from the box, whatever the cache's age")
 
-    s = sub.add_parser("usage", help="write a usage row; queued locally when EC2 is down")
-    us = s.add_subparsers(dest="op", metavar="add")
+    s = sub.add_parser("usage", help="write a usage row, or send the queued ones; queued locally when EC2 is down")
+    us = s.add_subparsers(dest="op", metavar="add|flush")
     us.required = True
-    w = us.add_parser("add")
+    us.add_parser("flush", help="send the queued rows, structured()'s own among them; none queued, nothing sent")
+    w = us.add_parser("add", help="write one row, after the queued ones")
     w.add_argument("--component", required=True, choices=COMPONENTS)
     w.add_argument("--model", required=True)
     w.add_argument("--in", dest="in_", type=int, required=True, metavar="N")

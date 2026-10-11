@@ -37,6 +37,7 @@ from .world import Seen
 
 SAY_TIMEOUT_S = 30
 BROKE = "sorry, something broke on my side and that one didn't finish"
+TOLD = "the player was told"  # a note on an exception already said in chat, so it is never said twice
 LINE_MAX = 200    # a chat line written here
 ROW_MAX = 400     # an AI row's text
 BRIEF_SHORT = 160  # a brief in an `AI task` row
@@ -155,6 +156,7 @@ class Acts:
         except Exception as e:  # raised on, for the event's own log: the task closes, the player hears so
             self.cut(tid, f"{tid} failed: it broke ({type(e).__name__}: {short(str(e), 120)})")
             await self.say(BROKE, task)
+            e.add_note(TOLD)
             raise
         finally:  # cancelled: the brain stopped while it ran
             self.cut(tid, f"{tid} failed: cut off, the brain stopped while it ran")
@@ -211,8 +213,10 @@ class Acts:
             log("action", f"{tid} #{i + 1} {p.to} {state} in {time.perf_counter() - t0:.1f} s: {o.summary[:200]}")
             if p.to in ("stop", "edit") or (o.ok and getattr(self.catalog.get(p.to), "runs", "") == "until_stopped"):
                 self.world.refetch_running()
-        if spent.calls:
-            log("plan", f"{tid} retries: {spent.calls} planner call(s), {spent.ms} ms, ${spent.cost:.6f}")
+        if spent.calls:  # their usage rows, structured()'s, sent nobody waiting
+            log("plan", f"{tid} retries: {spent.calls} planner call(s), {spent.ms} ms, "
+                        f"${spent.cost:.6f}{'' if spent.known else '+'}")
+            self.later.flush_usage()
         return outcomes
 
     def values(self, name: str, cls, given: dict[str, Any], seen: Seen) -> tuple[dict[str, Any], list[str]]:

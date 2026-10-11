@@ -28,7 +28,7 @@ THE CORE ACTIONS
 - stop: ending, cancelling or undoing a copy under RUNNING NOW, by its name. An effect or item a running copy keeps giving is ended by stopping that copy, not by a command.
 
 WRITING AN ACTION
-For every action part, write the action itself in `action`: one key and value for each field it sets, the key as the action's FIELDS name it, exactly as it will run. A list field takes a list: `commands` ["give Steve minecraft:cooked_beef 64"]. `instruction` is one short sentence in plain words saying what it does, for whom: "give Steve 64 firework rockets".
+For every action part, write the action itself in `action`: one key and value for each field it sets, the key as the action's FIELDS name it, exactly as it will run. A list field takes a list: `commands` ["give Steve minecraft:cooked_beef 64"]. A `values` field, which holds another action's values (incantation_create's), takes one key per value, `values.<name>`: `values.commands` ["give Steve minecraft:cooked_beef 64"]. `instruction` is one short sentence in plain words saying what it does, for whom: "give Steve 64 firework rockets".
 - Players: a field naming a player is the speaker, unless the line names others. Write players' names exactly as the rows give them, never "me" or "him". @a only when someone explicitly asks for everyone.
 - A value the line does not give keeps its default: never invent a number. Copy levels, amounts and durations only when the line says them, and keep each number's unit.
 - `effect give <player> <effect> <seconds> <amplifier>`: always write both. No duration asked: `infinite`. The amplifier is the level minus 1: no level asked is 0 (level I); Speed II is 1.

@@ -35,6 +35,7 @@ the conversation answered in chat: see `answered()`.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -79,6 +80,29 @@ def iso(t: datetime) -> str:
 def short(text: str, n: int) -> str:
     text = " ".join(str(text).split())
     return text if len(text) <= n else text[:n - 1] + "…"
+
+
+def queue_usage(out: Path) -> Path:
+    """Where a replay's usage rows queue, one per structured() call: VFG_USAGE_QUEUE, set to the
+    run's own folder `out` unless the caller set one. Never $VFG_HOME's queue, which the brain's
+    next `vfg usage flush` would send into the live usage table: `out`'s usage.pending.jsonl
+    reaches the box only when sent on purpose, `VFG_USAGE_QUEUE=OUT vfg usage flush`. VFG_HOME
+    stays as it is: it finds the OpenRouter key."""
+    if not os.environ.get("VFG_USAGE_QUEUE"):
+        os.environ["VFG_USAGE_QUEUE"] = str(Path(out).resolve())
+    where = Path(os.environ["VFG_USAGE_QUEUE"]).expanduser()
+    print(f"usage rows queue in {where}/usage.pending.jsonl, not sent", flush=True)
+    return where
+
+
+def replayed(ask):
+    """An asker (structured() with a model's settings) whose calls' usage rows say they are a
+    replay's: the component the brain gives, the call_id `replay <its own>`. Their rows queue where
+    queue_usage() says, which each replay calls first."""
+    async def asked(*args, **kw):
+        kw["call_id"] = f"replay {kw['call_id']}"[:64]
+        return await ask(*args, **kw)
+    return asked
 
 
 @dataclass

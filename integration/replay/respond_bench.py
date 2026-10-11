@@ -64,7 +64,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-import playtest  # noqa: E402,F401  (puts brain/ on the path)
+import playtest  # noqa: E402  (puts brain/ on the path)
 from playtest import Clock, Line, Playtest  # noqa: E402
 
 import httpx  # noqa: E402
@@ -376,6 +376,7 @@ async def run(args) -> None:
     ask = asker(cfg.respond_model, cfg.respond_reasoning, args.timeout, cfg.respond_providers)
     out = Path(args.out) / args.version / args.set
     out.mkdir(parents=True, exist_ok=True)
+    playtest.queue_usage(out)
     if args.set == "invented":
         respond = Respond(catalog, ask, owner=INVENTED_OWNER, checkpoint=cfg.checkpoint, prompt=prompt)
         items = invented_items(respond, catalog, args.limit)
@@ -421,7 +422,8 @@ async def run(args) -> None:
                 _held = []
                 t0 = time.perf_counter()
                 try:
-                    answer = await respond.ask(it.tail, output, cached=it.blocks)
+                    answer = await respond.ask(it.tail, output, cached=it.blocks, component="respond",
+                                               call_id=f"replay respond {args.version} {it.row['id']}"[:64])
                 except Exception as err:  # noqa: BLE001 — an LlmError in production; any failure is a hand-up
                     row.update(up=True, error=f"{type(err).__name__}: {err}"[:300],
                                ms=int((time.perf_counter() - t0) * 1000), cost=0.0)

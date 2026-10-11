@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, at TEXT NOT NULL, kind T
 CREATE INDEX IF NOT EXISTS events_at ON events(at);
 CREATE TABLE IF NOT EXISTS feed (seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, line TEXT NOT NULL);  -- line: the whole line, exactly as in feed.log
 CREATE TABLE IF NOT EXISTS usage (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,
-  component TEXT NOT NULL CHECK (component IN ('jev','conversation','orchestrator','implementer','brain','respond')),
+  component TEXT NOT NULL CHECK (component IN ('jev','conversation','orchestrator','implementer','brain','respond','planner','alias')),
   model TEXT, input_tokens INTEGER, output_tokens INTEGER, cost_usd REAL, ref TEXT);
 """
 
@@ -46,6 +46,9 @@ CREATE INDEX IF NOT EXISTS casts_player_started ON casts(player_name, started_at
 COLUMNS = [
     ("usage", "cache_read_tokens", "INTEGER"),   # vfg usage add --cache-read
     ("usage", "cache_write_tokens", "INTEGER"),  # vfg usage add --cache-write
+    ("usage", "ok", "INTEGER"),                  # a structured() call's row: 1 answered, 0 failed
+    ("usage", "error", "TEXT"),                  # why it failed, short; NULL when it answered
+    ("usage", "ms", "INTEGER"),                  # how long the call took, its retries included
     ("lines", "dropped", "TEXT"),                # 'cast': only an incantation; Jev never sees it
     ("lines", "cast_id", "TEXT"),                # the cast the line overlaps
     ("feed", "processed_at", "TEXT"),            # the brain's mark: vfg context mark
@@ -57,7 +60,8 @@ COLUMNS = [
 CHECKS = [
     ("lines", "jev_class", ("action_oriented", "conversational", "context", "not_relevant"),
      {"direct_ask": "action_oriented", "not_useful": "not_relevant"}),
-    ("usage", "component", ("jev", "conversation", "orchestrator", "implementer", "brain", "respond"),
+    ("usage", "component", ("jev", "conversation", "orchestrator", "implementer", "brain", "respond",
+                            "planner", "alias"),
      {}),
 ]
 

@@ -398,6 +398,7 @@ def tail(rp: Replay, at: str, who: str, words: str, parts: list[dict], k: int, g
 async def run(args) -> None:
     out = Path(args.out)
     (out / "prompts").mkdir(parents=True, exist_ok=True)
+    playtest.queue_usage(out)
     prompt_file = Path(args.prompt) if args.prompt else PROMPTS / f"{args.version}.md"
     pt = Playtest(Path(args.db))
     cfg = config.load()
@@ -460,7 +461,8 @@ async def run(args) -> None:
                     g = dict(p)
                     t0 = time.perf_counter()
                     try:
-                        a = await ask(text, answer_type(names, banned, None, replying=k == 0), cached=blocks)
+                        a = await ask(text, answer_type(names, banned, None, replying=k == 0), cached=blocks,
+                                      component="orchestrator", call_id=f"replay taskcall #{e.n}.{k}")
                     except vfg_llm.LlmError as err:
                         g.update(error=str(err)[:500], ms=int((time.perf_counter() - t0) * 1000))
                     else:

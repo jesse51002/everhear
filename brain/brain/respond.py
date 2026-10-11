@@ -150,9 +150,11 @@ class Respond:
 
     async def answer(self, row: Row, ctx: Context, seen: Seen, tasks: str, new: list[Row]):
         """An Answer whose value is a Response, never with both a reply and a hand-up, and never a
-        reply that promises or offers (promises()); raises LlmError."""
+        reply that promises or offers (promises()); raises LlmError. Its usage row is structured()'s:
+        component respond, `#<seq>`."""
         answer = await self.ask(self.tail(row, seen, tasks, new), Response,
-                                cached=ctx.cached(self.opening(), self.checkpoint))
+                                cached=ctx.cached(self.opening(), self.checkpoint),
+                                component="respond", call_id=f"#{row.seq}")
         said = answer.value
         if not said.hand_up and (kind := promises(said.reply, tasks, row.who)):
             log("respond", f"guard #{row.seq} {kind}: {json.dumps(said.reply, ensure_ascii=False)}")

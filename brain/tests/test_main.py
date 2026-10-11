@@ -60,6 +60,11 @@ async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fail
     assert ("result T1", "T1 failed: interrupted, the brain restarted while it ran") in vfg.rows("result")
     tasks = json.loads(cfg.tasks_file.read_text())["tasks"]
     assert [t["status"] for t in tasks.values()] == ["failed", "done", "done"] and impl.closed
+    # the usage queue sent at the start, after the two calls and at the stop; never a row of its own. The calls
+    # asked at once: one flush for both, or one and the one more after it, never two running at once
+    flushes = vfg.of("usage")
+    assert 3 <= len(flushes) <= 4 and flushes == [["usage", "flush"]] * len(flushes)
+    assert vfg.calls[-1] == ["usage", "flush"] and vfg.calls.index(flushes[0]) < vfg.calls.index(vfg.of("say")[0])
 
 
 async def test_with_no_rows_that_recent_it_follows_from_the_feeds_last_seq_and_a_failed_read_is_tried_again(

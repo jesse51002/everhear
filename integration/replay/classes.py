@@ -48,7 +48,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import playtest  # noqa: E402  (puts brain/ on the path)
-from playtest import Clock, Playtest, iso, when  # noqa: E402
+from playtest import Clock, Playtest, iso, queue_usage, replayed, when  # noqa: E402
 
 sys.path.insert(0, str(playtest.REPO / "jev"))
 import httpx  # noqa: E402
@@ -228,6 +228,7 @@ def final_classes(out: Path) -> dict[str, tuple[str, str, float | None, bool]]:
 
 async def run_respond(args) -> None:
     out = Path(args.out)
+    queue_usage(out)
     pt = Playtest(Path(args.db))
     cfg = config.load()
     catalog = actions.load(cfg.repo, cfg.server)
@@ -235,7 +236,7 @@ async def run_respond(args) -> None:
     entries = pt.entries({i: (c, fed) for i, (c, fed, _, _) in classes.items()})
     clock = Clock(entries, getattr(cfg, "batch_s", 60.0))
     chat = pt.answered()
-    base = asker(cfg.respond_model, cfg.respond_reasoning, cfg.timeout_s, cfg.respond_providers)
+    base = replayed(asker(cfg.respond_model, cfg.respond_reasoning, cfg.timeout_s, cfg.respond_providers))
     raw: dict = {}
 
     async def ask(*a, **k):
