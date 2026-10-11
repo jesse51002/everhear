@@ -12,7 +12,7 @@ import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from harness import TOOLKIT, Box, BoxCase, Result, vfg_module, wait_for, write  # noqa: E402
+from harness import TOOLKIT, Box, BoxCase, Result, vfg_module, wait_for  # noqa: E402
 import fake_jev_route  # noqa: E402
 
 sys.path.insert(0, os.path.join(TOOLKIT, "lib"))
