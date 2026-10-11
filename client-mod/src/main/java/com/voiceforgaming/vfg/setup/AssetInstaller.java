@@ -31,7 +31,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Downloads, verifies and unpacks the pinned natives, VAD, model and turn model into
+ * Downloads, verifies and unpacks the pinned natives, VAD, model, turn model and keyword model into
  * {@code <gameDir>/vfg/}.
  *
  * <p>For each one: if its folder's {@code .ok} holds the source's SHA-256 it is skipped;
@@ -134,7 +134,7 @@ public final class AssetInstaller {
 			prepareFolder(folder);
 			switch (a.kind()) {
 				case NATIVES -> unpackNatives(file, folder, a.variant());
-				case MODEL -> unpackModel(file, folder, a);
+				case MODEL, KWS -> unpackModel(file, folder, a);
 				case VAD -> move(file, folder.resolve(Assets.VAD_FILE));
 				case TURN -> move(file, folder.resolve(a.fileName()));
 			}

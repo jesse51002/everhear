@@ -1,7 +1,9 @@
 # rcon.py: vfg cmd and vfg say. ARGS:
 #   {"mode": "cmd", "mc": "/opt/mc", "command": "time set day"}
 #   {"mode": "say", "mc": "/opt/mc", "vfg": "/opt/vfg", "to": null|"Steve",
-#    "commands": ["tellraw @a [...]", ...], "store": "<text as stored>"}
+#    "commands": ["tellraw @a [...]", ...], "store": "<text as stored>", "task": null|"T7"}
+# A say is stored as an ai line, then fed as `AI say <task|-> | <text as stored>` through
+# /opt/vfg/lib/vfg_feed.py, the feed's one writer, in this same call.
 import sqlite3
 
 
@@ -58,6 +60,21 @@ def run_say():
             con.close()
     except Exception as e:
         warn("said, but not stored in history: %s" % e)
+    try:
+        feed(first_at)
+    except Exception as e:
+        warn("said, but not fed: %s" % e)
+
+
+def feed(at):
+    """The feed's AI say row, through vfg_feed, which finds its files by VFG_DB and VFG_FEED."""
+    os.environ["VFG_DB"] = os.path.join(ARGS["vfg"], "vfg.db")
+    os.environ["VFG_FEED"] = os.path.join(ARGS["vfg"], "feed.log")
+    lib = os.path.join(ARGS["vfg"], "lib")
+    if lib not in sys.path:
+        sys.path.insert(0, lib)
+    import vfg_feed
+    vfg_feed.append("AI", "say %s" % (ARGS.get("task") or "-"), ARGS["store"], at)
 
 
 if ARGS["mode"] == "cmd":

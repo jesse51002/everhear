@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# The EverHear brain. vfg brain start runs it detached and sends its log to brain.log.
+set -euo pipefail
+here="$(dirname "$(readlink -f "$0")")"
+cd "$here"
+# The dependencies, from uv.lock (a no-op when they are already there). Then exec, so the brain
+# is this process: the pid vfg brain start records is the one that takes the lock and gets SIGTERM.
+uv sync --frozen --inexact --no-dev --quiet
+exec .venv/bin/python -m brain

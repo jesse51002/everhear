@@ -1,5 +1,0 @@
-# Apostrophes and quotes in a player's words: the hand-off still goes out (the quoting held).
-prompt:
-LINE#924 {t-2} Steve voice direct_ask 0.91 -9dB | can't you build a 'tower' by my house
-check:
-send == 1

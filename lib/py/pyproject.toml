@@ -27,3 +27,5 @@ cache-keys = [{ file = "pyproject.toml" }, { file = "*.py" }]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# stop's and edit's field `copy` hides BaseModel.copy(), which nothing calls
+filterwarnings = ['ignore:Field name "copy" in:UserWarning']

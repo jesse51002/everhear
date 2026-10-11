@@ -1,6 +1,0 @@
-# A question it can answer from what it knows: an answer in chat, no task.
-prompt:
-LINE#901 {t-2} Alex chat direct_ask 0.88 - | how do i make a beacon
-check:
-say >= 1
-send == 0

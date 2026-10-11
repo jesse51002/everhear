@@ -1,13 +1,12 @@
 # ~/.vfg/config: every Everhear setting on your PC, KEY=value, mode 600.
-# toolkit/install.sh copies this file there. The vfg toolkit, bridge/deploy/*.sh,
-# jev/deploy.sh, installer/publish.sh, conversation/start and lib/py all read it.
+# toolkit/install.sh copies this file there. The vfg toolkit, the brain, bridge/deploy/*.sh,
+# jev/deploy.sh, installer/publish.sh and lib/py all read it.
 # An environment variable of the same name wins. An empty value means the default.
 # No secret goes here: the key's path only, never the key.
 
 # --- You ---
-# Your Minecraft name. The conversation treats this player as the server's owner:
-# only the owner may ask for op, bans, the whitelist, stopping the server and the like.
-# conversation/start writes it into conversation/CLAUDE.local.md the first time. Required.
+# Your Minecraft name: the server's owner. Only the owner may ask for op, bans, the
+# whitelist, stopping the server and the like; the brain and every script read it. Required.
 VFG_OWNER=
 
 # --- The EC2 box ---
@@ -46,7 +45,7 @@ VFG_CLIENT_JAR_DIR=
 # --- The vfg toolkit ---
 # What vfg say puts first, in aqua. Default: "[AI] " (quote it to keep the space).
 VFG_CHAT_PREFIX=
-# Where orchestrator/run and scripts/ are. Default: the repo the toolkit is in
+# Where brain/run and scripts/ are. Default: the repo the toolkit is in
 VFG_REPO=
 # The bridge's folder on EC2. Default: /opt/vfg
 VFG_REMOTE_VFG=
@@ -62,30 +61,52 @@ VFG_SSH=
 # server again; vfg place save and forget update the cache as they go. Default: 30
 VFG_PLACES_TTL_S=
 
-# --- The dispatcher ---
+# --- The brain (brain/run; vfg brain start runs it) ---
 # The file holding your OpenRouter API key alone, mode 600; lib/py's structured()
 # reads it. OPEN_ROUTER_API in the environment wins over the file.
 # Default: ~/.vfg/openrouter.key
 VFG_OPENROUTER_KEY=
-# Its folder: the inbox vfg orch send appends to, state.json, dispatcher.log, the pid
-# and refs/, the command references per server version. Default: ~/.vfg/dispatch
-VFG_DISPATCH_DIR=
-# The OpenRouter model of every dispatcher call. Default: ~deepseek/deepseek-v4-flash-latest
-VFG_DISPATCH_MODEL=
-# Seconds one model call may take, its retries included; past it the task, or that
-# part of it, goes to the orchestrator. Default: 10
-VFG_DISPATCH_MODEL_TIMEOUT_S=
-# The dispatcher's reasoning: off, or an effort (low, medium, high) for a model that
-# cannot turn it off, such as Sonnet 5.5 on OpenRouter. Default: off
-VFG_DISPATCH_REASONING=
-# How often a failed action is changed and run again before it is handed on or
-# dropped. Default: 1
-VFG_DISPATCH_RETRIES=
-# Seconds from the first task handed on until every task handed since goes to the
-# orchestrator, in one vfg orch hand. Default: 10
-VFG_DISPATCH_WINDOW_S=
-# Seconds an action may run on EC2; teleport allows itself 60. Default: 20
-VFG_DISPATCH_ACTION_TIMEOUT_S=
+# The OpenRouter model of every brain call, one per event (an action-oriented line, a line
+# Respond hands up, an implementer's report), and its reasoning effort.
+VFG_BRAIN_MODEL=openai/gpt-6.1-sol
+VFG_BRAIN_REASONING=low
+# Respond, the brain's cheap mode, which answers a conversational line or hands it up.
+# DeepSeek V4 Flash with reasoning off: at low it thinks ~900 tokens, about 7.7 s a call.
+VFG_RESPOND_MODEL=~deepseek/deepseek-v4-flash-latest
+VFG_RESPOND_REASONING=off
+# OpenRouter providers to try first, fastest first; none lets OpenRouter choose.
+VFG_RESPOND_PROVIDERS=parasail,wafer,phala,together,venice
+# The planner, kept only to retry a command Minecraft refused: rare, and it has the command
+# and Minecraft's error in hand, so the cheap model.
+VFG_PLAN_MODEL=~deepseek/deepseek-v4-flash-latest
+VFG_PLAN_REASONING=off
+VFG_PLAN_PROVIDERS=parasail,wafer,phala,together,venice
+# Hours of the feed the brain reads as its context; vfg context's default. Default: 6
+VFG_BRAIN_HISTORY_HOURS=6
+# Every how many minute-blocks of the conversation a brain call marks for the prompt cache
+# (at most three marks, plus the fixed opening). Default: 5
+VFG_BRAIN_CHECKPOINT=
+# Seconds a brain call may take before it is given up. Default: 20
+VFG_BRAIN_TIMEOUT_S=
+# OpenRouter providers to try first for the brain's call, comma-separated; none lets
+# OpenRouter choose. Default: none
+VFG_BRAIN_PROVIDERS=
+# on: the retry planner checks its own draft against the command's reference first (about
+# 1 s more). Default: off
+VFG_PLAN_CHECK=
+# The brain's folder: tasks.json, brain.log, brain.pid, lock and the command references.
+# Default: $VFG_HOME/brain
+VFG_BRAIN_DIR=
+# Seconds between fetches of the running copies the brain's menu lists. Default: 30
+VFG_RUNNING_TTL_S=
+
+# --- Implementers (started by the brain, on your Claude subscription) ---
+# Their model, effort and turns. Defaults: claude-haiku-5-5, low, 40
+VFG_IMPL_MODEL=
+VFG_IMPL_EFFORT=
+VFG_IMPL_MAX_TURNS=
+# Minutes an implementer may run before it is stopped and its task failed. Default: 10
+VFG_IMPLEMENTER_MINUTES=
 
 # --- Scripts (vfg script, vfg preset, vfg state) ---
 # The server this PC drives, and the name of its folder under made/, where what its
@@ -94,6 +115,9 @@ VFG_SERVER=
 # How often a running script looks again for the values vfg script set wrote, in seconds.
 # Default: 0.5
 VFG_LIVE_POLL_S=
+# Seconds vfg action run waits for a once action on EC2, its deploy included, when the action
+# sets no timeout_s of its own; past it the answer is that it still runs. Default: 20
+VFG_DISPATCH_ACTION_TIMEOUT_S=
 
 # --- The router (vfg route) and the implementers' cache ---
 # Seconds vfg route waits for Jev before it picks by words instead. Default: 3
@@ -101,6 +125,6 @@ VFG_ROUTE_TIMEOUT_S=
 # What loads an example script for an implementer (runs_it and close together)
 # or a preset (use), from 0 to 1. Default: 0.3
 VFG_ROUTE_LOAD=
-# How long an implementer's prompt cache lives, 5m or 1h; the orchestrator passes
-# it as subagentPromptCacheTtl. An hour doubles the price of every cache write. Default: 5m
-VFG_SUBAGENT_CACHE_TTL=
+# How long an implementer's prompt cache lives, 5m or 1h. An hour doubles the price of
+# every cache write. VFG_SUBAGENT_CACHE_TTL is read when this is empty. Default: 5m
+VFG_IMPL_CACHE_TTL=

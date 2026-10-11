@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # One command: the real bridge, Jev filter and vfg toolkit (plus the client mod's HTTP
-# client and the conversation's hooks) run together on this PC, in a temp folder that
-# stands in for EC2's /opt/vfg and /opt/mc. Prints PASS/FAIL per check and per path;
-# exits non-zero if anything failed. --keep keeps the temp folder and its logs.
+# client and the brain's reader of the feed) run together on this PC, in a temp folder that
+# stands in for EC2's /opt/vfg and /opt/mc, driven the way the brain drives them. Prints
+# PASS/FAIL per check and per path; exits non-zero if anything failed. --keep keeps the temp
+# folder and its logs.
 #
 #   integration/run.sh [--keep]
 #

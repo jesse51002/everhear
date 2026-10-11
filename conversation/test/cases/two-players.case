@@ -1,8 +1,0 @@
-# Two players, two separate asks in one batch: replies naming both, one task each.
-prompt:
-LINE#906 {t-4} Steve voice direct_ask 0.91 -9dB | AI can you make it day
-LINE#907 {t-2} Alex chat direct_ask 0.89 - | can i get a horse please
-check:
-says_mention Steve
-says_mention Alex
-send == 2

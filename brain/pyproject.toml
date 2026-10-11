@@ -1,0 +1,31 @@
+[project]
+name = "vfg-brain"
+version = "0.1.0"
+description = "The EverHear brain: one structured() call per event, Respond, the shared context, and the implementers it starts."
+requires-python = ">=3.12"
+dependencies = [
+    "vfg-lib",
+    "pydantic>=2.14.0",
+    "httpx>=0.28.1",
+    "claude-agent-sdk==0.2.165",
+]
+
+[tool.uv.sources]
+vfg-lib = { path = "../lib/py" }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["."]
+# stop's and edit's field `copy` hides BaseModel.copy(), which nothing calls (brain/actions.py)
+filterwarnings = ['ignore:Field name "copy" in:UserWarning']

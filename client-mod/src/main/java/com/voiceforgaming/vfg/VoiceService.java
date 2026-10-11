@@ -3,7 +3,12 @@ package com.voiceforgaming.vfg;
 import com.voiceforgaming.vfg.audio.MicCapture;
 import com.voiceforgaming.vfg.audio.WindowListener.StopReason;
 import com.voiceforgaming.vfg.config.VfgConfig;
+import com.voiceforgaming.vfg.kws.Spotter;
+import com.voiceforgaming.vfg.kws.SpotterWorker;
 import com.voiceforgaming.vfg.net.BridgeClient;
+import com.voiceforgaming.vfg.net.CastClient;
+import com.voiceforgaming.vfg.net.CastPayload;
+import com.voiceforgaming.vfg.net.IncantationClient;
 import com.voiceforgaming.vfg.net.LinePayload;
 import com.voiceforgaming.vfg.session.SessionGate;
 import com.voiceforgaming.vfg.session.StatusBoard;
@@ -24,6 +29,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -38,6 +44,14 @@ import org.slf4j.LoggerFactory;
  * and until then lines end on silence alone. A download that fails is tried again in the
  * background; a model that will not load is not. Either costs only speed, and Voice settings
  * says which under the status.
+ *
+ * <p>The keyword spotter ({@link SpotterWorker}) is the incantations' pipeline beside the
+ * sentences': once the engine has loaded the natives, its model is installed and loaded on a
+ * thread of its own, {@code vfg-kws-setup}, outside the setup lock, so neither the turn model nor
+ * a later setup waits for its download; while the mod listens it has the player's incantations
+ * from the bridge ({@link IncantationClient}), and each cast it hears is posted on its own
+ * ({@link CastClient}). A model that does not install or load leaves the spotter off until the
+ * next setup; lines are not affected.
  */
 public final class VoiceService {
 	private static final Logger LOG = LoggerFactory.getLogger("vfg");
@@ -54,12 +68,17 @@ public final class VoiceService {
 	private final EngineSlot<SpeechEngine, TurnDetector> slot = new EngineSlot<>();
 	private final TurnSetup turnSetup = new TurnSetup(status, Thread::sleep);
 	private volatile String requestedModel;
+	private final AtomicBoolean spotterSetup = new AtomicBoolean();
+	private volatile boolean stopping;
 	private Thread setupThread;
 	private final Object setupLock = new Object();
 
 	private final VoicePipeline pipeline;
 	private final BridgeClient sender;
 	private final SessionGate gate;
+	private final SpotterWorker spotter;
+	private final CastClient casts;
+	private final IncantationClient incantations;
 
 	// What the mic is doing, decided from the gate and the settings screen's mic test.
 	private MicMode micMode = MicMode.OFF;
@@ -77,6 +96,8 @@ public final class VoiceService {
 		this.config = VfgConfig.load(configFile);
 		LOG.info("config: {}", config);
 
+		this.spotter = new SpotterWorker(config.incantations, config.incantationThreshold, config.incantationBoost,
+			this::castHeard);
 		this.pipeline = new VoicePipeline(MicCapture.OPENAL, () -> (VoiceDetector) slot.engine(),
 			() -> (Transcriber) slot.engine(), slot::turn, config.turnThreshold, config.silenceSeconds,
 			System::currentTimeMillis, () -> config.logText, new VoicePipeline.Events() {
@@ -99,7 +120,7 @@ public final class VoiceService {
 				public void micError(String error) {
 					status.micError(error);
 				}
-			});
+			}, spotter);
 		this.sender = new BridgeClient(this::target, new BridgeClient.Listener() {
 			@Override
 			public void delivered(String clientLineId, String id) {
@@ -129,18 +150,37 @@ public final class VoiceService {
 					setGateListening(false, reason);
 				}
 			}, notices, status);
+		this.casts = new CastClient(() -> new CastClient.Target(config.castsUrl(), config.effectiveClientToken()),
+			new CastClient.Listener() {
+				@Override
+				public void tokenRejected() {
+					status.tokenRejected(true);
+					gate.onTokenRejected();
+				}
+			});
+		this.incantations = new IncantationClient(
+			() -> new IncantationClient.Target(config.incantationsUrl(), config.effectiveClientToken()),
+			(version, list) -> {
+				LOG.info("incantations: {} for {} (version {})", list.size(), this.playerName, version);
+				spotter.setIncantations(list);
+			});
 	}
 
 	/** {@code CLIENT_STARTED}: start the worker threads and setup. */
 	public void start() {
 		pipeline.start();
+		spotter.start();
 		sender.start();
 		startSetup(config.model);
 	}
 
 	/** {@code CLIENT_STOPPING}: close the mic, stop the threads (the sender gets 2 s), release the engine. */
 	public void stop() {
+		stopping = true;
 		pipeline.shutdown(1000);
+		incantations.stop();
+		spotter.shutdown(1000);
+		casts.shutdown(500);
 		sender.shutdown(2000);
 		Thread s;
 		synchronized (this) {
@@ -206,6 +246,7 @@ public final class VoiceService {
 		if (!Objects.equals(before.micDevice, next.micDevice)) {
 			changeDevice(next.micDevice);
 		}
+		spotter.configure(next.incantations, next.incantationThreshold, next.incantationBoost);
 		if (!Objects.equals(next.model, requestedModel) && status.get().setup() != VoiceStatus.Setup.UNSUPPORTED) {
 			startSetup(next.model);
 		}
@@ -242,6 +283,13 @@ public final class VoiceService {
 		return new BridgeClient.Target(c.linesUrl(), c.effectiveClientToken());
 	}
 
+	/** On {@code vfg-kws}: a cast heard; posted on its own thread. */
+	private void castHeard(SpotterWorker.Cast cast) {
+		CastPayload payload = CastPayload.create(playerUuid, playerName, cast.phrase(), cast.heard(),
+			cast.startedAtMillis(), cast.endedAtMillis());
+		casts.post(payload, cast.heardAtMillis());
+	}
+
 	private void lineClosed(LineAssembler.Line line) {
 		LinePayload payload = LinePayload.create(playerUuid, playerName, line.text(), line.startedAtMillis(),
 			line.endedAtMillis(), line.peakDbfs(), line.meanDbfs());
@@ -255,6 +303,12 @@ public final class VoiceService {
 			pendingStop = reason;
 		}
 		updateMic();
+		if (on) {
+			incantations.start(playerName);
+		} else {
+			incantations.stop();
+			spotter.setIncantations(List.of());
+		}
 	}
 
 	private synchronized void changeDevice(String device) {
@@ -358,7 +412,44 @@ public final class VoiceService {
 			finishSetup(VoiceStatus.Setup.ENGINE_FAILED, message);
 			return;
 		}
+		if (c.incantations && !spotter.hasModel() && spotterSetup.compareAndSet(false, true)) {
+			Thread t = new Thread(() -> {
+				try {
+					setUpSpotter(natives);
+				} finally {
+					spotterSetup.set(false);
+				}
+			}, "vfg-kws-setup");
+			t.setDaemon(true);
+			t.start();
+		}
 		setUpTurn(c.turnModel, natives, loaded);
+	}
+
+	/**
+	 * Installs and loads the keyword model on {@code vfg-kws-setup}, once the engine has loaded the
+	 * natives it runs on; one that will not install or load leaves the spotter off, with a log line.
+	 * It touches only its own folder and the worker, so it takes no setup lock.
+	 */
+	private void setUpSpotter(Assets.Asset natives) {
+		Assets.Asset asset = Assets.kws();
+		try {
+			new AssetInstaller(vfgRoot, null).install(asset);
+			long t0 = System.nanoTime();
+			Spotter loaded = Spotter.load(Assets.folder(vfgRoot, natives), Assets.folder(vfgRoot, asset));
+			if (stopping) {
+				loaded.close();
+				return;
+			}
+			spotter.setModel(loaded);
+			LOG.info("keyword spotter loaded ({} ms)", (System.nanoTime() - t0) / 1_000_000);
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+		} catch (AssetInstaller.SetupException e) {
+			LOG.warn("keyword spotter not installed ({}); incantations are heard in lines only", e.getMessage());
+		} catch (Throwable t) {
+			LOG.warn("keyword spotter failed to load ({}); incantations are heard in lines only", t.toString());
+		}
 	}
 
 	/**

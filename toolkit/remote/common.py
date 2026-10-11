@@ -101,7 +101,7 @@ def read_pid(path):
 def last_feed_seq(path):
     """The highest seq in the last 4 KiB of feed.log, or None without a feed."""
     import re
-    rx = re.compile(rb"^(LINE|GAME|ORCH|SYS)#(\d+) ")
+    rx = re.compile(rb"^([A-Z]+)#(\d+) ")
     try:
         with open(path, "rb") as f:
             f.seek(0, 2)

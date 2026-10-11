@@ -3,15 +3,17 @@
 A client-only Fabric mod for Minecraft Java 26.3. While you are connected to the one
 server it is set up for, it turns what you say into text **on your own PC** and posts
 each line — with its time and its volume — to that server's bridge (`POST /v1/lines`,
-docs/CONTRACTS.md §2) as soon as you have finished saying it. No audio ever leaves your
-PC, and it never uses Minecraft's own networking, so it works on a vanilla server.
+docs/CONTRACTS.md §2) as soon as you have finished saying it. Beside that, a keyword
+spotter listens for your incantations and posts each one the moment you say it (below). No
+audio ever leaves your PC, and it never uses Minecraft's own networking, so it works on a
+vanilla server.
 
 Speech-to-text is [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 1.13.8 with the
 Silero VAD and NVIDIA's Parakeet TDT 110M (English, int8; CC-BY-4.0). Moonshine base and
 tiny can be chosen instead. A line ends when a small turn model,
 [Smart Turn v3.2](https://huggingface.co/pipecat-ai/smart-turn-v3) (Pipecat, BSD-2-Clause),
 hears at a pause that you have finished, or after 3 s of silence (below). The jar is
-small; the engine and models (about 130 MB) download once on first start, pinned by SHA-256.
+small; the engine and models (about 150 MB) download once on first start, pinned by SHA-256.
 
 ## For players: install
 
@@ -21,7 +23,7 @@ Windows, and the same elsewhere:
    (<https://fabricmc.net/use/installer/>). It adds a launcher profile.
 2. Put **Fabric API `0.162.0+26.3`** and **`vfg-client-<version>.jar`** (the server's owner
    sends it) in your `.minecraft/mods/` folder.
-3. Start that profile. The first start downloads about 130 MB in the background;
+3. Start that profile. The first start downloads about 150 MB in the background;
    Voice settings shows the progress.
 4. **Multiplayer → `Voice…`** (top right): the server address exactly as it is in your
    server list, the client token the owner gave you, your microphone. Press `Test mic`,
@@ -65,7 +67,9 @@ cd client-mod            # from the repo's root
 ./gradlew test          # unit tests: no natives, no internet (the fake-bridge test needs python3)
 ./gradlew engineTest    # the real VAD and all three models; installs ~260 MB into build/vfg-test-assets/ once
 ./gradlew speechTest    # real speech through the mod's pipeline in real time, about 4 min (below)
+./gradlew kwsTest       # the keyword spotter on Kokoro speech: hits, false casts, latency, CPU (below)
 ./gradlew micCheck      # your own mic through the mod's pipeline, no Minecraft (below)
+./gradlew castCheck     # a WAV as if from the mic, posting casts and lines to a real bridge (below)
 ./gradlew sttCompare    # the models side by side on the same audio: errors, speed, size, memory (below)
 ./gradlew turnCompare   # the two turn models on real and game speech: cut-offs, waits, speed (below; needs uv)
 ```
@@ -133,7 +137,7 @@ which words they hold, and how long after the end of speech each was ready.
 - **With the mod's defaults** (Smart Turn at its own threshold, `silence_seconds` 3): 12
   short Minecraft requests ("Build me a castle by the cave", "Summon an ender dragon", …)
   spoken by Kokoro TTS in eleven voices must each become their own line, **within 1 s of the
-  last word, median** (0.76 s on 2026-10-09: the VAD's 0.6 s, then speech-to-text and the
+  last word, median** (0.49 s on 2026-10-10: the VAD's 0.35 s, then speech-to-text and the
   turn model's score), and every line, whatever the model heard, by `silence_seconds` +
   0.5 s. Kokoro, because Smart Turn hears most of Kitten's finished sentences as unfinished
   (`reports/turn-compare.md`).
@@ -225,14 +229,16 @@ The fake bridge serves `POST /v1/lines` as §2 does — `401` for a wrong token,
 first; `400` with the reason for a body that breaks §2; `202 {"id": "<ULID>"}`, the same
 id for a repeated `client_line_id` — and prints one line per accepted request.
 `--fail N` answers `500` to the first N requests, `--status CODE` forces a code,
-`--delay S` waits before answering.
+`--delay S` waits before answering. `--incantation "fire ball=fireball,fire bowl"` (repeatable)
+binds a phrase and its aliases for every player: it then lists them at `GET /v1/incantations`
+and answers a cast of one at `POST /v1/casts` with `fired`, and of anything else with `404`.
 
 ## How a line ends
 
-The Silero VAD ends a segment of speech at 0.6 s of silence. At that pause, once the segment
+The Silero VAD ends a segment of speech at 0.35 s of silence. At that pause, once the segment
 is transcribed, the turn model scores the line's audio — from 0.5 s before its first speech
 to 0.2 s after its last, the last 8 s of that at most — for whether you have finished. At or
-above its threshold the line goes at once, about 0.7 s after your last word; below it the
+above its threshold the line goes at once, about 0.5 s after your last word; below it the
 line stays open, and speech that follows joins it and is scored again at its own pause. A
 line the model keeps waiting goes at `silence_seconds` (3) + 0.5 s after the last speech.
 Speech starting again before a line goes keeps it open. A thought cut off is not repaired:
@@ -245,9 +251,67 @@ It installs and loads after the speech engine is ready, so it never holds up voi
 it is in, or if it cannot download (tried again after 30 s, 2 min, then every 10 min) or
 load, lines end on silence alone, and Voice settings says which under the status. The model
 is asked at every pause, even after a cough or laugh that makes no line of its own; after
-speech the VAD cut at its 7 s limit, it is asked once 0.6 s of silence follow.
+speech the VAD cut at its 7 s limit, it is asked once 0.35 s of silence follow.
 `turn_model: turn-1-mini` swaps in [turn-1-mini](https://huggingface.co/p99lab/turn-1-mini)
 (p99lab, Apache-2.0); `./gradlew turnCompare` is how the two were measured.
+
+## Incantations: the keyword spotter
+
+A player's incantations (docs/CONTRACTS.md: the bridge's `GET /v1/incantations` and
+`POST /v1/casts`) are heard by a keyword spotter, a pipeline of its own beside the lines: it never
+waits on a line, and a line never waits on it. It is sherpa-onnx's streaming `KeywordSpotter` over
+icefall's English GigaSpeech keyword model (a 3.3M-parameter zipformer, int8, 17.6 MB once), on
+its own thread, `vfg-kws`, one CPU thread.
+
+- **The list.** While the mod listens, it asks the bridge for the player's incantations, at once
+  on joining and then by long poll (`after` the version it has, `wait=25`; `304` is no change).
+  Every phrase and every alias is a keyword; a hit on an alias casts the phrase.
+- **The tokens are made here.** The box sends plain phrases; the mod splits them into the model's
+  tokens with the model's own `bpe.model` (`kws/SentencePiece.java`, checked against Python's
+  sentencepiece on 45 phrases by `tools/kws_bpe_fixture.py`). That file is a *unigram* model, not
+  BPE, despite its name. A keyword with a token the model lacks (a digit) is left out, with a log line.
+- **Only while someone speaks.** The capture thread hands every 32 ms window to `vfg-kws` by a
+  non-blocking offer (a full 2 s queue drops it). A stream opens when the VAD hears speech, fed the
+  last 0.64 s first, and closes 0.32 s after the VAD stops hearing it. Silence costs nothing, and no
+  stream sits in the 1.5 s of silence after which sherpa-onnx resets it itself and drops the start
+  of a keyword said just then (its issue #3990: 9 of 42 missed one way, none this way).
+- **A cast** is posted on a thread of its own with a fresh `client_cast_id`, the phrase, the keyword
+  heard, and when it was said on the same audio clock a line's `started_at` uses. A failure is tried
+  again for at most 2 s after the hit, then dropped: a late spell is worse than none. `404` (no such
+  incantation) and `503` (no kit on the box) are final. One log line per cast, never with audio:
+  `cast "fire ball" (heard "fireball"): fired as command_2, answered 0.40 s after the phrase`.
+- **Measured** (`./gradlew kwsTest`, Kokoro TTS, 2026-10-10): "fire ball" said alone heard 10 of 11
+  voices, inside a sentence 12 of 12; "kamehameha" 0 of 11 as Kokoro reads the spelling, 4 of 11 said
+  syllable by syllable (through its alias "kami hami ha"); no false casts in 16 ordinary requests or
+  6 near misses ("Throw the ball into the fire."); heard a median 0.46 s after the end of the phrase
+  on the audio clock; about 1.6% of one core while it decodes, nothing in silence.
+
+### Check the spotter: `./gradlew kwsTest`
+
+The keyword model installed through the mod's installer, Kokoro takes (kept with the speech
+test's), the mod's VAD and its `SpotterWorker`, fed 32 ms at a time faster than real time: the
+cases above, the after-a-pause case both ways, the latency and the CPU, in about 15 s once the takes
+are made. It checks what is certain ("fire ball" said alone is heard) and reports the rest, in
+`build/kws-test/report.txt`. `-Pkws-sweep` adds a table over thresholds, boosts and trailing blanks
+(about 3 min).
+
+### End to end: `./gradlew castCheck`
+
+Plays a WAV, or Kokoro saying `--say` texts, through the mod's own pipeline and spotter as if from
+the mic, posts casts and lines to a real bridge, and prints for each when it was said (on the audio
+clock, as UTC and as seconds into the WAV), heard, posted and answered. The WAV plays through the
+speech test's stand-in sound card, which delivers samples as the wall clock runs, and the capture
+thread stamps each read as it does a mic's, so the audio clock maps to the wall clock as a mic's
+does: sample `i` is at about the moment the device opened plus `i / rate`.
+
+```sh
+VFG_CLIENT_TOKEN=test python3 tools/fake_bridge.py --port 8787 --incantation "fire ball=fireball"
+./gradlew castCheck --args="--bridge http://127.0.0.1:8787 --token test --player Steve --say 'Fire ball!' --say 'Okay, fire ball on the zombie now.'"
+./gradlew castCheck --args="--bridge http://127.0.0.1:8787 --token test --player Steve --wav build/cast-check/said.wav"
+```
+
+It listens for the player's incantations as the bridge lists them; `--incantation "p=a,b"` adds
+some for a bridge that lists none. `--threshold` and `--boost` are the config's; `--help` lists all.
 
 ## Configuration
 
@@ -257,7 +321,8 @@ speech the VAD cut at its 7 s limit, it is asked once 0.6 s of silence follow.
 { "server_address": "", "bridge_url": "", "client_token": "", "mic_device": "",
   "model": "parakeet-110m-en", "icon_corner": "top_left", "muted": false,
   "turn_model": "smart-turn-v3.2", "turn_threshold": null, "silence_seconds": 3,
-  "vad_threshold": 0.5, "stt_threads": 2, "log_text": false }
+  "vad_threshold": 0.5, "stt_threads": 2, "log_text": false,
+  "incantations": true, "incantation_threshold": 0.25, "incantation_boost": 1.5 }
 ```
 
 - `client_token` is `VFG_CLIENT_TOKEN`. It lives only in this file, is shown masked, and
@@ -275,18 +340,24 @@ speech the VAD cut at its 7 s limit, it is asked once 0.6 s of silence follow.
   (0.1–0.9), `stt_threads` (1–8), `log_text` (logs what was heard and sent). Out-of-range
   values fall back to the default with a log line. `turn_model: off` with
   `silence_seconds: 5` is the mod before the turn model.
+- File only, the keyword spotter: `incantations` (on by default; off, the mod never downloads the
+  keyword model and incantations are heard in lines only, by the bridge), `incantation_threshold`
+  (0.05–0.95, default 0.25: the mean probability of a keyword's tokens at which it fires) and
+  `incantation_boost` (0.5–5, default 1.5: the score added per token of a keyword). Lower threshold
+  and higher boost hear more and cast more by mistake; on Kokoro speech 0.1 to 0.25 heard the same,
+  and a boost of 3 heard less.
 - A file with no `turn_model` key was written before the turn model: when it is read, a
   `silence_seconds` of 5 becomes 3 (any other value stays) and the file is written back once.
 - A file that does not parse is renamed `vfg-client.json.bad` and the defaults are used.
 
-The engine and models live in `<game folder>/vfg/` (about 185 MB unpacked for Parakeet and
-Smart Turn; each other model chosen adds its own folder). The log is
+The engine and models live in `<game folder>/vfg/` (about 190 MB unpacked for Parakeet, Smart
+Turn and the keyword model; each other model chosen adds its own folder). The log is
 the game's `logs/latest.log`, logger `vfg`.
 
 ## Downloads
 
 Each checked by SHA-256 as it streams. Only this PC's natives, the VAD, the chosen speech
-model and the chosen turn model are fetched. From
+model, the chosen turn model and the keyword model (unless `incantations` is off) are fetched. From
 `https://github.com/k2-fsa/sherpa-onnx/releases/download/`:
 
 | File | Bytes | SHA-256 |
@@ -299,6 +370,14 @@ model and the chosen turn model are fetched. From
 | `asr-models/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8.tar.bz2` (default) | 108035095 | `f628312e9fdf8686374cb01a69425c41732529d540860311f16f37cbc32cfe9b` |
 | `asr-models/sherpa-onnx-moonshine-base-en-quantized-2026-02-27.tar.bz2` | 111266225 | `43232c1d13013d37317163baec3135bd771a186a4356f28c889bab453bb0e891` |
 | `asr-models/sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27.tar.bz2` | 29858559 | `9ec31b342d8fa3240c3b81b8f82e1cf7e3ac467c93ca5a999b741d5887164f8d` |
+
+The keyword spotter's model, from the same release, into `<game folder>/vfg/models/kws/`; only its
+`encoder`, `decoder` and `joiner` (`*-epoch-12-avg-2-chunk-16-left-64.int8.onnx`), `tokens.txt` and
+`bpe.model` are kept (icefall, Apache-2.0):
+
+| File | Bytes | SHA-256 |
+|---|---|---|
+| `kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2` | 17626723 | `f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a` |
 
 The turn models, from Hugging Face at pinned revisions, into
 `<game folder>/vfg/models/turn/<turn_model>/`:
@@ -336,6 +415,7 @@ build.gradle  settings.gradle  gradle.properties  gradlew  gradlew.bat  gradle/w
 libs/                               the fetched sherpa-onnx-jvm jar (gitignored)
 tools/fake_bridge.py                stand-in bridge, Python 3 stdlib
 tools/turn_data.py                  turnCompare's public set, from Pipecat's test shard (run through uv)
+tools/kws_bpe_fixture.py            the keyword tokens' fixture, from Python's sentencepiece (run through uv)
 reports/turn-compare.md             turnCompare's report, as last run
 src/main/java/com/voiceforgaming/vfg/
   VfgClient.java                    entrypoint; Fabric events, keys, HUD, the Voice… button
@@ -359,14 +439,21 @@ src/main/java/com/voiceforgaming/vfg/
   turn/OnnxRuntime.java             ONNX Runtime's C API, on sherpa-onnx's own library
   net/LinePayload.java              the §2 body and its JSON
   net/BridgeClient.java             the sender, retries, delivery status, connection test
+  net/CastPayload.java  net/CastClient.java   the incantation invoke's body, and its sender (2 s, then dropped)
+  net/IncantationClient.java        the player's incantations, by long poll
+  kws/SpotterWorker.java            the vfg-kws thread: windows in, streams while speech, casts out
+  kws/Spotter.java                  sherpa-onnx's KeywordSpotter (the only sherpa-onnx code of the spotter)
+  kws/Keywords.java  kws/SentencePiece.java   phrases and aliases to the model's tokens and keyword string
   session/ServerAddressMatch.java   normalising and comparing addresses
   session/SessionGate.java          whether to listen, and the chat notices
   session/StatusBoard.java          the one status snapshot the HUD and screen read
   hud/ListeningIcon.java            the corner icon
-src/test/java/com/voiceforgaming/vfg/   unit tests; EngineSmokeTest is tagged "engine", SpeechTest "speech"
+src/test/java/com/voiceforgaming/vfg/   unit tests; EngineSmokeTest is tagged "engine", SpeechTest "speech",
+                                    kws/SpotterEngineTest "engine" and "kws"
   tools/MicCheck.java               ./gradlew micCheck
   tools/SttCompare.java             ./gradlew sttCompare
   tools/TurnCompare.java            ./gradlew turnCompare
+  tools/CastCheck.java              ./gradlew castCheck
   testing/                          the engine for tests, WAV files, Kitten and Kokoro TTS, the stand-in
                                     sound card, the models sttCompare measures (SttModels)
 ```

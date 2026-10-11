@@ -1,6 +1,0 @@
-2026-10-07 18:20:02 Steve voice context 0.71 | we should build near the river
-2026-10-07 18:22:31 Steve voice direct_ask 0.93 | hey AI build me a castle
-2026-10-07 18:22:33 AI ai - | on it — castle coming up
-2026-10-07 18:22:35 Alex chat - | lol
-2026-10-07 18:22:40 death Steve | Steve was slain by Zombie
-2026-10-07 18:24:02 AI ai - | castle’s up at spawn

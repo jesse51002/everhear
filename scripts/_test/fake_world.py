@@ -134,6 +134,12 @@ class World(object):
                 if crit == "minecraft.custom:minecraft.sneak_time":
                     self.scores[(obj, name)] = self.scores.get((obj, name), 0) + ticks
 
+    def crouch(self, name, down=True):
+        """A player crouches (or stands up): while down, sneak_time has grown at every read of
+        it, as it grows each tick on a server, and the is_sneaking predicate passes."""
+        with self.lock:
+            self.players[name]["sneaking"] = down
+
     # ---- blocks and chunks ----
 
     def is_loaded(self, dim, x, z):
@@ -478,6 +484,8 @@ class World(object):
                 raise Fail("Unknown scoreboard objective '%s'" % obj)
             for e in self._select(m.group(1), ctx):
                 name = e["name"]
+                if e.get("sneaking") and self.objectives[obj] == "minecraft.custom:minecraft.sneak_time":
+                    self.scores[(obj, name)] = self.scores.get((obj, name), 0) + 1
                 if (obj, name) in self.scores:
                     return "%s has %d [%s]" % (name, self.scores[(obj, name)], obj)
                 raise Fail("Can't get value of %s for %s; none is set" % (obj, name))

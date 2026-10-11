@@ -22,6 +22,8 @@ import time
 import unittest
 
 sys.dont_write_bytecode = True
+# A script that ends by itself cleans up at once, not after mc's 0.4 s grace for a last blast.
+os.environ.setdefault("VFG_EXIT_GRACE_S", "0")
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIB = os.path.join(os.path.dirname(HERE), "_lib")
 sys.path.insert(0, HERE)
@@ -106,6 +108,59 @@ def assert_checked_on_the_pc(case, preset):
                 va.check_values(cls, {key: bad[kind]}, allow_fixed=True)
 
 
+def until(cond, seconds=5.0):
+    """Wait for cond() to be true, at most `seconds`; its last answer."""
+    end = time.time() + seconds
+    got = cond()
+    while not got and time.time() < end:
+        time.sleep(0.01)
+        got = cond()
+    return got
+
+
+def looked(world, *words, times=2, seconds=5.0, also=()):
+    """Wait until `times` more commands holding every one of `words` reach `world` (and of each
+    tuple of words in `also`): what polls with them has looked again since now (the first may
+    have been on its way already). The tests wait for this, never for a guess at how long a
+    look takes."""
+    groups = [words] + list(also)
+
+    def counts():
+        with world.lock:
+            return [len([c for c in world.commands if all(w in c for w in g)]) for g in groups]
+    want = [n + times for n in counts()]
+    return until(lambda: all(n >= w for n, w in zip(counts(), want)), seconds)
+
+
+FAST_CLOCK = os.path.join(HERE, "fast_clock")
+
+
+def fast_clock_env(rate, epoch):
+    """What a script's environment needs to run on a clock `rate` times as fast, from `epoch`
+    (the same for every script a test starts, so scripts sharing a file agree on the time):
+    fast_clock/sitecustomize.py on its path."""
+    return {"PYTHONPATH": os.pathsep.join([LIB, FAST_CLOCK]), "VFG_TEST_CLOCK_RATE": str(rate),
+            "VFG_TEST_CLOCK_EPOCH": repr(epoch)}
+
+
+class Clock(object):
+    """A clock for the modules a test gives it (in place of their `time`): the real one, `rate`
+    times as fast, plus whatever advance() skipped. A test skips what the code times with
+    time.time() (a timer, a window, a cooldown) instead of sleeping through it."""
+
+    def __init__(self, rate=1.0):
+        self.rate, self.t0, self.skipped = float(rate), time.time(), 0.0
+
+    def time(self):
+        return self.t0 + (time.time() - self.t0) * self.rate + self.skipped
+
+    def sleep(self, s):
+        time.sleep(max(0.0, s) / self.rate)
+
+    def advance(self, s):
+        self.skipped += s
+
+
 class KitCase(unittest.TestCase):
     """mc talks to a fake whose world is self.world, made new for each test."""
 
@@ -149,19 +204,30 @@ class KitCase(unittest.TestCase):
     def sent(self, word):
         return [c for c in self.world.commands if word in c]
 
+    def looked(self, *words, times=2, seconds=5.0, also=()):
+        return looked(self.world, *words, times=times, seconds=seconds, also=also)
+
+    def clock(self, *modules, rate=1.0):
+        """A Clock in place of these modules' `time` (a preset's, the kit's), for this test."""
+        c = Clock(rate)
+        for m in modules:
+            self.addCleanup(setattr, m, "time", m.time)
+            m.time = c
+        return c
+
 
 RUNNING = []
 
 
-def collect(gen, seconds):
+def collect(gen, seconds, clock=time):
     """Run a kit generator in a thread for a while (or until the test ends): a list of
-    (what it yielded, time.time())."""
+    (what it yielded, clock.time())."""
     got = []
     end = time.time() + seconds
 
     def go():
         for p in gen:
-            got.append((p, time.time()))
+            got.append((p, clock.time()))
             if time.time() > end:
                 return
     th = threading.Thread(target=go, daemon=True)
@@ -178,26 +244,20 @@ class ValuesTests(KitCase):
         v = values(meta={"values": {"player": "@a", "cooldown": 30.0}, "live": ["cooldown"]}, run_dir=d,
                    instance="rail", poll=0.05)
         self.world.hold("Steve", main="railgun")
-        got, th = collect(items.clicks(v["player"], "Railgun", cooldown=v["cooldown"], every=0.05), 3)
-        time.sleep(0.3)
+        got, th = collect(items.clicks(v["player"], "Railgun", cooldown=v["cooldown"], every=0.05), 5)
+        self.looked("vfg_click", "railgun")
         self.world.click("Steve")
-        time.sleep(0.3)
-        self.world.click("Steve")          # inside the 30 s cooldown: not fired
-        time.sleep(0.3)
+        self.assertTrue(until(lambda: len(got) == 1))
+        self.looked("vfg_click", "railgun")    # a use while the body ran is not counted: look again first
+        self.world.click("Steve")          # inside the 30 s cooldown: not fired, the time left shown
+        self.assertTrue(until(lambda: self.sent("Railgun: ")))
         with open(os.path.join(d, "rail.values.json"), "w") as f:
             json.dump({"cooldown": 0}, f)
-        time.sleep(0.3)
+        time.sleep(0.1)                    # past the live file's poll
+        self.looked("vfg_click", "railgun")
         self.world.click("Steve")          # the cooldown is 0 now
-        time.sleep(0.4)
+        self.assertTrue(until(lambda: len(got) == 2))
         self.assertEqual([p for p, _ in got], ["Steve", "Steve"])
-
-    def test_a_values_meta_is_every_preset_value_checked_on_the_pc(self):
-        meta = values_meta("crater", "sneak", given=["crater_radius=999", "sneak_item=Spirit Bomb"])
-        self.assertEqual(meta["values"]["crater_radius"], 300)        # clamped, as vfg action run clamps
-        self.assertEqual(meta["values"]["sneak_item"], "Spirit Bomb")
-        self.assertIn("crater_radius", meta["live"])
-        with self.assertRaises(ValueError):
-            values_meta("crater", given={"crater_leave": "water"})
 
 
 class CopyValuesTests(KitCase):
@@ -334,7 +394,7 @@ class McKitTests(KitCase):
             got = []
             th = threading.Thread(target=lambda: got.append(mc.rcon("list")))
             th.start()
-            time.sleep(0.4)
+            time.sleep(0.2)
             self.assertEqual(got, [])                 # waiting for the lock
             fcntl.flock(fd, fcntl.LOCK_UN)
             th.join(2)
@@ -353,27 +413,21 @@ class McKitTests(KitCase):
 class ItemsTests(KitCase):
     def test_each_click_reaches_only_the_script_whose_item_took_it(self):
         self.world.hold("Steve", main="alpha_wand")
-        a, _ = collect(items.clicks("@a", "Alpha Wand", every=0.05), 4)
-        b, _ = collect(items.clicks("Steve", "Beta Wand", every=0.05), 4)
-        time.sleep(0.4)
-        self.world.click("Steve")                                  # alpha in hand
-        time.sleep(0.4)
-        self.world.hold("Steve", main="beta_wand")
-        time.sleep(0.3)
-        self.world.click("Steve")                                  # beta in hand
-        time.sleep(0.4)
-        self.world.hold("Steve", main="beta_wand", off="alpha_wand")
-        time.sleep(0.3)
-        self.world.click("Steve")                                  # beta in hand takes it, not alpha in the off hand
-        time.sleep(0.4)
-        self.world.hold("Steve", main=None, off="alpha_wand")
-        time.sleep(0.3)
-        self.world.click("Steve")                                  # alpha in the off hand, nothing in the main
-        time.sleep(0.4)
-        self.world.hold("Steve", main="plain")
-        time.sleep(0.3)
-        self.world.click("Steve", 3)                               # a plain carrot on a stick: nobody's
-        time.sleep(0.4)
+        a, _ = collect(items.clicks("@a", "Alpha Wand", every=0.05), 10)
+        b, _ = collect(items.clicks("Steve", "Beta Wand", every=0.05), 10)
+
+        def both_looked():
+            self.looked("vfg_click", '"alpha_wand"', also=[("vfg_click", '"beta_wand"')])
+
+        for main, off, n in (("alpha_wand", None, 1),          # alpha in hand
+                             ("beta_wand", None, 1),           # beta in hand
+                             ("beta_wand", "alpha_wand", 1),   # beta in hand takes it, not alpha in the off hand
+                             (None, "alpha_wand", 1),          # alpha in the off hand, nothing in the main
+                             ("plain", None, 3)):              # a plain carrot on a stick: nobody's
+            self.world.hold("Steve", main=main, off=off)
+            both_looked()                                      # each saw what he holds before he clicks
+            self.world.click("Steve", n)
+            both_looked()
         self.assertEqual(len(a), 2, a)
         self.assertEqual(len(b), 2, b)
         self.assertLess(a[0][1], b[0][1])
@@ -389,43 +443,40 @@ class ItemsTests(KitCase):
         self.world.no_negation = True
         self.world.hold("Steve", main="alpha_wand")
         got, _ = collect(items.clicks("Steve", "Alpha Wand", every=0.05), 3)
-        time.sleep(0.4)
+        self.looked("vfg_click", '"alpha_wand"', times=3)       # refused once, then the plainer check
         self.world.click("Steve")
-        time.sleep(0.4)
+        self.assertTrue(until(lambda: got, 2))
         self.assertEqual([p for p, _ in got], ["Steve"])
 
     def test_a_hold_yields_while_the_button_is_down(self):
         self.world.hold("Steve", main="gatling_gun")
         got, _ = collect(items.holds("Steve", "Gatling Gun", every=0.05), 3)
-        time.sleep(0.3)
+        self.looked("vfg_click", '"gatling_gun"')
         first = time.time()
-        for _ in range(6):                       # held down: a use every 0.2 s for 1.2 s
+        for _ in range(4):                       # held down: a use every 0.2 s for 0.8 s
             self.world.click("Steve")
             last = time.time()
             time.sleep(0.2)
-        time.sleep(1.0)
+        time.sleep(0.6)                          # let go: it stops within HOLD_GAP (0.4 s)
         times = [t for _, t in got]
-        self.assertGreater(len(times), 10)
+        self.assertGreater(len(times), 8)
         self.assertGreaterEqual(min(times), first)
-        self.assertLess(max(times), last + 0.9, "kept yielding after it was let go")
+        self.assertLess(max(times), last + 0.6, "kept yielding after it was let go")
 
     def test_a_charge_fires_once_when_full_and_not_when_let_go_early(self):
         self.world.hold("Steve", main="spirit_bomb")
         got, _ = collect(items.charged("Steve", "Spirit Bomb", 0.6, every=0.05), 5)
-        time.sleep(0.3)
-        for _ in range(2):                       # 0.4 s: let go before the charge is full
-            self.world.click("Steve")
-            time.sleep(0.2)
-        time.sleep(0.8)
+        self.looked("vfg_click", '"spirit_bomb"')
+        self.world.click("Steve")                # one use: held 0.4 s (HOLD_GAP), let go before 0.6
+        time.sleep(0.6)
         self.assertEqual(got, [])
         start = time.time()
-        for _ in range(8):                       # 1.6 s held: full at 0.6 s, fires once
+        for _ in range(6):                       # 1.2 s held: full at 0.6 s, fires once
             self.world.click("Steve")
             time.sleep(0.2)
-        time.sleep(0.6)
         self.assertEqual(len(got), 1, got)
         self.assertGreaterEqual(got[0][1] - start, 0.55)
-        self.assertLess(got[0][1] - start, 1.3)
+        self.assertLess(got[0][1] - start, 1.1)
         self.assertTrue(self.sent("actionbar"), "no charge shown")
 
     def test_a_player_with_no_score_hides_nobody_and_a_first_click_counts(self):
@@ -433,9 +484,10 @@ class ItemsTests(KitCase):
         self.world.hold("Alex", main="alpha_wand")
         self.world.hold("Steve", main="alpha_wand")
         got, _ = collect(items.clicks("@a", "Alpha Wand", every=0.05), 3)
-        time.sleep(0.4)
+        self.looked("vfg_click", '"alpha_wand"')
         self.world.click("Alex")                   # Alex's first click ever, Steve never clicked
-        time.sleep(0.4)
+        self.assertTrue(until(lambda: got, 2))
+        self.looked("vfg_click", '"alpha_wand"')
         self.assertEqual([p for p, _ in got], ["Alex"])
         self.assertTrue(self.sent("scoreboard players add @a vfg_click 0"))
         s = items.Stat("vfg_x", "dummy")
@@ -650,8 +702,8 @@ class WorldTests(KitCase):
     def test_mspt_and_throttle(self):
         self.world.mspt = 61.0
         t = time.time()
-        self.assertEqual(world.throttle(45, longest=0.6), 61.0)
-        self.assertGreaterEqual(time.time() - t, 0.5)
+        self.assertEqual(world.throttle(45, longest=0.3), 61.0)
+        self.assertGreaterEqual(time.time() - t, 0.3)             # it waited
         self.world.mspt = 20.0
         world._ms["at"] = 0.0
         self.assertEqual(world.throttle(45), 20.0)
@@ -732,10 +784,10 @@ class FxTests(KitCase):
         self.assertIn("stopsound @a * minecraft:music_disc.pigstep", self.world.commands)
 
     def test_a_newer_melody_cuts_the_older_off(self):
-        fx.melody([(0, "pling", 12, 1), (0.6, "bell", 12, 1)], "Steve", key="t")
-        time.sleep(0.2)
+        fx.melody([(0, "pling", 12, 1), (0.3, "bell", 12, 1)], "Steve", key="t")
+        time.sleep(0.1)
         fx.melody([(0, "bass", 0, 1)], "Steve", key="t").join(2)
-        time.sleep(0.7)
+        time.sleep(0.35)                                            # past where the bell was due
         notes = self.sent("playsound")
         self.assertEqual(len(notes), 2, notes)
         self.assertIn("minecraft:block.note_block.bass", notes[1])
@@ -926,12 +978,15 @@ class KitScriptTests(unittest.TestCase):
         while len(self.world.gives) < 2 and time.time() < deadline:
             time.sleep(0.05)
         self.assertEqual(len(self.world.gives), 2)
-        time.sleep(0.3)
+
+        def both_looked():
+            looked(self.world, "vfg_click", '"alpha_wand"', also=[("vfg_click", '"beta_wand"')])
+
         for held, n in (("alpha_wand", 1), ("beta_wand", 2), ("alpha_wand", 1), ("plain", 3)):
             self.world.hold("Steve", main=held)
-            time.sleep(0.25)
+            both_looked()
             self.world.click("Steve", n)
-            time.sleep(0.35)
+            both_looked()
         for p in (a, b):
             p.send_signal(signal.SIGTERM)
         out_a = a.communicate(timeout=4)[0].decode()

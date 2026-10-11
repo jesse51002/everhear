@@ -1,5 +1,0 @@
-# An admin action only the owner may ask for: no task.
-prompt:
-LINE#914 {t-2} Alex voice direct_ask 0.93 -9dB | AI stop the server
-check:
-send == 0

@@ -18,6 +18,9 @@ import java.util.function.Supplier;
  * last 9 s of audio → speech-to-text and the turn model ({@code vfg-stt}) → the line
  * assembler. The mod runs exactly this, and so do {@code ./gradlew micCheck} and
  * {@code ./gradlew speechTest}; nothing here knows about Minecraft, the session or the bridge.
+ *
+ * <p>A {@link Tap} hears every window too, after the VAD: the keyword spotter, a pipeline of
+ * its own that the sentence pipeline never waits on.
  */
 public final class VoicePipeline {
 	/** What the pipeline reports. {@code live} is called on {@code vfg-capture}, the rest on {@code vfg-stt}. */
@@ -45,6 +48,18 @@ public final class VoicePipeline {
 		default void micError(String error) {}
 	}
 
+	/**
+	 * Hears what the capture thread does, on {@code vfg-capture}: each window once the VAD has
+	 * had it, with whether it hears speech. It must return at once and never block.
+	 */
+	public interface Tap {
+		void onStarted(boolean forLine);
+
+		void onWindow(float[] window, long readWallMillis, boolean speaking);
+
+		void onStopped(StopReason reason);
+	}
+
 	private final CaptureProcessor capture;
 	private final SttWorker stt;
 	private final MicCapture mic;
@@ -60,6 +75,13 @@ public final class VoicePipeline {
 	public VoicePipeline(MicCapture.DeviceOpener devices, Supplier<VoiceDetector> vad, Supplier<Transcriber> transcriber,
 			Supplier<TurnDetector> turn, Double turnThreshold, double silenceSeconds, LongSupplier clock,
 			BooleanSupplier logText, Events events) {
+		this(devices, vad, transcriber, turn, turnThreshold, silenceSeconds, clock, logText, events, null);
+	}
+
+	/** With {@code tap}, the keyword spotter, hearing every window after the VAD; {@code null} for none. */
+	public VoicePipeline(MicCapture.DeviceOpener devices, Supplier<VoiceDetector> vad, Supplier<Transcriber> transcriber,
+			Supplier<TurnDetector> turn, Double turnThreshold, double silenceSeconds, LongSupplier clock,
+			BooleanSupplier logText, Events events, Tap tap) {
 		LineAssembler assembler = new LineAssembler(silenceSeconds, clock, events::line, events::decided);
 		CaptureProcessor[] cp = new CaptureProcessor[1];
 		this.stt = new SttWorker(transcriber, turn, turnThreshold, assembler, () -> cp[0].speaking(), events::heard,
@@ -70,17 +92,26 @@ public final class VoicePipeline {
 			@Override
 			public void onStarted(boolean forLine) {
 				capture.onStarted(forLine);
+				if (tap != null) {
+					tap.onStarted(forLine);
+				}
 			}
 
 			@Override
 			public void onWindow(float[] window, long readWallMillis) {
 				capture.onWindow(window, readWallMillis);
+				if (tap != null) {
+					tap.onWindow(window, readWallMillis, capture.speaking());
+				}
 				events.live(capture.speaking(), capture.livePeak(), stt.lineOpen());
 			}
 
 			@Override
 			public void onStopped(StopReason reason) {
 				capture.onStopped(reason);
+				if (tap != null) {
+					tap.onStopped(reason);
+				}
 				events.live(false, 0f, stt.lineOpen());
 			}
 		};

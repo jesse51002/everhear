@@ -1,6 +1,6 @@
 """Stand-in actions and scripts for the vfg tests: the command, edit, stop and save_place
-actions as the dispatcher's will be (their real ones come in a later wave), and a few of the
-tests' own: beam (until stopped, live values), ping and slow (once).
+actions, smaller than the library's, and a few of the tests' own: beam (until stopped, live
+values), ping and slow (once).
 
     standins.install(repo)    # writes them into a test's repo, with the real scripts/_lib
 

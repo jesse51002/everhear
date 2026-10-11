@@ -31,7 +31,8 @@ BAD = '{"mobs": [{"name": "Creeper", "temper": "angry"}]}'
 def ok(content: str, cost: float = 0.001) -> httpx.Response:
     return httpx.Response(200, json={
         "choices": [{"message": {"role": "assistant", "content": content}}],
-        "usage": {"prompt_tokens": 20, "completion_tokens": 30, "cost": cost},
+        "usage": {"prompt_tokens": 20, "completion_tokens": 30, "cost": cost,
+                  "prompt_tokens_details": {"cached_tokens": 16}},
     })
 
 
@@ -79,7 +80,23 @@ async def test_valid_answer(monkeypatch):
         "type": "json_schema", "json_schema": {"name": "Mobs", "schema": Mobs.model_json_schema()}}
     assert body["provider"] == {"require_parameters": True}
     assert body["reasoning"] == {"enabled": False}
+    assert (answer.prompt_tokens, answer.cached_tokens, answer.completion_tokens) == (20, 16, 30)
     assert KEY not in repr(answer)
+
+
+async def test_cached_blocks_go_before_the_prompt_each_marked_or_not(monkeypatch):
+    seen = serve(monkeypatch, ok(GOOD), ok(GOOD))
+    await structured("TAIL", Mobs, cached=[("RULES ", True), ("a ", False), ("b ", True), ("", True), ("c ", False)])
+    marked = {"type": "ephemeral"}
+    assert json.loads(seen[0].content)["messages"] == [{"role": "user", "content": [
+        {"type": "text", "text": "RULES ", "cache_control": marked}, {"type": "text", "text": "a "},
+        {"type": "text", "text": "b ", "cache_control": marked}, {"type": "text", "text": "c "},
+        {"type": "text", "text": "TAIL"}]}]
+    await structured("TAIL", Mobs, cached="RULES ")  # one opening: one mark
+    assert json.loads(seen[1].content)["messages"][0]["content"] == [
+        {"type": "text", "text": "RULES ", "cache_control": marked}, {"type": "text", "text": "TAIL"}]
+    with pytest.raises(ValueError, match="at most 4"):
+        await structured("TAIL", Mobs, cached=[("x", True)] * 5)
 
 
 async def test_providers_go_as_an_order_with_fallbacks(monkeypatch):
@@ -124,7 +141,7 @@ async def test_invalid_answer_repaired_on_second_try(monkeypatch):
     answer = await structured("Name two mobs.", Mobs)
 
     assert answer.value.mobs[1].name == "Cow"
-    assert answer.cost == pytest.approx(0.003)
+    assert answer.cost == pytest.approx(0.003) and answer.prompt_tokens == 40  # both attempts
     retry = json.loads(seen[1].content)["messages"]
     assert retry[1] == {"role": "assistant", "content": BAD}
     assert retry[2]["role"] == "user"
@@ -170,8 +187,8 @@ async def test_timeout_bounds_the_call(monkeypatch):
     async def slow(request):
         await asyncio.sleep(5)
     monkeypatch.setattr(vfg_llm, "client", httpx.AsyncClient(transport=httpx.MockTransport(slow)))
-    with pytest.raises(LlmError, match="within 0.05 s"):
-        await structured("Name two mobs.", Mobs, timeout=0.05)
+    with pytest.raises(LlmError, match="within 0.01 s"):
+        await structured("Name two mobs.", Mobs, timeout=0.01)
 
 
 async def test_key_from_the_file_the_config_names(monkeypatch, tmp_path):

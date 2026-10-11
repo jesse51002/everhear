@@ -12,7 +12,7 @@ absolute path, nothing from made/ (what implementers make goes in each brief):
      line and its values class, as written; a script's first line only, since the
      brief carries every action in full.
 
-`vfg prefix` prints it. The orchestrator puts it after the implementer's rules.
+`vfg prefix` prints it. An implementer gets it after its rules.
 
 Python 3.9+, standard library only, like toolkit/vfg.
 """

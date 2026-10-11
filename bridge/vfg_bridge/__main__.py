@@ -1,7 +1,7 @@
 """python3 -m vfg_bridge [--init-db | --parse FILE]
 
 With no option: apply the schema, load watch.json, tail the console and serve
-the speech endpoint until SIGTERM.  ``--init-db`` applies the schema and exits;
+the speech and incantation endpoints until SIGTERM.  ``--init-db`` applies the schema and exits;
 ``--parse FILE`` prints each recognised line of a console log (plain or .gz)
 as one JSON object and touches nothing.
 """
@@ -14,6 +14,7 @@ import sys
 import threading
 
 EX_CONFIG = 78  # systemd does not restart on it (RestartPreventExitStatus=78)
+HTTP_POLL_SECONDS = 0.05  # how soon the server sees a stop
 
 log = logging.getLogger("vfg_bridge")
 
@@ -48,8 +49,10 @@ def serve(cfg):
     import vfg_feed
 
     from .api import make_server
+    from .casts import Casts
     from .console import Tail
     from .db import DB
+    from .kit import Kit
     from .watch import WatchFile
 
     db = DB(cfg.db)
@@ -58,7 +61,9 @@ def serve(cfg):
     watch.ensure()
     watch.check()
     tail = Tail(cfg.console_log, cfg.state, db, watch, vfg_feed)
-    httpd = make_server(cfg.bind, cfg.port, db, cfg.client_token)
+    kit = Kit(cfg.kit)
+    casts = Casts.from_config(cfg, db, kit, vfg_feed)
+    httpd = make_server(cfg.bind, cfg.port, db, cfg.client_token, casts=casts)
 
     stop = threading.Event()
 
@@ -70,10 +75,11 @@ def serve(cfg):
 
     tail_thread = threading.Thread(target=_guarded("console tail", lambda: tail.run(stop)),
                                    name="tail", daemon=True)
-    http_thread = threading.Thread(target=_guarded("http", httpd.serve_forever),
+    http_thread = threading.Thread(target=_guarded("http", lambda: httpd.serve_forever(HTTP_POLL_SECONDS)),
                                    name="http", daemon=True)
     tail_thread.start()
     http_thread.start()
+    threading.Thread(target=kit.warm, name="warm", daemon=True).start()  # the dictionary, now
     host, port = httpd.server_address[:2]
     log.info("vfg-bridge serving on %s:%d, db %s, console %s", host, port, cfg.db,
              cfg.console_log)

@@ -4,10 +4,9 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 vhome=${VFG_HOME:-$HOME/.vfg}
 
-mkdir -p "$HOME/.local/bin" "$vhome/orch" "$vhome/ssh"
+mkdir -p "$HOME/.local/bin" "$vhome/brain" "$vhome/ssh"
 chmod 700 "$vhome" "$vhome/ssh"
-chmod +x "$here/vfg" "$here/tests/fake_ssh" "$here/tests/fake_rcon.py" \
-         "$here/tests/fake_vfg_feed.py" "$here/tests/bin/"*
+chmod +x "$here/vfg" "$here/tests/fake_ssh" "$here/tests/fake_vfg_feed.py" "$here/tests/bin/"*
 ln -sfn "$here/vfg" "$HOME/.local/bin/vfg"
 if [ ! -e "$vhome/config" ]; then
     cp "$here/config.example" "$vhome/config"

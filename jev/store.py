@@ -12,12 +12,15 @@ than made empty.
 """
 import logging
 import os
+import re
 import sqlite3
 import urllib.parse
 
 log = logging.getLogger("vfg-jev")
 
 COLUMNS = "id, at, player_name, source, text, peak_dbfs, jev_class, jev_confidence, jev_judged_at, fed_at"
+RECORDS = ("action", "task", "result")   # the brain's AI rows that go into Jev's history
+_AI_ROW = re.compile(r"^AI#\d+ \d\d:\d\d:\d\d (\S+) \S+ \| (.*)$", re.S)
 
 
 class Store:
@@ -25,6 +28,7 @@ class Store:
         self.path = path
         self.conn = None
         self._said = None   # the last "not ready" reason logged, so it is logged once
+        self._dropped = False
 
     # -- opening ---------------------------------------------------------------
 
@@ -79,19 +83,27 @@ class Store:
             raise
         return counts
 
+    def _live(self):
+        """` AND dropped IS NULL` once `lines` has the bridge's `dropped` column (a line that
+        was only an incantation), so Jev never sees one; nothing on an older database."""
+        if not self._dropped:
+            cols = self.conn.execute("SELECT * FROM lines LIMIT 0").description
+            self._dropped = any(c[0] == "dropped" for c in cols)
+        return " AND dropped IS NULL" if self._dropped else ""
+
     # -- reading ---------------------------------------------------------------
 
     def unjudged(self, limit=32):
         """Lines to judge: no verdict yet and not the AI's own, oldest first."""
         return self.conn.execute(
-            "SELECT %s FROM lines WHERE jev_class IS NULL AND source != 'ai' "
-            "ORDER BY at, id LIMIT ?" % COLUMNS, (limit,)).fetchall()
+            "SELECT %s FROM lines WHERE jev_class IS NULL AND source != 'ai'%s "
+            "ORDER BY at, id LIMIT ?" % (COLUMNS, self._live()), (limit,)).fetchall()
 
     def ask_again(self, judged_since, limit=5):
-        """Jev's own `not_useful` verdicts (a confidence, so not a blank line)
+        """Jev's own `not_relevant` verdicts (a confidence, so not a blank line)
         judged since `judged_since`, newest `at` first."""
         return self.conn.execute(
-            "SELECT %s FROM lines WHERE jev_class = 'not_useful' AND jev_confidence IS NOT NULL "
+            "SELECT %s FROM lines WHERE jev_class = 'not_relevant' AND jev_confidence IS NOT NULL "
             "AND jev_judged_at >= ? ORDER BY at DESC, id DESC LIMIT ?" % COLUMNS,
             (judged_since, limit)).fetchall()
 
@@ -102,14 +114,31 @@ class Store:
         holes = ",".join("?" * len(exclude))
         skip = (" AND id NOT IN (%s)" % holes) if exclude else ""
         return self.conn.execute(
-            "SELECT %s FROM lines WHERE at >= ?%s ORDER BY at DESC, id DESC LIMIT ?" % (COLUMNS, skip),
+            "SELECT %s FROM lines WHERE at >= ?%s%s ORDER BY at DESC, id DESC LIMIT ?"
+            % (COLUMNS, skip, self._live()),
             [since] + exclude + [limit]).fetchall()
+
+    def ai_records(self, since, scan=2000):
+        """The brain's own records said since `since` — the feed's `AI` rows of
+        kind action, task and result, among its last `scan` rows — as history
+        rows whose `source` is the kind, newest first. A `say` is left out:
+        `vfg say` keeps it in `lines` too."""
+        rows = self.conn.execute(
+            "SELECT seq, at, line FROM (SELECT seq, at, line FROM feed ORDER BY seq DESC LIMIT ?) "
+            "WHERE line LIKE 'AI#%' AND at >= ? ORDER BY at DESC, seq DESC", (scan, since)).fetchall()
+        records = []
+        for seq, at, line in rows:
+            m = _AI_ROW.match(line)
+            if m and m.group(1) in RECORDS:
+                records.append({"id": "AI#%d" % seq, "at": at, "player_name": "AI", "source": m.group(1),
+                                "text": m.group(2), "peak_dbfs": None})
+        return records
 
     def kept_unfed(self, since):
         """Kept lines not yet fed, said since `since`, oldest first."""
         return self.conn.execute(
-            "SELECT %s FROM lines WHERE jev_class IN ('direct_ask', 'context') AND fed_at IS NULL "
-            "AND at >= ? ORDER BY at, id" % COLUMNS, (since,)).fetchall()
+            "SELECT %s FROM lines WHERE jev_class IN ('action_oriented', 'conversational', 'context') "
+            "AND fed_at IS NULL AND at >= ? ORDER BY at, id" % COLUMNS, (since,)).fetchall()
 
     def feed_lines_at(self, ats):
         """`(seq, at, line)` of every LINE already in the `feed` table whose `at`
@@ -132,7 +161,7 @@ class Store:
         for fid, fcls, fconf in flips:
             statements.append((
                 "UPDATE lines SET jev_class = ?, jev_confidence = ?, jev_judged_at = ? "
-                "WHERE id = ? AND jev_class = 'not_useful'", (fcls, fconf, judged_at, fid)))
+                "WHERE id = ? AND jev_class = 'not_relevant'", (fcls, fconf, judged_at, fid)))
         if usage is not None:
             statements.append(self._usage_sql(**usage))
         counts = self._tx(statements)
@@ -149,7 +178,7 @@ class Store:
         with no confidence. Answers how many."""
         return self._tx([(
             "UPDATE lines SET jev_class = 'context', jev_confidence = NULL, jev_judged_at = ? "
-            "WHERE jev_class IS NULL AND source != 'ai'", (judged_at,))])[0]
+            "WHERE jev_class IS NULL AND source != 'ai'" + self._live(), (judged_at,))])[0]
 
     def mark_fed(self, ids, fed_at):
         ids = list(ids)

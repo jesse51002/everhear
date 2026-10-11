@@ -1,8 +1,9 @@
 """A local stand-in for Jev's `POST /v1/systemone`, for the tests.
 
 It answers every question by keyword in the line its instructions quote (the
-text between “ and ”): `build`, `make` or `there` -> direct_ask 0.9; `cave` or
-`base` -> context 0.7; anything else -> not_useful 0.8. A `noul` question is
+text between “ and ”): `build`, `make` or `there` -> action_oriented 0.9;
+`thanks` -> conversational 0.85; `cave` or `base` -> context 0.7; anything else
+-> not_relevant 0.8. A `noul` question is
 answered `noul: 0.9`. The state must be a JSON object, as the live API is
 called (a bare string is refused with 400); `usage.input_tokens` is its
 JSON-encoded length / 4.
@@ -28,10 +29,12 @@ QUOTED = re.compile(r"“(.*)”", re.S)
 def verdict(text):
     t = text.lower()
     if any(w in t for w in ("build", "make", "there")):
-        return "direct_ask", 0.9
+        return "action_oriented", 0.9
+    if "thanks" in t:
+        return "conversational", 0.85
     if any(w in t for w in ("cave", "base")):
         return "context", 0.7
-    return "not_useful", 0.8
+    return "not_relevant", 0.8
 
 
 def answer(question):
@@ -123,7 +126,7 @@ def serve(port=0, hang_seconds=5.0):
     srv.lock = threading.Lock()
     srv.hang_seconds = hang_seconds
     srv.url = "http://127.0.0.1:%d/v1/systemone" % srv.server_address[1]
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    threading.Thread(target=srv.serve_forever, args=(0.005,), daemon=True).start()   # a quick shutdown()
     return srv
 
 

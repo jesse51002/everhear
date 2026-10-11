@@ -1,0 +1,377 @@
+"""The EXAMPLES block (examples.py, route.py): on a small temp repo whose actions load through
+lib/py/vfg_actions.py, with the fake vfg answering vfg route and vfg state."""
+import json
+import os
+import shutil
+import time
+
+import pytest
+
+from brain.implementers import examples, route
+from brain.implementers.config import ROOT, ImplementerConfig
+from brain.implementers.vfg import VfgResult
+
+from .fakes import FakeVfg, bad, never, ok
+
+# What a temp repo needs from the real one for its actions to load.
+ACTIONS_BASE = ["actions/__init__.py", "actions/_types.py", "scripts/_lib/commands.py", "scripts/_lib/kit/world.py"]
+
+ICE_BEAM = '''"""Ice Beam: a beam from the eyes that freezes what it hits."""
+ASKS = ["ice beam", "freeze ray"]
+from kit import values, aim
+
+v = values()
+'''
+GALICK = '''"""Galick Gun: charge, then a purple beam that leaves a crater."""
+ASKS = ["galick gun"]
+'''
+ZOO = '''"""Zoo: animals in pens round a player."""
+ASKS = ["a zoo"]
+'''
+CRATER = '''"""Carve a sphere out of the world at a place, leaving air, lava or fire."""
+from kit import area
+from actions._types import Field, Live, Values
+
+
+class Crater(Values):
+    crater_radius: Live[int] = Field(8, ge=2, le=64)
+    """how wide the crater is, in blocks"""
+
+
+def crater(at, v):
+    area.sphere(at, v["crater_radius"], block="air")
+'''
+REPLACE = '''"""Replace one kind of block with another in a box."""
+from actions._types import BlockId, Values
+
+
+class ReplaceBlocks(Values):
+    replace_to: BlockId = "ice"
+    """what the blocks become"""
+
+
+def replace_blocks(box, v):
+    pass
+'''
+GALICK_ICE = '''"""Galick Ice: the Galick Gun, laying ice where it hits."""
+ASKS = ["galick gun that freezes"]
+'''
+ICE_TRAIL = '''"""Lay packed ice under a player's feet as they walk."""
+from actions._types import BlockId, Values
+
+
+class IceTrail(Values):
+    ice_trail_block: BlockId = "packed_ice"
+    """what it lays"""
+
+
+def ice_trail(p, v):
+    pass
+'''
+
+ICE_BEAM_ACTION = '''from actions._types import Action, Field, Live, Players
+
+
+class IceBeam(Action):
+    """Give a player an ice beam: a beam from the eyes that freezes what it hits."""
+
+    script = "ice_beam"
+    runs = "until_stopped"
+    takes = ["player", "freeze_seconds"]
+
+    player: Players = "@a"
+    """who gets one: a name, several separated by commas, or @a"""
+    freeze_seconds: Live[int] = Field(5, ge=1, le=60)
+    """how long what it hits stays frozen, in seconds"""
+'''
+FROST_RAY_ACTION = '''from actions.ice_beam import IceBeam
+
+
+class FrostRay(IceBeam):
+    """Give a player a frost ray: an ice beam that freezes for a whole minute."""
+
+    takes = ["player"]
+    fixed = {"freeze_seconds": 60}
+'''
+GALICK_ACTION = '''from actions._types import Action, Field, Live, Players
+
+
+class GalickGun(Action):
+    """Give a player a Galick Gun: charge, then a purple beam that leaves a crater."""
+
+    script = "galick_gun"
+    runs = "until_stopped"
+    takes = ["player", "cooldown"]
+
+    player: Players = "@a"
+    """who gets one"""
+    cooldown: Live[float] = Field(10, ge=0, le=60)
+    """seconds between shots"""
+'''
+ZOO_ACTION = '''from actions._types import Action, Place
+
+
+class Zoo(Action):
+    """Build a zoo: animals in pens at a place."""
+
+    script = "zoo"
+    runs = "once"
+    takes = ["at"]
+
+    at: Place = ""
+    """where the zoo goes: a saved place, x y z, or a player"""
+'''
+GALICK_ICE_ACTION = '''from actions._types import Action, Players
+
+
+class GalickIce(Action):
+    """Give a player a Galick Ice gun: the Galick Gun, laying ice where it hits."""
+
+    script = "galick_ice"
+    runs = "until_stopped"
+    takes = ["player"]
+
+    player: Players = "@a"
+    """who gets one"""
+'''
+
+FILES = {
+    "scripts/ice_beam/main.py": ICE_BEAM,
+    "scripts/galick_gun/main.py": GALICK,
+    "scripts/zoo/main.py": ZOO,
+    "scripts/tnt_rain/main.py": "from mc import rcon\nrcon('say tnt')\n",
+    "scripts/tnt_rain/README.md": "Rains primed TNT round a player.\nUsage: tnt_rain [player]\nEnds: when stopped\n",
+    "scripts/_presets/crater.py": CRATER,
+    "scripts/_presets/replace_blocks.py": REPLACE,
+    "made/main/scripts/galick_ice/main.py": GALICK_ICE,
+    "made/main/presets/ice_trail.py": ICE_TRAIL,
+    "actions/ice_beam.py": ICE_BEAM_ACTION,
+    "actions/frost_ray.py": FROST_RAY_ACTION,
+    "actions/galick_gun.py": GALICK_ACTION,
+    "actions/zoo.py": ZOO_ACTION,
+    "made/main/actions/galick_ice.py": GALICK_ICE_ACTION,
+}
+
+ROUTE = {"task": "T7", "scripts": [
+    {"name": "ice_beam", "source": "library", "verdict": "runs_it", "p_runs_it": 0.91, "p_close": 0.05,
+     "path": "scripts/ice_beam/main.py"},
+    {"name": "galick_gun", "source": "library", "verdict": "close", "p_runs_it": 0.1, "p_close": 0.42,
+     "path": "scripts/galick_gun/main.py"}],
+    "presets": [{"name": "crater", "source": "library", "p_use": 0.77, "path": "scripts/_presets/crater.py"},
+                {"name": "replace_blocks", "source": "library", "p_use": 0.5, "path": "scripts/_presets/replace_blocks.py"}],
+    "fallback": False, "ms": 312, "tokens": 11840}
+
+STATE = {"online": [{"name": "Steve", "pos": [120, 64, -40], "dimension": "overworld"},
+                    {"name": "Alex", "pos": [98, 70, -12], "dimension": "overworld"}],
+         "time": {"daytime": 18000, "day": 3, "phase": "night"}, "weather": "clear",
+         "instances": [
+             {"instance": "galick-alex", "script": "galick_gun", "source": "library", "task": "T5", "pid": 10,
+              "values": {"player": "Alex", "cooldown": 0}, "changed": {"player": "Alex", "cooldown": 0},
+              "args": [], "touches": ["Alex"]},
+             {"instance": "horror_mode", "script": "horror_mode", "source": "library", "task": "T2", "pid": 11,
+              "values": {}, "changed": {}, "args": [], "touches": []},
+             {"instance": "zoo-steve", "script": "zoo", "source": "library", "task": "T3", "pid": 12,
+              "values": {"player": "Steve"}, "changed": {"player": "Steve"}, "args": [], "touches": ["Steve"]}],
+         "rcon": None, "ms": 300}
+
+# running.json: what vfg wrote through for every run (the state's instances, above, are what an older vfg gives)
+RUNNING = {"fetched_at": 1760000000, "copies": {
+    "galick-alex": {"action": "galick_gun", "script": "galick_gun", "values": {"player": "Alex", "cooldown": 0},
+                    "live": ["cooldown"], "task": "T5", "started": "2026-10-09T12:00:00Z", "runs": "until_stopped"},
+    "horror_mode": {"action": "horror_mode", "script": "horror_mode", "values": {}, "live": [], "task": "T2",
+                    "started": "2026-10-09T11:00:00Z", "runs": "until_stopped"},
+    "zoo-steve": {"action": "zoo", "script": "zoo", "values": {"at": "Steve"}, "live": [], "task": "T3",
+                  "started": "2026-10-09T11:30:00Z", "runs": "once"}}}
+
+JOB = "Give Steve an ice beam with a crater where it hits. Leave tnt_rain alone."
+
+
+class Repo:
+    """A temp repo with a small library, its actions and a made/main/, its own VFG_HOME with
+    running.json, and the fake vfg answering route and state."""
+
+    def __init__(self, tmp_path, route_json=ROUTE, state=STATE, running=RUNNING, env=None):
+        self.dir = str(tmp_path / "repo")
+        for rel in ACTIONS_BASE:
+            os.makedirs(os.path.dirname(os.path.join(self.dir, rel)), exist_ok=True)
+            shutil.copy(os.path.join(ROOT, rel), os.path.join(self.dir, rel))
+        for rel, text in FILES.items():
+            os.makedirs(os.path.dirname(os.path.join(self.dir, rel)), exist_ok=True)
+            with open(os.path.join(self.dir, rel), "w") as f:
+                f.write(text)
+        for rel in ACTIONS_BASE + list(FILES):  # written a minute ago: a cache built now is fresh
+            os.utime(os.path.join(self.dir, rel), (time.time() - 60, time.time() - 60))
+        self.home = str(tmp_path / "vfg-home")
+        os.makedirs(self.home)
+        if running is not None:
+            self.write_home("running.json", json.dumps(running))
+        self.vfg = FakeVfg()
+        if route_json is not None:
+            self.vfg.on("route", answer=ok(json.dumps(route_json)))
+        if state is not None:
+            self.vfg.on("state", answer=ok(json.dumps(state)))
+        self.cfg = ImplementerConfig.load({"VFG_REPO": self.dir, "VFG_HOME": self.home, **(env or {})})
+
+    def write(self, rel: str, text: str) -> None:
+        os.makedirs(os.path.dirname(os.path.join(self.dir, rel)), exist_ok=True)
+        with open(os.path.join(self.dir, rel), "w") as f:
+            f.write(text)
+
+    def write_home(self, rel: str, text: str) -> None:
+        with open(os.path.join(self.home, rel), "w") as f:
+            f.write(text)
+
+    async def block(self, job: str = JOB, task: str = "T7") -> str:
+        return await examples.build(self.cfg, job, task, self.vfg)
+
+
+def whole(rel: str) -> str:
+    return "=== %s ===\n%s" % (rel, FILES[rel])
+
+
+def parts(block: str) -> tuple[str, str, str, str]:
+    """The block's header, its made first lines, its ACTIONS and its files."""
+    head, rest = block.split("\n\n", 1)
+    made, rest = rest.split("\n\n", 1)
+    acts, _, files = rest.partition("\n\n=== ")
+    return head, made, acts, ("=== " + files if files else "")
+
+
+# ---------------------------------------------------------------- the block
+
+async def test_the_block_in_the_specs_shape_with_every_file_whole_in_order(tmp_path):
+    r = Repo(tmp_path)
+    block = await r.block()
+    head, made, acts, files = parts(block)
+    assert head.split("\n") == [
+        "EXAMPLES, picked for T7 by Jev in 0.3 s.",
+        "ice_beam runs this job: run one of its actions, ice_beam or frost_ray, with the values the job needs. "
+        "galick_gun is close.",
+        "Presets to copy: crater and replace_blocks.",
+        "Named in your brief, in full below: tnt_rain.",
+        "Running: galick-alex (galick_gun, player=Alex, cooldown=0, T5), horror_mode (T2), zoo-steve (zoo, at=Steve, T3).",
+        "Online: Steve 120 64 -40 overworld, Alex 98 70 -12 overworld. Night, clear.",
+        examples.NOW,
+    ]
+    assert made.split("\n") == [
+        "Made on this server (made/main/), by first line:",
+        "  galick_ice (script): Galick Ice: the Galick Gun, laying ice where it hits.",
+        "  ice_trail (preset): Lay packed ice under a player's feet as they walk.",
+    ]
+    # every action whole, the library's by name then this server's
+    assert acts.startswith("ACTIONS: every action, the library's (actions/) then this server's (made/main/actions/), "
+                           "whole, as they were when you started. Run one with vfg action run <action> key=value ... "
+                           "--task T7; * marks the values it takes, and any value but a fixed one can be given.\n")
+    firsts = [line.split(" — ")[0] for line in acts.split("\n") if " — " in line]
+    assert firsts == ["frost_ray", "galick_gun", "ice_beam", "zoo", "galick_ice"]
+    ice = acts[acts.index("ice_beam — "):].split("\n\n")[0].split("\n")
+    assert ice == ["ice_beam — Give a player an ice beam: a beam from the eyes that freezes what it hits.",
+                   "script ice_beam · runs until stopped",
+                   "values (* = the planner fills it):",
+                   "* player (player names separated by commas, or @a, @r, @p; default \"@a\"): who gets one: a name, "
+                   "several separated by commas, or @a",
+                   "* freeze_seconds (a whole number 1..60; live; default 5): how long what it hits stays frozen, in seconds"]
+    assert "  freeze_seconds (a whole number 1..60; live; fixed 60): how long" in acts  # the variant's
+    # whole files, never cut: the router's scripts (runs_it first), its presets, then the named
+    order = ["scripts/ice_beam/main.py", "scripts/galick_gun/main.py", "scripts/_presets/crater.py",
+             "scripts/_presets/replace_blocks.py", "scripts/tnt_rain/main.py"]
+    assert files == "\n".join(whole(rel) for rel in order)
+    # the router read the brain's brief for T7, on its stdin; the state was asked for
+    assert ["route", "--task", "T7"] in r.vfg.calls and r.vfg.stdin["route"] == JOB
+    assert ["state", "--json"] in r.vfg.calls
+
+
+async def test_a_running_copy_the_brief_names_comes_with_its_values_and_its_script(tmp_path):
+    r = Repo(tmp_path)
+    lines = (await r.block("Make the zoo-steve pens bigger, and galick-alex fires faster.")).split("\n")
+    # another task's copies: their code is copied to be changed, never edited (the guard refuses it)
+    assert ("Your brief names galick-alex, a copy of galick_gun running for T5 with player=Alex, cooldown=0: vfg script "
+            "set galick-alex key=value changes it; its script is below; to change its code, copy it: vfg script new "
+            "<new_name> --from galick_gun.") in lines
+    assert "\n".join(lines).count("=== scripts/galick_gun/main.py ===") == 1
+    assert "\n".join(lines).endswith(whole("scripts/zoo/main.py"))
+    # the task that started it may change it
+    lines = (await r.block("galick-alex fires faster.", task="T5")).split("\n")
+    assert ("Your brief names galick-alex, a copy of galick_gun running for T5 with player=Alex, cooldown=0: vfg script "
+            "set galick-alex key=value changes it; its script is below.") in lines
+
+
+async def test_what_fails_is_said_and_the_block_still_goes(tmp_path, monkeypatch):
+    r = Repo(tmp_path, running=None)
+    r.vfg.on("route", answer=bad("vfg: not configured: VFG_ROUTE_LOAD must be a number"))
+    r.vfg.on("state", answer=bad("vfg: EC2 unreachable"))
+    lines = (await r.block()).split("\n")
+    assert lines[:2] == ["EXAMPLES for T7: nothing was picked, the router failed (exit 1: vfg: not configured: "
+                         "VFG_ROUTE_LOAD must be a number). Every library script's and preset's first line is in your "
+                         "system prompt, every action is under ACTIONS, and you can read any of them.",
+                         "Named in your brief, in full below: ice_beam and tnt_rain."]
+    assert lines[2:4] == ["Server state: unavailable (exit 1: vfg: EC2 unreachable).", examples.UNKNOWN]
+    # hung: cut off at VFG_ROUTE_TIMEOUT_S and the step's slack
+    monkeypatch.setattr(examples, "STEP_SLACK_S", 0)
+    r.cfg.route_timeout_s = 0.01
+    r.vfg.on("route", answer=never).on("state", answer=never)
+    block = await r.block()
+    assert "the router failed (no answer within 0.01 s)" in block
+    assert "Server state: unavailable (no answer within 0.01 s).\n" + examples.UNKNOWN in block
+    # Minecraft not answering (exit 5): what runs is still listed, who is online is not
+    r.vfg.on("state", answer=VfgResult(5, json.dumps({**STATE, "online": [], "rcon": "RCON refused"}), ""))
+    lines = (await r.block()).split("\n")
+    assert lines[lines.index("Minecraft is not answering (RCON refused): who is online, the time and the weather are "
+                             "unknown.") + 1] == examples.UNKNOWN
+    assert any(line.startswith("Running: galick-alex (galick_gun, player=Alex, cooldown=0, T5)") for line in lines)
+
+
+def gathered(**over) -> examples.Gathered:
+    g = dict(task="T7", picks={**ROUTE}, route_failed=None, state=STATE, state_failed=None, server="main",
+             acts={"actions": {"ice_beam": {"script": "ice_beam", "source": "library"}}}, copies={})
+    g.update(over)
+    return examples.Gathered(**g)
+
+
+def test_the_header_says_how_the_picks_were_made_and_what_is_held():
+    words = {**ROUTE, "fallback": True, "ms": 3012, "why": "jev did not answer within 3 s",
+             "scripts": [{**ROUTE["scripts"][0], "verdict": "words"}], "presets": [ROUTE["presets"][0]]}
+    assert examples.header(gathered(picks=words))[:3] == [
+        "EXAMPLES, picked for T7 by words in 3.0 s: Jev did not answer (jev did not answer within 3 s).",
+        "Matched by words: ice_beam.", "Presets to copy: crater."]
+    held = [{"name": "beam_clash", "source": "library", "in": "galick_gun"},
+            {"name": "ice_trail", "source": "made", "in": "galick_ice"}]
+    assert examples.header(gathered(picks={**ROUTE, "presets": [], "held": held}))[2] == (
+        "Presets to copy: none. Already in a loaded script: beam_clash (in galick_gun) and ice_trail (made) "
+        "(in galick_ice).")
+    nothing = {**ROUTE, "scripts": [], "presets": [{"name": "ice_trail", "source": "made"}]}
+    assert examples.header(gathered(picks=nothing))[1:3] == ["No example script runs this job or is close to it.",
+                                                             "Presets to copy: ice_trail (made)."]
+    empty = examples.header(gathered(state={**STATE, "online": [], "weather": "rain", "time": {"phase": "day"}}))
+    assert empty[-3:] == ["Running: nothing.", "Online: nobody. Day, rain.", examples.NOW]
+
+
+def test_which_actions_run_the_picked_scripts():
+    acts = {"actions": {"ice_beam": {"script": "ice_beam", "source": "library"},
+                        "frost_ray": {"script": "ice_beam", "source": "library"},
+                        "galick_ice": {"script": "galick_ice", "source": "made"}}}
+    ice, made, seed = ({"name": "ice_beam", "source": "library"}, {"name": "galick_ice", "source": "made"},
+                       {"name": "tnt_rain", "source": "library"})
+    assert examples.runs_line([ice, made], acts, "main") == (
+        "ice_beam and galick_ice (made) run this job: run one of their actions, ice_beam, frost_ray or galick_ice, "
+        "with the values the job needs.")
+    assert examples.runs_line([seed], acts, "main") == (
+        "tnt_rain runs this job, but no action runs it yet: write one in made/main/actions/<name>.py, vfg action "
+        "check <name>, then run it.")
+    assert examples.runs_line([ice], None, "main") == "ice_beam runs this job: run its action with the values the job needs."
+
+
+def test_names_match_as_words_in_a_row_however_they_are_written():
+    assert examples.names_in("Run the Galick-Gun at Steve", ["galick_gun", "gun", "galick_ice"]) == ["galick_gun", "gun"]
+    assert examples.names_in("a zookeeper", ["zoo"]) == []
+    assert examples.names_in("galick then gun", ["galick_gun"]) == []
+
+
+async def test_route_run_refuses_what_is_not_its_json():
+    vfg = FakeVfg().on("route", answer=ok('{"scripts": "no"}'))
+    with pytest.raises(route.RouteFailed, match="no scripts and presets"):
+        await route.run("x", "T1", 1, vfg)
+    vfg.on("route", answer=ok("Traceback"))
+    with pytest.raises(route.RouteFailed, match="not JSON"):
+        await route.run("x", None, 1, vfg)
+    assert vfg.calls == [["route", "--task", "T1"], ["route"]] and vfg.stdin["route"] == "x"

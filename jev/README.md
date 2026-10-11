@@ -1,13 +1,28 @@
 # jev — the Jev filter
 
-On the EC2 box. It asks Jev (TypeSafe) whether each new line a player says or types is said to the
-AI (`direct_ask`), useful `context` or `not_useful`, writes the verdict into the transcript history,
-and feeds the lines it keeps to the conversation in batches.
+On the EC2 box. It asks Jev (TypeSafe) which of four classes each new line a player says or types
+is, writes the verdict into the transcript history, and feeds the lines it keeps to the brain in
+batches:
 
-A `direct_ask` flushes the batch at once; otherwise a batch goes `VFG_BATCH_SECONDS` after its first
-line. Lines dropped in the last two minutes are asked about again inside the next call, and one that
-flips is fed with `was=not_useful`. If Jev fails for 10 s the filter fails open: every line passes
-as `context`, with one `SYS` line in the feed when that starts and another when Jev is back.
+| Class | A line that |
+|---|---|
+| `action_oriented` | asks the AI for something to happen, or follows up an earlier ask |
+| `conversational` | talks to the AI without asking for an action |
+| `context` | is not said to the AI, but the AI needs it to understand or carry out an ask |
+| `not_relevant` | is neither; never fed |
+
+An `action_oriented` or `conversational` line flushes the batch at once, since both get a live
+answer; otherwise a batch goes `VFG_BATCH_SECONDS` after its first line. Lines dropped in the last
+two minutes are asked about again inside the next call, and one that flips is fed with
+`was=not_relevant`. If Jev fails for 10 s the filter fails open: every line passes as `context`,
+with one `SYS` line in the feed when that starts and another when Jev is back.
+
+Jev's state is the fixed rules, `lookout.md`, the brain's action menu `menu.md` (one
+`name — what it does` a line; missing or empty is fine), then the history: the lines said, the
+AI's included, and the brain's own records of what it did — the feed's `AI` rows of kind
+`action`, `task` and `result` — so a follow-up to an earlier ask reads as one. All of it fits in
+`VFG_JEV_STATE_TOKENS`: the menu takes at most half of what the rules, the lookout and the lines
+asked about leave, in whole lines, and the history the rest, newest first.
 
 ## Run it
 
@@ -25,8 +40,9 @@ Deploy from the repo's root on the owner's PC: `jev/deploy.sh`. It streams this 
 cd jev && python3 -m unittest discover -s tests
 ```
 
-No network: `tests/fake_jev.py` stands in for Jev's API and `tests/fake_lib/` for the bridge's feed
-writer. `test_e2e.py` runs `jev_filter.py` as a process against them.
+No network, under a second: `tests/fake_jev.py` stands in for Jev's API and `tests/fake_lib/` for
+the bridge's feed writer. Every rule runs on a fake clock in `test_filter.py`; `test_e2e.py` runs
+`jev_filter.py` once as a process against the stand-ins and stops it with SIGTERM.
 
 ## Settings
 
@@ -37,7 +53,8 @@ From the environment (systemd reads `/opt/vfg/.env`):
 | `TYPESAFE_API_KEY` | required, from the environment or else `VFG_ENV_FILE`; never logged |
 | `VFG_ENV_FILE`, `VFG_DB`, `VFG_LIB` | `/opt/vfg/.env`, `/opt/vfg/vfg.db`, `/opt/vfg/lib` |
 | `VFG_LOOKOUT` | `/opt/vfg/lookout.md`, what to look out for (`vfg lookout set`) |
-| `VFG_BATCH_SECONDS`, `VFG_POLL_MS` | `5`, `200` |
+| `VFG_MENU` | `/opt/vfg/menu.md`, the brain's action menu (`vfg jev menu set`) |
+| `VFG_BATCH_SECONDS`, `VFG_POLL_MS` | `5`, `50` |
 | `VFG_JEV_URL`, `VFG_JEV_MODEL`, `VFG_JEV_TIMEOUT` | `https://api.typesafe.ai/v1/systemone`, `jev-latest`, `3` s |
 | `VFG_JEV_STATE_TOKENS`, `VFG_JEV_HISTORY_HOURS` | `8000`, `3` |
 
@@ -47,4 +64,5 @@ From the environment (systemd reads `/opt/vfg/.env`):
 ## Contracts
 
 [docs/CONTRACTS.md](../docs/CONTRACTS.md): §4 (it writes only the `jev_*` and `fed_at` columns and
-`usage` rows), §5 Jev, §7 the feed (through `vfg_feed`, exactly once per kept line), §11 secrets.
+`usage` rows), §5 Jev, §7 the feed (through `vfg_feed`, exactly once per kept line; it reads the
+brain's `AI` rows from the `feed` table), §11 secrets.

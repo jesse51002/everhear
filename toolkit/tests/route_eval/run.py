@@ -7,7 +7,7 @@
     ... [--only E001,E007] [--limit N] [--misses] [--out results.jsonl]
 
 briefs.jsonl holds each brief as the orchestrator wrote it on 2026-10-08, its
-task and context from the inbox, and its labels: every example script and
+task and context (given to vfg route as a task in the brain's tasks.json), and its labels: every example script and
 preset that is part of the job, from what the implementer actually did, with
 players' names replaced (Steve, Alex, Sam); `values_only` marks the 19 jobs the
 examples now do by their values alone, where the labelled script should come
@@ -51,8 +51,8 @@ def pct(xs, p):
     return xs[k]
 
 
-def call_live(b, repo, orch, ref):
-    env = dict(os.environ, VFG_REPO=repo, VFG_ORCH_DIR=orch, VFG_SERVER=NO_SERVER)
+def call_live(b, repo, home, ref):
+    env = dict(os.environ, VFG_REPO=repo, VFG_HOME=home, VFG_SERVER=NO_SERVER)
     t0 = time.monotonic()
     r = subprocess.run([sys.executable, VFG, "route", "--task", b["task"], "--ref", ref],
                        input=b["brief"].encode("utf-8"), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -107,18 +107,24 @@ def main():
     n_scripts = sum(1 for c in cards if c["kind"] == "script")
     print("library: %d example scripts, %d presets in %s" % (n_scripts, len(cards) - n_scripts, a.repo))
 
-    orch = tempfile.mkdtemp(prefix="route-eval-")
-    with open(os.path.join(orch, "inbox.jsonl"), "w", encoding="utf-8") as f:
-        seen = set()
-        for b in briefs:
-            if b["task"] not in seen:
-                seen.add(b["task"])
-                f.write(json.dumps({"id": b["task"], "at": b["at"], "task": b["task_text"],
-                                    "context": b["context"]}, ensure_ascii=False) + "\n")
+    # A VFG_HOME of its own, with this PC's config and known hosts, whose brain/tasks.json holds
+    # each brief's task: vfg route --task reads its text there, and the context as the player's line.
+    home = tempfile.mkdtemp(prefix="route-eval-")
+    real = os.path.expanduser(os.environ.get("VFG_HOME") or "~/.vfg")
+    for name in ("config", "known_hosts"):
+        if os.path.exists(os.path.join(real, name)):
+            os.symlink(os.path.join(real, name), os.path.join(home, name))
+    os.makedirs(os.path.join(home, "brain"))
+    tasks = {}
+    for b in briefs:
+        tasks.setdefault(b["task"], {"id": b["task"], "at": b["at"], "task": b["task_text"], "line": b["context"],
+                                     "status": "open"})
+    with open(os.path.join(home, "brain", "tasks.json"), "w", encoding="utf-8") as f:
+        json.dump({"tasks": tasks}, f, ensure_ascii=False)
 
     rows, out = [], open(a.out, "w", encoding="utf-8") if a.out else None
     for i, b in enumerate(briefs, 1):
-        got, wall = call_words(b, cards) if a.words else call_live(b, a.repo, orch, a.ref)
+        got, wall = call_words(b, cards) if a.words else call_live(b, a.repo, home, a.ref)
         ms, mp = judge(b, got, holds)
         absent = [s for s in b["scripts"] if ("script", s) not in have] + \
                  [p for p in b["presets"] if ("preset", p) not in have]

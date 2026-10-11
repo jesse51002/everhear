@@ -24,7 +24,7 @@ def row(n, text, player="Steve", source="voice", at=T0):
 class ApiTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.server = fake_jev.serve(hang_seconds=1.5)
+        cls.server = fake_jev.serve(hang_seconds=0.2)
 
     @classmethod
     def tearDownClass(cls):
@@ -58,15 +58,15 @@ class ApiTest(unittest.TestCase):
     def test_answers_and_tokens(self):
         qs = questions([row(1, "build me a castle"), row(2, "that cave by spawn"), row(3, "lol")])
         res = self.jev.ask({"t": "x" * 391}, qs)     # 400 bytes encoded
-        self.assertEqual(res.answers, {"line_1": ("direct_ask", 0.9), "line_2": ("context", 0.7),
-                                       "line_3": ("not_useful", 0.8)})
+        self.assertEqual(res.answers, {"line_1": ("action_oriented", 0.9), "line_2": ("context", 0.7),
+                                       "line_3": ("not_relevant", 0.8)})
         self.assertEqual(res.input_tokens, 100)
         self.assertAlmostEqual(res.cost_usd, 100 * 0.000000042)
         self.assertGreaterEqual(res.ms, 0)
 
     def test_confidence_falls_back_to_probabilities(self):
         self.canned({"answers": {"line_1": {"type": "choice", "choice": "context",
-                                            "probabilities": {"direct_ask": 0.1, "context": 0.66, "not_useful": 0.24}}},
+                                            "probabilities": {"action_oriented": 0.1, "context": 0.66, "not_relevant": 0.24}}},
                      "usage": {"input_tokens": 7}})
         res = self.jev.ask({"t": "s"}, questions([row(1, "hm")]))
         self.assertEqual(res.answers["line_1"], ("context", 0.66))
@@ -85,7 +85,7 @@ class ApiTest(unittest.TestCase):
             self.jev.ask({"t": "s"}, qs)
         self.server.mode = "hang"
         with self.assertRaises(JevDown):
-            self.jev.ask({"t": "s"}, qs)
+            Jev(KEY, url=self.server.url, timeout=0.02).ask({"t": "s"}, qs)
 
     def test_refused(self):
         self.server.mode = "refuse"
@@ -107,10 +107,10 @@ class ApiTest(unittest.TestCase):
 
     def test_malformed_line_3_dropped_rest_kept(self):
         self.canned({"answers": {
-            "line_1": {"choice": "direct_ask", "confidence": 0.93},
+            "line_1": {"choice": "action_oriented", "confidence": 0.93},
             "line_2": {"choice": "context", "confidence": 0.71},
             "line_3": {"choice": "banana", "confidence": 0.5},
-            "line_4": {"choice": "not_useful", "confidence": 0.6}}, "usage": {"input_tokens": 3}})
+            "line_4": {"choice": "not_relevant", "confidence": 0.6}}, "usage": {"input_tokens": 3}})
         res = self.jev.ask({"t": "s"}, questions([row(n, "t%d" % n) for n in range(1, 5)]))
         self.assertEqual(set(res.answers), {"line_1", "line_2", "line_4"})
 

@@ -4,9 +4,9 @@ pydantic for a preset's values class:
 
     uv run --no-project --python 3.12 --with pydantic python scripts/_test/test_presets_shows.py
 
-Each preset: its function sends the commands it should, its values class clamps or refuses
-values outside its limits, and, copied into a script the way `vfg script new --preset` copies
-it and stopped with SIGTERM, nothing it made is left. The kit's harness (test_kit.KitCase) points
+Each preset: its function sends the commands it should, and, copied into a script the way
+`vfg script new --preset` copies it and stopped with SIGTERM, nothing it made is left (its
+values class is checked with every preset's, in test_presets_values.py). The kit's harness (test_kit.KitCase) points
 mc at a fake whose world each test makes afresh.
 """
 import importlib.util
@@ -17,7 +17,6 @@ import signal
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import unittest
 
@@ -31,11 +30,11 @@ TOOLKIT_LIB = os.path.join(os.path.dirname(SCRIPTS), "toolkit", "lib")
 sys.path.insert(0, HERE)
 
 import test_kit  # noqa: E402  (also points mc at a fake)
-from test_kit import KitCase, collect, TMP, _properties  # noqa: E402
+from test_kit import KitCase, collect, until, TMP, _properties  # noqa: E402
 from fake_rcon import FakeRcon  # noqa: E402
 from fake_world import World  # noqa: E402
 import mc  # noqa: E402
-from kit import fx, values, world  # noqa: E402
+from kit import fx, loop, values, world  # noqa: E402
 
 
 def _load(name):
@@ -54,7 +53,6 @@ theme_mod, charge_mod, sneak_mod, proj_mod, count_mod, death_mod = (
 sys.path.insert(0, TOOLKIT_LIB)
 import library  # noqa: E402
 
-MODS = [theme_mod, charge_mod, sneak_mod, proj_mod, count_mod, death_mod]
 
 
 def vals(mod, *argv):
@@ -195,42 +193,19 @@ class ShowCase(KitCase):
         self.world.add_player("Steve", (10.5, 64.0, -3.5), rot=(-90.0, 0.0), prefix="[Owner] ")
 
 
-# ---- values ----------------------------------------------------------------------------------
-
-class PresetValuesTests(unittest.TestCase):
-    def test_every_value_is_clamped_or_refused_outside_its_limits(self):
-        va = test_kit._vfg_actions()
-        T = va._types()
-        for mod in MODS:
-            test_kit.assert_checked_on_the_pc(self, mod)
-            cls = test_kit.values_class(mod)
-            for key, f in cls.model_fields.items():
-                for o in T.choices(f.annotation, f.metadata) or []:
-                    if T.kind(f.annotation, f.metadata) == "enum":     # an option in any case
-                        self.assertEqual(va.check_values(cls, {key: o.upper()}, allow_fixed=True).values[key], o)
-                if T.kind(f.annotation, f.metadata) == "particle":
-                    self.assertRaises(ValueError, va.check_values, cls, {key: "Not A Particle"}, allow_fixed=True)
-
-    def test_every_preset_passes_vfg_script_check(self):
-        lib = library.Library(os.path.dirname(SCRIPTS))
-        for mod in MODS:
-            item = library.parse(mod.__file__, "preset", source="library", rel="scripts/_presets/" +
-                                 os.path.basename(mod.__file__))
-            self.assertEqual(library.check(item, lib), [], mod.__name__)
-
-
 # ---- theme_music -----------------------------------------------------------------------------
 
 class ThemeMusicTests(ShowCase):
     def setUp(self):
         for key in list(fx._tunes):          # an earlier test's tune, still sleeping to its next note, is cut
             fx.stop_melody(key)
-        time.sleep(0.1)
         ShowCase.setUp(self)
+        self.t = self.clock(fx, loop, rate=4)     # every tune four times as fast
 
     def tearDown(self):
         for key in list(fx._tunes):
             fx.stop_melody(key)
+        time.sleep(0.1)                      # a note already on its way lands in this test's world
         ShowCase.tearDown(self)
 
     def sounds(self):
@@ -259,9 +234,9 @@ class ThemeMusicTests(ShowCase):
 
     def test_a_newer_theme_cuts_the_older_off(self):
         theme_mod.theme_music("Steve", vals(theme_mod, "theme_tune=hollow_purple"))
-        time.sleep(0.5)
+        self.t.sleep(0.5)
         theme_mod.theme_music("Steve", vals(theme_mod, "theme_tune=ice_beam", "theme_reach=20"))
-        time.sleep(3.2)
+        self.t.sleep(3.2)                                       # past the end of both
         s = self.sounds()
         self.assertFalse([c for c in s if "didgeridoo" in c and "0.561" in c], "hollow purple played on")
         self.assertEqual(len([c for c in s if "@a[distance=..20]" in c]), len(theme_mod._THEME_MUSIC_TUNES["ice_beam"]))
@@ -282,9 +257,9 @@ class ThemeMusicTests(ShowCase):
         theme_mod.theme_music("Steve", vals(theme_mod, "theme_tune=spirit_bomb_throw", "theme_loop=true"))
         self.assertTrue(wait_for(lambda: len(self.sounds()) >= 22, 4), len(self.sounds()))      # it came round again
         theme_mod.theme_music("Steve", vals(theme_mod), tune="none")                              # and is cut off
-        time.sleep(0.2)
+        self.t.sleep(0.2)
         n = len(self.sounds())
-        time.sleep(1.8)
+        self.t.sleep(1.8)                                       # longer than the tune and its gap
         self.assertEqual(len(self.sounds()), n)
 
     def test_at_a_place_for_the_player_alone_falls_back_to_near(self):
@@ -298,13 +273,17 @@ class ThemeMusicTests(ShowCase):
 # ---- charge_up -------------------------------------------------------------------------------
 
 class ChargeUpTests(ShowCase):
+    def setUp(self):
+        ShowCase.setUp(self)
+        self.t = self.clock(charge_mod, loop, rate=4)       # every charge four times as fast
+
     def particles(self):
         return [c for c in self.world.commands if " particle " in c]
 
     def test_a_sphere_grows_over_the_head(self):
-        t = time.time()
+        t = self.t.time()
         at = charge_mod.charge_up("Steve", vals(charge_mod, "charge_seconds=0.6", "charge_size=6"))
-        took = time.time() - t
+        took = self.t.time() - t
         self.assertTrue(0.5 <= took < 1.5, took)
         self.assertEqual(tuple(round(c, 2) for c in at), (10.5, 72.5, -3.5))     # feet + size + 2.5
         ps = self.particles()
@@ -337,66 +316,77 @@ class ChargeUpTests(ShowCase):
         self.assertTrue([c for c in self.particles() if c.startswith("execute at Steve positioned ~ ~1 ~ run particle dust")])
 
     def test_nobody_to_charge(self):
-        t = time.time()
+        t = self.t.time()
         self.assertIsNone(charge_mod.charge_up("Alex", vals(charge_mod)))
-        self.assertLess(time.time() - t, 0.5)
+        self.assertLess(self.t.time() - t, 0.5)
         self.assertEqual(self.particles(), [])
 
 
 # ---- sneak -----------------------------------------------------------------------------------
 
 class SneakTests(ShowCase):
-    def crouch(self, seconds, name="Steve"):
-        end = time.time() + seconds
-        while time.time() < end:
-            self.world.sneak(name, 1)
-            time.sleep(0.05)
+    """The fake world grows a crouching player's sneak_time at every read of it, as a server
+    does each tick; each step waits for the preset's next looks (every 0.1 s, on its clock,
+    which runs four times as fast)."""
 
-    def tap(self, n, gap=0.3, name="Steve"):
+    def setUp(self):
+        ShowCase.setUp(self)
+        self.t = self.clock(sneak_mod, rate=4)
+
+    def look(self, times=2):
+        self.looked("scoreboard players get @s vfg_sneak", times=times)
+
+    def start(self, player, *argv):
+        got, _ = collect(sneak_mod.sneak(player, vals(sneak_mod, *argv)), 30)
+        self.look()
+        return got
+
+    def tap(self, n=1, name="Steve"):
+        """Crouch and stand up again, n times: each seen down by a look, then up by another."""
         for _ in range(n):
-            self.crouch(0.2, name)
-            time.sleep(gap)
+            self.world.crouch(name)
+            self.look()
+            self.world.crouch(name, False)
+            self.look()
 
     def test_while_crouched_and_not_after(self):
-        got, _ = collect(sneak_mod.sneak("@a", vals(sneak_mod, "sneak_mode=while")), 30)
-        time.sleep(0.4)
-        self.crouch(1.0)
+        got = self.start("@a", "sneak_mode=while")
+        self.world.crouch("Steve")
+        self.assertTrue(until(lambda: len(got) >= 4, 3), got)     # a pass after a pass
+        self.world.crouch("Steve", False)
+        self.look()
         n = len(got)
-        self.assertTrue(6 <= n <= 12, n)
-        time.sleep(0.6)
-        self.assertLessEqual(len(got), n + 1)
+        self.look(4)
+        self.assertEqual(len(got), n)
         self.assertTrue(all(p == "Steve" for p, _ in got))
 
     def test_each_tap_once(self):
-        got, _ = collect(sneak_mod.sneak("Steve", vals(sneak_mod, "sneak_mode=tap")), 30)
-        time.sleep(0.4)
+        got = self.start("Steve", "sneak_mode=tap")
         self.tap(3)
-        self.crouch(1.0)                    # a long crouch is one tap
-        time.sleep(0.3)
+        self.world.crouch("Steve")
+        self.look(6)                         # a long crouch is one tap
+        self.world.crouch("Steve", False)
+        self.look()
         self.assertEqual(len(got), 4, got)
 
     def test_three_taps_within_the_window(self):
-        got, _ = collect(sneak_mod.sneak("@a", vals(sneak_mod, "sneak_mode=three_taps", "sneak_seconds=1.5")), 30)
-        time.sleep(0.4)
+        got = self.start("@a", "sneak_mode=three_taps", "sneak_seconds=5")
         self.tap(2)
-        time.sleep(1.6)                     # two, then too late for a third
+        self.t.advance(5.5)                  # two, then too late for a third
         self.tap(1)
-        time.sleep(0.3)
         self.assertEqual(got, [])
         self.tap(3)
         self.assertEqual([p for p, _ in got], ["Steve"])
 
     def test_clicks_never_count_and_only_with_the_item_held(self):
-        got, _ = collect(sneak_mod.sneak("@a", vals(sneak_mod, "sneak_mode=tap", "sneak_item=Sniper Rifle")), 30)
-        time.sleep(0.4)
+        got = self.start("@a", "sneak_mode=tap", "sneak_item=Sniper Rifle")
         self.world.hold("Steve", main="plain")
-        for _ in range(5):
-            self.world.click("Steve")
-            time.sleep(0.15)
+        self.world.click("Steve", 5)
+        self.look()
         self.tap(2)                         # crouching without the rifle
         self.assertEqual(got, [])
         self.world.hold("Steve", main="sniper_rifle")
-        time.sleep(0.3)
+        self.look()
         self.tap(2)
         self.assertEqual(len(got), 2, got)
         self.assertIn("execute as @a if items entity @s weapon.* *[custom_data~{vfg_item:\"sniper_rifle\"}] run "
@@ -404,44 +394,56 @@ class SneakTests(ShowCase):
 
     def test_a_player_who_never_crouched_does_not_hide_the_next(self):
         self.world.add_player("Alex", (20.5, 64.0, 5.5))     # after Steve in every reply; Steve never crouches
-        got, _ = collect(sneak_mod.sneak("@a", vals(sneak_mod, "sneak_mode=tap")), 30)
-        time.sleep(0.4)
+        got = self.start("@a", "sneak_mode=tap")
         self.tap(2, name="Alex")
         self.assertEqual([p for p, _ in got], ["Alex", "Alex"])
 
     def test_each_player_on_their_own(self):
         self.world.add_player("Alex", (20.5, 64.0, 5.5))
-        got, _ = collect(sneak_mod.sneak("Steve,Alex", vals(sneak_mod, "sneak_mode=three_taps")), 30)
-        time.sleep(0.4)
-        t = threading.Thread(target=self.tap, args=(2,), kwargs={"name": "Alex"})
-        t.start()
-        self.tap(3)
-        t.join()
-        time.sleep(0.3)
+        got = self.start("Steve,Alex", "sneak_mode=three_taps", "sneak_seconds=5")
+        for i in range(3):                  # Steve taps three times, Alex twice, at the same time
+            self.world.crouch("Steve")
+            self.world.crouch("Alex", i < 2)
+            self.look()
+            self.world.crouch("Steve", False)
+            self.world.crouch("Alex", False)
+            self.look()
         self.assertEqual([p for p, _ in got], ["Steve"])
 
 
 # ---- projectile_lands -------------------------------------------------------------------------
 
 class ProjectileLandsTests(ShowCase):
+    """Each step waits for the preset's next passes (every 0.05 s while something flies)."""
+
     def start(self, *argv):
         got, _ = collect(proj_mod.projectile_lands("@a", vals(proj_mod, *argv)), 30)
         return got
+
+    def passes(self, n=2):
+        """Wait for n more of its passes: each asks for the projectiles near anyone."""
+        self.looked("as @e[type=", "run data get entity @s UUID", times=2 * n)
+
+    def seen(self, *es):
+        """Wait until it has looked at each of these, then a pass more (it asked where they are)."""
+        tag = "vfg_%s_seen" % mc.INSTANCE
+        self.assertTrue(wait_for(lambda: all(tag in e["tags"] for e in es), 3))
+        self.passes(1)
 
     def test_where_an_arrow_lands_and_who_shot_it(self):
         got = self.start()
         arrow = self.world.projectile("arrow", [12.0, 66.0, -3.5], "Steve")
         skel = self.world.projectile("arrow", [14.0, 66.0, -3.5], "Skeleton")
-        time.sleep(0.4)
+        self.seen(arrow, skel)
         arrow["pos"] = [30.0, 64.2, -3.5]
         skel["in_ground"] = True
-        time.sleep(0.3)
+        self.passes()
         self.assertEqual(got, [])
         arrow["in_ground"] = True
         self.assertTrue(wait_for(lambda: got, 2))
         (at, p, weapon), _ = got[0]
         self.assertEqual((p, tuple(at), at.dim, weapon), ("Steve", (30.0, 64.2, -3.5), None, ""))
-        time.sleep(0.4)
+        self.passes()
         self.assertEqual(len(got), 1)                                   # once
         self.assertIn("vfg_%s_seen" % mc.INSTANCE, arrow["tags"])
 
@@ -449,10 +451,11 @@ class ProjectileLandsTests(ShowCase):
         got = self.start()
         tri = self.world.projectile("trident", [12.0, 66.0, -3.5], "Steve")
         arrow = self.world.projectile("arrow", [11.0, 66.0, -3.5], "Steve")
-        time.sleep(0.3)
-        for _ in range(16):                                             # it flies along +x, a block every 0.025 s
-            arrow["pos"][0] += 1.0
-            time.sleep(0.025)
+        self.seen(tri, arrow)
+        where = ShowWorld.uuid_of(arrow) + " Pos"
+        for _ in range(8):                                              # it flies along +x, two blocks a look
+            arrow["pos"][0] += 2.0
+            self.looked(where, times=1)
         tri["dealt"] = True
         self.world.entities.remove(arrow)                               # it hit a mob: gone
         self.assertTrue(wait_for(lambda: len(got) == 2, 2))
@@ -468,12 +471,12 @@ class ProjectileLandsTests(ShowCase):
         bomb = self.world.projectile("trident", [12.0, 66.0, -2.5], "Steve", weapon="spear_bomb")
         dud = self.world.projectile("trident", [12.0, 66.0, -1.5], "Steve", weapon="spear_bomb")
         arrow = self.world.projectile("arrow", [12.0, 66.0, -0.5], "Steve", weapon="spear_bomb")
-        time.sleep(0.4)
+        self.seen(plain, bomb, dud)
         for e in (plain, bomb, arrow):
             e["in_ground"] = True
         self.assertTrue(wait_for(lambda: got, 2))
         dud["in_ground"] = True
-        time.sleep(0.5)
+        self.passes()
         self.assertEqual([(tuple(at), weapon) for (at, p, weapon), _ in got], [((12.0, 66.0, -2.5), "spear_bomb")])
         self.assertNotIn(bomb, self.world.entities)                     # removed
         self.assertIn(dud, self.world.entities)                         # too soon: it lands as it is
@@ -486,11 +489,11 @@ class ProjectileLandsTests(ShowCase):
         bow = self.world.projectile("arrow", [12.0, 66.0, -3.5], "Steve", weapon="boom_bow")
         spear = self.world.projectile("trident", [12.0, 66.0, -2.5], "Steve", weapon="spear_bomb")
         plain = self.world.projectile("arrow", [12.0, 66.0, -1.5], "Steve")
-        time.sleep(0.4)
+        self.seen(bow, spear, plain)
         for e in (bow, spear, plain):
             e["in_ground"] = True
         self.assertTrue(wait_for(lambda: len(got) == 2, 2))
-        time.sleep(0.3)
+        self.passes()
         self.assertEqual(sorted(weapon for (at, p, weapon), _ in got), ["boom_bow", "spear_bomb"])
 
     def test_one_lying_in_the_ground_from_before_is_left_alone(self):
@@ -500,13 +503,15 @@ class ProjectileLandsTests(ShowCase):
         new = self.world.projectile("arrow", [12.0, 66.0, -2.5], "Steve")
         new.update(in_ground=True, life=2)                              # a point-blank shot, down at once
         self.assertTrue(wait_for(lambda: got, 2))
-        time.sleep(0.4)
+        self.passes()
         self.assertEqual([tuple(at) for (at, p, weapon), _ in got], [(12.0, 66.0, -2.5)])
 
     def test_nobody_online_asks_nothing(self):
         del self.world.players["Steve"]
-        got = self.start()
-        time.sleep(0.5)
+        self.clock(proj_mod, rate=10)                                   # its second's wait for someone, shorter
+        self.start()
+        self.assertTrue(wait_for(lambda: "list" in self.world.commands, 2))     # it asked who is online: nobody
+        time.sleep(0.1)
         self.assertEqual([c for c in self.world.commands if "UUID" in c], [])
 
 
@@ -514,9 +519,10 @@ class ProjectileLandsTests(ShowCase):
 
 class CountdownTests(ShowCase):
     def test_chat_then_a_title_each_second_then_on(self):
-        t = time.time()
+        t = self.clock(count_mod, loop, rate=3)                 # 3 s in 1 s
+        start = t.time()
         self.assertTrue(count_mod.countdown(vals(count_mod, "countdown_seconds=3", "countdown_text=Nuke")))
-        self.assertTrue(2.9 <= time.time() - t < 3.6)
+        self.assertTrue(2.9 <= t.time() - start < 4.0)
         c = self.world.commands
         self.assertEqual(c[0], 'tellraw @a {"text": "Nuke in 3s.", "color": "red", "bold": true}')
         titles = [x for x in c if x.startswith("title @a title")]
@@ -526,38 +532,35 @@ class CountdownTests(ShowCase):
 
     def test_for_named_players_and_the_marks_on_the_way(self):
         self.world.add_player("Alex", (20.5, 64.0, 5.5))
-        v = vals(count_mod, "countdown_seconds=12", "countdown_to=Alex")
-        count_mod.countdown.__globals__["time"] = _Fast(4.0)            # 12 s in about 3 s
-        try:
-            self.assertTrue(count_mod.countdown(v))
-        finally:
-            count_mod.countdown.__globals__["time"] = time
+        self.clock(count_mod, loop, rate=5)                     # 11 s in about 2 s
+        self.assertTrue(count_mod.countdown(vals(count_mod, "countdown_seconds=11", "countdown_to=Alex")))
         said = [x for x in self.world.commands if x.startswith("tellraw")]
         self.assertEqual([re.search(r'"text": "([^"]+)"', x).group(1) for x in said],
-                         ["Detonation in 12s.", "Detonation in 10s."])
+                         ["Detonation in 11s.", "Detonation in 10s."])
         self.assertTrue(all(x.startswith("tellraw Alex ") for x in said))
         self.assertEqual(len([x for x in self.world.commands if x.startswith("title Alex title")]), 10)
-
-
-class _Fast(object):
-    """time, running `k` times as fast (for the countdown's clock only)."""
-
-    def __init__(self, k):
-        self.k, self.t0 = k, time.time()
-
-    def time(self):
-        return self.t0 + (time.time() - self.t0) * self.k
-
-    def sleep(self, s):
-        time.sleep(s / self.k)
 
 
 # ---- on_death --------------------------------------------------------------------------------
 
 class OnDeathTests(ShowCase):
+    """on_death's clock and loop's (who is online) run ten times as fast; each step waits for
+    its next looks at the deaths."""
+
+    def setUp(self):
+        ShowCase.setUp(self)
+        self.clock(death_mod, loop, rate=10)
+
+    def look(self, times=2):
+        self.looked("scoreboard players get @s", "_deaths", times=times)
+
+    def start(self, player, *argv):
+        got, _ = collect(death_mod.on_death(player, vals(death_mod, *argv)), 30)
+        self.look()
+        return got
+
     def test_where_a_player_died_and_where_they_killed(self):
-        got, _ = collect(death_mod.on_death("@a", vals(death_mod, "on_death_event=both")), 30)
-        time.sleep(0.5)
+        got = self.start("@a", "on_death_event=both")
         self.world.die("Steve", (40, 70, -12), "minecraft:the_nether")
         self.assertTrue(wait_for(lambda: got, 2))
         (at, p, what), _ = got[0]
@@ -568,11 +571,10 @@ class OnDeathTests(ShowCase):
         self.assertIn("vfg_%s_deaths" % mc.INSTANCE, self.world.objectives)
 
     def test_a_player_who_dies_and_leaves_at_once_is_counted_when_back(self):
-        got, _ = collect(death_mod.on_death("@a", vals(death_mod)), 30)
-        time.sleep(0.5)
+        got = self.start("@a")
         steve = self.world.players.pop("Steve")              # gone the moment they died
         self.world.die("Steve", (7, 64, 7))
-        time.sleep(1.5)
+        self.looked("list", times=3)                         # it saw nobody online, more than once
         self.assertEqual(got, [])
         self.world.players["Steve"] = steve
         self.assertTrue(wait_for(lambda: got, 3))
@@ -580,19 +582,17 @@ class OnDeathTests(ShowCase):
 
     def test_a_player_who_never_died_does_not_hide_the_next(self):
         self.world.add_player("Alex", (20.5, 64.0, 5.5))
-        got, _ = collect(death_mod.on_death("@a", vals(death_mod)), 30)
-        time.sleep(0.5)
+        got = self.start("@a")
         self.world.die("Alex", (2, 64, 2))
         self.assertTrue(wait_for(lambda: got, 2))
         self.assertEqual([(p, w) for (a, p, w), _ in got], [("Alex", "death")])
 
     def test_deaths_only_and_only_the_players_named(self):
         self.world.add_player("Alex", (20.5, 64.0, 5.5))
-        got, _ = collect(death_mod.on_death("Alex", vals(death_mod)), 30)
-        time.sleep(0.5)
+        got = self.start("Alex")
         self.world.die("Steve", (1, 64, 1))
         self.world.bump("Alex", "totalKillCount")
-        time.sleep(0.6)
+        self.look()
         self.assertEqual(got, [])
         self.world.die("Alex", (2, 64, 2))
         self.assertTrue(wait_for(lambda: got, 2))

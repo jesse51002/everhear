@@ -268,7 +268,7 @@ fi
 sudo tar czf /tmp/mc-backup.tgz -C /opt \
   --exclude=mc/libraries --exclude=mc/versions --exclude=mc/console.log mc
 files=""
-for f in vfg/vfg.db vfg/feed.log vfg/watch.json vfg/lookout.md vfg/.env; do
+for f in vfg/vfg.db vfg/feed.log vfg/watch.json vfg/lookout.md vfg/menu.md vfg/.env; do
   if [ -e "/opt/$f" ]; then files="$files $f"; fi
 done
 # After the checkpoint the WAL is empty; if something still held it, keep what it holds.

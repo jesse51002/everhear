@@ -145,6 +145,29 @@ tasks.register('engineTest', Test) {
 	workingDir = testRunDir
 	doFirst { testRunDir.mkdirs() }
 	systemProperty 'vfg.testAssets', layout.buildDirectory.dir('vfg-test-assets').get().asFile.absolutePath
+	systemProperty 'vfg.kwsOut', layout.buildDirectory.dir('kws-test').get().asFile.absolutePath
+	jvmArgs '--enable-native-access=ALL-UNNAMED'
+	outputs.upToDateWhen { false }
+	testLogging {
+		events 'passed', 'failed', 'skipped'
+		exceptionFormat = 'full'
+		showStandardStreams = true
+	}
+}
+
+tasks.register('kwsTest', Test) {
+	group = 'verification'
+	description = 'The keyword spotter on Kokoro speech: hits, false casts, the after-a-pause case, latency, CPU (-Pkws-sweep: tuning).'
+	testClassesDirs = sourceSets.test.output.classesDirs
+	classpath = sourceSets.test.runtimeClasspath
+	useJUnitPlatform {
+		includeTags 'kws'
+	}
+	workingDir = testRunDir
+	doFirst { testRunDir.mkdirs() }
+	systemProperty 'vfg.testAssets', layout.buildDirectory.dir('vfg-test-assets').get().asFile.absolutePath
+	systemProperty 'vfg.kwsOut', layout.buildDirectory.dir('kws-test').get().asFile.absolutePath
+	systemProperty 'vfg.kwsSweep', project.hasProperty('kws-sweep') ? 'true' : 'false'
 	jvmArgs '--enable-native-access=ALL-UNNAMED'
 	outputs.upToDateWhen { false }
 	testLogging {
@@ -192,6 +215,25 @@ tasks.register('micCheck', JavaExec) {
 	workingDir = runDir
 	doFirst { runDir.mkdirs() }
 	standardInput = System.in
+}
+
+// ---------------------------------------------------------------------------
+// ./gradlew castCheck: a WAV through the mod's pipeline and keyword spotter as if from the mic,
+// posting casts and lines to a real bridge; the end-to-end test of incantations.
+// ./gradlew castCheck --args="--bridge http://127.0.0.1:8787 --player Steve --say 'fire ball'"
+// ---------------------------------------------------------------------------
+
+tasks.register('castCheck', JavaExec) {
+	group = 'verification'
+	description = 'Plays a WAV as if from the mic through the mod\'s pipeline and keyword spotter, posting casts and lines to a bridge.'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'com.voiceforgaming.vfg.tools.CastCheck'
+	jvmArgs '--enable-native-access=ALL-UNNAMED'
+	systemProperty 'vfg.projectDir', projectDir.absolutePath
+	systemProperty 'vfg.testAssets', layout.buildDirectory.dir('vfg-test-assets').get().asFile.absolutePath
+	def runDir = layout.buildDirectory.dir('cast-check').get().asFile
+	workingDir = runDir
+	doFirst { runDir.mkdirs() }
 }
 
 // ---------------------------------------------------------------------------

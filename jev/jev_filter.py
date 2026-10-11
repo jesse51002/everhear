@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""vfg-jev: asks Jev whether each line a player says or types is a direct ask
-to the AI, context, or not useful; writes the verdict back to the transcript
-history; feeds the lines it keeps to the conversation in batches.
+"""vfg-jev: asks Jev whether each line a player says or types asks the AI for
+something to happen (action_oriented), talks to it (conversational), is context,
+or is not relevant; writes the verdict back to the transcript history; feeds the
+lines it keeps to the brain in batches.
 
     python3 -u /opt/vfg/jev/jev_filter.py              the service (systemd unit vfg-jev)
     python3 /opt/vfg/jev/jev_filter.py --judge "<text>"  judge one text, write nothing
@@ -27,7 +28,7 @@ if HERE not in sys.path:
 from filter import Config, Filter                   # noqa: E402
 from jev_api import Jev, JevDown, JevRefused          # noqa: E402
 from jev_clock import SystemClock, iso                # noqa: E402
-from prompt import Lookout, build_state, questions    # noqa: E402
+from prompt import Lookout, Menu, build_state, questions   # noqa: E402
 from store import Store                               # noqa: E402
 
 KEY_NAME = "TYPESAFE_API_KEY"
@@ -64,13 +65,14 @@ def setup_logging():
 
 def judge_once(cfg, key, text, raw=False):
     """`--judge`: one text as a chat line from `tester` said now, the current
-    lookout, no history, nothing asked again. Prints, writes nothing. With
+    lookout and menu, no history, nothing asked again. Prints, writes nothing. With
     `raw`, also prints the response body exactly as Jev sent it — the way to
     check, on the first live run, the answer's shape this code assumes."""
     jev = Jev(key, url=cfg.jev_url, model=cfg.model, timeout=cfg.timeout)
     row = {"id": "judge", "at": iso(time.time()), "player_name": "tester", "source": "chat",
            "text": text, "peak_dbfs": None}
-    state, _ = build_state(Lookout(cfg.lookout).text(), [row], [], cfg.state_tokens)
+    state, _ = build_state(Lookout(cfg.lookout).text(), [row], [], cfg.state_tokens,
+                           menu=Menu(cfg.menu).text())
     try:
         result = jev.ask(state, questions([row]))
     except (JevDown, JevRefused) as e:

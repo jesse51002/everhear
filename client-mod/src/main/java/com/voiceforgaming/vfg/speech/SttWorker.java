@@ -29,7 +29,7 @@ import org.slf4j.LoggerFactory;
  */
 public final class SttWorker implements Runnable {
 	private static final Logger LOG = LoggerFactory.getLogger("vfg");
-	public static final long TICK_MILLIS = 250;
+	public static final long TICK_MILLIS = 50;
 	/** A score that takes longer than this counts as not finished. */
 	public static final long TURN_LIMIT_MILLIS = 500;
 
