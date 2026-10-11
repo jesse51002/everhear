@@ -903,15 +903,23 @@ def path5(box, rep, ctx):
         rep.check(ok, "vfg feed post AI '%s %s' … prints the seq; once in vfg watch, feed table and feed.log"
                   % (kind, task), why)
         posted.append(seq)
+    # The brain's own records are processed as they are written (vfg_feed): only it writes them.
+    ai = box.sql("SELECT seq, processed_at FROM feed WHERE seq IN (%s)" % ",".join(str(s) for s in posted if s))
+    rep.check(len(ai) == len(posted) and all(ISO_RE.match(a["processed_at"] or "") for a in ai),
+              "each AI row is written processed: the brain never reads its own", "%r" % ai)
+    read = []          # the rows the brain reads, and marks once it has
     r, seq = post("GAME", "cast Steve", "Steve cast fireball")
     ok, why = seen(seq, "GAME", "cast Steve", "Steve cast fireball") if seq else (False, r.stderr)
     rep.check(ok, "GAME takes any kind the bridge may feed: GAME cast Steve | …", why)
+    read.append(seq)
     r, seq = post("SYS", "", "smoke test")
     ok, why = seen(seq, "SYS", "", "smoke test") if seq else (False, r.stderr)
     rep.check(ok, "vfg feed post SYS '' 'smoke test' -> SYS#n HH:MM:SS | smoke test", why)
+    read.append(seq)
     r, seq = post("SYS", "", "two\nlines")
     ok, why = seen(seq, "SYS", "", "two lines") if seq else (False, r.stderr)
     rep.check(ok, "a newline in the text becomes a space", why)
+    read.append(seq)
     r, seq = post("AI", "note -", "long " + "y" * 700)
     cut = "long " + "y" * 494 + "…"
     ok, why = seen(seq, "AI", "note -", cut) if seq else (False, r.stderr)
@@ -943,7 +951,7 @@ def path5(box, rep, ctx):
     recent = [t["line"] for t in table if t["at"] >= iso(now() - dt.timedelta(seconds=55))]
     rep.check(plain.returncode == 0 and all(l in plain.stdout.splitlines() for l in recent),
               "vfg context --since -1m prints the lines themselves", plain.stdout[-600:] + plain.stderr)
-    seqs = [str(s) for s in posted if s]
+    seqs = [str(s) for s in read if s]
     r = box.vfg("context", "mark", *seqs)
     marked = box.sql("SELECT seq, processed_at FROM feed WHERE seq IN (%s)" % ",".join(seqs))
     rep.check(r.returncode == 0 and r.stdout.strip() == str(len(seqs))
@@ -961,7 +969,8 @@ def path5(box, rep, ctx):
     bad = box.vfg("context", "mark", "12x")
     rep.check(bad.returncode == 2 and len(bad.stderr.strip().splitlines()) == 1, "vfg context mark 12x is refused",
               bad.stderr)
-    ctx["marked"] = [int(s) for s in seqs]
+    # Every processed mark so far, the AI rows' and these: path 7 checks the bridge's restarts keep them.
+    ctx["marked"] = [m["seq"] for m in box.sql("SELECT seq FROM feed WHERE processed_at IS NOT NULL")]
 
 
 def find_java():
