@@ -672,7 +672,7 @@ def ask_two_at_once(run):
     # Neither carries a task, so the two replies are told apart only by their order: the first
     # said is put to the first line, for the table.
     r1 = run.reply(a1)
-    r2 = run.reply(a2, skip={r1["seq"]} if r1 else ())
+    run.reply(a2, skip={r1["seq"]} if r1 else ())
     time.sleep(3)
     sent = box.world.sent[mark:]
     rep.check(any(re.match(r"^(execute .* run )?give Steve (minecraft:)?golden_apple( 1)?$", x) for x in sent)

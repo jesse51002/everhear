@@ -1402,7 +1402,7 @@ def path10(box, rep, ctx):
               "session": None, "result": None, "created_at": ago(90), "updated_at": ago(90), "closed_at": None}
     r = task_set(castle)
     rep.check(r.returncode == 0 and r.stdout.strip() == "added castle_steve" and stored() == [castle],
-              "vfg task set '<the whole row>' adds castle_steve: every column as given, in one SSH call",
+              "vfg task set '<the whole row>' adds castle_steve: every column as given",
               r.stdout + r.stderr + "%r" % stored())
     raw = box.sql("SELECT made, variables FROM tasks WHERE name = 'castle_steve'")
     rep.check(raw == [{"made": '{"scripts":[],"actions":[],"presets":[],"copies":[]}', "variables": None}],
@@ -1456,7 +1456,7 @@ def path10(box, rep, ctx):
     for bad in ("Galick", "cast"):
         r = box.vfg("task", "list", "--name", bad)
         rep.check(r.returncode == 2 and len(r.stderr.strip().splitlines()) == 1,
-                  "vfg task list --name %s is refused before any SSH call" % bad, r.stdout + r.stderr)
+                  "vfg task list --name %s is refused: exit 2, one stderr line" % bad, r.stdout + r.stderr)
 
     objs, r = box.context_json()
     rep.check(r.returncode == 0 and len(objs) >= 2 and objs[-2] == {"tasks": [done, trail]}
