@@ -243,9 +243,13 @@ class Filter:
         cls, conf = route(result.answers)
         usage = {"at": at, "model": self.cfg.model, "input_tokens": result.input_tokens,
                  "cost_usd": result.cost_usd, "ref": row["id"]}
-        self.store.judge(row["id"], cls, round(conf, 3), at, usage)
+        written = self.store.judge(row["id"], cls, round(conf, 3), at, usage)
         log.info("judge %s %s %s %s %.2f · %s · %dms %stok", row["id"], row["player_name"], row["source"], cls, conf,
                  in_short(result.answers), result.ms, "?" if result.input_tokens is None else result.input_tokens)
+        if not written:   # the bridge dropped it while Jev judged it: never fed, nothing gathered
+            log.warning("no verdict written for %s: the bridge dropped it (only an incantation) while Jev judged it",
+                        row["id"])
+            return True
         said = said_at(row)
         if cls in KEPT and (said is None or said < now - FEED_MAX_AGE):
             self._too_old(row, said)

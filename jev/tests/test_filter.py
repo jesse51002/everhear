@@ -343,6 +343,29 @@ class TestJudging(Base):
         self.assertEqual(self.lines.usage(), [])
 
 
+    def test_a_line_the_bridge_drops_while_jev_judges_it_gets_no_verdict_and_nothing_gathered(self):
+        self.conn.execute("ALTER TABLE lines ADD COLUMN dropped TEXT")
+        self.lines.add(T0 - 5, "Steve", "voice", "the big one")
+        self.step()
+        line = self.lines.add(T0, "Steve", "voice", "build a fire ball")
+        ask = self.jev.ask
+
+        def ask_while_the_bridge_drops_it(state, questions, required="line_1"):   # its drop_line, mid-call
+            self.conn.execute("UPDATE lines SET dropped = 'cast' WHERE id = ? AND jev_class IS NULL", (line,))
+            return ask(state, questions, required)
+
+        self.jev.ask = ask_while_the_bridge_drops_it
+        with self.assertLogs("vfg-jev", "WARNING"):
+            self.step(1)
+            self.step(10)
+        r = self.row(line)
+        self.assertEqual((r["jev_class"], r["fed_at"]), (None, None))
+        self.assertEqual(len(self.jev.calls), 2)       # no gather call
+        self.assertEqual(self.f.groups, {})
+        self.assertEqual(self.batches(), [])
+        self.assertEqual(len(self.lines.usage()), 2)   # the call was made and paid for
+
+
 class TestGather(Base):
     """A line to the AI gets one more call, over its speaker's unsent lines; the yes lines go with it."""
 

@@ -155,10 +155,10 @@ class Store:
         return records
 
     def kept_unfed(self, since):
-        """Kept lines not yet fed, said since `since`, oldest first."""
+        """Kept lines not yet fed, said since `since`, oldest first; never a dropped one."""
         return self.conn.execute(
             "SELECT %s FROM lines WHERE jev_class IN ('action_oriented', 'conversational', 'context') "
-            "AND fed_at IS NULL AND at >= ? ORDER BY at, id" % COLUMNS, (since,)).fetchall()
+            "AND fed_at IS NULL AND at >= ?%s ORDER BY at, id" % (COLUMNS, self._live()), (since,)).fetchall()
 
     def feed_lines_at(self, ats):
         """`(seq, at, line)` of every LINE already in the `feed` table whose `at`
@@ -172,19 +172,23 @@ class Store:
     # -- writing ---------------------------------------------------------------
 
     def judge(self, line_id, cls, confidence, judged_at, usage=None):
-        """One transaction: the line's verdict and the call's `usage` row."""
+        """One transaction: the line's verdict and the call's `usage` row. Answers
+        whether the verdict was written: not when the bridge dropped the line (only
+        an incantation) while Jev judged it, or it had a verdict already. The
+        usage row is written either way: the call was made."""
         statements = [(
             "UPDATE lines SET jev_class = ?, jev_confidence = ?, jev_judged_at = ? "
-            "WHERE id = ? AND jev_class IS NULL", (cls, confidence, judged_at, line_id))]
+            "WHERE id = ? AND jev_class IS NULL" + self._live(), (cls, confidence, judged_at, line_id))]
         if usage is not None:
             statements.append(self._usage_sql(**usage))
-        self._tx(statements)
+        return self._tx(statements)[0] == 1
 
     def set_class(self, line_id, cls, confidence, judged_at):
-        """A verdict written without Jev's answer (a blank line, a refusal)."""
+        """A verdict written without Jev's answer (a blank line, a refusal); none
+        on a line dropped meanwhile."""
         return self._tx([(
             "UPDATE lines SET jev_class = ?, jev_confidence = ?, jev_judged_at = ? "
-            "WHERE id = ? AND jev_class IS NULL", (cls, confidence, judged_at, line_id))])[0]
+            "WHERE id = ? AND jev_class IS NULL" + self._live(), (cls, confidence, judged_at, line_id))])[0]
 
     def pass_all_as_context(self, judged_at):
         """Failing open: every unjudged line but the AI's becomes `context`
