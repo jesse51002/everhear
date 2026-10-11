@@ -36,7 +36,7 @@ ATTRIBUTES_SNBT = ('[{id: "minecraft:movement_speed", base: 0.23000000417232513d
                    '{id: "minecraft:scale", base: 2.0d}]')
 STRING_SNBT = '"minecraft:overworld"'
 GLOWING_SNBT = "1b"
-TAGS_SNBT = '["vfg_summon_T7_new", "vfg", "vfg_summon_T7"]'
+TAGS_SNBT = '["vfg_summon_zombies_steve_new", "vfg", "vfg_summon_zombies_steve"]'
 
 LOCATE_BIOME = "The nearest minecraft:snowy_taiga is at [-1408, 64, 1408] (1992 blocks away)"
 LOCATE_BIOME_TAG = "The nearest #minecraft:is_forest (minecraft:forest) is at [260, 0, -264] (172 blocks away)"
@@ -68,9 +68,10 @@ OUT_OF_WORLD = "That position is out of this world!"
 STORAGE = "Storage everhear:places has the following contents: %s"
 STORAGE_EMPTY = "Storage everhear:places has the following contents: {}"
 STORAGE_THREE = ('Storage everhear:places has the following contents: {123: {pos: [1, 2, 3], by: "", '
-                 'dim: "minecraft:overworld"}, castle: {pos: [198, 68, 251], by: "T24", dim: '
-                 '"minecraft:overworld"}, 1st_base: {pos: [1, -5, 2], by: "T7", dim: "minecraft:the_nether"}}')
-STORAGE_ONE = 'Storage everhear:places has the following contents: {pos: [197, 68, 251], by: "T23", dim: "minecraft:overworld"}'
+                 'dim: "minecraft:overworld"}, castle: {pos: [198, 68, 251], by: "castle_alex", dim: '
+                 '"minecraft:overworld"}, 1st_base: {pos: [1, -5, 2], by: "base_alex", dim: "minecraft:the_nether"}}')
+STORAGE_ONE = ('Storage everhear:places has the following contents: {pos: [197, 68, 251], by: "castle_steve", '
+               'dim: "minecraft:overworld"}')
 STORAGE_MODIFIED = "Modified storage everhear:places"
 NOTHING_CHANGED = "Nothing changed. The specified properties already have these values"
 
@@ -125,12 +126,12 @@ COMMANDS = [
     ("execute as @a run say hi", "", False),
     ("execute if entity @e[tag=probe]", "Test passed. Count: 1", False),
     ("execute if entity @e[tag=nothing]", "Test failed", False),
-    ("kill @e[tag=vfg_summon_T7]", "Killed Bob", False),
+    ("kill @e[tag=vfg_summon_zombies_steve]", "Killed Bob", False),
     ("data get storage everhear:places castle", STORAGE_ONE, False),
     ("data get entity @e[tag=probe,limit=1] Pos", "Armor Stand has the following entity data: [0.5d, 100.0d, 0.5d]",
      False),
-    ("attribute @e[tag=vfg_summon_T7,limit=1] minecraft:scale get", "The value of attribute Scale for entity Bob is 2.0",
-     False),
+    ("attribute @e[tag=vfg_summon_zombies_steve,limit=1] minecraft:scale get",
+     "The value of attribute Scale for entity Bob is 2.0", False),
     ("bogus", "Unknown or incomplete command. See below for errorbogus<--[HERE]", True),
     ("give", "Unknown or incomplete command. See below for errorgive<--[HERE]", True),
     ("locate biome", "Unknown or incomplete command. See below for error...cate biome<--[HERE]", True),

@@ -1,5 +1,6 @@
 # places.py: the saved places, kept in Minecraft's own command storage
-# `everhear:places`, one entry per name: {pos: [x, y, z], dim: "minecraft:overworld", by: "T23"}.
+# `everhear:places`, one entry per name: {pos: [x, y, z], dim: "minecraft:overworld",
+# by: "castle_steve"}, `by` the name of the task that saved it ("" when none did).
 #
 # Python 3.9+, standard library only, and pure: every function takes `rcon`, a
 # callable that runs one server command and returns Minecraft's reply as text.
@@ -8,7 +9,7 @@
 # RCON client.
 #
 # The replies it reads, as Minecraft 26.3 prints them:
-#   Storage everhear:places has the following contents: {castle: {pos: [197, 68, 251], by: "T23", dim: "minecraft:overworld"}}
+#   Storage everhear:places has the following contents: {castle: {pos: [197, 68, 251], by: "castle_steve", dim: "minecraft:overworld"}}
 #   Found no elements matching castle
 #   Modified storage everhear:places
 #   Nothing changed. The specified properties already have these values
@@ -19,6 +20,8 @@ import re
 
 STORAGE = "everhear:places"
 NAME_RE = re.compile(r"^[a-z0-9_]{1,32}$")
+# A task's name, or "": what save() writes. Wider than a name, so an entry an older vfg saved,
+# under a task's number, still reads.
 BY_RE = re.compile(r"^[A-Za-z0-9_-]{0,32}$")
 DIM_RE = re.compile(r"^[a-z0-9_.-]+:[a-z0-9_./-]+$")
 DIMS = {"overworld": "minecraft:overworld", "nether": "minecraft:the_nether",
@@ -80,7 +83,7 @@ def save(rcon, name, pos, dim="minecraft:overworld", by=""):
     d = norm_dim(dim)
     by = by or ""
     if not BY_RE.match(by):
-        raise ValueError("%r is not a task id" % (by,))
+        raise ValueError("%r is not a task name" % (by,))
     value = '{pos:[%d,%d,%d],dim:%s,by:%s}' % (p[0], p[1], p[2], _quote(d), _quote(by))
     reply = rcon("data modify storage %s %s set value %s" % (STORAGE, name, value))
     if not reply.startswith(_CHANGED):
@@ -100,7 +103,8 @@ def forget(rcon, name):
 
 
 def line(name, p):
-    """castle 197 68 251 overworld (T23): the dimension without minecraft:, (by) only when set."""
+    """castle 197 68 251 overworld (castle_steve): the dimension without minecraft:, (by) only
+    when set."""
     x, y, z = p["pos"]
     dim = p.get("dim") or "minecraft:overworld"
     if dim.startswith("minecraft:"):
