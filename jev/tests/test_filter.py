@@ -411,6 +411,18 @@ class TestGather(Base):
         self.assertEqual(len(self.jev.calls), 3)
         self.assertEqual([u["ref"] for u in self.lines.usage()], ids)
 
+    def test_the_gather_call_reads_the_routing_calls_history_and_never_the_database_again(self):
+        self.lines.add(T0 - 10, "Steve", "chat", "the big one by the river")
+        read = []
+        history = self.f.store.history
+        self.f.store.history = lambda *a, **k: read.append(a) or history(*a, **k)
+        self.lines.add(T0, "Steve", "chat", "make it bigger")
+        self.step(1)
+        self.assertEqual(len(self.jev.calls), 3)   # two lines, and the ask's gather call
+        self.assertEqual(len(read), 2)             # one history read a routing call, none for the gather call
+        state, _ = self.jev.calls[-1]
+        self.assertIn("[1] 18:22:21 Steve (chat): the big one by the river", state["history"])
+
     def test_a_line_gathered_into_one_ask_is_never_gathered_into_another(self):
         self.lines.add(T0 - 20, "Steve", "chat", "the big one by the river")
         self.step()

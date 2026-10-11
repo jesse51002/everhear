@@ -60,10 +60,18 @@ class TestGatherWindow(unittest.TestCase):
             cols.update(jev_class=cls, jev_confidence=confidence, jev_judged_at=iso(T0 + 100 + judged))
         return self.lines.add(at, player, "voice", text, **cols)
 
-    def window(self, ask, since=T0 - 180):
+    def window(self, ask, since=T0 - 180, sent_since=None):
         self.assertTrue(self.store.ready())
-        row = [r for r in self.store.history(iso(T0 - 3600)) if r["id"] == ask][0]
-        return [r["text"] for r in self.store.gather_window(row, iso(since))]
+        row = [r for r in self.store.history(iso(T0 - 7200)) if r["id"] == ask][0]
+        sent = None if sent_since is None else iso(sent_since)
+        return [r["text"] for r in self.store.gather_window(row, iso(since), sent_since=sent)]
+
+    def test_the_last_line_to_the_ai_is_looked_for_only_since_sent_since(self):
+        self.add(T0 - 5000, "Steve", "build me a tower", "action_oriented", 9)   # judged after the piece, said long before
+        self.add(T0 - 60, "Steve", "the big one", "not_relevant", 1)
+        ask = self.add(T0, "Steve", "make it bigger", "action_oriented", 10)
+        self.assertEqual(self.window(ask), [])                                    # unbounded, the old ask bounds it
+        self.assertEqual(self.window(ask, sent_since=T0 - 3780), ["the big one"])  # said before sent_since: not looked at
 
     def test_the_speakers_lines_judged_since_his_last_line_to_the_ai_said_before_the_ask(self):
         add = self.add

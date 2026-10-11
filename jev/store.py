@@ -99,7 +99,7 @@ class Store:
             "SELECT %s FROM lines WHERE jev_class IS NULL AND source != 'ai'%s "
             "ORDER BY at, id LIMIT ?" % (COLUMNS, self._live()), (limit,)).fetchall()
 
-    def gather_window(self, ask, since, limit=10):
+    def gather_window(self, ask, since, limit=10, sent_since=None):
         """The gather call's lines for `ask`: the same speaker's lines, not the
         AI's and not dropped, said before the ask (by `at`, then `id`) and since
         `since`, that Jev classed `context` or `not_relevant` with a confidence
@@ -112,11 +112,17 @@ class Store:
         speech is turned into text, after a line typed later may have been judged:
         each line is offered to the speaker's next line to the AI judged after it
         and to no other, so a line gathered into one ask is never gathered again,
-        and a piece stored after the ask it was said before reaches the next."""
+        and a piece stored after the ask it was said before reaches the next.
+
+        The last line to the AI is looked for among those said since `sent_since`
+        (all of them when None), on the (player_name, at) index: one judged after
+        a line in the window but said long before it cannot be, since lines are
+        judged in the order they are stored."""
+        bound, bound_params = ("", []) if sent_since is None else (" AND at >= ?", [sent_since])
         last = self.conn.execute(
-            "SELECT jev_judged_at, id FROM lines WHERE player_name = ? AND source != 'ai' AND id != ? "
-            "AND jev_class IN ('action_oriented', 'conversational') ORDER BY jev_judged_at DESC, id DESC LIMIT 1",
-            (ask["player_name"], ask["id"])).fetchone()
+            "SELECT jev_judged_at, id FROM lines WHERE player_name = ? AND source != 'ai' AND id != ?%s "
+            "AND jev_class IN ('action_oriented', 'conversational') ORDER BY jev_judged_at DESC, id DESC LIMIT 1"
+            % bound, [ask["player_name"], ask["id"]] + bound_params).fetchone()
         params = [ask["player_name"], ask["at"], ask["at"], ask["id"], since]
         after = ""
         if last is not None:

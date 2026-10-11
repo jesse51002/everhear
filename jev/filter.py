@@ -155,6 +155,7 @@ class Filter:
         self.last_probe = None
         self.owed = []               # SYS texts not yet written to the feed
         self.groups = {}             # ask id -> the lines gathered into it, oldest first, until it is fed
+        self._asked = (None, [])     # the last routing call's line id and its history, for the gather call
         self.unmarked = []           # fed, but fed_at not yet written
         self.stale = set()           # kept lines already reported as too old to feed
         self.stopping = False        # set by the signal handler: finish the call in hand
@@ -204,11 +205,14 @@ class Filter:
             self.feed()   # so a line for the AI goes before the next call
         return None
 
-    def _state(self, marked, began, share=1.0, rules=RULES, heading=HISTORY_HEADING):
+    def _history(self, began, exclude):
+        """The lines said and the brain's records of what it did, newest first,
+        leaving out `exclude` (the ids of the lines asked about)."""
         since = iso(began - self.cfg.history_hours * 3600)
-        # the lines said and the brain's records of what it did, newest first
-        others = sorted(list(self.store.history(since, exclude=[r["id"] for _, r in marked]))
-                        + self.store.ai_records(since), key=lambda r: (r["at"], r["id"]), reverse=True)
+        return sorted(list(self.store.history(since, exclude=exclude)) + self.store.ai_records(since),
+                      key=lambda r: (r["at"], r["id"]), reverse=True)
+
+    def _state(self, marked, others, share=1.0, rules=RULES, heading=HISTORY_HEADING):
         menu = self.menu.text()
         state, _ = build_state(self.lookout.text(), marked, others, self.cfg.state_tokens, share, menu, rules, heading)
         if menu and state.get("actions") != menu and menu != self._menu_cut:
@@ -217,7 +221,8 @@ class Filter:
         return state
 
     def _ask(self, row, began, share=1.0):
-        return self.jev.ask(self._state([(1, row)], began, share), questions(row), required="d_what")
+        self._asked = (row["id"], self._history(began, [row["id"]]))   # the gather call reads it again
+        return self.jev.ask(self._state([(1, row)], self._asked[1], share), questions(row), required="d_what")
 
     def _judge_one(self, row):
         """The routing call for `row`, and the gather call when it goes to the AI.
@@ -266,12 +271,18 @@ class Filter:
         ask when it is fed. No lines, no call. A call that fails leaves the ask to
         go alone; it is not Jev failing to judge a line, so the failing clock is
         left as it is."""
-        window = self.store.gather_window(ask, iso(said - GATHER_LOOKBACK), GATHER_MAX)
+        window = self.store.gather_window(ask, iso(said - GATHER_LOOKBACK), GATHER_MAX,
+                                          sent_since=iso(said - GATHER_LOOKBACK - STALE_LOOKBACK))
         if not window:
             return
         marked = [("ask", ask)] + list(enumerate(window, 1))
+        # the routing call's history, read a moment ago, with the window's lines now marked
+        asked, others = self._asked
+        skip = {r["id"] for r in window}
+        others = ([r for r in others if r["id"] not in skip] if asked == ask["id"]
+                  else self._history(self.clock.time(), [r["id"] for _, r in marked]))
         try:
-            state = self._state(marked, self.clock.time(), rules=GATHER_RULES, heading=GATHER_HEADING)
+            state = self._state(marked, others, rules=GATHER_RULES, heading=GATHER_HEADING)
             result = self.jev.ask(state, gather_questions(ask, window), required=None)
         except (JevDown, JevRefused) as e:
             log.warning("gather %s failed: %s — the ask goes alone", ask["id"], e)
