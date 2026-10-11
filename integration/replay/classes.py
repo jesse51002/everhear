@@ -168,7 +168,7 @@ def run_jev(args) -> None:
             for attempt in range(TRIES):
                 state, kept = build_state(lookout, as_rows, others, STATE_TOKENS, share, menu)
                 try:
-                    result = jev.ask(state, questions(as_rows))
+                    result = jev.ask(state, questions(as_rows), required="line_1")
                     calls += 1
                     break
                 except JevRefused as e:

@@ -84,15 +84,15 @@ class ApiTest(unittest.TestCase):
         qs = questions(row(1, "build"))
         self.server.mode = "fail"
         with self.assertRaises(JevDown):
-            self.jev.ask({"t": "s"}, qs)
+            self.jev.ask({"t": "s"}, qs, required="d_what")
         self.server.mode = "hang"
         with self.assertRaises(JevDown):
-            Jev(KEY, url=self.server.url, timeout=0.02).ask({"t": "s"}, qs)
+            Jev(KEY, url=self.server.url, timeout=0.02).ask({"t": "s"}, qs, required="d_what")
 
     def test_refused(self):
         self.server.mode = "refuse"
         with self.assertRaises(JevRefused) as e:
-            self.jev.ask({"t": "s"}, questions(row(1, "build")))
+            self.jev.ask({"t": "s"}, questions(row(1, "build")), required="d_what")
         self.assertIn("400", str(e.exception))
 
     def test_unknown_label_in_the_required_answer_is_down(self):
@@ -128,7 +128,7 @@ class ApiTest(unittest.TestCase):
                              (403, JevDown), (429, JevDown), (500, JevDown), (503, JevDown)):
             jev = Jev(KEY, url=self._status_url(status), timeout=0.5)
             with self.assertRaises(kind, msg=status):
-                jev.ask({"t": "s"}, questions(row(1, "build")))
+                jev.ask({"t": "s"}, questions(row(1, "build")), required="d_what")
 
     def _status_url(self, status):
         from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -154,7 +154,7 @@ class ApiTest(unittest.TestCase):
     def test_errors_never_carry_the_key_or_the_state(self):
         jev = Jev(KEY, url=self._status_url(422), timeout=0.5)
         with self.assertRaises(JevRefused) as e:
-            jev.ask({"history": "THE STATE"}, questions(row(1, "build")))
+            jev.ask({"history": "THE STATE"}, questions(row(1, "build")), required="d_what")
         self.assertNotIn(KEY, str(e.exception))
         self.assertNotIn("THE STATE", str(e.exception))
         self.assertIn("field required", str(e.exception))
@@ -165,16 +165,16 @@ class ApiTest(unittest.TestCase):
         port = s.getsockname()[1]
         s.close()
         with self.assertRaises(JevDown):
-            Jev(KEY, url="http://127.0.0.1:%d/v1/systemone" % port, timeout=0.5).ask({"t": "s"}, questions(row(1, "x")))
+            Jev(KEY, url="http://127.0.0.1:%d/v1/systemone" % port, timeout=0.5).ask({"t": "s"}, questions(row(1, "x")), required="d_what")
 
     def test_no_key_is_down_without_a_call(self):
         with self.assertRaises(JevDown):
-            Jev("", url=self.server.url).ask({"t": "s"}, questions(row(1, "build")))
+            Jev("", url=self.server.url).ask({"t": "s"}, questions(row(1, "build")), required="d_what")
         self.assertEqual(self.server.calls, [])
 
     def test_a_bare_string_state_is_refused_by_the_stand_in(self):
         with self.assertRaises(JevRefused):
-            self.jev.ask("a bare string", questions(row(1, "build")))
+            self.jev.ask("a bare string", questions(row(1, "build")), required="d_what")
 
     def test_body_is_utf8_json_as_counted(self):
         from prompt import state_json

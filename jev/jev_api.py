@@ -128,11 +128,11 @@ class Jev:
         self.timeout = timeout
         self.last_body = None   # the last response body, as Jev sent it (for --judge --raw)
 
-    def ask(self, state, questions, required="line_1"):
+    def ask(self, state, questions, *, required):
         """One state, every question about it, one attempt. Answers a `Result`.
-        Raises `JevDown` when `required` is missing or malformed: the filter
-        passes `d_what` for the routing call and None for the gather call (the
-        default is the old benches' `line_1`)."""
+        Raises `JevDown` when the answer `required` names is missing or
+        malformed; None requires none. Every caller says which: the filter's
+        routing call `d_what`, its gather call None."""
         if not self.key:
             raise JevDown("no key (TYPESAFE_API_KEY)")
         # UTF-8 JSON, not \u-escaped: the state's size here is the size the
