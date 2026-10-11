@@ -172,6 +172,13 @@ def test_task_lines_show_each_task_oldest_first_with_what_it_made_its_copies_run
     assert lines[4] == "- lava_moat_sam, for Sam, open, 18:26:10: A lava moat round Sam's base, 3 wide."
     assert lines[5] == "  made: nothing yet; running now: none" and len(lines) == 6  # no result yet: no line
     assert task_lines([], COPIES) == "TASKS: none yet"
+    assert "  made: not known; running now: none" in task_lines([row("castle_bob", made=None)], {}, today=TODAY)
+
+
+def test_the_tail_shows_times_against_its_own_clock():
+    o = Orchestrator(catalog(), None, now=lambda: NOW)
+    tail = o.tail(head=HEAD, parts=PARTS, k=0, given=[], others=[], replying=True, tasks=TASKS, copies={})
+    assert "- lava_moat_sam, for Sam, open, 18:26:10: " in tail and ", done, 2026-10-09 23:59:30: " in tail
 
 
 def test_running_lines_show_each_value_now_its_limits_or_choices_live_or_restart_and_who_started_it():

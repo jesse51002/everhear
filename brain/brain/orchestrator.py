@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
@@ -198,13 +199,17 @@ def task_lines(tasks: list[dict], copies: dict[str, dict], *, today: str | None 
     rows = []
     for t in sorted(tasks, key=lambda t: str(t.get("created_at") or "")):
         name = str(t.get("name") or "?")
-        made = t.get("made") if isinstance(t.get("made"), dict) else {}
-        kinds = [f"{k} {', '.join(map(str, made[k]))}" for k in ("scripts", "actions", "presets", "copies")
-                 if isinstance(made.get(k), list) and made[k]]
+        made = t.get("made")
+        if isinstance(made, dict):
+            kinds = [f"{k} {', '.join(map(str, made[k]))}" for k in ("scripts", "actions", "presets", "copies")
+                     if isinstance(made.get(k), list) and made[k]]
+            what = "; ".join(kinds) or "nothing yet"
+        else:
+            what = "not known"  # null: never recorded
         running = sorted(c for c, info in copies.items() if _task_of(info) == name)
         rows.append(f"- {name}, for {t.get('player') or 'nobody'}, {t.get('status') or '?'}, "
                     f"{_when(t.get('updated_at') or t.get('created_at'), today)}: {_one_line(t.get('description'))}\n"
-                    f"  made: {'; '.join(kinds) or 'nothing yet'}; running now: {', '.join(running) or 'none'}")
+                    f"  made: {what}; running now: {', '.join(running) or 'none'}")
         result = _one_line(t.get("result"))
         if result:
             rows[-1] += f"\n  last result: {result}"
@@ -290,8 +295,10 @@ def describe(value: AnswerBase) -> str:
 
 
 class Orchestrator:
-    def __init__(self, catalog, ask, *, owner: str = "", checkpoint: int = 5, prompt: Path = PROMPT):
+    def __init__(self, catalog, ask, *, owner: str = "", checkpoint: int = 5, prompt: Path = PROMPT,
+                 now: Callable[[], datetime] = lambda: datetime.now(UTC)):
         self.catalog = catalog
+        self.now = now  # today, for TASKS' times: a time not today shows its date (the replay sets it)
         self.ask = ask  # structured() with the orchestrator's model, reasoning, providers and timeout
         self.checkpoint = checkpoint
         rules = prompt.read_text(encoding="utf-8").rstrip("\n")
@@ -325,7 +332,9 @@ class Orchestrator:
 
         reply = ("THE REPLY: yours — the line's one chat line, said once the action parts are done." if replying
                  else "THE REPLY: not yours — leave reply empty, unless you answer reply only.")
-        return (f"\n{task_lines(tasks, copies)}\n\n{running_lines(copies, self.catalog)}\n\n{head}\n\n"
+        today = self.now().astimezone(UTC).strftime("%Y-%m-%d")
+        return (f"\n{task_lines(tasks, copies, today=today)}\n\n{running_lines(copies, self.catalog)}\n\n"
+                f"{head}\n\n"
                 f"THE BRAIN'S INSTRUCTION FOR THIS PART: {p.instruction}\n"
                 f"(the part of the line it covers: \"{p.part}\")\n\n"
                 + block("THE LINE'S OTHER PARTS FOR YOU", mine) + "\n\n"
