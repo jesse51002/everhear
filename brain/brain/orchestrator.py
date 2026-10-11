@@ -83,7 +83,9 @@ class AnswerBase(BaseModel):
     def edits(self) -> dict[str, Any]:
         """An edit's values as check_edit takes them: {key: value}, a value that reads as a JSON
         list or object being that list or object, any other kept as text for the field's type to
-        read (0, true, 30). The validator and Acts both use it, so what was checked is what runs."""
+        read (0, true, 30). Text in JSON quotes, as RUNNING NOW shows a value with a space in it
+        (name="Frost Bow"), is that text without them. The validator and Acts both use it, so what
+        was checked is what runs."""
         out: dict[str, Any] = {}
         for v in self.values:
             text = v.value.strip()
@@ -91,7 +93,7 @@ class AnswerBase(BaseModel):
                 got = json.loads(text)
             except ValueError:
                 got = None
-            out[v.key.strip()] = got if isinstance(got, (list, dict)) else text
+            out[v.key.strip()] = got if isinstance(got, (list, dict, str)) else text
         return out
 
 

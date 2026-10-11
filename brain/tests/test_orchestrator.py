@@ -290,6 +290,10 @@ def test_edits_keep_text_for_the_field_to_read_and_decode_a_json_list():
     assert e.values["range"] == 30 and e.values["through_walls"] is True
     assert e.values["damage_spare"] == ["Steve", "Alex"] and set(e.changed) == {"range", "damage_spare", "item"}
     assert AnswerBase(kind=EDIT, values=[{"key": "cooldown", "value": "0"}]).edits() == {"cooldown": "0"}
+    # Text quoted as RUNNING NOW quotes a value with a space in it is that text, never its quotes.
+    quoted = AnswerBase(kind=EDIT, values=[{"key": "item", "value": '"Ice Gun"'}, {"key": "range", "value": '"30"'}])
+    assert quoted.edits() == {"item": "Ice Gun", "range": "30"}
+    assert check_edit(cls, {}, quoted.edits()).values["item"] == "Ice Gun"
     assert check_edit(cls, {}, {"cooldown": "0"}).values["cooldown"] == 0
     with pytest.raises(ValidationError, match="through_walls is true or false, not maybe"):
         check(a(EDIT, copy="railgun_steve", values=[{"key": "through_walls", "value": "maybe"}]), replying=False)
