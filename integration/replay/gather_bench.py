@@ -81,14 +81,44 @@ FAR = 10 ** 9   # a window's limit with no cap
 
 # ------------------------------------------------------------------ the wordings of the gather call
 
-def prod_questions(ask, window):
-    return prompt.gather_questions(ask, window)
-
-
-# name -> (what it changes, the questions function); `prod` is jev/prompt.py's, unchanged.
-WORDINGS = {
-    "prod": ("production: prompt.gather_questions and GATHER_CRITERIA", prod_questions),
+# Candidates, written after reading production's answers on the first half's windows: it said yes to 1
+# of 196 lines there, and left out pieces of a sentence cut at a pause ("My castle." … "it built yet.",
+# P 0.43). Its `not_part_of_it` says "or the ask makes full sense without it", which a short ask read
+# alone nearly always does. Both candidates describe the two sides by what the line is, and say
+# nothing about whether the ask stands alone; g3 also says why one ask can come in pieces.
+BALANCED = {
+    "part_of_the_ask": "Part of the ask: a piece of the same sentence or request, cut off by a pause, or it says what, "
+                       "where, who or how for the ask.",
+    "not_part_of_it": "Not part of the ask: something else: a reaction, a remark, talk to a player, or another "
+                      "subject or ask.",
 }
+PIECES = "Speech-to-text cuts a player at every pause, so one ask can arrive as several lines. "
+
+
+def gather_wording(criteria: dict, why: str = ""):
+    """prompt.gather_questions with other `criteria`, and `why` said before the line asked about."""
+    def qs(ask, window):
+        head = "%s's line [ask] at %s, “%s”, goes to the AI. %s" % (ask["player_name"], prompt.when(ask["at"]),
+                                                                  prompt.quote(ask), why)
+        return {"line_%d" % k: {
+            "type": "choice",
+            "instructions": head + "Line [%d], said by %s before it at %s: “%s”. Is line [%d] part of that ask?"
+                                   % (k, row["player_name"], prompt.when(row["at"]), prompt.quote(row), k),
+            "criteria": dict(criteria)}
+            for k, row in enumerate(window, 1)}
+    return qs
+
+
+# name -> (what it changes, the questions function); `prod` is jev/prompt.py's own, unchanged.
+WORDINGS = {
+    "prod": ("production: prompt.gather_questions, GATHER_CRITERIA", prompt.gather_questions),
+    "g2": ("the criteria balanced (BALANCED), the instruction production's", gather_wording(BALANCED)),
+    "g3": ("g2, and the instruction says speech-to-text cuts a player at every pause (PIECES)",
+           gather_wording(BALANCED, PIECES)),
+}
+_row = {"id": "x", "at": "2026-10-08T06:00:00.000Z", "player_name": "Steve", "source": "voice", "text": "the big one",
+        "peak_dbfs": None}
+assert gather_wording(prompt.GATHER_CRITERIA)(_row, [_row]) == prompt.gather_questions(_row, [_row])
 
 
 # ------------------------------------------------------------------ the stand-ins around production
@@ -376,7 +406,7 @@ def regather(args) -> None:
                 try:
                     res = b.jev.ask(state, qs, required=None)
                 except (JevDown, JevRefused) as e:
-                    row["tries"].append(str(e))
+                    row["tries"].append({"refused" if isinstance(e, JevRefused) else "down": str(e)})
                     time.sleep(1.0)
                     continue
                 a = raw_answers(b.jev.last_body, qs)
