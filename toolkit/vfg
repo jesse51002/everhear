@@ -50,12 +50,13 @@ AI_KINDS = ["say", "action", "task", "result", "note"]
 CLASSES = ["action_oriented", "conversational", "context", "not_relevant", "unjudged"]
 # brain and respond are the brain's; the old components stay valid for the rows that have them.
 COMPONENTS = ["jev", "brain", "respond", "implementer", "conversation", "orchestrator"]
-PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
+PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,16}\Z")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 # A task's name (Prototype_Named_Tasks): the brain's tasks table's key, and the --task, --by and AI
 # field that name one. cast is the bridge's own task for an incantation's copies, never a task's name.
-TASK_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
-AI_FIELDS_RE = re.compile(r"^(say|action|task|result|note) ([a-z][a-z0-9_]{1,31}|-)$")
+# \Z, not $: $ also matches before a last newline, and "gun_a\n" would pass as a name.
+TASK_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}\Z")
+AI_FIELDS_RE = re.compile(r"^(say|action|task|result|note) ([a-z][a-z0-9_]{1,31}|-)\Z")
 TASK_COLUMNS = ("name", "description", "player", "status", "line", "brief", "made", "variables",
                 "session", "result", "created_at", "updated_at", "closed_at")
 TASK_STATUSES = ("open", "done", "failed")
@@ -190,7 +191,7 @@ def check_task(name, flag):
         raise Fail(2, "%s is the bridge's task for an incantation's copies, never a task's name" % name)
     if not TASK_RE.match(name):
         raise Fail(2, "%s %s is not a task's name (a-z, 0-9 and _, starting with a letter, 2 to 32), "
-                      "like galick_gun_styrk" % (flag, name))
+                      "like galick_gun_styrk" % (flag, name if name.isprintable() else repr(name)))
 
 
 def check_home(words):

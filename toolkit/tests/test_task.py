@@ -126,6 +126,7 @@ class TestSet(TaskCase):
         cases = [(galick(name=RETIRED), "is not a task's name"), (galick(name="cast"), "the bridge's task"),
                  (galick(name="Galick"), "not a task's name"), (galick(name="g"), "not a task's name"),
                  (galick(name="a" * 33), "not a task's name"), (galick(name="7gun"), "not a task's name"),
+                 (galick(name="gun_a\n"), "not a task's name"), (galick(player="Steve\n"), "player"),
                  (dict(galick(), colour="red"), "colour is not a task's key"), ({"description": "x"}, "its name"),
                  (galick(status="running"), "status is open, done, failed"), (galick(description=""), "description"),
                  (galick(description=None), "description"), (galick(player="not a name"), "player"),

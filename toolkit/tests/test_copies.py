@@ -189,6 +189,7 @@ class TestRun(ActionCase):
                               (["beam", "as=Bad-Name"], r"^as=Bad-Name is not a copy name"),
                               (["beam", "--task", "7"], r"^--task 7 is not a task's name"),
                               (["beam", "--task", RETIRED], r"^--task %s is not a task's name" % RETIRED),
+                              (["beam", "--task", "gun_a\n"], r"^--task 'gun_a\\n' is not a task's name"),
                               (["beam", "--task=cast"], r"^cast is the bridge's task for an incantation's copies"),
                               (["beam", "--for", "not a name"], r"^--for not a name is not a player's name"),
                               (["beam", "--for="], r"^--for  is not a player's name"),

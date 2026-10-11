@@ -600,7 +600,7 @@ class TestFeed(BoxCase):
         for args in (["NOISE", "", "x"], ["SYS", "f", "x"], ["ORCH", "castle_steve done", "x"],
                      ["AI", "finished castle_steve", "x"], ["AI", "task " + RETIRED, "x"], ["AI", "say Galick", "x"],
                      ["AI", "task 7gun", "x"], ["AI", "task a", "x"], ["AI", "task " + "a" * 33, "x"],
-                     ["AI", "say 7", "x"], ["AI", "say", "x"], ["AI", "action T0", "x"],
+                     ["AI", "say 7", "x"], ["AI", "say", "x"], ["AI", "action T0", "x"], ["AI", "task gun_a\n", "x"],
                      ["GAME", "death | Steve", "x"], ["LINE", "a\nb", "x"]):
             self.assertOneLine(self.vfg("feed", "post", *args), 2)
         self.assertEqual(len(feed_lines(self.box)), 3)
