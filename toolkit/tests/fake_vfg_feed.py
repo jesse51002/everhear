@@ -8,7 +8,7 @@ Appends `TYPE#seq HH:MM:SS fields | text` to the feed, inserts the `feed` row in
 when it exists, and returns the seq: one more than the larger of the table's and the file's,
 so it is never 0. Like the real writer, it finds its files by VFG_FEED and VFG_DB, read on
 every call, defaulting to /opt/vfg; and it takes LINE, GAME, AI and SYS, AI's fields
-`<say|action|task|result|note> <task|->`.
+`<say|action|task|result|note> <name|->`, a task's name or -.
 """
 import fcntl
 import os
@@ -18,7 +18,7 @@ import sys
 from datetime import datetime, timezone
 
 TYPES = ("LINE", "GAME", "AI", "SYS")
-AI_RE = re.compile(r"^(say|action|task|result|note) (T\d+|-)$")
+AI_RE = re.compile(r"^(say|action|task|result|note) ([a-z][a-z0-9_]{1,31}|-)$")
 SEQ_RE = re.compile(rb"^([A-Z]+)#(\d+) ")
 
 

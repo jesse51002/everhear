@@ -5,8 +5,11 @@
 #    "stamps": {"_lib": "<sha256>", "galick_gun": ...}}]}
 #   {"vfg": "/opt/vfg", "mc": "/opt/mc", "op": "run", "action": "galick_gun", "script": "galick_gun",
 #    "source": "library"|"made", "server": "main", "values": {...}, "live": [...], "runs": "once"|
-#    "until_stopped", "task": "T7"|null, "as": null|"steve_gun", "tars": [...] | "stamps": [{"root",
-#    "stamps"}], "owner": ..., "poll": 0.5, "wait": 20, "on_result": false}
+#    "until_stopped", "task": "galick_gun_styrk"|null, "as": null|"steve_gun", "base": null|
+#    "galick_gun_steve", "tars": [...] | "stamps": [{"root", "stamps"}], "owner": ..., "poll": 0.5,
+#    "wait": 20, "on_result": false}
+# "base" is the name the copy takes in place of the action's (vfg action run --for: the brain's own
+# copy, <action>_<player>), then with _2, _3 ... (instances.Box.pick).
 #
 # A deploy keeps each folder's stamp, the PC's hash of what it sent (toolkit/vfg, stamp), in the
 # folder, as .vfg-stamp. A run with "stamps" in place of "tars" deploys nothing: when every folder
@@ -227,7 +230,7 @@ def op_run():
         die(5, str(e))
     b = box()
     try:
-        name, pid, proc = b.start(meta, ARGS.get("as"))
+        name, pid, proc = b.start(meta, ARGS.get("as"), base=ARGS.get("base"))
     except instances.NotDeployed as e:
         die(3, str(e))
     except instances.CopyError as e:

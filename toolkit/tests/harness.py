@@ -7,7 +7,8 @@ vfg needs pydantic for its actions, so where this Python has none the run starts
 under uv, as vfg does (the first test module to import this one does it).
 
 A Box is the PC and the EC2 box at once: HOME, VFG_HOME and a repo, and the "box" that
-VFG_REMOTE_VFG and VFG_REMOTE_MC point into, with vfg.db, feed.log and the feed's writer
+VFG_REMOTE_VFG and VFG_REMOTE_MC point into, with vfg.db (its tasks table too, but with
+tasks=False: a box whose bridge has not added it yet), feed.log and the feed's writer
 (fake_vfg_feed.py). box.vfg(...) runs vfg's main() here with the box's environment, and every
 SSH call it makes runs its remote program here too, as the box's Python would: BoxSsh below
 replaces Ssh's one subprocess call and nothing else, so the master check, the retry and the
@@ -88,6 +89,13 @@ CREATE TABLE usage (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,
   component TEXT NOT NULL CHECK (component IN ('jev','conversation','orchestrator','implementer',
                                                'brain','respond')),
   model TEXT, input_tokens INTEGER, output_tokens INTEGER, cost_usd REAL, ref TEXT);
+"""
+# The brain's tasks, as the bridge adds the table (bridge/vfg_bridge/db.py's ADDED).
+TASKS = """
+CREATE TABLE tasks (name TEXT PRIMARY KEY, description TEXT NOT NULL, player TEXT,
+  status TEXT NOT NULL CHECK (status IN ('open','done','failed')), line TEXT, brief TEXT,
+  made TEXT, variables TEXT, session TEXT, result TEXT, created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL, closed_at TEXT);
 """
 
 Result = collections.namedtuple("Result", "returncode stdout stderr")
@@ -235,7 +243,7 @@ class Box(object):
     """A temp world: HOME, VFG_HOME, the repo, the EC2 box, the units; RCON from `rcon`."""
     current = None
 
-    def __init__(self, rcon, feed_lines=3, processed_at=True):
+    def __init__(self, rcon, feed_lines=3, processed_at=True, tasks=True):
         self.root = tempfile.mkdtemp(prefix="vfg-test-")
         j = lambda *p: os.path.join(self.root, *p)  # noqa: E731
         self.home, self.vhome, self.repo = j("home"), j("home", ".vfg"), j("repo")
@@ -254,7 +262,7 @@ class Box(object):
         self.write_props()
         self.db = os.path.join(self.rvfg, "vfg.db")
         self.feed = os.path.join(self.rvfg, "feed.log")
-        self.make_db(feed_lines, processed_at)
+        self.make_db(feed_lines, processed_at, tasks)
         with open(self.feed, "w") as f:
             f.write("".join(line + "\n" for _seq, line in self.feed_rows))
         shutil.copy(os.path.join(TESTS, "fake_vfg_feed.py"), os.path.join(self.rvfg, "lib", "vfg_feed.py"))
@@ -292,11 +300,11 @@ class Box(object):
         self.write_props(port=port)
         return port
 
-    def make_db(self, feed_lines, processed_at):
+    def make_db(self, feed_lines, processed_at, tasks=True):
         now = datetime.now(timezone.utc)
         con = sqlite3.connect(self.db)
         schema = SCHEMA if processed_at else SCHEMA.replace(",\n  processed_at TEXT)", ")")
-        con.executescript(schema)
+        con.executescript(schema + (TASKS if tasks else ""))
         con.execute("PRAGMA journal_mode=WAL")
         lines = [
             ("L1", now - timedelta(minutes=5), "Steve", "voice", "build me a castle", "action_oriented", 0.93),
@@ -506,6 +514,35 @@ class Box(object):
             i += 1
         script = words[i + 1]
         return self.run_here(lambda ns: runpy.run_path(script, run_name="__main__"), env, [script] + words[i + 2:])
+
+    def add_task(self, name, description="a test's task", status="open", minutes_ago=10, **more):
+        """A row of the tasks table, written straight on the box as `vfg task set` would leave it:
+        made and variables (in `more`) as JSON text, created and updated `minutes_ago`. The row."""
+        at = iso(datetime.now(timezone.utc) - timedelta(minutes=minutes_ago))
+        row = dict({"name": name, "description": description, "status": status, "created_at": at,
+                    "updated_at": at, "closed_at": None if status == "open" else at}, **more)
+        con = sqlite3.connect(self.db)
+        try:
+            con.execute("INSERT INTO tasks (%s) VALUES (%s)" % (", ".join(row), ", ".join("?" * len(row))),
+                        [json.dumps(v) if k in ("made", "variables") and v is not None else v
+                         for k, v in row.items()])
+            con.commit()
+        finally:
+            con.close()
+        return row
+
+    def tasks(self):
+        """Every row of the tasks table, oldest created first, as dicts, made and variables decoded."""
+        con = sqlite3.connect(self.db)
+        con.row_factory = sqlite3.Row
+        try:
+            rows = [dict(r) for r in con.execute("SELECT * FROM tasks ORDER BY created_at, name")]
+        finally:
+            con.close()
+        for r in rows:
+            for k in ("made", "variables"):
+                r[k] = json.loads(r[k]) if r[k] is not None else None
+        return rows
 
     def post(self, typ, fields, text):
         """A feed line written straight on the box, as the bridge would: its seq."""

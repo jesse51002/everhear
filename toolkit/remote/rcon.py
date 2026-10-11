@@ -1,8 +1,8 @@
 # rcon.py: vfg cmd and vfg say. ARGS:
 #   {"mode": "cmd", "mc": "/opt/mc", "command": "time set day"}
 #   {"mode": "say", "mc": "/opt/mc", "vfg": "/opt/vfg", "to": null|"Steve",
-#    "commands": ["tellraw @a [...]", ...], "store": "<text as stored>", "task": null|"T7"}
-# A say is stored as an ai line, then fed as `AI say <task|-> | <text as stored>` through
+#    "commands": ["tellraw @a [...]", ...], "store": "<text as stored>", "task": null|"galick_gun_styrk"}
+# A say is stored as an ai line, then fed as `AI say <task's name|-> | <text as stored>` through
 # /opt/vfg/lib/vfg_feed.py, the feed's one writer, in this same call.
 import sqlite3
 

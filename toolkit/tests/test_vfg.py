@@ -26,6 +26,8 @@ from harness import (ISO_RE, PY, REAL_LIB, REPO, SCRIPTS_TEST, TESTS, TOOLKIT, V
                      alive, iso, load_module, vfg_module, wait_for, write)
 import standins  # noqa: E402
 
+RETIRED = "T%d" % 7   # a task as it was named before named tasks (Prototype_Named_Tasks): refused now
+
 
 def feed_lines(box):
     with open(box.feed) as f:
@@ -40,7 +42,7 @@ class TestBasics(BoxCase):
         self.assertEqual((r.returncode, r.stdout), (0, "vfg 0.1.0\n"))
         r = self.vfg("--help")
         self.assertOk(r)
-        for c in ("up", "watch", "say", "cmd", "history", "context", "watchers", "lookout", "brain", "jev",
+        for c in ("up", "watch", "say", "cmd", "history", "context", "watchers", "lookout", "brain", "task", "jev",
                   "feed", "script", "preset", "state", "route", "prefix", "action", "made", "place", "usage"):
             self.assertRegex(r.stdout, r"\n\s+%s\s" % c)
         self.assertNotRegex(r.stdout, r"\n\s+orch\s")
@@ -51,7 +53,9 @@ class TestBasics(BoxCase):
                             (["say", "--help"], ["--to", "--task"]),
                             (["state", "--help"], ["--json", "--items"]),
                             (["feed", "post", "--help"], ["LINE, GAME, AI or SYS"]),
-                            (["action", "run", "--help"], ["key=value", "as=<copy>", "--task", "JSON line"]),
+                            (["action", "run", "--help"], ["key=value", "as=<copy>", "--for", "--task", "JSON line"]),
+                            (["task", "--help"], ["set", "list"]),
+                            (["task", "list", "--help"], ["--open", "--name", "--json"]),
                             (["script", "--help"], ["new", "check", "deploy", "list", "set", "stop", "logs", "save"]),
                             (["history", "--help"], ["--since", "--until", "--player", "--class", "--source",
                                                      "--events", "--feed", "--limit"]),
@@ -299,22 +303,26 @@ class TestSay(BoxCase):
         self.assertEqual(len(self.box.calls), 1)
 
     def test_a_whisper_about_a_task(self):
-        self.assertOk(self.vfg("say", "your base is ready", "--to", "Steve", "--task", "T7"))
+        self.assertOk(self.vfg("say", "your base is ready", "--to", "Steve", "--task", "castle_steve"))
         self.assertEqual(self.box.rcon_commands(), [self.tellraw("Steve", "your base is ready")])
         self.assertEqual(self.ai_rows()[0][5], "(to Steve) your base is ready")
-        self.assertRegex(feed_lines(self.box)[-1], r"^AI#4 \d\d:\d\d:\d\d say T7 \| \(to Steve\) your base is ready$")
-        for args in (["x", "--to", "not a name"], ["x", "--task", "7"], ["x", "--task"], ["hi", "--to"],
-                     ["--to", "Steve"], [" \n "]):
+        self.assertRegex(feed_lines(self.box)[-1],
+                         r"^AI#4 \d\d:\d\d:\d\d say castle_steve \| \(to Steve\) your base is ready$")
+        for args in (["x", "--to", "not a name"], ["x", "--task", "7"], ["x", "--task", RETIRED], ["x", "--task"],
+                     ["x", "--task", "Castle"], ["x", "--task", "c"], ["hi", "--to"], ["--to", "Steve"], [" \n "]):
             self.assertOneLine(self.vfg("say", *args), 2)
+        self.assertOneLine(self.vfg("say", "x", "--task=cast"), 2,
+                           "^vfg: cast is the bridge's task for an incantation's copies, never a task's name$")
         self.assertEqual(len(feed_lines(self.box)), 4)
+        self.assertEqual(len(self.box.calls), 1)
 
     def test_every_word_is_the_text_wherever_the_flags_sit(self):
         self.box.write_config("VFG_SSH_HOST=fakebox\nVFG_SSH_KEY=%s\nVFG_CHAT_PREFIX=\"<Bot> \"\n" % self.box.key)
         for args, target, text, task in (
                 (["can", "t", "do", "that", "right", "now"], "@a", "can t do that right now", "-"),
                 (["hello", "--to", "Steve", "world"], "Steve", "hello world", "-"),
-                (["on", "it", "--to=Steve", "--task=T3"], "Steve", "on it", "T3"),
-                (["--task", "T4", "your", "base"], "@a", "your base", "T4"),
+                (["on", "it", "--to=Steve", "--task=ice_beam_steve"], "Steve", "on it", "ice_beam_steve"),
+                (["--task", "castle_alex", "your", "base"], "@a", "your base", "castle_alex"),
                 (["--", "--to", "Steve"], "@a", "--to Steve", "-"),
                 (["-5", "hearts"], "@a", "-5 hearts", "-"),
                 (["  one\ntwo\tthree — ok\r\n "], "@a", "one two three — ok", "-")):
@@ -420,12 +428,13 @@ class TestHistory(BoxCase):
 
 class TestContext(BoxCase):
     def rows(self, *args, **env):
-        """The rows; the last object, checked here, is the feed's highest seq."""
+        """The rows; the last two objects, checked here, are the box's tasks (none here) and the
+        feed's highest seq."""
         r = self.vfg("context", "--json", *args, **env)
         self.assertOk(r)
         objs = [json.loads(l) for l in r.stdout.splitlines()]
-        self.assertEqual(objs[-1], {"last_seq": self.box.query("SELECT MAX(seq) FROM feed")[0][0]})
-        return objs[:-1]
+        self.assertEqual(objs[-2:], [{"tasks": []}, {"last_seq": self.box.query("SELECT MAX(seq) FROM feed")[0][0]}])
+        return objs[:-2]
 
     def test_the_rows_of_the_last_hours_oldest_first(self):
         old = iso(datetime.now(timezone.utc) - timedelta(hours=2))
@@ -433,12 +442,12 @@ class TestContext(BoxCase):
         con.execute("INSERT INTO feed (seq, at, line) VALUES (0, ?, 'SYS#0 00:00:00 | two hours ago')", (old,))
         con.commit()
         con.close()
-        self.box.post("AI", "action T7", "give Steve diamond_pickaxe — ok")
+        self.box.post("AI", "action -", "give Steve diamond_pickaxe — ok")
         rows = self.rows()
         self.assertEqual([r["seq"] for r in rows], [0, 1, 2, 3, 4])
         self.assertEqual(sorted(rows[1]), ["at", "line", "processed_at", "seq"])
         self.assertEqual((rows[1]["line"], rows[1]["processed_at"]), (self.box.feed_rows[0][1], None))
-        self.assertRegex(rows[4]["line"], r"^AI#4 \d\d:\d\d:\d\d action T7 \| give Steve diamond_pickaxe — ok$")
+        self.assertRegex(rows[4]["line"], r"^AI#4 \d\d:\d\d:\d\d action - \| give Steve diamond_pickaxe — ok$")
         self.assertEqual([r["seq"] for r in self.rows(VFG_BRAIN_HISTORY_HOURS="1")], [1, 2, 3, 4])
         self.assertEqual([r["seq"] for r in self.rows("--since", "-8m")], [3, 4])
         self.assertEqual(self.rows("--since", "2999-01-01"), [])   # none that recent: the last seq alone
@@ -478,10 +487,10 @@ class TestUsage(BoxCase):
     def test_a_row_with_the_pcs_time_for_every_component(self):
         before = iso(datetime.now(timezone.utc))
         r = self.vfg("usage", "add", "--component", "brain", "--model", "openai/gpt-6.1-sol", "--in", "10",
-                     "--out", "5", "--cost", "0.0012", "--ref", "T7")
+                     "--out", "5", "--cost", "0.0012", "--ref", "#812")
         self.assertEqual((r.returncode, r.stdout), (0, "1\n"), r.stderr)
         rows = self.usage()
-        self.assertEqual(rows[0][2:], ("brain", "openai/gpt-6.1-sol", 10, 5, 0.0012, "T7"))
+        self.assertEqual(rows[0][2:], ("brain", "openai/gpt-6.1-sol", 10, 5, 0.0012, "#812"))
         self.assertRegex(rows[0][1], ISO_RE)
         self.assertGreaterEqual(rows[0][1], before[:19])
         for c in ("respond", "jev", "implementer", "conversation", "orchestrator"):
@@ -493,7 +502,7 @@ class TestUsage(BoxCase):
     def test_queued_when_down_then_inserted_first(self):
         self.box.down = True
         self.assertOneLine(self.vfg("usage", "add", "--component", "brain", "--model", "sol", "--in", "100",
-                                    "--out", "50", "--ref", "T1"), 4, "cannot reach EC2")
+                                    "--out", "50", "--ref", "galick_gun_styrk"), 4, "cannot reach EC2")
         pending = os.path.join(self.box.vhome, "usage.pending.jsonl")
         with open(pending) as f:
             self.assertEqual(len(f.read().splitlines()), 1)
@@ -579,14 +588,16 @@ class TestFeed(BoxCase):
                          "env VFG_DB=%s/vfg.db VFG_FEED=%s/feed.log %s/python/bin/python3 %s/lib/vfg_feed.py post "
                          "SYS '' 'smoke ~ $HOME '\"'\"'q'\"'\"' \"d\"'" % ((self.box.rvfg,) * 4))
         self.assertOk(self.vfg("feed", "post", "GAME", "death Steve", "--", "-5 hearts"))
-        for fields in ("say -", "action T7", "task T183", "result T183", "note -"):
+        for fields in ("say -", "task galick_gun_styrk", "action -", "result galick_gun_styrk", "note railgun_steve"):
             self.assertOk(self.vfg("feed", "post", "AI", fields, "text"))
         lines = feed_lines(self.box)
         self.assertRegex(lines[4], r"^GAME#5 \d\d:\d\d:\d\d death Steve \| -5 hearts$")
-        self.assertRegex(lines[6], r"^AI#7 \d\d:\d\d:\d\d action T7 \| text$")
+        self.assertRegex(lines[6], r"^AI#7 \d\d:\d\d:\d\d task galick_gun_styrk \| text$")
 
     def test_bad_posts(self):
-        for args in (["NOISE", "", "x"], ["SYS", "f", "x"], ["ORCH", "T7 done", "x"], ["AI", "finished T7", "x"],
+        for args in (["NOISE", "", "x"], ["SYS", "f", "x"], ["ORCH", "castle_steve done", "x"],
+                     ["AI", "finished castle_steve", "x"], ["AI", "task " + RETIRED, "x"], ["AI", "say Galick", "x"],
+                     ["AI", "task 7gun", "x"], ["AI", "task a", "x"], ["AI", "task " + "a" * 33, "x"],
                      ["AI", "say 7", "x"], ["AI", "say", "x"], ["AI", "action T0", "x"],
                      ["GAME", "death | Steve", "x"], ["LINE", "a\nb", "x"]):
             self.assertOneLine(self.vfg("feed", "post", *args), 2)
@@ -653,15 +664,27 @@ class TestBrain(BoxCase):
         self.assertEqual(self.vfg("brain", "start").stdout, "brain  running pid %d\n" % pid)
         self.assertTrue(wait_for(lambda: self.log().endswith("up\n")))
         self.assertRegex(self.log(), r"^\d{4}-\d\d-\d\dT[\d:.]+Z vfg brain start\nfake brain %d up\n$" % pid)
-        write(self.brain("tasks.json"), json.dumps({"next": 11, "tasks": {
-            "T10": {"id": "T10", "player": "Alex", "line": "a castle", "task": "a castle at spawn, 40 by 40",
-                    "status": "open"},
-            "T9": {"id": "T9", "player": "Steve", "line": "ice", "task": "an ice trail behind Steve\nfor a minute",
-                   "status": "open"},
-            "T8": {"id": "T8", "player": "Steve", "task": "a done one", "status": "done"}}}))
+        # The open tasks are the box's, read in one call, oldest first; a done one is not listed.
+        self.box.add_task("castle_alex", "A castle at spawn, 40 by 40, for Alex", player="Alex", minutes_ago=5)
+        self.box.add_task("ice_trail_steve", "An ice trail behind Steve\nfor a minute", player="Steve",
+                          minutes_ago=8)
+        self.box.add_task("aaa_done", "a done one", status="done", minutes_ago=9)
+        self.box.add_task("long_one", "x" * 200, minutes_ago=1)
+        before = len(self.box.calls)
         r = self.vfg("brain", "status")
-        self.assertRegex(r.stdout, r"^brain  running pid %d since \d\d:\d\d:\d\d\nopen   T9 Steve: an ice trail behind "
-                                   r"Steve for a minute\nopen   T10 Alex: a castle at spawn, 40 by 40\n$" % pid)
+        self.assertEqual((r.returncode, r.stderr), (0, ""))
+        self.assertRegex(r.stdout, r"^brain  running pid %d since \d\d:\d\d:\d\d\nopen   ice_trail_steve Steve: An ice "
+                                   r"trail behind Steve for a minute\nopen   castle_alex Alex: A castle at spawn, 40 by "
+                                   r"40, for Alex\nopen   long_one -: x{119}…\n$" % pid)
+        self.assertEqual(self.box.programs()[before:], [{"op": "list", "open": True, "name": None, "json": True,
+                                                         "vfg": self.box.rvfg, "mc": self.box.rmc}])
+        # A read that fails says so, and the exit code is still the brain's.
+        self.box.down = True
+        r = self.vfg("brain", "status")
+        self.assertEqual(r.returncode, 0)
+        self.assertRegex(r.stdout, r"\nopen   \? \(cannot reach EC2 \(ec2-user@fakebox\): .*\)\n$")
+        self.assertRegex(r.stderr, r"^vfg: cannot read the open tasks from the box: cannot reach EC2")
+        self.box.down = False
         r = self.vfg("brain", "stop")
         self.assertEqual(r.stdout, "brain  stopped pid %d\n" % pid)
         self.assertTrue(wait_for(lambda: not alive(pid)))
@@ -669,6 +692,18 @@ class TestBrain(BoxCase):
             self.assertEqual(f.read(), "stopping\n")   # SIGTERM to the brain, which it saw; none to its child
         self.assertFalse(os.path.exists(self.brain("brain.pid")))
         self.assertOneLine(self.vfg("brain", "status"), 1)
+
+    def test_status_on_a_box_without_the_tasks_table(self):
+        self.box.close()
+        self.box = Box(self.rcon, tasks=False)
+        self.addCleanup(self.box.close)
+        r = self.vfg("brain", "status")
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(r.stdout, "brain  stopped\nopen   ? (vfg.db has no tasks table yet — restart vfg-bridge, "
+                                   "which adds it)\n")
+        self.assertEqual(r.stderr.splitlines(), [
+            "vfg: cannot read the open tasks from the box: vfg.db has no tasks table yet — restart vfg-bridge, "
+            "which adds it", "vfg: the brain is not running — vfg brain start"])
 
     def test_a_brain_deaf_to_sigterm_is_killed(self):
         write(self.run_path, "#!/usr/bin/env bash\ntrap '' TERM\nwhile true; do sleep 0.02; done\n")
@@ -980,17 +1015,18 @@ class TestPlace(BoxCase):
         return [c for c in self.world.sent if c == "data get storage everhear:places"]
 
     def test_save_list_and_forget(self):
-        r = self.place("save", "castle", "--player", "Steve", "--by", "T23")
+        r = self.place("save", "castle", "--player", "Steve", "--by", "castle_steve")
         self.assertEqual((r.returncode, r.stdout), (0, "saved castle at 197 68 251 in overworld\n"), r.stderr)
         self.assertIn('data modify storage everhear:places castle set value '
-                      '{pos:[197,68,251],dim:"minecraft:overworld",by:"T23"}', self.world.sent)
+                      '{pos:[197,68,251],dim:"minecraft:overworld",by:"castle_steve"}', self.world.sent)
         self.assertEqual(self.place("save", "nest", "--at", "-368.7", "70", "912.2", "--dim", "THE_END", "--by",
-                                    "T5").stdout, "saved nest at -369 70 912 in the_end\n")
-        self.assertEqual(self.world.storage["nest"], {"pos": [-369, 70, 912], "by": "T5", "dim": "minecraft:the_end"})
-        self.assertEqual(self.place("list", "--fresh").stdout, "castle 197 68 251 overworld (T23)\n"
-                                                               "nest -369 70 912 the_end (T5)\n")
+                                    "nest_alex").stdout, "saved nest at -369 70 912 in the_end\n")
+        self.assertEqual(self.world.storage["nest"], {"pos": [-369, 70, 912], "by": "nest_alex",
+                                                      "dim": "minecraft:the_end"})
+        self.assertEqual(self.place("list", "--fresh").stdout, "castle 197 68 251 overworld (castle_steve)\n"
+                                                               "nest -369 70 912 the_end (nest_alex)\n")
         self.assertEqual(json.loads(self.place("list", "--json").stdout)["castle"],
-                         {"pos": [197, 68, 251], "dim": "minecraft:overworld", "by": "T23"})
+                         {"pos": [197, 68, 251], "dim": "minecraft:overworld", "by": "castle_steve"})
         self.assertEqual(self.place("forget", "castle").stdout, "forgot castle\n")
         self.assertOneLine(self.place("forget", "castle"), 1, "^vfg: no place named castle$")
         self.assertOneLine(self.place("save", "x", "--player", "Nobody"), 1, "^vfg: Nobody is not online$")
@@ -1002,6 +1038,7 @@ class TestPlace(BoxCase):
                      ["save", "x", "--at", "1", "2"], ["save", "x", "--at", "nan", "2", "3"],
                      ["save", "x", "--player", "Steve", "--dim", "the_end"],
                      ["save", "x", "--at", "1", "2", "3", "--dim", "bad dim!"], ["save", "x", "--player", "Alex", "--by", "7"],
+                     ["save", "x", "--player", "Alex", "--by", RETIRED], ["save", "x", "--player", "Alex", "--by", "cast"],
                      ["save", "x"], ["save", "x", "--player", "Alex", "--at", "1", "2", "3"], ["forget", "Castle"],
                      ["list", "x"]):
             self.assertOneLine(self.place(*args), 2)
@@ -1009,13 +1046,13 @@ class TestPlace(BoxCase):
 
     def test_the_cache(self):
         self.assertEqual(self.place("list").stdout, "none\n")
-        self.world.save_place("castle", [197, 68, 251], by="T23")
+        self.world.save_place("castle", [197, 68, 251], by="castle_steve")
         self.assertEqual(self.place("list").stdout, "none\n")                     # inside the TTL: the cache
         self.assertEqual(os.stat(os.path.join(self.box.vhome, "places.json")).st_mode & 0o777, 0o600)
-        self.assertEqual(self.place("list", "--fresh").stdout, "castle 197 68 251 overworld (T23)\n")
+        self.assertEqual(self.place("list", "--fresh").stdout, "castle 197 68 251 overworld (castle_steve)\n")
         self.world.save_place("zoo", [1, 2, 3])
         self.age_cache(31)
-        self.assertEqual(self.place("list").stdout, "castle 197 68 251 overworld (T23)\nzoo 1 2 3 overworld\n")
+        self.assertEqual(self.place("list").stdout, "castle 197 68 251 overworld (castle_steve)\nzoo 1 2 3 overworld\n")
         self.assertEqual(len(self.lists()), 3)
         self.assertEqual(self.place("list", VFG_PLACES_TTL_S="0").stdout.count("\n"), 2)
         self.assertEqual(len(self.lists()), 4)
@@ -1026,7 +1063,7 @@ class TestPlace(BoxCase):
         self.assertOk(self.place("forget", "zoo"))
         self.assertEqual(sorted(self.cache()["places"]), ["castle", "nest"])
         self.assertAlmostEqual(self.cache()["fetched_at"], at, delta=1)
-        self.assertEqual(self.place("list").stdout, "castle 197 68 251 overworld (T23)\nnest 1 2 3 the_end\n")
+        self.assertEqual(self.place("list").stdout, "castle 197 68 251 overworld (castle_steve)\nnest 1 2 3 the_end\n")
         self.assertEqual(len(self.lists()), 4)
 
     def test_minecraft_down(self):
@@ -1035,12 +1072,12 @@ class TestPlace(BoxCase):
         self.assertFalse(os.path.exists(os.path.join(self.box.vhome, "places.json")))
         self.assertOneLine(self.place("save", "x", "--at", "1", "2", "3"), 5, "minecraft is not running")
         self.box.write_props()
-        self.world.save_place("castle", [197, 68, 251], by="T23")
+        self.world.save_place("castle", [197, 68, 251], by="castle_steve")
         self.place("list")
         self.age_cache(600)
         self.box.write_props(enable=False)
         r = self.place("list")              # a failed fetch serves a stale cache
-        self.assertEqual((r.returncode, r.stdout), (0, "castle 197 68 251 overworld (T23)\n"))
+        self.assertEqual((r.returncode, r.stdout), (0, "castle 197 68 251 overworld (castle_steve)\n"))
         self.assertRegex(r.stderr, r"^vfg: saved places from 60\d s ago: .*minecraft is not running")
 
 
@@ -1381,10 +1418,12 @@ class TestRealFeedWriter(BoxCase):
         self.assertEqual(self.vfg("feed", "post", "GAME", "death Steve", "--", "-5 hearts").stdout, "4\n")
         want = [r"^SYS#3 \d\d:\d\d:\d\d \| smoke ~ \$HOME second 'line'$", r"^GAME#4 \d\d:\d\d:\d\d death Steve \| -5 hearts$"]
         if "AI" in load_module("real_vfg_feed", REAL_FEED).TYPES:
-            r = self.vfg("say", "on it", "--task", "T7")
+            r = self.vfg("say", "on it", "--task", "castle_steve")
             self.assertEqual((r.returncode, r.stderr), (0, ""))
-            self.assertEqual(self.vfg("feed", "post", "AI", "result T7", "T7 done: castle").stdout, "6\n")
-            want += [r"^AI#5 \d\d:\d\d:\d\d say T7 \| on it$", r"^AI#6 \d\d:\d\d:\d\d result T7 \| T7 done: castle$"]
+            self.assertEqual(self.vfg("feed", "post", "AI", "result castle_steve", "castle_steve done: castle").stdout,
+                             "6\n")
+            want += [r"^AI#5 \d\d:\d\d:\d\d say castle_steve \| on it$",
+                     r"^AI#6 \d\d:\d\d:\d\d result castle_steve \| castle_steve done: castle$"]
         got = self.vfg("history", "--feed", "--limit", str(len(want))).stdout.splitlines()
         self.assertEqual(len(got), len(want))
         for line, pattern in zip(got, want):
