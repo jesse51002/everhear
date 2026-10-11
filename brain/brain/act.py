@@ -287,7 +287,7 @@ class Acts:
         before the next call. `turn.decided` is set once the first is answered and its edit or
         stop done, or it failed, so the reply can go."""
         given: list[str] = []
-        waiting: list[str] = []  # tasks opened whose implementer has not started yet
+        waiting: dict[str, str] = {}  # task -> its record, opened but not handed to its implementer yet
         try:
             for k, p in enumerate(handed):
                 first = k == 0 and not report
@@ -309,7 +309,7 @@ class Acts:
                 if v.kind == NEW:
                     await self.new(v, p, turn, given, waiting, player=player, line=line, first=first)
                 elif v.kind == FOLLOW_UP:
-                    await self.follow_up(v, p, turn, given, first=first)
+                    await self.follow_up(v, p, turn, given, waiting, first=first)
                 elif v.kind in (EDIT, STOP):
                     done = await (self.edit(v, seen, ref) if v.kind == EDIT else self.stop(v, seen, ref))
                     given.append(f"edit {v.copy}" if v.kind == EDIT else f"stop {', '.join(v.copies)}")
@@ -326,8 +326,8 @@ class Acts:
                     elif v.reply.strip():
                         turn.extras.append(v.reply)
         finally:
-            for name in waiting:  # cancelled before its implementer started
-                self.fail(name, f"{name} failed: cut off, the brain stopped before its implementer started")
+            for name, record in waiting.items():  # cancelled before its implementer had it
+                self.fail(name, record)
             turn.decided.set()
 
     @staticmethod
@@ -336,7 +336,7 @@ class Acts:
         turn.answered, turn.reply = True, reply
         turn.decided.set()
 
-    async def new(self, v, p, turn: Turn, given: list[str], waiting: list[str], *, player: str, line: str,
+    async def new(self, v, p, turn: Turn, given: list[str], waiting: dict[str, str], *, player: str, line: str,
                   first: bool) -> None:
         """A new task: its name made free, its row opened and written through, its `AI task` row,
         the reply let go, then its implementer started, at once."""
@@ -352,7 +352,7 @@ class Acts:
             if first:
                 turn.decided.set()
             return
-        waiting.append(name)
+        waiting[name] = f"{name} failed: cut off, the brain stopped before its implementer started"
         self.post("task", name, f"new: {v.description}")
         turn.started.append(p.part)
         turn.task = turn.task or name
@@ -363,13 +363,13 @@ class Acts:
         try:
             await self.implementers.start(name, v.brief)
         except Exception as e:  # noqa: BLE001 — the task fails, said so; the line's other parts go on
-            waiting.remove(name)
+            del waiting[name]
             self.fail(name, f"{name} failed: the implementer could not start: {short(f'{type(e).__name__}: {e}', 160)}")
             return
-        waiting.remove(name)
+        del waiting[name]
         log("task", f"{name} started for {player or 'nobody'}: {short(v.brief, 300)}")
 
-    async def follow_up(self, v, p, turn: Turn, given: list[str], *, first: bool) -> None:
+    async def follow_up(self, v, p, turn: Turn, given: list[str], waiting: dict[str, str], *, first: bool) -> None:
         """A follow-up: the task open again with its brief and description, its `AI task` row, the
         reply let go, then the brief sent to its implementer."""
         name = v.task
@@ -380,6 +380,7 @@ class Acts:
                 turn.decided.set()
             return
         self.tasks.follow_up(name, v.brief, v.description)
+        waiting[name] = f"{name} failed: cut off, the brain stopped before its implementer got the follow-up"
         self.post("task", name, f"follow-up: {short(v.brief, BRIEF_SHORT)}")
         turn.started.append(p.part)
         turn.task = turn.task or name
@@ -394,8 +395,10 @@ class Acts:
             await self.implementers.follow_up(name, v.brief, session=row.get("session") or None,
                                               brief=str(row.get("description") or ""))
         except Exception as e:  # noqa: BLE001
+            del waiting[name]
             self.fail(name, f"{name} failed: the implementer could not start: {short(f'{type(e).__name__}: {e}', 160)}")
             return
+        del waiting[name]
         log("task", f"{name} follow-up: {short(v.brief, 300)}")
 
     async def edit(self, v, seen: Seen, ref: str) -> list[Outcome]:

@@ -350,6 +350,33 @@ async def test_a_task_whose_implementer_never_started_is_failed_by_name(kit):
                                                          "before its implementer started")
 
 
+async def test_a_follow_up_cut_off_before_its_implementer_got_it_is_failed_by_name(kit):
+    k = kit(orchestrator=[answer("follow_up", task="galick_gun_styrk", brief="make the beam pierce blocks",
+                                 description="…", reply="on it, it'll pierce blocks")])
+    opened(k)
+    k.tasks.close("galick_gun_styrk", "done", "galick_gun_styrk done: a Galick Gun")
+    posted = k.acts.post
+
+    def post(kind, task, text):  # the brain stops right after the follow-up's row: the cancel
+        posted(kind, task, text)  # lands on the await before the implementer is handed the brief
+        if kind == "task":
+            asyncio.current_task().cancel()
+
+    k.acts.post = post
+    running = asyncio.create_task(k.acts.run(decided(k, decision(part("orchestrator", "make it pierce blocks"),
+                                                                 reply="ok")),
+                                             player="Styrkaeopteryx", line="make it pierce blocks", seen=SEEN,
+                                             ctx=k.ctx, head=HEAD, ref="#812"))
+    await asyncio.gather(running, return_exceptions=True)
+    await k.settle()
+    assert k.impl.followed == []
+    t = k.tasks.get("galick_gun_styrk")
+    record = "galick_gun_styrk failed: cut off, the brain stopped before its implementer got the follow-up"
+    assert (t["status"], t["result"]) == ("failed", record)
+    assert k.written("galick_gun_styrk")[-1]["status"] == "failed"
+    assert k.vfg.rows("result") == [("result galick_gun_styrk", record)]
+
+
 async def test_a_reports_orchestrator_part_writes_no_reply_and_the_brains_is_said(kit):
     k = kit(orchestrator=[answer("follow_up", task="galick_gun_styrk", brief="fix the beam's range",
                                  description="…", reply="never said")])
