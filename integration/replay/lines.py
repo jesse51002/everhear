@@ -95,7 +95,7 @@ async def run(args) -> None:
     pt = Playtest(Path(args.db))
     cfg = config.load()
     entries = pt.entries()
-    clock = Clock(entries, cfg.batch_s)
+    clock = Clock(entries, getattr(cfg, "batch_s", 60.0))
     asks = [e for e in entries if e.row.type == "LINE" and e.row.cls == "action_oriented"]
     only = {int(x) for x in args.only.split(",")} if args.only else None
     chosen = [e for e in asks if only is None or e.n in only][:args.limit or None]
@@ -112,7 +112,7 @@ async def run(args) -> None:
         done = {json.loads(x)["n"] for x in rows_file.read_text().splitlines() if x.strip()}
     meta = {"started": datetime.now(UTC).isoformat(timespec="seconds"), "db": str(args.db), "head": git_head(),
             "model": cfg.model, "reasoning": cfg.reasoning, "providers": list(cfg.providers), "owner": cfg.owner,
-            "checkpoint": cfg.checkpoint, "batch_s": cfg.batch_s, "timeout_s": cfg.timeout_s,
+            "checkpoint": cfg.checkpoint, "batch_s": getattr(cfg, "batch_s", 60.0), "timeout_s": cfg.timeout_s,
             "actions": len(catalog.names()), "refs": str(refs_dir),
             "prompt_sha": hashlib.sha256(PROMPT.read_bytes()).hexdigest()[:12],
             "asks": len(asks), "chosen": len(chosen), "already": len(done & {e.n for e in chosen})}

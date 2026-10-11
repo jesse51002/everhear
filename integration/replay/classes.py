@@ -232,7 +232,7 @@ async def run_respond(args) -> None:
     catalog = actions.load(cfg.repo, cfg.server)
     classes = final_classes(out)
     entries = pt.entries({i: (c, fed) for i, (c, fed, _, _) in classes.items()})
-    clock = Clock(entries, cfg.batch_s)
+    clock = Clock(entries, getattr(cfg, "batch_s", 60.0))
     chat = pt.answered()
     base = asker(cfg.respond_model, cfg.respond_reasoning, cfg.timeout_s, cfg.respond_providers)
     raw: dict = {}

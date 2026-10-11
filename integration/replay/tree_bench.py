@@ -264,18 +264,18 @@ def run_batches(args) -> None:
     judged = {r["id"]: r["judged"] for r in lines}
     cls = {"brain": "action_oriented", "respond": "conversational", "noreply": "context", "context": "context",
            "dropped": "not_relevant"}
-    result = {"batch_s": cfg.batch_s, "version": args.version, "margin": args.margin}
+    result = {"batch_s": getattr(cfg, "batch_s", 60.0), "version": args.version, "margin": args.margin}
     for variant in ("jev", "tree", "council"):
         got = outcomes(lines, tree if variant != "jev" else None, variant, args.margin)
         classes = {i: (cls[g["out"]], fed[i] if variant == "jev" else judged[i]) for i, g in got.items()}
         entries = pt.entries(classes)
-        clock = Clock(entries, cfg.batch_s)
+        clock = Clock(entries, getattr(cfg, "batch_s", 60.0))
         reads = 0
         for e in entries:
             if e.row.type == "LINE" and e.row.cls in LIVE:
                 clock.read(e.seen)
                 reads += 1
-        clock.until(iso(when(entries[-1].seen) + timedelta(seconds=cfg.batch_s + 1)))
+        clock.until(iso(when(entries[-1].seen) + timedelta(seconds=getattr(cfg, "batch_s", 60.0) + 1)))
         result[variant] = {"batches": len(clock.batches), "reads": reads,
                            "rows_in_batches": sum(n for _, n in clock.batches),
                            "times": [at for at, _ in clock.batches]}

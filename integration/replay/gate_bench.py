@@ -235,7 +235,7 @@ def respond_items(pt: Playtest, bench: list[dict], jev: dict[str, dict], cfg, re
     the context's size), the context the brain's at the line's moment (see the docstring)."""
     classes = {i: (v["class"], v["fed"]) for i, v in jev.items()}
     entries = pt.entries(classes)
-    clock = Clock(entries, cfg.batch_s)
+    clock = Clock(entries, getattr(cfg, "batch_s", 60.0))
     want = {r["id"]: r for r in bench}
     events = []  # (moment, 0, index, entry) for a context row; (moment, 1, id, None) for a line not kept
     in_ctx = set()
