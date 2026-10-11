@@ -100,9 +100,11 @@ flowchart TB
 - The **client mod** turns speech into text on the player's own PC (no audio leaves it) and posts
   each line to the **bridge** on the server's EC2 box. The bridge also tails the Minecraft console
   for joins, deaths and the like.
-- The **Jev filter** asks Jev (TypeSafe) whether each line asks the AI for something to happen
-  (`action_oriented`), talks to it (`conversational`), is context it needs, or is not relevant, and
-  writes what it keeps to the **feed**, one line per entry, beside the bridge's game events.
+- The **Jev filter** asks Jev (TypeSafe) what should become of each line: the brain acts on it
+  (`action_oriented`), Respond answers it (`conversational`), it is kept as context, or it is
+  dropped. A line for the brain or Respond goes with its speaker's earlier lines that belong to the
+  same ask, which a second Jev call gathers. It writes what it keeps to the **feed**, one line per
+  entry, beside the bridge's game events.
 - The **brain**, on the owner's PC, follows the feed over SSH (`vfg watch`). Every action-oriented
   line is one call to a fast OpenRouter model (`structured()`), its own task, so no line waits for
   another. That one call routes each part of the line and does it in the same answer: an
@@ -217,7 +219,7 @@ Rough guidance from list prices; check the current ones for your region and plan
 | What | How it is billed |
 |---|---|
 | EC2 | `m7i.xlarge` on demand, about $0.20 an hour while running, plus a 30 GB gp3 disk until the box is retired. `ec2.sh stop` stops the hourly charge; `retire` ends both |
-| Jev (TypeSafe) | per call, one per line players say or type; see TypeSafe's pricing |
+| Jev (TypeSafe) | per call: one per line players say or type, and one more for a line to the AI when its speaker has earlier lines to gather; see TypeSafe's pricing |
 | OpenRouter | the brain and Respond: a fraction of a cent a call with the conversation cached, roughly $0.30 an hour for one player and $1 for three |
 | Claude | implementers run on a Claude subscription and count against its usage limits; at API prices they would be the largest cost by far. `vfg usage add` records each part's tokens and their API-price cost in the `usage` table |
 | S3 | the installer bucket holds a few MB, deleted after 8 days |

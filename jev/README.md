@@ -1,34 +1,70 @@
 # jev — the Jev filter
 
-On the EC2 box. It asks Jev (TypeSafe) which of four classes each new line a player says or types
-is, writes the verdict into the transcript history, and feeds the lines it keeps to the brain in
-batches:
+On the EC2 box. It asks Jev (TypeSafe) what should become of each new line a player says or types,
+writes the verdict into the transcript history, and feeds the lines it keeps to the brain in
+batches.
 
-| Class | A line that |
-|---|---|
-| `action_oriented` | asks the AI for something to happen, or follows up an earlier ask |
-| `conversational` | talks to the AI without asking for an action |
-| `context` | is not said to the AI, but the AI needs it to understand or carry out an ask |
-| `not_relevant` | is neither; never fed |
+**One call a line, two questions** (D2, chosen on 2026-10-11): what should happen with the line —
+the AI must act, answer in chat, remember it, or ignore it — and, if the AI only replied in chat,
+whether the speaker would be fine, let down, or not notice. The answers walk onto four classes:
+
+| Class | Answers | Goes to |
+|---|---|---|
+| `action_oriented` | act, and the speaker would be let down by a reply alone | the brain |
+| `conversational` | answer; or act, with the second answer anything else or missing | Respond |
+| `context` | remember | the feed, read by no model |
+| `not_relevant` | ignore | nowhere; never fed |
+
+The confidence stored and fed is the first answer's. An answer without the first question counts as
+Jev failing.
+
+**The gather call.** Speech-to-text cuts a player at every pause, so one ask can arrive in pieces. A
+line classed `action_oriented` or `conversational` gets one more call before it is fed, over its
+speaker's lines that Jev classed `context` or `not_relevant` after it judged their last line to the
+AI, said before this one and 3 minutes before it at most (the newest 10): is each part of this ask?
+That is judge order, not the order said, because a voice line is stored only once its speech is
+text, after a line typed later may have been judged: each line is offered to the speaker's next line
+to the AI judged after it, and to no other. A line passed as `context` with no confidence, while Jev
+failed open or after it refused the line twice, is never gathered. The yes lines go with the ask as
+one feed line, in the order said, the ask last, joined with ` … ` —
+`the castle by the river … the big one … make it bigger` — with the ask's fields and time, the
+oldest dropped first when it would be over the feed's 500 characters. A gathered line keeps its own
+class and is fed, or not, as before. No such lines, no call. A gather call that fails leaves the ask
+to go alone, and does not count towards failing open. The group is held in memory until the ask is
+fed, so a crash between the two feeds the ask alone; a restart finds a group already fed by the ask
+at its end.
 
 An `action_oriented` or `conversational` line flushes the batch at once, since both get a live
-answer; otherwise a batch goes `VFG_BATCH_SECONDS` after its first line. Lines dropped in the last
-two minutes are asked about again inside the next call, and one that flips is fed with
-`was=not_relevant`. If Jev fails for 10 s the filter fails open: every line passes as `context`,
-with one `SYS` line in the feed when that starts and another when Jev is back.
+answer; otherwise a batch goes `VFG_BATCH_SECONDS` after its first line. If Jev fails for 10 s the
+filter fails open: every line passes as `context`, with one `SYS` line in the feed when that starts
+and another when Jev is back.
 
-Jev's state is the fixed rules, `lookout.md`, the brain's action menu `menu.md` (one
-`name — what it does` a line; missing or empty is fine), then the history: the lines said, the
-AI's included, and the brain's own records of what it did — the feed's `AI` rows of kind
-`action`, `task` and `result` — so a follow-up to an earlier ask reads as one. All of it fits in
-`VFG_JEV_STATE_TOKENS`: the menu takes at most half of what the rules, the lookout and the lines
-asked about leave, in whole lines, and the history the rest, newest first.
+Jev's state is the fixed rules (the setting and how to read the state; the classes are defined only
+in the questions' options), `lookout.md` (what to watch for), a block of invented examples under
+what should become of each, the brain's action menu `menu.md` (one `name — what it does` a line;
+missing or empty is fine), then the history: the lines said, the AI's included, and the brain's own
+records of what it did — the feed's `AI` rows of kind `action`, `task` and `result` — so a follow-up
+to an earlier ask reads as one. The line asked about is marked `[1]` where it was said; in the
+gather call the ask is marked `[ask]` and the lines asked about `[1]` … `[n]`. All of it fits in
+`VFG_JEV_STATE_TOKENS`: the menu takes at most half of what the rules, the lookout, the examples and
+the lines asked about leave, in whole lines, and the history the rest, newest first.
+
+The journal has one line per call, the routing call's with both answers:
+
+```text
+judge <id> Steve voice action_oriented 0.91 · act 0.91, let down 0.88 · 230ms 7012tok
+gather <ask id> Steve · 3 asked, 1 yes: <id> 0.91 · no: <id> 0.80, <id> 0.77 · 210ms 7400tok
+```
+
+A routing call Jev answers writes one `usage` row, `ref` the line's id, one row for both calls when
+it was refused once first; a call that fails, or is refused twice, writes none. An answered gather
+call writes one with `ref` `gather:<ask id>`, and the probe that finds Jev back one with `ref` `probe`.
 
 ## Run it
 
 On the box it is the systemd unit `vfg-jev`: `/opt/vfg/python/bin/python3 -u /opt/vfg/jev/jev_filter.py`.
-To judge one text and write nothing: `python3 jev_filter.py --judge "<text>"`, with `--raw` to see
-Jev's answer as sent.
+To judge one text and write nothing: `python3 jev_filter.py --judge "<text>"`, which prints the class
+with both answers, with `--raw` to see Jev's answer as sent.
 
 Deploy from the repo's root on the owner's PC: `jev/deploy.sh`. It streams this folder (without
 `tests/`) to `/opt/vfg/jev/` over SSH, swaps it in and restarts the unit. Set the key once with
@@ -40,9 +76,11 @@ Deploy from the repo's root on the owner's PC: `jev/deploy.sh`. It streams this 
 cd jev && python3 -m unittest discover -s tests
 ```
 
-No network, under a second: `tests/fake_jev.py` stands in for Jev's API and `tests/fake_lib/` for
-the bridge's feed writer. Every rule runs on a fake clock in `test_filter.py`; `test_e2e.py` runs
-`jev_filter.py` once as a process against the stand-ins and stops it with SIGTERM.
+No network, under a second: `tests/fake_jev.py` stands in for Jev's API (it answers by keyword; a
+line with `big one` in it is part of the ask) and `tests/fake_lib/` for the bridge's feed writer.
+Every rule runs on a fake clock in `test_filter.py`; `test_e2e.py` runs `jev_filter.py` once as a
+process against the stand-ins and stops it with SIGTERM. `test_drift.py` checks Jev's wording against
+the wording benched in `integration/replay/` (skipped where that is not there).
 
 ## Settings
 

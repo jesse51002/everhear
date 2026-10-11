@@ -1,14 +1,17 @@
 """The loop: each row routed by its class, a context line no model is shown, Respond's
-hand-up, history, two lines at once, a report, and no batch."""
+hand-up and the order it answers in, history, two lines at once, a report, and no batch."""
 
 import asyncio
 import importlib.util
+from pathlib import Path
 
 from vfg_llm import LlmError
 
 from brain import config, loop
 from brain.act import BROKE
 from brain.call import PROMPT
+from brain.respond import Response, promises
+from brain.tasks import Tasks
 
 from conftest import cmd, decision, part, rows
 
@@ -54,6 +57,68 @@ async def test_respond_replies_or_hands_up_never_both(kit):
     k.brain.feed(TALK.format(seq=8))
     await k.settle()
     assert [c["output"] for c in k.ask.calls] == ["Response", "Decision"]
+
+
+async def test_respond_never_says_an_offer_or_a_promise_it_hands_the_line_up_instead(kit, capsys):
+    k = kit(Decision=GIVE, Response={"reason": "a question", "hand_up": False, "reply": "Want me to make it rain?"})
+    k.brain.feed(TALK.format(seq=7))
+    await k.settle()
+    assert [c["output"] for c in k.ask.calls] == ["Response", "Decision"]
+    assert "handed this line up to you: a question · handed up in code: an offer" in k.ask.calls[1]["prompt"]
+    assert k.vfg.said() == [["there you go", "--task", "T1"]]  # the brain's line, never the offer
+    assert 'respond guard #7 an offer: "Want me to make it rain?"' in capsys.readouterr().out  # the log alone
+
+    ack = "Got it, I'll ask you before giving Alex anything."  # a rule for later: said
+    k = kit(Response={"reason": "a rule for later", "hand_up": False, "reply": ack})
+    k.brain.feed(TALK.format(seq=8))
+    await k.settle()
+    assert [c["output"] for c in k.ask.calls] == ["Response"] and k.vfg.said() == [[ack]]
+
+
+GUARD = {  # reply -> what promises() says, no task open (the reviewer's probes among them)
+    "Sure thing, on it!": "a promise", "Aye, on it, captain!": "a promise", "Will do!": "a promise",
+    "Consider it done.": "a promise", "Leave it to me!": "a promise", "I'm gonna make it rain!": "a promise",
+    "I'm going to build that for you.": "a promise", "Okay, making it rain now!": "a promise",
+    "I'll take care of it.": "a promise", "I'll make sure you get a netherite sword.": "a promise",
+    "Aye, I'll be makin' it rain, matey!": "a promise", "One storm, coming right at ya!": "a promise",
+    "Done! Enjoy the sword.": "a promise", "Sure thing, spawning some cows now.": "a promise",
+    "I can do that.": "an offer", "Let me do that for you.": "an offer", "Want it stopped?": "an offer",
+    "Yeah, I can add theme music. Want distinct tracks for each?": "an offer",
+    "Put a sign on it and click on it.": "", "Aye aye! I could get used to this pirate life.": "",
+    "Let me put it this way: smite only beats sharpness on undead.": "", "Will check with you first, promise.": "",
+    "Want the recipe? Three glass, five obsidian and a nether star.": "",
+    "You don't want me to spoil the ending, trust me.": "", "Good luck in the nether! Watch your back for ghasts.": "",
+    "Hang on, you lost everything in lava? Rip.": "", "Night's coming up, find a bed soon.": "",
+    "Grab some food on the way back.": "", "The sun will be up soon, hold out.": "",
+    "I mean, that was a pretty good one, I'll give you that.": "", "Aye aye, Captain Riley.": "",
+    # small talk and the AI's own talk: said, not handed up
+    "I'm doing great, thanks for asking!": "", "We're doing great as a team.": "",
+    "Getting dark now, better find shelter.": "", "Haha, I'm making no promises about the creepers.": "",
+    "Done already? That was fast.": "", "Right away? Patience, my friend.": "",
+    "Okay, I'll stop talking now.": "", "Sure, I'll keep quiet for a bit.": "", "Arr, I'll turn the chatter down.": "",
+    "You're on the way to the nether, nice.": "", "Not right away, it takes a minute to learn.": "",
+    "Steak, well-done!": "", "I can get why you'd think that.": "", "Your stuff is on the way back to spawn.": "",
+    "Sure - on it.": "a promise", "Your sword's on the way.": "a promise", "I can get you one.": "an offer",
+}
+
+
+def test_promises_catches_an_offer_or_a_promise_and_lets_talk_and_a_speakers_own_status_through():
+    assert {reply: promises(reply, "OPEN TASKS:\nnone") for reply in GUARD} == GUARD
+    status = "castle's coming up, give it a sec"   # a status only while the speaker has a task open
+    opened = Tasks(Path("/nonexistent/tasks.json"))
+    opened.tasks["T1"] = {"id": "T1", "at": "2026-10-08T18:22:31.000Z", "player": "Steve", "task": "a castle",
+                          "status": "open"}
+    assert [bool(promises(status, tasks, who)) for tasks, who in (
+        (opened.show(), "Steve"), (opened.show(["T1"]), "Steve"), (opened.show(), "Alex"),
+        ("OPEN TASKS:\nnone", "Steve"),
+        ("TASKS (…):\n- castle_steve for Steve, done: a castle", "Steve"),   # named tasks list closed ones too
+        ("TASKS (…):\n- castle_steve for Steve, open: a castle", "Steve"))] == [False, False, True, True, True, False]
+
+
+def test_respond_decides_first_and_always_writes_its_reason():
+    schema = Response.model_json_schema()               # what the model is shown, and writes in this order
+    assert list(schema["properties"]) == ["reason", "hand_up", "reply"]
+    assert schema["required"] == ["reason"] and schema["properties"]["hand_up"]["default"] is True
 
 
 async def test_history_is_the_old_feed_at_the_start_and_a_line_on_the_watch_is_live_whatever_its_time(kit):

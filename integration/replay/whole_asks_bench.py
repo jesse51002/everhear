@@ -51,7 +51,8 @@ from tree_bench import Bench, raw_answers, read_rows, tree_questions  # noqa: E4
 from classes import HISTORY_H, STATE_TOKENS, TRIES  # noqa: E402
 from jev_api import PRICE_PER_INPUT_TOKEN, JevDown, JevRefused  # noqa: E402
 from playtest import iso, when  # noqa: E402
-from prompt import build_state, estimate, questions  # noqa: E402
+from prompt import estimate  # noqa: E402
+from state_v1 import build_state, questions  # noqa: E402  (the old state, as benched)
 from tree_questions import A_ONLY, NAMES  # noqa: E402
 from trees_bench import build_questions  # noqa: E402
 import state_v2  # noqa: E402
@@ -132,7 +133,7 @@ def run(args) -> None:
         todo = todo[:args.limit]
     b.meta(out / f"meta-{args.half}{'-limit' if args.limit else ''}.json", state=args.state, routing=args.routing,
            half=args.half, inputs=len(todo), already=len(done), inputs_file=str(args.inputs),
-           rules=state_v2.RULES_V2 if args.state == "new" else "prompt.RULES",
+           rules=state_v2.RULES_V2 if args.state == "new" else "state_v1.RULES",
            lookout=state_v2.LOOKOUT_V2 if args.state == "new" else str(b.lookout),
            examples=state_v2.EXAMPLES_V2 if args.state == "new" else "")
     print(f"{args.state} {args.routing}: {len(todo)} inputs ({args.half}), {len(done)} already, "

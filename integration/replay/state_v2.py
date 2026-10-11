@@ -26,7 +26,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[1] / "jev"))
-from prompt import HISTORY_HEADING, _json_bytes, _order, fit_menu, render_line, state_json  # noqa: E402
+from prompt import _json_bytes, _order, fit_menu, render_line, state_json  # noqa: E402
+from state_v1 import HISTORY_HEADING  # noqa: E402  (the heading as benched)
 
 RULES_V2 = """\
 You read what players say on a Minecraft server, for an AI that plays alongside them. The AI hears every line: speech turned into text by speech-to-text, so words can be wrong or missing, and typed chat. It answers in chat and changes the game for the players: it gives items and effects, builds, spawns, teleports, sets the time and the weather, makes new weapons and powers, and runs events. Players talk to it without a wake word, sometimes calling it "AI", "bot" or a name, which speech-to-text often mishears; most of what they say is to each other.

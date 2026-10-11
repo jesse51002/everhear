@@ -1,6 +1,6 @@
 # Everhear contracts
 
-_The contract the parts were built to (draft, 2026-10-07; the dispatcher, §14, 2026-10-09; actions, §1, §8, §10 and §14, 2026-10-10; incantations, §2, §4, §7, §8 and §10, 2026-10-10; the brain, which replaces the conversation, the orchestrator and the dispatcher, §1, §4, §5, §7, §8, §9, §12 and §14, 2026-10-10). Code comments cite it as "Contracts §N". Where the code has moved on — model choices — the code and the part's README are current._
+_The contract the parts were built to (draft, 2026-10-07; the dispatcher, §14, 2026-10-09; actions, §1, §8, §10 and §14, 2026-10-10; incantations, §2, §4, §7, §8 and §10, 2026-10-10; the brain, which replaces the conversation, the orchestrator and the dispatcher, §1, §4, §5, §7, §8, §9, §12 and §14, 2026-10-10; the Jev routing, §5 and §7, 2026-10-11). Code comments cite it as "Contracts §N". Where the code has moved on — model choices — the code and the part's README are current._
 
 **What every part of the prototype takes in and puts out, so each part can be built from its own spec in one prompt and still fit the others.** A part's spec may decide anything inside the part; it may not change anything here. Where a part needs this page to change, the change is made here first.
 
@@ -79,13 +79,15 @@ CREATE TABLE usage (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,
 ## 5. Jev — the Jev filter
 
 - Takes lines with `jev_class IS NULL` and `source` other than `ai`, in `at` order, polling every 250 ms or less.
-- Calls Jev — `POST https://api.typesafe.ai/v1/systemone`, model `jev-latest`, key `TYPESAFE_API_KEY` — once per new line. The state is the fixed rules, then `/opt/vfg/lookout.md` (what to look out for), then `/opt/vfg/menu.md` (the brain's actions, one `name — what it does` line each, which `vfg jev menu set` writes), then history: recent lines, the AI's included, and the brain's records of the actions it ran and the tasks it opened (`AI` feed lines), so a follow-up to an earlier ask reads as one — as much as fits in `VFG_JEV_STATE_TOKENS` (default 8,000). Each line asked about gets one `choice` question with its confidence, of four classes:
-  - `action_oriented` — asks the AI for something to happen, or follows up an earlier ask;
-  - `conversational` — talks to the AI without asking for an action;
-  - `context` — not said to the AI, but needed to understand or carry out an ask;
-  - `not_relevant` — neither.
+- Calls Jev — `POST https://api.typesafe.ai/v1/systemone`, model `jev-latest`, key `TYPESAFE_API_KEY` — once per new line, the routing call. The state is the fixed rules (the setting and how to read the state; they define no class), then `/opt/vfg/lookout.md` (what to look out for), then a block of invented examples under what should become of each, then `/opt/vfg/menu.md` (the brain's actions, one `name — what it does` line each, which `vfg jev menu set` writes), then history: recent lines, the AI's included, and the brain's records of the actions it ran and the tasks it opened (`AI` feed lines), so a follow-up to an earlier ask reads as one — as much as fits in `VFG_JEV_STATE_TOKENS` (default 8,000). The line is marked `[1]` in the history and gets two `choice` questions, D2's: what should happen with it (`d_what`: the AI must act, the AI should answer in chat, remember it, ignore it), and how the speaker would feel if the AI only replied in chat (`d_feel`: fine, let down, they wouldn't notice). The answers walk onto four classes, with `d_what`'s confidence:
+  - `action_oriented` — act, and let down: the brain;
+  - `conversational` — answer, or act with `d_feel` anything else or missing: Respond;
+  - `context` — remember: kept, and shown to no model (§9);
+  - `not_relevant` — ignore: never fed.
+
+  A missing or malformed `d_what` is Jev failing. Each line is judged once: nothing is asked again.
 - Writes the verdict to the line, and a `usage` row with `component = jev`.
-- **Judges again in the same call**: up to 5 lines judged `not_relevant` in the last 2 minutes are asked again, as extra `choice` questions in the new line's call, so the state is paid for once. One that flips is fed with `was=not_relevant`. The filter keeps that marker in memory, so a flip caught by a crash is fed without it.
+- **The gather call.** A line classed `action_oriented` or `conversational` gets one more call before it is fed, over its speaker's lines that Jev classed `context` or `not_relevant` with a confidence (never a line passed as `context` while Jev failed open or after it refused the line twice), judged after that speaker's last `action_oriented` or `conversational` line was judged, said before the line and at most 180 s before it, not blank and not dropped — the newest 10. Judge order, not the order said, because a voice line is stored once its speech is text, after a line typed later may have been judged: each line is offered to the speaker's next line to the AI judged after it, and to no other. When there are none, no call is made. The state is built the same way, with the gather call's own rules and history heading, the line marked `[ask]` and those lines `[1]` … `[n]`, and each of them gets one `choice` question: is it part of the ask (`part_of_the_ask`, `not_part_of_it`); a missing answer is a no. The yes lines go with the ask as one `LINE` (§7): their texts and then the ask's, in the order said, joined with ` … `, the oldest dropped first when that is over 500 characters, under the ask's fields and time. A gathered line keeps its own class and is fed, or not, as before. A gather call that fails feeds the ask alone, and does not count towards failing open. It writes a `usage` row with `ref = gather:<ask id>`, and one `gather` line to the journal. The filter holds a group in memory until the ask is fed, so an ask caught by a crash in between is fed alone.
 - **Feeds what it keeps** (`action_oriented`, `conversational`, `context`) in batches. An `action_oriented` or `conversational` line flushes the batch at once, with whatever context is waiting: both get a live answer. Otherwise a batch flushes `VFG_BATCH_SECONDS` (default 5) after its first line.
 - If Jev fails for 10 s it **fails open**: every line passes as `context` with no confidence, and one `SYS` line says so. No model is shown a `context` line (§9), so while Jev fails open the brain answers none of them. Another `SYS` line says when Jev is back.
 
@@ -104,7 +106,7 @@ CREATE TABLE usage (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,
 
 ```text
 LINE#812 18:22:31 Steve voice action_oriented 0.93 -8dB | build me a castle
-LINE#813 18:22:33 Alex chat context 0.71 - was=not_relevant | that cave by spawn
+LINE#813 18:22:33 Alex chat context 0.71 - | that cave by spawn
 AI#814 18:22:35 task T7 | T7: a castle at spawn, about 40x40, stone and oak
 AI#815 18:22:35 say T7 | on it, castle coming up
 GAME#816 18:22:40 death Steve | Steve was slain by Zombie
@@ -113,14 +115,14 @@ SYS#818 18:25:00 | jev unavailable — passing every line as context
 ```
 
 - The grammar is `TYPE#seq HH:MM:SS fields | text`. `TYPE` is `LINE`, `GAME`, `AI` or `SYS`. The time is UTC. The fields, separated by single spaces, with `-` for anything missing:
-  - `LINE`: `<player> <voice|chat> <action_oriented|conversational|context> <confidence|-> <NdB|-> [was=not_relevant]`. The confidence has two decimals and is `-` when Jev fails open; dB is the line's peak, rounded, and `-` for typed chat.
+  - `LINE`: `<player> <voice|chat> <action_oriented|conversational|context> <confidence|-> <NdB|->`. The confidence has two decimals and is `-` when Jev fails open; dB is the line's peak, rounded, and `-` for typed chat. A line fed before the Jev routing may end with ` was=not_relevant`, from the re-ask that is gone; the writer still accepts it, and nothing writes it now. The text may hold a group (§5): the lines Jev gathered into an ask, then the ask, in the order said, joined with ` … ` — `the castle by the river … the big one … make it bigger`.
   - `GAME`: `<kind> <player|->`, any kind the bridge feeds.
   - `AI`: `<say|action|task|result|note> <task id|->` — what the brain did, which only it writes: `say`, a chat line it sent (as the `lines` table keeps it); `action`, an action it ran and how it went; `task`, an implementer task it opened or a follow-up it sent; `result`, a task's result, one short line; `note`, anything else it records. Nothing an implementer writes is ever fed.
   - `SYS`: no fields.
 - The `ORCH` type of the orchestrator is retired.
 - Text has newlines replaced by spaces and is cut at 500 characters with `…`.
 - A batch is written in one go, under 200 ms.
-- **Every kept line is fed exactly once**, across restarts and crashes: before feeding a line not yet marked `fed_at`, the Jev filter looks for it in the `feed` table and only marks it if it is already there.
+- **Every kept line is fed exactly once**, across restarts and crashes: before feeding a line not yet marked `fed_at`, the Jev filter looks for it in the `feed` table and only marks it if it is already there. A group is that ask's line: its text ends with ` … ` and the ask's.
 - **A cast** that fired or failed (§2) is always fed, whatever `watch.json` says: `GAME#820 18:30:02 cast Steve | Steve cast "fire ball": command, running as command_2`, or `… | Steve cast "fire ball": failed — <error>`. Cooldown and duplicate casts are not fed.
 - `SYS#0` is never assigned by the feed: `vfg watch` uses it for its own notices — EC2 unreachable, reconnected, lines skipped, feed restarted.
 - **The writer is one Python module, `vfg_feed`**, owned by the bridge and deployed to `/opt/vfg/lib/`. Its API is `append(type, fields, text, at=None) -> seq` and `append_batch(entries) -> [seq]`, where each entry is a `(type, fields, text, at)` tuple; `at` is the moment it describes (when a line was said), defaulting to now, and is what the `HH:MM:SS` shows. It cleans the text (newlines to spaces, 500 characters), takes a file lock, appends to `feed.log` and inserts the `feed` row. Its command line is `python3 /opt/vfg/lib/vfg_feed.py post <TYPE> "<fields>" "<text>"`, which prints the seq. The Jev filter imports it, and `vfg feed post` calls it over SSH.

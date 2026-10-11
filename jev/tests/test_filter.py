@@ -1,44 +1,50 @@
 """Every rule of Behaviour, driven through `Filter.step()` with a fake clock, a
 fake Jev and the stand-in feed writer. Nothing here sleeps."""
 import os
-import re
 import sqlite3
 import unittest
 from unittest import mock
 
-from fake_jev import verdict
+from fake_jev import asked_about, choose
 from support import T0, FakeClock, Lines, load_fake_feed, make_db, tempdir
 
-from filter import SYS_BACK, SYS_OPEN, Config, Filter
+from filter import GATHER_MAX, MAX_STATE_TOKENS, SYS_BACK, SYS_OPEN, Config, Filter
 from jev_api import JevDown, JevRefused, Result
-from prompt import estimate, state_json
+from prompt import EXAMPLES, GATHER_HEADING, GATHER_RULES, estimate, gather_questions, state_json
 from store import Store
-
-QUOTED = re.compile(r"“(.*)”", re.S)
 
 
 class FakeJev:
-    """Answers by keyword in the quoted line, or as `verdicts[text]` says;
-    raises on demand; records every call."""
+    """Answers as the stand-in does (fake_jev.choose): by keyword in the line
+    asked about, or by the class `verdicts[text]` gives it; for a text in
+    `answers`, exactly those answers. Raises on demand, and, as the real
+    client does, JevDown when the answer `required` is missing. Records every
+    call."""
 
     def __init__(self):
         self.calls = []
         self.probes = 0
         self.down = None      # a reason: every call and probe raises JevDown
-        self.refuse = 0       # how many calls in a row raise JevRefused
-        self.verdicts = {}
+        self.raises = []      # what the next calls raise, in turn; None answers
+        self.verdicts = {}    # text -> (class, confidence), answered as D's two questions
+        self.answers = {}     # text -> {question name: (label, confidence)}, a question left out unanswered
 
-    def ask(self, state, questions):
+    def ask(self, state, questions, required="line_1"):
         self.calls.append((state, questions))
         if self.down:
             raise JevDown(self.down)
-        if self.refuse:
-            self.refuse -= 1
-            raise JevRefused("400 bad request")
+        if self.raises:
+            err = self.raises.pop(0)
+            if err is not None:
+                raise err
         answers = {}
         for name, q in questions.items():
-            text = QUOTED.search(q["instructions"]).group(1)
-            answers[name] = self.verdicts.get(text) or verdict(text)
+            text = asked_about(q["instructions"])
+            got = self.answers[text].get(name) if text in self.answers else choose(q, self.verdicts)
+            if got is not None:
+                answers[name] = got
+        if required and required not in answers:
+            raise JevDown("malformed or missing %s in the answer" % required)
         return Result(answers, len(state_json(state)) // 4, 12)
 
     def probe(self):
@@ -230,23 +236,18 @@ class TestBatching(Base):
 
 class TestFields(Base):
     def test_the_three_examples(self):
-        self.jev.verdicts = {"build me a castle": ("action_oriented", 0.93), "that cave by spawn": ("not_relevant", 0.8)}
+        self.jev.verdicts = {"build me a castle": ("action_oriented", 0.93), "that cave by spawn": ("context", 0.71)}
         s = self.lines.add(T0, "Steve", "voice", "build me a castle", peak=-8.2)
         a = self.lines.add(T0 + 1, "Alex", "chat", "that cave by spawn")
         self.step()
-        self.jev.verdicts["that cave by spawn"] = ("context", 0.71)
-        self.lines.add(T0 + 3, "Alex", "chat", "lol")
-        self.step(3)
-        self.step(5)
         self.jev.down = "500"
         v = self.lines.add(T0 + 9, "Alex", "voice", "anyone got iron", peak=-21.4)
         self.step(1)
         self.step(10)
         self.step(5)
         fields = [e[1] for e in self.fed()]
-        self.assertIn("Steve voice action_oriented 0.93 -8dB", fields)
-        self.assertIn("Alex chat context 0.71 - was=not_relevant", fields)
-        self.assertIn("Alex voice context - -21dB", fields)
+        self.assertEqual(fields, ["Steve voice action_oriented 0.93 -8dB", "Alex chat context 0.71 -",
+                                  "Alex voice context - -21dB"])
         self.assertEqual(self.row(s)["jev_confidence"], 0.93)
         self.assertEqual(self.row(a)["jev_class"], "context")
         self.assertIsNone(self.row(v)["jev_confidence"])
@@ -254,10 +255,9 @@ class TestFields(Base):
         for line in self.feed.lines():
             if line.startswith("LINE#"):
                 self.assertRegex(line, r"^LINE#\d+ \d\d:\d\d:\d\d \S+ (voice|chat) (action_oriented|context) "
-                                       r"(\d\.\d\d|-) (-?\d+dB|-)( was=not_relevant)? \| ")
+                                       r"(\d\.\d\d|-) (-?\d+dB|-) \| ")
         self.assertIn("LINE#1 18:22:31 Steve voice action_oriented 0.93 -8dB | build me a castle", self.feed.lines())
-        self.assertIn("18:22:32 Alex chat context 0.71 - was=not_relevant | that cave by spawn",
-                      "\n".join(self.feed.lines()))
+        self.assertIn("18:22:32 Alex chat context 0.71 - | that cave by spawn", "\n".join(self.feed.lines()))
         self.assertIn("18:22:40 Alex voice context - -21dB | anyone got iron", "\n".join(self.feed.lines()))
 
     def test_db_rounding_and_voice_without_peak(self):
@@ -275,21 +275,35 @@ class TestJudging(Base):
     def test_one_call_and_one_usage_row_per_new_line(self):
         ids = [self.lines.add(T0 + n, "Steve", "voice", t) for n, t in
                enumerate(["build me a castle", "lol", "that cave by spawn"])]
-        self.step()
+        with self.assertLogs("vfg-jev", "INFO") as logs:
+            self.step()
         self.assertEqual(len(self.jev.calls), 3)
         usage = self.lines.usage()
         self.assertEqual([u["ref"] for u in usage], ids)
-        for (state, _), u in zip(self.jev.calls, usage):
+        for (state, qs), u in zip(self.jev.calls, usage):
             self.assertEqual(u["component"], "jev")
             self.assertEqual(u["model"], "jev-latest")
             self.assertEqual(u["input_tokens"], len(state_json(state)) // 4)
-            self.assertEqual(list(state), ["rules", "look_out_for", "history"])
+            self.assertEqual(list(state), ["rules", "look_out_for", "examples", "history"])
+            self.assertEqual(state["examples"], EXAMPLES)
+            self.assertEqual(list(qs), ["d_what", "d_feel"])
             self.assertEqual(u["output_tokens"], 0)
             self.assertEqual(u["cost_usd"], u["input_tokens"] * 0.000000042)
             self.assertLessEqual(estimate(state), self.cfg.state_tokens)
         r = self.row(ids[0])
         self.assertEqual((r["jev_class"], r["jev_confidence"], r["jev_judged_at"]),
                          ("action_oriented", 0.9, "2026-10-07T18:22:31.000Z"))
+        self.assertIn("judge %s Steve voice action_oriented 0.90 · act 0.90, let down 0.60 · 12ms %dtok"
+                      % (ids[0], usage[0]["input_tokens"]), "\n".join(logs.output))
+
+    def test_an_answer_without_d_what_is_jev_down(self):
+        a = self.lines.add(T0, "Steve", "voice", "build me a castle")
+        self.jev.answers["build me a castle"] = {"d_feel": ("let_down_wanted_something_done", 0.9)}
+        with self.assertLogs("vfg-jev", "WARNING"):
+            self.assertEqual(self.step(), 1.0)
+        self.assertIsNone(self.row(a)["jev_class"])
+        self.assertEqual(self.f.failing_since, T0)
+        self.assertEqual(self.lines.usage(), [])
 
     def test_blank_line_is_not_relevant_without_a_call(self):
         a = self.lines.add(T0, "Steve", "voice", "   \n ")
@@ -299,70 +313,17 @@ class TestJudging(Base):
         self.assertEqual((r["jev_class"], r["jev_confidence"]), ("not_relevant", None))
         self.assertEqual(self.lines.usage(), [])
 
-    def test_asking_again_the_newest_five(self):
-        recent = []
-        for n in range(7):   # seven Jev verdicts of not_relevant in the last 2 minutes
-            judged = T0 - 100 + n * 10
-            recent.append(self.lines.add(judged - 1, "Alex", "chat", "meh %d" % n, jev_class="not_relevant",
-                                         jev_confidence=0.8, jev_judged_at=_iso(judged)))
-        old = self.lines.add(T0 - 181, "Alex", "chat", "old meh", jev_class="not_relevant", jev_confidence=0.8,
-                             jev_judged_at=_iso(T0 - 180))
-        blank = self.lines.add(T0 - 5, "Alex", "chat", " ", jev_class="not_relevant", jev_judged_at=_iso(T0 - 5))
-        before = {i: self.row(i) for i in recent + [old, blank]}
-        new = self.lines.add(T0, "Steve", "voice", "hello there")
-        self.step()
-        self.assertEqual(len(self.jev.calls), 1)
-        self.assertEqual(len(self.lines.usage()), 1)
-        state, qs = self.jev.calls[0]
-        self.assertEqual(list(qs), ["line_1", "line_2", "line_3", "line_4", "line_5", "line_6"])
-        quoted = [QUOTED.search(q["instructions"]).group(1) for q in qs.values()]
-        self.assertEqual(quoted, ["hello there", "meh 6", "meh 5", "meh 4", "meh 3", "meh 2"])
-        hist = state["history"].split("\n")[1:]
-        self.assertEqual([h.split(" ")[0] for h in hist if h.startswith("[")], ["[6]", "[5]", "[4]", "[3]", "[2]", "[1]"])
-        for i in recent + [old, blank]:   # all stayed not_relevant: nothing written
-            self.assertEqual(self.row(i), before[i])
-        self.assertEqual(self.row(new)["jev_class"], "action_oriented")
-
-    def test_a_flip_is_fed_with_was_not_relevant(self):
-        self.jev.verdicts = {"that cave by spawn": ("not_relevant", 0.6)}
-        a = self.lines.add(T0, "Alex", "chat", "that cave by spawn")
-        self.step()
-        self.assertEqual(self.row(a)["jev_class"], "not_relevant")
-        del self.jev.verdicts["that cave by spawn"]
-        self.lines.add(T0 + 30, "Steve", "voice", "put it there, by the cave")
-        self.step(30)
-        r = self.row(a)
-        self.assertEqual((r["jev_class"], r["jev_confidence"], r["jev_judged_at"]),
-                         ("context", 0.7, "2026-10-07T18:23:01.000Z"))
-        self.assertEqual(len(self.jev.calls), 2)
-        self.assertEqual(len(self.lines.usage()), 2)
-        self.assertEqual([e[1] for e in self.fed()],
-                         ["Alex chat context 0.70 - was=not_relevant", "Steve voice action_oriented 0.90 -"])
-        # once fed, the mark is gone
-        self.assertEqual(self.f.flipped, set())
-
-    def test_a_line_judged_3_minutes_ago_is_not_asked_again(self):
-        self.jev.verdicts = {"that cave by spawn": ("not_relevant", 0.6)}
-        self.lines.add(T0, "Alex", "chat", "that cave by spawn")
-        self.step()
-        self.lines.add(T0 + 121, "Steve", "voice", "hello")
-        self.step(121)
-        self.assertEqual(list(self.jev.calls[1][1]), ["line_1"])
-
-    def test_refused_once_asks_again_with_half_the_history_and_nothing_again(self):
+    def test_refused_once_asks_again_with_half_the_history(self):
         for n in range(300):
             self.lines.add(T0 - 3000 + n, "Alex", "chat", "filler line %d" % n + " x" * 30,
                            jev_class="context", fed_at=_iso(T0 - 3000 + n), jev_judged_at=_iso(T0 - 3000 + n))
-        self.lines.add(T0 - 10, "Alex", "chat", "meh", jev_class="not_relevant", jev_confidence=0.8,
-                       jev_judged_at=_iso(T0 - 10))
         a = self.lines.add(T0, "Steve", "voice", "build me a castle")
         self.cfg.state_tokens = 3000
-        self.jev.refuse = 1
+        self.jev.raises = [JevRefused("400 bad request")]
         self.step()
         self.assertEqual(len(self.jev.calls), 2)
         (first, q1), (second, q2) = self.jev.calls
-        self.assertEqual(len(q1), 2)
-        self.assertEqual(list(q2), ["line_1"])
+        self.assertEqual(q1, q2)
         self.assertLess(len(second["history"]), len(first["history"]))
         self.assertEqual(self.row(a)["jev_class"], "action_oriented")
         self.assertEqual(len(self.lines.usage()), 1)
@@ -370,7 +331,7 @@ class TestJudging(Base):
 
     def test_refused_twice_passes_as_context_without_a_sys_line(self):
         a = self.lines.add(T0, "Steve", "voice", "build me a castle")
-        self.jev.refuse = 2
+        self.jev.raises = [JevRefused("400 bad request"), JevRefused("400 bad request")]
         with self.assertLogs("vfg-jev", "ERROR"):
             self.step()
         r = self.row(a)
@@ -380,6 +341,153 @@ class TestJudging(Base):
         self.assertEqual([e[1] for e in self.fed()], ["Steve voice context - -"])
         self.assertEqual(self.sys_lines(), [])
         self.assertEqual(self.lines.usage(), [])
+
+
+    def test_a_line_the_bridge_drops_while_jev_judges_it_gets_no_verdict_and_nothing_gathered(self):
+        self.conn.execute("ALTER TABLE lines ADD COLUMN dropped TEXT")
+        self.lines.add(T0 - 5, "Steve", "voice", "the big one")
+        self.step()
+        line = self.lines.add(T0, "Steve", "voice", "build a fire ball")
+        ask = self.jev.ask
+
+        def ask_while_the_bridge_drops_it(state, questions, required="line_1"):   # its drop_line, mid-call
+            self.conn.execute("UPDATE lines SET dropped = 'cast' WHERE id = ? AND jev_class IS NULL", (line,))
+            return ask(state, questions, required)
+
+        self.jev.ask = ask_while_the_bridge_drops_it
+        with self.assertLogs("vfg-jev", "WARNING"):
+            self.step(1)
+            self.step(10)
+        r = self.row(line)
+        self.assertEqual((r["jev_class"], r["fed_at"]), (None, None))
+        self.assertEqual(len(self.jev.calls), 2)       # no gather call
+        self.assertEqual(self.f.groups, {})
+        self.assertEqual(self.batches(), [])
+        self.assertEqual(len(self.lines.usage()), 2)   # the call was made and paid for
+
+
+class TestGather(Base):
+    """A line to the AI gets one more call, over its speaker's unsent lines; the yes lines go with it."""
+
+    def test_an_ask_is_fed_as_one_line_with_the_speakers_lines_that_belong_to_it(self):
+        add = self.lines.add
+        self.jev.answers["the big one, honestly"] = {"d_what": ("ignore_it", 0.8)}   # left unanswered when gathering
+        add(T0 - 181, "Steve", "chat", "the big one, long ago")       # over 3 minutes before the ask
+        a = add(T0 - 40, "Steve", "chat", "the big one by our base")  # context, and part of it
+        add(T0 - 30, "Alex", "chat", "the big one is mine")           # another player's: never asked about
+        b = add(T0 - 20, "Steve", "voice", "lol")
+        c = add(T0 - 15, "Steve", "chat", "the big one, honestly")    # no answer: a no
+        d = add(T0 - 10, "Steve", "chat", "yeah the big one")
+        ask = add(T0, "Steve", "chat", "make it bigger")
+        with self.assertLogs("vfg-jev", "INFO") as logs:
+            self.step()
+        self.assertEqual(len(self.jev.calls), 8)                      # seven lines, and the ask's gather call
+        state, qs = self.jev.calls[-1]
+        self.assertEqual([asked_about(q["instructions"]) for q in qs.values()],
+                         ["the big one by our base", "lol", "the big one, honestly", "yeah the big one"])
+        self.assertTrue(qs["line_1"]["instructions"].startswith("Steve's line [ask] at 18:22:31, “make it bigger”"))
+        self.assertEqual(state["rules"], GATHER_RULES)
+        hist = state["history"].split("\n")
+        self.assertEqual(hist[0], GATHER_HEADING)
+        self.assertEqual([h.split(" ")[0] for h in hist if h.startswith("[")], ["[1]", "[2]", "[3]", "[4]", "[ask]"])
+        self.assertIn("18:22:01 Alex (chat): the big one is mine", hist)
+        # the context line is fed on its own, as ever, and the ask as one line holding the yes lines
+        self.assertEqual(self.batches(), [[
+            ("LINE", "Steve chat context 0.70 -", "the big one by our base", self.row(a)["at"]),
+            ("LINE", "Steve chat action_oriented 0.90 -", "the big one by our base … yeah the big one … make it bigger",
+             self.row(ask)["at"])]])
+        self.assertEqual([self.row(i)["jev_class"] for i in (b, c, d)], ["not_relevant"] * 3)
+        self.assertEqual(self.f.groups, {})
+        usage = self.lines.usage()
+        self.assertEqual((len(usage), usage[-1]["ref"], usage[-1]["component"]), (8, "gather:" + ask, "jev"))
+        self.assertIn("gather %s Steve · 4 asked, 2 yes: %s 0.90, %s 0.90 · no: %s 0.80, %s - · 12ms %dtok"
+                      % (ask, a, d, b, c, usage[-1]["input_tokens"]), "\n".join(logs.output))
+
+    def test_no_call_when_the_speaker_has_no_unsent_line(self):
+        ids = [self.lines.add(T0 - 10, "Alex", "chat", "lol"),
+               self.lines.add(T0, "Steve", "chat", "build me a castle"),
+               self.lines.add(T0 + 1, "Steve", "chat", "thanks AI")]   # nothing unsent since his last line to the AI
+        self.step(1)
+        self.assertEqual(len(self.jev.calls), 3)
+        self.assertEqual([u["ref"] for u in self.lines.usage()], ids)
+
+    def test_the_gather_call_reads_the_routing_calls_history_and_never_the_database_again(self):
+        self.lines.add(T0 - 10, "Steve", "chat", "the big one by the river")
+        read = []
+        history = self.f.store.history
+        self.f.store.history = lambda *a, **k: read.append(a) or history(*a, **k)
+        self.lines.add(T0, "Steve", "chat", "make it bigger")
+        self.step(1)
+        self.assertEqual(len(self.jev.calls), 3)   # two lines, and the ask's gather call
+        self.assertEqual(len(read), 2)             # one history read a routing call, none for the gather call
+        state, _ = self.jev.calls[-1]
+        self.assertIn("[1] 18:22:21 Steve (chat): the big one by the river", state["history"])
+
+    def test_a_line_gathered_into_one_ask_is_never_gathered_into_another(self):
+        self.lines.add(T0 - 20, "Steve", "chat", "the big one by the river")
+        self.step()
+        self.lines.add(T0 + 2, "Steve", "chat", "make it bigger")
+        self.step(3)
+        # a voice line is stored once its speech is text: this one was said before the typed ask
+        self.lines.add(T0, "Steve", "voice", "and make a moat")
+        self.step(1)
+        self.assertEqual([e[2] for e in self.fed()], ["the big one by the river … make it bigger", "and make a moat"])
+        self.assertEqual(len(self.jev.calls), 4)   # three lines, and the first ask's gather call
+
+    def test_a_piece_stored_after_the_ask_it_was_said_before_goes_with_the_next(self):
+        self.lines.add(T0 + 2, "Steve", "chat", "make it bigger")
+        self.step(3)
+        self.lines.add(T0, "Steve", "voice", "the big one by the river")
+        self.step(1)
+        self.lines.add(T0 + 30, "Steve", "chat", "and make it taller")
+        self.step(30)
+        self.assertEqual([e[2] for e in self.fed()],
+                         ["make it bigger", "the big one by the river … and make it taller"])
+
+    def test_a_failing_gather_call_feeds_the_ask_alone_and_leaves_failing_open_alone(self):
+        for n, err in enumerate((JevDown("timeout"), JevRefused("413 too large"))):
+            with self.subTest(err=err):
+                self.lines.add(T0 + 10 * n, "Steve", "chat", "the big one")
+                ask = self.lines.add(T0 + 10 * n + 1, "Steve", "chat", "make it bigger")
+                self.jev.raises = [None, None, err]   # the two lines' calls answer, the gather call fails
+                with self.assertLogs("vfg-jev", "WARNING") as logs:
+                    self.step(10)
+                self.assertEqual(len(self.jev.calls), 3 * (n + 1))   # and is not asked again
+                self.assertEqual(self.fed()[-1][2], "make it bigger")
+                self.assertEqual(self.row(ask)["jev_class"], "action_oriented")
+                self.assertIsNone(self.f.failing_since)
+                self.assertNotIn("gather:" + ask, [u["ref"] for u in self.lines.usage()])
+                self.assertIn("gather %s failed: %s — the ask goes alone" % (ask, err), "\n".join(logs.output))
+        self.assertEqual(self.sys_lines(), [])
+
+    def test_the_group_fits_500_characters_the_oldest_dropped_first(self):
+        steps = (   # the lines said before each ask, the ask, and what is fed
+            # the writer turns "\r\n" into one space: 280 + 3 + 200 + 3 + 14 = 500 characters, all in
+            (["the big one\r\n" + "a" * 268, "the big one " + "b" * 188], "make it bigger",
+             "the big one " + "a" * 268 + " … the big one " + "b" * 188 + " … make it bigger"),
+            # 501: the oldest goes
+            (["the big one " + "c" * 269, "the big one " + "d" * 188], "make it bigger",
+             "the big one " + "d" * 188 + " … make it bigger"),
+            # an ask alone over 500 goes alone, cut by the writer as ever
+            (["the big one"], "make " + "x" * 600, "make " + "x" * 494 + "…"),
+        )
+        for n, (before, ask, fed) in enumerate(steps):
+            for k, text in enumerate(before):
+                self.lines.add(T0 + 10 * n + k, "Steve", "chat", text)
+            self.lines.add(T0 + 10 * n + 5, "Steve", "chat", ask)
+            with self.assertLogs("vfg-jev", "INFO") as logs:
+                self.step(10)
+            self.assertEqual(self.feed.lines()[-1].split(" | ", 1)[1], fed)
+            dropped = [l for l in logs.output if "dropped to fit 500 characters" in l]
+            self.assertEqual(len(dropped), 0 if n == 0 else 1)
+        self.assertIn("the oldest 1 dropped", "\n".join(dropped))
+
+    def test_the_state_cap_leaves_room_for_ten_gather_questions_at_their_largest(self):
+        line = {"id": "x", "at": _iso(T0), "player_name": "P" * 16, "source": "chat", "text": "😀" * 300,
+                "peak_dbfs": None}
+        self.assertLess(MAX_STATE_TOKENS + estimate(gather_questions(line, [line] * GATHER_MAX)), 32000)
+        self.assertEqual(Config(state_tokens=10 ** 6).state_tokens, MAX_STATE_TOKENS)
+        self.assertEqual(Config().state_tokens, 8000)
 
 
 class TestState(Base):
@@ -399,7 +507,7 @@ class TestState(Base):
         self.lines.add(T0, "Steve", "voice", "make it longer")
         self.step()
         state = self.jev.calls[0][0]
-        self.assertEqual(list(state), ["rules", "look_out_for", "actions", "history"])
+        self.assertEqual(list(state), ["rules", "look_out_for", "examples", "actions", "history"])
         self.assertEqual(state["actions"], "give — gives a player items\nweather — sets the weather")
         self.assertEqual(state["history"].split("\n")[1:], [
             "18:22:02 AI (action): command: give Steve diamond_pickaxe — ok",
@@ -417,8 +525,8 @@ class TestAiLines(Base):
         self.assertEqual(len(self.jev.calls), 1)
         state, qs = self.jev.calls[0]
         self.assertIn("18:22:31 AI (ai): Which colour should the tower be?", state["history"])
-        self.assertEqual(list(qs), ["line_1"])
-        self.assertNotIn("colour", qs["line_1"]["instructions"])
+        self.assertEqual(list(qs), ["d_what", "d_feel"])
+        self.assertNotIn("colour", qs["d_what"]["instructions"])
         self.assertIsNone(self.row(ai)["jev_class"])
         self.assertEqual(self.row(b)["jev_class"], "not_relevant")
         # failing open does not pass it either
@@ -515,15 +623,14 @@ class TestWritesOnly(Base):
             return sqlite3.SQLITE_OK
 
         self.f.store.conn.set_authorizer(watch)
-        self.jev.verdicts = {"that cave by spawn": ("not_relevant", 0.6)}
         self.lines.add(T0, "Alex", "chat", "that cave by spawn")
         self.lines.add(T0 + 1, "AI", "ai", "Where should it go?")
         self.lines.add(T0 + 1, "Steve", "chat", " ")
+        self.lines.add(T0 + 1, "Steve", "chat", "the big one")
         self.step(1)
-        del self.jev.verdicts["that cave by spawn"]
-        self.lines.add(T0 + 2, "Steve", "voice", "put it there, by the cave")
+        self.lines.add(T0 + 2, "Steve", "voice", "put it there, by the cave")   # a gather call, and a group fed
         self.step(1)
-        self.jev.refuse = 2
+        self.jev.raises = [JevRefused("400 bad request"), JevRefused("400 bad request")]
         self.lines.add(T0 + 3, "Steve", "voice", "and make it red")
         self.step(1)
         self.jev.down = "500"
@@ -544,6 +651,7 @@ class TestWritesOnly(Base):
                      sqlite3.SQLITE_DROP_TABLE, sqlite3.SQLITE_ALTER_TABLE, sqlite3.SQLITE_PRAGMA}
         self.assertEqual([s for s in seen if s[0] in forbidden], [])
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM feed").fetchone()[0], 0)
+        self.assertIn("gather:", " ".join(u["ref"] for u in self.lines.usage()))
 
 
 class TestMalformedTimes(Base):
@@ -640,6 +748,23 @@ class TestKilledBetweenFeedAndMark(Base):
         self.assertEqual(sum(l.endswith("| that cave by spawn") for l in lines), 2)   # the second line, once
         self.step(10)
         self.assertEqual(len(self.feed.lines()), 3)
+
+    def test_a_group_is_known_by_its_ask_and_not_fed_again(self):
+        self.lines.add(T0, "Steve", "chat", "yeah the big one")
+        ask = self.lines.add(T0 + 1, "Steve", "chat", "make it bigger")
+        self.die_after_the_next_batch()
+        with self.assertRaises(Killed):
+            self.step()
+        self.assertEqual(self.feed.lines(), ["LINE#1 18:22:32 Steve chat action_oriented 0.90 - | "
+                                             "yeah the big one … make it bigger"])
+        self.clock.advance(2)
+        self.f = self.new_filter()                       # the service restarts, the group forgotten
+        with self.assertLogs("vfg-jev", "WARNING") as logs:
+            self.step()
+            self.step(5)
+        self.assertIn("%s was already fed as LINE#1" % ask, "\n".join(logs.output))
+        self.assertIsNotNone(self.row(ask)["fed_at"])
+        self.assertEqual(len(self.feed.lines()), 1)
 
     def test_a_line_judged_but_never_fed_is_still_fed_after_a_restart(self):
         a = self.lines.add(T0, "Alex", "chat", "that cave by spawn")
