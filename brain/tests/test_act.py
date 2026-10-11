@@ -187,6 +187,28 @@ async def test_a_reply_only_starts_nothing_and_is_said_with_no_task(kit):
     assert k.vfg.said() == [["better how, more damage or no cooldown?"]]
 
 
+async def test_the_real_orchestrator_as_main_builds_it_opens_a_new_task_and_runs_an_edit_under_acts(kit):
+    from brain.__main__ import orchestrator_of
+    k = kit(rows(LINE))
+    k.acts.orchestrator = orchestrator_of(k.cat, k.ask, owner="KrownJM", checkpoint=2)
+    k.ask.answers["TaskAnswer"] = {**NEW_GUN, "name": " galick_gun_styrk "}
+    await run(k, decision(GUN, reply="on it!"))
+    [asked] = k.ask.of("TaskAnswer")
+    assert HEAD in asked["prompt"] and "THE REPLY: yours" in asked["prompt"]
+    assert k.impl.started == [("galick_gun_styrk", "a Galick Gun for Styrkaeopteryx")]
+    assert k.vfg.said() == [["on it, your galick gun's coming", "--task", "galick_gun_styrk"]]
+
+    k = kit()
+    k.acts.orchestrator = orchestrator_of(k.cat, k.ask, owner="KrownJM", checkpoint=2)
+    k.ask.answers["TaskAnswer"] = answer("edit", copy="railgun_steve", values=[{"key": "cooldown", "value": " 0 "}],
+                                         reply="cooldown's 0 now")
+    k.running({"railgun_steve": RAILGUN})
+    await run(k, decision(part("orchestrator", "no cooldown on Steve's railgun"), reply="sure"), player="Steve")
+    assert k.vfg.of("action", "run") == [["action", "run", "edit", "copy=railgun_steve", "cooldown=0"]]
+    assert k.vfg.rows("note") == [("note -", "edited railgun_steve: cooldown=0")]
+    assert k.vfg.said() == [["cooldown's 0 now"]]
+
+
 # ------------------------------------------------------------------ the reply
 
 async def test_the_orchestrators_reply_goes_out_once_the_action_parts_are_done(kit):
