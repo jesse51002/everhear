@@ -1,20 +1,24 @@
 """The implementers: one Claude Agent SDK query per task, on Haiku 5.5 and the owner's Claude
-subscription, which code starts from the brain's brief. The implementer is the main agent, with
-nothing around it: its system prompt is prompts/implementer.md and `vfg prefix`, its brief is the
-brain's with the task, the saved places and the EXAMPLES block (brief.py), and the guard
-(guard.py) holds every tool call to its rules.
+subscription, which code starts from the brief the orchestrator wrote. A task is known by its name
+(Prototype_Named_Tasks), which the script, the action and the copy its implementer makes take too.
+The implementer is the main agent, with nothing around it: its system prompt is
+prompts/implementer.md and `vfg prefix`, its brief is the orchestrator's with the task's name, the
+saved places and the EXAMPLES block (brief.py), and the guard (guard.py) holds every tool call to
+its rules and records what it makes.
 
     implementers = Implementers(ImplementerConfig.load(), on_report)
-    await implementers.start("T7", brief)            # at once; later on_report("T7", "done", report)
-    await implementers.follow_up("T7", "bigger")     # resumes T7's session: another on_report
-    # on_session("T7", session), when given, as soon as the CLI names the session
-    stopped = await implementers.close(5)            # the ids still running; the brain fails them
+    await implementers.start("galick_gun_styrk", brief)          # at once; later on_report(…)
+    await implementers.follow_up("galick_gun_styrk", "bigger")   # resumes its session: another on_report
+    # on_session("galick_gun_styrk", session), when given, as soon as the CLI names the session
+    stopped = await implementers.close(5)            # the names still running; the brain fails them
 
 Its last message is its report, which goes to on_report with "failed" for an error, its turns used
-up, a crash or the time limit, else the report's first word (Done or Failed). A task's jobs run one
-after another: a follow-up waits behind the task's running implementer, then resumes its session,
-so two implementers never edit one script. Each run writes its usage with `vfg usage add`, off the
-critical path, after its report has gone."""
+up, a crash or the time limit, else the report's first word (Done or Failed). The report's last
+line, DESCRIPTION: what the thing is now, is taken off and given on its own (split_description),
+with what the task made (guard.made_now). A task's jobs run one after another: a follow-up waits
+behind the task's running implementer, then resumes its session, so two implementers never edit one
+script. Each run writes its usage with `vfg usage add`, its ref the task's name, off the critical
+path, after its report has gone."""
 import asyncio
 import hashlib
 import json
@@ -32,14 +36,15 @@ from . import brief as briefing
 from . import prefix as implementer_prefix
 from . import usage
 from .config import ImplementerConfig, js_num, log
-from .guard import GuardContext, brief as short, make_guard, running_copies
+from .guard import MADE_KINDS, GuardContext, brief as short, made_now, make_guard, running_copies
 from .vfg import VfgRunner, vfg as vfg_runner, why
 
-__all__ = ["Implementers", "ImplementerConfig", "Report"]
+__all__ = ["Implementers", "ImplementerConfig", "Report", "split_description"]
 
-# (task id, "done" or "failed", the report)
-Report = Callable[[str, str, str], Awaitable[None]]
-# (task id, the implementer's session id): the brain keeps it, so a follow-up after a restart resumes it
+# (task name, "done" or "failed", the report without its DESCRIPTION line, the description or "",
+#  what it made {"scripts", "actions", "presets", "copies"})
+Report = Callable[[str, str, str, str, dict[str, list[str]]], Awaitable[None]]
+# (task name, the implementer's session id): the brain keeps it, so a follow-up after a restart resumes it
 Session = Callable[[str, str], None]
 # ClaudeAgentOptions -> a client: connect(), query(prompt), receive_response(), interrupt(), disconnect().
 ClientFactory = Callable[[ClaudeAgentOptions], Any]
@@ -158,9 +163,32 @@ def fill(rules_text: str, cfg: ImplementerConfig) -> str:
     return rules_text.replace("%REPO%", cfg.repo).replace("%SERVER%", cfg.server)
 
 
-def follow_up_prompt(task: str, text: str) -> str:
-    return ("FOLLOW-UP to %s, from the brain: %s\nDo it as before, check it once, and end with a new report."
-            % (task, text.strip()))
+def follow_up_prompt(name: str, text: str) -> str:
+    return ("FOLLOW-UP to %s, from the brain: %s\nDo it as before, check it once, and end with a new report, its "
+            "last line DESCRIPTION: what %s is now." % (name, text.strip(), name))
+
+
+# The report's DESCRIPTION line, however the model dresses it: "DESCRIPTION:", "**Description:**",
+# "- _description_:".
+_DESCRIPTION = re.compile(r"^[\s>*_`#-]*description[*_`]*\s*:", re.I)
+# The description the brain keeps, at most.
+DESCRIPTION_MAX = 600
+
+
+def split_description(text: str) -> tuple[str, str]:
+    """(the report, the description): the description is all after the colon of the report's last
+    DESCRIPTION line, to the end, its whitespace collapsed and its markdown stripped, cut to 600
+    characters; the report is what comes before that line. With no such line, (text, "")."""
+    lines = text.split("\n")
+    at = next((i for i in range(len(lines) - 1, -1, -1) if _DESCRIPTION.match(lines[i])), None)
+    if at is None:
+        return text, ""
+    first = lines[at][_DESCRIPTION.match(lines[at]).end():]
+    description = " ".join(" ".join([first] + lines[at + 1:]).split())
+    while description != description.strip("*_`").strip():
+        description = description.strip("*_`").strip()
+    report = "\n".join(lines[:at]).rstrip()
+    return report or "Done: the implementer ended without a report.", description[:DESCRIPTION_MAX].rstrip()
 
 
 _FIRST_WORD = re.compile(r"\W*(done|failed)\b", re.I)
@@ -186,7 +214,7 @@ def outcome(result: ResultMessage | None, failed: str | None, max_turns: int) ->
 
 @dataclass
 class _Task:
-    id: str
+    name: str
     guard: GuardContext
     brief: str = ""
     # The implementer's session, once the CLI gave it: a follow-up resumes it.
@@ -224,26 +252,26 @@ class Implementers:
 
     # ------------------------------------------------------------------ the brain's calls
 
-    async def start(self, task_id: str, brief: str) -> None:
-        """Starts the task's implementer and returns at once; on_report follows when it ends.
-        A task already started takes this as a follow-up."""
-        t = self._tasks.get(task_id)
+    async def start(self, name: str, brief: str) -> None:
+        """Starts the implementer of the task `name` and returns at once; on_report follows when it
+        ends. A task already started takes this as a follow-up."""
+        t = self._tasks.get(name)
         if t is not None:
-            log("implementer", "%s is already started: this brief goes to it as a follow-up" % task_id)
-            await self.follow_up(task_id, brief)
+            log("implementer", "%s is already started: this brief goes to it as a follow-up" % name)
+            await self.follow_up(name, brief)
             return
-        t = self._tasks[task_id] = _Task(task_id, self._guard(task_id), brief=brief)
+        t = self._tasks[name] = _Task(name, self._guard(name), brief=brief)
         t.jobs.append(("start", brief))
         self._kick(t)
 
-    async def follow_up(self, task_id: str, text: str, session: str | None = None, brief: str = "") -> None:
+    async def follow_up(self, name: str, text: str, session: str | None = None, brief: str = "") -> None:
         """To the task's implementer, behind whatever it is running: its session resumed with the
         text, ending in another on_report. `session` and `brief` are for a task this process did
-        not start (the brain's tasks.json keeps them): its session resumed; with no session at
-        all, a new implementer starts on the task's brief and the text."""
-        t = self._tasks.get(task_id)
+        not start (the brain keeps both in the task's row): its session resumed; with no session at
+        all, a new implementer starts on `brief`, what the task is, and the text."""
+        t = self._tasks.get(name)
         if t is None:
-            t = self._tasks[task_id] = _Task(task_id, self._guard(task_id), brief=brief, session=session)
+            t = self._tasks[name] = _Task(name, self._guard(name), brief=brief, session=session)
         else:
             t.session = t.session or session
             t.brief = t.brief or brief
@@ -253,16 +281,16 @@ class Implementers:
     def running(self) -> list[str]:
         """The tasks whose implementer runs, or has a follow-up waiting. While a run reports, its
         task is here only when a follow-up to it waits, which runs next."""
-        return [t.id for t in self._tasks.values() if t.worker is not None and (t.busy or t.jobs)]
+        return [t.name for t in self._tasks.values() if t.worker is not None and (t.busy or t.jobs)]
 
-    def session(self, task_id: str) -> str | None:
-        """The task's implementer session, for the brain's tasks.json; None until the CLI gave one."""
-        t = self._tasks.get(task_id)
+    def session(self, name: str) -> str | None:
+        """The task's implementer session, for the task's row; None until the CLI gave one."""
+        t = self._tasks.get(name)
         return t.session if t else None
 
     async def close(self, grace_s: float) -> list[str]:
         """Stops every implementer: interrupted, given `grace_s` to end, then cancelled. Follow-ups
-        still waiting are dropped, and nothing more is reported. Returns the ids it stopped."""
+        still waiting are dropped, and nothing more is reported. Returns the names it stopped."""
         self._closing = True
         live = [t for t in self._tasks.values() if t.worker is not None]
         for t in live:
@@ -277,18 +305,20 @@ class Implementers:
                 await asyncio.wait(late, timeout=INTERRUPT_TIMEOUT_S)
         if self._background:  # usage rows still going out
             await asyncio.wait(set(self._background), timeout=grace_s)
-        ids = [t.id for t in live]
-        log("implementer", "closed: %s" % (", ".join(ids) or "nothing was running"))
-        return ids
+        names = [t.name for t in live]
+        log("implementer", "closed: %s" % (", ".join(names) or "nothing was running"))
+        return names
 
     # ------------------------------------------------------------------ one task's jobs
 
-    def _guard(self, task_id: str) -> GuardContext:
-        return GuardContext(repo=self.cfg.repo, server=self.cfg.server, task=task_id, running=self._running_copies)
+    def _guard(self, name: str) -> GuardContext:
+        """The task's guard, kept with it: what it made over every run, and its own script, the one
+        named as the task, its own to change from the start (GuardContext.own)."""
+        return GuardContext(repo=self.cfg.repo, server=self.cfg.server, task=name, running=self._running_copies)
 
     def _kick(self, t: _Task) -> None:
         if self._closing:
-            log("implementer", "%s: closing, so its jobs are dropped" % t.id)
+            log("implementer", "%s: closing, so its jobs are dropped" % t.name)
             t.jobs.clear()
             return
         if t.worker is None:
@@ -304,9 +334,9 @@ class Implementers:
                     await self._run(t, kind, text)
                 except Exception as e:
                     t.busy = False
-                    log("implementer", "%s broke: %s" % (t.id, traceback.format_exc()))
-                    if not self._closing:
-                        await self._report(t.id, "failed", "Failed: the implementer could not run: %s: %s."
+                    log("implementer", "%s broke: %s" % (t.name, traceback.format_exc()))
+                    if not self._closing:  # with what it made so far
+                        await self._report(t, "failed", "Failed: the implementer could not run: %s: %s."
                                            % (type(e).__name__, e))
                 finally:
                     t.busy = False
@@ -316,30 +346,31 @@ class Implementers:
     async def _run(self, t: _Task, kind: str, text: str) -> None:
         resume = t.session if kind == "follow_up" else None
         if resume:
-            prompt = follow_up_prompt(t.id, text)
+            prompt = follow_up_prompt(t.name, text)
         else:
             if kind == "follow_up" and t.brief:  # nothing to resume: a new implementer, on both
                 text = "%s\n\nFOLLOW-UP: %s" % (t.brief.rstrip(), text.strip())
-            prompt = await briefing.compose(text, t.id, self.cfg, self.vfg)
+            prompt = await briefing.compose(text, t.name, self.cfg, self.vfg)
         if self._closing:
             return
 
         def stderr(line: str) -> None:
             if line.strip():
-                log("cli", "%s %s" % (t.id, line.rstrip()))
+                log("cli", "%s %s" % (t.name, line.rstrip()))
 
         options = build_options(self.cfg, await self._system(), t.guard, resume=resume, stderr=stderr)
-        log("implementer", "%s %s: %d characters of brief" % (t.id, "resumed " + resume if resume else "started",
+        log("implementer", "%s %s: %d characters of brief" % (t.name, "resumed " + resume if resume else "started",
                                                                len(prompt)))
         result, failed = await self._query(t, options, prompt)
         if self._closing:
             return
-        status, report = outcome(result, failed, self.cfg.max_turns)
+        status, report = outcome(result, failed, self.cfg.max_turns)  # the status from the whole text
+        report, description = split_description(report)
         rows = []
         if result is not None:
-            rows, t.usage = usage.rows(t.usage, result.model_usage, t.id)
+            rows, t.usage = usage.rows(t.usage, result.model_usage, t.name)
         t.busy = False  # this run is over: the brain sees whether a follow-up waits behind it
-        await self._report(t.id, status, report)
+        await self._report(t, status, report, description)
         for row in rows:  # after the report: the player's answer waits on nothing
             self._spawn(self._usage_row(row))
 
@@ -368,7 +399,7 @@ class Implementers:
             try:
                 await client.disconnect()
             except Exception as e:
-                log("implementer", "%s: disconnect: %s" % (t.id, e))
+                log("implementer", "%s: disconnect: %s" % (t.name, e))
         return result, failed
 
     def _seen(self, t: _Task, msg: Any) -> str | None:
@@ -377,23 +408,23 @@ class Implementers:
             data = msg.data or {}
             self._keep_session(t, data.get("session_id"))
             log("implementer", "%s init: session %s, model %s, permission mode %s" % (
-                t.id, t.session, data.get("model"), data.get("permissionMode")))
+                t.name, t.session, data.get("model"), data.get("permissionMode")))
             src = data.get("apiKeySource")
             if src and src != "none":
                 return "the CLI would use an API key (%s), not the subscription, so it was stopped" % src
         elif isinstance(msg, AssistantMessage):
             for b in msg.content:
                 if isinstance(b, ToolUseBlock):
-                    log("implementer", "%s %s %s" % (t.id, b.name, short(b.input)))
+                    log("implementer", "%s %s %s" % (t.name, b.name, short(b.input)))
                 elif isinstance(b, TextBlock) and b.text.strip():
-                    log("implementer", "%s says: %s" % (t.id, re.sub(r"\s+", " ", b.text.strip())[:300]))
+                    log("implementer", "%s says: %s" % (t.name, re.sub(r"\s+", " ", b.text.strip())[:300]))
         elif isinstance(msg, ResultMessage):
             self._keep_session(t, msg.session_id)
             log("implementer", "%s %s (%s, %s turns, %d s)" % (
-                t.id, "error" if msg.is_error else "ended", msg.subtype, msg.num_turns, (msg.duration_ms or 0) // 1000))
+                t.name, "error" if msg.is_error else "ended", msg.subtype, msg.num_turns, (msg.duration_ms or 0) // 1000))
             for d in msg.permission_denials or []:
                 if isinstance(d, dict):
-                    log("denied", "%s %s %s" % (t.id, d.get("tool_name"), short(d.get("tool_input"))))
+                    log("denied", "%s %s %s" % (t.name, d.get("tool_name"), short(d.get("tool_input"))))
         return None
 
     def _keep_session(self, t: _Task, session: str | None) -> None:
@@ -404,9 +435,9 @@ class Implementers:
         t.session = session
         if self.on_session is not None:
             try:
-                self.on_session(t.id, session)
+                self.on_session(t.name, session)
             except Exception:
-                log("implementer", "%s: on_session broke: %s" % (t.id, traceback.format_exc()))
+                log("implementer", "%s: on_session broke: %s" % (t.name, traceback.format_exc()))
 
     async def _system(self) -> str:
         async with self._prefix_lock:
@@ -414,18 +445,24 @@ class Implementers:
                 self._prefix = await implementer_prefix.load(self.vfg)
         return implementer_prefix.system_prompt(self._rules, self._prefix)
 
-    async def _report(self, task_id: str, status: str, report: str) -> None:
-        log("implementer", "%s %s: %s" % (task_id, status, re.sub(r"\s+", " ", report)[:300]))
+    async def _report(self, t: _Task, status: str, report: str, description: str = "") -> None:
+        """The report to the brain, with the description and what the task made, cumulative over its
+        runs in this process and checked against the disk."""
+        made = made_now(t.guard)
+        log("implementer", "%s %s: %s" % (t.name, status, re.sub(r"\s+", " ", report)[:300]))
+        log("implementer", "%s made %s; description: %s" % (
+            t.name, "; ".join("%s %s" % (k, ", ".join(made[k])) for k in MADE_KINDS if made[k]) or "nothing",
+            description[:300] or "none"))
         try:
-            await self.on_report(task_id, status, report)
+            await self.on_report(t.name, status, report, description, made)
         except Exception:
-            log("implementer", "%s: on_report broke: %s" % (task_id, traceback.format_exc()))
+            log("implementer", "%s: on_report broke: %s" % (t.name, traceback.format_exc()))
 
     async def _interrupt(self, t: _Task) -> None:
         try:
             await asyncio.wait_for(t.client.interrupt(), INTERRUPT_TIMEOUT_S)
         except Exception as e:
-            log("implementer", "%s: interrupt: %s" % (t.id, e))
+            log("implementer", "%s: interrupt: %s" % (t.name, e))
 
     async def _usage_row(self, row: dict) -> None:
         r = await self.vfg(*usage.usage_args(row), timeout=30)

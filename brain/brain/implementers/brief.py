@@ -1,6 +1,7 @@
-"""The brief an implementer starts with: the brain's brief, then a line naming its task, the server's
-saved places read fresh, and the EXAMPLES block (examples.py). The places and the block are read at
-once; whichever fails is logged and left out, and the brief still goes."""
+"""The brief an implementer starts with: the orchestrator's brief, then a line naming its task and
+saying that what it makes takes the task's name, the server's saved places read fresh, and the
+EXAMPLES block (examples.py). The places and the block are read at once; whichever fails is logged
+and left out, and the brief still goes."""
 import asyncio
 import re
 
@@ -40,13 +41,15 @@ async def saved_places(run: VfgRunner) -> str:
     return line
 
 
-def task_line(task: str) -> str:
-    return "YOUR TASK: %s. Every vfg action run you send takes --task %s, and a vfg place save --by %s." % (
-        task, task, task)
+def task_line(name: str) -> str:
+    """The task's name, and that the script, the action and the copy it makes are named so too
+    (Prototype_Named_Tasks)."""
+    return ("YOUR TASK: {0}. Name what you make {0}: vfg script new {0}, its action {0}, and run it as={0}. "
+            "Every vfg action run you send takes --task {0}, and a vfg place save --by {0}.".format(name))
 
 
 async def compose(brief: str, task: str, cfg: ImplementerConfig, run: VfgRunner) -> str:
-    """The brain's brief, the task line and the saved places, then the EXAMPLES block for the brief."""
+    """The orchestrator's brief, the task line and the saved places, then the EXAMPLES block for the brief."""
     places, block = await asyncio.gather(saved_places(run), examples.build(cfg, brief, task, run),
                                          return_exceptions=True)
     head = task_line(task)
