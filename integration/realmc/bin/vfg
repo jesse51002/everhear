@@ -18,8 +18,9 @@ export VFG_REMOTE_VFG="$state/vfg" VFG_REMOTE_MC="$state/mc" VFG_REPO="$repo"
 if [ "${1:-}" = brain ]; then
   # `vfg brain start` starts the brain, whose implementers' Claude CLI finds its login under
   # ~/.claude and whose uv finds its Python and cache under ~/.cache: it keeps the caller's HOME.
-  # vfg's own state stays in VFG_HOME (the brain's tasks.json, log and refs in $VFG_HOME/brain
-  # unless VFG_BRAIN_DIR says otherwise), and this bin/ is first on its PATH, so every vfg the
+  # vfg's own state stays in VFG_HOME (the brain's log and refs in $VFG_HOME/brain unless
+  # VFG_BRAIN_DIR says otherwise; its tasks are in the stand-in's vfg.db, which vfg task reaches
+  # through bin/ssh like every box program), and this bin/ is first on its PATH, so every vfg the
   # brain and its implementers run comes back here.
   export HOME="$real_home"
   case ":$PATH:" in

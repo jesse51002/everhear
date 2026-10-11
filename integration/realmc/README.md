@@ -29,10 +29,11 @@ itself is not exported, so `uv`, `git` and the rest of the shell keep yours. It 
 
 `vfg brain …` keeps your `HOME`: `vfg brain start` starts the brain, whose implementers' Claude
 CLI finds its login under `~/.claude` (in the stand-in's `HOME` it says "Not logged in") and whose
-`uv` its Python and cache under `~/.cache`. vfg's own state stays in the stand-in (the brain's
-`tasks.json`, log and command references in `$VFG_HOME/brain`, or `VFG_BRAIN_DIR`), `bin/` goes
-first on the brain's `PATH`, and every `vfg` the brain and its implementers run comes back through
-`bin/vfg`, to the stand-in. The brain's OpenRouter key goes in its environment
+`uv` its Python and cache under `~/.cache`. vfg's own state stays in the stand-in (the brain's log
+and command references in `$VFG_HOME/brain`, or `VFG_BRAIN_DIR`; its tasks in the `tasks` table of
+the stand-in's `vfg.db`, which `vfg task` reaches through `bin/ssh` as every box program does),
+`bin/` goes first on the brain's `PATH`, and every `vfg` the brain and its implementers run comes
+back through `bin/vfg`, to the stand-in. The brain's OpenRouter key goes in its environment
 (`OPEN_ROUTER_API`), never in the stand-in.
 
 ```sh
@@ -250,8 +251,9 @@ integration/realmc/
     shared/              server.jar, libraries/, versions/, mods/ (Carpet), env (the .env)
     template/world/      the world every server's starts from; template.json says where the arena is
     <NAME>/mc/           the server: server.properties (600), world/, console.log, logs/
-    <NAME>/vfg/          /opt/vfg: lib/vfg_feed.py, vfg.db, scripts/, made/, run/, .env,
-                         python/bin/python3 (the box's Python 3.12)
+    <NAME>/vfg/          /opt/vfg: lib/vfg_feed.py, vfg.db (the lines, the feed, the brain's tasks),
+                         scripts/, made/, run/, .env, python/bin/python3 (the box's Python 3.12),
+                         set-aside-<time>/ (an earlier vfg.db and feed.log, brain_live's clean slate)
     <NAME>/home/.vfg/    the VFG_HOME vfg uses for it
     <NAME>/box/          the box's PATH (python3 is 3.9, Amazon Linux's own) and the fake systemctl's units
 ```
