@@ -135,6 +135,20 @@ def program_args(data):
     return json.loads(ast.literal_eval(m.group(1))) if m else None
 
 
+class FastPoll(object):
+    """`time` for scripts/_lib/instances.py on the box here: Box.wait, which waits on a copy to the
+    end of a deadline, looks for it every 5 ms, not every 50 (a test's copy ends in about 30);
+    every other wait, and every clock, as they are."""
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+    @staticmethod
+    def sleep(seconds):
+        time.sleep(min(seconds, 0.005) if sys._getframe(1).f_code.co_name == "wait" else seconds)
+
+
+FAST_POLL = FastPoll()
 _COMPILED = {}
 
 
@@ -250,10 +264,17 @@ class Box(object):
         self.down = False       # SSH answers 255: EC2 unreachable
         self.slow = False       # SSH out of time
         self.procs = []
-        self.base_env = {k: v for k, v in os.environ.items() if not k.startswith(("VFG_", "FAKE_", "CLAUDE"))}
+        # Nothing of this PC's: no VFG_ setting, and no OpenRouter key, so no test reaches a model.
+        self.base_env = {k: v for k, v in os.environ.items()
+                         if not k.startswith(("VFG_", "FAKE_", "CLAUDE")) and k != "OPEN_ROUTER_API"}
 
     # -- setup
     def write_config(self, text):
+        """~/.vfg/config: `text`, and no alias model for an incantation unless it names one. In
+        the config, not the environment, as a thread of vfg reads it while a remote program here
+        has the box's environment."""
+        if "VFG_INCANT_ALIAS_MODEL=" not in text:
+            text += "VFG_INCANT_ALIAS_MODEL=off\n"
         write(os.path.join(self.vhome, "config"), "# test config\n" + text)
 
     def write_props(self, password=None, enable=True, port=None):
@@ -352,8 +373,9 @@ class Box(object):
         """vfg's main() in this process, with this box's environment: Result(code, stdout, stderr)."""
         began = time.time()
         mod = vfg_module()
+        repo = self.env(**env)["VFG_REPO"]
         for key, cat in list(mod._CATALOG.items()):
-            if key[0] == self.repo:
+            if key[0] == repo:
                 cat.refresh()     # as a new process would read them: what changed since, again
             else:
                 del mod._CATALOG[key]
@@ -398,6 +420,9 @@ class Box(object):
         env = {k: self.base_env[k] for k in ("USER", "LOGNAME") if k in self.base_env}
         env.update(HOME=self.home, LANG="C.UTF-8", FAKE_UNITS=self.units,
                    PATH=os.pathsep.join([self.bin, os.path.join(TESTS, "bin"), self.base_env.get("PATH", "")]))
+        # A test's copies set nothing off that needs a tick to go: one that ends, ends at once,
+        # not mc.py's 0.4 s later.
+        env["VFG_EXIT_GRACE_S"] = "0"
         return env
 
     def run_here(self, run, env, argv=None):
@@ -455,12 +480,18 @@ class Box(object):
         if m is None:
             return self.run_here(lambda ns: exec(compiled(text), ns), self.box_env())
         args = json.loads(ast.literal_eval(m.group(1)))
+        head, tail = text[:m.start()], text[m.end():]
+        libs = list(re.finditer(r"^\w+ = _library\(.*\)$", tail, re.M))
+        cut = libs[-1].end() if libs else 0     # the libraries the program ships, then the program
 
         def run(ns):
             ns["compile"] = compile_once     # what _library compiles of each library: once too
-            exec(compiled(text[:m.start()]), ns)
+            exec(compiled(head), ns)
             ns["ARGS"] = args
-            exec(compiled(text[m.end():]), ns)
+            exec(compiled(tail[:cut]), ns)
+            if "instances" in ns:
+                ns["instances"].time = FAST_POLL
+            exec(compiled(tail[cut:]), ns)
         return self.run_here(run, self.box_env())
 
     def run_feed(self, cmd):

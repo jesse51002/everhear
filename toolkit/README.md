@@ -98,8 +98,8 @@ one line on stderr. `vfg --help` and `vfg <command> --help` list every option.
   on those rows where it is not set, in one call and one transaction, and prints how many. The
   bridge adds the column on start; until it has, both exit 1 saying so.
 - **`vfg watch --after <seq>`** prints the feed from seq+1, then follows; it reads and writes no
-  cursor, takes no lock (a person's `vfg watch` runs beside it) and has no valve. After a gap of
-  more than `VFG_WATCH_CATCHUP` lines it prints the last of them, behind a `SYS#0` notice.
+  cursor, takes no lock (a person's `vfg watch` runs beside it), has no valve and skips no line
+  however far behind it starts: no `VFG_WATCH_CATCHUP`.
 - **`vfg state --json --items`** adds to each online player `"items"`: Minecraft's replies to
   `data get entity <p> Inventory`, its `equipment` (asked only when it has any) and
   `SelectedItemSlot`, which the brain's `listing.py` turns into slot names.
@@ -264,7 +264,10 @@ sends: the harness replaces `Ssh`'s one subprocess call and nothing else, and gi
 the box's environment, none of the PC's. A test class shares one `fake_rcon.py`, Minecraft's RCON
 in-process on localhost; a copy an action starts is a real process on the real kit, from the
 stand-in actions of `tests/standins.py`. vfg's own waits are short in the tests (the 2 s check
-0.2 s, `vfg brain start`'s 3 s check 0.1 s), and each part of a remote program is compiled once.
+0.2 s, `vfg brain start`'s 3 s check 0.1 s), a copy ends with no exit grace (`VFG_EXIT_GRACE_S=0`
+on the box) and is waited for in 5 ms steps, and each part of a remote program is compiled once.
+No test reaches a model: the box's config turns the incantation alias model off unless a test
+names one, with `vfg_llm` mocked, and no OpenRouter key passes in.
 
 - `test_vfg.py`: every command at its edge, with `fake_places_world.py` (26.3's recorded
   replies) for places, a fake `java` for the data generator and `tests/bin/`'s fake
@@ -273,6 +276,8 @@ stand-in actions of `tests/standins.py`. vfg's own waits are short in the tests 
 - `test_copies.py`: `vfg action run` and its copies, edits, stops, `running.json`, script save.
 - `test_route.py`: the router, `remote/jev.py` against `fake_jev_route.py`, `vfg prefix`.
 - `test_library.py`: `vfg script new` and `check`, `vfg preset save`, five real presets in one script.
+- `test_incantations.py`: the incantation actions writing the box's store through their real
+  script, the alias call, and `vfg incantation list` with its cache; one box for a class.
 - `test_e2e.py`: a handful with vfg as a process, through `tests/fake_ssh`, which runs the remote
   command here with bash: a command and its SSH options, closed descriptors, and watches
   following the feed.

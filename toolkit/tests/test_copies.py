@@ -267,7 +267,7 @@ class TestEditStop(ActionCase):
         self.line(self.run_action("beam"))
         stop = os.path.join(self.box.repo, "scripts", "stop", "main.py")
         said = ('"""Stop: answers as the stop script does when it did not stop the copy."""\nimport sys\n\n'
-                'import mc\nfrom kit import result, values\n\nmc.EXIT_GRACE = 0\nv = values()\n'
+                'from kit import result, values\n\nv = values()\n'
                 'result(SAID % v["copy"], copy=v["copy"]FACTS)\nsys.exit(1)\n')
         standins.write(stop, said.replace("SAID", '"cannot stop %s: [Errno 1] Operation not permitted"')
                        .replace("FACTS", ""))
