@@ -245,6 +245,21 @@ async def test_a_failed_action_or_edit_replaces_the_orchestrators_reply_with_a_c
     assert k.vfg.said() == [["couldn't stop railgun_steve: nothing called railgun_steve is running"]]
 
 
+async def test_a_question_back_is_still_asked_after_the_code_line_when_an_action_fails(kit):
+    k = kit(orchestrator=[answer("reply", reply="better how, more damage or no cooldown?"),
+                          answer("reply", reply="which staff, the ice one or the fire one?")])
+    k.vfg.on("action", "run", "summon_around", answer=ran(False, "no such mob"))
+    d = decision(part("summon_around", "summon 5 zombies round Steve", {"players": "Steve", "mob": "zombie",
+                                                                         "count": 5}),
+                 part("orchestrator", "make Steve's gun better", said="make my gun better"),
+                 part("orchestrator", "make Steve's staff stronger", said="and my staff stronger"), reply="ok")
+    await run(k, d, player="Steve")
+    assert k.impl.started == k.impl.followed == [] and k.tasks.all() == []
+    assert k.vfg.said() == [["couldn't summon 5 zombies round Steve: no such mob"],
+                            ["better how, more damage or no cooldown?"],
+                            ["which staff, the ice one or the fire one?"]]
+
+
 async def test_two_orchestrator_parts_one_after_another_one_reply_and_a_later_reply_only_as_a_line_of_its_own(kit):
     k = kit(orchestrator=[NEW_GUN, answer("reply", reply="which staff, the ice one or the fire one?"),
                           LlmError("no answer")])

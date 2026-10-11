@@ -80,6 +80,7 @@ class Turn:
     decided: asyncio.Event = field(default_factory=asyncio.Event)  # the first call and its edit or stop are done
     answered: bool = False   # the first call answered (False: it failed, and the brain's reply is said)
     reply: str = ""          # the first call's reply
+    asked: bool = False      # the first call answered reply only: its reply is a question back
     outcomes: list[Outcome] = field(default_factory=list)  # the first call's edit or stop
     started: list[str] = field(default_factory=list)  # the player's words of each new or follow_up
     task: str = ""           # the first task a new or follow_up opened: the reply's --task
@@ -236,7 +237,8 @@ class Acts:
     def reply_for(self, decision, outcomes: list[Outcome], turn: Turn, handed: list, ref: str, *,
                   replying: bool) -> str:
         """The one reply: the first orchestrator call's when it wrote it (`replying`), else the
-        brain's; a line written here when anything failed."""
+        brain's; a line written here when anything failed. A question the first call asks back
+        (reply only) is never lost to that line: it is said next, as a line of its own."""
         acted = all(o.ok or o.chosen for o in outcomes)  # the brain's reply already says what it dropped
         if not replying:
             if acted:
@@ -251,6 +253,11 @@ class Acts:
         if acted and all(o.ok for o in turn.outcomes):
             return turn.reply or decision.reply
         reply = fallback(outcomes + turn.outcomes, turn.started)
+        if turn.asked and turn.reply.strip():  # said after the code's line, before a later call's lines
+            turn.extras.insert(0, turn.reply)
+            log("reply", f"{ref} an action failed or was dropped: said {reply!r}, then the question back "
+                         f"{turn.reply!r}")
+            return reply
         log("reply", f"{ref} an action, an edit or a stop failed or was dropped: said {reply!r} instead of "
                      f"{turn.reply!r}")
         return reply
@@ -314,6 +321,7 @@ class Acts:
                 else:
                     given.append("reply only")
                     if first:
+                        turn.asked = True
                         self.free(turn, v.reply)
                     elif v.reply.strip():
                         turn.extras.append(v.reply)
