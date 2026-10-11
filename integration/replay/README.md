@@ -119,6 +119,13 @@ off: follow-ups 34 of 41 (82.9%, bar not met), new taken 2 of 9 (22.2%), 6 calls
 twice (3 an empty reply, 3 an edit or stop of a copy RUNNING NOW does not hold), 26 tasks, 3.3 s
 and p90 5.3 s, $0.16. Gemini is the better, and stays the orchestrator's model.
 
+Jesse then ruled that those two new tasks are right either way (`either` in `tasks.jsonl`, which
+`taskcall_score.py` reads). T59 (#239): the brain gave the barrier to the `barrier_shield`
+action, so the line's one implementer part was the Infinity fix, which was rightly followed up.
+T115 (#517): the Ice Staff had been removed five minutes before, so rebuilding it as the Ice Beam
+Staff under the same task is as fine as a new one. The score files are scored with the rulings:
+Gemini takes 0 of 9 new tasks for follow-ups (bar met), and DeepSeek 1 of 9 (11.1%).
+
 ### What it leaves in OUT
 
 | Path | Is |
@@ -228,6 +235,8 @@ and `run`: the run's figures for it — `send_to_done_s`, `words_to_done_s` (fro
 words), `kind` (what the run did: a new script written, a script edited, commands), `result`, and
 each implementer job: model, time, calls, calls before the first change, seconds per kind of call,
 turns, whether it hit the turn cap, cost; and the task's implementer and orchestrator cost.
+Two rows also carry `either`, a hand ruling with why: T59 and T115 are right as new tasks or as
+follow-ups, and `taskcall_score.py` counts them so.
 
 ### How it is measured
 

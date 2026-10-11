@@ -22,6 +22,8 @@ Writes OUT/score.md and OUT/score.json for each and prints them. Standard librar
   Right when one of the line's parts said "new"; taken for a follow-up when none did. Bar: at most
   5% taken. Also counted: the parts on lines whose every task was fresh that went to a follow-up.
 - Lines the conversation made no task of: how many parts went new and how many followed up.
+- EITHER: a new task whose row in tasks.jsonl carries `either` (a hand ruling, with why) is right
+  whether the line's parts said "new" or followed a task up, by script and by the labels alike.
 - REPLY ONLY: a built orchestrator (taskcall.py --built) may answer a part with a reply alone,
   starting nothing, such as asking back what was meant. Counted on a line of its own: a new task
   on a line whose parts only asked back is neither called new nor taken for a follow-up; a
@@ -70,6 +72,16 @@ def runs() -> tuple[list[str], dict[str, tuple[set[str], set[str]]]]:
     return order, out
 
 
+def either() -> set[str]:
+    """The new tasks a hand ruling in tasks.jsonl accepts as a follow-up too."""
+    return {t["id"] for t in map(json.loads, RUNS.read_text().splitlines()) if t.get("either")}
+
+
+def called(t: dict, anew: bool, named: set[str], rulings: set[str]) -> bool:
+    """A new task is right when a part said "new", or, under a hand ruling, when one followed a task up."""
+    return anew or (t["id"] in rulings and bool(named))
+
+
 NOT_SCRIPTS = {"edit", "both"}  # words the results' shorthand puts where a script's name goes
 
 
@@ -105,6 +117,7 @@ def by_script(rows: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
     """(follow-ups, follow-ups no task held, new) by what each task's implementer wrote or edited;
     each item {r, t, ok, right}, the chains rebuilt from the replay's own attribution, line by line."""
     order, ran = runs()
+    rulings = either()
     pos = {tid: i for i, tid in enumerate(order)}
     owner: dict[str, str] = {}
     fu, none, new = [], [], []
@@ -123,7 +136,8 @@ def by_script(rows: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
                 item = {"r": r, "t": dict(t, right=right, scripts=sorted(prior)), "ok": bool(named & set(right))}
                 (fu if right else none).append(item)
             elif wrote and not edited and t["kind"] == "fresh":
-                new.append({"r": r, "t": dict(t, scripts=sorted(wrote)), "ok": anew, "asked": asked(r)})
+                new.append({"r": r, "t": dict(t, scripts=sorted(wrote)), "ok": called(t, anew, named, rulings),
+                            "asked": asked(r)})
         for t in r["truth"]:
             if t.get("owner"):
                 owner.setdefault(t["id"], t["owner"])
@@ -152,6 +166,7 @@ def score(out: Path) -> tuple[str, dict]:
     calls = [p for p in parts if "ms" in p]
     errors = [p for p in parts if "error" in p]
 
+    rulings = either()
     fu, fu_later, fu_no_task, fresh = [], [], [], []
     for r in rows:
         named = {p["name"] for p in r["parts"] if p.get("kind") and p["kind"] != NEW and p.get("name")}
@@ -159,7 +174,7 @@ def score(out: Path) -> tuple[str, dict]:
         for t in r["truth"]:
             item = {"r": r, "t": t}
             if t["kind"] == "fresh":
-                item["ok"], item["asked"] = anew, asked(r)
+                item["ok"], item["asked"] = called(t, anew, named, rulings), asked(r)
                 fresh.append(item)
             elif t["later"]:
                 fu_later.append(item)
@@ -218,6 +233,9 @@ def score(out: Path) -> tuple[str, dict]:
       f"{pct(len(fresh) - taken - l_asked, len(fresh))} | "
       f"taken for follow-ups at most 5%: {pct(taken, len(fresh))}, "
       f"{'met' if fresh and taken / len(fresh) <= 0.05 else 'NOT met'} |")
+    ruled = sorted({x["t"]["id"] for x in [*s_new, *fresh] if x["t"]["id"] in rulings}, key=lambda i: int(i[1:]))
+    if ruled:
+        w(f"\n**Either way** (a hand ruling in tasks.jsonl): {', '.join(ruled)} are right as new or as a follow-up.")
     if replies_only:
         w(f"\n**Reply only** (nothing started): {len(replies_only)} parts. Of the new tasks, {s_asked} by script and "
           f"{l_asked} by the labels were only asked back, so neither called new nor taken for follow-ups; of the "

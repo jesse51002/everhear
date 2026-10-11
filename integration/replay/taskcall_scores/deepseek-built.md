@@ -11,7 +11,7 @@ Failed: deepseek/deepseek-v4-flash twice failed to match TaskAnswer: - the answe
 | | Right | Of | Share | Bar |
 |---|---|---|---|---|
 | **Follow-ups** named the task holding the script it edited | 34 | 41 | 82.9% | at least 85%: NOT met |
-| **New tasks** (a new script) called new | 7 | 9 | 77.8% | taken for follow-ups at most 5%: 22.2%, NOT met |
+| **New tasks** (a new script) called new | 8 | 9 | 88.9% | taken for follow-ups at most 5%: 11.1%, NOT met |
 
 15 more edited a script no task here held (the brain ran its maker as an action).
 
@@ -20,7 +20,9 @@ Failed: deepseek/deepseek-v4-flash twice failed to match TaskAnswer: - the answe
 | | Right | Of | Share | Bar |
 |---|---|---|---|---|
 | **Follow-ups** named the task whose chain holds the target | 18 | 19 | 94.7% | at least 85%: met |
-| **New tasks** called new | 17 | 65 | 26.2% | taken for follow-ups at most 5%: 70.8%, NOT met |
+| **New tasks** called new | 18 | 65 | 27.7% | taken for follow-ups at most 5%: 69.2%, NOT met |
+
+**Either way** (a hand ruling in tasks.jsonl): T59, T115 are right as new or as a follow-up.
 
 **Reply only** (nothing started): 9 parts. Of the new tasks, 0 by script and 2 by the labels were only asked back, so neither called new nor taken for follow-ups; of the follow-ups missed, 1 by script and 0 by the labels.
 
@@ -42,11 +44,10 @@ Failed: deepseek/deepseek-v4-flash twice failed to match TaskAnswer: - the answe
 | 666 | KrownJM | Can you remove the glow on everyone's wallet? Wait, did you throw up again? That was Maggie. Oh shit. | follow-up ice_beam_staff_krown: Remove the maintained Glowing effect from KrownJM, Styrkaeopteryx and Eclipszr so they ar… | T159 (keep_effects): Remove the Glowing effect from everyone → right: one_shot_trident_krown |
 | 711 | Styrkaeopteryx | Did you fix Gallic gun killing everyone no matter which way I look? | ERROR : Fix Styrkaeopteryx’s Galick Gun hitting players regardless of aim. Damage must only hit t… | T161 (galick_gun): Fix the Galick Gun hitting everyone regardless of aim → right: ice_beam_staff_krown, pretty_house_styrkaeopteryx |
 
-## By script: new tasks taken for follow-ups: 2
+## By script: new tasks taken for follow-ups: 1
 
 | # | Who | The line | The orchestrator: each part's answer and the brain's instruction | The truth |
 |---|---|---|---|---|
-| 239 | Eclipszr | But also make sure you work on my affinity please. Let's see if I can make a barrier around me. | follow-up infinity_eclipszr: Check and fix Eclipszr's Infinity Gauntlet so its existing right-click powers work reliab… | T59 (barrier_shield): Give Eclipszr a barrier around him that keeps mobs away |
 | 272 | KrownJM | Cloud, can you turn everything I walk on into ice? I had to give me frostwalker as well. Yeah, but like also … | follow-up one_shot_trident_krown: Add Frost Walker to KrownJM's existing boots, inspecting the inventory to find them since… | T68 (ice_walk): Make everything KrownJM walks on turn to ice |
 
 ## By the labels: follow-ups missed: 1
@@ -55,7 +56,7 @@ Failed: deepseek/deepseek-v4-flash twice failed to match TaskAnswer: - the answe
 |---|---|---|---|---|
 | 525 | Eclipszr | Claude make it have infinite range It doesn't need damage though. | follow-up infinity_eclipszr: Change Eclipszr's existing Hollow Purple to have unlimited range rather than its current …; follow-up infinity_eclipszr: Remove damage and instant kills against players and mobs from Eclipszr's Hollow Purple; k… | T118: Change to T114: Hollow Purple gets infinite range → right: one_shot_trident_krown |
 
-## By the labels: new tasks taken for follow-ups: 48
+## By the labels: new tasks taken for follow-ups: 47
 
 | # | Who | The line | The orchestrator: each part's answer and the brain's instruction | The truth |
 |---|---|---|---|---|
@@ -66,7 +67,6 @@ Failed: deepseek/deepseek-v4-flash twice failed to match TaskAnswer: - the answe
 | 201 | KrownJM | Counch. for this hunt. Okay. It is zero level three is word on another. Can you also reduce our armor to diam… | follow-up one_shot_trident_krown: Replace KrownJM, Styrkaeopteryx and Eclipszr's current armor with diamond equivalents, do… | T50: Replace every online player’s armor with diamond armor |
 | 222 | Eclipszr | My gaming gun doesn't work. | follow-up meteor_toss_eclipszr: Fix Eclipszr's Gatling Gun from the earlier work: holding right-click should fire its rap… | T53: Fix the Gatling Gun for Eclipszr |
 | 233 | KrownJM | Yeah, it's like can you make sure we're taking can you reduce our armor as I think because the uncle barely t… | follow-up one_shot_trident_krown: Reduce the protection of the armor previously given to KrownJM, Styrkaeopteryx and Eclips… | T57: Remove all armor from the online players so they take real damage |
-| 239 | Eclipszr | But also make sure you work on my affinity please. Let's see if I can make a barrier around me. | follow-up infinity_eclipszr: Check and fix Eclipszr's Infinity Gauntlet so its existing right-click powers work reliab… | T59: Give Eclipszr a barrier around him that keeps mobs away |
 | 247 | Eclipszr | Make the dead beam faster, please, Claude. This is way too slow. | follow-up infinity_eclipszr: Speed up Eclipszr's death gaze from the work already underway: reduce the delay between l… | T60: Make the death beam faster for Eclipszr |
 | 272 | KrownJM | Cloud, can you turn everything I walk on into ice? I had to give me frostwalker as well. Yeah, but like also … | follow-up one_shot_trident_krown: Add Frost Walker to KrownJM's existing boots, inspecting the inventory to find them since… | T68: Make everything KrownJM walks on turn to ice |
 | 273 | KrownJM | Back to the music, the music stopped. | follow-up black_hole_eclipszr: Fix the three-headed dragon boss music for KrownJM: restore playback for all online playe… | T69: Restart the boss music for all players |
