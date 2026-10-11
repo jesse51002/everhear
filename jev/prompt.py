@@ -109,14 +109,15 @@ SHORT = {"the_ai_must_act": "act", "the_ai_should_answer": "answer", "remember_i
          "fine_a_reply_is_all": "fine", "let_down_wanted_something_done": "let down",
          "not_talking_to_the_ai": "wouldn't notice"}
 
-# g3 of integration/replay/gather_bench.md: each side says what the line is, and nothing says whether
-# the ask stands alone, which a short ask read alone nearly always does (the first wording leaned on
-# that, and took 1 of 7 clear pieces on 2026-10-08; this one 6).
+# g5 of integration/replay/gather_bench.md: each side says what the line is about. The first wording's
+# "or the ask makes full sense without it" lost sentences cut at a pause, since a short ask read alone
+# nearly always makes sense; g3's "a remark" lost lines that say where the ask's "there" is. g5 takes
+# both: 6 of the 7 clear pieces on 2026-10-08 (all 4 held out), and 0.82 to 0.99 on the live runs' pieces.
 GATHER_CRITERIA = {
-    "part_of_the_ask": "Part of the ask: a piece of the same sentence or request, cut off by a pause, or it says what, "
-                       "where, who or how for the ask.",
-    "not_part_of_it": "Not part of the ask: something else: a reaction, a remark, talk to a player, or another "
-                      "subject or ask.",
+    "part_of_the_ask": "Part of the ask: a piece of the same sentence, cut off by a pause, or it says what, where, who "
+                       "or how for the ask, such as what \"it\", \"there\" or \"one\" in the ask points at.",
+    "not_part_of_it": "Not part of the ask: it is about something else, such as another subject, another ask or a "
+                      "reaction, and the ask needs nothing from it.",
 }
 PART_OF_IT = "part_of_the_ask"
 GATHER_WHY = "Speech-to-text cuts a player at every pause, so one ask can arrive as several lines. "

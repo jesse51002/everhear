@@ -282,10 +282,11 @@ numbers barely move, because the windows rarely hold a piece. The change is two 
 `jev/prompt.py`: `GATHER_CRITERIA`, and the instruction head in `gather_questions` (`BALANCED` and
 `PIECES` in `gather_bench.py`). The jev builder owns that file.
 
-**g3 went into production on 2026-10-11**, the orchestrator's call: `jev/prompt.py`'s `GATHER_CRITERIA`
-and `GATHER_WHY`. Every "production" row on this page is the first wording, recorded before that; in
-`gather_bench.py` it is now `FIRST`, and `prod` and `repeat` ask it, so they reproduce. `run` asks
-whatever production's wording is, g3 since.
+**g3 went into production on 2026-10-11, and g5 replaced it after round two**, both the orchestrator's
+call: `jev/prompt.py`'s `GATHER_CRITERIA` is g5's (`REFERS`), and `GATHER_WHY` g3's sentence on pauses.
+Every "production" row on this page is the first wording, recorded before either; in `gather_bench.py`
+it is now `FIRST`, and `prod` and `repeat` ask it, so they reproduce. `run` asks whatever production's
+wording is, g5 now.
 
 ### Round two: the live runs
 
@@ -362,7 +363,7 @@ counted the same way. No wording gathered a line outside it.
 (19, 21); $3.03 a session; 9 yes of 408 lines asked; 219 / 243 ms a call. No Respond event's hand-up
 changes.
 
-**I would put g5 into production.** It keeps g3's gains on the playtest (the same 2 of 3 clear pieces
+**I would put g5 into production** (done, 2026-10-11). It keeps g3's gains on the playtest (the same 2 of 3 clear pieces
 on the first half, all 4 held out) and is above the first wording on every live piece (cave 0.91–0.95
 against 0.72–0.79, pickaxe 0.97–0.99 against 0.96–0.98, monument 0.82–0.90 against 0.77–0.86), with
 the other lines at 0.00. It costs 0.7% more tokens than g3. The change is `GATHER_CRITERIA` in

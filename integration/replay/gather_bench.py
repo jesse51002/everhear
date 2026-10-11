@@ -148,7 +148,7 @@ SPEC = {
 }
 
 # name -> (what it changes, the questions function). `prod` is the first wording (FIRST), which `run`
-# recorded; g3 has been jev/prompt.py's own since, so `run` now asks g3.
+# recorded; g5 is jev/prompt.py's own since round two, so `run` now asks g5.
 WORDINGS = {
     "prod": ("the first wording: FIRST, production's when `run` recorded it", gather_wording(FIRST)),
     "first": ("the first wording (FIRST), asked on the live states", gather_wording(FIRST)),
@@ -164,7 +164,7 @@ WORDINGS = {
 }
 _row = {"id": "x", "at": "2026-10-08T06:00:00.000Z", "player_name": "Steve", "source": "voice", "text": "the big one",
         "peak_dbfs": None}
-assert gather_wording(BALANCED, PIECES)(_row, [_row]) == prompt.gather_questions(_row, [_row])   # g3 is production
+assert gather_wording(REFERS, PIECES)(_row, [_row]) == prompt.gather_questions(_row, [_row])   # g5 is production
 
 
 # ------------------------------------------------------------------ the stand-ins around production
