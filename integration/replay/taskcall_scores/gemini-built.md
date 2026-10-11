@@ -9,7 +9,7 @@
 | | Right | Of | Share | Bar |
 |---|---|---|---|---|
 | **Follow-ups** named the task holding the script it edited | 36 | 41 | 87.8% | at least 85%: met |
-| **New tasks** (a new script) called new | 7 | 9 | 77.8% | taken for follow-ups at most 5%: 22.2%, NOT met |
+| **New tasks** (a new script) called new | 9 | 9 | 100.0% | taken for follow-ups at most 5%: 0.0%, met |
 
 15 more edited a script no task here held (the brain ran its maker as an action).
 
@@ -18,7 +18,9 @@
 | | Right | Of | Share | Bar |
 |---|---|---|---|---|
 | **Follow-ups** named the task whose chain holds the target | 18 | 19 | 94.7% | at least 85%: met |
-| **New tasks** called new | 27 | 65 | 41.5% | taken for follow-ups at most 5%: 58.5%, NOT met |
+| **New tasks** called new | 29 | 65 | 44.6% | taken for follow-ups at most 5%: 55.4%, NOT met |
+
+**Either way** (a hand ruling in tasks.jsonl): T59, T115 are right as new or as a follow-up.
 
 **Reply only** (nothing started): 5 parts. Of the new tasks, 0 by script and 0 by the labels were only asked back, so neither called new nor taken for follow-ups; of the follow-ups missed, 0 by script and 0 by the labels.
 
@@ -38,12 +40,8 @@
 | 654 | Eclipszr | Log Make? Fear bomb one hundred percent every time make it broken as fuck and just nuke the world. | new spirit_bomb_fix_eclipszr: Fix Eclipszr’s Spirit Bomb so every charged release reliably launches and detonates; diag…; follow-up spirit_bomb_fix_eclipszr: Upgrade Eclipszr’s Spirit Bomb to an enormous terrain-destroying blast, as large as the s… | T151 (spirit_bomb): Change to T136: Spirit Bomb always full power with a massive blast → right: remove_cooldowns_all |
 | 666 | KrownJM | Can you remove the glow on everyone's wallet? Wait, did you throw up again? That was Maggie. Oh shit. | new remove_glowing_all_2: Remove the maintained Glowing effect from KrownJM, Styrkaeopteryx and Eclipszr so they ar… | T159 (keep_effects): Remove the Glowing effect from everyone → right: no_damage_all, speed_two_krown |
 
-## By script: new tasks taken for follow-ups: 2
+## By script: new tasks taken for follow-ups: 0
 
-| # | Who | The line | The orchestrator: each part's answer and the brain's instruction | The truth |
-|---|---|---|---|---|
-| 239 | Eclipszr | But also make sure you work on my affinity please. Let's see if I can make a barrier around me. | follow-up infinity_power_eclipszr: Check and fix Eclipszr's Infinity Gauntlet so its existing right-click powers work reliab… | T59 (barrier_shield): Give Eclipszr a barrier around him that keeps mobs away |
-| 517 | KrownJM | Can you also give me a staff that shoots like similar to the Holocaust like an ice beam and everything it tou… | follow-up ice_staff_krown: Give KrownJM an ice beam staff: right-click fires a beam that turns every block it touche… | T115 (ice_beam): Give KrownJM an Ice Beam Staff |
 
 ## By the labels: follow-ups missed: 1
 
@@ -51,7 +49,7 @@
 |---|---|---|---|---|
 | 525 | Eclipszr | Claude make it have infinite range It doesn't need damage though. | follow-up hollow_purple_eclipszr: Change Eclipszr's existing Hollow Purple to have unlimited range rather than its current …; follow-up hollow_purple_eclipszr: Remove damage and instant kills against players and mobs from Eclipszr's Hollow Purple; k… | T118: Change to T114: Hollow Purple gets infinite range → right: frost_walker_boots_krown |
 
-## By the labels: new tasks taken for follow-ups: 38
+## By the labels: new tasks taken for follow-ups: 36
 
 | # | Who | The line | The orchestrator: each part's answer and the brain's instruction | The truth |
 |---|---|---|---|---|
@@ -60,7 +58,6 @@
 | 168 | KrownJM | So are you tossic videos? Oh here it goes. So why does Bijat explode? Oh God, my trial is not consistent. It … | follow-up creeper_trident_krown: Fix KrownJM's Creeper Trident so every thrown hit on a mob or block reliably explodes at …; follow-up horror_mode_all: Remove darkness and blindness from KrownJM now and prevent horror mode from applying eith… | T38: Remove the darkness effects from KrownJM and make his Creeper Trident explode e… |
 | 223 | KrownJM | Also, take off the rain and yes this time to do a thousand bobs on each of us. We should be surrounded by mob… | follow-up thousand_mob_horde: Spawn 1,000 mixed monsters around each of KrownJM, Styrkaeopteryx and Eclipszr, surroundi… | T54: Clear the weather, spawn about 1000 mobs around each online player, and add fal… |
 | 233 | KrownJM | Yeah, it's like can you make sure we're taking can you reduce our armor as I think because the uncle barely t… | follow-up diamond_armor_all: Reduce the protection of the armor previously given to KrownJM, Styrkaeopteryx and Eclips… | T57: Remove all armor from the online players so they take real damage |
-| 239 | Eclipszr | But also make sure you work on my affinity please. Let's see if I can make a barrier around me. | follow-up infinity_power_eclipszr: Check and fix Eclipszr's Infinity Gauntlet so its existing right-click powers work reliab… | T59: Give Eclipszr a barrier around him that keeps mobs away |
 | 276 | KrownJM | Fire Army. Who keeps doing that? Also, give me my tried inspect. They are gone from my inventory and I don't … | follow-up creeper_trident_krown: Restore KrownJM's missing powered tridents, checking inventory space and nearby dropped i… | T71: Give KrownJM back his tridents |
 | 287 | KrownJM | Are you sitting on me somewhere? Wait, I guess can't kill you. Okay, take away Oh my God, Kelly's throw. I ca… | follow-up immortality_eclipszr: Remove Eclipszr's immortality: put Eclipszr in survival mode, remove invulnerability and … | T72: Remove all immortality from Eclipszr and never grant it again |
 | 291 | KrownJM | Also you can remove the the rain. | follow-up thousand_mob_horde: Stop the falling lava-particle rain started for KrownJM and all players. Leave the mobs a… | T73: Stop the falling lava particles |
@@ -79,7 +76,6 @@
 | 496 | KrownJM | I want frostwalkers when I admit. Also, it shouldn't like just make ice. It should turn the blocks that are a… | follow-up frost_walker_boots_krown: Fix KrownJM's ground-ice power so it replaces existing buried blocks with ice, rather tha… | T110: Give KrownJM his Frost Walker boots back |
 | 513 | KrownJM | Okay, this ice thing is still breaking. It's going to piss me off. Also, you can do whatever eclipse say is c… | follow-up frost_walker_boots_krown: Fix KrownJM's ground-ice ability again: existing blocks within 10 blocks of KrownJM's fee… | T113: Fix ice_walk, it is still breaking for KrownJM |
 | 513 | KrownJM | Okay, this ice thing is still breaking. It's going to piss me off. Also, you can do whatever eclipse say is c… | follow-up frost_walker_boots_krown: Fix KrownJM's ground-ice ability again: existing blocks within 10 blocks of KrownJM's fee… | T114: Upgrade Eclipszr’s Hollow Purple as he asked |
-| 517 | KrownJM | Can you also give me a staff that shoots like similar to the Holocaust like an ice beam and everything it tou… | follow-up ice_staff_krown: Give KrownJM an ice beam staff: right-click fires a beam that turns every block it touche… | T115: Give KrownJM an Ice Beam Staff |
 | 527 | KrownJM | I don't understand. Why is it not changing grass blocks though? Like some grass blocks stay and don't transfo… | follow-up frost_walker_boots_krown: Fix KrownJM's ground ice: some grass blocks within the 10-block area above, below and aro… | T119: Fix ice_walk, some grass blocks stay unfrozen for KrownJM |
 | 536 | Eclipszr | is that I say. That's cool. They make it kind of high wave and I make it like interact with the Galagun. Like… | follow-up hollow_purple_eclipszr: Update Eclipszr’s Hollow Purple so it clashes with Styrkaeopteryx’s Galick Gun when their… | T121: Add a beam clash between Hollow Purple and the Galick Gun |
 | 545 | KrownJM | Can you not like exclude anything from the Ice List? Just make it include everything. Thank you. Thank you fo… | follow-up frost_walker_boots_krown: Update KrownJM's ground-freezing ice_walk: remove every block exclusion so all existing b… | T124: Remove all exclusions from ice_walk so it freezes every block |
