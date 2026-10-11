@@ -593,10 +593,10 @@ def path0(box, rep, ctx):
               "vfg jev menu set writes /opt/vfg/menu.md; vfg jev menu show prints it back",
               "set %s %s; show %r" % (r.stdout, r.stderr, shown.stdout[:200]))
     objs, r = box.context_json()
-    rep.check(r.returncode == 0 and objs and set(objs[-1]) == {"last_seq"}
-              and all(set(o) == {"seq", "at", "line", "processed_at"} for o in objs[:-1]),
-              "vfg context --json reads the feed table (%d rows so far), then the feed's last seq"
-              % (len(objs) - 1), r.stdout[-600:] + r.stderr)
+    rep.check(r.returncode == 0 and len(objs) >= 2 and objs[-2] == {"tasks": []} and set(objs[-1]) == {"last_seq"}
+              and all(set(o) == {"seq", "at", "line", "processed_at"} for o in objs[:-2]),
+              "vfg context --json reads the feed table (%d rows so far), then the tasks (none yet), then the "
+              "feed's last seq" % (len(objs) - 2), r.stdout[-600:] + r.stderr)
     start = objs[-1].get("last_seq", 0) if objs else 0
     box.start_watch(start)
     r = box.vfg("feed", "post", "SYS", "", "the brain's watch is on")
