@@ -1365,13 +1365,11 @@ def path6(box, rep, ctx):
               "a component that is not §4's (dispatcher) is refused, nothing written", r.stderr)
 
 
-TASK_COLUMNS = ("name", "description", "player", "status", "line", "brief", "made", "variables", "session",
-                "result", "created_at", "updated_at", "closed_at")
-
-
 def path10(box, rep, ctx):
     rep.path("10", "vfg task set and vfg task list on the real vfg.db, as the brain writes its tasks; the tasks in "
                    "vfg context --json and vfg brain status (§4 §8)")
+    columns = ("name", "description", "player", "status", "line", "brief", "made", "variables", "session", "result",
+               "created_at", "updated_at", "closed_at")
 
     def task_set(row, stdin=False):
         text = row if isinstance(row, str) else json.dumps(row, ensure_ascii=False)
@@ -1390,7 +1388,7 @@ def path10(box, rep, ctx):
     if not have:
         return
     cols = [c["name"] for c in box.sql("PRAGMA table_info(tasks)")]
-    rep.check(tuple(cols) == TASK_COLUMNS, "its columns are the spec's, in order", "%r" % cols)
+    rep.check(tuple(cols) == columns, "its columns are the spec's, in order", "%r" % cols)
 
     # The rows as the brain's Tasks sends them: the whole row on every write, made with all four kinds.
     t0 = now()
