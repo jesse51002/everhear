@@ -24,10 +24,11 @@ enforce.
 
 THE VERSIONS (`VERSIONS`): `old` is Respond on main at 9f32e06 (its prompt and its answer's field
 descriptions); each later one a rewrite, its prompt kept in respond_prompts/ so the bench does not
-move with the brain's own, and v5 is brain/prompts/respond.md and brain.respond.Response. All on
-Respond's production model and providers (config.py: DeepSeek V4 Flash, reasoning off, parasail
-first), one call at a time, as the loop calls it. A failed call is a hand-up, as the loop makes
-it; a hand-up's reply is kept in the row (`reply`), though the loop drops it.
+move with the brain's own; v5 is brain/prompts/respond.md (but for its group sentence, made
+neutral after the bench) and brain.respond.Response. All on Respond's production model and
+providers (config.py: DeepSeek V4 Flash, reasoning off, parasail first), one call at a time, as
+the loop calls it. A failed call is a hand-up, as the loop makes it; a hand-up's reply is kept in
+the row (`reply`), though the loop drops it.
 
     (cd brain && uv sync --frozen --inexact)
     PY=brain/.venv/bin/python; L=integration/replay; DB=DIR/vfg/vfg.db; D2=WHOLE_OUT/new/D2/rows.jsonl
@@ -482,9 +483,12 @@ JUDGED = (
 def open_tasks(args) -> dict[str, str]:
     """OPEN TASKS as each input's call showed it: the playtest's at the input's moment, the invented set's own."""
     out = {}
-    for it in INVENTED:
-        rows = [f"- {tid} for {who}: {brief}" for tid, who, brief in it.get("tasks", [])]
-        out[it["id"]] = "OPEN TASKS:\n" + ("\n".join(rows) or "none")
+    for k, it in enumerate(INVENTED):   # as invented_items shows them, in Tasks.show()'s own lines
+        shown = Tasks(Path("/nonexistent/tasks.json"))
+        for tid, player, brief in it.get("tasks", []):
+            shown.tasks[tid] = {"id": tid, "at": at_plus(INVENTED_AT, 300 * k + 9), "player": player, "line": "",
+                                "task": brief, "status": "open"}
+        out[it["id"]] = shown.show(list(shown.tasks))
     pt = Playtest(Path(args.db))
     inputs = read_rows(Path(args.inputs))
     d2 = d2_outcomes(Path(args.d2))
@@ -509,7 +513,7 @@ def guard(args) -> None:
                and piece in r["reply"].lower().replace("\u2019", "'")]
         if len(hit) == 1:
             judged[(run, v, hit[0]["id"])] = piece
-    fires = {(run, v, r["id"]): promises(r["reply"], tasks.get(r["id"], "")) for run, v, _, r in said}
+    fires = {(run, v, r["id"]): promises(r["reply"], tasks.get(r["id"], ""), r["who"]) for run, v, _, r in said}
     caught = [k for k in judged if fires.get(k)]
     print(f"{len(said)} replies said; {len(judged)} judged a promise or an offer by hand, of {len(JUDGED)} listed; "
           f"the guard hands up {sum(1 for k in fires if fires[k])}: {len(caught)} of the judged, "

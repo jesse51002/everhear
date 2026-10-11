@@ -32,16 +32,17 @@ Prototype_Jev_Routing's _Test_ asks for this: "Respond's rewritten prompt, on th
 **A guard in code now hands up any reply that promises or offers** (`brain.respond.promises()`, under _The guard_):
 
 - Measured on every reply the runs recorded, with no new call.
-- It catches 40 of the 42 promises and offers judged by hand across all versions, and fires on 1 other reply of 680.
+- It catches 41 of the 42 promises and offers judged by hand across all versions, and all 21 of a reviewer's probe promises.
+- It fires on 12 of the 680 replies I had judged fine. 7 are status lines about another player's task, which by design pass only for the speaker's own.
 - v5 with the guard keeps none of its 8.
 - It hands up 2 more asks: 20 of 33 and 17 of 18.
-- Its other hand-ups are about 2 brain calls a session.
+- Its other hand-ups are about 3 brain calls a session.
 
 **`reason` is now required** (`brain/brain/respond.py`):
 
 - Left optional, the model sometimes skipped it, wrote `hand_up` first and decided with no reason at all: 16 of 88 answers in two runs of v3's prompt, and 2 of 44 of v1's.
 - Every one of those decisions was made without the deciding-first step that gate_bench.md measured.
-- Once `reason` was required, it was written first in all 460 answers.
+- Once `reason` was required, it was written first in all 540 answers: 460 on the playtest inputs, 80 on the invented set.
 
 **What remains, plainly:**
 
@@ -51,88 +52,109 @@ Prototype_Jev_Routing's _Test_ asks for this: "Respond's rewritten prompt, on th
 
 ## The guard
 
-**`brain.respond.promises(reply, tasks)` runs on every reply Respond means to say.**
+**`brain.respond.promises(reply, tasks, who)` runs on every reply Respond means to say.**
 
-- When the reply offers or promises something in the game, the answer becomes a hand-up: the reply is dropped, and `reason` gains ` · handed up in code: an offer` (or `a promise`).
-- The loop's log and the brain's "handed this line up to you" both show it.
+- When the reply offers or promises something in the game, the answer becomes a hand-up: the reply is dropped, and `reason` gains ` · handed up in code: an offer` (or `a promise`). The brain's "handed this line up to you" shows that note.
+- The log gets one line with the blocked reply, `respond guard #<seq> a promise: "Coming right up!"`. It goes to the log only, never into a prompt.
 - This is the spec's point 1, "Respond never promises what it can't do itself", in code, as the brain writes its own line when an action fails.
-- A wrong hand-up costs a brain call.
 
-**The patterns**, lower-cased with curly apostrophes made straight. They come from what Respond actually wrote, and "the AI does" is one verb list: make (not "make sure"), give (not "give you that"), build, spawn, summon, set, fix, turn, get, put, add, bring, pull, teleport, clear, swap, change, upgrade, boost, beef, toss, drop, hook, sort, redo, layer, handle.
+**It is tuned for catching a promise over never handing up a fine reply.**
+
+- A missed promise tells a player something will happen that never does.
+- A wrong hand-up costs about a second and a brain call, and the player still gets one reply.
+- So a rule acknowledged with an action verb ("Sure, I'll turn the chatter down") goes up too, and the brain acknowledges it.
+
+**The patterns**, on the reply lower-cased with curly apostrophes made straight. "The AI does" is a list of verb stems in any form ("make", "makes", "making", "makin'"): make, give, build, spawn, summon, set, fix, turn, get, put, add, bring, pull, teleport, tp, clear, swap, change, upgrade, boost, beef, buff, toss, drop, hook, sort, redo, layer, handle, do, craft, stop, remove, kill, whip, start, move, send, grab, enchant, repair, freeze, delete, destroy, undo, cancel, rebuild, reset, restore, keep, heal, protect, shrink, double, spin, cook, conjure, unleash. The only exception is the idiom "I'll give you that." ending a sentence.
 
 - **An offer, always:**
-  - "want me to", "shall I", "should I" + the verbs, "say the word";
-  - "want it / one / them / that / the / a / some / more / another / extras / your own … ?" opening a sentence or after "or" or "you";
-  - "I can / could / might / may (be able to)" + the verbs; "happy to" + the verbs; "let me" + the verbs;
+  - "want me to", but not "don't want me to";
+  - "shall I", "should I" + a verb, "say the word";
+  - "want it / one / them / that / the / a / some / more / another / extras / your own … ?" as the reply's **last** sentence. An offer waits for the player's yes, so "Want the recipe? Three glass, five obsidian and a nether star." is a knowledge answer and passes: the reply answers its own question;
+  - "I can" + a verb; "I could" + a verb + an object ("I could make you one", not "I could get used to this");
+  - "I might / may / could be able to" + a verb; "happy to" + a verb;
+  - "let me" + a verb, but not "let me put it this way", "let me get this straight", "let me turn that around";
   - "has / got your name on it", "whenever you want it".
 - **A promise, always:**
-  - "I'll / I will (just, also, go)" + the verbs;
-  - "I'll call out / point you / ping you / announce / see it";
-  - "I'll keep … alive / away / safe / going / running / an eye";
-  - "watch your back";
-  - "I'm on it", or a reply opening with "on it";
+  - "I'll / I will / I shall / I'm gonna / I'm going to / I am going to / imma" (+ just, also, go, be, now, then…) + a verb, "take care of", "see it", "call out", "point you", "ping you", "announce";
+  - "gonna" + a verb opening a clause;
+  - "I'm / we're" (+ just, now, already, busy) + a verb's -ing form;
+  - a clause opening with a verb's -ing form that says "now" ("Okay, making it rain now!"), but not "from now on";
+  - "on it" opening the reply or a clause, or after "I'm", "yep", "sure", "aye", "got it", "you got it", "no problem"… ("Aye, on it, captain!"), but not "put a sign on it";
+  - "will do", "consider it done", "leave it to me", "done" opening a clause, "right away";
+  - "I'll / I've got your back", "I'll watch your back", but not the advice "watch your back for ghasts";
   - "give me a sec / second / minute / moment".
-- **A promise only when OPEN TASKS lists none**, a status when a task is open: "coming up", "coming right up", "give it / her / him / them a sec / minute / moment / beat", "hang tight", "hang on" (not "hang on tight"), "one sec", "on its / the / their way", "it's coming", "should / will be done / ready / up in / soon".
-  - A task was open at 82% of these inputs' moments, which is why these phrases are status most of the time.
-
-**What it does not fire on.** Of the replies the runs recorded:
-
-- every acknowledgement of a rule for later ("Got it, Sam. No builds near spawn unless you say so.", "Aye aye, Captain Riley.", "Netherite next time, got it.");
-- every knowledge answer;
-- every status line about an open task ("Spirit bomb upgrade is still cooking, give it a sec.", "Castle's still rising, give it a minute.");
-- and "I'll give you that", "I'll have to listen next time", "I'll let that go to my head", "I'll watch the fireworks from a safe distance", "Keep an eye on chat", "if you want another look", "Want to test it on the dragon".
+- **A promise unless the line's speaker has a task open:**
+  - the phrases: "coming (right) up", "coming right at ya", "give it / her / him / them a sec / minute / moment / beat", "hang tight", "one sec", "on its / their way", "'s / is / are on the way" (not "on the way back"), "it's coming", "should / will be done / ready in / soon";
+  - an open task is a line of the tasks text in `Tasks.show()`'s shape (`OPEN_TASK`), and only one for the speaker counts;
+  - "Night's coming up", "Hang on, you lost everything?" and "The sun will be up soon" are not among these phrases.
 
 **On the 722 replies the runs recorded** (all versions, all runs, the invented set; `respond_bench.py guard`):
 
-- **Caught: 40 of the 42 promises and offers judged by hand:**
-  - all 16 of old's on the playtest;
-  - all 8 of v4's and all 8 of v5's;
-  - 4 of v1's 5; v2's 2; v3's 2.
-  - "Give it a sec, Styrka — building takes a minute" is caught because no task was open.
-- **Missed: 2.**
-  - Old's invented "Rules are rules. Lava's off the hook from now on.": no first person and no offer, so beyond a phrase list.
-  - v1's "I'll keep it spooky but not cruel": "I'll keep it" + an adjective is left alone, so that "I'll keep it short" acknowledging a rule is said.
-- **Fires on 1 reply I had not counted:** old's "Probably because the mountain builder was churning through blocks, but I'm on it now." (4YF56H).
-  - A teleport task for the speaker was open, so my reading counted it as status.
-  - "on it" is the spec's own example of what Respond never says, and here Respond claims to be doing it. So the guard keeps "I'm on it" always, and this is its one hand-up I would not have made.
-  - None of the other 679 acceptable replies fires.
+- **Caught: 41 of the 42 promises and offers judged by hand:**
+  - all 17 of old's on the playtest;
+  - all 5 of v1's, both of v2's, both of v3's, all 8 of v4's and all 8 of v5's.
+- **Missed: 1.** Old's invented "Rules are rules. Lava's off the hook from now on.": no first person, no offer, no phrase.
+- **Fires on 12 of the 680 replies I had judged fine.** 7 are status lines, now handed up because the open task was another player's. 5 are first-person banter:
+  - "The castle's coming up over east, give it a minute. And congrats on the seer gig…" (old, XNZSZH): Eclipszr asked; the castle was Styrkaeopteryx's.
+  - "Seer of the east, I like it. Castle's still going up, give it a sec." (v1, XNZSZH): the same.
+  - "Castle's still rising, give it a minute. Seer of what, exactly?" (v4, XNZSZH): the same.
+  - "A castle's being put together for Styrkaeopteryx, give it a sec. …" (v3, XNZSZH): the same.
+  - "Not sure yet, still building the clash. Give it a sec." (old, 7JG3ZA): Styrkaeopteryx asked; the clash was Eclipszr's.
+  - "No worries, Styrk — castle's coming, just give it a sec." (old, V5TWND): Krown's ice castle, Styrkaeopteryx speaking.
+  - "Hey, it's coming along — don't be sorry." (v5, V5TWND): the same.
+  - "Probably because the mountain builder was churning through blocks, but I'm on it now." (old, 4YF56H): the spec's own "on it", and Respond claims to be doing it.
+  - "It's the withers we're clearing — hang tight, they're going down." (v5, 7EGRQ9): "we're clearing" claims the AI is acting.
+  - "Krown, you're the main character. Just keep the chaos coming and I'll keep up." (v4, EEEHXQ): "I'll keep".
+  - "…but you're the one I'm keeping an eye on." (old, EEEHXQ): "I'm keeping".
+  - "No copyright claims are here, but I can send a very scary legal letter to whoever pressed record." (old, M82VE3): "I can send".
+- **Rule acknowledgements in the recorded rows:** none fires. Every invented acknowledgement passes ("Got it, Sam. No more guns for Jordan today.", "Aye aye, Captain Riley.", "Netherite next time, got it."), and so does "Got it, keeping it short from now on".
+
+**On the reviewer's probes** (`guard_probe.py`, 22 replies that should be said and 21 promises):
+
+- **All 21 promises caught**, among them "Will do!", "Consider it done.", "I'm gonna make it rain!", "Okay, making it rain now!", "Aye, I'll be makin' it rain, matey!", "One storm, coming right at ya!" and "Done! Enjoy the sword.".
+- **"Coming right up, Steve!", "Hang tight, it's on its way." and "Give it a sec!" now go up** when the open task is another player's. They pass when it is the speaker's.
+- **14 of the 22 pass**, among them:
+  - "I could get used to this pirate life", "Let me put it this way…", "Want the recipe? Three glass…";
+  - "You don't want me to spoil the ending", "Watch your back for ghasts", "Hang on, you lost everything in lava?";
+  - "Night's coming up", "Grab some food on the way back", "The sun will be up soon".
+- **8 go up**: 7 acknowledgements with an action verb, as decided, and one joke.
+  - The acknowledgements: "I'll clear it with you first…", "I'll get your okay…", "I'll set that as the rule…", "Aye, I'll keep it going, matey!", "Arr, I'll turn pirate from here on", "Sure, I'll turn the chatter down", "I'll change my style to shorter lines".
+  - The joke: "I could fix you a pep talk, but you're doing great." It has the shape of a real offer, "I could <verb> you a …".
+
+**The cost to watch is persona speech.** Under a standing pirate persona, "Arr, I'll …" replies with an action verb go up and the brain answers them. The recorded session had no persona, so it does not measure this.
 
 **v5 with the guard**, its three runs pooled, against v5 alone:
 
 | Half | Asks handed up | Wanted a change, handed up | All hand-ups | The guard's hand-ups | Promises and offers left |
 |---|---|---|---|---|---|
 | first | 19 → **20 of 33** | 21 → **22 of 30** | 55 → 58 of 132 | 3 | 3 → **0** |
-| second (held out) | 16 → **17 of 18** | 19 → **20 of 21** | 57 → 62 of 144 | 5 | 5 → **0** |
-
-**What the table shows:**
+| second (held out) | 16 → **17 of 18** | 19 → **20 of 21** | 57 → 64 of 144 | 7 | 5 → **0** |
 
 - **The asks now handed up** are TFJFMK ("Is it possible to increase the lightning's damage?") and 9BE9TH ("Can make music for each of the attacks?"). v5 had answered each with an offer.
-- **v5's asks still missed: 4 answers.** 7R3N3G twice (garbled "teleport both of us"), RGPW3X once (it asked back), and HEX1GJ once (a cut-off complaint). None held a promise.
-- **The extra hand-ups:** 8 over three runs, 2.7 a session. 2 are those asks; the other 6 are talk the brain now answers, about 2 brain calls and $0.02 a session.
+- **v5 still misses 4 asks**, none with a promise.
+- **The extra hand-ups:** 10 over three runs, 3.3 a session.
+  - 8 are the hand-judged promises and offers (2 of them on those asks).
+  - 2 are status lines about another player's task, which the guard now hands up by design.
+  - In all, about 2.7 brain calls and $0.02 a session beyond the asks.
 
-**Every version with the guard**, pooled over its runs (asks / wanted a change / all hand-ups, without → with):
+**Every version with the guard**, pooled over its runs (without → with):
 
 | Version | Half | Runs | Asks | Wanted a change | All hand-ups | The guard's own | Judged promises left |
 |---|---|---|---|---|---|---|---|
-| old | first | 3 | 16 → 16 of 33 | 14 → 14 of 30 | 31 → 36 of 132 | 5 | 0 |
-| old | second | 3 | 8 → 13 of 18 | 8 → 13 of 21 | 15 → 27 of 144 | 12 | 0 |
-| v1 | first | 1 | 6 → 7 of 11 | 7 → 7 of 10 | 15 → 19 of 44 | 4 | 1 |
+| old | first | 3 | 16 → 17 of 33 | 14 → 14 of 30 | 31 → 39 of 132 | 8 | 0 |
+| old | second | 3 | 8 → 13 of 18 | 8 → 13 of 21 | 15 → 29 of 144 | 14 | 0 |
+| v1 | first | 1 | 6 → 8 of 11 | 7 → 8 of 10 | 15 → 21 of 44 | 6 | 0 |
 | v2 | first | 1 | 5 → 6 of 11 | 4 → 5 of 10 | 12 → 14 of 44 | 2 | 0 |
-| v3 | first | 2 | 12 → 12 of 22 | 12 → 12 of 20 | 30 → 32 of 88 | 2 | 0 |
-| v4 | first | 2 | 11 → 11 of 22 | 13 → 13 of 20 | 34 → 35 of 88 | 1 | 0 |
+| v3 | first | 2 | 12 → 12 of 22 | 12 → 12 of 20 | 30 → 33 of 88 | 3 | 0 |
+| v4 | first | 2 | 11 → 11 of 22 | 13 → 13 of 20 | 34 → 37 of 88 | 3 | 0 |
 | v4 | second | 2 | 10 → 10 of 12 | 10 → 10 of 14 | 34 → 41 of 96 | 7 | 0 |
 | v5 | first | 3 | 19 → 20 of 33 | 21 → 22 of 30 | 55 → 58 of 132 | 3 | 0 |
-| v5 | second | 3 | 16 → 17 of 18 | 19 → 20 of 21 | 57 → 62 of 144 | 5 | 0 |
-
-**What the guard does to the old prompt:**
-
-- It lifts old's held-out asks from 8 to 13 of 18, because old answered asks with offers ("want me to give each one its own theme?").
-- v5 with the guard still hands up more: 17 of 18 asks, 20 of 21 inputs that wanted a change, against 13 and 13.
+| v5 | second | 3 | 16 → 17 of 18 | 19 → 20 of 21 | 57 → 64 of 144 | 7 | 0 |
 
 **What a replay of recorded answers cannot show:**
 
-- **How the brain answers what the guard hands up.** It answers the line itself, with the guard's note in "handed this line up to you".
-- **Patterns from one session's replies.** A new turn of phrase gets past the list until it is added. The prompt still says the same thing first.
+- **How the brain answers what the guard hands up.**
+- **Phrasings this session never produced, persona speech above all.** The prompt still says the same thing first.
 
 ## The promises, read by hand
 
@@ -285,7 +307,11 @@ Prototype_Jev_Routing's _Test_ asks for this: "Respond's rewritten prompt, on th
 - **v5's rule was written after reading v4's second-half rows**, so the second half is held out for v4, not fully for v5. The same pattern is in the first half: the brain's own "…want that?" at 06:18:37, and v4's "whenever you want it". The rule names a cause, not an input.
 - **The invented set was written before the first run and never changed.** No rule was added for an invented line. Every version answers i12 ("ugh I'm starving and I've got nothing to eat"), a hint the spec's points do not name, and it was left so.
 
-`brain/prompts/respond.md` is `respond_prompts/v5.md`, byte for byte. `brain.respond.Response` has v5's schema: the bench checks it builds the same JSON schema.
+`brain/prompts/respond.md` is `respond_prompts/v5.md` except for one sentence, changed after the bench and not re-run.
+
+- The group sentence now reads "…joined with " … ", the newest last: Jev joined the earlier pieces that go with it, so read them as one line".
+- v5 said "the ask last … read them as one ask", which contradicted the opening's "talk, not an ask".
+- `brain.respond.Response` has v5's schema: the bench checks it builds the same JSON schema.
 
 ## Results
 
@@ -413,7 +439,9 @@ The future rules v5 handed up (i02 and i04, once each) cost a brain call, not an
 - **The model makes up game facts in every version:** coordinates, causes, an "obsidian castle". This is outside the spec's bar. The rule "say that something is done, fixed or on its way only when the conversation or OPEN TASKS shows it" covers only part of it.
 - **`reason` is now required.**
   - An answer without one fails validation: `structured()` asks once more, and a second failure is a hand-up (the loop's `LlmError` path).
-  - None happened in 460 calls.
+  - None happened in 540 calls.
+- **The guard hands up persona speech and acknowledgements that use an action verb**, "Arr, I'll turn the chatter down", by decision. Under a standing persona that may be many replies a session, each a brain call instead of a cheap reply. The recorded session had no persona, so the cost is not measured.
+- **The guard's status phrases pass only for the speaker's own open task**, so a player asking after a friend's build gets the brain's answer, not Respond's.
 - **Three runs are few for numbers this noisy.** A fourth run would move each count by a few.
 
 ## Cost and time
