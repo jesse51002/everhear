@@ -1,6 +1,8 @@
 """The PreToolUse hook on every tool an implementer calls. It denies with a reason the model can act
 on, one line saying what to send instead, so the next call runs; and otherwise returns {} so the
-allow rules (permission mode "dontAsk", runner.rules) decide."""
+allow rules (permission mode "dontAsk", runner.rules) decide. What a call it lets through makes —
+a script, an action, a preset, a copy — it records (made_by), and the runner gives the brain that
+record, checked against the disk (made_now), with the report."""
 import json
 import os
 import re
@@ -62,9 +64,10 @@ class DENY:
     @staticmethod
     def running(name: str, inst: dict, server: str) -> str:
         who = inst.get("copy") or inst.get("instance") or name
+        task = inst.get("task")
         return ("Refused: %s%s runs made/%s/scripts/%s/, and code a running copy uses is not changed: "
-                "vfg script new <new_name> --from %s copies it, with its action, for you to Edit; then vfg script stop "
-                "%s and run the new action." % (who, " (%s)" % inst["task"] if inst.get("task") else "", server, name,
+                "vfg script new <your task> --from %s copies it, with its action, for you to Edit; then vfg script stop "
+                "%s and run the new action." % (who, " (%s)" % task if task and task != who else "", server, name,
                                                  name, who))
 
     library_flag = "--library is for coding sessions: leave it out, and vfg script new writes into this server's folder."
@@ -86,7 +89,7 @@ class DENY:
     find = "Refused: use the Glob tool (a pattern like made/**/main.py), or ls <folder>."
     ps = "Refused: vfg script list shows every running copy, and vfg script stop <copy> stops one."
     python = ("Refused: only python3 -m py_compile <file in the repository> runs; a script runs on the server through "
-              "its action: vfg action run <action> key=value ... --task <task id>.")
+              "its action: vfg action run <action> key=value ... --task <your task>.")
     outside_bash = "Refused: ls, grep, head, tail and py_compile read only inside the repository: give a path in it."
     wild = ("Refused: no unquoted * ? [ ], {a,b} or ~name after ls, grep, head, tail, echo, sleep or py_compile, since "
             "bash would expand them where the guard cannot see: put a pattern in single quotes ('def .*') and name "
@@ -120,8 +123,9 @@ class DENY:
         return "Refused: vfg %s is not an implementer's. These are: %s." % (b, VFG_FORMS)
 
     script_run = ("Refused: vfg script run is gone: a script runs only through its action, vfg action run <action> "
-                  "key=value ... [as=<copy>] --task <task id>.")
-    action_task = "Refused: say which task it is for: vfg action run <action> key=value ... --task <task id>."
+                  "key=value ... [as=<copy>] --task <your task>.")
+    action_task = ("Refused: say which task it is for, by the name YOUR TASK gives: vfg action run <action> key=value ... "
+                   "--task <your task>.")
     follow = "vfg script logs --follow never ends: use vfg script logs <copy> -n 40, and sleep between looks."
     outside = "Only the repository can be searched: give a path inside it, or none."
     read_outside = "Only files in the repository can be read."
@@ -129,19 +133,19 @@ class DENY:
 
 
 # Every vfg command an implementer runs, and how each is sent.
-VFG_FORMS = ("vfg action run <action> key=value ... --task <task id> | vfg action list | vfg action check <name> | "
+VFG_FORMS = ("vfg action run <action> key=value ... --task <your task> | vfg action list | vfg action check <name> | "
              "vfg cmd '<command>' | vfg script new|set|stop|logs|list|check|save|deploy ... | "
              "vfg preset save <script> <function> <name> | vfg state | vfg place save|list ... | vfg history ...")
 VFG_USAGE = {
-    "action": "vfg action run <action> key=value ... [as=<copy>] --task <task id>, vfg action list, or "
+    "action": "vfg action run <action> key=value ... [as=<copy>] --task <your task>, vfg action list, or "
               "vfg action check <name>",
-    "action run": "vfg action run <action> key=value ... [as=<copy>] --task <task id>",
+    "action run": "vfg action run <action> key=value ... [as=<copy>] --task <your task>",
     "action list": "vfg action list, or vfg action list --json",
     "action check": "vfg action check <name>",
     "cmd": "vfg cmd '<command>'",
     "state": "vfg state, or vfg state --json, with nothing after it",
     "preset": "vfg preset save <script> <function> <name>",
-    "place": "vfg place save <name> --at <x> <y> <z> --by <task id>, or vfg place list",
+    "place": "vfg place save <name> --at <x> <y> <z> --by <your task>, or vfg place list",
     "script list": "vfg script list, with --json or --fresh or nothing after it",
     "script new": "vfg script new <name> --from <script> --preset <preset> ...",
     "script save": "vfg script save <copy> <new_name>",
@@ -152,20 +156,34 @@ VFG_USAGE = {
 }
 
 
+# What a task made, by kind: the keys of on_report's `made` and of the task's row (Prototype_Named_Tasks).
+MADE_KINDS = ("scripts", "actions", "presets", "copies")
+
+
 @dataclass
 class GuardContext:
     """One implementer's: the runner keeps it with the task, so a follow-up keeps what it made."""
     repo: str
     # VFG_SERVER: implementers write only in made/<server>/.
     server: str = "main"
-    # The task the implementer works on.
+    # The task the implementer works on: its name, which the script, the action and the copy it
+    # makes take too.
     task: str | None = None
     # The copies running now (running.json, else `vfg state --json`), each with its script and task,
     # or None when that cannot be told; no callable, no check (running_copies is the runner's).
     running: Callable[[], Awaitable[list[dict] | None]] | None = None
     # The scripts in made/<server>/scripts/ this implementer made itself, or was let change once;
-    # its own to change while it works.
+    # its own to change while it works. It starts with the task's name: the task's own script, which
+    # a follow-up changes in place while the brain's own copies of its action run.
     own: set[str] = field(default_factory=set)
+    # What it made, by kind, each name once in the order it was made: made_by's record of the
+    # commands let through, and each new action or preset it wrote. made_now checks it against the
+    # disk.
+    made: dict[str, list[str]] = field(default_factory=lambda: {k: [] for k in MADE_KINDS})
+
+    def __post_init__(self):
+        if self.task:
+            self.own.add(self.task)
 
 
 def command_word_in(cmd: str, words_set: frozenset) -> str | None:
@@ -391,12 +409,17 @@ def allowed_form(words: list[str]) -> bool:
     return c in ("stop", "logs") and len(words) >= 4
 
 
+# A task's name (Prototype_Named_Tasks): galick_gun_styrk.
+TASK_NAME = re.compile(r"[a-z][a-z0-9_]{1,31}", re.ASCII)
+
+
 def task_given(words: list[str]) -> bool:
-    """Does `vfg action run ...` say its task: --task T7 or --task=T7?"""
+    """Does `vfg action run ...` say its task by its name: --task galick_gun_styrk or
+    --task=galick_gun_styrk?"""
     for i, a in enumerate(words):
-        if a == "--task" and i + 1 < len(words) and re.fullmatch(r"T\d+", words[i + 1], re.ASCII):
+        if a == "--task" and i + 1 < len(words) and TASK_NAME.fullmatch(words[i + 1]):
             return True
-        if a.startswith("--task=") and re.fullmatch(r"T\d+", a[len("--task="):], re.ASCII):
+        if a.startswith("--task=") and TASK_NAME.fullmatch(a[len("--task="):]):
             return True
     return False
 
@@ -696,19 +719,110 @@ def new_script_name(words: list[str]) -> str | None:
     return positional[want] if len(positional) > want else None
 
 
+# ------------------------------------------------------------------ what a task made
+
+# A name vfg script new, vfg script save and vfg preset save take; and a copy's name, as= (vfg's own
+# rules: a command with another name is refused there, and is not recorded here).
+MADE_NAME = re.compile(r"[a-z][a-z0-9_]{0,47}", re.ASCII)
+COPY_NAME = re.compile(r"[a-z0-9][a-z0-9_]{0,47}", re.ASCII)
+
+
+def run_words(args: list[str]) -> tuple[str | None, str | None]:
+    """(the action, the as=<copy>) of `vfg action run`'s words after `run`, in any order, as vfg
+    reads them: the action is the first word that is no flag, no flag's value and no key=value."""
+    if args[:1] == ["--"]:
+        args = args[1:]
+    action = copy = None
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("--task", "--for"):
+            i += 2
+            continue
+        if a.startswith("as="):
+            copy = a[len("as="):]
+        elif action is None and "=" not in a and not a.startswith("-"):
+            action = a
+        i += 1
+    return action, copy
+
+
+def made_by(words: list[str]) -> list[tuple[str, str]]:
+    """What one command makes, as (kind, name): `vfg script new <name>` a script and its action,
+    `vfg script save <copy> <name>` an action, `vfg preset save <script> <function> <name>` a preset,
+    and `vfg action run <action> … as=<copy>` a copy, unless the action is edit or stop, which
+    change a copy and start none."""
+    if words[:1] != ["vfg"]:
+        return []
+    if words[1:3] in (["script", "new"], ["script", "save"]):
+        name = new_script_name(words)
+        if not name or not MADE_NAME.fullmatch(name):
+            return []
+        return [("scripts", name), ("actions", name)] if words[2] == "new" else [("actions", name)]
+    if words[1:3] == ["preset", "save"]:
+        return [("presets", words[5])] if len(words) == 6 and MADE_NAME.fullmatch(words[5]) else []
+    if words[1:3] == ["action", "run"]:
+        action, copy = run_words(words[3:])
+        if action and action not in ("edit", "stop") and copy and COPY_NAME.fullmatch(copy):
+            return [("copies", copy)]
+    return []
+
+
+def record(g: GuardContext, kind: str, name: str) -> None:
+    """One thing the task made, kept once, in the order it came."""
+    names = g.made.setdefault(kind, [])
+    if name not in names:
+        names.append(name)
+
+
 def note_made(call: dict, g: GuardContext) -> None:
-    """After an implementer's Bash call is let through: a script its vfg script new or vfg script save
-    is about to make in made/<server>/scripts/ (with its action) is its own to change."""
+    """After an implementer's Bash call is let through: what each of its commands makes, in order
+    (made_by), is recorded; and a script its vfg script new or vfg script save is about to make in
+    made/<server>/scripts/ (with its action) is its own to change."""
     command = str((call.get("tool_input") or {}).get("command") or "")
     for cmd in split_shell(command):
         name = new_script_name(cmd.words)
         if name and not os.path.exists(os.path.join(g.repo, "made", g.server, "scripts", name)):
             g.own.add(name)
+        for kind, made in made_by(cmd.words):
+            record(g, kind, made)
+
+
+def note_written(call: dict, g: GuardContext) -> None:
+    """After an implementer's Write is let through: a new made/<server>/actions/<name>.py (a variant)
+    or made/<server>/presets/<name>.py is recorded as made. A Write over a file that is there, or
+    an Edit, makes nothing new."""
+    path = str((call.get("tool_input") or {}).get("file_path") or "")
+    if not path:
+        return
+    real = realish(os.path.abspath(os.path.join(g.repo, _expand_home(path))))
+    stem, ext = os.path.splitext(os.path.basename(real))
+    if ext != ".py" or not MADE_NAME.fullmatch(stem) or os.path.exists(real):
+        return
+    for kind in ("actions", "presets"):
+        if os.path.dirname(real) == realish(os.path.join(g.repo, "made", g.server, kind)):
+            record(g, kind, stem)
+
+
+def made_now(g: GuardContext) -> dict[str, list[str]]:
+    """What the task made, as on_report gives it: the record checked against the disk, a copy with
+    every kind. A script is kept when its main.py is there, an action or a preset when its file is;
+    a copy as it was named, since what ran cannot be told from here."""
+    base = os.path.join(g.repo, "made", g.server)
+    there = {"scripts": lambda n: os.path.join(base, "scripts", n, "main.py"),
+             "actions": lambda n: os.path.join(base, "actions", n + ".py"),
+             "presets": lambda n: os.path.join(base, "presets", n + ".py")}
+    out = {}
+    for kind in MADE_KINDS:
+        names = list(g.made.get(kind) or [])
+        out[kind] = names if kind == "copies" else [n for n in names if os.path.isfile(there[kind](n))]
+    return out
 
 
 async def check_running(call: dict, g: GuardContext) -> str | None:
-    """Why an implementer may not change this script: it is in made/<server>/scripts/, it did not make
-    it, and a copy another task started runs it. New code is a new script with its own name."""
+    """Why an implementer may not change this script: it is in made/<server>/scripts/, it is not its
+    own (it did not make it, and it is not named as its task), and a copy another task or the brain
+    started runs it. New code is a new script with its own name."""
     if g.running is None or call.get("tool_name") not in ("Write", "Edit"):
         return None
     name = made_script(str((call.get("tool_input") or {}).get("file_path") or ""), g)
@@ -755,6 +869,8 @@ def make_guard(g: GuardContext) -> HookCallback:
                                            "permissionDecisionReason": reason}}
         if call["tool_name"] == "Bash":
             note_made(call, g)
+        elif call["tool_name"] == "Write":
+            note_written(call, g)
         return {}
 
     return hook
