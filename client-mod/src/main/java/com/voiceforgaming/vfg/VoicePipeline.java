@@ -9,6 +9,7 @@ import com.voiceforgaming.vfg.speech.SttWorker;
 import com.voiceforgaming.vfg.speech.Transcriber;
 import com.voiceforgaming.vfg.speech.VoiceDetector;
 import com.voiceforgaming.vfg.turn.TurnDetector;
+import java.util.List;
 import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
@@ -19,8 +20,8 @@ import java.util.function.Supplier;
  * assembler. The mod runs exactly this, and so do {@code ./gradlew micCheck} and
  * {@code ./gradlew speechTest}; nothing here knows about Minecraft, the session or the bridge.
  *
- * <p>A {@link Tap} hears every window too, after the VAD: the keyword spotter, a pipeline of
- * its own that the sentence pipeline never waits on.
+ * <p>A {@link Tap} hears every window too, after the VAD: the keyword spotter and Vosk, each a
+ * pipeline of its own that the sentence pipeline never waits on.
  */
 public final class VoicePipeline {
 	/** What the pipeline reports. {@code live} is called on {@code vfg-capture}, the rest on {@code vfg-stt}. */
@@ -58,6 +59,33 @@ public final class VoicePipeline {
 		void onWindow(float[] window, long readWallMillis, boolean speaking);
 
 		void onStopped(StopReason reason);
+
+		/** Every one of {@code taps} hearing the same windows, in order: the keyword spotter and Vosk. */
+		static Tap of(Tap... taps) {
+			List<Tap> all = List.of(taps);
+			return new Tap() {
+				@Override
+				public void onStarted(boolean forLine) {
+					for (Tap t : all) {
+						t.onStarted(forLine);
+					}
+				}
+
+				@Override
+				public void onWindow(float[] window, long readWallMillis, boolean speaking) {
+					for (Tap t : all) {
+						t.onWindow(window, readWallMillis, speaking);
+					}
+				}
+
+				@Override
+				public void onStopped(StopReason reason) {
+					for (Tap t : all) {
+						t.onStopped(reason);
+					}
+				}
+			};
+		}
 	}
 
 	private final CaptureProcessor capture;
@@ -78,7 +106,10 @@ public final class VoicePipeline {
 		this(devices, vad, transcriber, turn, turnThreshold, silenceSeconds, clock, logText, events, null);
 	}
 
-	/** With {@code tap}, the keyword spotter, hearing every window after the VAD; {@code null} for none. */
+	/**
+	 * With {@code tap}, the keyword spotter and Vosk ({@link Tap#of}), hearing every window after the
+	 * VAD; {@code null} for none.
+	 */
 	public VoicePipeline(MicCapture.DeviceOpener devices, Supplier<VoiceDetector> vad, Supplier<Transcriber> transcriber,
 			Supplier<TurnDetector> turn, Double turnThreshold, double silenceSeconds, LongSupplier clock,
 			BooleanSupplier logText, Events events, Tap tap) {

@@ -1,6 +1,7 @@
 package com.voiceforgaming.vfg.setup;
 
 import com.voiceforgaming.vfg.kws.Spotter;
+import com.voiceforgaming.vfg.kws.Vosk;
 import com.voiceforgaming.vfg.turn.TurnDetectors;
 import java.nio.file.Path;
 import java.util.List;
@@ -15,7 +16,7 @@ public final class Assets {
 	public static final String SHERPA_VERSION = "1.13.8";
 	public static final String MODEL_DATE = "2026-02-27";
 
-	public enum Kind { NATIVES, VAD, MODEL, TURN, KWS }
+	public enum Kind { NATIVES, VAD, MODEL, TURN, KWS, VOSK, VOSK_NATIVES }
 
 	/**
 	 * One pinned file: {@code path} is relative to {@link #BASE_URL}, or a whole URL when it
@@ -35,6 +36,15 @@ public final class Assets {
 
 	/** The keyword spotter's model: icefall's English GigaSpeech zipformer, 3.3M parameters (Apache-2.0). */
 	public static final String KWS_GIGASPEECH = "gigaspeech-3.3m";
+	/** Vosk's model, beside the spotter: Alpha Cephei's small US English one (Apache-2.0). */
+	public static final String VOSK_SMALL_EN_US = "small-en-us-0.15";
+	public static final String VOSK_VERSION = "0.3.45";
+	/**
+	 * Vosk's library for macOS, one file for Intel and Apple silicon, is published for 0.3.45 only in
+	 * its Maven jar, which holds every platform's; on a Mac the whole jar is fetched and only it kept.
+	 */
+	private static final String VOSK_JAR = "https://repo1.maven.org/maven2/com/alphacephei/vosk/0.3.45/vosk-0.3.45.jar";
+	private static final String VOSK_JAR_SHA256 = "9e38e96e4448a41d889bb254b2f8424945554945c6e77e1cd97a3d8633fac2ba";
 
 	public static final List<Asset> PINNED = List.of(
 		new Asset(Kind.NATIVES, "win-x64", "v1.13.8/sherpa-onnx-native-lib-win-x64-1.13.8.jar", 8277046L,
@@ -62,7 +72,17 @@ public final class Assets {
 			"a59a5b627190e7bf52a46dd25026ec8d4d0b01e1b0146643bb39161808c0619e"),
 		new Asset(Kind.KWS, KWS_GIGASPEECH,
 			"kws-models/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01.tar.bz2", 17626723L,
-			"f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a"));
+			"f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a"),
+		new Asset(Kind.VOSK, VOSK_SMALL_EN_US, "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip",
+			41205931L, "30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498"),
+		new Asset(Kind.VOSK_NATIVES, "win-x64",
+			"https://github.com/alphacep/vosk-api/releases/download/v0.3.45/vosk-win64-0.3.45.zip", 14882445L,
+			"f1dcc9cca460630f81ea8f71794f69c80bed6556d2a4e6237b5785e1d2dff34b"),
+		new Asset(Kind.VOSK_NATIVES, "linux-x64",
+			"https://github.com/alphacep/vosk-api/releases/download/v0.3.45/vosk-linux-x86_64-0.3.45.zip", 7185065L,
+			"bbdc8ed85c43979f6443142889770ea95cbfbc56cffb5c5dcd73afa875c5fbb2"),
+		new Asset(Kind.VOSK_NATIVES, "osx-x64", VOSK_JAR, 25861916L, VOSK_JAR_SHA256),
+		new Asset(Kind.VOSK_NATIVES, "osx-aarch64", VOSK_JAR, 25861916L, VOSK_JAR_SHA256));
 
 	/** The config's {@code model} values, the default first. */
 	public static final String PARAKEET_110M = "parakeet-110m-en";
@@ -135,10 +155,13 @@ public final class Assets {
 		return model.kind() == Kind.MODEL && model.variant().startsWith("parakeet");
 	}
 
-	/** The files to take from a model archive (or the keyword model's). */
+	/** The files to take from a model archive (or the keyword model's, or Vosk's). */
 	public static List<String> modelFiles(Asset model) {
 		if (model.kind() == Kind.KWS) {
 			return Spotter.FILES;
+		}
+		if (model.kind() == Kind.VOSK) {
+			return Vosk.FILES;
 		}
 		return isParakeet(model) ? PARAKEET_FILES : MOONSHINE_FILES;
 	}
@@ -146,6 +169,30 @@ public final class Assets {
 	/** The keyword spotter's model. */
 	public static Asset kws() {
 		return find(Kind.KWS, KWS_GIGASPEECH);
+	}
+
+	/** Vosk's model. */
+	public static Asset vosk() {
+		return find(Kind.VOSK, VOSK_SMALL_EN_US);
+	}
+
+	/** Vosk's library for a platform as {@link #platform} names it, with what it loads beside it. */
+	public static Asset voskNatives(String platform) {
+		return find(Kind.VOSK_NATIVES, platform);
+	}
+
+	/**
+	 * The files a Vosk natives archive is unpacked to, as their paths inside it; each lands in the
+	 * natives folder under its own name. On Windows, libvosk.dll and the MinGW runtime it was built
+	 * with, which Windows finds beside it.
+	 */
+	public static List<String> voskNativeFiles(Asset natives) {
+		return switch (natives.variant()) {
+			case "win-x64" -> List.of("vosk-win64-0.3.45/libvosk.dll", "vosk-win64-0.3.45/libstdc++-6.dll",
+				"vosk-win64-0.3.45/libgcc_s_seh-1.dll", "vosk-win64-0.3.45/libwinpthread-1.dll");
+			case "linux-x64" -> List.of("vosk-linux-x86_64-0.3.45/libvosk.so");
+			default -> List.of("darwin/libvosk.dylib");
+		};
 	}
 
 	private static Asset find(Kind kind, String variant) {
@@ -189,13 +236,20 @@ public final class Assets {
 				? "parakeet-tdt-110m-en-36000-int8"
 				: "moonshine-" + a.variant() + "-en-" + MODEL_DATE);
 			case TURN -> vfgRoot.resolve("models").resolve("turn").resolve(a.variant());
-			case KWS -> vfgRoot.resolve("models").resolve("kws").resolve(kwsFolder(a));
+			case KWS -> vfgRoot.resolve("models").resolve("kws").resolve(archiveFolder(a));
+			case VOSK -> vfgRoot.resolve("models").resolve("vosk").resolve(archiveFolder(a));
+			case VOSK_NATIVES -> vfgRoot.resolve("natives").resolve("vosk-" + VOSK_VERSION + "-" + a.variant());
 		};
 	}
 
-	/** The keyword model's folder name: its archive's name without {@code .tar.bz2}. */
-	private static String kwsFolder(Asset a) {
+	/** A model's folder name: its archive's name without {@code .tar.bz2} or {@code .zip}. */
+	private static String archiveFolder(Asset a) {
 		String name = a.fileName();
-		return name.endsWith(".tar.bz2") ? name.substring(0, name.length() - ".tar.bz2".length()) : name;
+		for (String ext : List.of(".tar.bz2", ".zip")) {
+			if (name.endsWith(ext)) {
+				return name.substring(0, name.length() - ext.length());
+			}
+		}
+		return name;
 	}
 }

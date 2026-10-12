@@ -6,6 +6,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.voiceforgaming.vfg.kws.Spotter;
 import com.voiceforgaming.vfg.session.ServerAddressMatch;
 import com.voiceforgaming.vfg.setup.Assets;
 import com.voiceforgaming.vfg.turn.TurnDetectors;
@@ -65,6 +66,19 @@ public final class VfgConfig {
 	/** The re-check's reach other than 0: 1–10 s. */
 	public static final double MIN_INCANTATION_RECHECK_SECONDS = 1;
 	public static final double MAX_INCANTATION_RECHECK_SECONDS = 10;
+	/**
+	 * The keyword spotter's beam, sherpa-onnx's {@code max_active_paths}: 16, where sherpa-onnx's
+	 * default is 4, hears fast speech far more often (Kokoro at 1.6 times its speed: 84% against 65%).
+	 */
+	public static final int DEFAULT_INCANTATION_PATHS = Spotter.MAX_ACTIVE_PATHS;
+	public static final int MIN_INCANTATION_PATHS = 1;
+	public static final int MAX_INCANTATION_PATHS = 64;
+	/**
+	 * How many of each incantation's aliases the keyword spotter listens for, the first (the bridge
+	 * lists up to 24, likeliest first); Vosk listens for the phrases alone.
+	 */
+	public static final int DEFAULT_INCANTATION_SPOTTER_ALIASES = 10;
+	public static final int MAX_INCANTATION_SPOTTER_ALIASES = 24;
 
 	public String serverAddress = "";
 	public String bridgeUrl = "";
@@ -85,6 +99,14 @@ public final class VfgConfig {
 	public double incantationThreshold = DEFAULT_INCANTATION_THRESHOLD;
 	public double incantationBoost = DEFAULT_INCANTATION_BOOST;
 	public double incantationRecheckSeconds = DEFAULT_INCANTATION_RECHECK_SECONDS;
+	/** The keyword spotter's {@code max_active_paths}; read when its model loads. */
+	public int incantationPaths = DEFAULT_INCANTATION_PATHS;
+	/** How many of each incantation's aliases, the first, the keyword spotter listens for. */
+	public int incantationSpotterAliases = DEFAULT_INCANTATION_SPOTTER_ALIASES;
+	/** Whether Vosk listens for the incantations beside the keyword spotter. */
+	public boolean vosk = true;
+	/** Whether a phrase Vosk hears casts only once the next partial, or the end of speech, still shows it. */
+	public boolean voskConfirm = false;
 
 	private transient Map<String, String> env = System.getenv();
 
@@ -107,6 +129,10 @@ public final class VfgConfig {
 		c.incantationThreshold = incantationThreshold;
 		c.incantationBoost = incantationBoost;
 		c.incantationRecheckSeconds = incantationRecheckSeconds;
+		c.incantationPaths = incantationPaths;
+		c.incantationSpotterAliases = incantationSpotterAliases;
+		c.vosk = vosk;
+		c.voskConfirm = voskConfirm;
 		c.env = env;
 		return c;
 	}
@@ -274,12 +300,7 @@ public final class VfgConfig {
 		c.turnThreshold = optionalNumber(o, "turn_threshold", 0.05, 0.95);
 		c.silenceSeconds = number(o, "silence_seconds", DEFAULT_SILENCE_SECONDS, 2, 30);
 		c.vadThreshold = number(o, "vad_threshold", DEFAULT_VAD_THRESHOLD, 0.1, 0.9);
-		double threads = number(o, "stt_threads", DEFAULT_STT_THREADS, 1, 8);
-		if (threads != Math.rint(threads)) {
-			LOG.warn("config: stt_threads {} is not a whole number; using {}", threads, DEFAULT_STT_THREADS);
-			threads = DEFAULT_STT_THREADS;
-		}
-		c.sttThreads = (int) threads;
+		c.sttThreads = wholeNumber(o, "stt_threads", DEFAULT_STT_THREADS, 1, 8);
 		c.logText = bool(o, "log_text", false);
 		c.incantations = bool(o, "incantations", true);
 		c.incantationThreshold = number(o, "incantation_threshold", DEFAULT_INCANTATION_THRESHOLD, 0.05, 0.95);
@@ -292,7 +313,23 @@ public final class VfgConfig {
 				DEFAULT_INCANTATION_RECHECK_SECONDS);
 			c.incantationRecheckSeconds = DEFAULT_INCANTATION_RECHECK_SECONDS;
 		}
+		c.incantationPaths = wholeNumber(o, "incantation_paths", DEFAULT_INCANTATION_PATHS, MIN_INCANTATION_PATHS,
+			MAX_INCANTATION_PATHS);
+		c.incantationSpotterAliases = wholeNumber(o, "incantation_spotter_aliases", DEFAULT_INCANTATION_SPOTTER_ALIASES, 0,
+			MAX_INCANTATION_SPOTTER_ALIASES);
+		c.vosk = bool(o, "vosk", true);
+		c.voskConfirm = bool(o, "vosk_confirm", false);
 		return c;
+	}
+
+	/** A whole number in range, else the default with a log line. */
+	private static int wholeNumber(JsonObject o, String key, int fallback, int min, int max) {
+		double v = number(o, key, fallback, min, max);
+		if (v != Math.rint(v)) {
+			LOG.warn("config: {} {} is not a whole number; using {}", key, v, fallback);
+			return fallback;
+		}
+		return (int) v;
 	}
 
 	private static String string(JsonObject o, String key, String fallback) {
@@ -377,6 +414,10 @@ public final class VfgConfig {
 		o.addProperty("incantation_threshold", incantationThreshold);
 		o.addProperty("incantation_boost", incantationBoost);
 		wholeOrNot(o, "incantation_recheck_seconds", incantationRecheckSeconds);
+		o.addProperty("incantation_paths", incantationPaths);
+		o.addProperty("incantation_spotter_aliases", incantationSpotterAliases);
+		o.addProperty("vosk", vosk);
+		o.addProperty("vosk_confirm", voskConfirm);
 		return o;
 	}
 
@@ -420,6 +461,7 @@ public final class VfgConfig {
 			+ ", vad_threshold=" + vadThreshold + ", stt_threads=" + sttThreads + ", log_text=" + logText
 			+ ", incantations=" + incantations + ", incantation_threshold=" + incantationThreshold
 			+ ", incantation_boost=" + incantationBoost + ", incantation_recheck_seconds=" + incantationRecheckSeconds
-			+ "]";
+			+ ", incantation_paths=" + incantationPaths + ", incantation_spotter_aliases=" + incantationSpotterAliases
+			+ ", vosk=" + vosk + ", vosk_confirm=" + voskConfirm + "]";
 	}
 }

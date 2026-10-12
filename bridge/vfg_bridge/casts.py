@@ -38,6 +38,13 @@ from . import timeutil, ulid
 log = logging.getLogger("vfg_bridge")
 
 DEFAULT_COOLDOWN_S = 3.0
+# Layer 2 casts only from a line of at most this many words (normalised, fillers counted):
+# VFG_INCANT_LAYER2_MAX_WORDS, 0 for any length. A cast is said on its own, and a longer line
+# is talk. On 2026-10-12, with each player given that night's six incantations, the stored
+# aliases cast falsely on 216 of the 843 lines of 10-08's talk, and with 20 of the alias call's
+# on 397; at 6 words, 7 and 31. On the two sessions with casts, 10-11's false casts went from 28
+# to 2 and that night's from 3 to 1, every cast found as before (78% and 94% of them, stored).
+LAYER2_MAX_WORDS = 6
 # How far back a player's casts are read: past the longest cooldown (600 s), a player's
 # clock up to 10 minutes behind (the clock guard's limit) and a long line's window.
 LOOKBACK = _dt.timedelta(minutes=30)
@@ -92,7 +99,7 @@ class Casts:
 
     def __init__(self, db, kit, feed, store_path, base, mc="/opt/mc", owner="", poll=0.5,
                  gap_s=1.0, slack_s=0.3, allowance=0.25, layer2=True, wait_s=1.5, clock=None,
-                 monotonic=None, logger=None, jev_max_age_s=2.0):
+                 monotonic=None, logger=None, jev_max_age_s=2.0, layer2_max_words=LAYER2_MAX_WORDS):
         self.db = db
         self.kit = kit
         self.feed = feed
@@ -105,6 +112,7 @@ class Casts:
         self.slack_s = slack_s
         self.allowance = allowance
         self.layer2 = layer2
+        self.layer2_max_words = layer2_max_words
         self.wait_s = wait_s
         self.jev_max_age_s = jev_max_age_s
         self.clock = clock or timeutil.utcnow
@@ -119,7 +127,8 @@ class Casts:
     def from_config(cls, cfg, db, kit, feed, clock=None):
         return cls(db, kit, feed, cfg.incantations, cfg.base, cfg.mc, cfg.owner, cfg.live_poll_s,
                    cfg.cast_gap_s, cfg.cast_slack_s, cfg.incant_allowance, cfg.incant_layer2,
-                   cfg.cast_wait_s, clock, jev_max_age_s=cfg.jev_cast_max_age_s)
+                   cfg.cast_wait_s, clock, jev_max_age_s=cfg.jev_cast_max_age_s,
+                   layer2_max_words=cfg.incant_layer2_max_words)
 
     # -- the kit and the store -----------------------------------------------------
 
@@ -283,9 +292,10 @@ class Casts:
     def on_line(self, player, text, started, ended, client_line_id, arrived=None, made=None):
         """Layer 2 and the drop rule for a voice line, before it is stored: a LineCasts.
 
-        Nothing for a player with no incantations, or a line already stored. Each cast Layer
-        2 makes goes into ``made`` (the caller's list) as soon as it is stored, so the caller
-        announces it whatever happens after."""
+        Nothing for a player with no incantations, or a line already stored. Layer 2 only on a
+        line of at most ``layer2_max_words`` words (0: any). Each cast Layer 2 makes goes into
+        ``made`` (the caller's list) as soon as it is stored, so the caller announces it
+        whatever happens after."""
         arrived = self.monotonic() if arrived is None else arrived
         made = [] if made is None else made
         mods = self.kit.modules()
@@ -297,8 +307,8 @@ class Casts:
             self.received(client_line_id, arrived)  # before it is stored: a Jev cast's age
         if not entries or self.db.line_id(client_line_id) is not None:
             return NOTHING
-        if self.layer2:
-            words = inc.words(text)
+        words = inc.words(text)
+        if self.layer2 and (not self.layer2_max_words or len(words) <= self.layer2_max_words):
             taken = []  # the word spans cast already: one cast for the same words
             for m in inc.match_line(text, self._one_per_phrase(inc, entries), self.allowance):
                 if any(m.start < end and start < m.end for start, end in taken):
@@ -441,6 +451,15 @@ class Casts:
         out = []
         for e in self._one_per_phrase(inc, entries):
             cooldown = e.get("cooldown_s")
-            out.append({"phrase": e["phrase"], "aliases": list(e.get("aliases") or ()),
+            out.append({"phrase": e["phrase"], "aliases": self.spotted(inc, e),
                         "cooldown_s": DEFAULT_COOLDOWN_S if cooldown is None else cooldown})
         return 200, {"version": doc["version"], "player": player, "incantations": out}
+
+    @staticmethod
+    def spotted(inc, entry):
+        """The aliases the mod's keyword spotter listens for: the entry's aliases less its
+        ``everyday_aliases``, everyday talk in their own right ("ice cream" for "ice beam"), which
+        would cast on ordinary conversation; Layer 2 and the Jev cast check still use them. An
+        entry without the field has none (Contracts §10)."""
+        everyday = set(inc.normalize(a) for a in entry.get("everyday_aliases") or ())
+        return [a for a in entry.get("aliases") or () if inc.normalize(a) not in everyday]

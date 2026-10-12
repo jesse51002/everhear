@@ -86,13 +86,23 @@ and lines are stored as before. Every endpoint takes the client token.
 - **`GET /v1/incantations?player=Steve&after=<version>&wait=<s>`**: `200 {"version", "player",
   "incantations": [{"phrase", "aliases", "cooldown_s"}]}`, the player's own then the `@a` ones. With
   `after` the current version it is held until the store changes or `wait` s pass (default 25, at
-  most 30), then `304`.
+  most 30), then `304`. It is what the mod's keyword spotter listens for, so each incantation's
+  `aliases` leave out its `everyday_aliases` (`Casts.spotted`): those that are everyday talk of
+  their own, "ice cream" and "i scream" for "ice beam", which would cast on ordinary
+  conversation. Layer 2, the drop rule and the Jev cast check still use every alias; an entry
+  from before the marks has none.
 - **`POST /v1/lines`**, for a player with incantations: Layer 2 (`match_line` at
-  `VFG_INCANT_ALLOWANCE`) may fire `transcript` casts, with the line's window: its matches best
-  first, one per run of words, one per phrase (the player's own before `@a`). A one-word phrase
+  `VFG_INCANT_ALLOWANCE`), on a line of at most `VFG_INCANT_LAYER2_MAX_WORDS` words (6,
+  normalised, fillers counted; 0 any length), may fire `transcript` casts, with the line's
+  window: its matches best first, one per run of words, one per phrase (the player's own before
+  `@a`). A longer line is talk and casts nothing: on 10-08's 843 lines of talk, with each player
+  given that night's six incantations, the stored aliases cast falsely on 216 of them, at 6
+  words on 7, and 10-11's false casts went from 28 to 2 with every cast found as before
+  (`casts.LAYER2_MAX_WORDS`). A one-word phrase
   matches only from the start of a word, so it casts in any sentence and at the start of a longer
   word ("dash" in "dashboard"), and one of fewer than 6 speech sounds only as it is said, its
-  mishearings left to its aliases (`incantations._found`). Then the drop rule: a line that
+  mishearings left to its aliases (`incantations._found`). Then the drop rule, on a line of any
+  length: a line that
   overlaps one of the player's casts and has at most one word besides its phrase is
   stored with `dropped = 'cast'`, and Jev never sees it; a kept line gets `cast_id`, the cast that
   fired. The casts it overlaps get its `line_id`. A repeated `client_line_id` casts nothing.
@@ -148,6 +158,7 @@ On the box, from `/opt/vfg/.env` (its names are in `deploy/env.example`):
 | `VFG_CAST_WAIT_S` | `1.5`: a cast held longer than this since its request is `stale` |
 | `VFG_JEV_CAST_MAX_AGE_S` | `2.0`: a Jev cast of a line received longer ago than this is `stale` |
 | `VFG_INCANT_ALLOWANCE`, `VFG_INCANT_LAYER2` | `0.25`, `on` (`off` turns Layer 2 off) |
+| `VFG_INCANT_LAYER2_MAX_WORDS` | `6`: Layer 2 only on a line of at most this many words; `0` any length |
 
 On the owner's PC, from `~/.vfg/config`: `VFG_SSH_HOST`, `VFG_SSH_USER`, `VFG_SSH_KEY`,
 `VFG_AWS_REGION`, `VFG_INSTANCE_TYPE`, `VFG_KEY_PAIR`, `VFG_BACKUP_DIR` and `VFG_ACCEPT_EULA`

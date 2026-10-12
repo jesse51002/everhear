@@ -3,9 +3,14 @@ package com.voiceforgaming.vfg;
 import com.voiceforgaming.vfg.audio.MicCapture;
 import com.voiceforgaming.vfg.audio.WindowListener.StopReason;
 import com.voiceforgaming.vfg.config.VfgConfig;
+import com.voiceforgaming.vfg.kws.CastGate;
+import com.voiceforgaming.vfg.kws.SpeechTap;
 import com.voiceforgaming.vfg.kws.Spotter;
 import com.voiceforgaming.vfg.kws.SpotterVad;
 import com.voiceforgaming.vfg.kws.SpotterWorker;
+import com.voiceforgaming.vfg.kws.Vosk;
+import com.voiceforgaming.vfg.kws.VoskGrammar;
+import com.voiceforgaming.vfg.kws.VoskWorker;
 import com.voiceforgaming.vfg.net.BridgeClient;
 import com.voiceforgaming.vfg.net.CastClient;
 import com.voiceforgaming.vfg.net.CastPayload;
@@ -53,6 +58,11 @@ import org.slf4j.LoggerFactory;
  * from the bridge ({@link IncantationClient}), and each cast it hears is posted on its own
  * ({@link CastClient}). A model that does not install or load leaves the spotter off until the
  * next setup; lines are not affected.
+ *
+ * <p>Vosk ({@link VoskWorker}) listens for the same incantations beside the spotter, on its own
+ * thread: its model is installed and loaded on {@code vfg-kws-setup} after the spotter's, and one
+ * that does not install or load leaves the spotter alone, with one log line. The two share a
+ * {@link CastGate}, so a phrase either hears casts once.
  */
 public final class VoiceService {
 	private static final Logger LOG = LoggerFactory.getLogger("vfg");
@@ -70,6 +80,7 @@ public final class VoiceService {
 	private final TurnSetup turnSetup = new TurnSetup(status, Thread::sleep);
 	private volatile String requestedModel;
 	private final AtomicBoolean spotterSetup = new AtomicBoolean();
+	private final AtomicBoolean voskWarned = new AtomicBoolean();
 	private volatile boolean stopping;
 	private Thread setupThread;
 	private final Object setupLock = new Object();
@@ -78,6 +89,8 @@ public final class VoiceService {
 	private final BridgeClient sender;
 	private final SessionGate gate;
 	private final SpotterWorker spotter;
+	private final VoskWorker vosk;
+	private final SpeechTap speechTap;
 	private final CastClient casts;
 	private final IncantationClient incantations;
 
@@ -97,8 +110,13 @@ public final class VoiceService {
 		this.config = VfgConfig.load(configFile);
 		LOG.info("config: {}", config);
 
+		CastGate castGate = new CastGate();
 		this.spotter = new SpotterWorker(config.incantations, config.incantationThreshold, config.incantationBoost,
-			config.incantationRecheckSeconds, this::castHeard);
+			config.incantationRecheckSeconds, castGate, this::castHeard);
+		spotter.maxAliases(config.incantationSpotterAliases);
+		this.vosk = new VoskWorker(config.incantations && config.vosk, castGate, this::castHeard);
+		vosk.confirmSayings(config.voskConfirm);
+		this.speechTap = new SpeechTap(() -> spotter.listening() || vosk.listening(), spotter, vosk);
 		this.pipeline = new VoicePipeline(MicCapture.OPENAL, () -> (VoiceDetector) slot.engine(),
 			() -> (Transcriber) slot.engine(), slot::turn, config.turnThreshold, config.silenceSeconds,
 			System::currentTimeMillis, () -> config.logText, new VoicePipeline.Events() {
@@ -121,7 +139,7 @@ public final class VoiceService {
 				public void micError(String error) {
 					status.micError(error);
 				}
-			}, spotter);
+			}, speechTap);
 		this.sender = new BridgeClient(this::target, new BridgeClient.Listener() {
 			@Override
 			public void delivered(String clientLineId, String id) {
@@ -164,6 +182,7 @@ public final class VoiceService {
 			(version, list) -> {
 				LOG.info("incantations: {} for {} (version {})", list.size(), this.playerName, version);
 				spotter.setIncantations(list);
+				vosk.setIncantations(list);
 			});
 	}
 
@@ -171,6 +190,7 @@ public final class VoiceService {
 	public void start() {
 		pipeline.start();
 		spotter.start();
+		vosk.start();
 		sender.start();
 		startSetup(config.model);
 	}
@@ -181,6 +201,8 @@ public final class VoiceService {
 		pipeline.shutdown(1000);
 		incantations.stop();
 		spotter.shutdown(1000);
+		vosk.shutdown(1000);
+		speechTap.close();
 		casts.shutdown(500);
 		sender.shutdown(2000);
 		Thread s;
@@ -249,6 +271,9 @@ public final class VoiceService {
 		}
 		spotter.configure(next.incantations, next.incantationThreshold, next.incantationBoost,
 			next.incantationRecheckSeconds);
+		spotter.maxAliases(next.incantationSpotterAliases);
+		vosk.configure(next.incantations && next.vosk);
+		vosk.confirmSayings(next.voskConfirm);
 		if (!Objects.equals(next.model, requestedModel) && status.get().setup() != VoiceStatus.Setup.UNSUPPORTED) {
 			startSetup(next.model);
 		}
@@ -310,6 +335,7 @@ public final class VoiceService {
 		} else {
 			incantations.stop();
 			spotter.setIncantations(List.of());
+			vosk.setIncantations(List.of());
 		}
 	}
 
@@ -414,11 +440,20 @@ public final class VoiceService {
 			finishSetup(VoiceStatus.Setup.ENGINE_FAILED, message);
 			return;
 		}
-		if (c.incantations && !spotter.hasModel() && spotterSetup.compareAndSet(false, true)) {
+		boolean wantVosk = c.vosk && !vosk.hasModel();
+		if (c.incantations && (!spotter.hasModel() || wantVosk) && spotterSetup.compareAndSet(false, true)) {
 			Path vadFile = Assets.folder(vfgRoot, vad).resolve(Assets.VAD_FILE);
 			Thread t = new Thread(() -> {
 				try {
-					setUpSpotter(natives, vadFile, c.vadThreshold);
+					if (!speechTap.hasVad()) {
+						setUpSpeechVad(natives, vadFile, c.vadThreshold);
+					}
+					if (!spotter.hasModel()) {
+						setUpSpotter(natives, c.incantationPaths);
+					}
+					if (wantVosk && !stopping) {
+						setUpVosk(natives);
+					}
 				} finally {
 					spotterSetup.set(false);
 				}
@@ -430,47 +465,81 @@ public final class VoiceService {
 	}
 
 	/**
-	 * Installs and loads the keyword model on {@code vfg-kws-setup}, once the engine has loaded the
-	 * natives it runs on, with the spotter's own VAD from {@code vadFile}, the file the engine's VAD
-	 * loaded; a model that will not install or load leaves the spotter off, and a VAD that will not
-	 * load leaves it on the capture's VAD, each with a log line. It touches only its own folder and
-	 * the worker, so it takes no setup lock.
+	 * Loads the VAD that says for the spotter and Vosk when someone speaks ({@link SpeechTap}), on
+	 * {@code vfg-kws-setup}, from {@code vadFile}, the file the engine's VAD loaded; one that will not
+	 * load leaves them on the lines' VAD, with a log line.
 	 */
-	private void setUpSpotter(Assets.Asset natives, Path vadFile, double vadThreshold) {
+	private void setUpSpeechVad(Assets.Asset natives, Path vadFile, double vadThreshold) {
+		try {
+			SpotterVad loaded = Spotter.vad(Assets.folder(vfgRoot, natives), vadFile, vadThreshold);
+			if (stopping) {
+				loaded.close();
+				return;
+			}
+			speechTap.setVad(loaded);
+		} catch (Throwable e) { // an Error from the natives too: the capture's VAD will do
+			LOG.warn("keyword spotter's VAD failed to load ({}); it hears speech end with the lines' VAD", e.toString());
+		}
+	}
+
+	/**
+	 * Installs and loads the keyword model on {@code vfg-kws-setup}, once the engine has loaded the
+	 * natives it runs on; a model that will not install or load leaves the spotter off, with a log
+	 * line. It touches only its own folder and the worker, so it takes no setup lock.
+	 */
+	private void setUpSpotter(Assets.Asset natives, int maxActivePaths) {
 		Assets.Asset asset = Assets.kws();
 		try {
 			new AssetInstaller(vfgRoot, null).install(asset);
 			long t0 = System.nanoTime();
-			Spotter loaded = Spotter.load(Assets.folder(vfgRoot, natives), Assets.folder(vfgRoot, asset));
-			SpotterVad ownVad = null;
-			boolean handed = false;
-			try {
-				try {
-					ownVad = Spotter.vad(Assets.folder(vfgRoot, natives), vadFile, vadThreshold);
-				} catch (Throwable e) { // an Error from the natives too: the capture's VAD will do
-					LOG.warn("keyword spotter's VAD failed to load ({}); it hears speech end with the lines' VAD",
-						e.toString());
-				}
-				if (stopping) {
-					return;
-				}
-				spotter.setModel(loaded, ownVad);
-				handed = true;
-				LOG.info("keyword spotter loaded ({} ms)", (System.nanoTime() - t0) / 1_000_000);
-			} finally {
-				if (!handed) {
-					loaded.close();
-					if (ownVad != null) {
-						ownVad.close();
-					}
-				}
+			Spotter loaded = Spotter.load(Assets.folder(vfgRoot, natives), Assets.folder(vfgRoot, asset),
+				Spotter.TRAILING_BLANKS, maxActivePaths);
+			if (stopping) {
+				loaded.close();
+				return;
 			}
+			spotter.setModel(loaded); // speech comes from the SpeechTap's VAD
+			LOG.info("keyword spotter loaded ({} ms, max_active_paths {})", (System.nanoTime() - t0) / 1_000_000,
+				maxActivePaths);
 		} catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
 		} catch (AssetInstaller.SetupException e) {
 			LOG.warn("keyword spotter not installed ({}); incantations are heard in lines only", e.getMessage());
 		} catch (Throwable t) {
 			LOG.warn("keyword spotter failed to load ({}); incantations are heard in lines only", t.toString());
+		}
+	}
+
+	/**
+	 * Installs and loads Vosk's library for this PC and its model on {@code vfg-kws-setup}, after the
+	 * spotter's; speech comes from the {@link SpeechTap}'s VAD, as the spotter's does. A library or
+	 * model that will not install or load leaves the spotter alone, said once a game.
+	 */
+	private void setUpVosk(Assets.Asset natives) {
+		Assets.Asset voskNatives = Assets.voskNatives(natives.variant());
+		Assets.Asset asset = Assets.vosk();
+		try {
+			AssetInstaller installer = new AssetInstaller(vfgRoot, null);
+			installer.install(voskNatives);
+			installer.install(asset);
+			long t0 = System.nanoTime();
+			Vosk loaded = Vosk.load(Assets.folder(vfgRoot, voskNatives), Assets.folder(vfgRoot, asset));
+			if (stopping) {
+				loaded.close();
+				return;
+			}
+			vosk.setModel(loaded, null, VoskGrammar.fillers());
+			LOG.info("vosk loaded ({} ms)", (System.nanoTime() - t0) / 1_000_000);
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+		} catch (AssetInstaller.SetupException e) {
+			if (voskWarned.compareAndSet(false, true)) {
+				LOG.warn("vosk not installed ({}); incantations are heard by the keyword spotter alone", e.getMessage());
+			}
+		} catch (Throwable t) { // an UnsatisfiedLinkError or ExceptionInInitializerError from the natives too
+			if (voskWarned.compareAndSet(false, true)) {
+				LOG.warn("vosk failed to load ({}); incantations are heard by the keyword spotter alone", t.toString());
+			}
 		}
 	}
 

@@ -31,8 +31,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Downloads, verifies and unpacks the pinned natives, VAD, model, turn model and keyword model into
- * {@code <gameDir>/vfg/}.
+ * Downloads, verifies and unpacks the pinned natives, VAD, model, turn model, keyword model, and
+ * Vosk's model and natives into {@code <gameDir>/vfg/}.
  *
  * <p>For each one: if its folder's {@code .ok} holds the source's SHA-256 it is skipped;
  * else a file of that name in {@code downloads/} with the right hash is used (a player
@@ -135,6 +135,8 @@ public final class AssetInstaller {
 			switch (a.kind()) {
 				case NATIVES -> unpackNatives(file, folder, a.variant());
 				case MODEL, KWS -> unpackModel(file, folder, a);
+				case VOSK -> unpackZipModel(file, folder, a);
+				case VOSK_NATIVES -> unpackVoskNatives(file, folder, a);
 				case VAD -> move(file, folder.resolve(Assets.VAD_FILE));
 				case TURN -> move(file, folder.resolve(a.fileName()));
 			}
@@ -304,6 +306,54 @@ public final class AssetInstaller {
 		}
 		if (!missing.isEmpty()) {
 			throw new SetupException("the model archive is missing " + String.join(", ", new ArrayList<>(missing)));
+		}
+	}
+
+	/** From a Vosk natives zip (or jar), only this platform's library and what it loads, flat. */
+	private static void unpackVoskNatives(Path zipFile, Path folder, Assets.Asset a) throws IOException, SetupException {
+		Set<String> missing = new LinkedHashSet<>(Assets.voskNativeFiles(a));
+		try (ZipInputStream zip = new ZipInputStream(new BufferedInputStream(Files.newInputStream(zipFile), 1 << 16))) {
+			ZipEntry e;
+			while ((e = zip.getNextEntry()) != null) {
+				if (e.isDirectory() || !missing.remove(e.getName())) {
+					continue;
+				}
+				String name = e.getName().substring(e.getName().lastIndexOf('/') + 1);
+				Files.copy(zip, folder.resolve(name), StandardCopyOption.REPLACE_EXISTING);
+			}
+		}
+		if (!missing.isEmpty()) {
+			throw new SetupException("the Vosk natives archive is missing " + String.join(", ", missing));
+		}
+	}
+
+	/** From a model zip, only its wanted files (paths below the zip's top folder). */
+	private static void unpackZipModel(Path zipFile, Path folder, Assets.Asset a) throws IOException, SetupException {
+		Set<String> missing = new LinkedHashSet<>(Assets.modelFiles(a));
+		Set<String> wanted = new LinkedHashSet<>(missing);
+		try (ZipInputStream zip = new ZipInputStream(new BufferedInputStream(Files.newInputStream(zipFile), 1 << 16))) {
+			ZipEntry e;
+			while ((e = zip.getNextEntry()) != null) {
+				if (e.isDirectory()) {
+					continue;
+				}
+				String name = e.getName();
+				int slash = name.indexOf('/');
+				String rel = slash >= 0 ? name.substring(slash + 1) : name;
+				if (!wanted.contains(rel)) {
+					continue;
+				}
+				Path target = folder.resolve(rel).normalize();
+				if (!target.startsWith(folder)) {
+					continue;
+				}
+				Files.createDirectories(target.getParent());
+				Files.copy(zip, target, StandardCopyOption.REPLACE_EXISTING);
+				missing.remove(rel);
+			}
+		}
+		if (!missing.isEmpty()) {
+			throw new SetupException("the model zip is missing " + String.join(", ", new ArrayList<>(missing)));
 		}
 	}
 

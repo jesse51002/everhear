@@ -7,7 +7,7 @@ class IncantationEdit(Action):
     Only what is given changes. The values are checked against the action the
     phrase fires, over the ones it has; a player field set empty becomes whoever
     casts it. New aliases replace the whole list, and are checked for phrases of
-    that player's they sound like.
+    that player's they sound like; the everyday ones among them stay so.
     """
 
     script = "incantations"
@@ -24,3 +24,7 @@ class IncantationEdit(Action):
     """the new seconds before it can be cast again; leave it out to keep the cooldown"""
     aliases: list[str] = []
     """the whole new list of other ways it is said or misheard, such as fireball or fire bowl; leave it out to keep them"""
+    # Not in takes: set by hand (vfg action run incantation_edit everyday_aliases=...), as the
+    # alias call marks them when the phrase is created.
+    everyday_aliases: list[str] = []
+    """the whole new list of its aliases that are everyday talk, phrases people say for other reasons, such as ice cream for ice beam: the keyword spotter does not listen for them; empty for none; leave it out to keep them, less any the new aliases drop"""

@@ -3,8 +3,12 @@ package com.voiceforgaming.vfg.tools;
 import com.voiceforgaming.vfg.VoicePipeline;
 import com.voiceforgaming.vfg.audio.WindowListener.StopReason;
 import com.voiceforgaming.vfg.config.VfgConfig;
+import com.voiceforgaming.vfg.kws.CastGate;
 import com.voiceforgaming.vfg.kws.Incantation;
+import com.voiceforgaming.vfg.kws.Spotter;
 import com.voiceforgaming.vfg.kws.SpotterWorker;
+import com.voiceforgaming.vfg.kws.VoskGrammar;
+import com.voiceforgaming.vfg.kws.VoskWorker;
 import com.voiceforgaming.vfg.net.BridgeClient;
 import com.voiceforgaming.vfg.net.CastClient;
 import com.voiceforgaming.vfg.net.CastPayload;
@@ -29,10 +33,11 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * {@code ./gradlew castCheck}: a WAV played through the mod's own pipeline and keyword spotter as
- * if from the mic, with no Minecraft, posting casts ({@code POST /v1/casts}) and lines
+ * {@code ./gradlew castCheck}: a WAV played through the mod's own pipeline, keyword spotter and Vosk
+ * as if from the mic, with no Minecraft, posting casts ({@code POST /v1/casts}) and lines
  * ({@code POST /v1/lines}) to a real bridge, for the end-to-end test. It prints, for each cast and
- * each line, when it was said on the audio clock and when it was heard, posted and answered.
+ * each line, when it was said on the audio clock and when it was heard (and by which engine),
+ * posted and answered.
  *
  * <p>The audio clock maps to the wall clock as a mic's does: the WAV plays through a
  * {@link PlaybackDevice}, whose samples become readable as the wall clock runs, from the moment
@@ -59,6 +64,8 @@ public final class CastCheck {
 		  --boost <x>            the spotter's boost, 0.5-5 (default 1.5, the mod's)
 		  --recheck <s>          how far the spotter's re-check reaches back, 0 or 1-10 s (default 3, the
 		                         mod's; 0: the live stream alone)
+		  --paths <n>            the spotter's max_active_paths, 1-64 (default 16, the mod's incantation_paths)
+		  --no-vosk              the spotter alone, as with vosk: false
 		""";
 
 	private static final Object OUT = new Object();
@@ -92,11 +99,13 @@ public final class CastCheck {
 		}
 		String key = token.trim();
 
-		say("Loading Parakeet TDT 110M, the Silero VAD, Smart Turn and the keyword model...");
+		say("Loading Parakeet TDT 110M, the Silero VAD, Smart Turn, the keyword model%s...", o.vosk ? " and Vosk" : "");
 		SpeechEngine engine = TestAssets.engine(VfgConfig.DEFAULT_MODEL, VfgConfig.DEFAULT_STT_THREADS, 0.5f);
 		TurnDetector turn = TestAssets.turnDetector(TurnDetectors.DEFAULT);
-		var model = TestAssets.spotter();
+		var model = Spotter.load(TestAssets.nativesDir(), TestAssets.kwsModelDir(), Spotter.TRAILING_BLANKS, o.paths);
 		var spotterVad = TestAssets.spotterVad(0.5);
+		var vosk = o.vosk ? TestAssets.vosk() : null;
+		var voskVad = o.vosk ? TestAssets.spotterVad(0.5) : null;
 
 		Wav.Audio audio = o.wav != null ? Wav.read(Path.of(System.getProperty("vfg.projectDir", ".")).resolve(o.wav))
 			: said(o.said, o.voice);
@@ -137,7 +146,7 @@ public final class CastCheck {
 					say("  cast \"%s\": dropped, %s", cast.phrase(), reason);
 				}
 			});
-		SpotterWorker spotter = new SpotterWorker(true, o.threshold, o.boost, o.recheck, cast -> {
+		java.util.function.Consumer<SpotterWorker.Cast> heard = cast -> {
 			CastPayload p = CastPayload.create(uuid, o.player, cast.phrase(), cast.heard(), cast.startedAtMillis(),
 				cast.endedAtMillis());
 			long now = System.currentTimeMillis();
@@ -147,9 +156,16 @@ public final class CastCheck {
 				at(device, cast.endedAtMillis()), LinePayload.timestamp(cast.startedAtMillis()),
 				LinePayload.timestamp(cast.endedAtMillis()), at(device, cast.heardAtMillis()), at(device, now));
 			casts.post(p, cast.heardAtMillis(), cast.via().words());
-		});
+		};
+		CastGate gate = new CastGate();
+		SpotterWorker spotter = new SpotterWorker(true, o.threshold, o.boost, o.recheck, gate, heard);
 		spotter.setModel(model, spotterVad);
 		spotter.setIncantations(list);
+		VoskWorker voskWorker = new VoskWorker(o.vosk, gate, heard);
+		if (vosk != null) {
+			voskWorker.setModel(vosk, voskVad, VoskGrammar.fillers());
+			voskWorker.setIncantations(list);
+		}
 
 		Map<String, Long> enqueued = new ConcurrentHashMap<>();
 		BridgeClient lines = new BridgeClient(() -> new BridgeClient.Target(VfgConfig.linesUrl(o.bridge, ""), key),
@@ -177,12 +193,13 @@ public final class CastCheck {
 						at(device, now));
 					lines.enqueue(p, line.closedAtMillis());
 				}
-			}, spotter);
+			}, VoicePipeline.Tap.of(spotter, voskWorker));
 
 		double seconds = device.recordingSeconds();
 		say("Playing %.1f s as %s's mic (%d Hz) to %s; times are seconds into the WAV.", seconds, o.player, rate,
 			o.bridge);
 		spotter.start();
+		voskWorker.start();
 		pipeline.start();
 		pipeline.startCapture("", true);
 		Thread.sleep((long) ((seconds + VfgConfig.DEFAULT_SILENCE_SECONDS + 1.5) * 1000));
@@ -199,6 +216,7 @@ public final class CastCheck {
 		lines.shutdown(2000);
 		casts.shutdown(1000);
 		spotter.shutdown(1000);
+		voskWorker.shutdown(1000);
 		pipeline.shutdown(2000);
 		turn.close();
 		engine.close();
@@ -240,6 +258,8 @@ public final class CastCheck {
 		double threshold = VfgConfig.DEFAULT_INCANTATION_THRESHOLD;
 		double boost = VfgConfig.DEFAULT_INCANTATION_BOOST;
 		double recheck = VfgConfig.DEFAULT_INCANTATION_RECHECK_SECONDS;
+		int paths = VfgConfig.DEFAULT_INCANTATION_PATHS;
+		boolean vosk = true;
 
 		static Options parse(String[] a) {
 			Options o = new Options();
@@ -267,6 +287,9 @@ public final class CastCheck {
 							throw new IllegalArgumentException(k + " must be 0 or 1-10");
 						}
 					}
+					case "--paths" -> o.paths = (int) number(value(a, ++i, k), k, VfgConfig.MIN_INCANTATION_PATHS,
+						VfgConfig.MAX_INCANTATION_PATHS);
+					case "--no-vosk" -> o.vosk = false;
 					default -> throw new IllegalArgumentException("unknown option " + k);
 				}
 			}
