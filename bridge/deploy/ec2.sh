@@ -10,6 +10,12 @@
 #   ec2.sh retire    backs the box up into VFG_BACKUP_DIR (default ~/everhear/backups/), checks
 #                    the copies, then terminates the instance (and releases any vfg-mc Elastic IP)
 #
+# retire writes mc-backup.tgz (/opt/mc, the world) and vfg-backup.tgz (vfg.db, feed.log,
+# watch.json, lookout.md, menu.md and .env from /opt/vfg). The pair they replace becomes *.prev.tgz,
+# and the pair before that is deleted. vfg-backup.tgz is also kept as vfg-backup-<UTC time>.tgz
+# (vfg-backup-2026-10-11-065900.tgz), mode 600, which nothing rotates or deletes: every session's
+# data survives.
+#
 # No Elastic IP: the zero-cost habit is launch, play, retire. The public IP is the instance's own
 # and changes on every launch and every stop/start: update VFG_SSH_HOST and the players' address.
 # Everything is found by the tag Name=vfg-mc in VFG_AWS_REGION (us-east-2), so nobody types an id.
@@ -246,7 +252,7 @@ cmd_ssh_ip() {
 }
 
 cmd_retire() {
-  local id state ip alloc remote_sums name local_sum remote_sum
+  local id state ip alloc remote_sums name local_sum remote_sum dated=""
   id=$(require_instance)
   state=$(instance_state "$id")
   if [[ $state != running ]]; then
@@ -302,8 +308,27 @@ REMOTE
     if [[ -f $BACKUP_DIR/$name.tgz.part ]]; then
       [[ -f $BACKUP_DIR/$name.tgz ]] && mv -f "$BACKUP_DIR/$name.tgz" "$BACKUP_DIR/$name.prev.tgz"
       mv -f "$BACKUP_DIR/$name.tgz.part" "$BACKUP_DIR/$name.tgz"
+      if [[ $name == vfg-backup ]]; then
+        dated=$BACKUP_DIR/vfg-backup-$(date -u +%Y-%m-%d-%H%M%S).tgz
+      fi
     fi
   done
+  # The new vfg-backup.tgz is also kept under a dated name that nothing rotates or deletes, so
+  # every session's vfg.db survives for the replays and cost studies. It holds .env: mode 600.
+  # The checked vfg-backup.tgz is already in place, so a missing dated copy only warns.
+  if [[ -n $dated ]]; then
+    if [[ -e $dated ]]; then
+      log "warning: $dated already exists and was left alone;" \
+        "vfg-backup.tgz still holds this session"
+    elif ln "$BACKUP_DIR/vfg-backup.tgz" "$dated" 2> /dev/null \
+        || cp -p "$BACKUP_DIR/vfg-backup.tgz" "$dated"; then
+      chmod 600 "$dated"
+      log "kept ${dated##*/}"
+    else
+      log "warning: could not keep vfg-backup.tgz as $dated;" \
+        "vfg-backup.tgz still holds this session"
+    fi
+  fi
   log "backups are in $BACKUP_DIR"
 
   log "terminating $id"
