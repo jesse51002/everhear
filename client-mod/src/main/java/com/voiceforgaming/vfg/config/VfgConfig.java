@@ -60,6 +60,11 @@ public final class VfgConfig {
 	public static final double DEFAULT_INCANTATION_THRESHOLD = 0.25;
 	/** The keyword spotter's per-token boost. */
 	public static final double DEFAULT_INCANTATION_BOOST = 1.5;
+	/** How far back the keyword spotter's re-check reaches, in seconds; 0 turns re-checks off. */
+	public static final double DEFAULT_INCANTATION_RECHECK_SECONDS = 3;
+	/** The re-check's reach other than 0: 1–10 s. */
+	public static final double MIN_INCANTATION_RECHECK_SECONDS = 1;
+	public static final double MAX_INCANTATION_RECHECK_SECONDS = 10;
 
 	public String serverAddress = "";
 	public String bridgeUrl = "";
@@ -79,6 +84,7 @@ public final class VfgConfig {
 	public boolean incantations = true;
 	public double incantationThreshold = DEFAULT_INCANTATION_THRESHOLD;
 	public double incantationBoost = DEFAULT_INCANTATION_BOOST;
+	public double incantationRecheckSeconds = DEFAULT_INCANTATION_RECHECK_SECONDS;
 
 	private transient Map<String, String> env = System.getenv();
 
@@ -100,6 +106,7 @@ public final class VfgConfig {
 		c.incantations = incantations;
 		c.incantationThreshold = incantationThreshold;
 		c.incantationBoost = incantationBoost;
+		c.incantationRecheckSeconds = incantationRecheckSeconds;
 		c.env = env;
 		return c;
 	}
@@ -277,6 +284,14 @@ public final class VfgConfig {
 		c.incantations = bool(o, "incantations", true);
 		c.incantationThreshold = number(o, "incantation_threshold", DEFAULT_INCANTATION_THRESHOLD, 0.05, 0.95);
 		c.incantationBoost = number(o, "incantation_boost", DEFAULT_INCANTATION_BOOST, 0.5, 5);
+		c.incantationRecheckSeconds = number(o, "incantation_recheck_seconds", DEFAULT_INCANTATION_RECHECK_SECONDS, 0,
+			MAX_INCANTATION_RECHECK_SECONDS);
+		if (c.incantationRecheckSeconds > 0 && c.incantationRecheckSeconds < MIN_INCANTATION_RECHECK_SECONDS) {
+			LOG.warn("config: incantation_recheck_seconds = {} is outside 0 or {}–{}; using {}",
+				c.incantationRecheckSeconds, MIN_INCANTATION_RECHECK_SECONDS, MAX_INCANTATION_RECHECK_SECONDS,
+				DEFAULT_INCANTATION_RECHECK_SECONDS);
+			c.incantationRecheckSeconds = DEFAULT_INCANTATION_RECHECK_SECONDS;
+		}
 		return c;
 	}
 
@@ -354,18 +369,24 @@ public final class VfgConfig {
 		} else {
 			o.addProperty("turn_threshold", turnThreshold);
 		}
-		if (silenceSeconds == Math.rint(silenceSeconds)) {
-			o.addProperty("silence_seconds", (long) silenceSeconds);
-		} else {
-			o.addProperty("silence_seconds", silenceSeconds);
-		}
+		wholeOrNot(o, "silence_seconds", silenceSeconds);
 		o.addProperty("vad_threshold", vadThreshold);
 		o.addProperty("stt_threads", sttThreads);
 		o.addProperty("log_text", logText);
 		o.addProperty("incantations", incantations);
 		o.addProperty("incantation_threshold", incantationThreshold);
 		o.addProperty("incantation_boost", incantationBoost);
+		wholeOrNot(o, "incantation_recheck_seconds", incantationRecheckSeconds);
 		return o;
+	}
+
+	/** A number written as a whole number when it is one: {@code 3}, not {@code 3.0}. */
+	private static void wholeOrNot(JsonObject o, String key, double v) {
+		if (v == Math.rint(v)) {
+			o.addProperty(key, (long) v);
+		} else {
+			o.addProperty(key, v);
+		}
 	}
 
 	/** Writes the file values (never the environment overrides), through a temp file. */
@@ -398,6 +419,7 @@ public final class VfgConfig {
 			+ (turnThreshold == null ? "(the model's own)" : turnThreshold) + ", silence_seconds=" + silenceSeconds
 			+ ", vad_threshold=" + vadThreshold + ", stt_threads=" + sttThreads + ", log_text=" + logText
 			+ ", incantations=" + incantations + ", incantation_threshold=" + incantationThreshold
-			+ ", incantation_boost=" + incantationBoost + "]";
+			+ ", incantation_boost=" + incantationBoost + ", incantation_recheck_seconds=" + incantationRecheckSeconds
+			+ "]";
 	}
 }

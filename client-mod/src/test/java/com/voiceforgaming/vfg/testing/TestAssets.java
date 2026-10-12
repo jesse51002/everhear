@@ -1,6 +1,7 @@
 package com.voiceforgaming.vfg.testing;
 
 import com.voiceforgaming.vfg.kws.Spotter;
+import com.voiceforgaming.vfg.kws.SpotterVad;
 import com.voiceforgaming.vfg.setup.AssetInstaller;
 import com.voiceforgaming.vfg.setup.Assets;
 import com.voiceforgaming.vfg.speech.SpeechEngine;
@@ -114,6 +115,11 @@ public final class TestAssets {
 	/** Installs (once) and loads the keyword spotter's model as the mod does; load the engine first, as the mod does. */
 	public static Spotter spotter() throws Exception {
 		return Spotter.load(nativesDir(), kwsModelDir());
+	}
+
+	/** The spotter's own VAD as the mod loads it, on the VAD file {@link #engine} installs; load the engine first. */
+	public static SpotterVad spotterVad(double threshold) {
+		return Spotter.vad(nativesDir(), Assets.folder(root(), Assets.vad()).resolve(Assets.VAD_FILE), threshold);
 	}
 
 	/** A pinned extra file, fetched once into {@code downloads/} through the mod's installer. */

@@ -2646,7 +2646,7 @@ def cmd_place(cfg, a):
 
 # ----------------------------------------------------------- incantations
 
-# A player's incantations: phrases of two words or more, each bound to an action and its values,
+# A player's incantations: words or phrases, each bound to an action and its values,
 # which fire the moment that player says one, with no model on the path (the spec
 # Specs/2026-10-10-Prototype_Voice_Triggers). They live in the box's store, the kit's
 # incantations.Store (<vfg>/incantations.json), which the bridge reads as players cast. The
@@ -2664,7 +2664,9 @@ INCANT_STANDIN = "Caster"  # what a caster field holds while its values are chec
 # planner uses, through its providers, fastest first (dispatcher/dispatcher/config.py, DEFAULT_MODEL
 # and DEFAULT_PROVIDERS), unless VFG_INCANT_ALIAS_MODEL names another (off: no call). Reasoning
 # off: on 2026-10-10 "low" took 18 s and $0.0019 for "fire ball", off about 1 s and $0.00005. Its
-# prompt is this one.
+# prompt is this one. It also says whether the phrase is everyday talk, which casts whenever it is
+# said in conversation (a note), as a word list cannot without flagging made-up words: CMUdict
+# holds kamehameha, nova and umbra.
 INCANT_ALIAS_MODEL = "~deepseek/deepseek-v4-flash-latest"
 INCANT_ALIAS_PROVIDERS = ["parasail", "wafer", "phala", "together", "venice"]
 INCANT_ALIAS_TIMEOUT_S = 8.0
@@ -2680,6 +2682,10 @@ words speech to text may split it into, as "come a hammer ha".
 
 A few variants, the likeliest first, at most six: lowercase words and spaces, no punctuation; \
 never the phrase itself, never a phrase that means the same but sounds different.
+
+Then say whether the phrase is everyday talk: a word or words people often say in ordinary \
+conversation, as "heal", "shield" or "come here". A made-up word, as kamehameha, or a spell's \
+name, as "fire ball", is not.
 
 The phrase: "%s"
 """
@@ -2799,13 +2805,14 @@ def incant_warnings(inc, phrase, aliases, players, rows, skip=None):
 
 
 def incant_alias_call(cfg, phrase):
-    """How `phrase` is likely said or misheard, from one structured() call: (variants, a note
-    when the call failed, {"model", "cost", "ms"} when it answered). A failure is a note, never
-    a refusal: the code's aliases stand. The call queues its own usage row, component alias and
-    the phrase its ref, and `vfg usage flush` sends it, nobody waiting."""
+    """How `phrase` is likely said or misheard, from one structured() call: (variants, whether
+    it is everyday talk, a note when the call failed, {"model", "cost", "ms"} when it answered).
+    A failure is a note, never a refusal: the code's aliases stand. The call queues its own
+    usage row, component alias and the phrase its ref, and `vfg usage flush` sends it, nobody
+    waiting."""
     model = (cfg.get("VFG_INCANT_ALIAS_MODEL") or INCANT_ALIAS_MODEL).strip()
     if model.lower() == "off":
-        return [], None, None
+        return [], False, None, None
     asked = False
     try:
         actions_lib()  # lib/py on sys.path
@@ -2819,6 +2826,9 @@ def incant_alias_call(cfg, phrase):
         class Variants(BaseModel):
             variants: list[str] = Field(description="how the phrase is likely said or misheard, the likeliest "
                                                     "first, at most six")
+            everyday: bool = Field(False, description="whether people often say the phrase in ordinary "
+                                                      "conversation, as heal or shield; false for a made-up "
+                                                      "word, as kamehameha")
 
         asked = True
         got = asyncio.run(vfg_llm.structured(INCANT_ALIAS_PROMPT % phrase, Variants, component="alias",
@@ -2827,9 +2837,9 @@ def incant_alias_call(cfg, phrase):
     except Exception as e:  # noqa: BLE001 — an LlmError, no key, no httpx: the code's aliases stand
         if asked:
             flush_usage_later(cfg)
-        return [], "aliases from code only: the alias call failed (%s)" % (str(e) or type(e).__name__), None
+        return [], False, "aliases from code only: the alias call failed (%s)" % (str(e) or type(e).__name__), None
     flush_usage_later(cfg)
-    return [x for x in got.value.variants if isinstance(x, str)], None, \
+    return [x for x in got.value.variants if isinstance(x, str)], got.value.everyday is True, None, \
         {"model": model, "cost": round(got.cost, 6), "ms": got.ms}
 
 
@@ -2977,12 +2987,15 @@ def run_incantation(cfg, a, name, given, as_=None, task=None):
     caller.start()
     store, stale = fetch_incantations(cfg, a, stamps_for(cfg, home, folders))
     caller.join()
-    variants, why, call = answer[0] if answer else ([], "aliases from code only: the alias call failed", None)
+    variants, everyday, why, call = answer[0] if answer else (
+        [], False, "aliases from code only: the alias call failed", None)
     if why:
         notes.append(why)
     aliases = inc.merge_aliases(phrase, inc.code_aliases(phrase), variants)
     rows = store["incantations"]
     notes += incant_warnings(inc, phrase, aliases, players, rows)
+    if everyday:
+        notes.append('"%s" is everyday talk, so it will fire whenever it is said in conversation.' % phrase)
     for p in players:
         old = incant_find(inc, rows, p, phrase)
         if old:

@@ -32,6 +32,13 @@ word boundaries ignored, so "come a hammer ha" lines up with "kamehameha". The c
 and the distance is the cost over the target's phoneme count: 0 is exact, 0.25 the default
 allowance (one consonant wrong in "fire ball", or four vowels in "kamehameha").
 
+A one-word phrase (one_word) is held tighter, everywhere a target is found: its phrase's and
+aliases' runs start only where a word of the line starts, so "dash" is in "dashboard" but not
+in "haberdashery", and a target of fewer than SHORT_PHONES phonemes is found only as it is
+said, within SHORT_COST in all (an HH put in or left out), its mishearings left to its
+aliases. At 0.25 alone, "heal" matched 500 of the 2026-10-08 playtest's 843 lines ("build",
+"all", "really"); held so, none.
+
 The store, /opt/vfg/incantations.json (store_path), is written whole: a temp file then
 os.replace, under the flock incantations.lock beside it, every write bumping `version`.
 """
@@ -57,13 +64,15 @@ DROP_SPAN_WORDS = 1       # ... and at most the target's words + 1, unless withi
 # A line with one of these left beside the phrase is never dropped: it asks something of the spell.
 KEEP_WORDS = frozenset("stop remove cancel delete unbind dont not no never undo end".split())
 SOUNDS_LIKE = 0.34        # bind_warnings: a phrase or alias this close to another's
-SHORT_PHONES = 6          # bind_warnings: a phrase with fewer is short
+SHORT_PHONES = 6          # bind_warnings: a phrase with fewer is short; a one-word phrase's
+SHORT_COST = 0.25         # ... target with fewer is found only within this, in all (_found)
 MIN_ALIAS_PHONES = 4      # merge_aliases drops a shorter alias
 ALIAS_CAP = 12
 MAX_PHRASE = 80           # characters, normalised
 MAX_LINE_WORDS = 200      # match_line reads the first 200 words of a line (about 1000 characters)
 SPAN_PHONES, SPAN_SLACK = 3, 0.1   # _best_end: a match's end may move this far for this much more
 EPS = 1e-9                # sums of 0.3s are not exact: a distance on the allowance is within it
+_INF = float("inf")
 DEFAULT_COOLDOWN_S = 3.0
 PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
 EVERYONE = "@a"
@@ -85,10 +94,10 @@ def words(text):
 
 
 def check_phrase(phrase):
-    """The phrase normalised; ValueError unless it is two words at least."""
+    """The phrase normalised; ValueError unless it is a word at least."""
     p = normalize(phrase)
-    if len(p.split()) < 2:
-        raise ValueError("%r is not an incantation: a phrase is two words at least" % (phrase,))
+    if not p:
+        raise ValueError("%r is not an incantation: a phrase is a word at least" % (phrase,))
     if len(p) > MAX_PHRASE:
         raise ValueError("%r is too long for an incantation: %d characters at most" % (phrase, MAX_PHRASE))
     return p
@@ -135,6 +144,12 @@ def store_path():
 def entry_id(player, phrase):
     """steve.fire_ball; @a.fire_ball."""
     return "%s.%s" % (str(player).lower(), normalize(phrase).replace(" ", "_"))
+
+
+def one_word(entry):
+    """Whether the entry's phrase is one word ("fireball"): Layer 2 and the drop rule hold its
+    targets tighter (_found)."""
+    return len(normalize(entry.get("phrase")).split()) == 1
 
 
 def targets(entry):
@@ -591,6 +606,19 @@ def _line(text):
     return ids, word_of
 
 
+def _starts(word_of):
+    """For each place in a run of phone ids (0 to its length), whether a word starts there:
+    where a one-word phrase's run may start (_best_end)."""
+    return [j == 0 or word_of[j] != word_of[j - 1] for j in range(len(word_of))] + [True]
+
+
+@lru_cache(maxsize=4096)
+def _target_starts(text):
+    """_starts for a normalised target's phone ids, by its words."""
+    word_of = [k for k, w in enumerate(text.split()) for _ in _word_ids(w)]
+    return tuple(_starts(word_of))
+
+
 @lru_cache(maxsize=1024)
 def _tables(t):
     """A target's costs, by phone id: (each of its phones left out, [each phone of the line
@@ -598,12 +626,13 @@ def _tables(t):
     return [_INDEL[a] for a in t], [[_SUB[a][b] for a in t] for b in range(len(PHONES))]
 
 
-def _best_end(t, line):
+def _best_end(t, line, starts=None):
     """The cheapest cost of the target `t` (phone ids) aligned whole against any run of `line`,
     and the index just past that run: (cost, end). Semi-global edit distance: the line is free
     before and after the run. One column of costs at a time, no traceback. An end up to
     SPAN_PHONES further on that costs at most SPAN_SLACK more is taken instead, so a last
-    phoneme is matched loosely rather than left out ("ha" in "come a hammer ha")."""
+    phoneme is matched loosely rather than left out ("ha" in "come a hammer ha"). `starts`
+    (_starts): a run starts only where it is true; anywhere without it."""
     m = len(t)
     dels, cols = _tables(t)
     prev = [0.0] * (m + 1)
@@ -612,11 +641,14 @@ def _best_end(t, line):
     ends = [prev[m]]
     cur = [0.0] * (m + 1)
     rng = range(m)
-    for b in line:
+    for j, b in enumerate(line):
         sub = cols[b]
         ins = _INDEL[b]
-        up = 0.0
-        diag = 0.0
+        if starts is None:
+            up = diag = 0.0
+        else:     # a run starting here (diag), or just after this phoneme (up)
+            diag = 0.0 if starts[j] else _INF
+            up = 0.0 if starts[j + 1] else _INF
         for i in rng:
             left = prev[i + 1]
             v = diag + sub[i]
@@ -639,9 +671,9 @@ def _best_end(t, line):
     return ends[end], end
 
 
-def _span(t, line, end):
+def _span(t, line, end, starts=None):
     """Where the cheapest run of `t` ending at `end` starts: the same alignment again over
-    line[:end], keeping each cell's start."""
+    line[:end], keeping each cell's start; with `starts`, as _best_end has it."""
     m = len(t)
     prev = [0.0] * (m + 1)
     pstart = [0] * (m + 1)
@@ -649,7 +681,7 @@ def _span(t, line, end):
         prev[i + 1] = prev[i] + _INDEL[t[i]]
     for j in range(1, end + 1):
         b = line[j - 1]
-        cur = [0.0] * (m + 1)
+        cur = [0.0 if starts is None or starts[j] else _INF] + [0.0] * m
         cstart = [j] * (m + 1)
         for i in range(1, m + 1):
             a = t[i - 1]
@@ -663,44 +695,61 @@ def _span(t, line, end):
     return pstart[m]
 
 
-def _distance(a, b):
-    """How unlike two normalised targets sound, 0 to 1: the closer of a found in b and b in a."""
+def _inside(a, b, one):
+    """How unlike the target `a` sounds to its best run in the target `b`, 0 to 1; with `one`
+    (a is a one-word phrase's), held as _found holds it: from a word of b, and a short one
+    within SHORT_COST or not at all."""
     ta, tb = _target_ids(a), _target_ids(b)
-    if not ta or not tb:
+    cost = _best_end(ta, tb, _target_starts(b) if one else None)[0]
+    if one and len(ta) < SHORT_PHONES and cost > SHORT_COST + EPS:
         return 1.0
-    return min(_best_end(ta, tb)[0] / len(ta), _best_end(tb, ta)[0] / len(tb))
+    return cost / len(ta)
 
 
-def _found(ids, entry, allowance):
+def _distance(a, b, a_one=False, b_one=False):
+    """How unlike two normalised targets sound, 0 to 1: the closer of a found in b and b in a,
+    each held as a one-word phrase's when it is one's (`a_one`, `b_one`)."""
+    if not _target_ids(a) or not _target_ids(b):
+        return 1.0
+    return min(_inside(a, b, a_one), _inside(b, a, b_one))
+
+
+def _found(ids, word_of, entry, allowance):
     """Each of the entry's targets (once per sound) whose best run in the line's phone ids is
-    within `allowance`: [(distance, target, its ids, end)], best first."""
+    within `allowance`: [(distance, target, its ids, end, starts)], best first, `starts` what
+    _span takes for where its run starts. A one-word phrase's targets (one_word) run only from
+    where a word of the line starts, and one of fewer than SHORT_PHONES phonemes is found only
+    within SHORT_COST, in all."""
+    starts = _starts(word_of) if one_word(entry) else None
     out, seen = [], set()
     for target in targets(entry):
         t = _target_ids(target)
         if not t or t in seen:
             continue
         seen.add(t)
-        cost, end = _best_end(t, ids)
+        cost, end = _best_end(t, ids, starts)
         d = cost / len(t)
+        if starts is not None and len(t) < SHORT_PHONES and cost > SHORT_COST + EPS:
+            continue
         if d <= allowance + EPS and end > 0:
-            out.append((d, target, t, end))
+            out.append((d, target, t, end, starts))
     out.sort(key=lambda f: f[0])
     return out
 
 
 def match_line(text, entries, allowance=ALLOWANCE):
     """Layer 2: each entry whose phrase or an alias sounds like a run of the line, within
-    `allowance`, across word boundaries; its best match only, best first. Fillers are skipped,
-    and only the first MAX_LINE_WORDS words read."""
+    `allowance`, across word boundaries (a one-word phrase's held tighter: _found); its best
+    match only, best first. Fillers are skipped, and only the first MAX_LINE_WORDS words read."""
     ids, word_of = _line(text)
     if not ids:
         return []
     out = []
     for e in entries:
-        found = _found(ids, e, allowance)
+        found = _found(ids, word_of, e, allowance)
         if found:
-            d, target, t, end = found[0]
-            start = _span(t, ids, end)
+            d, target, t, end, starts = found[0]
+            start = _span(t, ids, end, starts)
             out.append(Match(e, target, word_of[min(start, end - 1)], word_of[end - 1] + 1, round(d, 3)))
     out.sort(key=lambda mt: (mt.distance, mt.start))
     return out
@@ -740,8 +789,8 @@ def _left(text, entry):
     if found:
         return len(left), left
     ids, word_of = _line(" ".join(ws))
-    for d, target, t, end in _found(ids, entry, DROP_ALLOWANCE):
-        start = min(_span(t, ids, end), end - 1)
+    for d, target, t, end, starts in _found(ids, word_of, entry, DROP_ALLOWANCE):
+        start = min(_span(t, ids, end, starts), end - 1)
         first, last = word_of[start], word_of[end - 1] + 1
         if _plausible(d, target, t, end - start, last - first):
             return len(ws) - (last - first), ws[:first] + ws[last:]
@@ -788,7 +837,8 @@ def _split(word):
 def code_aliases(phrase):
     """The phrase joined ("fire ball" -> "fireball"; for three words or more, also any two
     neighbours that join into a dictionary word), and the split forms of its compound words
-    ("fireball blast" -> "fire ball blast", each word alone and then all of them)."""
+    ("fireball blast" -> "fire ball blast", each word alone and then all of them; "fireball"
+    -> "fire ball")."""
     ws = words(phrase)
     out = []
     if len(ws) > 1:
@@ -827,14 +877,17 @@ def merge_aliases(phrase, *lists, cap=ALIAS_CAP):
 def bind_warnings(phrase, aliases, others):
     """Why a phrase may misfire, one plain sentence each: it is short (fewer than SHORT_PHONES
     phonemes); it, or an alias, sounds like another entry's phrase or alias (distance at most
-    SOUNDS_LIKE, either inside the other); or it, or an alias, starts with another entry's
-    first word. `others`: the player's other entries (the phrase's own entry is skipped)."""
+    SOUNDS_LIKE, either inside the other, a one-word phrase's held as Layer 2 holds it); or it,
+    or an alias, starts with another entry's first word. `others`: the player's other entries
+    (the phrase's own entry is skipped)."""
     p = normalize(phrase)
     out = []
     n = len(_target_ids(p))
     if n < SHORT_PHONES:
-        out.append('"%s" is short (%d speech sounds), so it may fire by accident: a third word helps.' % (p, n))
+        more = {1: "a second word", 2: "a third word"}.get(len(p.split()), "another word")
+        out.append('"%s" is short (%d speech sounds), so it may fire by accident: %s helps.' % (p, n, more))
     mine = [p] + [a for a in (normalize(x) for x in aliases or []) if a and a != p]
+    one = len(p.split()) == 1
     for o in others or []:
         op = normalize(o.get("phrase"))
         if not op or op == p:
@@ -843,7 +896,7 @@ def bind_warnings(phrase, aliases, others):
         hit = None
         for a in mine:
             for b in theirs:
-                d = _distance(a, b)
+                d = _distance(a, b, one, one_word(o))
                 if d <= SOUNDS_LIKE + EPS and (hit is None or d < hit[0]):
                     hit = (d, a, b)
         if hit is not None:
