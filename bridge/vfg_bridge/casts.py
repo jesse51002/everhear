@@ -46,6 +46,11 @@ ERROR_MAX = 300
 # such time): this long, and at most this many lines.
 RECEIVED_KEEP = _dt.timedelta(minutes=30)
 RECEIVED_MAX = 20000
+# A Jev cast whose phrase was said this long before its line ended is stale: a long line comes when
+# the whole utterance ends, so a phrase at its start would fire seconds late. Where the phrase is,
+# the kit's phoneme match finds, as loose as this; its time is placed by word between at and ended_at.
+PHRASE_LEAD_S = 3.0
+PHRASE_ALLOWANCE = 0.4   # finds "variable" for fire ball (0.32), not noise (0.43+)
 
 
 class Unavailable(Exception):
@@ -327,9 +332,15 @@ class Casts:
 
     # -- POST /v1/jev/casts ---------------------------------------------------------
 
-    def jev_cast(self, line_id, phrase, arrived=None):
+    def jev_cast(self, line_id, phrase, arrived=None, keep=False):
         """The Jev filter's cast of a stored voice line it judged a cast of ``phrase``, before
         routing it: (HTTP status, body, what to do once answered, or None).
+
+        With ``keep`` (a line over 6 words, the cast said inside other talk, or a short one Jev is
+        not sure of) the cast is the same but the line is kept, to be routed as ever, so the rest of
+        it reaches the AI; it takes the cast's id as its cast_id when the cast fired and it has none
+        (``"line": "kept"``). Jev may ask it after routing the line (a long line's routing never
+        waits on its cast check), so a kept cast is not refused for a line Jev judged.
 
         The same checks as every cast, on the line's window (its ``at`` and ``ended_at``, the
         clock guard's already), layer ``jev``, ``client_cast_id`` ``jev:<line id>``, so asking
@@ -341,7 +352,9 @@ class Casts:
         A Jev cast never fires late: one whose line /v1/lines received more than
         VFG_JEV_CAST_MAX_AGE_S (2 s) before, on the bridge's monotonic clock (``received``), or at a time the
         bridge no longer has (before it last started), is ``stale``, recorded and not started;
-        its line is dropped all the same."""
+        its line is dropped all the same (kept, with ``keep``). So is one whose phrase was said
+        more than PHRASE_LEAD_S before its line ended (``_said_early``), as at the start of a long
+        line, which comes only when the whole utterance ends."""
         arrived = self.monotonic() if arrived is None else arrived
         inc, ins = self._modules()
         key = "jev:%s" % line_id
@@ -356,7 +369,7 @@ class Casts:
                     return 400, {"error": "line %s is not a voice line" % line_id}, None
                 if line["dropped"] is not None:
                     return 200, {"line": "dropped", "cast_id": line["cast_id"]}, None
-                if line["jev_class"] is not None:
+                if line["jev_class"] is not None and not keep:  # a kept line's cast may come after its routing
                     return 409, {"error": "Jev judged line %s already" % line_id, "line": "judged"}, None
                 player = line["player_name"]
                 entry = self._store(inc).lookup(player, phrase)
@@ -365,13 +378,45 @@ class Casts:
                 started = timeutil.parse_time(line["at"])
                 ended = timeutil.parse_time(line["ended_at"] or line["at"])
                 heard = " ".join(inc.words(line["text"]))[:200] or None
+                late = self._too_old(line) or self._said_early(inc, entry, line["text"], started, ended)
                 cast = self._try(ins, entry, player, heard, "jev", started, ended, key, arrived,
-                                 line_id=line_id, late=self._too_old(line))
+                                 line_id=line_id, late=late)
                 new = True
-            dropped = line["dropped"] is not None or self.db.drop_judged_cast(
-                line_id, cast["id"], cast["status"] == "fired")
-        doc = dict(answer(cast), line="dropped" if dropped else "judged")
+            if keep:
+                if cast["status"] == "fired":
+                    self.db.line_cast(line_id, cast["id"])
+                kept = "dropped" if line["dropped"] is not None else "kept"
+            else:
+                dropped = line["dropped"] is not None or self.db.drop_judged_cast(
+                    line_id, cast["id"], cast["status"] == "fired")
+                kept = "dropped" if dropped else "judged"
+        doc = dict(answer(cast), line=kept)
         return 202, doc, (lambda: self.announce(cast)) if new else None
+
+    @staticmethod
+    def _said_early(inc, entry, text, started, ended):
+        """Why a Jev cast is too late because its phrase was said early in its line, or None: the
+        last place the kit's phoneme match (any length, PHRASE_ALLOWANCE) finds the phrase or an
+        alias, its last word's time estimated by word between the line's start and end, more than
+        PHRASE_LEAD_S before the end. None when the phrase is not found: then it is allowed."""
+        words = inc.words(text)
+        span = (ended - started).total_seconds()
+        if not words or span <= PHRASE_LEAD_S:
+            return None
+        last, offset = None, 0
+        while offset < len(words):
+            found = inc.match_line(" ".join(words[offset:]), [entry], PHRASE_ALLOWANCE)
+            if not found:
+                break
+            last = offset + found[0].end
+            offset = last
+        if last is None:
+            return None
+        lead = span * (len(words) - last) / len(words)
+        if lead > PHRASE_LEAD_S:
+            return ("the phrase was said about %.1f s before its line ended, past the %g s a Jev cast"
+                    " may be" % (lead, PHRASE_LEAD_S))
+        return None
 
     def received(self, client_line_id, arrived):
         """Note when /v1/lines received a line of a player with an incantation (only such a line

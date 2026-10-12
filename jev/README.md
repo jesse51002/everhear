@@ -2,17 +2,19 @@
 
 On the EC2 box. It asks Jev (TypeSafe) what should become of each new line a player says or types,
 writes the verdict into the transcript history, and feeds the lines it keeps to the brain in
-batches. Before that, a short voice line from a player with an incantation gets the cast check: if
-it was said to cast one, the bridge casts it and the line never reaches the brain.
+batches. Before that, a voice line from a player with an incantation gets the cast check: if it
+was said to cast one, the bridge casts it. A short line surely cast never reaches the brain; a long
+one (a cast inside other talk), or a short one Jev is not sure of, is routed as ever too: "I'd
+rather it do both if it's not sure."
 
 **The cast check** (`casting.py`, 2026-10-11). Speech-to-text mishears incantations ("hot fireball"
 as "Hot variable." or "Affordable.") and cuts them into pieces ("Ice.", then "Beam"); the bridge's
 deterministic layers (the spotter, Layer 2, the drop rule) let some through, and the brain answered
-them. So a voice line the bridge kept, of at most 6 words, from a player with an incantation (their
-own or an `@a` one, in `VFG_INCANTATIONS`), gets one Jev call before its routing call, one after the
-other: one `choice` question, `cast`, its options one `cast_<phrase>` per incantation (the phrase,
+them. So every voice line the bridge kept, from a player with an incantation (their own or an `@a`
+one, in `VFG_INCANTATIONS`), gets one Jev call before its routing call, one after the other: one `choice` question, `cast`, its options one `cast_<phrase>` per incantation (the phrase,
 its aliases and what it does: a `command` one's commands, else its action's line on the menu) and
-`not_a_cast`. The state is the fixed rules (a cast is the phrase, a mishearing, a piece or it said
+`not_a_cast` (an option holds up to 24 aliases and the whole of what it does: past 1,000
+characters the last aliases go, never the description). The state is the fixed rules (a cast is the phrase, a mishearing, a piece or it said
 twice; talk about an incantation, a request or a reply is not), invented examples of both, and
 RECENT: the speaker's lines (dropped ones too) and casts of the last minute and the AI's lines, the
 newest 8, the line asked about marked `[1]` last.
@@ -24,16 +26,41 @@ answer with no probability for its option is not a cast. The path is
 `POST http://127.0.0.1:$VFG_BRIDGE_PORT/v1/jev/casts` with `VFG_CLIENT_TOKEN`: the same checks as
 every cast (the 1 s gap, the incantation's cooldown, the duplicate window, a `casts` row, layer
 `jev`), plus an age: a line the bridge received more than `VFG_JEV_CAST_MAX_AGE_S` (2 s, the
-bridge's setting) before is cast `stale`, never fired. The bridge drops the line whatever came of
-the cast, fired, cooldown, duplicate or stale, so it is never routed nor fed. Not a cast, under the
-threshold, no probability, a call that fails or is refused, or a bridge that does not answer or
-keeps the line: the line goes on to the routing call as before. A
+bridge's setting) before is cast `stale`, never fired. A short line (6 words or fewer) whose cast
+is sure, `VFG_JEV_CAST_SURE` (0.7) or over, the bridge drops whatever came of the cast, fired,
+cooldown, duplicate or stale, so it is never routed nor fed. One under it is cast all the same, with
+`"keep": true`, and the line goes on to routing, which still classes noise like "Ice." as
+`not_relevant`. On the two sessions benched, 178 of the 187 short cast lines Jev caught were sure
+and dropped, and 9 kept (0.50 to 0.66: "steak.", "Hester.", "High step." three times …), while the
+one short false cast on the 2026-10-08 talk ("Uh, that Sorry beam struggle.", 0.61) is kept for
+routing.
+Not a cast, under the threshold, no probability, a call that fails or is refused, or a bridge that
+does not answer or keeps the line: the line goes on to the routing call as before.
+
+**A long line** (over 6 words) is asked in its own wording (`casting.LONG_*`): does it have the
+player casting an incantation right now, as a command or a shout, the rest being other talk ("ok
+watch this, frost nova", "Frost nova. Can you also give me some food?"), or does it only talk,
+about an incantation or anything else ("can you make thunder strike hit more", "that frost nova
+was sick")? The bridge's Layer 2 no longer casts in long lines, so this is the one judgement there.
+Its threshold is `VFG_JEV_CAST_MIN_LONG` (0.7; over 1, no long line is checked): on the
+2026-10-08 playtest's 604 long lines, every player given tonight's incantations, 0.7 made one false
+cast and 0.5 the same one; on 2026-10-11's 59 long talk lines, 0.5 made one ("how much damage is
+the ice cream due right now") and 0.6 or more none; it caught the one real long cast ("I still have
+the floaty effect. Can you remove it? Ice Beam.", 0.97) and 26 of 40 made-up ones (30 at 0.5). A
+long line's cast goes to the bridge with `"keep": true`: the same cast path and rules, the line kept
+(it takes the cast's id as its `cast_id` when the cast fired and it has none), the line routed
+first, as ever, so a request in the same sentence still reaches the AI; the brain sees the cast as its GAME line.
+A phrase said more than 3 s before its long line ended is `stale` at the bridge, never fired late
+(`bridge/README.md`). A
 failed cast check does not count towards failing open (the routing call right after it does); each
 line is checked once; nothing is checked while Jev fails open. A line that cannot be read for
 RECENT is routed without a call.
 
-**A cast never waits behind routing.** Each step checks every line due a cast check before it routes
-any line, and checks again after each routing call, so a cast said meanwhile goes next. And no call
+**A cast never waits behind routing.** Each step checks every short line due a cast check before it
+routes any line, and checks again after each routing call, so a cast said meanwhile goes next. A
+long line is kept and routed whatever its check says, so it is routed first and checked right after
+(after any short line waiting): its answer never waits on a Jev round trip, and a short cast never
+waits behind long lines' checks. And no call
 is made for a line already too old for the bridge to fire it (it goes on to routing): more than
 `VFG_JEV_CAST_MAX_AGE_S` (2 s, read from the same `.env` as the bridge) since the filter first read
 it, on the box's clock (never more than its age at the bridge, so never wrong), or more than that
@@ -44,10 +71,8 @@ check, and the lines go to routing as before). The journal says
 
 The store is read by a copy of the kit's reading (`scripts/_lib/incantations.py`), not the kit
 itself: the kit reaches the box with `vfg action run`, and this folder is deployed alone.
-`tests/test_kit_pin.py` holds the copy to the kit's answers. **A line over 6 words is never
-checked**, and makes no call: every cast benched was 5 words or fewer, and the false casts were sentences that also
-asked for something, whose cast Layer 2 fires anyway. `VFG_JEV_CAST_MIN` over 1 turns the check
-off, and so does a missing `VFG_CLIENT_TOKEN` (said once, at the start).
+`tests/test_kit_pin.py` holds the copy to the kit's answers. `VFG_JEV_CAST_MIN` over 1 turns the
+check off, and so does a missing `VFG_CLIENT_TOKEN` (said once, at the start).
 
 **One call a line, two questions** (D2, chosen on 2026-10-11): what should happen with the line —
 the AI must act, answer in chat, remember it, or ignore it — and, if the AI only replied in chat,
@@ -104,6 +129,8 @@ cast-check <id> Steve · hot fireball p 0.92 → fired · 210ms 1700tok
 cast-check <id> Steve · ice beam p 0.88 → cooldown (0.4 s left of its 3 s cooldown) · 190ms 1650tok
 cast-check <id> Steve · fire ball p 0.97 → stale (the line is 2.3 s old, past the 2 s a Jev cast may be) · 200ms 1700tok
 cast-check <id> Steve · no p 0.95 → routing · 190ms 1600tok
+cast-check <id> Steve · long · ice beam p 0.97 → fired, the line kept (routed first) · 180ms 1850tok
+cast-check <id> Steve · ice beam p 0.63 → fired, the line kept, not sure (under 0.70), routing · 170ms 1800tok
 ```
 
 `p` is the probability of the option Jev chose, the number held to `VFG_JEV_CAST_MIN` (`p -` when
@@ -157,6 +184,8 @@ From the environment (systemd reads `/opt/vfg/.env`):
 | `VFG_JEV_URL`, `VFG_JEV_MODEL`, `VFG_JEV_TIMEOUT` | `https://api.typesafe.ai/v1/systemone`, `jev-latest`, `3` s |
 | `VFG_JEV_STATE_TOKENS`, `VFG_JEV_HISTORY_HOURS` | `8000`, `3` |
 | `VFG_JEV_CAST_MIN` | `0.5`: the cast check's threshold, on the chosen option's probability; over 1, no cast check |
+| `VFG_JEV_CAST_MIN_LONG` | `0.7`: a long line's (over 6 words); over 1, no long line is checked |
+| `VFG_JEV_CAST_SURE` | `0.7`: a short cast this sure drops its line; under it, cast and routed too; over 1, no line dropped |
 | `VFG_JEV_CAST_MAX_AGE_S` | `2.0`, the bridge's: no cast check call for a line older (above) |
 | `VFG_INCANTATIONS`, `VFG_BRIDGE_PORT` | `/opt/vfg/incantations.json`, `8787`: the store, and the bridge on 127.0.0.1 |
 | `VFG_CLIENT_TOKEN` | the bridge's, from the environment or else `VFG_ENV_FILE`; never logged; none, no cast check |

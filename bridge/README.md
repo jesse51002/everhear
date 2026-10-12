@@ -96,13 +96,23 @@ and lines are stored as before. Every endpoint takes the client token.
   overlaps one of the player's casts and has at most one word besides its phrase is
   stored with `dropped = 'cast'`, and Jev never sees it; a kept line gets `cast_id`, the cast that
   fired. The casts it overlaps get its `line_id`. A repeated `client_line_id` casts nothing.
-- **`POST /v1/jev/casts`** `{"line_id", "phrase"}`, the Jev filter's cast check (`jev/README.md`),
+- **`POST /v1/jev/casts`** `{"line_id", "phrase", "keep"?}`, the Jev filter's cast check (`jev/README.md`),
   taken only from the box itself (a peer other than loopback is `403`), with the token: Jev judged
   that stored voice line, not yet judged or dropped, a cast of `phrase`. It goes through the same
   lock and checks as every cast (`Casts.jev_cast`), layer `jev`, with the line's window (its `at`
   and `ended_at`, the clock guard's already) and `client_cast_id` `jev:<line id>`, so asking again
   answers what the first did; then the line is stored with `dropped = 'cast'` whatever became of the
   cast, and `cast_id` that cast, unless it did not fire and the line carries a fired one already.
+  With `"keep": true` (a long line, the cast said inside other talk, or a short one Jev is not sure
+  of) the cast is the same but the
+  line is kept, for Jev to route as ever (`"line": "kept"`); it takes the cast's id as its `cast_id`
+  when the cast fired and it has none. Jev routes a long line before it asks, so a kept cast is not
+  refused for a line Jev judged. A long line comes only when the whole utterance ends, so a phrase
+  said at its start would fire seconds late: the kit's phoneme match (`match_line`, any length,
+  allowance 0.4) finds the last place the phrase or an alias is said, its time is placed by word
+  between the line's `at` and `ended_at`, and more than 3 s before the line ended the cast is
+  `stale` (`the phrase was said about 6.2 s before its line ended, past the 3 s a Jev cast may be`).
+  Where the phrase is not found, the cast is allowed.
   A Jev cast never fires late: when `/v1/lines` received its line more than `VFG_JEV_CAST_MAX_AGE_S`
   (2 s) before, on the bridge's monotonic clock, it is `stale` (error `the line is 2.3 s old, past
   the 2 s a Jev cast may be`), recorded and not started, and its line dropped all the same. The
@@ -110,7 +120,7 @@ and lines are stored as before. Every endpoint takes the client token.
   a line of a player with an incantation (no other line can get a Jev cast), noted as Layer 2 runs,
   before the line is stored, for 30 minutes; a line received before the bridge last started has
   none, and its Jev cast is `stale` too.
-  `202 {"id", "status", "copy"?, "error"?, "line": "dropped"}`; `200 {"line": "dropped",
+  `202 {"id", "status", "copy"?, "error"?, "line": "dropped"|"kept"}`; `200 {"line": "dropped",
   "cast_id"}` for a line dropped meanwhile, nothing cast; `404` no such line or incantation; `400` not
   a voice line; `409 {"line": "judged"}` when Jev judged it first. A fired or failed one is announced
   after the answer, as every cast is.

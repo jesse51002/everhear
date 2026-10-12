@@ -130,7 +130,10 @@ def validate_jev_cast(body):
     line_id = body.get("line_id")
     if not isinstance(line_id, str) or not 1 <= len(line_id) <= 64:
         raise BadRequest("line_id: must be a string of 1-64 characters")
-    return {"line_id": line_id, "phrase": _short(body, "phrase", PHRASE_MAX)}
+    keep = body.get("keep", False)
+    if not isinstance(keep, bool):
+        raise BadRequest("keep: must be true or false")
+    return {"line_id": line_id, "phrase": _short(body, "phrase", PHRASE_MAX), "keep": keep}
 
 
 LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
@@ -380,7 +383,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(503, {"error": "incantations are not set up on this bridge"})
             return
         try:
-            status, doc, after = casts.jev_cast(req["line_id"], req["phrase"], arrived=self._start)
+            status, doc, after = casts.jev_cast(req["line_id"], req["phrase"], arrived=self._start,
+                                                keep=req["keep"])
         except Unavailable as exc:
             self._send(503, {"error": str(exc)})
             return

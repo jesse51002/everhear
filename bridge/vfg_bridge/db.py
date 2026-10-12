@@ -314,6 +314,12 @@ class DB:
 
         return self._in_transaction(run)
 
+    def line_cast(self, line_id, cast_id):
+        """A kept line's cast_id, the Jev filter's fired cast inside it, unless it has one."""
+        with self.lock:
+            self.conn.execute("UPDATE lines SET cast_id = ? WHERE id = ? AND cast_id IS NULL",
+                              (cast_id, line_id))
+
     def last_fired(self, player_name, since):
         """{incantation_id: the ``at`` it last fired} of a player's casts started at ``since`` or later."""
         with self.lock:

@@ -72,6 +72,8 @@ class Config:
         "history_hours": ("VFG_JEV_HISTORY_HOURS", 3.0, float),
         "incantations": ("VFG_INCANTATIONS", "/opt/vfg/incantations.json", str),
         "cast_min": ("VFG_JEV_CAST_MIN", 0.5, float),
+        "cast_min_long": ("VFG_JEV_CAST_MIN_LONG", 0.7, float),   # a long line's: over 1, long lines unchecked
+        "cast_sure": ("VFG_JEV_CAST_SURE", 0.7, float),   # a short cast this sure drops its line; less, kept
         "cast_max_age": ("VFG_JEV_CAST_MAX_AGE_S", 2.0, float),   # the bridge's, read here to save calls
         "bridge_port": ("VFG_BRIDGE_PORT", 8787, int),
     }
@@ -167,8 +169,10 @@ class Filter:
         if bridge is not None and self.bridge is None:
             log.info("cast check off: VFG_JEV_CAST_MIN is %g, over 1", cfg.cast_min)
         elif self.bridge is not None:
-            log.info("cast check on · at %.2f or over · the bridge on 127.0.0.1:%d · incantations %s",
-                     cfg.cast_min, cfg.bridge_port, cfg.incantations)
+            log.info("cast check on · at %.2f or over, dropped at %.2f, a long line at %s · the bridge on "
+                     "127.0.0.1:%d · incantations %s", cfg.cast_min, cfg.cast_sure,
+                     "%.2f" % cfg.cast_min_long if cfg.cast_min_long <= 1 else "none (unchecked)",
+                     cfg.bridge_port, cfg.incantations)
         self.incantations = casting.Incantations(cfg.incantations)
         self.cast_checked = {}       # line ids checked, oldest first: each line is checked once
         self.first_seen = {}         # line id -> when a cast pass first read it, on the filter's clock
@@ -226,19 +230,23 @@ class Filter:
                 self.store.set_class(row["id"], "not_relevant", None, iso(self.clock.time()))
                 log.info("judge %s %s %s not_relevant - · blank, no call", row["id"], row["player_name"], row["source"])
                 continue
-            if self._cast_check(row):   # a cast: the bridge dropped the line, which is never routed
+            long = not casting.short_enough(row["text"])
+            if not long and self._cast_check(row):   # a sure cast: the bridge dropped the line
                 continue
             if not self._judge_one(row):
                 return FAILURE_PAUSE
             self.feed()   # so a line for the AI goes before the next call
-            self._cast_pass()   # a cast said while that line was judged goes before the next
+            self._cast_pass()   # a short cast said while that line was judged goes before the next
+            if long:
+                self._cast_check(row)   # a long line is kept whatever Jev says: routed first, then checked
         return None
 
     def _cast_pass(self):
-        """The cast check on every line waiting that is due one, before any line is routed: a
-        cast must reach the bridge within VFG_JEV_CAST_MAX_AGE_S of its line, so it never waits
-        behind other lines' routing and gather calls. Run at the start of each step and again
-        after each routing call."""
+        """The cast check on every short line waiting that is due one, before any line is routed:
+        a cast must reach the bridge within VFG_JEV_CAST_MAX_AGE_S of its line, so it never waits
+        behind other lines' routing and gather calls, nor behind long lines' checks. Run at the
+        start of each step and again after each routing call. A long line is kept and routed
+        whatever its check says, so it is routed first and checked after (_judge_new)."""
         if self.bridge is None:
             return
         now = self.clock.time()
@@ -246,7 +254,7 @@ class Filter:
             if self.stopping:
                 return
             self.first_seen.setdefault(row["id"], now)
-            if row["text"].strip():
+            if row["text"].strip() and casting.short_enough(row["text"]):
                 self._cast_check(row)
 
     def _still_there(self, row):
@@ -270,16 +278,23 @@ class Filter:
         return None
     def _cast_check(self, row):
         """The cast check (casting.py), before the routing call: was `row` said to cast one of
-        its speaker's incantations? Only for a voice line of at most 6 words from a player with
-        one (their own or an @a one), once a line, and only while it is young enough for the
-        bridge to fire it (_too_old_to_cast: no call otherwise). A cast whose option has a probability of
-        VFG_JEV_CAST_MIN or over goes to the bridge's cast path, which drops the line whatever
-        comes of the cast: answers True, and the line is never routed. Anything else answers
-        False and the line is routed as ever: not a cast, a probability under the threshold or
-        none at all, a call that fails or is refused (it is not Jev failing to judge a line, so
-        the failing clock is left as it is), or a bridge that gives no answer."""
-        if (self.bridge is None or row["source"] != "voice" or row["id"] in self.cast_checked
-                or not casting.short_enough(row["text"])):
+        its speaker's incantations? For a voice line from a player with one (their own or an @a
+        one), once a line, and only while it is young enough for the bridge to fire it
+        (_too_old_to_cast: no call otherwise). A cast whose option has a probability of
+        VFG_JEV_CAST_MIN or over (VFG_JEV_CAST_MIN_LONG for a long line, over 6 words; over 1, no
+        long line is checked) goes to the bridge's cast path. A short line (6 words or fewer)
+        whose cast is sure, VFG_JEV_CAST_SURE or over, the bridge then drops whatever comes of the
+        cast: answers True, and it is never routed. A long line (the cast said inside other talk),
+        or a short one whose cast is not sure, it keeps: answers False, routed as ever ("do both
+        if it's not sure"); a long line is checked only once it was routed (_judge_new).
+        Anything else answers False and the line is routed as ever: not a cast, a probability
+        under the threshold or none at all, a call that fails or is refused (it is not Jev failing
+        to judge a line, so the failing clock is left as it is), or a bridge that gives no answer."""
+        if self.bridge is None or row["source"] != "voice" or row["id"] in self.cast_checked:
+            return False
+        long = not casting.short_enough(row["text"])
+        least = self.cfg.cast_min_long if long else self.cfg.cast_min
+        if least > 1:
             return False
         entries = self.incantations.for_player(row["player_name"])
         if not entries:
@@ -289,7 +304,7 @@ class Filter:
             for line_id in list(self.cast_checked)[:CAST_CHECKED_MAX // 2]:
                 del self.cast_checked[line_id]
                 self.first_seen.pop(line_id, None)
-        who = "%s %s" % (row["id"], row["player_name"])
+        who = "%s %s%s" % (row["id"], row["player_name"], " · long" if long else "")
         late = self._too_old_to_cast(row)
         if late:
             log.info("cast-check %s · too old to cast (%s) → routing, no call", who, late)
@@ -301,9 +316,9 @@ class Filter:
         except sqlite3.Error as e:
             log.warning("cast-check %s · could not read its recent lines: %s → routing, no call", who, e)
             return False
-        asked, picked = casting.questions(row, entries, self.menu.text())
+        asked, picked = casting.questions(row, entries, self.menu.text(), long)
         try:
-            result = self.jev.ask(casting.state(row, recent), asked, required=casting.QUESTION)
+            result = self.jev.ask(casting.state(row, recent, long), asked, required=casting.QUESTION)
         except (JevDown, JevRefused) as e:
             log.warning("cast-check %s · failed: %s → routing", who, e)
             return False
@@ -321,15 +336,18 @@ class Filter:
         if p is None:
             log.info("cast-check %s · %s → no probability, routing · %s", who, heard, took)
             return False
-        if p < self.cfg.cast_min:
-            log.info("cast-check %s · %s → under %.2f, routing · %s", who, heard, self.cfg.cast_min, took)
+        if p < least:
+            log.info("cast-check %s · %s → under %.2f, routing · %s", who, heard, least, took)
             return False
+        keep = long or p < self.cfg.cast_sure   # not sure, or inside other talk: cast, and route it too
         try:
-            got = self.bridge.cast(row["id"], entry["phrase"])
+            got = self.bridge.cast(row["id"], entry["phrase"], keep=keep)
         except casting.BridgeError as e:
             log.warning("cast-check %s · %s → the bridge failed: %s, routing · %s", who, heard, e, took)
             return False
-        log.info("cast-check %s · %s → %s%s · %s", who, heard, got.said, "" if got.dropped else ", routing", took)
+        why = (", the line kept (routed first)" if long
+               else ", the line kept, not sure (under %.2f), routing" % self.cfg.cast_sure if keep else ", routing")
+        log.info("cast-check %s · %s → %s%s · %s", who, heard, got.said, "" if got.dropped else why, took)
         return got.dropped
 
     def _history(self, began, exclude):
