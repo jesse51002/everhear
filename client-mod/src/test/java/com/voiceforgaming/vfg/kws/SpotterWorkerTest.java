@@ -212,6 +212,7 @@ class SpotterWorkerTest {
 	}
 
 	private FakeModel model;
+	private CastGate gate;
 	private List<SpotterWorker.Cast> casts;
 	private SpotterWorker worker;
 	private int windows;
@@ -228,8 +229,9 @@ class SpotterWorkerTest {
 
 	private void start(double recheckSeconds, SpotterVad vad) {
 		model = new FakeModel();
+		gate = new CastGate();
 		casts = new ArrayList<>();
-		worker = new SpotterWorker(true, 0.25, 1.5, recheckSeconds, casts::add);
+		worker = new SpotterWorker(true, 0.25, 1.5, recheckSeconds, gate, casts::add);
 		worker.setModel(model, vad);
 		worker.setIncantations(List.of(FIRE_BALL));
 		worker.onStarted(true);
@@ -723,5 +725,86 @@ class SpotterWorkerTest {
 		assertEquals(1, casts.size());
 		assertEquals("fireball", casts.getFirst().phrase());
 		assertEquals("fireball", casts.getFirst().heard());
+	}
+
+	// --- beside Vosk ---
+
+	@Test
+	void eachCastIsClaimedInTheGateItSharesWithVosk() {
+		start(3);
+		model.said.add(new Said("fireball", 11, 20));
+		windows(10, false);
+		windows(10, true);
+		assertEquals(1, casts.size());
+		assertEquals(1, gate.claims().size());
+		CastGate.Claim c = gate.claims().getFirst();
+		assertEquals("fire ball", c.phrase());
+		assertEquals(SpotterWorker.Via.RECHECK, c.via());
+		assertEquals(casts.getFirst().endedAtMillis(), gate.lastEnd());
+	}
+
+	@Test
+	void aCastVoskMadeMovesTheReachBackOnAndClosesTheLiveStream() {
+		start(3);
+		model.said.add(new Said("fireball", 11, 20));
+		windows(10, false);
+		windows(9, true);
+		assertTrue(casts.isEmpty());
+		FakeStream live = model.streams.getFirst();
+		// Vosk heard the saying first, and claims it up to the newest sample it had
+		assertTrue(gate.claim("fire ball", startOf(11) - 300, T0 + 19 * 32, SpotterWorker.Via.VOSK));
+		int before = model.streams.size();
+		windows(11, true);
+		assertTrue(casts.isEmpty(), "that saying is Vosk's: " + casts);
+		assertTrue(live.closed, "the live stream, which had the saying in it");
+		for (FakeStream st : model.streams.subList(before, model.streams.size())) {
+			assertTrue(firstInstant(st) > T0 + 19 * 32 - CastGate.VOSK_REACH_MARGIN_MILLIS,
+				"nothing from before the end of Vosk's cast, less its margin");
+		}
+		model.said.add(new Said("fireball", 33, 40));
+		windows(10, true);
+		assertEquals(1, casts.size(), "the next saying is the spotter's again");
+	}
+
+	@Test
+	void aPhraseSaidRightAfterOneVoskCastLateIsStillHeard() {
+		start(3);
+		worker.setIncantations(List.of(FIRE_BALL, new Incantation("ice wall", List.of(), 3)));
+		model.said.add(new Said("fireball", 16, 25));
+		windows(10, false);
+		windows(17, true);
+		// "ice wall fire ball": Vosk heard "ice wall" in windows 11-15, its estimate running into window 17
+		assertTrue(gate.claim("ice wall", startOf(11) - 200, T0 + 17 * 32, SpotterWorker.Via.VOSK));
+		windows(10, true);
+		assertEquals(List.of("fire ball"), casts.stream().map(SpotterWorker.Cast::phrase).toList(),
+			"the reach-back stops 0.3 s before Vosk's estimated end");
+	}
+
+	@Test
+	void aHeldKeywordInsideALongerPhraseVoskCastIsNotCast() {
+		start(3);
+		worker.setIncantations(List.of(new Incantation("fire", List.of(), 3), FIRE_BALL));
+		model.said.add(new Said("fire", 11, 15, true));
+		windows(10, false);
+		windows(5, true);
+		assertTrue(gate.claim("fire ball", startOf(11), T0 + 15 * 32, SpotterWorker.Via.VOSK), "Vosk heard \"fire ball\"");
+		window(false);
+		windows(20, false);
+		assertTrue(casts.isEmpty(), casts.toString());
+	}
+
+	@Test
+	void theSpotterListensForTheFirstAliasesOnly() {
+		start(3);
+		// aliases made of the stand-in model's few tokens
+		worker.setIncantations(List.of(new Incantation("fire ball", List.of("fireball", "ice wall"), 3)));
+		window(true);
+		assertEquals(3, model.opened.getFirst().split("/").length, "the phrase and its two aliases");
+		worker.maxAliases(1);
+		window(true);
+		assertEquals(2, model.opened.getLast().split("/").length, "the phrase and the first alias");
+		assertTrue(model.opened.getLast().contains("@fireball"));
+		assertEquals(List.of(new Incantation("ice wall", List.of(), 3)),
+			SpotterWorker.firstAliases(List.of(new Incantation("ice wall", List.of("ice well"), 3)), 0));
 	}
 }

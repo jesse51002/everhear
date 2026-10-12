@@ -58,6 +58,13 @@ public final class Spotter implements KeywordModel {
 	public static final int FRAME_SAMPLES = SampleClock.SAMPLE_RATE / 25;
 	/** Blank frames after the last token before a keyword fires (sherpa-onnx's Java default is 2). */
 	public static final int TRAILING_BLANKS = 1;
+	/**
+	 * The decoder's beam, {@code max_active_paths}, by default: 16 where sherpa-onnx's is 4. A wider
+	 * beam keeps a keyword's path alive through fast speech: on Kokoro TTS at 1.0, 1.3, 1.6 and 2.0
+	 * times its speed, 4 heard 86, 83, 65 and 34% of the phrases, 16 heard 95, 93, 84 and 58%, at
+	 * about the same CPU (the config's {@code incantation_paths}).
+	 */
+	public static final int MAX_ACTIVE_PATHS = 16;
 	/** The silence that ends speech for the spotter's own VAD ({@link #vad}): 0.15 s. */
 	public static final float VAD_MIN_SILENCE_SECONDS = 0.15f;
 	/** The speech that starts it: 0.1 s. */
@@ -86,11 +93,15 @@ public final class Spotter implements KeywordModel {
 	 * {@code nativesDir}, which the speech engine has usually loaded already.
 	 */
 	public static Spotter load(Path nativesDir, Path modelDir) throws IOException {
-		return load(nativesDir, modelDir, TRAILING_BLANKS);
+		return load(nativesDir, modelDir, TRAILING_BLANKS, MAX_ACTIVE_PATHS);
 	}
 
-	/** With another number of trailing blank frames, for measuring. */
-	public static Spotter load(Path nativesDir, Path modelDir, int trailingBlanks) throws IOException {
+	/**
+	 * With {@code maxActivePaths}, the decoder's beam (the config's {@code incantation_paths}), and
+	 * another number of trailing blank frames for measuring.
+	 */
+	public static Spotter load(Path nativesDir, Path modelDir, int trailingBlanks, int maxActivePaths)
+			throws IOException {
 		if (System.getProperty("sherpa_onnx.native.path") == null) {
 			System.setProperty("sherpa_onnx.native.path", nativesDir.toAbsolutePath().toString());
 		}
@@ -107,7 +118,7 @@ public final class Spotter implements KeywordModel {
 			.setNumThreads(1).setDebug(false).setProvider("cpu").build();
 		var config = KeywordSpotterConfig.builder().setOnlineModelConfig(model)
 			.setKeywordsFile(none.toAbsolutePath().toString()).setNumTrailingBlanks(trailingBlanks)
-			.setMaxActivePaths(4).build();
+			.setMaxActivePaths(maxActivePaths).build();
 		return new Spotter(new KeywordSpotter(config), pieces, tokens, trailingBlanks);
 	}
 

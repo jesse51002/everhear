@@ -16,6 +16,7 @@ class IncantationCreate(Action):
     script = "incantations"
     runs = "once"
     takes = ["player", "phrase", "action", "values", "cooldown_s"]
+    timeout_s = 40   # the alias call takes about 7 s and up to 20, then the bound script may deploy
 
     # A plain text with a pattern, as save_place's player: Players needs a default it takes,
     # and an incantation has none. vfg refuses it empty.

@@ -41,6 +41,13 @@ aliases. At 0.25 alone, "heal" matched 500 of the 2026-10-08 playtest's 843 line
 
 The store, /opt/vfg/incantations.json (store_path), is written whole: a temp file then
 os.replace, under the flock incantations.lock beside it, every write bumping `version`.
+
+An entry's `everyday_aliases` are those of its `aliases` that are everyday talk in their own
+right, a phrase people say for other reasons ("ice cream" and "i scream" for "ice beam"), as
+vfg's alias call marks them: the bridge's GET /v1/incantations leaves them out, so the mod's
+keyword spotter never listens for them, and Layer 2 and the Jev cast check use them as any other
+alias. Always a subset of the aliases (put and updated keep it one, through everyday()); an
+entry without the field has none.
 """
 import fcntl
 import gzip
@@ -67,7 +74,17 @@ SOUNDS_LIKE = 0.34        # bind_warnings: a phrase or alias this close to anoth
 SHORT_PHONES = 6          # bind_warnings: a phrase with fewer is short; a one-word phrase's
 SHORT_COST = 0.25         # ... target with fewer is found only within this, in all (_found)
 MIN_ALIAS_PHONES = 4      # merge_aliases drops a shorter alias
-ALIAS_CAP = 12
+ALIAS_CAP = 24            # the alias call's 20, beside the code's joined and split forms
+# checked_variants: the alias call's variants that are kept sound like the phrase, within this
+# sound_distance of it, and are less than this much longer, their speech sounds weighed as
+# sound_distance weighs one put in (_indel_cost: an HH 0.25, an AH 0.5, any other 1), so a
+# made-up word's respellings keep their H and "uh" sounds ("come a hammer ha" for kamehameha,
+# which CMUdict says in 8 sounds with no H). A backstop: on the
+# 2026-10-12 bench of the alias prompts (1,775 variants), they dropped 4 of the 59 from the old
+# prompt ("destroy everything right", "galactic gun"), 5 of 200 from Gemini 3.8 Flash's exactly
+# 20 at light thinking ("nice dean", "call me hammer ha"), and none from Sonnet, Haiku or Sol.
+ALIAS_MAX_DISTANCE = 0.35
+ALIAS_MAX_LONGER = 3
 MAX_PHRASE = 80           # characters, normalised
 MAX_LINE_WORDS = 200      # match_line reads the first 200 words of a line (about 1000 characters)
 SPAN_PHONES, SPAN_SLACK = 3, 0.1   # _best_end: a match's end may move this far for this much more
@@ -182,7 +199,8 @@ def updated(entry, changes, merge=False, drop_asked=()):
     """`entry` with `changes` over it, as Store.update writes it: each change replaces its field
     whole, except that with `merge` a values or asked change is merged over the entry's own, so
     only the keys given change; `drop_asked`, keys taken out of asked (a field that became the
-    caster's). vfg makes its cache's copy of an edited entry with it too, so the two agree."""
+    caster's). The everyday aliases left are those still among the aliases (everyday). vfg makes
+    its cache's copy of an edited entry with it too, so the two agree."""
     new = dict(entry)
     new.update(changes)
     if merge:
@@ -191,6 +209,8 @@ def updated(entry, changes, merge=False, drop_asked=()):
                 new[k] = dict(entry.get(k) or {}, **changes[k])
     if drop_asked and isinstance(new.get("asked"), dict):
         new["asked"] = dict((k, x) for k, x in new["asked"].items() if k not in drop_asked)
+    if "everyday_aliases" in new and ("aliases" in changes or "everyday_aliases" in changes):
+        new["everyday_aliases"] = everyday(new.get("aliases"), new["everyday_aliases"])
     return new
 
 
@@ -266,6 +286,8 @@ class Store(object):
         e["phrase"] = check_phrase(e.get("phrase"))
         e["id"] = entry_id(player, e["phrase"])
         e.setdefault("aliases", [])
+        if "everyday_aliases" in e:
+            e["everyday_aliases"] = everyday(e["aliases"], e["everyday_aliases"])
         e.setdefault("cooldown_s", DEFAULT_COOLDOWN_S)
         e.setdefault("created", now_iso())
         with _Change(self) as ch:
@@ -494,6 +516,16 @@ def phonemes(word):
 def phones(text):
     """Every word's phonemes, joined, with no word boundaries."""
     return [PHONES[i] for w in words(text) for i in _word_ids(w)]
+
+
+def pronunciation(phrase):
+    """How each word of the phrase is said, for the alias call's prompt: [(word, its phonemes as
+    "AY S", whether CMUdict has it)], a word it lacks given by the letter-to-sound rules."""
+    out = []
+    for w in words(phrase):
+        found = _cmu(w)
+        out.append((w, found if found is not None else " ".join(phonemes(w)), found is not None))
+    return out
 
 
 @lru_cache(maxsize=4096)
@@ -857,6 +889,60 @@ def code_aliases(phrase):
     return [a for k, a in enumerate(out) if a != p and a not in out[:k]]
 
 
+def sound_distance(phrase, alias):
+    """How unlike `alias` sounds to `phrase`, whole against whole: the weighted edit distance
+    between their phonemes (Layer 2's costs, _sub_cost and _indel_cost, word boundaries
+    ignored) over the phrase's phoneme count. 0 is the same sounds; "ice been" is 0.18 from "ice
+    beam" (IH for IY and N for M, 0.9 over 5), "ice beam now" 0.4 (N AW put in)."""
+    a, b = _target_ids(normalize(phrase)), _target_ids(normalize(alias))
+    prev = [0.0]
+    for q in b:
+        prev.append(prev[-1] + _INDEL[q])
+    for p in a:
+        cur = [prev[0] + _INDEL[p]]
+        sub, dp = _SUB[p], _INDEL[p]
+        for j, q in enumerate(b):
+            cur.append(min(prev[j + 1] + dp, cur[j] + _INDEL[q], prev[j] + sub[q]))
+        prev = cur
+    return prev[-1] / max(1, len(a))
+
+
+def _weight(text):
+    """A normalised text's speech sounds, each weighed as _indel_cost puts it in: an HH 0.25, an
+    AH 0.5, any other 1."""
+    return sum(_INDEL[i] for i in _target_ids(text))
+
+
+def checked_variants(phrase, variants):
+    """The alias call's variants as the code keeps them, before merge_aliases: (kept, normalised,
+    in order; dropped, [(variant, why)]). Dropped: the phrase itself, a repeat, one
+    ALIAS_MAX_LONGER speech sounds longer than the phrase or more, each weighed as _indel_cost
+    weighs it (an HH 0.25, an AH 0.5), and one more than ALIAS_MAX_DISTANCE from it
+    (sound_distance)."""
+    p = normalize(phrase)
+    n = _weight(p)
+    kept, dropped, seen = [], [], set()
+    for v in variants or ():
+        a = normalize(v)
+        if not a:
+            continue
+        if a == p:
+            why = "the phrase itself"
+        elif a in seen:
+            why = "a repeat"
+        elif _weight(a) - n >= ALIAS_MAX_LONGER - EPS:
+            why = "%g speech sounds longer" % (_weight(a) - n)
+        else:
+            d = sound_distance(p, a)
+            why = "sounds unlike it (%.2f)" % d if d > ALIAS_MAX_DISTANCE + EPS else None
+        seen.add(a)
+        if why:
+            dropped.append((a, why))
+        else:
+            kept.append(a)
+    return kept, dropped
+
+
 def merge_aliases(phrase, *lists, cap=ALIAS_CAP):
     """Aliases from every list, in order: normalised, each once, never the phrase itself, none
     of fewer than MIN_ALIAS_PHONES phonemes; `cap` at most."""
@@ -871,6 +957,18 @@ def merge_aliases(phrase, *lists, cap=ALIAS_CAP):
             out.append(n)
             if len(out) >= cap:
                 return out
+    return out
+
+
+def everyday(aliases, marks):
+    """Of `marks`, those among `aliases`, normalised, in the aliases' order, each once: an
+    entry's everyday_aliases as the store keeps them, a subset of its aliases."""
+    marked = set(normalize(m) for m in marks or ())
+    out = []
+    for a in aliases or ():
+        n = normalize(a)
+        if n in marked and n not in out:
+            out.append(n)
     return out
 
 

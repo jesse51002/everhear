@@ -155,6 +155,24 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(inc.updated({"values": {"a": 1}}, {"asked": {"a": 1}}, merge=True, drop_asked=["a"]),
                          {"values": {"a": 1}, "asked": {}})
 
+    def test_everyday_aliases_are_kept_a_subset_of_the_aliases(self):
+        ice = ["ice been", "ice cream", "i scream", "nice beam"]
+        entry, _ = self.put("Steve", "ice beam", aliases=ice, everyday_aliases=["I Scream!", "ice cream", "eyes beam"])
+        self.assertEqual(entry["everyday_aliases"], ["ice cream", "i scream"])   # the aliases' order; eyes beam is none
+        self.assertEqual(self.store.find("Steve", "ice beam"), entry)
+        # New aliases keep the marks still among them, as Store.update writes them.
+        entry = self.store.update("Steve", "ice beam", aliases=["ice been", "i scream"])
+        self.assertEqual(entry["everyday_aliases"], ["i scream"])
+        entry = self.store.update("Steve", "ice beam", everyday_aliases=["ice been", "nice beam"])
+        self.assertEqual(entry["everyday_aliases"], ["ice been"])
+        self.assertEqual(self.store.update("Steve", "ice beam", everyday_aliases=[])["everyday_aliases"], [])
+        # An entry from before the field has none, and gets none from a change of its aliases.
+        entry, _ = self.put("Steve", "fire ball", aliases=["fire bowl"])
+        self.assertNotIn("everyday_aliases", entry)
+        self.assertNotIn("everyday_aliases", self.store.update("Steve", "fire ball", aliases=["fireball"]))
+        self.assertEqual(inc.updated({"aliases": ["a b c"], "everyday_aliases": ["a b c"]}, {"cooldown_s": 1}),
+                         {"aliases": ["a b c"], "everyday_aliases": ["a b c"], "cooldown_s": 1})
+
     def test_update_of_none_or_of_the_phrase_refused_without_a_write(self):
         self.put("Steve", "fire ball")
         with self.assertRaises(KeyError):
@@ -446,8 +464,50 @@ class AliasTests(unittest.TestCase):
         got = inc.merge_aliases("fire ball", ["Fire-Ball", "fire bowl", "zap", ""], ["fireball", "FIRE BOWL"])
         self.assertEqual(got, ["fire bowl", "fireball"])     # zap: 3 phonemes
 
+    def test_pronunciation_from_the_dictionary_or_the_rules(self):
+        self.assertEqual(inc.pronunciation("Ice-Beam!"), [("ice", "AY S", True), ("beam", "B IY M", True)])
+        self.assertEqual(inc.pronunciation("galick gun"), [("galick", "G AE L IH K", False), ("gun", "G AH N", True)])
+        self.assertEqual(inc.pronunciation(" "), [])
+
+    def test_sound_distance_is_whole_against_whole_over_the_phrases_sounds(self):
+        d = inc.sound_distance
+        self.assertEqual(d("juicy steak", "juicy stake"), 0.0)
+        self.assertEqual(d("fire ball", "Fire-Ball!"), 0.0)
+        self.assertAlmostEqual(d("ice beam", "ice been"), 0.9 / 5)       # IH for IY 0.3, N for M 0.6
+        self.assertAlmostEqual(d("ice beam", "ice beam now"), 2 / 5)     # N AW put in, 1 each
+        self.assertAlmostEqual(d("ice beam", "ice"), 3 / 5)              # B IY M left out, 1 each
+        self.assertAlmostEqual(d("speed dash", "speed ash"), 1 / 7)      # D left out
+        self.assertAlmostEqual(d("ice beam", "nice beam"), 1 / 5)
+        self.assertGreater(d("fire ball", "ice cream"), 0.8)
+
+    def test_checked_variants(self):
+        kept, dropped = inc.checked_variants("ice beam", [
+            "Ice Been", "ice been", "Ice-Beam", "ice beam now please", "nice beam", "fire ball", "", "nice dean",
+            "icebeam", "eyes beam"])
+        self.assertEqual(kept, ["ice been", "nice beam", "icebeam", "eyes beam"])
+        self.assertEqual(dropped, [("ice been", "a repeat"), ("ice beam", "the phrase itself"),
+                                   ("ice beam now please", "6 speech sounds longer"),
+                                   ("fire ball", "sounds unlike it (0.66)"), ("nice dean", "sounds unlike it (0.44)")])
+        # Longer is weighed as a sound put in is (an HH 0.25, an AH 0.5): "come a hammer a ha" is 3
+        # sounds more than CMUdict's K AH M EY AH M EY AH, two of them H, one AH: 1.5. At 3 it goes.
+        self.assertEqual(inc.checked_variants("kamehameha", ["come a hammer ha", "come a hammer a ha",
+                                                             "come uh huh hammer uh huh", "call me hammer ha"]),
+                         (["come a hammer ha", "come a hammer a ha", "come uh huh hammer uh huh"],
+                          [("call me hammer ha", "3 speech sounds longer")]))
+        self.assertEqual(inc.checked_variants("ice beam", ["ice beam yeah", "ice beam yeah ok"])[1],
+                         [("ice beam yeah", "sounds unlike it (0.40)"), ("ice beam yeah ok", "5 speech sounds longer")])
+        self.assertEqual(inc.checked_variants("fire ball", []), ([], []))
+
+    def test_everyday_is_the_marks_among_the_aliases(self):
+        aliases = ["ice been", "ice cream", "i scream", "nice beam", "eyes beam"]
+        self.assertEqual(inc.everyday(aliases, ["Eyes-Beam", "ice cream", "ice cream", "hot fire bowl"]),
+                         ["ice cream", "eyes beam"])
+        self.assertEqual(inc.everyday(aliases, None), [])
+        self.assertEqual(inc.everyday(None, ["ice cream"]), [])
+
     def test_merge_aliases_caps(self):
-        self.assertEqual(len(inc.merge_aliases("fire ball", ["fire bowl %d" % i for i in range(20)])), 12)
+        self.assertEqual(inc.ALIAS_CAP, 24)     # the alias call's 20 beside the code's joined and split forms
+        self.assertEqual(len(inc.merge_aliases("fire ball", ["fire bowl %d" % i for i in range(30)])), 24)
         self.assertEqual(len(inc.merge_aliases("fire ball", ["fire bowl %d" % i for i in range(20)], cap=3)), 3)
 
 

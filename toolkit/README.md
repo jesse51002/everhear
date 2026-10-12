@@ -239,9 +239,10 @@ vfg action run incantation_create player=Steve phrase='fire ball' action=command
     values='{"commands": ["effect give Steve speed 10 2"]}' cooldown_s=5
 vfg action run incantation_edit player=Steve phrase='fire ball' cooldown_s=10   # or values='{…}', aliases='fireball,fire bowl'
 vfg action run incantation_edit player=Steve phrase='beam me' values.length=80 values.player=   # a value a word of its own
+vfg action run incantation_edit player=Steve phrase='ice beam' everyday_aliases='ice cream,i scream'   # everyday_aliases= for none
 vfg action run incantation_remove player=Steve phrase='fire ball'
 vfg incantation list                        # Steve: "fire ball" → command {…} cooldown 5s; aliases fireball, fire bowl
-vfg incantation list --player Steve --json  # what Steve can cast, his own and @a's: [{player, phrase, action, values, cooldown_s, aliases}]
+vfg incantation list --player Steve --json  # what Steve can cast, his own and @a's: [{player, phrase, action, values, cooldown_s, aliases, everyday_aliases}]
 ```
 
 An incantation is a word or a phrase that fires an action the moment its player says it, with
@@ -257,22 +258,52 @@ here (`run_incantation`):
   left out or empty is a caster field, checked with a stand-in name, stored empty and filled
   by the bridge with whoever casts. The entry keeps what was asked, `asked` (the values given,
   caster fields apart), beside `values`, every value a cast runs with. The aliases are the
-  code's (the phrase joined, compound words split) and one `structured()` call's, 12 at most:
-  `VFG_INCANT_ALIAS_MODEL`, by default DeepSeek V4 Flash through its fastest providers (Respond's),
-  reasoning off, 8 s at most (about 1 s and $0.00005); `off` skips it, and a failure is a note.
-  Its prompt is `INCANT_ALIAS_PROMPT` in `vfg`; it also says whether the phrase is everyday talk,
+  code's (the phrase joined, compound words split) and one `structured()` call's, 24 at most:
+  `VFG_INCANT_ALIAS_MODEL`, by default Gemini 3.8 Flash at light thinking (`low`), OpenRouter
+  picking the host, 20 s at most; `off` skips it, and a failure is a note. Its prompt is
+  `INCANT_ALIAS_PROMPT` in `vfg`: the incantation, each word's pronunciation (CMUdict's, in
+  ARPAbet; for a word it lacks, "not in the dictionary (a made-up word)" and the kit's guess from
+  its letters: `incantations.pronunciation`), five rules (the same sounds in the same order with
+  one or two near ones changed, the same length, written as a recognizer writes, never the
+  phrase or a synonym, the likeliest first) and exactly 20 variants (`INCANT_ALIAS_COUNT`), each
+  with its ARPAbet sounds. Then the code checks them (`incantations.checked_variants`) before
+  `merge_aliases`: the phrase itself, repeats, one 3 speech sounds longer than the phrase or
+  more, each sound weighed as Layer 2 weighs one put in (an H 0.25, an "uh" 0.5, any other 1),
+  so a made-up word keeps respellings with H and "uh" sounds ("come may hum may uh"), and one
+  more than 0.35 from it in sound (`sound_distance`: the weighted edit distance of their
+  phonemes, Layer 2's costs, over the phrase's count) are dropped, and so are those under 4
+  speech sounds or past the 24, as before. What was dropped goes in the line's
+  `facts.alias_call.dropped` (`"call me hammer ha: 3 speech sounds longer"`), never in a note.
+  On 2026-10-12 (ten phrases, three runs) it made 20 every time, at a median 6.7 s and at most
+  9.0 s (12.3 s in a later run), $0.0036 a create; 18 to 21 were kept for most phrases, 14 to
+  18 for kamehameha (CMUdict says it in 8 sounds, with no H: 9 to 12 before the length was
+  weighed) and 2 or 3 for heal (one-syllable variants are under 4 sounds). It also says whether the phrase is everyday talk,
   which is a note (`"heal" is everyday talk, so it will fire whenever it is said in
-  conversation.`), and none when the call is off or fails. The call is made while one SSH call
-  reads the store and the bound script's stamps: the bind warnings (a short phrase, with a
-  second word suggested for one word; one that sounds like, or starts like, another of the
-  player's, a one-word phrase found as Layer 2 finds it) and a replaced one are notes, and the
-  bound script and `_lib` are deployed when their stamps say so, as a run would.
+  conversation.`), and none when the call is off or fails. And it flags each variant that is a
+  common phrase of its own, said meaning something else (`common_phrase`: "ice cream", "i
+  scream", "nice beam" and "eyes beam" for ice beam, never "ice been", "juicy stake" or
+  "destroyed everything"): those kept among the aliases, never the code's own, are the entry's
+  `everyday_aliases`, which the bridge leaves out of what the mod's keyword spotter listens for
+  (`GET /v1/incantations`), so ordinary talk does not cast; Layer 2 and the Jev cast check still
+  use them, as speech to text writes "Ice cream." for "ice beam". The store summary names them
+  (`(everyday talk, not spotted: ice cream, i scream)`); none when the call is off or fails. A
+  stray flag on a mishearing ("hi step") only takes it from the spotter. No word list backs it
+  up: in Google Books "destroyed everything" is 23 times as common as "eyes beam". The call is
+  made while one SSH call reads the store and the bound script's stamps: the bind warnings (a
+  short phrase, with a second word suggested for one word; one that sounds like, or starts
+  like, another of the player's, a one-word phrase found as Layer 2 finds it) and a replaced
+  one are notes, and the bound script and `_lib` are deployed when their stamps say so, as a
+  run would.
 - **Edit** reads each player's entry from the box (never the cache), by its player and phrase,
   and changes what is given: the values, checked against its action over the stored ones (a
   player field set empty becomes a caster's, one given a name stops being one) and sent, with
   what was asked, as only the keys given (and the caster fields only when they change), which
   the box merges over what the store holds as it writes, so two edits of different values both
-  land; the cooldown; the aliases, normalised, capped and bind-checked again.
+  land; the cooldown; the aliases, normalised, capped and bind-checked again, keeping the
+  everyday marks still among them; `everyday_aliases=`, the marks replaced whole, each one of
+  its aliases after the edit (one that is not is left out, a note), empty for none. It is not
+  in the action's `takes`, so the brain is not shown it: it is set by hand. An entry from
+  before the marks has none.
 - **Values as words**: `values='{…}'` takes a JSON object, and `values.<name>=<value>` one value,
   a word of its own (Claude Code's permission check refuses a JSON object of two keys or more in
   one word). A word is read once the bound action is known: a field that takes text keeps it as
@@ -292,7 +323,8 @@ here (`run_incantation`):
   "version", "incantations": [entries]}`, while it is younger than `VFG_INCANT_TTL_S` (30 s),
   else fetches the store (`remote/incantations.py`, one SSH call); `--fresh` always fetches,
   and a failed fetch with any cache prints it and warns. Every incantation run writes through.
-  Values show as they differ from the action's own, caster fields as `player=<caster>`.
+  Values show as they differ from the action's own, caster fields as `player=<caster>`, and
+  the everyday aliases after the aliases (`; everyday, not spotted: ice cream, i scream`).
 
 ## The router and the implementer's prompt
 
@@ -363,8 +395,10 @@ names one, with `vfg_llm` mocked, and no OpenRouter key passes in.
 - `test_route.py`: the router, `remote/jev.py` against `fake_jev_route.py`, `vfg prefix`.
 - `test_library.py`: `vfg script new` and `check`, `vfg preset save`, five real presets in one script.
 - `test_incantations.py`: the incantation actions writing the box's store through their real
-  script, the alias call, `values.<name>=` words, a binding following its action after a run,
-  and `vfg incantation list` with its cache; one box for a class.
+  script, the alias call (its prompt, the code's checks) and its everyday aliases (kept,
+  edited, set by hand), `values.<name>=`
+  words, a binding following its action after a run, and `vfg incantation list` with its cache;
+  one box for a class.
 - `test_e2e.py`: a handful with vfg as a process, through `tests/fake_ssh`, which runs the remote
   command here with bash: a command and its SSH options, closed descriptors, and watches
   following the feed.

@@ -24,8 +24,9 @@ import org.slf4j.LoggerFactory;
  * for a line, with the spotter on, the model loaded, and at least one incantation.
  *
  * <p><b>Speech, as the spotter hears it,</b> is its own VAD's ({@link SpotterVad}), which ends it
- * after 0.15 s of silence where the capture's waits 0.35 s; with none loaded it is the capture's
- * flag. Nothing is decoded while nobody speaks.
+ * after 0.15 s of silence where the capture's waits 0.35 s; with none loaded it is the window's
+ * flag. In the mod that flag already is that VAD's answer: the {@link SpeechTap} runs it once on the
+ * capture thread for the spotter and Vosk both. Nothing is decoded while nobody speaks.
  *
  * <p><b>Two ways hear a phrase, and whichever hears it first casts it.</b>
  * <ul>
@@ -73,6 +74,10 @@ import org.slf4j.LoggerFactory;
  * re-check never reaches back past it, a re-check's cast closes the live stream, which the next
  * window reopens with its pre-roll from after that end, and the live stream resets itself after its
  * own hits. So whichever way hears a phrase first casts it, and the other never hears that saying.
+ * The last cast is the player's last, whichever engine cast it: Vosk ({@link VoskWorker}) listens
+ * beside the spotter, and both claim each cast in a {@link CastGate} before posting it. A cast Vosk
+ * claimed moves the reach-back on and closes the live stream, as a re-check's cast does; a hit the
+ * gate refuses (Vosk cast that saying first) is not posted, and counts as cast here.
  *
  * <p><b>A new list</b> rebuilds the keywords; an open stream is replaced at once by one with the
  * new keywords, fed the last 0.64 s again (from after the last cast), so a phrase being said is
@@ -105,9 +110,9 @@ public final class SpotterWorker implements VoicePipeline.Tap {
 	private static final float[] ZEROS = new float[PUSH_SAMPLES];
 	private static final long POLL_MILLIS = 250;
 
-	/** Which way a phrase was heard. */
+	/** Which way a phrase was heard: the spotter's two, or Vosk ({@link VoskWorker}). */
 	public enum Via {
-		RECHECK("the re-check"), STREAM("the stream");
+		RECHECK("the re-check"), STREAM("the stream"), VOSK("vosk");
 
 		private final String words;
 
@@ -143,7 +148,7 @@ public final class SpotterWorker implements VoicePipeline.Tap {
 	private record Held(Keywords.Target target, long startedAt, long endedAt, Via via) {}
 
 	private record Settings(boolean on, double threshold, double boost, double recheckSeconds,
-			List<Incantation> incantations) {}
+			List<Incantation> incantations, int maxAliases) {}
 
 	private record Loaded(KeywordModel model, SpotterVad vad) {
 		void close() {
@@ -156,6 +161,7 @@ public final class SpotterWorker implements VoicePipeline.Tap {
 
 	private final ArrayBlockingQueue<Window> queue = new ArrayBlockingQueue<>(QUEUE_WINDOWS);
 	private final Consumer<Cast> casts;
+	private final CastGate gate;
 	private final AtomicLong dropped = new AtomicLong();
 	private final AtomicReference<Loaded> offered = new AtomicReference<>();
 	private volatile Settings settings;
@@ -197,8 +203,15 @@ public final class SpotterWorker implements VoicePipeline.Tap {
 	 * {@code vfg-kws} and must return at once.
 	 */
 	public SpotterWorker(boolean on, double threshold, double boost, double recheckSeconds, Consumer<Cast> casts) {
+		this(on, threshold, boost, recheckSeconds, new CastGate(), casts);
+	}
+
+	/** With the {@link CastGate} it shares with Vosk. */
+	public SpotterWorker(boolean on, double threshold, double boost, double recheckSeconds, CastGate gate,
+			Consumer<Cast> casts) {
 		this.casts = casts;
-		this.settings = new Settings(on, threshold, boost, recheckSeconds, List.of());
+		this.gate = gate;
+		this.settings = new Settings(on, threshold, boost, recheckSeconds, List.of(), Integer.MAX_VALUE);
 	}
 
 	// --- from any thread ---
@@ -206,7 +219,8 @@ public final class SpotterWorker implements VoicePipeline.Tap {
 	/** The player's incantations, from the bridge; an empty list stops the spotter. */
 	public void setIncantations(List<Incantation> incantations) {
 		Settings s = settings;
-		settings = new Settings(s.on(), s.threshold(), s.boost(), s.recheckSeconds(), List.copyOf(incantations));
+		settings = new Settings(s.on(), s.threshold(), s.boost(), s.recheckSeconds(), List.copyOf(incantations),
+			s.maxAliases());
 	}
 
 	/**
@@ -215,7 +229,26 @@ public final class SpotterWorker implements VoicePipeline.Tap {
 	 */
 	public void configure(boolean on, double threshold, double boost, double recheckSeconds) {
 		Settings s = settings;
-		settings = new Settings(on, threshold, boost, recheckSeconds, s.incantations());
+		settings = new Settings(on, threshold, boost, recheckSeconds, s.incantations(), s.maxAliases());
+	}
+
+	/**
+	 * The config's {@code incantation_spotter_aliases}: how many of each incantation's aliases, the
+	 * first, the spotter listens for (the bridge lists them likeliest first, up to 24).
+	 */
+	public void maxAliases(int max) {
+		Settings s = settings;
+		settings = new Settings(s.on(), s.threshold(), s.boost(), s.recheckSeconds(), s.incantations(), Math.max(0, max));
+	}
+
+	/** Each incantation with its first {@code max} aliases only. */
+	static List<Incantation> firstAliases(List<Incantation> incantations, int max) {
+		List<Incantation> out = new ArrayList<>(incantations.size());
+		for (Incantation inc : incantations) {
+			out.add(inc.aliases().size() <= max ? inc
+				: new Incantation(inc.phrase(), inc.aliases().subList(0, max), inc.cooldownSeconds()));
+		}
+		return out;
 	}
 
 	/** The loaded model, with no VAD of the spotter's own; the worker owns it from now on. */
@@ -345,6 +378,7 @@ public final class SpotterWorker implements VoicePipeline.Tap {
 	/** Handles one window, or {@code null} after a wait with none; on {@code vfg-kws}, or a test's thread. */
 	public void step(Window w) {
 		refresh();
+		followOtherCasts();
 		if (w == null) {
 			if (!forLine) {
 				endAudio();
@@ -414,7 +448,8 @@ public final class SpotterWorker implements VoicePipeline.Tap {
 		ringWindows = Math.max(PRE_ROLL_WINDOWS, (recheckSamples + SpeechEngine.WINDOW - 1) / SpeechEngine.WINDOW);
 		trimRing();
 		Keywords before = keywords;
-		keywords = s.on() ? Keywords.build(s.incantations(), model.pieces(), model.tokens(), s.threshold(), s.boost())
+		keywords = s.on() ? Keywords.build(firstAliases(s.incantations(), s.maxAliases()), model.pieces(), model.tokens(),
+			s.threshold(), s.boost())
 			: Keywords.NONE;
 		if (keywords.spec().equals(before.spec())) {
 			return;
@@ -543,6 +578,7 @@ public final class SpotterWorker implements VoicePipeline.Tap {
 		if (recheckSamples == 0 || !(speaking || every) || model == null || keywords.isEmpty() || ring.isEmpty()) {
 			return;
 		}
+		followOtherCasts();
 		Slot newest = ring.getLast();
 		if (newest.end() == rechecked) {
 			return;
@@ -667,6 +703,7 @@ public final class SpotterWorker implements VoicePipeline.Tap {
 	 */
 	private void cast(Keywords.Target target, long firstToken, long lastFrameEnd, long streamFirst, Via via,
 			boolean startsAnother) {
+		followOtherCasts();
 		long newest = clock.totalSamples() - 1;
 		long startedAt = clock.instantOf(Math.min(newest, Math.max(streamFirst, firstToken - START_LEAD_MILLIS
 			* SAMPLES_PER_MS)));
@@ -692,7 +729,8 @@ public final class SpotterWorker implements VoicePipeline.Tap {
 	}
 
 	/**
-	 * Sends a cast. A re-check's closes the live stream, which has that saying in it too, to reopen
+	 * Sends a cast, unless the gate refuses it: Vosk cast that saying first. Either way it counts as
+	 * cast here. A re-check's closes the live stream, which has that saying in it too, to reopen
 	 * from after its end; the live stream resets itself after its own hits.
 	 */
 	private void send(Keywords.Target target, long startedAt, long endedAt, Via via) {
@@ -700,8 +738,37 @@ public final class SpotterWorker implements VoicePipeline.Tap {
 		if (via == Via.RECHECK) {
 			closeStream();
 		}
+		if (!gate.claim(target.phrase(), startedAt, endedAt, via)) {
+			LOG.debug("keyword spotter: \"{}\" heard by {}, cast already by vosk", target.phrase(), via.words());
+			return;
+		}
 		casts.accept(new Cast(target.phrase(), target.heard(), startedAt, endedAt,
 			clock.instantOf(clock.totalSamples() - 1), via));
+	}
+
+	/**
+	 * Takes up a cast the other engine made since: the reach-back moves on to its end, less a margin
+	 * for Vosk's estimated one ({@link CastGate#reachBack}), and the live stream, which may have that
+	 * saying in it, closes, to reopen from after it with the next window.
+	 * A held hit whose words are in such a cast's phrase, over its sound ("fire" when Vosk heard
+	 * "fire ball"), is dropped, as it is for the spotter's own longer phrase.
+	 */
+	private void followOtherCasts() {
+		long other = gate.reachBack();
+		if (other <= lastCastEnd) {
+			return;
+		}
+		if (held != null) {
+			for (CastGate.Claim c : gate.claims()) {
+				if (c.via() == Via.VOSK && c.endedAt() > lastCastEnd && c.startedAt() < held.endedAt()
+						&& c.endedAt() >= held.startedAt() && CastGate.related(c.phrase(), held.target().phrase())) {
+					held = null;
+					break;
+				}
+			}
+		}
+		lastCastEnd = other;
+		closeStream();
 	}
 
 	/** Casts the held hit when speech has ended or {@link #HOLD_MILLIS} have passed with no longer phrase. */

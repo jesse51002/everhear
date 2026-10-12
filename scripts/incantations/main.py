@@ -32,13 +32,16 @@ def word(x):
 
 
 def change(old, new):
-    """What an update changed, each in words: cooldown 5 s; aliases fireball, fire bowl; power=4;
-    a value a replacing update dropped, `speed gone`. Empty when it changed nothing."""
+    """What an update changed, each in words: cooldown 5 s; aliases fireball, fire bowl; everyday
+    aliases fire bowl; power=4; a value a replacing update dropped, `speed gone`. Empty when it
+    changed nothing."""
     bits = []
     if old.get("cooldown_s") != new.get("cooldown_s"):
         bits.append("cooldown %s s" % word(new.get("cooldown_s")))
     if old.get("aliases") != new.get("aliases"):
         bits.append("aliases " + (", ".join(new.get("aliases") or []) or "none"))
+    if (old.get("everyday_aliases") or []) != (new.get("everyday_aliases") or []):
+        bits.append("everyday aliases " + (", ".join(new.get("everyday_aliases") or []) or "none"))
     was, now = old.get("values") or {}, new.get("values") or {}
     for k in sorted(now):
         if was.get(k) != now[k]:
@@ -110,6 +113,8 @@ if op == "put":
     summary = 'stored "%s" for %s: %s' % (phrase, players, done[0]["action"])
     if done[0].get("aliases"):
         summary += ", aliases " + ", ".join(done[0]["aliases"])
+    if done[0].get("everyday_aliases"):
+        summary += " (everyday talk, not spotted: %s)" % ", ".join(done[0]["everyday_aliases"])
     if replaced:
         summary += "; it replaced the one %s had" % names(e["player"] for e in replaced)
         facts["replaced"] = [e["id"] for e in replaced]

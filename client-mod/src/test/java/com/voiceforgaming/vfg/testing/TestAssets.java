@@ -2,6 +2,7 @@ package com.voiceforgaming.vfg.testing;
 
 import com.voiceforgaming.vfg.kws.Spotter;
 import com.voiceforgaming.vfg.kws.SpotterVad;
+import com.voiceforgaming.vfg.kws.Vosk;
 import com.voiceforgaming.vfg.setup.AssetInstaller;
 import com.voiceforgaming.vfg.setup.Assets;
 import com.voiceforgaming.vfg.speech.SpeechEngine;
@@ -120,6 +121,21 @@ public final class TestAssets {
 	/** The spotter's own VAD as the mod loads it, on the VAD file {@link #engine} installs; load the engine first. */
 	public static SpotterVad spotterVad(double threshold) {
 		return Spotter.vad(nativesDir(), Assets.folder(root(), Assets.vad()).resolve(Assets.VAD_FILE), threshold);
+	}
+
+	/** Installs (once) Vosk's model through the mod's installer, and returns its folder. */
+	public static Path voskModelDir() throws Exception {
+		return installer().install(Assets.vosk());
+	}
+
+	/** Installs (once) this PC's Vosk library through the mod's installer, and returns its folder. */
+	public static Path voskNativesDir() throws Exception {
+		return installer().install(Assets.voskNatives(Assets.currentPlatform()));
+	}
+
+	/** Installs (once) and loads Vosk's library and model as the mod does. */
+	public static Vosk vosk() throws Exception {
+		return Vosk.load(voskNativesDir(), voskModelDir());
 	}
 
 	/** A pinned extra file, fetched once into {@code downloads/} through the mod's installer. */

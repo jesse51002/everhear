@@ -19,6 +19,7 @@ import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -32,19 +33,21 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
- * The keyword spotter on real speech: the keyword model installed through the mod's own
- * installer, Kokoro TTS takes (kept in the test assets), the spotter's own Silero VAD saying when
- * there is speech, and the mod's {@link SpotterWorker}, fed 32 ms windows as the capture thread
- * feeds it, faster than real time, the clock following the sample count.
+ * The keyword spotter and Vosk on real speech: the keyword model and Vosk's installed through the
+ * mod's own installer, Kokoro TTS takes (kept in the test assets), the spotter's own Silero VAD
+ * saying when there is speech (and another for Vosk), and the mod's {@link SpotterWorker} and
+ * {@link VoskWorker}, sharing a {@link CastGate}, fed 32 ms windows as the capture thread feeds
+ * them, faster than real time, the clock following the sample count.
  *
  * <p>{@code vfg-kws} is played on that clock too: a turn of it (every window waiting, then a
  * re-check) starts when the thread is free and a window is waiting, and lasts as long as it took
  * here, so a window that comes while a re-check runs waits for it, as in the mod, and a cast is
- * heard when its turn got that far, its compute included. Latency is from the end of the phrase's
- * sound to then.
+ * heard when its turn got that far, its compute included. {@code vfg-vosk} is played the same way,
+ * as a thread of its own. Latency is from the end of the phrase's sound to then.
  *
- * <p>Each case runs two ways: the mod's ({@link #MOD}: re-checks over 3 s beside the live stream)
- * and the live stream alone, pushed at the end of speech ({@link #STREAM}:
+ * <p>Each case runs three ways: the mod's ({@link #MOD}: re-checks over 3 s beside the live stream,
+ * and Vosk beside the spotter), the spotter alone ({@link #SPOTTER}: {@code vosk: false}), and the
+ * live stream alone, pushed at the end of speech ({@link #STREAM}:
  * {@code incantation_recheck_seconds: 0}). It checks the bars that are certain (Prototype_Fast_Casts:
  * a median at most 0.1 s and a 90th percentile at most 0.2 s after the phrase ends; "fire ball"
  * heard at least as often as before the re-check, alone and in sentences; no cast in the ordinary
@@ -60,20 +63,30 @@ class SpotterEngineTest {
 	private static final double THRESHOLD = VfgConfig.DEFAULT_INCANTATION_THRESHOLD;
 	private static final double BOOST = VfgConfig.DEFAULT_INCANTATION_BOOST;
 
-	/** How the spotter runs: how far a re-check reaches back (0: none), and the silence it keeps (-1: all). */
-	record Way(String name, double recheckSeconds, int leadWindows) {
+	/**
+	 * How the spotter runs: how far a re-check reaches back (0: none), the silence it keeps (-1: all),
+	 * and whether Vosk listens beside it.
+	 */
+	record Way(String name, double recheckSeconds, int leadWindows, boolean vosk) {
+		Way(String name, double recheckSeconds, int leadWindows) {
+			this(name, recheckSeconds, leadWindows, false);
+		}
+
 		@Override
 		public String toString() {
 			return name;
 		}
 	}
 
-	/** The mod's: re-checks over 3 s beside the live stream. */
-	static final Way MOD = new Way("re-checks over 3 s and the stream", VfgConfig.DEFAULT_INCANTATION_RECHECK_SECONDS,
-		SpotterWorker.LEAD_WINDOWS);
-	/** {@code incantation_recheck_seconds: 0}: the live stream alone, pushed at the end of speech. */
-	static final Way STREAM = new Way("the stream alone", 0, SpotterWorker.LEAD_WINDOWS);
-	static final List<Way> WAYS = List.of(MOD, STREAM);
+	/** The mod's: re-checks over 3 s beside the live stream, and Vosk beside the spotter. */
+	static final Way MOD = new Way("re-checks over 3 s, the stream and Vosk", VfgConfig.DEFAULT_INCANTATION_RECHECK_SECONDS,
+		SpotterWorker.LEAD_WINDOWS, true);
+	/** {@code vosk: false}: the spotter alone, re-checks over 3 s beside the live stream. */
+	static final Way SPOTTER = new Way("the spotter alone (re-checks and the stream)",
+		VfgConfig.DEFAULT_INCANTATION_RECHECK_SECONDS, SpotterWorker.LEAD_WINDOWS, false);
+	/** {@code incantation_recheck_seconds: 0} and {@code vosk: false}: the live stream alone, pushed at the end of speech. */
+	static final Way STREAM = new Way("the stream alone", 0, SpotterWorker.LEAD_WINDOWS, false);
+	static final List<Way> WAYS = List.of(MOD, SPOTTER, STREAM);
 
 	/**
 	 * Before the re-check (the stream alone, with no push), on 2026-10-11: "fire ball" said alone was
@@ -138,6 +151,8 @@ class SpotterEngineTest {
 	static final String MID_LINE = "Fire ball on that zombie now.";
 	static final int[] TALK_SECONDS = {0, 4, 8, 12};
 	static final int[] TALK_VOICES = {0, 3, 6, 9};
+	/** The voices fast speech is said in. */
+	static final int[] FAST_VOICES = {0, 3, 6, 9};
 
 	/** One-word phrases, as the spec measured them. */
 	static final Incantation FIREBALL = new Incantation("fireball", List.of("fire ball"), 3);
@@ -152,6 +167,7 @@ class SpotterEngineTest {
 	private static SpeechEngine engine;
 	private static Spotter model;
 	private static SpotterVad vad;
+	private static Vosk vosk;
 	private static KokoroTakes takes;
 	private static Path out;
 	private static final Map<Way, Stats> STATS = new LinkedHashMap<>();
@@ -166,6 +182,7 @@ class SpotterEngineTest {
 		final List<Double> endErrors = new ArrayList<>();
 		final List<Double> recheckMillis = new ArrayList<>();
 		long nanos;
+		long voskNanos;
 		double seconds;
 		double speech;
 		int twice;
@@ -177,6 +194,9 @@ class SpotterEngineTest {
 		long t0 = System.nanoTime();
 		model = TestAssets.spotter();
 		vad = TestAssets.spotterVad(VfgConfig.DEFAULT_VAD_THRESHOLD);
+		long v0 = System.nanoTime();
+		vosk = TestAssets.vosk();
+		long voskMillis = (System.nanoTime() - v0) / 1_000_000;
 		takes = new KokoroTakes();
 		out = Path.of("build/kws-test").toAbsolutePath();
 		String dir = System.getProperty("vfg.kwsOut");
@@ -188,8 +208,9 @@ class SpotterEngineTest {
 		for (Way way : WAYS) {
 			STATS.put(way, new Stats());
 		}
-		say("keyword model loaded in %d ms (threshold %s, boost %s, %d trailing blank frames); the two ways: %s",
-			(System.nanoTime() - t0) / 1_000_000, THRESHOLD, BOOST, model.trailingBlanks(), WAYS);
+		say("keyword model loaded in %d ms (threshold %s, boost %s, %d trailing blank frames, max_active_paths %d),"
+			+ " Vosk in %d ms; the three ways: %s", (System.nanoTime() - t0) / 1_000_000 - voskMillis, THRESHOLD, BOOST,
+			model.trailingBlanks(), Spotter.MAX_ACTIVE_PATHS, voskMillis, WAYS);
 	}
 
 	@AfterAll
@@ -206,11 +227,12 @@ class SpotterEngineTest {
 				+ " %d sayings cast twice", e.getKey(), median(s.latencies), p90(s.latencies), Collections.min(s.latencies),
 				Collections.max(s.latencies), s.latencies.size(), median(s.clockLatencies), median(s.startErrors),
 				median(s.endErrors), s.twice);
-			say("  CPU: %.3f of one core over %.0f s of audio, %.3f while someone speaks (%.0f s of speech)%s",
-				s.nanos / 1e9 / s.seconds, s.seconds, s.nanos / 1e9 / s.speech, s.speech, s.recheckMillis.isEmpty() ? ""
-					: String.format(Locale.ROOT, "; %d re-checks, median %.1f ms, 90th percentile %.1f ms, %.1f a second"
-						+ " of speech", s.recheckMillis.size(), median(s.recheckMillis), p90(s.recheckMillis),
-						s.recheckMillis.size() / s.speech));
+			say("  CPU: %.3f of one core over %.0f s of audio, %.3f while someone speaks (%.0f s of speech)%s%s",
+				s.nanos / 1e9 / s.seconds, s.seconds, s.nanos / 1e9 / s.speech, s.speech, s.voskNanos == 0 ? ""
+					: String.format(Locale.ROOT, "; Vosk's part %.3f while someone speaks", s.voskNanos / 1e9 / s.speech),
+				s.recheckMillis.isEmpty() ? "" : String.format(Locale.ROOT, "; %d re-checks, median %.1f ms, 90th"
+					+ " percentile %.1f ms, %.1f a second of speech", s.recheckMillis.size(), median(s.recheckMillis),
+					p90(s.recheckMillis), s.recheckMillis.size() / s.speech));
 		}
 		if (naiveSeconds > 0) {
 			say("CPU, every window decoded (one stream throughout): %.4f of real time (%.1f s of audio in %d ms)",
@@ -221,6 +243,9 @@ class SpotterEngineTest {
 		}
 		if (vad != null) {
 			vad.close();
+		}
+		if (vosk != null) {
+			vosk.close();
 		}
 		if (model != null) {
 			model.close();
@@ -389,12 +414,15 @@ class SpotterEngineTest {
 
 	/**
 	 * Every incantation bound at once, over ordinary requests, and over near misses with a phrase's
-	 * words in them: every cast is a false one, and the mod's way makes none.
+	 * words in them: every cast is a false one. The spotter makes none; with Vosk, none in the ordinary
+	 * requests, and the near misses are reported: Vosk casts from its partial text, which can show a
+	 * phrase's words together for a moment ("Throw the ball into the fire.").
 	 */
 	@Test
 	void noFalseCastsOnSentencesWithoutAPhrase() throws Exception {
 		for (Way way : WAYS) {
 			int total = 0;
+			int ordinary = 0;
 			for (Object[][] set : new Object[][][] {ORDINARY, NEAR_MISSES}) {
 				SpeechTimeline t = sentences(set);
 				Heard h = listen(t, ALL, model, THRESHOLD, BOOST, way);
@@ -403,13 +431,17 @@ class SpotterEngineTest {
 					which.add("\"" + c.heard() + "\" in \"" + sentenceAt(t, c) + "\"");
 				}
 				total += h.casts().size();
+				ordinary += set == ORDINARY ? h.casts().size() : 0;
 				say("%n== %s: false casts: %d %s, %s bound ==%n%d false casts in %.0f s of audio%s", way, set.length,
 					set == ORDINARY ? "ordinary requests" : "near misses (" + Arrays.stream(set).map(o -> (String) o[0])
 						.toList() + ")", ALL.stream().map(Incantation::phrase).toList(), h.casts().size(), h.seconds(),
 					which.isEmpty() ? "" : ": " + String.join(", ", which));
 			}
-			if (way == MOD) {
+			if (way == SPOTTER) {
 				assertEquals(0, total, "false casts with the re-check");
+			}
+			if (way == MOD) {
+				assertEquals(0, ordinary, "false casts in ordinary requests, with Vosk");
 			}
 		}
 	}
@@ -417,8 +449,8 @@ class SpotterEngineTest {
 	/**
 	 * sherpa-onnx issue #3990: a stream in silence resets itself every ~1.6 s and drops the start of
 	 * a keyword said just then. "Fire ball" after 1.0 to 2.0 s of silence, in 0.05 s steps, two voices:
-	 * the plain way (one stream, every window decoded) against the mod's two ways. Reported, and
-	 * neither may miss more.
+	 * the plain way (one stream, every window decoded) against the three ways. Reported, and none
+	 * may miss more.
 	 */
 	@Test
 	void aPhraseAfterAPauseIsHeard() throws Exception {
@@ -700,7 +732,8 @@ class SpotterEngineTest {
 		say("%n== sweep, the stream alone: hits of fire ball alone /11, in a sentence /12, kamehameha /22; false casts"
 			+ " in 16 ordinary requests and 6 near misses ==");
 		for (int trailing : new int[] {1, 2}) {
-			try (Spotter m = Spotter.load(TestAssets.nativesDir(), TestAssets.kwsModelDir(), trailing)) {
+			try (Spotter m = Spotter.load(TestAssets.nativesDir(), TestAssets.kwsModelDir(), trailing,
+					Spotter.MAX_ACTIVE_PATHS)) {
 				for (double threshold : new double[] {0.1, 0.15, 0.2, 0.25, 0.35}) {
 					for (double boost : new double[] {1.0, 1.5, 2.0, 3.0}) {
 						int alone = 0;
@@ -797,6 +830,94 @@ class SpotterEngineTest {
 		}
 	}
 
+	/**
+	 * Vosk's vocabulary, read from the model's own language model, is the one Vosk checks a grammar
+	 * against; the shipped filler words are all in it, and a made-up word is not.
+	 */
+	@Test
+	void voskKnowsItsWordsAndAPhraseWithAnotherIsLeftToTheSpotter() throws Exception {
+		Set<String> words = VoskVocabulary.read(TestAssets.voskModelDir());
+		assertEquals(152_217, words.size());
+		for (String w : List.of("fireball", "fire", "ball", "kamehameha", "creeper", "zombie", "gonna")) {
+			assertTrue(vosk.knows(w), w);
+		}
+		for (String w : List.of("galick", "rasengan", "fireballz")) {
+			assertTrue(!vosk.knows(w), w);
+		}
+		List<String> fillers = VoskGrammar.fillers();
+		assertTrue(fillers.stream().allMatch(vosk::knows), "every shipped filler is a word Vosk knows");
+		VoskGrammar g = VoskGrammar.build(ALL, vosk::knows, fillers);
+		assertEquals(List.of("fire ball", "kamehameha", "ice wall"), g.phrases());
+		assertEquals(List.of(new VoskGrammar.LeftOut("galick gun", List.of("galick"))), g.leftOut());
+		say("%n== Vosk: %d words in vocabulary; for %s it listens for %s among %d common words, and leaves %s to the"
+			+ " spotter ==", words.size(), ALL.stream().map(Incantation::phrase).toList(), g.phrases(), g.fillerCount(),
+			g.leftOut());
+	}
+
+	/** After a reset, Vosk's times go on counting every sample it was fed, as the worker counts them. */
+	@Test
+	void aResetRecognizerGoesOnCountingItsTimes() throws Exception {
+		VoskGrammar g = VoskGrammar.build(List.of(FIRE_BALL), vosk::knows, VoskGrammar.fillers());
+		float[] audio = alone("Fire ball!", 2).at16k();
+		short[] pcm = VoskWorker.pcm(audio, 0);
+		try (VoskModel.Recognizer r = vosk.recognizer(g.json())) {
+			r.accept(pcm);
+			r.reset();
+			List<VoskModel.Word> words = new ArrayList<>();
+			short[] piece = new short[512];
+			for (int off = 0; off < pcm.length + 3 * 16000 && words.isEmpty(); off += 512) {
+				java.util.Arrays.fill(piece, (short) 0);
+				if (off < pcm.length) {
+					System.arraycopy(pcm, off, piece, 0, Math.min(512, pcm.length - off));
+				}
+				if (r.accept(piece)) {
+					words.addAll(r.result());
+				}
+			}
+			assertTrue(!words.isEmpty(), "heard nothing");
+			double first = words.getFirst().start();
+			double fed = pcm.length / 16000.0;
+			assertTrue(first > fed && first < 2 * fed, "first word at " + first + " s, after the " + fed + " s before the reset");
+		}
+	}
+
+	/**
+	 * The two-word phrases said alone and ending a sentence, sped up 1.6 and 2 times, in four voices:
+	 * what Vosk adds. Reported.
+	 */
+	@Test
+	void fastSpeechIsCounted() throws Exception {
+		for (float speed : new float[] {1.6f, 2.0f}) {
+			for (Way way : WAYS) {
+				int hits = 0;
+				int tries = 0;
+				int twice = 0;
+				int byVosk = 0;
+				List<Double> latencies = new ArrayList<>();
+				for (Incantation inc : TIMED) {
+					for (int voice : FAST_VOICES) {
+						for (String text : said(inc)) {
+							SpeechTimeline t = new SpeechTimeline().silence(1.0)
+								.speech(text, List.of(), takes.say(text, voice, speed)).silence(1.5);
+							Heard h = listen(t, List.of(inc), model, THRESHOLD, BOOST, way);
+							List<Integer> mine = castsOf(h, inc.phrase());
+							tries++;
+							twice += mine.size() > 1 ? 1 : 0;
+							if (!mine.isEmpty()) {
+								hits++;
+								byVosk += h.casts().get(mine.getFirst()).via() == SpotterWorker.Via.VOSK ? 1 : 0;
+								latencies.add(heardSeconds(t.clips().getFirst(), h, mine.getFirst()));
+							}
+						}
+					}
+				}
+				say("%n== %s: the two-word phrases alone and ending a sentence at %.1f times Kokoro's speed ==%n%d of %d"
+					+ " heard (%d first by Vosk), %d cast twice; after the phrase ends: median %+.2f s, 90th percentile"
+					+ " %+.2f s", way, speed, hits, tries, byVosk, twice, median(latencies), p90(latencies));
+			}
+		}
+	}
+
 	// --- the harness ---
 
 	/** A phrase said alone, then ending two sentences, as the spec's measurements said it. */
@@ -848,88 +969,143 @@ class SpotterEngineTest {
 	/**
 	 * Plays a timeline at 16 kHz through the capture's VAD (a {@link CaptureProcessor} on the real
 	 * engine) and a {@link SpotterWorker} with the spotter's own VAD, 32 ms at a time, as the capture
-	 * thread does, with {@code vfg-kws} played on the audio clock (see the class comment). The way's
-	 * statistics take its time unless {@code recheckMillis} is given, which takes each re-check's.
+	 * thread does, with {@code vfg-kws} played on the audio clock (see the class comment); and, when
+	 * the way has Vosk, a {@link VoskWorker} with its own VAD beside it, sharing a {@link CastGate}, with
+	 * {@code vfg-vosk} played on the same clock as a thread of its own. The way's statistics take
+	 * their time unless {@code recheckMillis} is given, which takes each re-check's.
 	 */
 	static Heard listen(SpeechTimeline t, List<Incantation> list, KeywordModel m, double threshold, double boost,
 			Way way, List<Double> recheckMillis) {
 		float[] audio = t.at16k();
 		List<SpotterWorker.Cast> casts = new ArrayList<>();
-		List<Long> castNanos = new ArrayList<>();
-		SpotterWorker worker = new SpotterWorker(true, threshold, boost, way.recheckSeconds(), c -> {
-			casts.add(c);
-			castNanos.add(System.nanoTime());
-		});
-		worker.setModel(kept(m), kept(vad));
+		List<Double> heardAt = new ArrayList<>();
+		CastGate gate = new CastGate();
+		Turns kws = new Turns(casts, heardAt);
+		SpotterWorker worker = new SpotterWorker(true, threshold, boost, way.recheckSeconds(), gate, kws::cast);
+		worker.setModel(kept(m), null); // speech from the one VAD below, as the mod's SpeechTap gives it
 		worker.leadWindows(way.leadWindows());
 		Stats stats = recheckMillis == null ? STATS.get(way) : null;
 		List<Double> rechecks = recheckMillis != null ? recheckMillis : stats.recheckMillis;
 		worker.recheckTimes(n -> rechecks.add(n / 1e6));
 		worker.setIncantations(list);
 		worker.onStarted(true);
+		kws.drain = worker::drainNow;
+		VoskWorker voskWorker = null;
+		Turns voskTurns = null;
+		if (way.vosk()) {
+			voskTurns = new Turns(casts, heardAt);
+			voskWorker = new VoskWorker(true, gate, voskTurns::cast);
+			voskWorker.setModel(kept(vosk), null, VoskGrammar.fillers());
+			voskWorker.setIncantations(list);
+			voskWorker.onStarted(true);
+			voskTurns.drain = voskWorker::drainNow;
+		}
+		// at the same instant, Vosk's turn first: it takes a millisecond, a re-check tens
+		List<Turns> threads = voskTurns == null ? List.of(kws) : List.of(voskTurns, kws);
 		CaptureProcessor capture = new CaptureProcessor(() -> engine, item -> {});
 		capture.onStarted(true);
-		KwsThread kws = new KwsThread(worker, casts, castNanos);
+		vad.reset(); // the SpeechTap resets it as capture starts
 		long samples = 0;
 		for (int off = 0; off + SpeechEngine.WINDOW <= audio.length; off += SpeechEngine.WINDOW) {
 			float[] w = Arrays.copyOfRange(audio, off, off + SpeechEngine.WINDOW);
 			samples += w.length;
 			double arrives = samples / 16000.0;
-			if (kws.waiting > 0 && kws.free < arrives) {
-				kws.turn(kws.free); // free before this window came: it takes what waits
+			List<Turns> free = new ArrayList<>();
+			for (Turns th : threads) {
+				if (th.waiting > 0 && th.free < arrives) {
+					free.add(th); // free before this window came: it takes what waits
+				}
+			}
+			free.sort(Comparator.comparingDouble(th -> th.free));
+			for (Turns th : free) {
+				th.turn(th.free);
 			}
 			long wall = T0 + samples * 1000 / 16000;
 			capture.onWindow(w, wall);
-			worker.onWindow(w, wall, capture.speaking());
-			kws.waiting++;
-			if (kws.free <= arrives) {
-				kws.turn(arrives);
+			boolean speaking = vad.speaking(w); // the SpeechTap's one VAD, on the capture thread, for both
+			worker.onWindow(w, wall, speaking);
+			if (voskWorker != null) {
+				voskWorker.onWindow(w, wall, speaking);
+			}
+			for (Turns th : threads) {
+				th.waiting++;
+				if (th.free <= arrives) {
+					th.turn(arrives);
+				}
 			}
 		}
-		while (kws.waiting > 0) {
-			kws.turn(kws.free);
+		while (true) {
+			Turns next = null;
+			for (Turns th : threads) {
+				if (th.waiting > 0 && (next == null || th.free < next.free)) {
+					next = th;
+				}
+			}
+			if (next == null) {
+				break;
+			}
+			next.turn(next.free);
 		}
 		worker.onStopped(StopReason.DISCARD);
-		capture.onStopped(StopReason.DISCARD);
 		worker.shutdown(0);
+		if (voskWorker != null) {
+			voskWorker.onStopped(StopReason.DISCARD);
+			voskWorker.shutdown(0);
+		}
+		capture.onStopped(StopReason.DISCARD);
 		double seconds = audio.length / 16000.0;
+		long voskNanos = voskTurns == null ? 0 : voskTurns.nanos;
 		if (stats != null) {
-			stats.nanos += kws.nanos;
+			stats.nanos += kws.nanos + voskNanos;
+			stats.voskNanos += voskNanos;
 			stats.seconds += seconds;
 			for (SpeechTimeline.Clip c : t.clips()) {
 				stats.speech += SpeechTimeline.millisOf(c.end() - c.start()) / 1000.0;
 			}
 		}
-		return new Heard(casts, kws.heardAt, kws.nanos, seconds);
+		// in the order heard
+		List<Integer> order = new ArrayList<>();
+		for (int i = 0; i < casts.size(); i++) {
+			order.add(i);
+		}
+		order.sort(Comparator.comparingDouble(heardAt::get));
+		return new Heard(order.stream().map(casts::get).toList(), order.stream().map(heardAt::get).toList(),
+			kws.nanos + voskNanos, seconds);
 	}
 
-	/** {@code vfg-kws} on the audio clock: busy until {@code free}, with {@code waiting} windows queued. */
-	private static final class KwsThread {
-		final SpotterWorker worker;
+	/** A worker's thread on the audio clock: busy until {@code free}, with {@code waiting} windows queued. */
+	private static final class Turns {
 		final List<SpotterWorker.Cast> casts;
-		final List<Long> castNanos;
-		final List<Double> heardAt = new ArrayList<>();
+		final List<Double> heardAt;
+		final List<SpotterWorker.Cast> made = new ArrayList<>();
+		final List<Long> madeNanos = new ArrayList<>();
+		Runnable drain;
 		double free;
 		int waiting;
 		long nanos;
 
-		KwsThread(SpotterWorker worker, List<SpotterWorker.Cast> casts, List<Long> castNanos) {
-			this.worker = worker;
+		Turns(List<SpotterWorker.Cast> casts, List<Double> heardAt) {
 			this.casts = casts;
-			this.castNanos = castNanos;
+			this.heardAt = heardAt;
+		}
+
+		void cast(SpotterWorker.Cast c) {
+			made.add(c);
+			madeNanos.add(System.nanoTime());
 		}
 
 		/**
-		 * A turn starting at {@code at} seconds: every window waiting, then a re-check; each cast is
-		 * heard as far into the turn as it came.
+		 * A turn starting at {@code at} seconds: every window waiting (then, for the spotter, a
+		 * re-check); each cast is heard as far into the turn as it came.
 		 */
 		void turn(double at) {
-			int before = casts.size();
+			int before = made.size();
 			long a = System.nanoTime();
-			worker.drainNow();
+			drain.run();
 			long spent = System.nanoTime() - a;
-			for (int i = before; i < casts.size(); i++) {
-				heardAt.add(at + (castNanos.get(i) - a) / 1e9);
+			for (int i = before; i < made.size(); i++) {
+				casts.add(made.get(i));
+				heardAt.add(at + (madeNanos.get(i) - a) / 1e9);
 			}
 			nanos += spent;
 			free = at + spent / 1e9;
@@ -992,6 +1168,24 @@ class SpotterEngineTest {
 			@Override
 			public int trailingBlanks() {
 				return m.trailingBlanks();
+			}
+
+			@Override
+			public void close() {}
+		};
+	}
+
+	/** Vosk, shared the same way. */
+	static VoskModel kept(VoskModel v) {
+		return new VoskModel() {
+			@Override
+			public Recognizer recognizer(String grammarJson) {
+				return v.recognizer(grammarJson);
+			}
+
+			@Override
+			public boolean knows(String word) {
+				return v.knows(word);
 			}
 
 			@Override

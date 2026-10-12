@@ -314,7 +314,7 @@ class TestRepeats(CastCase):
         self.cast(start=-2.0)  # fired: its window is -2.0 .. -1.4
         self.clock.advance(0.5)
         # its long line (-2.0 .. +1.8) holds a transcript cast that did not fire
-        self.line("fire ball and build me a wall now", start=-2.5, length=3.8)
+        self.line("fire ball and build a wall", start=-2.5, length=3.8)
         self.clock.advance(3.0)  # past the cooldown: the next words, said at +1.6 .. +2.2
         self.assertEqual(self.cast(start=-1.9)[1]["status"], "fired")
         self.assertEqual(self.rows("SELECT layer, status FROM casts ORDER BY at"),
@@ -376,6 +376,17 @@ class TestList(CastCase):
         self.assertEqual(doc["incantations"][0], {"phrase": "fire ball", "aliases": [], "cooldown_s": 3.0})
         self.assertEqual([e["phrase"] for e in self.get("player=Notch")[1]["incantations"]], ["light up"])
         self.assertEqual(self.get("player=Steve&after=0")[0], 200)  # another version: at once
+
+    def test_the_everyday_aliases_are_left_out_for_the_spotter(self):
+        ice = entry("Steve", "ice beam", aliases=["ice been", "ice cream", "i scream", "nice beam"],
+                    everyday_aliases=["ice cream", "I Scream"])
+        self.write_store(ice, entry("Steve", "fire ball", aliases=["fireball", "fire bowl"]),
+                         entry("@a", "juicy steak", aliases=["juicy stake"], everyday_aliases=[]))
+        got = dict((e["phrase"], e["aliases"]) for e in self.get("player=Steve")[1]["incantations"])
+        self.assertEqual(got, {"ice beam": ["ice been", "nice beam"], "fire ball": ["fireball", "fire bowl"],
+                               "juicy steak": ["juicy stake"]})  # one from before the marks: all of them
+        self.assertEqual(self.get("player=Steve")[1]["incantations"][0],
+                         {"phrase": "ice beam", "aliases": ["ice been", "nice beam"], "cooldown_s": 3.0})
 
     def test_304_when_nothing_changes(self):
         start = time.monotonic()
@@ -445,6 +456,53 @@ class TestLayer2(CastCase):
         self.assertEqual(self.rows("SELECT count(*) FROM casts"), [(1,)])
 
 
+class TestLayer2MaxWords(CastCase):
+    """Layer 2 only on a line of at most VFG_INCANT_LAYER2_MAX_WORDS words (6; 0 any)."""
+
+    def test_six_words_cast_and_seven_do_not(self):
+        self.line("uh fire ball on them now", start=-2.5)          # 6 words, the filler counted
+        self.line("uh fire ball on all of them", start=-12.5)      # 7
+        self.assertEqual(self.rows("SELECT heard FROM casts"), [("fire ball",)])
+        self.assertEqual(self.rows("SELECT count(*) FROM lines"), [(2,)])
+
+    def test_zero_is_any_length_and_the_setting_reaches_casts(self):
+        self.casts.layer2_max_words = 0
+        self.line("could you please cast the fire ball on all of them right now", start=-2.5)
+        self.assertEqual(self.rows("SELECT layer, heard FROM casts"), [("transcript", "fire ball")])
+        from vfg_bridge import config
+        cfg = config.load({"VFG_INCANT_LAYER2_MAX_WORDS": "9"})
+        self.assertEqual(castsmod.Casts.from_config(cfg, self.db, KIT, vfg_feed).layer2_max_words, 9)
+        self.assertEqual(castsmod.Casts.from_config(config.load({}), self.db, KIT, vfg_feed).layer2_max_words, 6)
+
+    def test_a_long_line_is_still_dropped_after_a_spotters_cast(self):
+        _, spotted = self.cast(start=-2.0, length=0.6)
+        self.line("uh um fire ball uh um uh", start=-2.2, length=1.0)   # 7 words, all fillers but the phrase
+        self.assertEqual(self.rows("SELECT dropped, cast_id FROM lines"), [("cast", spotted["id"])])
+        self.assertEqual(self.rows("SELECT layer FROM casts"), [("spotter",)])
+
+
+class TestEverydayAliases(CastCase):
+    """An everyday alias, left out of the spotter's list, still casts through Layer 2, and the
+    store's lookup still finds it."""
+
+    def setUp(self):
+        super().setUp()
+        self.write_store(entry("Steve", "ice beam", aliases=["ice been", "ice cream", "i scream"],
+                               everyday_aliases=["ice cream", "i scream"]))
+
+    def test_layer_2_casts_it(self):
+        self.line("Ice cream.")
+        self.assertEqual(self.rows("SELECT incantation_id, layer, heard, status FROM casts"),
+                         [("steve.ice_beam", "transcript", "ice cream", "fired")])
+        self.assertEqual(self.rows("SELECT dropped FROM lines"), [("cast",)])
+
+    def test_the_drop_rule_takes_it_out(self):
+        self.casts.layer2 = False
+        _, spotted = self.cast("ice beam", start=-2.0, length=0.4)
+        self.line("i scream", start=-2.2, length=1.0)
+        self.assertEqual(self.rows("SELECT dropped, cast_id FROM lines"), [("cast", spotted["id"])])
+
+
 class TestDropRule(CastCase):
     def test_the_specs_four_lines(self):
         self.casts.layer2 = False
@@ -486,6 +544,7 @@ class TestOneWord(CastCase):
         self.assertEqual(self.rows("SELECT incantation_id, layer FROM casts"), [("steve.shield", "spotter")])
 
     def test_layer_2_casts_it_in_any_sentence_and_keeps_the_line(self):
+        self.casts.layer2_max_words = 0  # any length
         _, doc = self.line("Craft me an iron sword and a shield for the fight.")
         rows = self.rows("SELECT id, incantation_id, heard, status FROM casts")
         self.assertEqual([r[1:] for r in rows], [("steve.shield", "shield", "fired")])
@@ -687,7 +746,12 @@ class TestConfig(unittest.TestCase):
         self.assertEqual((cfg.base, cfg.mc, cfg.kit, cfg.incantations, cfg.owner),
                          ("/opt/vfg", "/opt/mc", "/opt/vfg/scripts/_lib", "/opt/vfg/incantations.json", ""))
         self.assertEqual((cfg.live_poll_s, cfg.cast_gap_s, cfg.cast_slack_s, cfg.cast_wait_s,
-                          cfg.incant_allowance, cfg.incant_layer2), (0.5, 1.0, 0.3, 1.5, 0.25, True))
+                          cfg.incant_allowance, cfg.incant_layer2, cfg.incant_layer2_max_words),
+                         (0.5, 1.0, 0.3, 1.5, 0.25, True, 6))
+        self.assertEqual(config.load({"VFG_INCANT_LAYER2_MAX_WORDS": "0"}).incant_layer2_max_words, 0)
+        for bad in ("6.5", "-1", "six"):
+            with self.assertRaises(SystemExit):
+                config.load({"VFG_INCANT_LAYER2_MAX_WORDS": bad})
         self.assertEqual(cfg.jev_cast_max_age_s, 2.0)
         self.assertEqual(config.load({"VFG_JEV_CAST_MAX_AGE_S": "3.5"}).jev_cast_max_age_s, 3.5)
         cfg = config.load({"VFG_BASE": "/b", "VFG_INCANT_LAYER2": "off", "VFG_CAST_GAP_S": "2"})
