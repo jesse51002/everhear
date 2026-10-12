@@ -2,7 +2,9 @@
 
 It answers every question by keyword in the line it asks about (the text
 between the last “ and ” of its instructions; a gather question quotes the ask
-first). The routing call's two questions answer so that D's walk gives:
+first). The cast check's question (`cast`) is answered `cast_<phrase>` 0.9 when
+the line, its letters run together, holds the phrase's (`hot fire ball` holds
+`hotfireball`), else `not_a_cast` 0.9. The routing call's two questions answer so that D's walk gives:
 `build`, `make` or `there` -> action_oriented 0.9 (act 0.9, let down);
 `thanks` -> conversational 0.85 (answer 0.85); `cave` or `base` -> context 0.7
 (remember 0.7); anything else -> not_relevant 0.8 (ignore 0.8). `d_feel` is
@@ -59,6 +61,12 @@ def choose(question, verdicts=None):
     `(class, confidence)`, or else its keywords."""
     text = asked_about(question.get("instructions"))
     labels = question.get("criteria") or {}
+    if "not_a_cast" in labels:
+        squashed = re.sub(r"[^a-z]", "", text.lower())
+        for label in labels:
+            if label.startswith("cast_") and label[len("cast_"):].replace("_", "") in squashed:
+                return label, 0.9
+        return "not_a_cast", 0.9
     if "part_of_the_ask" in labels:
         return ("part_of_the_ask", 0.9) if JOINS in text.lower() else ("not_part_of_it", 0.8)
     cls, conf = (verdicts or {}).get(text) or verdict(text)

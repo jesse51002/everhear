@@ -74,6 +74,16 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(res.answers["d_what"], ("remember_it", 0.66))
         self.assertEqual(res.input_tokens, 7)
 
+    def test_probabilities_of_the_questions_own_labels(self):
+        self.canned({"answers": {"d_what": {"type": "choice", "choice": "remember_it", "confidence": 0.4,
+                                            "probabilities": {"the_ai_must_act": 0.1, "remember_it": 0.66,
+                                                              "ignore_it": "x", "made_up": 0.2}},
+                                 "d_feel": {"type": "choice", "choice": "fine_a_reply_is_all", "confidence": 0.5}},
+                     "usage": {"input_tokens": 7}})
+        res = self.jev.ask({"t": "s"}, questions(row(1, "hm")), required="d_what")
+        self.assertEqual(res.answers["d_what"], ("remember_it", 0.4))
+        self.assertEqual(res.probabilities, {"d_what": {"the_ai_must_act": 0.1, "remember_it": 0.66}})
+
     def test_missing_usage_is_none_not_zero(self):
         self.canned({"answers": {"d_what": {"choice": "remember_it", "confidence": 0.5}}})
         res = self.jev.ask({"t": "s"}, questions(row(1, "hm")), required="d_what")

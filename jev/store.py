@@ -18,7 +18,7 @@ import urllib.parse
 
 log = logging.getLogger("vfg-jev")
 
-COLUMNS = "id, at, player_name, source, text, peak_dbfs, jev_class, jev_confidence, jev_judged_at, fed_at"
+COLUMNS = "id, at, ended_at, player_name, source, text, peak_dbfs, jev_class, jev_confidence, jev_judged_at, fed_at"
 RECORDS = ("action", "task", "result")   # the brain's AI rows that go into Jev's history
 _AI_ROW = re.compile(r"^AI#\d+ \d\d:\d\d:\d\d (\S+) (\S+) \| (.*)$", re.S)
 
@@ -31,12 +31,21 @@ def named(task, text):
     return "%s: %s" % (task, text)
 
 
+def _field(row, name):
+    """`row[name]`, or None when the row has no such column."""
+    try:
+        return row[name]
+    except (IndexError, KeyError):
+        return None
+
+
 class Store:
     def __init__(self, path):
         self.path = path
         self.conn = None
         self._said = None   # the last "not ready" reason logged, so it is logged once
         self._dropped = False
+        self._casts = False   # whether the bridge's `casts` table is there, once it is known to be
 
     # -- opening ---------------------------------------------------------------
 
@@ -168,6 +177,32 @@ class Store:
                 records.append({"id": "AI#%d" % seq, "at": at, "player_name": "AI", "source": m.group(1),
                                 "text": named(m.group(2), m.group(3)), "peak_dbfs": None})
         return records
+
+    def recent(self, line, since, limit=8):
+        """For the cast check: `line`'s speaker's lines, a dropped one too (it was a cast), and the
+        AI's, said since `since` and before `line` (by `at`, then `id`); and that speaker's casts
+        (the bridge's `casts`, when it has the table) started since `since` and by the time `line`
+        ended, but no `duplicate`, the same words cast twice. The newest `limit` of them, oldest
+        first, as dicts `{at, player_name, kind ("line" or "cast"), text}` (a cast's text its phrase)."""
+        rows = self.conn.execute(
+            "SELECT at, player_name, text FROM lines WHERE ((player_name = ? AND source != 'ai') OR source = 'ai') "
+            "AND at >= ? AND (at < ? OR (at = ? AND id < ?)) ORDER BY at DESC, id DESC LIMIT ?",
+            (line["player_name"], since, line["at"], line["at"], line["id"], limit)).fetchall()
+        items = [{"at": r["at"], "player_name": r["player_name"], "kind": "line", "text": r["text"]} for r in rows]
+        if self._has_casts():
+            casts = self.conn.execute(
+                "SELECT started_at, phrase FROM casts WHERE player_name = ? AND started_at >= ? AND started_at <= ? "
+                "AND status != 'duplicate' ORDER BY started_at DESC LIMIT ?",
+                (line["player_name"], since, _field(line, "ended_at") or line["at"], limit)).fetchall()
+            items += [{"at": r[0], "player_name": line["player_name"], "kind": "cast", "text": r[1]} for r in casts]
+        items.sort(key=lambda i: (i["at"], i["kind"] == "cast"), reverse=True)   # a line before its own cast
+        return items[:limit][::-1]
+
+    def _has_casts(self):
+        if not self._casts:
+            self._casts = self.conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'casts'").fetchone() is not None
+        return self._casts
 
     def kept_unfed(self, since):
         """Kept lines not yet fed, said since `since`, oldest first; never a dropped one."""
