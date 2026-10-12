@@ -157,7 +157,7 @@ tasks.register('engineTest', Test) {
 
 tasks.register('kwsTest', Test) {
 	group = 'verification'
-	description = 'The keyword spotter on Kokoro speech: hits, false casts, the after-a-pause case, latency, CPU (-Pkws-sweep: tuning).'
+	description = 'The keyword spotter on Kokoro speech, re-checks and the stream: hits, false casts, latency, CPU (-Pkws-sweep, -Pkws-lead: tuning).'
 	testClassesDirs = sourceSets.test.output.classesDirs
 	classpath = sourceSets.test.runtimeClasspath
 	useJUnitPlatform {
@@ -168,6 +168,7 @@ tasks.register('kwsTest', Test) {
 	systemProperty 'vfg.testAssets', layout.buildDirectory.dir('vfg-test-assets').get().asFile.absolutePath
 	systemProperty 'vfg.kwsOut', layout.buildDirectory.dir('kws-test').get().asFile.absolutePath
 	systemProperty 'vfg.kwsSweep', project.hasProperty('kws-sweep') ? 'true' : 'false'
+	systemProperty 'vfg.kwsLead', project.hasProperty('kws-lead') ? 'true' : 'false'
 	jvmArgs '--enable-native-access=ALL-UNNAMED'
 	outputs.upToDateWhen { false }
 	testLogging {

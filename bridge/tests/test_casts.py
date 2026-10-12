@@ -472,6 +472,52 @@ class TestDropRule(CastCase):
         self.assertEqual(self.rows("SELECT dropped, cast_id FROM lines"), [(None, None)])
 
 
+class TestOneWord(CastCase):
+    """A one-word phrase (Specs/2026-10-11-Prototype_Fast_Casts): cast by the spotter, by Layer
+    2 in any sentence and at the start of a longer word, never in everyday talk; the drop rule."""
+
+    def setUp(self):
+        super().setUp()
+        self.write_store(entry("Steve", "shield"), entry("Steve", "heal"), entry("Steve", "dash"))
+
+    def test_the_spotters_cast_fires(self):
+        status, doc = self.cast("shield")
+        self.assertEqual((status, doc["status"]), (202, "fired"))
+        self.assertEqual(self.rows("SELECT incantation_id, layer FROM casts"), [("steve.shield", "spotter")])
+
+    def test_layer_2_casts_it_in_any_sentence_and_keeps_the_line(self):
+        _, doc = self.line("Craft me an iron sword and a shield for the fight.")
+        rows = self.rows("SELECT id, incantation_id, heard, status FROM casts")
+        self.assertEqual([r[1:] for r in rows], [("steve.shield", "shield", "fired")])
+        self.assertEqual(self.rows("SELECT dropped, cast_id FROM lines"), [(None, rows[0][0])])
+
+    def test_layer_2_casts_it_at_the_start_of_a_longer_word(self):
+        self.line("I need some healing potions.")
+        self.assertEqual(self.rows("SELECT incantation_id, heard FROM casts"), [("steve.heal", "healing")])
+        self.assertEqual(self.rows("SELECT dropped FROM lines"), [(None,)])
+
+    def test_a_line_of_only_the_word_is_dropped(self):
+        self.line("Shield now!")
+        self.assertEqual(self.rows("SELECT layer, status FROM casts"), [("transcript", "fired")])
+        self.assertEqual(self.rows("SELECT dropped FROM lines"), [("cast",)])
+
+    def test_not_in_everyday_talk(self):
+        for k, text in enumerate(("help me build it", "it's really all of it", "she'll do it",
+                                  "the field is big", "go up the hill and deal with it")):
+            self.line(text, start=-2.5 - 10 * k)
+        self.assertEqual(self.rows("SELECT count(*) FROM casts"), [(0,)])
+        self.assertEqual(self.rows("SELECT count(*) FROM lines WHERE dropped IS NULL"), [(5,)])
+
+    def test_the_drop_rule_after_the_spotters_cast(self):
+        self.casts.layer2 = False
+        _, spotted = self.cast("heal", start=-2.0, length=0.4)
+        ids = [self.line(text, start=-2.2, length=2.0)[1]["id"] for text in (
+            "heal", "heal now", "don't heal", "heal me and build a wall", "help me")]
+        got = dict((r[0], r[1]) for r in self.rows("SELECT id, dropped FROM lines"))
+        self.assertEqual([got[i] for i in ids], ["cast", "cast", None, None, None])
+        self.assertEqual(self.rows("SELECT line_id FROM casts"), [(ids[0],)])
+
+
 class TestClockGuard(CastCase):
     def test_a_players_shift_is_kept_for_their_line(self):
         said = self.clock.now + _dt.timedelta(hours=1)  # Steve's clock is an hour fast

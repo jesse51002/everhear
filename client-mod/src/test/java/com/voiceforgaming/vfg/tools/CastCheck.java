@@ -57,6 +57,8 @@ public final class CastCheck {
 		                         (repeatable; for a bridge that lists none)
 		  --threshold <x>        the spotter's threshold, 0.05-0.95 (default 0.25, the mod's)
 		  --boost <x>            the spotter's boost, 0.5-5 (default 1.5, the mod's)
+		  --recheck <s>          how far the spotter's re-check reaches back, 0 or 1-10 s (default 3, the
+		                         mod's; 0: the live stream alone)
 		""";
 
 	private static final Object OUT = new Object();
@@ -94,6 +96,7 @@ public final class CastCheck {
 		SpeechEngine engine = TestAssets.engine(VfgConfig.DEFAULT_MODEL, VfgConfig.DEFAULT_STT_THREADS, 0.5f);
 		TurnDetector turn = TestAssets.turnDetector(TurnDetectors.DEFAULT);
 		var model = TestAssets.spotter();
+		var spotterVad = TestAssets.spotterVad(0.5);
 
 		Wav.Audio audio = o.wav != null ? Wav.read(Path.of(System.getProperty("vfg.projectDir", ".")).resolve(o.wav))
 			: said(o.said, o.voice);
@@ -124,8 +127,9 @@ public final class CastCheck {
 				@Override
 				public void answered(CastPayload cast, int status, String castStatus, long answeredAtMillis) {
 					long sent = posted.getOrDefault(cast.clientCastId(), answeredAtMillis);
-					say("  cast \"%s\": answered %d %s at %s s (%d ms after posting)", cast.phrase(), status,
-						castStatus == null ? "" : castStatus, at(device, answeredAtMillis), answeredAtMillis - sent);
+					say("  cast \"%s\": answered %d %s at %s s (%d ms after posting, %.2f s after the phrase)",
+						cast.phrase(), status, castStatus == null ? "" : castStatus, at(device, answeredAtMillis),
+						answeredAtMillis - sent, (answeredAtMillis - cast.endedAtMillis()) / 1000.0);
 				}
 
 				@Override
@@ -133,18 +137,18 @@ public final class CastCheck {
 					say("  cast \"%s\": dropped, %s", cast.phrase(), reason);
 				}
 			});
-		SpotterWorker spotter = new SpotterWorker(true, o.threshold, o.boost, cast -> {
+		SpotterWorker spotter = new SpotterWorker(true, o.threshold, o.boost, o.recheck, cast -> {
 			CastPayload p = CastPayload.create(uuid, o.player, cast.phrase(), cast.heard(), cast.startedAtMillis(),
 				cast.endedAtMillis());
 			long now = System.currentTimeMillis();
 			posted.put(p.clientCastId(), now);
-			say("CAST \"%s\" (heard \"%s\"): said %s -> %s s (%s -> %s), heard at %s s, posted at %s s", p.phrase(),
-				p.heard(), at(device, cast.startedAtMillis()), at(device, cast.endedAtMillis()),
-				LinePayload.timestamp(cast.startedAtMillis()), LinePayload.timestamp(cast.endedAtMillis()),
-				at(device, cast.heardAtMillis()), at(device, now));
-			casts.post(p, cast.heardAtMillis());
+			say("CAST \"%s\" (heard \"%s\" by %s): said %s -> %s s (%s -> %s), heard at %s s, posted at %s s",
+				p.phrase(), p.heard(), cast.via().words(), at(device, cast.startedAtMillis()),
+				at(device, cast.endedAtMillis()), LinePayload.timestamp(cast.startedAtMillis()),
+				LinePayload.timestamp(cast.endedAtMillis()), at(device, cast.heardAtMillis()), at(device, now));
+			casts.post(p, cast.heardAtMillis(), cast.via().words());
 		});
-		spotter.setModel(model);
+		spotter.setModel(model, spotterVad);
 		spotter.setIncantations(list);
 
 		Map<String, Long> enqueued = new ConcurrentHashMap<>();
@@ -235,6 +239,7 @@ public final class CastCheck {
 		final List<Incantation> incantations = new ArrayList<>();
 		double threshold = VfgConfig.DEFAULT_INCANTATION_THRESHOLD;
 		double boost = VfgConfig.DEFAULT_INCANTATION_BOOST;
+		double recheck = VfgConfig.DEFAULT_INCANTATION_RECHECK_SECONDS;
 
 		static Options parse(String[] a) {
 			Options o = new Options();
@@ -256,6 +261,12 @@ public final class CastCheck {
 					}
 					case "--threshold" -> o.threshold = number(value(a, ++i, k), k, 0.05, 0.95);
 					case "--boost" -> o.boost = number(value(a, ++i, k), k, 0.5, 5);
+					case "--recheck" -> {
+						o.recheck = number(value(a, ++i, k), k, 0, VfgConfig.MAX_INCANTATION_RECHECK_SECONDS);
+						if (o.recheck > 0 && o.recheck < VfgConfig.MIN_INCANTATION_RECHECK_SECONDS) {
+							throw new IllegalArgumentException(k + " must be 0 or 1-10");
+						}
+					}
 					default -> throw new IllegalArgumentException("unknown option " + k);
 				}
 			}

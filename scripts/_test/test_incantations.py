@@ -23,6 +23,12 @@ import incantations as inc  # noqa: E402
 
 FIRE_BALL = {"player": "Steve", "phrase": "fire ball", "aliases": []}
 KAMEHAMEHA = {"player": "Steve", "phrase": "kamehameha wave", "aliases": ["kamehameha"]}
+# One-word phrases: the spec's six (Specs/2026-10-11-Prototype_Fast_Casts), with the code's aliases.
+ONE_WORD = dict((p, {"player": "Steve", "phrase": p, "aliases": inc.code_aliases(p)})
+                for p in ("fireball", "heal", "freeze", "teleport", "dash", "shield", "kamehameha"))
+EVERYDAY = ("build me a castle", "where is the village", "give me a diamond sword", "help me", "will you help me",
+            "it's really building up", "all of it", "i still feel ill", "that rocket was huge", "she'll do it",
+            "the field is big", "ok cool", "can you make it night time", "deal with it", "go up the hill")
 
 
 class WordsTests(unittest.TestCase):
@@ -33,11 +39,16 @@ class WordsTests(unittest.TestCase):
     def test_words(self):
         self.assertEqual(inc.words("Uh, fire ball."), ["uh", "fire", "ball"])
 
-    def test_check_phrase_wants_two_words(self):
+    def test_check_phrase_wants_a_word(self):
         self.assertEqual(inc.check_phrase("Fire-Ball!"), "fire ball")
-        for bad in ("fireball", "", "  !! "):
-            with self.assertRaisesRegex(ValueError, "two words at least"):
+        self.assertEqual(inc.check_phrase(" Fireball! "), "fireball")
+        for bad in ("", "  !! ", None):
+            with self.assertRaisesRegex(ValueError, "a word at least"):
                 inc.check_phrase(bad)
+
+    def test_one_word(self):
+        self.assertTrue(inc.one_word({"phrase": "Fireball!"}))
+        self.assertFalse(inc.one_word({"phrase": "fire-ball"}))
 
     def test_split_players(self):
         self.assertEqual(inc.split_players("Steve, Alex,steve"), ["Steve", "Alex"])
@@ -99,12 +110,21 @@ class StoreTests(unittest.TestCase):
         entry, _ = self.put("@A", "fire ball")
         self.assertEqual((entry["player"], entry["id"]), ("@a", "@a.fire_ball"))
 
-    def test_put_refuses_several_players_and_one_word(self):
+    def test_put_refuses_several_players_and_no_word(self):
         with self.assertRaises(ValueError):
             self.put("Steve,Alex", "fire ball")
         with self.assertRaises(ValueError):
-            self.put("Steve", "fireball")
+            self.put("Steve", " ! ")
         self.assertEqual(self.store.version(), 0)
+
+    def test_a_one_word_phrase_is_put_found_changed_and_removed(self):
+        entry, replaced = self.put("Steve", "Heal!", aliases=["heals"])
+        self.assertEqual((entry["id"], entry["phrase"], replaced), ("steve.heal", "heal", False))
+        self.assertEqual(self.store.lookup("steve", "HEAL")["id"], "steve.heal")
+        self.assertEqual(self.store.lookup("steve", "heals")["id"], "steve.heal")
+        self.assertEqual(self.store.update("Steve", "heal", cooldown_s=1.0)["cooldown_s"], 1.0)
+        self.assertEqual(self.store.remove("Steve", "Heal")["id"], "steve.heal")
+        self.assertEqual(self.store.read(), {"version": 3, "incantations": []})
 
     def test_update(self):
         self.put("Steve", "fire ball", cooldown_s=3.0)
@@ -275,6 +295,42 @@ class Layer2Tests(unittest.TestCase):
         self.assertEqual(inc.match_line("fire wall", [FIRE_BALL], allowance=0.1), [])
         self.assertEqual(len(inc.match_line("fire wall", [FIRE_BALL], allowance=0.25)), 1)
 
+    def one(self, line, *phrases):
+        return [(m.entry["phrase"], m.target, m.start, m.end)
+                for m in inc.match_line(line, [ONE_WORD[p] for p in phrases or ONE_WORD])]
+
+    def test_a_one_word_phrase_in_any_sentence_and_at_the_start_of_a_longer_word(self):
+        self.assertEqual(self.one("Heal!"), [("heal", "heal", 0, 1)])
+        self.assertEqual(self.one("uh shields up"), [("shield", "shield", 1, 2)])
+        self.assertEqual(self.one("Craft me an iron sword and a shield for the fight."), [("shield", "shield", 7, 8)])
+        self.assertEqual(self.one("I need some healing potions."), [("heal", "heal", 3, 4)])
+        self.assertEqual(self.one("open the dashboard"), [("dash", "dash", 2, 3)])
+
+    def test_a_one_word_phrase_runs_only_from_the_start_of_a_word(self):
+        self.assertEqual(self.one("haberdashery"), [])
+        self.assertEqual(self.one("my flash drive", "dash"), [])
+        # Across word boundaries still, from the start of one.
+        self.assertEqual(self.one("uh come a hammer ha", "kamehameha"), [("kamehameha", "kamehameha", 1, 5)])
+        self.assertEqual(self.one("tell a port", "teleport"), [("teleport", "teleport", 0, 3)])
+        self.assertEqual(self.one("fire bowl", "fireball"), [("fireball", "fireball", 0, 2)])
+        # A phrase of two words is matched as it was: from anywhere.
+        self.assertEqual(self.match("ok then afire ball", [FIRE_BALL]), [("fire ball", "fire ball", 2, 4)])
+
+    def test_a_short_one_word_phrase_is_found_only_as_it_is_said(self):
+        for line in EVERYDAY:
+            self.assertEqual(self.one(line), [], line)
+        self.assertEqual(self.one("heel", "heal"), [("heal", "heal", 0, 1)])    # the same sounds
+        self.assertEqual(self.one("eel", "heal"), [("heal", "heal", 0, 1)])     # an HH left out
+        self.assertEqual(self.one("hill", "heal"), [])
+        # Its mishearings come from its aliases.
+        (m,) = inc.match_line("go up the hill", [dict(ONE_WORD["heal"], aliases=["hill"])])
+        self.assertEqual((m.target, m.start, m.end, m.distance), ("hill", 3, 4, 0.0))
+        # Within the allowance too, when that is tighter.
+        self.assertEqual(inc.match_line("eel", [ONE_WORD["heal"]], allowance=0.05), [])
+        # Held as a phrase of two words is, "heal" is in most of them.
+        with mock.patch.object(inc, "one_word", lambda e: False):
+            self.assertGreater(len([line for line in EVERYDAY if self.one(line, "heal")]), 8)
+
     def test_fast(self):
         entries = [{"player": "Steve", "phrase": p, "aliases": a} for p, a in (
             ("fire ball", ["fireball", "fire bowl", "fire bal", "far ball", "fyre ball"]),
@@ -341,6 +397,22 @@ class DropTests(unittest.TestCase):
         with mock.patch.object(inc, "DROP_SPAN_RATIO", (0.6, 1.1)):
             self.assertEqual(inc.words_left("come a hammer ha", KAMEHAMEHA), 4)   # 10 phonemes for 8
 
+    def test_a_one_word_phrase(self):
+        shield, heal = ONE_WORD["shield"], ONE_WORD["heal"]
+        for line, left, dropped in (("shield", 0, True), ("Shield now!", 1, True), ("uh shield please", 1, True),
+                                    ("shield and build me a wall", 5, False), ("don't shield", 1, False),
+                                    ("Craft me an iron sword and a shield for the fight.", 10, False)):
+            self.assertEqual(inc.words_left(line, shield), left, line)
+            self.assertEqual(inc.drop(line, shield), dropped, line)
+        self.assertTrue(inc.drop("Fireball!", ONE_WORD["fireball"]))
+        self.assertTrue(inc.drop("fire bowl now", ONE_WORD["fireball"]))      # by phonemes
+        self.assertTrue(inc.drop("come a hammer ha", ONE_WORD["kamehameha"]))
+        # A longer word is not the phrase, and a spotter's misfire never drops a real ask.
+        self.assertEqual(inc.words_left("I need some healing potions", heal), 4)
+        for line in ("help me", "build it", "will you", "hill now"):
+            self.assertEqual(inc.words_left(line, heal), 2, line)
+            self.assertFalse(inc.drop(line, heal), line)
+
     def test_not_found_takes_nothing_out(self):
         self.assertEqual(inc.words_left("can you make it night time", FIRE_BALL), 6)
         for line in ("make it night", "give me food", "heal me now", "teleport me home"):
@@ -363,6 +435,13 @@ class AliasTests(unittest.TestCase):
     def test_no_split_where_the_parts_sound_different(self):
         self.assertEqual(inc.code_aliases("together now"), ["togethernow"])
 
+    def test_code_aliases_of_one_word(self):
+        self.assertEqual(inc.code_aliases("fireball"), ["fire ball"])
+        for word in ("heal", "dash", "shield", "kamehameha", "teleport"):
+            self.assertEqual(inc.code_aliases(word), [], word)
+        self.assertEqual(inc.merge_aliases("heal", inc.code_aliases("heal"), ["heel", "heals", "he'll", "Heal!"]),
+                         ["heals"])      # heel and hell: 3 phonemes
+
     def test_merge_aliases(self):
         got = inc.merge_aliases("fire ball", ["Fire-Ball", "fire bowl", "zap", ""], ["fireball", "FIRE BOWL"])
         self.assertEqual(got, ["fire bowl", "fireball"])     # zap: 3 phonemes
@@ -377,6 +456,27 @@ class BindWarningTests(unittest.TestCase):
         (w,) = inc.bind_warnings("zap it", [], [])
         self.assertIn("short", w)
         self.assertEqual(inc.bind_warnings("fire ball", ["fireball"], []), [])   # 6 phonemes: at the floor
+
+    def test_short_one_word_phrase(self):
+        self.assertEqual(inc.bind_warnings("heal", [], []),
+                         ['"heal" is short (3 speech sounds), so it may fire by accident: a second word helps.'])
+        self.assertEqual(inc.bind_warnings("teleport", [], []), [])
+        self.assertEqual(inc.bind_warnings("kamehameha", [], []), [])
+
+    def test_a_one_word_phrase_sounds_like_another_as_layer_2_holds_it(self):
+        mine = [{"player": "Steve", "phrase": p, "aliases": inc.code_aliases(p)}
+                for p in ("fire ball", "ice wall", "summon the horde", "teleport")]
+        self.assertEqual(inc.bind_warnings("heal", [], mine)[1:], [])
+        self.assertEqual(inc.bind_warnings("kamehameha", [], mine), [])
+        self.assertEqual(inc.bind_warnings("fire ball", [], [ONE_WORD["heal"], ONE_WORD["dash"]]), [])
+        (_, w) = inc.bind_warnings("heal", [], [{"player": "Steve", "phrase": "healing light"}])
+        self.assertEqual(w, '"heal" sounds like "healing light", so one may fire for the other.')
+        (_, w) = inc.bind_warnings("dash", [], [{"player": "Steve", "phrase": "speed dash"}])
+        self.assertEqual(w, '"dash" sounds like "speed dash", so one may fire for the other.')
+        (w,) = inc.bind_warnings("fire ball", [], [ONE_WORD["fireball"]])
+        self.assertEqual(w, '"fire ball" sounds like "fireball", so one may fire for the other.')
+        (w,) = inc.bind_warnings("teleport", [], [{"player": "Steve", "phrase": "tell a port"}])
+        self.assertEqual(w, '"teleport" sounds like "tell a port", so one may fire for the other.')
 
     def test_sounds_like_another_phrase(self):
         (w,) = inc.bind_warnings("fire ball", [], [{"player": "Steve", "phrase": "higher ball"}])

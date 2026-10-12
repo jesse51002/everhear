@@ -1,6 +1,7 @@
 package com.voiceforgaming.vfg.kws;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -54,6 +55,34 @@ class KeywordsTest {
 		assertEquals(3, k.size());
 		assertEquals("fire ball", k.target("fireball").phrase());
 		assertEquals("fireball", k.target("ice_wall").phrase());
+	}
+
+	@Test
+	void aOneWordPhraseIsAKeywordOfItsOwn() throws Exception {
+		Keywords k = build(List.of(new Incantation("Fireball", List.of(), 3), new Incantation("ice", List.of(), 3)),
+			0.25, 1.5);
+		assertEquals("▁FI RE B AL L :1.5 #0.25 @fireball/▁I CE :1.5 #0.25 @ice", k.spec());
+		assertEquals(new Keywords.Target("fireball", "fireball"), k.target("fireball"));
+		assertEquals(new Keywords.Target("ice", "ice"), k.target("ice"));
+	}
+
+	@Test
+	void aKeywordWhoseTokensStartAnotherIsMarkedAcrossIncantationsAndAliases() throws Exception {
+		Keywords k = build(List.of(new Incantation("fire", List.of(), 3),
+			new Incantation("fire ball", List.of("fireball"), 3), new Incantation("ice wall", List.of("ice"), 3)), 0.25,
+			1.5);
+		assertTrue(k.startsAnother("fire"), "\"fire\" starts \"fire ball\" and \"fireball\"");
+		assertTrue(k.startsAnother("ice"), "an alias that starts its own phrase");
+		assertFalse(k.startsAnother("fire_ball"));
+		assertFalse(k.startsAnother("fireball"));
+		assertFalse(k.startsAnother("ice_wall"));
+		assertFalse(k.startsAnother(null));
+		assertTrue(k.anyStartsAnother());
+		assertEquals("▁FI RE ▁BA LL :1.5 #0.25 @fire_ball/▁FI RE B AL L :1.5 #0.25 @fireball/▁I CE ▁WA LL :1.5 #0.25"
+			+ " @ice_wall", k.specStartingNone());
+		Keywords plain = build(List.of(new Incantation("fire ball", List.of(), 3)), 0.25, 1.5);
+		assertFalse(plain.anyStartsAnother());
+		assertEquals(plain.spec(), plain.specStartingNone());
 	}
 
 	@Test

@@ -103,10 +103,15 @@ public final class CastClient {
 
 	/** Posts {@code cast}, heard at {@code heardAtMillis}, on a thread of its own; returns at once. */
 	public void post(CastPayload cast, long heardAtMillis) {
+		post(cast, heardAtMillis, null);
+	}
+
+	/** As {@link #post(CastPayload, long)}, with which way the spotter heard it for the log line ("the re-check"). */
+	public void post(CastPayload cast, long heardAtMillis, String by) {
 		try {
 			threads.execute(() -> {
 				try {
-					deliver(cast, heardAtMillis);
+					deliver(cast, heardAtMillis, by);
 				} catch (InterruptedException e) {
 					Thread.currentThread().interrupt();
 				} catch (RuntimeException e) {
@@ -131,13 +136,18 @@ public final class CastClient {
 
 	/** Posts {@code cast} on this thread, tries included, and returns how it ended. */
 	public Result deliver(CastPayload cast, long heardAtMillis) throws InterruptedException {
+		return deliver(cast, heardAtMillis, null);
+	}
+
+	private Result deliver(CastPayload cast, long heardAtMillis, String by) throws InterruptedException {
 		long deadline = heardAtMillis + WINDOW_MILLIS;
 		for (int attempt = 1; ; attempt++) {
 			long now = clock.getAsLong();
 			if (now >= deadline) {
 				return drop(cast, "not answered within 2 s of the hit");
 			}
-			Result r = attempt(cast, attempt, Math.max(MIN_TIMEOUT_MILLIS, Math.min(MAX_TIMEOUT_MILLIS, deadline - now)));
+			Result r = attempt(cast, by, heardAtMillis, attempt, Math.max(MIN_TIMEOUT_MILLIS, Math.min(MAX_TIMEOUT_MILLIS,
+				deadline - now)));
 			if (r != null) {
 				return r;
 			}
@@ -150,7 +160,8 @@ public final class CastClient {
 	}
 
 	/** One POST; {@code null} when it is worth trying again. */
-	private Result attempt(CastPayload cast, int number, long timeoutMillis) throws InterruptedException {
+	private Result attempt(CastPayload cast, String by, long heardAtMillis, int number, long timeoutMillis)
+			throws InterruptedException {
 		Target t = target.get();
 		if (t == null || t.castsUrl() == null || t.castsUrl().isBlank()) {
 			return drop(cast, "no bridge URL set");
@@ -177,14 +188,17 @@ public final class CastClient {
 			return null;
 		}
 		long now = clock.getAsLong();
-		String late = String.format(Locale.ROOT, "%.2f s after the phrase", (now - cast.endedAtMillis()) / 1000.0);
+		// after the phrase: from its ended_at, as the logs before the re-check; after the hit: the trip to the box
+		String late = String.format(Locale.ROOT, "%.2f s after the phrase, %.2f s after the hit",
+			(now - cast.endedAtMillis()) / 1000.0, (now - heardAtMillis) / 1000.0);
 		switch (status) {
 			case 202 -> {
 				String castStatus = field(body, "status");
 				String copy = field(body, "copy");
 				String error = field(body, "error");
-				LOG.info("cast \"{}\" (heard \"{}\"): {}{}{}, answered {}", cast.phrase(), cast.heard(), castStatus,
-					copy == null ? "" : " as " + copy, error == null ? "" : ": " + error, late);
+				LOG.info("cast \"{}\" (heard \"{}\"{}): {}{}{}, answered {}", cast.phrase(), cast.heard(),
+					by == null ? "" : " by " + by, castStatus, copy == null ? "" : " as " + copy,
+					error == null ? "" : ": " + error, late);
 				listener.answered(cast, status, castStatus, now);
 				return new Result(status, castStatus, null);
 			}

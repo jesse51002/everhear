@@ -265,35 +265,91 @@ its own thread, `vfg-kws`, one CPU thread.
 
 - **The list.** While the mod listens, it asks the bridge for the player's incantations, at once
   on joining and then by long poll (`after` the version it has, `wait=25`; `304` is no change).
-  Every phrase and every alias is a keyword; a hit on an alias casts the phrase.
+  Every phrase and every alias is a keyword; a hit on an alias casts the phrase. A phrase may be one
+  word: it then casts in any sentence it is said in, and at the start of longer words ("heal" in
+  "healing").
 - **The tokens are made here.** The box sends plain phrases; the mod splits them into the model's
   tokens with the model's own `bpe.model` (`kws/SentencePiece.java`, checked against Python's
   sentencepiece on 45 phrases by `tools/kws_bpe_fixture.py`). That file is a *unigram* model, not
   BPE, despite its name. A keyword with a token the model lacks (a digit) is left out, with a log line.
 - **Only while someone speaks.** The capture thread hands every 32 ms window to `vfg-kws` by a
-  non-blocking offer (a full 2 s queue drops it). A stream opens when the VAD hears speech, fed the
-  last 0.64 s first, and closes 0.32 s after the VAD stops hearing it. Silence costs nothing, and no
-  stream sits in the 1.5 s of silence after which sherpa-onnx resets it itself and drops the start
-  of a keyword said just then (its issue #3990: 9 of 42 missed one way, none this way).
+  non-blocking offer (a full 2 s queue drops it). The spotter has a VAD of its own, a second Silero
+  on the same file and threshold, which ends speech after 0.15 s of silence where the lines' VAD waits
+  0.35 s (a median 0.22 s after a sentence's sound, against 0.41 s), for about 70 µs a window, 0.2% of
+  a core. Nothing is decoded in silence.
+- **The re-check casts a phrase as it ends.** While the player speaks, and until 0.15 s of silence
+  after, `vfg-kws` handles every window waiting and then checks the newest audio again, back to back:
+  a fresh, throwaway stream is fed the player's last 3 s (`incantation_recheck_seconds`) and then
+  0.5 s of zeros, which stand for "the player stops right now", so the model decodes the end of what
+  was said without waiting for audio not yet spoken; its first hit casts. On Jesse's laptop one takes
+  a median 12 ms on one thread, 40 ms at the 90th percentile (a whole 3 s of speech about 45 ms), so
+  one runs after nearly every 32 ms window and keeps about half a core busy while the player talks;
+  a slower PC re-checks less often rather than falling behind. It keeps at most 0.32 s of the silence before speech, and none of a silence a second long:
+  a stream resets itself after 1.5 s of blanks and drops the start of a keyword said just then
+  (sherpa-onnx issue #3990). Kept whole, the silence made casts 0.1 s later and re-checks nearly
+  twice as dear, for the same hits.
+- **The live stream stays, as a backup.** It never skips audio when the PC is too busy to re-check.
+  It opens when speech starts, fed the last 0.64 s first; when speech ends it is pushed 0.5 s of
+  zeros, so its last 320 ms chunk decodes at once, and closed. No stream sits in the 1.5 s of silence
+  of issue #3990 (9 of 42 missed one way, none this way).
+- **A phrase that starts a longer one waits for it.** A keyword whose tokens start another's ("fire"
+  beside "fire ball", or beside the alias "fireball") would end the longer one: a re-check's zeros, or
+  the gap between the words, finish it first. So the re-checks leave it out while speech goes on, and
+  one more with every keyword runs when speech ends; a hit on it from either way is held. A cast whose
+  sound starts before the held one's end drops it; if none comes within 0.5 s (Microsoft's speech
+  engine waits as long after a phrase that can start another), or speech ends first, it casts then.
+  With `incantation_recheck_seconds: 0` the live stream alone hears "fire" first, and "fire ball" is
+  lost.
+- **One saying casts once.** Neither way hears audio from before the end of the last cast: a re-check
+  never reaches back past it, and a re-check's cast closes the live stream, which reopens from after
+  it. Whichever way hears a phrase first casts it; the bridge's duplicate check stays behind both.
 - **A cast** is posted on a thread of its own with a fresh `client_cast_id`, the phrase, the keyword
   heard, and when it was said on the same audio clock a line's `started_at` uses. A failure is tried
   again for at most 2 s after the hit, then dropped: a late spell is worse than none. `404` (no such
-  incantation) and `503` (no kit on the box) are final. One log line per cast, never with audio:
-  `cast "fire ball" (heard "fireball"): fired as command_2, answered 0.40 s after the phrase`.
-- **Measured** (`./gradlew kwsTest`, Kokoro TTS, 2026-10-10): "fire ball" said alone heard 10 of 11
-  voices, inside a sentence 12 of 12; "kamehameha" 0 of 11 as Kokoro reads the spelling, 4 of 11 said
-  syllable by syllable (through its alias "kami hami ha"); no false casts in 16 ordinary requests or
-  6 near misses ("Throw the ball into the fire."); heard a median 0.46 s after the end of the phrase
-  on the audio clock; about 1.6% of one core while it decodes, nothing in silence.
+  incantation) and `503` (no kit on the box) are final. One log line per cast, never with audio, with
+  which way heard it:
+  `cast "fire ball" (heard "fireball" by the re-check): fired as command_2, answered 0.30 s after the
+  phrase, 0.24 s after the hit`. "After the phrase" counts from the cast's `ended_at`, as the log did
+  before the re-check, so read the in-game bar (Prototype_Fast_Casts: a median at most 0.35 s, against
+  0.65 s on 2026-10-11) from it: it compares with the old logs, and for a re-check's cast it is an
+  overestimate, since a re-check usually hears the phrase before its last sound is over and then
+  ends it at the newest sample (a median 0.18 s early on Kokoro). "After the hit" is the trip to the
+  box and back alone.
+- **Measured** (`./gradlew kwsTest`, Kokoro TTS, 2026-10-11; the live stream alone in brackets): seven
+  two-word phrases ("fire ball", "ice wall", "lightning strike", "summon wolves", "rocket jump",
+  "healing light", "meteor storm") said alone and ending a sentence heard 229 of 231 (217), a median
+  0.12 s *before* the end of the phrase's sound and 0.06 s after it at the 90th percentile, compute
+  included (0.22 and 0.24 s after; 0.46 s before the stream had its push); over every take a phrase
+  ends, −0.14 and +0.05 s. "Fire ball" inside a sentence 12 of 12 (12), after a pause 42 of 42 (42),
+  after 0–12 s of nonstop talk 16 of 16 (14); "kamehameha" 0 of 11 as Kokoro reads the spelling, 9 of
+  11 said syllable by syllable, through its alias "kami hami ha" (8); no false casts in 16 ordinary
+  requests or 6 near misses ("Throw the ball into the fire."); no saying cast twice. A phrase starting
+  a longer word casts: "fire balloon", "ice walls", "fire ballad", 33 of 33 (31). One word: "fireball"
+  22 of 22 alone and ending a sentence (18), "heal" 17 (8), "shield" 21 (22); "a shield for the fight"
+  and "healing potions" cast 11 of 11. With "fire" and "fire ball" both bound, "fire ball" alone and
+  in sentences cast "fire ball" 23 of 23 and "fire" never (5 of 23, "fire" 17 times), and "Fire!"
+  cast "fire" 8 of 11, 0.23 s after it (3). About half a core while someone speaks, 51% (3%),
+  nothing in silence; a re-check takes a median 12 ms here, 37 ms at the 90th percentile. Casting
+  before the last sound is over, a cast's `ended_at` is the newest sample, a median 0.18 s before the
+  sound ends; its `started_at` is within 0.05 s.
 
 ### Check the spotter: `./gradlew kwsTest`
 
 The keyword model installed through the mod's installer, Kokoro takes (kept with the speech
-test's), the mod's VAD and its `SpotterWorker`, fed 32 ms at a time faster than real time: the
-cases above, the after-a-pause case both ways, the latency and the CPU, in about 15 s once the takes
-are made. It checks what is certain ("fire ball" said alone is heard) and reports the rest, in
-`build/kws-test/report.txt`. `-Pkws-sweep` adds a table over thresholds, boosts and trailing blanks
-(about 3 min).
+test's), the spotter's VAD and its `SpotterWorker`, fed 32 ms at a time faster than real time, with
+`vfg-kws` played on the same clock: a turn of it (every window waiting, then a re-check) starts when
+the thread is free and lasts as long as it took, so a window that comes during a re-check waits, and a
+cast counts as heard when its turn got that far, its compute included. Every case runs two ways, the
+mod's (re-checks over 3 s and the live stream) and the live stream alone with its push
+(`incantation_recheck_seconds: 0`): phrases alone and ending a sentence, inside sentences, the
+after-a-pause case, ordinary sentences and near misses, phrases that start longer words ("fire
+balloon"), a spell after 0–12 s of nonstop talk, one-word phrases, the spotter's VAD, latency and CPU,
+in about 5 min once the takes are made. It checks what is certain (Prototype_Fast_Casts: a
+median at most 0.1 s and a 90th percentile at most 0.2 s after the phrase ends; "fire ball" heard as
+often as before, alone and inside sentences; no false casts; no saying cast twice) and reports the
+rest, in `build/kws-test/report.txt`. `-Pkws-sweep` adds a table over thresholds, boosts and trailing
+blanks on the stream alone (about 3 min); `-Pkws-lead` how much silence a re-check keeps, and 3 s
+against 1.2 s.
 
 ### End to end: `./gradlew castCheck`
 
@@ -311,7 +367,9 @@ VFG_CLIENT_TOKEN=test python3 tools/fake_bridge.py --port 8787 --incantation "fi
 ```
 
 It listens for the player's incantations as the bridge lists them; `--incantation "p=a,b"` adds
-some for a bridge that lists none. `--threshold` and `--boost` are the config's; `--help` lists all.
+some for a bridge that lists none. `--threshold`, `--boost` and `--recheck` (seconds, 0 for the stream
+alone) are the config's; `--help` lists all. Each cast says which way heard it, and its answer how long
+after the phrase's end it came, as the mod's log does.
 
 ## Configuration
 
@@ -322,7 +380,8 @@ some for a bridge that lists none. `--threshold` and `--boost` are the config's;
   "model": "parakeet-110m-en", "icon_corner": "top_left", "muted": false,
   "turn_model": "smart-turn-v3.2", "turn_threshold": null, "silence_seconds": 3,
   "vad_threshold": 0.5, "stt_threads": 2, "log_text": false,
-  "incantations": true, "incantation_threshold": 0.25, "incantation_boost": 1.5 }
+  "incantations": true, "incantation_threshold": 0.25, "incantation_boost": 1.5,
+  "incantation_recheck_seconds": 3 }
 ```
 
 - `client_token` is `VFG_CLIENT_TOKEN`. It lives only in this file, is shown masked, and
@@ -345,7 +404,11 @@ some for a bridge that lists none. `--threshold` and `--boost` are the config's;
   (0.05–0.95, default 0.25: the mean probability of a keyword's tokens at which it fires) and
   `incantation_boost` (0.5–5, default 1.5: the score added per token of a keyword). Lower threshold
   and higher boost hear more and cast more by mistake; on Kokoro speech 0.1 to 0.25 heard the same,
-  and a boost of 3 heard less.
+  and a boost of 3 heard less. `incantation_recheck_seconds` (1–10, or 0; default 3) is how far back
+  the re-check reaches: further costs more CPU per re-check (about 14 ms a second of audio), and 0
+  turns re-checks off, leaving the live stream with its push at the end of speech: a cast about 0.23 s
+  after the phrase instead of as it ends, at 3% of a core while someone speaks instead of about half;
+  the fallback if the re-checks cost frame rate.
 - A file with no `turn_model` key was written before the turn model: when it is read, a
   `silence_seconds` of 5 becomes 3 (any other value stays) and the file is written back once.
 - A file that does not parse is renamed `vfg-client.json.bad` and the defaults are used.
@@ -441,8 +504,9 @@ src/main/java/com/voiceforgaming/vfg/
   net/BridgeClient.java             the sender, retries, delivery status, connection test
   net/CastPayload.java  net/CastClient.java   the incantation invoke's body, and its sender (2 s, then dropped)
   net/IncantationClient.java        the player's incantations, by long poll
-  kws/SpotterWorker.java            the vfg-kws thread: windows in, streams while speech, casts out
-  kws/Spotter.java                  sherpa-onnx's KeywordSpotter (the only sherpa-onnx code of the spotter)
+  kws/SpotterWorker.java            the vfg-kws thread: windows in, re-checks and the live stream while speech, casts out
+  kws/Spotter.java                  sherpa-onnx's KeywordSpotter and the spotter's VAD (its only sherpa-onnx code)
+  kws/SpotterVad.java               the spotter's own VAD, which ends speech after 0.15 s of silence
   kws/Keywords.java  kws/SentencePiece.java   phrases and aliases to the model's tokens and keyword string
   session/ServerAddressMatch.java   normalising and comparing addresses
   session/SessionGate.java          whether to listen, and the chat notices

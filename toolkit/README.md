@@ -244,11 +244,12 @@ vfg incantation list                        # Steve: "fire ball" â†’ command {â€
 vfg incantation list --player Steve --json  # what Steve can cast, his own and @a's: [{player, phrase, action, values, cooldown_s, aliases}]
 ```
 
-An incantation is a phrase of two words or more that fires an action the moment its player
-says it, with no model on the path (Specs/2026-10-10-Prototype_Voice_Triggers). The box keeps
-them in `/opt/vfg/incantations.json` (`scripts/_lib/incantations.py`'s store), which the bridge
-reads as players cast. The three actions change it through one script, `scripts/incantations/`,
-once vfg has checked everything here (`run_incantation`):
+An incantation is a word or a phrase that fires an action the moment its player says it, with
+no model on the path (Specs/2026-10-10-Prototype_Voice_Triggers; one word since
+Specs/2026-10-11-Prototype_Fast_Casts). The box keeps them in `/opt/vfg/incantations.json`
+(`scripts/_lib/incantations.py`'s store), which the bridge reads as players cast. The three
+actions change it through one script, `scripts/incantations/`, once vfg has checked everything
+here (`run_incantation`):
 
 - **Create** makes one entry per named player, `@a` as one, its phrase normalised. It refuses
   binding `edit`, `stop` or an `incantation_*` action. The bound action's values are checked as
@@ -259,10 +260,13 @@ once vfg has checked everything here (`run_incantation`):
   code's (the phrase joined, compound words split) and one `structured()` call's, 12 at most:
   `VFG_INCANT_ALIAS_MODEL`, by default the dispatcher's planner's model and providers,
   reasoning off, 8 s at most (about 1 s and $0.00005); `off` skips it, and a failure is a note.
-  Its prompt is `INCANT_ALIAS_PROMPT` in `vfg`. The call is made while one SSH call reads the
-  store and the bound script's stamps: the bind warnings (a short phrase; one that sounds like,
-  or starts like, another of the player's) and a replaced one are notes, and the bound script
-  and `_lib` are deployed when their stamps say so, as a run would.
+  Its prompt is `INCANT_ALIAS_PROMPT` in `vfg`; it also says whether the phrase is everyday talk,
+  which is a note (`"heal" is everyday talk, so it will fire whenever it is said in
+  conversation.`), and none when the call is off or fails. The call is made while one SSH call
+  reads the store and the bound script's stamps: the bind warnings (a short phrase, with a
+  second word suggested for one word; one that sounds like, or starts like, another of the
+  player's, a one-word phrase found as Layer 2 finds it) and a replaced one are notes, and the
+  bound script and `_lib` are deployed when their stamps say so, as a run would.
 - **Edit** reads each player's entry from the box (never the cache), by its player and phrase,
   and changes what is given: the values, checked against its action over the stored ones (a
   player field set empty becomes a caster's, one given a name stops being one) and sent, with
