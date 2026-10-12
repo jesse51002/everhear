@@ -2,7 +2,52 @@
 
 On the EC2 box. It asks Jev (TypeSafe) what should become of each new line a player says or types,
 writes the verdict into the transcript history, and feeds the lines it keeps to the brain in
-batches.
+batches. Before that, a short voice line from a player with an incantation gets the cast check: if
+it was said to cast one, the bridge casts it and the line never reaches the brain.
+
+**The cast check** (`casting.py`, 2026-10-11). Speech-to-text mishears incantations ("hot fireball"
+as "Hot variable." or "Affordable.") and cuts them into pieces ("Ice.", then "Beam"); the bridge's
+deterministic layers (the spotter, Layer 2, the drop rule) let some through, and the brain answered
+them. So a voice line the bridge kept, of at most 6 words, from a player with an incantation (their
+own or an `@a` one, in `VFG_INCANTATIONS`), gets one Jev call before its routing call, one after the
+other: one `choice` question, `cast`, its options one `cast_<phrase>` per incantation (the phrase,
+its aliases and what it does: a `command` one's commands, else its action's line on the menu) and
+`not_a_cast`. The state is the fixed rules (a cast is the phrase, a mishearing, a piece or it said
+twice; talk about an incantation, a request or a reply is not), invented examples of both, and
+RECENT: the speaker's lines (dropped ones too) and casts of the last minute and the AI's lines, the
+newest 8, the line asked about marked `[1]` last.
+
+A cast whose option Jev gave a probability of `VFG_JEV_CAST_MIN` (0.5) or more goes to the
+bridge's cast path. The threshold is on the chosen option's probability (the answer's
+`probabilities`), not on its `confidence`, which runs lower ("Call fireball.": 0.63 and 0.45); an
+answer with no probability for its option is not a cast. The path is
+`POST http://127.0.0.1:$VFG_BRIDGE_PORT/v1/jev/casts` with `VFG_CLIENT_TOKEN`: the same checks as
+every cast (the 1 s gap, the incantation's cooldown, the duplicate window, a `casts` row, layer
+`jev`), plus an age: a line the bridge received more than `VFG_JEV_CAST_MAX_AGE_S` (2 s, the
+bridge's setting) before is cast `stale`, never fired. The bridge drops the line whatever came of
+the cast, fired, cooldown, duplicate or stale, so it is never routed nor fed. Not a cast, under the
+threshold, no probability, a call that fails or is refused, or a bridge that does not answer or
+keeps the line: the line goes on to the routing call as before. A
+failed cast check does not count towards failing open (the routing call right after it does); each
+line is checked once; nothing is checked while Jev fails open. A line that cannot be read for
+RECENT is routed without a call.
+
+**A cast never waits behind routing.** Each step checks every line due a cast check before it routes
+any line, and checks again after each routing call, so a cast said meanwhile goes next. And no call
+is made for a line already too old for the bridge to fire it (it goes on to routing): more than
+`VFG_JEV_CAST_MAX_AGE_S` (2 s, read from the same `.env` as the bridge) since the filter first read
+it, on the box's clock (never more than its age at the bridge, so never wrong), or more than that
+and 10 s since it was said, on the mod's clock after the clock guard (the 10 s take speech-to-text's
+delay and a player's clock a few seconds off; a clock further behind than that loses its player the
+check, and the lines go to routing as before). The journal says
+`cast-check <id> Steve · too old to cast (2.5 s since it was read here) → routing, no call`.
+
+The store is read by a copy of the kit's reading (`scripts/_lib/incantations.py`), not the kit
+itself: the kit reaches the box with `vfg action run`, and this folder is deployed alone.
+`tests/test_kit_pin.py` holds the copy to the kit's answers. **A line over 6 words is never
+checked**, and makes no call: every cast benched was 5 words or fewer, and the false casts were sentences that also
+asked for something, whose cast Layer 2 fires anyway. `VFG_JEV_CAST_MIN` over 1 turns the check
+off, and so does a missing `VFG_CLIENT_TOKEN` (said once, at the start).
 
 **One call a line, two questions** (D2, chosen on 2026-10-11): what should happen with the line —
 the AI must act, answer in chat, remember it, or ignore it — and, if the AI only replied in chat,
@@ -49,22 +94,36 @@ gather call the ask is marked `[ask]` and the lines asked about `[1]` … `[n]`.
 `VFG_JEV_STATE_TOKENS`: the menu takes at most half of what the rules, the lookout, the examples and
 the lines asked about leave, in whole lines, and the history the rest, newest first.
 
-The journal has one line per call, the routing call's with both answers:
+The journal has one line per call, the routing call's with both answers, the cast check's with
+its answer and what became of the line:
 
 ```text
 judge <id> Steve voice action_oriented 0.91 · act 0.91, let down 0.88 · 230ms 7012tok
 gather <ask id> Steve · 3 asked, 1 yes: <id> 0.91 · no: <id> 0.80, <id> 0.77 · 210ms 7400tok
+cast-check <id> Steve · hot fireball p 0.92 → fired · 210ms 1700tok
+cast-check <id> Steve · ice beam p 0.88 → cooldown (0.4 s left of its 3 s cooldown) · 190ms 1650tok
+cast-check <id> Steve · fire ball p 0.97 → stale (the line is 2.3 s old, past the 2 s a Jev cast may be) · 200ms 1700tok
+cast-check <id> Steve · no p 0.95 → routing · 190ms 1600tok
+```
+
+`p` is the probability of the option Jev chose, the number held to `VFG_JEV_CAST_MIN` (`p -` when
+the answer gave none).
+
+```text
 ```
 
 A routing call Jev answers writes one `usage` row, `ref` the line's id, one row for both calls when
 it was refused once first; a call that fails, or is refused twice, writes none. An answered gather
-call writes one with `ref` `gather:<ask id>`, and the probe that finds Jev back one with `ref` `probe`.
+call writes one with `ref` `gather:<ask id>`, an answered cast check one with `ref` `cast:<line id>`,
+and the probe that finds Jev back one with `ref` `probe`.
 
 ## Run it
 
 On the box it is the systemd unit `vfg-jev`: `/opt/vfg/python/bin/python3 -u /opt/vfg/jev/jev_filter.py`.
 To judge one text and write nothing: `python3 jev_filter.py --judge "<text>"`, which prints the class
-with both answers, with `--raw` to see Jev's answer as sent.
+with both answers, with `--raw` to see Jev's answer as sent. The cast check alone, on the store and
+menu as they are, with no RECENT: `python3 jev_filter.py --cast "<text>" --player Steve`; it writes
+nothing and casts nothing.
 
 Deploy from the repo's root on the owner's PC: `jev/deploy.sh`. It streams this folder (without
 `tests/`) to `/opt/vfg/jev/` over SSH, swaps it in and restarts the unit. Set the key once with
@@ -76,10 +135,12 @@ Deploy from the repo's root on the owner's PC: `jev/deploy.sh`. It streams this 
 cd jev && python3 -m unittest discover -s tests
 ```
 
-No network, under a second: `tests/fake_jev.py` stands in for Jev's API (it answers by keyword; a
-line with `big one` in it is part of the ask) and `tests/fake_lib/` for the bridge's feed writer.
-Every rule runs on a fake clock in `test_filter.py`; `test_e2e.py` runs `jev_filter.py` once as a
-process against the stand-ins and stops it with SIGTERM. `test_drift.py` checks Jev's wording against
+No network, about two seconds: `tests/fake_jev.py` stands in for Jev's API (it answers by keyword; a
+line with `big one` in it is part of the ask; a line holding a phrase is its cast) and
+`tests/fake_lib/` for the bridge's feed writer. Every rule runs on a fake clock in `test_filter.py`,
+and the cast check's in `test_cast_check.py`, with a fake bridge; `test_e2e.py` runs `jev_filter.py`
+as a process against the stand-ins, once with a stand-in for the bridge's cast path, and stops it
+with SIGTERM. `test_drift.py` checks Jev's wording against
 the wording benched in `integration/replay/` (skipped where that is not there).
 
 ## Settings
@@ -95,12 +156,17 @@ From the environment (systemd reads `/opt/vfg/.env`):
 | `VFG_BATCH_SECONDS`, `VFG_POLL_MS` | `5`, `50` |
 | `VFG_JEV_URL`, `VFG_JEV_MODEL`, `VFG_JEV_TIMEOUT` | `https://api.typesafe.ai/v1/systemone`, `jev-latest`, `3` s |
 | `VFG_JEV_STATE_TOKENS`, `VFG_JEV_HISTORY_HOURS` | `8000`, `3` |
+| `VFG_JEV_CAST_MIN` | `0.5`: the cast check's threshold, on the chosen option's probability; over 1, no cast check |
+| `VFG_JEV_CAST_MAX_AGE_S` | `2.0`, the bridge's: no cast check call for a line older (above) |
+| `VFG_INCANTATIONS`, `VFG_BRIDGE_PORT` | `/opt/vfg/incantations.json`, `8787`: the store, and the bridge on 127.0.0.1 |
+| `VFG_CLIENT_TOKEN` | the bridge's, from the environment or else `VFG_ENV_FILE`; never logged; none, no cast check |
 
 `deploy.sh` reads `VFG_SSH_HOST`, `VFG_SSH_USER` (default `ec2-user`) and `VFG_SSH_KEY` from
 `~/.vfg/config` (`VFG_CONFIG` names another file).
 
 ## Contracts
 
-[docs/CONTRACTS.md](../docs/CONTRACTS.md): §4 (it writes only the `jev_*` and `fed_at` columns and
-`usage` rows), §5 Jev, §7 the feed (through `vfg_feed`, exactly once per kept line; it reads the
+[docs/CONTRACTS.md](../docs/CONTRACTS.md): §2 (the bridge's cast path, `POST /v1/jev/casts`), §4 (it
+writes only the `jev_*` and `fed_at` columns and `usage` rows; it reads `casts`), §5 Jev and its cast
+check, §7 the feed (through `vfg_feed`, exactly once per kept line; it reads the
 brain's `AI` rows from the `feed` table), §11 secrets.

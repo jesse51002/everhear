@@ -2,7 +2,8 @@
 
 On the EC2 box. It takes the players' speech lines over HTTP, tails the Minecraft console for chat
 and game events, keeps both in the transcript history, and writes the feed the brain watches.
-It also fires incantations: a player's bound phrase, heard by their mod, starts its action on the box.
+It also fires incantations: a player's bound phrase, heard by their mod, in a line's transcript, or by
+the Jev filter's cast check, starts its action on the box.
 `deploy/` is everything that makes, provisions, updates and retires the box, run from the owner's PC.
 
 ## Run it
@@ -95,9 +96,28 @@ and lines are stored as before. Every endpoint takes the client token.
   overlaps one of the player's casts and has at most one word besides its phrase is
   stored with `dropped = 'cast'`, and Jev never sees it; a kept line gets `cast_id`, the cast that
   fired. The casts it overlaps get its `line_id`. A repeated `client_line_id` casts nothing.
+- **`POST /v1/jev/casts`** `{"line_id", "phrase"}`, the Jev filter's cast check (`jev/README.md`),
+  taken only from the box itself (a peer other than loopback is `403`), with the token: Jev judged
+  that stored voice line, not yet judged or dropped, a cast of `phrase`. It goes through the same
+  lock and checks as every cast (`Casts.jev_cast`), layer `jev`, with the line's window (its `at`
+  and `ended_at`, the clock guard's already) and `client_cast_id` `jev:<line id>`, so asking again
+  answers what the first did; then the line is stored with `dropped = 'cast'` whatever became of the
+  cast, and `cast_id` that cast, unless it did not fire and the line carries a fired one already.
+  A Jev cast never fires late: when `/v1/lines` received its line more than `VFG_JEV_CAST_MAX_AGE_S`
+  (2 s) before, on the bridge's monotonic clock, it is `stale` (error `the line is 2.3 s old, past
+  the 2 s a Jev cast may be`), recorded and not started, and its line dropped all the same. The
+  bridge stores no time it received a line, so `Casts` keeps it in memory, by `client_line_id`, for
+  a line of a player with an incantation (no other line can get a Jev cast), noted as Layer 2 runs,
+  before the line is stored, for 30 minutes; a line received before the bridge last started has
+  none, and its Jev cast is `stale` too.
+  `202 {"id", "status", "copy"?, "error"?, "line": "dropped"}`; `200 {"line": "dropped",
+  "cast_id"}` for a line dropped meanwhile, nothing cast; `404` no such line or incantation; `400` not
+  a voice line; `409 {"line": "judged"}` when Jev judged it first. A fired or failed one is announced
+  after the answer, as every cast is.
 
-`casts` in `vfg.db`: `(id, at, started_at, ended_at, player_name, phrase, heard, layer,
-incantation_id, action, copy, status, error, line_id, client_cast_id UNIQUE)`, indexed on
+`casts` in `vfg.db`: `(id, at, started_at, ended_at, player_name, phrase, heard, layer
+(spotter, transcript or jev), incantation_id, action, copy, status, error, line_id,
+client_cast_id UNIQUE)`, indexed on
 `(player_name, started_at)`. `at` is the bridge's clock, which the cooldowns use; the windows are the
 mod's audio clock, after the same clock guard as lines. The guard keeps the shift it found for a
 player's clock and applies it to their later casts and lines while it brings them within bounds,
@@ -126,6 +146,7 @@ On the box, from `/opt/vfg/.env` (its names are in `deploy/env.example`):
 | `VFG_OWNER`, `VFG_LIVE_POLL_S` | none, `0.5`: passed to a cast's copy |
 | `VFG_CAST_GAP_S`, `VFG_CAST_SLACK_S` | `1.0` s between a player's casts, `0.3` s of overlap slack |
 | `VFG_CAST_WAIT_S` | `1.5`: a cast held longer than this since its request is `stale` |
+| `VFG_JEV_CAST_MAX_AGE_S` | `2.0`: a Jev cast of a line received longer ago than this is `stale` |
 | `VFG_INCANT_ALLOWANCE`, `VFG_INCANT_LAYER2` | `0.25`, `on` (`off` turns Layer 2 off) |
 
 On the owner's PC, from `~/.vfg/config`: `VFG_SSH_HOST`, `VFG_SSH_USER`, `VFG_SSH_KEY`,
