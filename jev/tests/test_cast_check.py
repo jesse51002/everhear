@@ -64,23 +64,32 @@ class CastJev(FakeJev):
 
 
 class FakeBridge:
-    """The bridge's cast path: drops the line as the real one does (unless `keeps`), answers `said`,
-    or raises `fails`. Records every cast asked for."""
+    """The bridge's cast path: drops the line as the real one does (unless `keeps`, or asked to
+    `keep` it, a long line's cast, when it only gives the line its cast_id), answers `said`, or
+    raises `fails`. Records every cast asked for, and in `kept` the line ids asked to keep."""
 
     def __init__(self, db):
         self.db = db
         self.asked = []
+        self.kept = []
         self.said = "fired"
         self.keeps = False
         self.fails = None
 
-    def cast(self, line_id, phrase):
+    def cast(self, line_id, phrase, keep=False):
         self.asked.append((line_id, phrase))
+        if keep:
+            self.kept.append(line_id)
         if self.fails:
             raise casting.BridgeError(self.fails)
         if self.keeps:
             return casting.Outcome(False, "409 Jev judged line %s already" % line_id)
         conn = sqlite3.connect(self.db)
+        if keep:
+            conn.execute("UPDATE lines SET cast_id = 'C1' WHERE id = ? AND cast_id IS NULL", (line_id,))
+            conn.commit()
+            conn.close()
+            return casting.Outcome(False, self.said)
         conn.execute("UPDATE lines SET dropped = 'cast', cast_id = 'C1' WHERE id = ?", (line_id,))
         conn.commit()
         conn.close()
@@ -177,14 +186,38 @@ class TestCasting(CastBase):
 
     def test_the_threshold_is_on_the_probability_not_the_confidence(self):
         a = self.lines.add(T0, "Steve", "voice", "Call fireball.")
-        self.cast("Call fireball.", "cast_hot_fireball", p=0.63, confidence=0.45)   # as Jev answered it on 10-11
+        self.cast("Call fireball.", "cast_hot_fireball", p=0.83, confidence=0.45)
         b = self.lines.add(T0 + 1, "Steve", "voice", "Hester.")
         self.cast("Hester.", "cast_hot_fireball", p=0.45, confidence=0.9)
         with self.assertLogs("vfg-jev", "INFO") as logs:
             self.step()
         self.assertEqual(self.bridge.asked, [(a, "hot fireball")])
         self.assertEqual((self.row(a)["dropped"], self.row(b)["jev_class"]), ("cast", "not_relevant"))
-        self.assertIn("cast-check %s Steve · hot fireball p 0.63 → fired" % a, "\n".join(logs.output))
+        self.assertIn("cast-check %s Steve · hot fireball p 0.83 → fired" % a, "\n".join(logs.output))
+
+    def test_a_short_cast_not_sure_fires_and_its_line_is_kept_and_routed_too(self):
+        sure = self.lines.add(T0, "Steve", "voice", "Hot fireball.")
+        self.cast("Hot fireball.", "cast_hot_fireball", p=0.70)   # VFG_JEV_CAST_SURE: dropped
+        shaky = self.lines.add(T0 + 1, "Steve", "voice", "Ice.")
+        self.cast("Ice.", "cast_ice_beam", p=0.63)               # under it: cast, and routed too
+        with self.assertLogs("vfg-jev", "INFO") as logs:
+            self.step()
+        self.assertEqual(self.bridge.asked, [(sure, "hot fireball"), (shaky, "ice beam")])
+        self.assertEqual(self.bridge.kept, [shaky])
+        self.assertEqual(self.row(sure)["dropped"], "cast")
+        r = self.row(shaky)
+        self.assertEqual((r["dropped"], r["cast_id"], r["jev_class"]), (None, "C1", "not_relevant"))
+        self.assertEqual(self.jev.kinds(), ["cast", "cast", "route"])
+        self.assertIn("cast-check %s Steve · ice beam p 0.63 → fired, the line kept, not sure (under 0.70), "
+                      "routing · " % shaky, "\n".join(logs.output))
+
+    def test_the_sure_threshold_is_a_setting(self):
+        self.cfg.cast_sure = 2   # never sure: every cast keeps its line
+        line = self.lines.add(T0, "Steve", "voice", "Hot fireball.")
+        self.cast("Hot fireball.", "cast_hot_fireball", p=1.0)
+        self.step()
+        self.assertEqual(self.bridge.kept, [line])
+        self.assertEqual(self.row(line)["jev_class"], "not_relevant")
 
     def test_an_answer_without_its_probability_goes_on_to_routing(self):
         line = self.lines.add(T0, "Steve", "voice", "Hot variable.")
@@ -202,9 +235,20 @@ class TestCasting(CastBase):
         cast = self.lines.add(T0 + 1, "Steve", "voice", "Hot variable.")
         self.cast("Hot variable.", "cast_hot_fireball")
         self.step(1)
-        self.assertEqual(self.jev.kinds()[0], "cast")
+        # Steve's short line first; Alex's long one (he has the @a one) is routed, then checked
+        self.assertEqual(self.jev.kinds()[:3], ["cast", "route", "cast"])
         self.assertEqual(self.bridge.asked, [(cast, "hot fireball")])
-        self.assertEqual(self.jev.kinds().count("cast"), 1)
+
+    def test_a_short_cast_is_never_queued_behind_long_lines(self):
+        longs = [self.lines.add(T0 + n, "Steve", "voice", "ok so tell me about the castle walls now %d" % n)
+                 for n in range(3)]
+        short = self.lines.add(T0 + 3, "Steve", "voice", "Ice.")
+        self.cast("Ice.", "cast_ice_beam")
+        self.step(3)
+        self.assertEqual(self.jev.kinds()[0], "cast")   # Ice.'s check, before any long line's
+        self.assertEqual(self.bridge.asked[0], (short, "ice beam"))
+        self.assertEqual(self.jev.kinds()[1:], ["route", "cast"] * 3)   # each long line: routed, then checked
+        self.assertTrue(all(self.row(l)["jev_class"] for l in longs))
 
     def test_a_cast_said_while_another_line_is_routed_is_checked_before_the_next(self):
         a = self.lines.add(T0, "Alex", "voice", "build me a big castle by the river")
@@ -219,7 +263,8 @@ class TestCasting(CastBase):
         self.jev.ask = ask_while_steve_casts
         self.cast("Hot variable.", "cast_hot_fireball")
         self.step(1)
-        self.assertEqual(self.jev.kinds(), ["route", "cast", "route"])
+        # a routed, Steve's short cast next, then a's own check, then b routed and checked
+        self.assertEqual(self.jev.kinds(), ["route", "cast", "cast", "route", "cast"])
         self.assertEqual(self.bridge.asked, [(added[0], "hot fireball")])
         self.assertEqual((self.row(a)["jev_class"], self.row(b)["jev_class"]), ("action_oriented", "not_relevant"))
 
@@ -315,19 +360,50 @@ class TestCasting(CastBase):
         self.assertEqual(self.row(b)["jev_class"], "not_relevant")
         self.assertEqual(self.jev.kinds(), ["cast", "route", "cast", "route"])
 
-    def test_no_call_for_a_player_without_incantations_a_typed_line_or_a_long_one(self):
+    def test_no_call_for_a_player_without_incantations_or_a_typed_line_but_a_long_line_has_one(self):
         self.write_store(entry("Steve", "hot fireball"), entry("Steve", "ice beam"))   # no @a one
         self.lines.add(T0, "Alex", "voice", "Hot variable.")                       # no incantation of Alex's
         self.lines.add(T0 + 1, "Steve", "chat", "hot fireball")                    # typed
-        self.lines.add(T0 + 2, "Steve", "voice", "ok so the hot fireball is too weak")   # 8 words
+        self.lines.add(T0 + 2, "Steve", "voice", "ok so the hot fireball is too weak")   # 8 words: checked
         self.lines.add(T0 + 3, "Steve", "voice", "   ")                            # blank: no call at all
         self.step()
-        self.assertEqual(self.jev.kinds(), ["route", "route", "route"])
+        self.assertEqual(self.jev.kinds(), ["route", "route", "route", "cast"])   # the long line: routed, then checked
         os.remove(self.cfg.incantations)                                           # no store: none for anyone
         self.lines.add(T0 + 4, "Steve", "voice", "Hot variable.")
         self.step(1)
-        self.assertEqual(self.jev.kinds(), ["route"] * 4)
+        self.assertEqual(self.jev.kinds(), ["route", "route", "route", "cast", "route"])
         self.assertEqual(self.bridge.asked, [])
+
+    def test_a_cast_in_a_long_line_fires_and_the_line_is_kept_and_routed(self):
+        text = "I still have the floaty effect. Can you remove it? Ice Beam."
+        line = self.lines.add(T0, "Steve", "voice", text)
+        self.cast(text, "cast_ice_beam", 0.98)
+        with self.assertLogs("vfg-jev", "INFO") as logs:
+            self.step()
+        self.assertEqual(self.bridge.asked, [(line, "ice beam")])
+        self.assertEqual(self.bridge.kept, [line])
+        self.assertEqual(self.jev.kinds(), ["route", "cast"])   # routed first: its check cannot change that
+        r = self.row(line)
+        self.assertEqual((r["dropped"], r["cast_id"], r["jev_class"]), (None, "C1", "not_relevant"))
+        self.assertIn("cast-check %s Steve · long · ice beam p 0.98 → fired, the line kept (routed first) · " % line,
+                      "\n".join(logs.output))
+
+    def test_a_long_line_has_its_own_threshold_and_over_1_is_never_checked(self):
+        a = self.lines.add(T0, "Steve", "voice", "ok watch this one, hot fireball, hot fireball")
+        self.cast("ok watch this one, hot fireball, hot fireball", "cast_hot_fireball", 0.65)   # under 0.70
+        b = self.lines.add(T0 + 1, "Steve", "voice", "they are all coming at me, ice beam")
+        self.cast("they are all coming at me, ice beam", "cast_ice_beam", 0.75)
+        with self.assertLogs("vfg-jev", "INFO") as logs:
+            self.step()
+        self.assertEqual(self.bridge.asked, [(b, "ice beam")])
+        self.assertIn("cast-check %s Steve · long · hot fireball p 0.65 → under 0.70, routing" % a,
+                      "\n".join(logs.output))
+        self.cfg.cast_min_long = 2   # long lines unchecked; short ones as ever
+        self.lines.add(T0 + 2, "Steve", "voice", "they are all coming at me again, ice beam")
+        self.lines.add(T0 + 3, "Steve", "voice", "Ice beam.")
+        calls = len(self.jev.calls)
+        self.step(1)
+        self.assertEqual(self.jev.kinds()[calls:], ["cast", "route", "route"])
 
     def test_an_everyone_incantation_counts_and_the_store_is_read_again_when_it_changes(self):
         self.lines.add(T0, "Notch", "voice", "Juicy stake.")
@@ -414,6 +490,28 @@ class TestTheCall(CastBase):
         self.assertEqual(recent[1], "18:22:05 Steve: line 4")
 
 
+class TestTheLongWording(CastBase):
+    def test_a_long_line_is_asked_in_its_own_wording_and_a_short_one_as_ever(self):
+        self.write_store(entry("Steve", "hot fireball", aliases=["hut fireball"]))
+        self.lines.add(T0, "Steve", "voice", "ok everyone stand back now, hot fireball")
+        self.lines.add(T0 + 1, "Steve", "voice", "Hot variable.")
+        self.step()
+        checks = [c for c in self.jev.calls if casting.QUESTION in c[1]]
+        (long_state, long_qs), = [c for c in checks if "stand back" in c[1][casting.QUESTION]["instructions"]]
+        (short_state, short_qs), = [c for c in checks if "Hot variable" in c[1][casting.QUESTION]["instructions"]]
+        q = long_qs[casting.QUESTION]
+        self.assertEqual((long_state["rules"], long_state["examples"]), (casting.LONG_RULES, casting.LONG_EXAMPLES))
+        self.assertTrue(q["instructions"].endswith(casting.LONG_ASK % "Steve"))
+        self.assertEqual(q["criteria"]["cast_hot_fireball"],
+                         'Cast "hot fireball": somewhere in line [1] the player says "hot fireball", or words that '
+                         'sound like it ("hut fireball"), to cast it now. It runs the action hot_fireball.')
+        self.assertEqual(q["criteria"]["not_a_cast"], casting.LONG_NOT_A_CAST_TEXT)
+        q = short_qs[casting.QUESTION]
+        self.assertEqual((short_state["rules"], short_state["examples"]), (casting.RULES, casting.EXAMPLES))
+        self.assertTrue(q["instructions"].endswith(casting.ASK % "Steve"))
+        self.assertEqual(q["criteria"]["not_a_cast"], casting.NOT_A_CAST_TEXT)
+
+
 class TestIncantations(unittest.TestCase):
     def test_own_then_everyones_one_per_phrase(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -433,6 +531,26 @@ class TestIncantations(unittest.TestCase):
             with open(path, "w") as f:   # as the kit: one entry that is not an object, and none is read
                 json.dump({"version": 3, "incantations": [entry("Steve", "fire ball"), "junk"]}, f)
             self.assertEqual(store.for_player("Steve"), [])
+
+    def test_an_option_holds_24_aliases_and_never_cuts_what_it_does(self):
+        does = "Destroy everything: five seconds of fire round a player, then a huge block-destroying blast"
+        aliases = ["destroyed everything", "destroy every thing", "destroys everything", "the stroy everything",
+                   "this troy everything", "destroy every thin", "destroy every think", "destroyed every thing",
+                   "destroys every thing", "test roy everything", "dis troy everything", "destroy every sing",
+                   "destroy every fin", "destroy every wing", "the stray everything", "destroy ever thing",
+                   "dust roy everything", "destroy every ring", "destroy every king", "destroy every ink",
+                   "destroyeverything", "de stroy everything", "destroy evry thing", "destroy everythin"]
+        e = entry("Steve", "destroy everything", action="destroy_everything", aliases=aliases)
+        for describe in (casting.describe, casting.describe_long):
+            got = describe(e, {"destroy_everything": does})
+            self.assertTrue(got.endswith("It %s." % does), describe)
+            self.assertTrue(all('"%s"' % a in got for a in aliases), describe)
+            huge = dict(e, aliases=["x" * 90 + str(n) for n in range(24)])
+            got = describe(huge, {"destroy_everything": does})
+            self.assertLessEqual(len(got), casting.OPTION_MAX)
+            self.assertTrue(got.endswith("It %s." % does))
+            self.assertIn('"%s0"' % ("x" * 90), got)
+            self.assertNotIn('"%s23"' % ("x" * 90), got)   # the last aliases go, never the description
 
     def test_short_enough_labels_and_what_it_does(self):
         self.assertTrue(casting.short_enough("Hot fire bomb. Fireball."))

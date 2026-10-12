@@ -110,10 +110,14 @@ class Bridge(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
         self.server.got.append((self.path, self.headers.get("Authorization"), body))
         conn = sqlite3.connect(self.server.db)
-        conn.execute("UPDATE lines SET dropped = 'cast', cast_id = 'C1' WHERE id = ?", (body["line_id"],))
+        if body.get("keep"):   # a long line's cast: the line is kept, and carries the cast
+            conn.execute("UPDATE lines SET cast_id = 'C2' WHERE id = ?", (body["line_id"],))
+        else:
+            conn.execute("UPDATE lines SET dropped = 'cast', cast_id = 'C1' WHERE id = ?", (body["line_id"],))
         conn.commit()
         conn.close()
-        raw = json.dumps({"id": "C1", "status": "fired", "copy": "hot_fireball", "line": "dropped"}).encode()
+        raw = json.dumps({"id": "C1", "status": "fired", "copy": "hot_fireball",
+                          "line": "kept" if body.get("keep") else "dropped"}).encode()
         self.send_response(202)
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
@@ -151,27 +155,46 @@ class TestTheCastCheck(WithJev):
         now = time.time()
         cast = lines.add(now, "Steve", "voice", "Hot fire ball.", peak=-8.0)
         castle = lines.add(now + 0.01, "Steve", "voice", "build me a castle", peak=-8.2)
+        inside = lines.add(now + 0.02, "Steve", "voice", "ok stand back and build me a wall, hot fireball")
         with open(journal, "w") as out:
             p = subprocess.Popen([sys.executable, "-u", os.path.join(ROOT, "jev_filter.py")], env=env,
                                  stdout=out, stderr=subprocess.STDOUT, cwd=ROOT)
         self.addCleanup(lambda: p.poll() is None and p.kill())
         end = time.monotonic() + 5
-        while not (os.path.exists(feed) and os.path.getsize(feed)) and time.monotonic() < end:   # castle, fed at once
+        def fed():
+            try:
+                with open(feed, encoding="utf-8") as f:
+                    return len(f.read().splitlines())
+            except FileNotFoundError:
+                return 0
+
+        while (len(self.server.calls) < 5 or fed() < 2) and time.monotonic() < end:   # 3 checks, 2 routing calls
             time.sleep(0.01)
         p.send_signal(signal.SIGTERM)
         self.assertEqual(p.wait(timeout=5), 0)
         self.assertEqual(bridge.got, [("/v1/jev/casts", "Bearer bridge-token-not-a-secret",
-                                       {"line_id": cast, "phrase": "hot fireball"})])
-        self.assertEqual(len(self.server.calls), 3)
+                                       {"line_id": cast, "phrase": "hot fireball"}),
+                                      ("/v1/jev/casts", "Bearer bridge-token-not-a-secret",
+                                       {"line_id": inside, "phrase": "hot fireball", "keep": True})])
+        self.assertGreaterEqual(len(self.server.calls), 5)
         with open(feed, encoding="utf-8") as f:
-            self.assertEqual([l.split(" | ", 1)[1] for l in f.read().splitlines()], ["build me a castle"])
+            self.assertEqual([l.split(" | ", 1)[1] for l in f.read().splitlines()][:2],
+                             ["build me a castle", "ok stand back and build me a wall, hot fireball"])
+        self.assertEqual(conn.execute("SELECT dropped, cast_id FROM lines WHERE id = ?", (inside,)).fetchone(),
+                         (None, "C2"))
         self.assertEqual(conn.execute("SELECT dropped, jev_class FROM lines WHERE id = ?", (cast,)).fetchone(),
                          ("cast", None))
-        self.assertEqual(sorted(r[0] for r in conn.execute("SELECT ref FROM usage")),
-                         sorted(["cast:" + cast, "cast:" + castle, castle]))
+        refs = [r[0] for r in conn.execute("SELECT ref FROM usage")]
+        self.assertEqual(sorted(r for r in refs if not r.startswith("gather:")),
+                         sorted(["cast:" + cast, "cast:" + castle, castle, "cast:" + inside, inside]))
         with open(journal, encoding="utf-8") as f:
             text = f.read()
-        self.assertIn("cast check on · at 0.50 or over · the bridge on 127.0.0.1:%d" % bridge.server_address[1], text)
+        self.assertIn("cast check on · at 0.50 or over, dropped at 0.70, a long line at 0.70 · the bridge on "
+                      "127.0.0.1:%d"
+                      % bridge.server_address[1], text)
+        self.assertIn("cast-check %s Steve · long · hot fireball p 0.90 → fired, the line kept (routed first) · "
+                      % inside,
+                      text)
         self.assertIn("cast-check %s Steve · hot fireball p 0.90 → fired · " % cast, text)
         self.assertIn("cast-check %s Steve · no p 0.90 → routing · " % castle, text)
         self.assertNotIn("bridge-token-not-a-secret", text)

@@ -585,8 +585,11 @@ class TestJevCasts(CastCase):
         super().setUp()
         self.casts.layer2 = False  # these lines' casts are the Jev filter's alone
 
-    def jev(self, line_id, phrase="fire ball", token="test"):
-        return self.request("POST", "/v1/jev/casts", {"line_id": line_id, "phrase": phrase}, token=token)
+    def jev(self, line_id, phrase="fire ball", token="test", keep=None):
+        body = {"line_id": line_id, "phrase": phrase}
+        if keep is not None:
+            body["keep"] = keep
+        return self.request("POST", "/v1/jev/casts", body, token=token)
 
     def lines(self):
         return self.rows("SELECT id, dropped, cast_id FROM lines WHERE source = 'voice' ORDER BY at")
@@ -678,6 +681,67 @@ class TestJevCasts(CastCase):
         self.write_store(entry("Steve", "fire ball"))
         self.line("hello there", player="Notch")   # none now
         self.assertEqual(len(self.casts._received), 1)
+
+    def test_keep_casts_the_same_and_keeps_the_line(self):
+        _, line = self.line("I still have the floaty effect. Can you remove it? Fire ball.")
+        status, doc = self.jev(line["id"], keep=True)
+        self.assertEqual((status, doc["status"], doc["copy"], doc["line"]), (202, "fired", "zap", "kept"))
+        self.assertEqual(self.lines(), [(line["id"], None, doc["id"])])   # kept, carrying the cast
+        self.assertEqual(self.rows("SELECT layer, line_id, client_cast_id FROM casts"),
+                         [("jev", line["id"], "jev:" + line["id"])])
+        self.assertTrue(self.events(1))
+        self.assertEqual(self.jev(line["id"], keep=True), (status, doc))   # asked again: the first
+
+    def test_keep_with_a_cast_that_does_not_fire_leaves_the_lines_cast_id(self):
+        self.assertEqual(self.cast(start=-2.0)[1]["status"], "fired")
+        self.clock.advance(1.5)
+        _, line = self.line("watch this everybody, look at me now, fire ball", start=-1.0, length=0.5)
+        status, doc = self.jev(line["id"], keep=True)
+        self.assertEqual((doc["status"], doc["line"]), ("cooldown", "kept"))
+        self.assertEqual(self.lines(), [(line["id"], None, None)])
+        self.clock.advance(2.0)   # past fire ball's 3 s cooldown
+        _, spotted = self.cast(start=-0.9, length=0.3)
+        self.assertEqual(spotted["status"], "fired")
+        self.clock.advance(5)
+        _, other = self.line("ok watch this one too everybody, fire ball", start=-6.0, length=1.0)
+        self.assertEqual(self.lines()[-1], (other["id"], None, spotted["id"]))
+        _, doc = self.jev(other["id"], keep=True)
+        self.assertEqual((doc["status"], doc["line"]), ("duplicate", "kept"))
+        self.assertEqual(self.lines()[-1], (other["id"], None, spotted["id"]))
+
+    def test_a_phrase_said_early_in_a_long_line_is_stale(self):
+        """An 8 s line: the phrase at its start was said about 6 s before it ended, too late."""
+        _, early = self.line("Fire ball. Can you also give me some food please and a sword", start=-9, length=8)
+        status, doc = self.jev(early["id"], keep=True)
+        self.assertEqual((status, doc["status"], doc["line"]), (202, "stale", "kept"))
+        self.assertRegex(doc["error"], r"^the phrase was said about 6\.\d s before its line ended, past the 3 s")
+        self.assertNotIn("copy", doc)
+        self.assertEqual(self.lines(), [(early["id"], None, None)])
+
+    def test_a_phrase_at_the_end_or_said_again_there_or_not_found_fires(self):
+        for n, text in enumerate(("Can you also give me some food please and then fire ball",
+                                  "Fire ball, I said, can you give me food please, fire ball",
+                                  "watch this everybody look at me now right now kaboom")):
+            self.clock.advance(10)   # past the cooldown and apart from the last one's window
+            _, line = self.line(text, start=-9, length=8)
+            self.assertEqual(self.jev(line["id"], keep=True)[1]["status"], "fired", text)
+
+    def test_a_kept_cast_may_come_after_jev_routed_the_line(self):
+        _, line = self.line("ok watch this everybody, look at me, fire ball")
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("UPDATE lines SET jev_class = 'action_oriented'")   # routed first, as a long line is
+        conn.commit()
+        conn.close()
+        status, doc = self.jev(line["id"], keep=True)
+        self.assertEqual((status, doc["status"], doc["line"]), (202, "fired", "kept"))
+        self.assertEqual(self.jev(line["id"])[0], 202)   # asked again: the first, whatever it asks
+
+    def test_keep_is_true_or_false(self):
+        _, line = self.line("Affordable.")
+        status, doc = self.jev(line["id"], keep="yes")
+        self.assertEqual(status, 400)
+        self.assertTrue(doc["error"].startswith("keep: "))
+        self.assertEqual(self.jev(line["id"], keep=False)[1]["line"], "dropped")
 
     def test_asked_again_answers_the_first(self):
         _, line = self.line("Affordable.")
