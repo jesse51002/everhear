@@ -111,7 +111,7 @@ def test_command_refuses_blocks_alone_and_after_run(catalog, word):
               "minecraft:" + word + " ~ ~ ~ stone", "execute as @a at @s run " + word + " ~ ~-1 ~ stone",
               "execute if entity @a run execute at @r run " + word + " ~ ~ ~ air",
               "return run " + word + " ~ ~ ~ stone"):
-        with pytest.raises(ValueError, match="building is the orchestrator's"):
+        with pytest.raises(ValueError, match="else an implementer's: hand it off"):
             check(catalog, "command", commands=[c])
     with pytest.raises(ValueError):
         check(catalog, "command", commands=["time set day", "execute at Steve run " + word + " ~ ~ ~ tnt"])

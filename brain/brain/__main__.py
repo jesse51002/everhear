@@ -2,10 +2,11 @@
 
 Start: take the lock; `vfg up`; `vfg watchers set join,leave,death,advancement,server`; Jev's
 lookout (prompts/lookout.md) and menu (every action's line, set again when the actions change);
-the actions, which each call reloads where a file changed; the command references in the
+the actions, which each loop reloads where a file changed; the command references in the
 background (about 95 s the first time on a server version), tried again every 5 minutes until
-they load; the old brain's tasks file in its folder set aside, renamed, never read; the context
-from `vfg context --json`, the last VFG_BRAIN_HISTORY_HOURS, what is older than two minutes and
+they load (the opening's command list, and a refused command's reference in its result); the
+old brain's tasks file in its folder set aside, renamed, never read; the context from `vfg
+context --json`, the last VFG_BRAIN_HISTORY_HOURS, what is older than two minutes and
 unread marked processed (history is never acted on), and every context line unread with it, a
 line from the last two minutes still unread answered; the tasks, every row of the box's `tasks`
 table, which `vfg context --json` gives after the rows, and those a crash left open failed as
@@ -13,8 +14,9 @@ interrupted; then `vfg watch --after <seq>` followed for good, from the feed's h
 the context was read (`vfg context --json` gives it last, with rows or none), so nothing older is
 ever read as new; and the greeting, skipped when nobody is on. A read of the context that fails
 is tried again, never followed from 0.
-Stop (SIGTERM or SIGINT): read nothing new, let the calls in flight finish for up to 10 s, stop
-the implementers and fail their tasks as stopped, let the tasks' writes go out, send the usage
+Stop (SIGTERM or SIGINT): read nothing new, drop what waits for a turn (a report dropped closes
+its task in code), let the loops in flight finish for up to 10 s, stop the implementers and fail
+their tasks as stopped, let the tasks' writes go out, send the usage
 rows still queued, exit 0. The start sends the queue too (`vfg usage flush`), for the rows of
 calls made while it was down.
 """
@@ -38,7 +40,6 @@ import vfg_llm
 
 from . import actions, config, running
 from .act import Acts
-from .action_planner import Planner
 from .call import Call
 from .config import Config, log
 from .context import Context, parse
@@ -116,27 +117,22 @@ async def load_refs(cfg: Config, vfg, http):
         refs = await refs_module.load(cfg.brain_dir, vfg, http=http,
                                       log=lambda msg, *more: log("refs", str(msg).removeprefix("refs: "), *more))
     except Exception as e:  # noqa: BLE001 — run on without them rather than die
-        log("refs", f"FAILED to load ({type(e).__name__}: {e}); a refused command is not retried until they load")
+        log("refs", f"FAILED to load ({type(e).__name__}: {e}); a refused command comes back without its reference "
+                    "until they load")
         return None
     log("refs", f"server {refs.version}: {len(refs.names())} commands")
     return refs
 
 
-async def keep_loading_refs(cfg: Config, vfg, http, brain: Brain, planner: Planner, every: float) -> None:
+async def keep_loading_refs(cfg: Config, vfg, http, brain: Brain, every: float) -> None:
     """In the background while lines are answered: load the references, and when that fails
     try again every `every` seconds until it works."""
     while True:
         refs = await load_refs(cfg, vfg, http)
         if refs is not None:
-            brain.refs = planner.refs = refs
+            brain.refs = refs
             return
         await asyncio.sleep(every)
-
-
-def orchestrator_of(catalog, ask, *, owner, checkpoint):
-    """The orchestrator's call (brain/orchestrator.py), imported only when the brain starts one."""
-    from .orchestrator import Orchestrator
-    return Orchestrator(catalog, ask, owner=owner, checkpoint=checkpoint)
 
 
 def read_context(out: str) -> tuple[Context, int, list[dict]] | None:
@@ -205,8 +201,8 @@ def retire_tasks_file(cfg: Config) -> None:
 
 
 async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, catalog=None, refs=LOAD,
-                ask=None, respond_ask=None, plan_ask=None, orchestrator_ask=None, make_orchestrator=orchestrator_of,
-                make_implementers=implementers, http: httpx.AsyncClient | None = None) -> int:
+                ask=None, respond_ask=None, make_implementers=implementers, http: httpx.AsyncClient | None = None,
+                clock=time.monotonic) -> int:
     cfg.brain_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     retire_tasks_file(cfg)
     later = Later(vfg)
@@ -222,16 +218,11 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
     hidden = actions.hidden_commands()
     copies = running.Refresher(vfg, cfg.running_ttl_s)
     world = World(vfg, cfg.running_file, catalog, refresher=copies)
-    planner = Planner(plan_ask or asker(cfg.plan_model, cfg.plan_reasoning, cfg.timeout_s, cfg.plan_providers), cfg.plan_model,
-                      None if refs is LOAD else refs, hidden=hidden, check=cfg.plan_check)
     call = Call(catalog, ask or asker(cfg.model, cfg.reasoning, cfg.timeout_s, cfg.providers), owner=cfg.owner,
                 hidden=hidden, checkpoint=cfg.checkpoint)
-    respond = Respond(catalog, respond_ask or asker(cfg.respond_model, cfg.respond_reasoning, cfg.timeout_s, cfg.respond_providers),
+    respond = Respond(catalog, respond_ask or asker(cfg.respond_model, cfg.respond_reasoning, cfg.respond_timeout_s,
+                                                    cfg.respond_providers),
                       owner=cfg.owner, checkpoint=cfg.checkpoint)
-    orchestrator = make_orchestrator(
-        catalog, orchestrator_ask or asker(cfg.orchestrator_model, cfg.orchestrator_reasoning,
-                                           cfg.orchestrator_timeout_s, cfg.orchestrator_providers),
-        owner=cfg.owner, checkpoint=cfg.checkpoint)
 
     loaded = await load_context(vfg, cfg.history_hours, stop)
     if loaded is None:
@@ -252,13 +243,13 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
         await brain.on_report(name, status, text, description, made)
 
     impl = make_implementers(on_report, tasks.set_session)  # a session is kept as soon as the CLI names it
-    acts = Acts(vfg=vfg, later=later, catalog=catalog, planner=planner, tasks=tasks, implementers=impl,
-                world=world, orchestrator=orchestrator, repo=cfg.repo, server=cfg.server,
-                action_timeout_s=cfg.action_timeout_s)
+    acts = Acts(vfg=vfg, later=later, catalog=catalog, tasks=tasks, implementers=impl, world=world, repo=cfg.repo,
+                server=cfg.server, action_timeout_s=cfg.action_timeout_s)
     brain = Brain(ctx=ctx, call=call, respond=respond, acts=acts, world=world, tasks=tasks, implementers=impl,
-                  later=later, catalog=catalog, refs=None if refs is LOAD else refs,
+                  later=later, catalog=catalog, refs=None if refs is LOAD else refs, clock=clock,
                   start=start, load=lambda: load_context(vfg, cfg.history_hours),
-                  menu=lambda text: later("jev", "menu", "set", text))
+                  menu=lambda text: later("jev", "menu", "set", text), steps=cfg.loop_steps,
+                  seconds=cfg.loop_seconds, waiting=cfg.turn_waiting, settle_s=cfg.turn_settle_s)
 
     for t in tasks.open_ones():  # their implementers went with the last run
         record = f"{t['name']} failed: interrupted, the brain restarted while it ran"
@@ -269,15 +260,15 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
     background = [asyncio.create_task(brain.follow(watch), name="watch")]
     if refs is LOAD:
         background.append(asyncio.create_task(
-            keep_loading_refs(cfg, vfg, http, brain, planner, REFS_RETRY_S), name="refs"))
+            keep_loading_refs(cfg, vfg, http, brain, REFS_RETRY_S), name="refs"))
     copies.start()
     greeting = await vfg("say", GREETING, timeout=30)
     if greeting.code != 0 and "nobody" not in (greeting.stderr + greeting.stdout).lower():
         log("start", f"the greeting failed: {(greeting.stderr or greeting.stdout).strip()[-200:]}")
     log("start", f"pid {os.getpid()}; {len(ctx.rows)} rows of context, following from #{brain.position()} "
                  f"({len(history)} history marked read); {len(rows)} tasks; {len(catalog.names())} actions; "
-                 f"brain {cfg.model} {cfg.reasoning}; orchestrator {cfg.orchestrator_model} "
-                 f"{cfg.orchestrator_reasoning}; respond {cfg.respond_model}; planner {cfg.plan_model}; "
+                 f"brain {cfg.model} {cfg.reasoning}, {cfg.loop_steps} steps and {cfg.loop_seconds:g} s a loop; "
+                 f"respond {cfg.respond_model}; turns: {cfg.turn_waiting} waiting, {cfg.turn_settle_s:g} s settle; "
                  f"owner {cfg.owner or '(not set)'}; server {cfg.server}")
 
     await stop.wait()

@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """The raw-line replay with the whole conversation: Prototype_Brain's first required test.
 
+GONE WITH THE BRAIN LOOP: it does not run on this branch. It replayed Prototype_Brain's one call
+per line (`Call.decide`, a decision of parts with its reply, and its prompt built by `Call.cached`),
+which Prototype_Brain_Loop replaced with a loop of steps (brain/brain/call.py's `Step`, run by
+loop.py). The loop's replay is `integration/loop_replay.py`. lines.jsonl files this script wrote are
+still read by lines_score.py and taskcall.py. What follows is this script as it was.
+
 Every direct-ask LINE of the 2026-10-08 playtest (357, Jev's `direct_ask`, today's
 `action_oriented`), in the order Jev fed them, through the brain's real call: `brain.call.Call`
 with the real catalog, prompt and command references, built as `brain/__main__.py` builds it, on
@@ -29,7 +35,6 @@ prompt of every 50th call in prompts/.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import hashlib
 import json
 import subprocess
@@ -172,6 +177,10 @@ async def run(args) -> None:
     print(f"{count} calls, ${spent:.2f}; batches the timer fired before the last line: {len(clock.batches)}")
 
 
+GONE = ("integration/replay/lines.py replayed Prototype_Brain's one call per line (Call.decide), gone with "
+        "Prototype_Brain_Loop: replay the loop with integration/loop_replay.py")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--db", required=True, help="the playtest's vfg.db")
@@ -180,7 +189,8 @@ def main() -> None:
     ap.add_argument("--only", default="", help="these lines only, by their LINE numbers: 13,15,18")
     ap.add_argument("--dry", action="store_true", help="write each chosen line's prompt to prompts/, call nothing")
     ap.add_argument("--budget", type=float, default=4.0, help="stop once this many dollars are spent (4)")
-    asyncio.run(run(ap.parse_args()))
+    ap.parse_args()
+    sys.exit(GONE)  # run() below calls Call.cached and Call.decide, which the loop's Call no longer has
 
 
 if __name__ == "__main__":

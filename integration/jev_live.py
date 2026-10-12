@@ -12,13 +12,15 @@ Real:  a Minecraft 26.3 server with Carpet's fake players Steve and Alex (integr
 Posted as the mod posts them: each line said (POST /v1/lines), a second or two apart.
 
 Each scenario is an ask said in two pieces, with the other player saying something between them
-that is about the same thing on purpose. Per scenario: the feed has ONE LINE for the ask, its text
-the first piece … the ask; the other player's line is never asked about and in no group; the
-brain's call is for that line (its usage row, brain.log, the task it opened), not for the first
-piece; and, a bonus, what the brain did is in the world (over RCON). Jev is not deterministic:
-every line's verdict is printed, and a scenario whose first piece Jev sent to the AI on its own,
-or whose ask it did not, is reported as Jev's routing, not the gather's, and skipped. PASS/FAIL per
-check; exit 1 when one failed or no scenario could be checked. Each run starts a new transcript:
+that is about the same thing on purpose. Per scenario: the feed has ONE LINE for the ask, its
+text the first piece … the ask; the other player's line is never asked about and in no group;
+the brain's turn is for that line (its usage rows, Respond's `#seq` and its loop's steps'
+`#seq s<n>`; brain.log's Respond line with the line's words and the loop's line for the asker;
+the task it opened), not for the first piece; and, a bonus, what the brain did is in the world
+(over RCON). Jev is not deterministic: every line's verdict is printed, and a scenario whose first
+piece Jev sent to the AI on its own, or whose ask it did not, is reported as Jev's routing, not
+the gather's, and skipped. PASS/FAIL per check; exit 1 when one failed or no scenario could be
+checked. Each run starts a new transcript:
 the last run's vfg.db, feed, lookout, menu and logs move to vfg/runs/. --no-brain checks Jev alone
 (no OpenRouter). The server is left down unless --keep-up. Never `down --all`, `--purge-key`,
 `--regen`, `key` or `carpet`: other builders share REALMC_ROOT.
@@ -65,7 +67,10 @@ SCENARIOS = [
 
 JUDGE = re.compile(r"^judge (\S+) \S+ \S+ (\S+) (\S+) · (.*) · (\d+)ms")
 GATHER = re.compile(r"^gather (\S+) \S+ · (\d+) asked, (\d+) yes: (.*) · no: (.*) · (\d+)ms (\S+)tok")
-SAID = re.compile(r"^\S+ (brain|respond) #(\d+) \S+: (.*?) -> ")
+# What brain.log says of a line's turn: Respond's answer, with the line's words (`respond #5 Steve: '…' -> …`),
+# and the loop's last line (`loop #5 Steve: 1 step(s), …, ended reply`); a step's line holds no words of the line.
+SAID = re.compile(r"^\S+ respond #(\d+) (\S+): (.*?) -> ")
+LOOP = re.compile(r"^\S+ loop #(\d+) (\S+): \d+ step\(s\), .*, ended (\S+)$")
 
 
 def iso(t):
@@ -189,20 +194,28 @@ def scenario(run, name, asker, other, said, world):
     if not run.brain or not line:
         return
     run.replies.await_reply(a, 90)
-    use = wait_for(lambda: sorted(u["component"] for u in live.sql("SELECT component FROM usage WHERE ref = ?",
-                                                                   ("#%d" % a["seq"],))), 15) or []
-    logged = [m.group(3) for m in map(SAID.match, live.log_since(live.mark).splitlines())
-              if m and m.group(2) == str(a["seq"])]
+
+    def calls(seq):  # a line's model calls: Respond's (`#seq`) and its loop's steps (`#seq s<n>`)
+        return live.sql("SELECT component, ref FROM usage WHERE ref = ? OR ref LIKE ? ORDER BY id",
+                        ("#%d" % seq, "#%d s%%" % seq))
+    use = wait_for(lambda: calls(a["seq"]), 15) or []
+    log = live.log_since(live.mark).splitlines()
+    worded = [m.group(3) for m in map(SAID.match, log) if m and m.group(1) == str(a["seq"])]
+    looped = [(m.group(2), m.group(3)) for m in map(LOOP.match, log) if m and m.group(1) == str(a["seq"])]
     opened = [t for t in live.sql("SELECT * FROM tasks WHERE player = ? ORDER BY created_at", (asker,))
               if parse_iso(t["created_at"]) >= a["at"] - 2]   # the brain's tasks, in vfg.db by name
     task = opened[0] if opened else {}
     first_fed = rows[0]["fed_at"] and [r["seq"] for r in live.rows(run.start_seq, "LINE") if r["text"] == said[0]]
-    alone = first_fed and live.sql("SELECT id FROM usage WHERE ref = ?", ("#%d" % first_fed[0],))
-    rep.check(a["reply"] and use and logged and all(t == repr(group[:80]) for t in logged)
+    alone = first_fed and calls(first_fed[0])
+    rep.check((a["reply"] or a.get("silent")) and use and (worded or looped)
+              and all(t == repr(group[:80]) for t in worded) and all(who == asker for who, _ in looped)
               and (not task or task.get("line") == group) and not alone,
-              "the brain's call is for that LINE (%s #%d%s), and none for the first piece alone"
-              % (" and ".join(use) or "no call", a["seq"], ", task %s's line the group" % task["name"] if task else ""),
-              "usage %r; brain.log %r; task %r; first piece's calls %r" % (use, logged, task, alone))
+              "the brain's turn is for that LINE (#%d: %s%s%s), and none for the first piece alone" % (
+                  a["seq"], ", ".join("%s %s" % (u["component"], u["ref"]) for u in use) or "no call",
+                  "; its loop ended %s" % looped[0][1] if looped else "",
+                  "; task %s's line the group" % task["name"] if task else ""),
+              "usage %r; Respond's words %r; loop %r; task %r; first piece's calls %r"
+              % (use, worded, looped, task, alone))
     effects = [e for e in world["effects"] if live.effect_level(asker, e) is not None]
     items = {i: live.count_items(asker, i) - before[i] for i in world["items"]}
     rep.extra(effects or any(n > 0 for n in items.values()),

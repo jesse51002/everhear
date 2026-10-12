@@ -3,12 +3,14 @@ level, game mode, effects) and items by slot, the time and the weather (one `vfg
 --items`), the running copies (running.json, kept fresh by running.Refresher), the saved places
 (`vfg place list`) and the incantations (`vfg incantation list --json`).
 
-A live brain call wants the world as it is now, so it fetches the state, unless a snapshot
-younger than STATE_FRESH_S is there to share; past STATE_WAIT_S it goes on with the last good
-one, and the fetch finishes for the next call. Respond takes the last snapshot without waiting:
-banter needs no fresh position. Respond's players have their place and state, no items. The
-incantations change rarely and are fetched at most every INCANTATIONS_TTL_S; until `vfg
-incantation` exists they are "none".
+A brain loop reads the world once, at its start (Prototype_Brain_Loop), so it fetches the state
+then, unless a snapshot younger than STATE_FRESH_S is there to share; past STATE_WAIT_S it goes
+on with the last good one, and the fetch finishes for the next call. It is shown the items of the
+speaker alone (a report's: its task's player's), and RUNNING NOW in full; another player's items
+come from the loop's read tool (items()), from a state fetched for it. Respond takes the last
+snapshot without waiting: banter needs no fresh position. Respond's players have their place and
+state, no items. The incantations change rarely and are fetched at most every
+INCANTATIONS_TTL_S; until `vfg incantation` exists they are "none".
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import asyncio
 import contextlib
 import json
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -93,19 +96,26 @@ def condition(p: dict) -> str:
     return out
 
 
-def players(world: dict[str, Any] | None, items: bool = True) -> str:
-    """PLAYERS ONLINE, each with where they are, their state and, with `items`, their items by
-    slot: `- Steve at 197 68 251 in overworld: 14/20 health, …; Steve's items, by slot: …`."""
+def items_line(p: dict) -> str:
+    """One online player's items by slot, as `item modify` names the slots."""
+    return readable([str(x) for x in p.get("items") or []]) or "items unknown"
+
+
+def players(world: dict[str, Any] | None, items: bool | Iterable[str] = True) -> str:
+    """PLAYERS ONLINE, each with where they are, their state and their items by slot: every
+    player's with `items` True, none with False, else only the players it names (`- Steve at 197
+    68 251 in overworld: 14/20 health, …; Steve's items, by slot: …`)."""
     if not isinstance(world, dict):
         return "PLAYERS ONLINE: unknown (the server's state could not be read)"
     if world.get("rcon"):
         return f"PLAYERS ONLINE: unknown (Minecraft did not answer: {world['rcon']})"
+    shown = None if isinstance(items, bool) else set(items)
     rows = []
     for p in world.get("online") or []:
         where = " ".join(str(c) for c in p["pos"]) if p.get("pos") else "?"
         said = [condition(p)]
-        if items:
-            said.append(readable([str(x) for x in p.get("items") or []]) or "items unknown")
+        if items is True or (shown is not None and p.get("name") in shown):
+            said.append(items_line(p))
         said = "; ".join(x for x in said if x)
         rows.append(f"- {p.get('name')} at {where} in {p.get('dimension') or '?'}" + (f": {said}" if said else ""))
     return "PLAYERS ONLINE:\n" + ("\n".join(rows) or "nobody")
@@ -154,10 +164,10 @@ class World:
         self.incantations_at = float("-inf")
         self.later: set[asyncio.Task] = set()
 
-    async def fresh_state(self, wait: float = STATE_WAIT_S) -> dict[str, Any] | None:
-        """The state now: a snapshot younger than STATE_FRESH_S, else a fetch, waited for up to
+    async def fresh_state(self, wait: float = STATE_WAIT_S, younger: float = STATE_FRESH_S) -> dict[str, Any] | None:
+        """The state now: a snapshot younger than `younger` s, else a fetch, waited for up to
         `wait` s; past it (or with `wait` 0) the last good one, while the fetch goes on."""
-        if self.state is not None and self.clock() - self.state_at < STATE_FRESH_S:
+        if self.state is not None and self.clock() - self.state_at < younger:
             return self.state
         if self.fetching is None or self.fetching.done():
             self.fetching = asyncio.create_task(self._fetch_state(), name="state")
@@ -168,7 +178,8 @@ class World:
                 log("world", f"vfg state took over {wait:g} s: the last state there is")
         return self.state
 
-    async def _fetch_state(self) -> None:
+    async def _fetch_state(self) -> dict[str, Any] | None:
+        """One `vfg state --json --items`: the state it got, kept as the last good one, or None."""
         t0 = time.perf_counter()
         r = await self.vfg("state", "--json", "--items", timeout=STATE_TIMEOUT_S)
         try:
@@ -177,8 +188,9 @@ class World:
             got = None
         if not isinstance(got, dict):
             log("world", f"vfg state failed ({why(r)}), {int((time.perf_counter() - t0) * 1000)} ms")
-            return
+            return None
         self.state, self.state_at = got, self.clock()
+        return got
 
     async def places(self) -> tuple[str, set[str] | None]:
         """The `SAVED PLACES: …` line, from `vfg place list` (vfg answers from its 30 s cache), and
@@ -204,13 +216,32 @@ class World:
     def copies(self) -> dict[str, dict]:
         return running.read(self.running_file)
 
-    async def seen(self, *, wait: float = STATE_WAIT_S, items: bool = True) -> Seen:
-        """The world for one call: the state, the places and the incantations at once."""
+    async def seen(self, *, wait: float = STATE_WAIT_S, items: bool | Iterable[str] = True,
+                   full: bool = False) -> Seen:
+        """The world for one call: the state, the places and the incantations at once; `items`
+        as players() takes it, and with `full` RUNNING NOW as the brain sees it (running.full)."""
         state, (places, known), incantations = await asyncio.gather(
             self.fresh_state(wait), self.places(), self.fetch_incantations())
         copies = self.copies()
-        return Seen(players=players(state, items), clock=clock(state), running=running.block(copies, self.catalog),
-                    places=places, incantations=incantations, copies=copies, known=known)
+        shown = running.full(copies, self.catalog) if full else running.block(copies, self.catalog)
+        return Seen(players=players(state, items), clock=clock(state), running=shown, places=places,
+                    incantations=incantations, copies=copies, known=known)
+
+    async def items(self, player: str) -> tuple[bool, str]:
+        """The read tool: (True, `Alex's items, by slot: …`) from a state fetched for it, or (False,
+        why not): the player is not online, or no fresh state could be read. It fetches its own,
+        waiting for it up to STATE_TIMEOUT_S, never a snapshot or a fetch begun before it (the step's
+        actions may have changed the items), and an older state never passes for a fresh one: it reads
+        its own fetch's answer, never the last good state another fetch left."""
+        state = await self._fetch_state()
+        if state is None:
+            return False, "the server's state could not be read just now: nothing read, try again"
+        if state.get("rcon"):
+            return False, f"Minecraft did not answer: {state['rcon']}"
+        for p in state.get("online") or []:
+            if str(p.get("name") or "").lower() == player.strip().lower():
+                return True, items_line(p)
+        return False, f"{player} is not online"
 
     async def glance(self) -> Seen:
         """For Respond: the last state, never waited for (one is fetched for the next call), with

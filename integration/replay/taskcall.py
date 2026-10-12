@@ -44,13 +44,16 @@ This replays it on the 2026-10-08 playtest, model calls only, nothing run:
   lines). A task's status is open while a T<n> of its chain has no report yet, else its last
   report's; unknown when its chain has none.
 
-THE BUILT ORCHESTRATOR (`--built`): the same replay through brain/brain/orchestrator.py as built,
+THE BUILT ORCHESTRATOR (`--built`), GONE WITH THE BRAIN LOOP: brain/brain/orchestrator.py and its
+prompt are gone (Prototype_Brain_Loop made the orchestrator call tools of the brain's loop), so
+`--built` refuses to run; the rest of this script, the prompt versions in taskcall_prompts/, still
+runs, as a measure of the old design. As it was: the same replay through the built orchestrator,
 its opening, its tail and its answer's checks, with its prompt (brain/prompts/orchestrator.md) and,
 unless given, the model, reasoning, providers and timeout of the brain's orchestrator settings. Its
-head is the line as the brain core gives it (`THE LINE #<n>, …`), its TASKS each task as a row of
+head was the line as the brain core gave it (`THE LINE #<n>, …`), its TASKS each task as a row of
 the tasks table (what it made not known, null), and RUNNING NOW none. The conversation's task rows
-read as the brain posts them: `AI task [<name>]: new: …` and `follow-up: …`. An answer is a `kind`
-(new, follow_up, edit, stop or reply) with the fields the brain gets; a reply only names no task,
+read as the brain posted them: `AI task [<name>]: new: …` and `follow-up: …`. An answer was a `kind`
+(new, follow_up, edit, stop or reply) with the fields the brain got; a reply only named no task,
 and taskcall_score.py counts it apart. The brain's route `orchestrator` is read as `implementer` is.
 
     (cd brain && uv sync --frozen --inexact)
@@ -58,7 +61,6 @@ and taskcall_score.py counts it apart. The brain's route `orchestrator` is read 
     $PY integration/replay/taskcall.py --db DIR/vfg/vfg.db --lines FULL/lines.jsonl --out OUT \\
         --model deepseek/deepseek-v4-flash --reasoning off --limit 15   # a pilot: the first 15 parts
     $PY integration/replay/taskcall.py --db … --lines … --out OUT --model …   # every part
-    $PY integration/replay/taskcall.py --db … --lines … --out OUT --built --limit 3   # the built one
     python3 integration/replay/taskcall_score.py OUT
 
 A second run into the same OUT goes on after the last line recorded, the tasks rebuilt from the
@@ -80,7 +82,7 @@ import re
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -94,7 +96,7 @@ from playtest import RESULT_MAX, BRIEF_MAX, Playtest, short  # noqa: E402
 import httpx  # noqa: E402
 import vfg_llm  # noqa: E402
 from brain import actions, config, names  # noqa: E402
-from brain.call import Event, library  # noqa: E402
+from brain.call import library  # noqa: E402
 from brain.context import Context, Row  # noqa: E402
 from pydantic import BaseModel, Field, model_validator  # noqa: E402
 
@@ -104,6 +106,8 @@ TID = re.compile(r"\bT(\d+)\b")
 FOLLOW_UP = re.compile(r"^\W*(change\s+to|cancel)\s+(T\d+)", re.I)
 NEW, STOP, EDIT, REPLY = "new", "stop", "edit", "reply"
 ROUTED = ("implementer", "orchestrator")  # the brain's route to this call, before and since named tasks
+BUILT_GONE = ("--built ran brain/brain/orchestrator.py, gone with Prototype_Brain_Loop: the brain's loop "
+              "follows up, edits and stops as tools of a step; integration/loop_replay.py replays it")
 REPLY_MAX = 300  # as the brain's: aim under 80 characters, never over 200, refused past 300
 PROMPT_EVERY = 40
 ACTION_WHAT = 70  # characters of an action's words before its result, in an `AI action` result row
@@ -464,17 +468,12 @@ async def run(args) -> None:
     banned = set(library(catalog))
     ask = functools.partial(vfg_llm.structured, model=args.model, reasoning=config.Config.effort_of(args.reasoning),
                             providers=[x for x in args.providers.split(",") if x] or None, timeout=args.timeout)
-    if args.built:
-        from brain.orchestrator import PROMPT as BUILT_PROMPT, Orchestrator
-        prompt_file = BUILT_PROMPT
-        when = {"at": datetime.now(UTC)}  # the line's time: TASKS shows a time of its day without a date
-        orch = Orchestrator(catalog, ask, owner=cfg.owner, checkpoint=args.checkpoint, now=lambda: when["at"])
-        opening = orch.opening()
-    else:
-        prompt_file = Path(args.prompt) if args.prompt else PROMPTS / f"{args.version}.md"
-        rules = prompt_file.read_text(encoding="utf-8").rstrip("\n").replace("{owner}", cfg.owner or "not named")
-        opening = (f"{rules}\n\nTHE CONVERSATION SO FAR (oldest first; each row: its time in UTC, who, and for a "
-                   "player's line Jev's class):\n")
+    if args.built:  # main() refuses it first; here too, for a caller of run()
+        sys.exit(BUILT_GONE)
+    prompt_file = Path(args.prompt) if args.prompt else PROMPTS / f"{args.version}.md"
+    rules = prompt_file.read_text(encoding="utf-8").rstrip("\n").replace("{owner}", cfg.owner or "not named")
+    opening = (f"{rules}\n\nTHE CONVERSATION SO FAR (oldest first; each row: its time in UTC, who, and for a "
+               "player's line Jev's class):\n")
 
     brain = {r["n"]: r for r in (json.loads(x) for x in Path(args.lines).read_text().splitlines() if x.strip())}
     rp = Replay(pt, built=args.built, banned=frozenset(banned | names.RESERVED) if args.built else frozenset())
@@ -520,43 +519,24 @@ async def run(args) -> None:
                         continue
                     names_now = set(rp.tasks)
                     blocks = rp.ctx.cached(opening, args.checkpoint)
-                    if args.built:
-                        when["at"] = datetime.fromisoformat(e.seen.replace("Z", "+00:00"))
-                        head = "THE " + Event("LINE", replace(e.row, seq=e.n)).show()
-                        shape = dict(head=head, parts=[SimpleNamespace(part=q["part"], instruction=q["shown"])
-                                                       for q in parts],
-                                     k=k, given=[given_text(x) for x in given], others=[part_of(q) for q in rest],
-                                     replying=k == 0, tasks=rp.rows(e.seen), copies={})
-                        text = orch.tail(**shape)
-                    else:
-                        text = tail(rp, e.seen, br["who"], br["words"], parts, k, given, rest)
+                    text = tail(rp, e.seen, br["who"], br["words"], parts, k, given, rest)
                     if calls % PROMPT_EVERY == 0:
                         (out / "prompts" / f"{e.n}-{k}.txt").write_text(
                             "".join(f"{'[MARK] ' if m else ''}{t}" for t, m in blocks) + text, encoding="utf-8")
                     g = dict(p)
                     t0 = time.perf_counter()
                     try:
-                        if args.built:
-                            a = await orch.answer(rp.ctx, **shape, ref=f"replay taskcall #{e.n}.{k}")
-                        else:
-                            a = await ask(text, answer_type(names_now, banned, None, replying=k == 0), cached=blocks,
-                                          component="orchestrator", call_id=f"replay taskcall #{e.n}.{k}")
+                        a = await ask(text, answer_type(names_now, banned, None, replying=k == 0), cached=blocks,
+                                      component="orchestrator", call_id=f"replay taskcall #{e.n}.{k}")
                     except vfg_llm.LlmError as err:
                         g.update(error=str(err)[:500], ms=int((time.perf_counter() - t0) * 1000))
                     else:
                         v = a.value
-                        if args.built:
-                            copies = list(v.copies)
-                            g["answer"] = {"kind": v.kind, "task": v.task, "name": v.name,
-                                           "description": v.description, "brief": v.brief, "copy": v.copy,
-                                           "values": [{"key": x.key, "value": x.value} for x in v.values],
-                                           "copies": copies, "reply": v.reply, "stop": copies}
-                        else:
-                            g["answer"] = {"task": v.task.strip(), "name": v.name.strip(),
-                                           "description": v.description.strip(), "brief": v.brief.strip(),
-                                           "reply": v.reply.strip() if k == 0 else "",
-                                           "stop": [c.strip() for c in v.stop if c.strip()], "copy": v.copy.strip(),
-                                           "values": [{"key": x.key, "value": x.value} for x in v.values]}
+                        g["answer"] = {"task": v.task.strip(), "name": v.name.strip(),
+                                       "description": v.description.strip(), "brief": v.brief.strip(),
+                                       "reply": v.reply.strip() if k == 0 else "",
+                                       "stop": [c.strip() for c in v.stop if c.strip()], "copy": v.copy.strip(),
+                                       "values": [{"key": x.key, "value": x.value} for x in v.values]}
                         g.update(ms=a.ms, cost=a.cost, prompt_tokens=a.prompt_tokens, cached_tokens=a.cached_tokens,
                                  completion_tokens=a.completion_tokens)
                         g["kind"], g["name"] = rp.apply(g["answer"], br["who"], br["words"], e.seen)
@@ -592,15 +572,12 @@ def main() -> None:
     ap.add_argument("--lines", required=True, help="the brain's full raw-line replay, lines.py's lines.jsonl")
     ap.add_argument("--out", required=True, help="where taskcall.jsonl, tasks.json and meta.json go")
     ap.add_argument("--built", action="store_true",
-                    help="the built orchestrator (brain/brain/orchestrator.py and its prompt) instead of --version")
-    ap.add_argument("--model", default=None, help="the orchestrator's model, an OpenRouter id (required without "
-                                                  "--built; with it, VFG_ORCHESTRATOR_MODEL's)")
-    ap.add_argument("--reasoning", default=None, help="off, or an effort (low; with --built, "
-                                                      "VFG_ORCHESTRATOR_REASONING's)")
-    ap.add_argument("--providers", default=None, help="OpenRouter providers to try first, comma-separated (with "
-                                                      "--built, VFG_ORCHESTRATOR_PROVIDERS')")
-    ap.add_argument("--version", default="v3", help="the prompt, taskcall_prompts/<version>.md (v3), without --built")
-    ap.add_argument("--prompt", default="", help="a prompt file instead of --version, without --built")
+                    help="gone with the brain loop: the built orchestrator (brain/brain/orchestrator.py); refused")
+    ap.add_argument("--model", default=None, help="the orchestrator's model, an OpenRouter id (required)")
+    ap.add_argument("--reasoning", default=None, help="off, or an effort (low)")
+    ap.add_argument("--providers", default=None, help="OpenRouter providers to try first, comma-separated")
+    ap.add_argument("--version", default="v3", help="the prompt, taskcall_prompts/<version>.md (v3)")
+    ap.add_argument("--prompt", default="", help="a prompt file instead of --version")
     ap.add_argument("--checkpoint", type=int, default=5, help="a cache mark every this many minute-blocks (5)")
     ap.add_argument("--timeout", type=float, default=None, help="seconds a call may take, retries included (60; "
                                                                 "with --built, VFG_ORCHESTRATOR_TIMEOUT_S's)")
@@ -608,21 +585,12 @@ def main() -> None:
     ap.add_argument("--budget", type=float, default=1.0, help="stop once this many dollars are spent (1)")
     args = ap.parse_args()
     if args.built:
-        # The brain's settings for its orchestrator call; read with defaults, so --help works before
-        # config.py has them.
-        cfg = config.load()
-        args.model = args.model or getattr(cfg, "orchestrator_model", "google/gemini-3.8-flash")
-        args.reasoning = args.reasoning or getattr(cfg, "orchestrator_reasoning", "low")
-        if args.providers is None:
-            args.providers = ",".join(getattr(cfg, "orchestrator_providers", ()))
-        if args.timeout is None:
-            args.timeout = float(getattr(cfg, "orchestrator_timeout_s", 15.0))
-    else:
-        if not args.model:
-            ap.error("--model is required without --built")
-        args.reasoning = args.reasoning or "low"
-        args.providers = args.providers or ""
-        args.timeout = 60.0 if args.timeout is None else args.timeout
+        ap.error(BUILT_GONE)
+    if not args.model:
+        ap.error("--model is required")
+    args.reasoning = args.reasoning or "low"
+    args.providers = args.providers or ""
+    args.timeout = 60.0 if args.timeout is None else args.timeout
     asyncio.run(run(args))
 
 

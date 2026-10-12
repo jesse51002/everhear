@@ -22,6 +22,7 @@ it no longer runs on this branch and **needs rewriting for the brain** (below).
 | `gather_bench.py`, `gather_score.py` | the Jev routing as it ships: Jev's production filter line by line on all 843 lines, D's two questions and the gather call, with the gather call's windows from production's own query; D with and without the gather call on the clean labels, and the gather call's wordings; results and the commands in `gather_bench.md` |
 | `respond_bench.py`, `respond_score.py`, `respond_prompts/` | Respond's prompt before and after its rewrite, and its code guard against promises and offers, on the whole-ask inputs D sends Respond and an invented set; results and the commands in `respond_bench.md` |
 | `run.py`, `measure.py`, `tasks.jsonl` | the live task replay against the orchestrator: gone with it |
+| `loop/`, `../loop_replay.py` | the 2026-10-11 session through the brain's loop, live on realmc (Prototype_Brain_Loop's _Test_): below, _The loop replay_ |
 
 ## The data
 
@@ -160,6 +161,42 @@ first; and **by the labels** (`Change to T<x>` is a follow-up, anything else fre
 many right follow-ups as new tasks taken, since the conversation often wrote a fix as a fresh
 task. Since the chains are the replay's own, **one thing, one task** checks each task against the
 scripts its T ids touched: lumped tasks and split scripts.
+
+## The loop replay: 2026-10-11 through the brain's loop
+
+Prototype_Brain_Loop's first Test. The 110 brain calls of the 2026-10-11 session (one player,
+KrownJM, 05:40–06:59 UTC, the brain before Named Tasks, $1.18 on GPT-6.1 Sol) — 21 talk, 16 action
+asks, 32 hand-offs and 41 implementer reports — each run again as one loop of today's brain, in
+order, in one process, on a realmc server of its own.
+
+- **The data**, in `loop/`, made once by `loop/build.py` (its docstring has every field): the
+  session's feed, each call with the feed it was answered in and what it cost then
+  (`events.jsonl`), what that night's implementers did to the world and when (`world.jsonl`, and
+  the actions they made in `loop/made/`), and `session.json` (the counts against the spec's, the six
+  tasks and their 35 follow-ups, the five misread asks, KrownJM's kit). It reads only `vfg/vfg.db`
+  of `~/Documents/MinecraftServers/aws-backup/vfg-backup-2026-10-11.tgz` (never its `.env`), that
+  night's `~/.vfg/brain/brain.log` and `tasks.json`, and the implementers' transcripts.
+- **The run**, `integration/loop_replay.py` (its docstring has the rest): the brain's classes as
+  `brain/__main__.py` wires them, the real `vfg` to the server and real model calls; the
+  implementers record each brief and follow-up and start nothing. Each loop reads the night's own
+  feed up to its call, so the prompt cache sees what it saw then; the night's T<n> task numbers
+  read as today's names. Its usage rows stay in OUT.
+
+```sh
+R=…/integration/realmc/.server     # a REALMC_ROOT with the jar, the template and Carpet
+brain/.venv/bin/python integration/loop_replay.py --dry                       # no model, no server
+REALMC_ROOT=$R brain/.venv/bin/python integration/loop_replay.py --only 1-12 --budget 0.3   # a pilot
+REALMC_ROOT=$R brain/.venv/bin/python integration/loop_replay.py              # all 110, budget $3
+python3 integration/loop_replay.py --report OUT                               # the report again
+```
+
+OUT (default the temp folder, `vfg-loop-replay-<time>`) gets `results.jsonl` (per event: each
+step's cost, tokens, cached share and ms, the time to the reply, how it ended, what ran, each brief
+and follow-up, any answer the Step's checks sent back, with its errors), `usage.pending.jsonl`,
+`brain.log`, `meta.json` and `report.md`: the cost beside the $1.18, the p90 time to the reply of
+the asks that do not hand off (bar 30 s), the cached share of the steps after the first (bar 85%),
+one step against two or more, each brief's parts, and the five misread asks' done-when lists. A
+whole run also writes `loop/report.md`.
 
 ## The live task replay: gone with the orchestrator
 

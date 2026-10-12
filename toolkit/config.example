@@ -66,46 +66,39 @@ VFG_PLACES_TTL_S=
 # reads it. OPEN_ROUTER_API in the environment wins over the file.
 # Default: ~/.vfg/openrouter.key
 VFG_OPENROUTER_KEY=
-# The OpenRouter model of every brain call, one per event (an action-oriented line, a line
-# Respond hands up, an implementer's report), and its reasoning effort.
-VFG_BRAIN_MODEL=openai/gpt-6.1-sol
-VFG_BRAIN_REASONING=low
+# The OpenRouter model of every step of the brain's loop (a loop per event: an action-oriented
+# line, a line Respond hands up, an implementer's report), and its reasoning effort.
+# Defaults: google/gemini-3.8-flash, low
+VFG_BRAIN_MODEL=
+VFG_BRAIN_REASONING=
+# OpenRouter providers to try first for the brain's steps, comma-separated; none lets
+# OpenRouter choose. Default: none
+VFG_BRAIN_PROVIDERS=
+# Seconds one step's call may take, its resend and retries included. Default: 45
+VFG_BRAIN_TIMEOUT_S=
+# A loop's limits: its steps, and the seconds from when the player's turn began; the step that
+# starts at either is the last, and ends with a reply or a hand-off. Defaults: 10, 120
+VFG_LOOP_STEPS=
+VFG_LOOP_SECONDS=
 # Respond, the brain's cheap mode, which answers a conversational line or hands it up.
 # DeepSeek V4 Flash with reasoning off: at low it thinks ~900 tokens, about 7.7 s a call.
 VFG_RESPOND_MODEL=~deepseek/deepseek-v4-flash-latest
 VFG_RESPOND_REASONING=off
 # OpenRouter providers to try first, fastest first; none lets OpenRouter choose.
 VFG_RESPOND_PROVIDERS=parasail,wafer,phala,together,venice
-# The planner, kept only to retry a command Minecraft refused: rare, and it has the command
-# and Minecraft's error in hand, so the cheap model.
-VFG_PLAN_MODEL=~deepseek/deepseek-v4-flash-latest
-VFG_PLAN_REASONING=off
-VFG_PLAN_PROVIDERS=parasail,wafer,phala,together,venice
-# The orchestrator: one call for each part the brain sends it (anything new, a change to
-# something that exists, a stop), which names the task and writes the line's reply. Gemini
-# 3.8 Flash at low kept one thing to one task on the follow-up replay; DeepSeek V4 Flash is
-# about 7x cheaper but lumps things together, and wants reasoning off.
-VFG_ORCHESTRATOR_MODEL=google/gemini-3.8-flash
-VFG_ORCHESTRATOR_REASONING=low
-# OpenRouter providers to try first for it, comma-separated; none lets OpenRouter choose.
-# Default: none
-VFG_ORCHESTRATOR_PROVIDERS=
-# Seconds one orchestrator call may take, its retries included, before it is given up and
-# the brain's own reply is said instead. Default: 15
-VFG_ORCHESTRATOR_TIMEOUT_S=
+# Seconds one Respond call may take, its retries included, before the line goes up to the
+# brain. Default: 20
+VFG_RESPOND_TIMEOUT_S=
+# One turn per player: the lines that may wait for it (one more is turned away, told so
+# privately), and the seconds a turn waits for the rows it wrote to come back before the
+# next starts (0: no wait). Defaults: 3, 3
+VFG_TURN_WAITING=
+VFG_TURN_SETTLE_S=
 # Hours of the feed the brain reads as its context; vfg context's default. Default: 6
 VFG_BRAIN_HISTORY_HOURS=6
-# Every how many minute-blocks of the conversation a brain call marks for the prompt cache
-# (at most three marks, plus the fixed opening). Default: 5
+# Every how many minute-blocks of the conversation a call marks for the prompt cache
+# (a brain step: at most two marks; Respond: three). Default: 5
 VFG_BRAIN_CHECKPOINT=
-# Seconds a brain call may take before it is given up. Default: 20
-VFG_BRAIN_TIMEOUT_S=
-# OpenRouter providers to try first for the brain's call, comma-separated; none lets
-# OpenRouter choose. Default: none
-VFG_BRAIN_PROVIDERS=
-# on: the retry planner checks its own draft against the command's reference first (about
-# 1 s more). Default: off
-VFG_PLAN_CHECK=
 # The brain's folder: brain.log, brain.pid, lock and the command references. The tasks are
 # in the box's vfg.db, written only by the brain.
 # Default: $VFG_HOME/brain

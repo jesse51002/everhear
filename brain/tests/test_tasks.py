@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from brain.tasks import Tasks
+from brain.tasks import Tasks, board
 
 from conftest import Clock
 
@@ -185,3 +185,39 @@ async def test_a_write_that_failed_is_sent_again_until_it_lands_and_a_newer_chan
     galick(tasks)
     await asyncio.sleep(0.1)
     assert len(fails) == 3 and tasks.writes == {}  # one try and two retries, then given up, logged
+
+
+def row(name: str, **more) -> dict:
+    """A task's row, as the brain keeps it and `vfg task list --json` prints it."""
+    base = {"name": name, "description": f"what {name} is", "player": "Alex", "status": "done",
+            "line": "make me one", "brief": "make one",
+            "made": {"scripts": [], "actions": [], "presets": [], "copies": []}, "variables": None,
+            "session": None, "result": "", "created_at": "2026-10-10T18:20:00.000Z",
+            "updated_at": "2026-10-10T18:21:00.000Z", "closed_at": None}
+    return {**base, **more}
+
+
+def test_the_board_shows_each_task_oldest_first_with_what_it_made_its_copies_running_and_its_result():
+    tasks = [
+        row("lava_moat_sam", player="Sam", status="open", description="A lava moat round Sam's base, 3 wide.",
+            created_at="2026-10-10T18:25:00.000Z", updated_at="2026-10-10T18:26:10.500Z"),
+        row("frost_bow_alex", description="A Frost Bow for Alex: right-click to shoot freezing arrows.",
+            made={"scripts": ["frost_bow_alex"], "actions": ["frost_bow_alex"], "presets": [],
+                  "copies": ["frost_bow_alex"]},
+            result="frost_bow_alex done: the bow is in Alex's hand", created_at="2026-10-09T23:59:00.000Z",
+            updated_at="2026-10-09T23:59:30.000Z"),
+    ]
+    copies = {"frost_bow_alex": {"action": "frost_bow_alex", "task": "frost_bow_alex"},
+              "railgun_steve": {"action": "railgun", "task": None}}
+    lines = board(tasks, copies, busy=["lava_moat_sam"], today="2026-10-10").splitlines()
+    assert lines[0].startswith("TASKS (oldest first: name, for whom, status, when last written")
+    assert lines[1] == ("- frost_bow_alex, for Alex, done, 2026-10-09 23:59:30: A Frost Bow for Alex: right-click "
+                        "to shoot freezing arrows.")  # yesterday: its date shown
+    assert lines[2] == ("  made: scripts frost_bow_alex; actions frost_bow_alex; copies frost_bow_alex; "
+                        "running now: frost_bow_alex")
+    assert lines[3] == "  last result: frost_bow_alex done: the bow is in Alex's hand"
+    assert lines[4] == ("- lava_moat_sam, for Sam, open, an implementer is on it, 18:26:10: A lava moat round Sam's "
+                        "base, 3 wide.")
+    assert lines[5] == "  made: nothing yet; running now: none" and len(lines) == 6  # no result yet: no line
+    assert board([], copies) == "TASKS: none yet"
+    assert "  made: not known; running now: none" in board([row("castle_bob", made=None)], {}, today="2026-10-10")

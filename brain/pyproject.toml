@@ -1,7 +1,7 @@
 [project]
 name = "vfg-brain"
 version = "0.1.0"
-description = "The EverHear brain: one structured() call per event, Respond, the shared context, and the implementers it starts."
+description = "The EverHear brain: a loop of structured() steps per event, Respond, the shared context, one turn per player, and the implementers it starts."
 requires-python = ">=3.12"
 dependencies = [
     "vfg-lib",

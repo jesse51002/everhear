@@ -1,6 +1,6 @@
 """A task's name, and the names a new one must not take (Prototype_Named_Tasks).
 
-The orchestrator names a task from what is made and for whom (`galick_gun_styrk`); code adds
+The brain's hand-off names a task from what is made and for whom (`galick_gun_styrk`); code adds
 `_2`, `_3` … when the name is taken. The name is the task's, its script's, its action's and its
 copy's, so it must be free as each of those: a task, an action (the library's or this server's),
 a script folder, a running copy, and never `cast`, the task the bridge gives an incantation's

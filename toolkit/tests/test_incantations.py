@@ -315,6 +315,11 @@ class TestEdit(Case):
         self.assertTrue(line["ok"], line)
         self.assertIn("cooldown_s=700 is over its max, clamped to 600", line["notes"])
         self.assertIn('changed "beam me" for Steve: cooldown 600 s', line["summary"])
+        self.assertIn("cooldown 600 s", line["facts"]["changed"])     # what it changed, as edit's facts say it
+        line = self.run_("incantation_edit", player="steve", phrase="Beam me", cooldown_s="600")
+        self.assertTrue(line["ok"], line)                              # the same again: it ran, and changed nothing
+        self.assertEqual((line["facts"]["changed"], line["summary"].split(";")[0]),
+                         ([], 'changed "beam me" for Steve: nothing new'))
         e = self.entry("steve.beam_me")
         self.assertEqual((e["values"]["player"], e["caster_fields"], e["cooldown_s"]), ("Alex", [], 600.0))
 
