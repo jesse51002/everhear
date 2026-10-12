@@ -108,14 +108,16 @@ class Later:
         t.add_done_callback(self.tasks.discard)
         return t
 
-    async def _run(self, args: tuple[str, ...], timeout: float) -> None:
+    async def _run(self, args: tuple[str, ...], timeout: float) -> bool:
+        """The call, its failure logged; whether it exited 0 (the task's result)."""
         try:
             r = await self.vfg(*args, timeout=timeout)
         except Exception as e:  # noqa: BLE001 — a runner that broke is a failed call, logged
             log("vfg", f"vfg {' '.join(args[:3])} broke: {type(e).__name__}: {e}")
-            return
+            return False
         if r.code != 0:
             log("vfg", f"vfg {' '.join(args[:3])} failed: {why(r)}")
+        return r.code == 0
 
     async def drain(self, timeout: float) -> None:
         """Wait up to `timeout` for what is still running; cancel the rest."""

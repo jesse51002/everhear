@@ -1,10 +1,10 @@
-"""The actions as the dispatcher sees them: lib/py/vfg_actions.py's Catalog, kept in memory and
-refreshed before each ask, so an action file written or changed a moment ago (an implementer's,
-in made/<server>/actions/) is on the menu at the next ask, with no restart.
+"""The actions as the brain sees them: lib/py/vfg_actions.py's Catalog, kept in memory and
+refreshed before each loop, so an action file written or changed a moment ago (an implementer's,
+in made/<server>/actions/) is on the menu at the next loop, with no restart.
 
-Also here: what the selector and the planner are shown of an action (its menu line; its
-docstring and the values it takes), the fields that hold server commands, and the words a
-value becomes on `vfg action run`'s command line.
+Also here: what the brain is shown of an action (its docstring and the values it takes), the
+fields that hold server commands, and the words a value becomes on `vfg action run`'s command
+line.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import vfg_actions
-from vfg_actions import Catalog, describe, menu_line
+from vfg_actions import Catalog, describe
 
 from .config import log
 
@@ -57,11 +57,6 @@ def hidden_commands() -> frozenset[str]:
         return frozenset()
 
 
-def menu(catalog: Catalog) -> str:
-    """One line per action, its name and its docstring's first line: all the selector sees of it."""
-    return "\n".join(f"- {menu_line(name, catalog.get(name))}" for name in catalog.names())
-
-
 def doc(cls) -> str:
     return inspect.cleandoc(cls.__doc__ or "")
 
@@ -73,7 +68,7 @@ def runs_words(cls) -> str:
 
 
 def view(name: str, cls) -> str:
-    """What the planner sees of one action: its whole docstring, how it runs, and each value it
+    """What the brain sees of one action: its whole docstring, how it runs, and each value it
     fills (its `takes`), with its type, limits, default and description as describe() gives them."""
     lines = describe(name, cls).splitlines()[3:]
     takes, keep = [], False

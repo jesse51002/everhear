@@ -27,9 +27,9 @@ class Railgun(Action, preset("damage_hits")):
     # ...a field for every value the script reads that no preset holds
 ```
 
-- **The docstring's first line** is all the selector sees: what it does, in players' words.
+- **The docstring's first line** is the action's line on the menu, the brain's and Jev's: what it does, in players' words. The brain also reads the whole docstring, how the action runs and each field in `takes`.
 - **`script`**: the folder under `scripts/` (a made action: `made/<server>/scripts/` or `scripts/`). **`runs`**: `"once"` for a script that ends by itself, whose `result()` is the answer (a castle, a meteor), or `"until_stopped"` (a weapon, a rain, a rule). **`timeout_s`**: for a once action slower than `VFG_DISPATCH_ACTION_TIMEOUT_S`.
-- **`takes`**: the fields the planner fills, usually two to six, the target first. Every other field keeps its default, and an edit can still change it.
+- **`takes`**: the fields the brain fills, the only ones it is shown with the action, usually two to six, the target first. Every other field keeps its default, and an edit can still change it.
 - **The presets the script copied** (its `# --- preset: <name>` lines) are inherited, `preset("<name>")` each, so a preset's value is written once, in `scripts/_presets/<name>.py`'s `class <CamelName>(Values)`. **`defaults`** gives an inherited field this action's own default (`damage_amount` is 20 in the preset, 30 here), and **`descriptions`** its own words, `{"damage_amount": "..."}`: the type and limits stay the preset's, so they change in one place. The fields the action declares are the script's own values; an inherited field is written again only to change its type or limits (nuke's `crater_radius` reaches 1000, ice_queen's `boss_gear` adds `ice`), with its whole description under it.
 - **A field per value the script reads**, named as the script reads it: a type from `_types.py`, the default, limits as `Field(ge=, le=)`, and the string under it as its description, in players' words. **`Live[T]`** for a value the script reads again while it runs: an edit to it lands within half a second; an edit to any other restarts the copy.
 - **`fixed`**: values this action sets, which nobody fills; a run that gives one is refused, an edit may still change it.

@@ -777,12 +777,18 @@ def path3(box, rep, ctx):
         row = box.sql("SELECT at FROM feed WHERE seq = ?", (int(FEED_RE.match(g1[0]).group(2)),))
         rep.check(row and row[0]["at"] == ai[0]["at"], "the AI say row's at is the ai line's at",
                   "%r vs %r" % (row, ai[0]["at"]))
-    # The brain's records of what it did: Jev's history takes action, task and result, not note. An
-    # action never carries a task; a task's rows carry its name.
-    records = [("action", "-", "command: give Steve diamond_pickaxe — ok: Gave 1 [Diamond Pickaxe] to Steve"),
+    # The brain's records of what it did: Jev's history takes action, task and result, not note. A
+    # loop's one record is `AI action -`, with no task; a task's rows carry its name, which Jev's
+    # history puts in front of the text unless the text starts with it, as a result's does
+    # (jev/store.py named()). `AI note` rows are an older brain's: the loop writes none.
+    records = [("action", "-", "gave Steve's axe Fire Aspect 5 by item modifier; /enchant refuses a level over "
+                               "the maximum"),
                ("task", "castle_steve", "new: a castle at spawn for Steve, about 40x40, stone and oak"),
                ("result", "castle_steve", "castle_steve done: castle built at spawn, 40x40"),
                ("note", "-", "a note Jev never sees")]
+
+    def named(task, text):
+        return text if task == "-" or text.startswith(task) else "%s: %s" % (task, text)
     for kind, task, text in records:
         box.vfg("feed", "post", "AI", "%s %s" % (kind, task), text)
     box.wait_watch(ai_regex("note", "-", "a note Jev never sees"), 6)
@@ -799,8 +805,10 @@ def path3(box, rep, ctx):
     hist = st.get("history", "")
     rep.check("AI (ai): on it — castle coming up" in hist and "AI (ai): (to Steve) your base is ready" in hist,
               "the ai lines are in the history of Jev's next call (§5: the AI's included)", short(hist, 900))
-    rep.check(all("AI (%s): %s" % (k, t) in hist for k, _, t in records[:3]) and records[3][2] not in hist,
-              "and the brain's action, task and result rows are too, its notes not (§5)", short(hist, 1500))
+    rep.check(all("AI (%s): %s" % (k, named(task, t)) in hist for k, task, t in records[:3])
+              and records[3][2] not in hist,
+              "and the brain's action, task and result rows are too, a task's named, its notes not (§5)",
+              short(hist, 1500))
     rep.check(st.get("look_out_for") == ctx.get("lookout"), "Jev's state carries lookout.md as vfg lookout set wrote it",
               short(st.get("look_out_for"), 300))
     rep.check(st.get("actions") == ctx.get("menu"), "Jev's state carries menu.md, the brain's action menu, "
@@ -1363,8 +1371,8 @@ def path7(box, rep, ctx):
 
 
 def path6(box, rep, ctx):
-    rep.path("6", "usage rows: one per Jev call for component jev; the brain's, Respond's, the orchestrator's "
-                  "and an implementer's")
+    rep.path("6", "usage rows: one per Jev call for component jev; the brain's steps, Respond's and an "
+                  "implementer's; an older brain's orchestrator and planner rows")
     judged = box.sql("SELECT id, text, jev_confidence FROM lines WHERE source != 'ai' AND jev_class IS NOT NULL")
     bad = []
     for r in judged:
@@ -1385,25 +1393,26 @@ def path6(box, rep, ctx):
               "usage row (ref=probe)", "%r" % probes)
     stray = box.sql("SELECT u.ref FROM usage u JOIN lines l ON l.id = u.ref WHERE l.source = 'ai'")
     rep.check(not stray, "no usage row points at an ai line")
-    # Rows as `vfg usage add` takes them: brain/implementers/usage.py's usage_args() and the like (the brain's,
-    # Respond's and the orchestrator's own rows are structured()'s, below: the orchestrator's ref is its line's
-    # #seq, or a report's task).
+    # Rows as `vfg usage add` takes them: brain/implementers/usage.py's usage_args() and the like. The brain's
+    # and Respond's own rows are structured()'s (below): a step of the brain's loop is `#<seq> s<n>` for a
+    # line, `<task> s<n>` for a report; Respond's is its line's `#<seq>`. A box that ran an older brain also
+    # holds `orchestrator` rows (and `planner` ones), which the table and vfg still take.
     rows = [
-        (["--component", "brain", "--model", "openai/gpt-6.1-sol", "--in", "9512", "--out", "210", "--cost",
-          "0.001834", "--cache-read", "9216", "--ref", "#812"],
-         ("brain", "openai/gpt-6.1-sol", 9512, 210, 0.001834, 9216, None, "#812")),
-        (["--component", "brain", "--model", "openai/gpt-6.1-sol", "--in", "12040", "--out", "12", "--cost",
-          "0.004700", "--cache-read", "11800", "--ref", "batch #814-#820"],
-         ("brain", "openai/gpt-6.1-sol", 12040, 12, 0.0047, 11800, None, "batch #814-#820")),
-        (["--component", "respond", "--model", "google/gemini-3.8-flash", "--in", "7100", "--out", "30", "--cost",
-          "0.000410", "--cache-read", "6900", "--ref", "#813"],
-         ("respond", "google/gemini-3.8-flash", 7100, 30, 0.00041, 6900, None, "#813")),
+        (["--component", "brain", "--model", "google/gemini-3.8-flash", "--in", "31512", "--out", "210", "--cost",
+          "0.003834", "--cache-read", "29216", "--ref", "#812 s1"],
+         ("brain", "google/gemini-3.8-flash", 31512, 210, 0.003834, 29216, None, "#812 s1")),
+        (["--component", "brain", "--model", "google/gemini-3.8-flash", "--in", "33040", "--out", "120", "--cost",
+          "0.002700", "--cache-read", "31800", "--ref", "#812 s2"],
+         ("brain", "google/gemini-3.8-flash", 33040, 120, 0.0027, 31800, None, "#812 s2")),
+        (["--component", "brain", "--model", "google/gemini-3.8-flash", "--in", "34400", "--out", "90", "--cost",
+          "0.004100", "--cache-read", "30200", "--ref", "castle_steve s1"],
+         ("brain", "google/gemini-3.8-flash", 34400, 90, 0.0041, 30200, None, "castle_steve s1")),
+        (["--component", "respond", "--model", "~deepseek/deepseek-v4-flash-latest", "--in", "7100", "--out", "30",
+          "--cost", "0.000410", "--cache-read", "6900", "--ref", "#813"],
+         ("respond", "~deepseek/deepseek-v4-flash-latest", 7100, 30, 0.00041, 6900, None, "#813")),
         (["--component", "orchestrator", "--model", "google/gemini-3.8-flash", "--in", "3120", "--out", "96",
-          "--cost", "0.000690", "--cache-read", "2880", "--ref", "#812"],
-         ("orchestrator", "google/gemini-3.8-flash", 3120, 96, 0.00069, 2880, None, "#812")),
-        (["--component", "orchestrator", "--model", "google/gemini-3.8-flash", "--in", "3400", "--out", "40",
-          "--cost", "0.000300", "--cache-read", "3200", "--ref", "castle_steve"],
-         ("orchestrator", "google/gemini-3.8-flash", 3400, 40, 0.0003, 3200, None, "castle_steve")),
+          "--cost", "0.000690", "--cache-read", "2880", "--ref", "#790"],
+         ("orchestrator", "google/gemini-3.8-flash", 3120, 96, 0.00069, 2880, None, "#790")),
         (["--component", "implementer", "--model", "claude-haiku-5-5", "--in", "48000", "--out", "2100", "--cost",
           "0.081000", "--cache-read", "41000", "--cache-write", "6000", "--ref", "castle_steve"],
          ("implementer", "claude-haiku-5-5", 48000, 2100, 0.081, 41000, 6000, "castle_steve")),
@@ -1417,24 +1426,24 @@ def path6(box, rep, ctx):
                   "its cached tokens too, and prints its id" % (want[0], want[-1]), r.stdout + r.stderr + "%r" % (got,))
     # structured()'s rows (lib/py/vfg_llm.py usage_row and record): queued on the PC, a failed call's with its cost
     # (NULL for one that timed out with an attempt in flight), sent by vfg usage flush into the columns the bridge
-    # added on start
-    queued = [dict(at=iso(now()), component=c, model="~deepseek/deepseek-v4-flash-latest",
-                   input_tokens=i, output_tokens=o, cost_usd=cost, ref=ref, cache_read_tokens=0,
-                   cache_write_tokens=None, ok=ok, error=err, ms=ms)
-              for c, i, o, cost, ref, ok, err, ms in (
-                  ("planner", 2400, 60, None, "#812 #1", 0, "no answer from ~deepseek/deepseek-v4-flash-latest "
-                   "within 20 s; $0.000310 spent before it, the attempt in flight not counted", 20012),
-                  ("planner", 2400, 60, 0.00062, "castle_steve #2", 0, "~deepseek/deepseek-v4-flash-latest twice "
-                   "failed to match Planned_command: - action: Field required", 3100),
-                  ("orchestrator", 3120, 96, 0.00069, "#816", 1, None, 2900),
-                  ("orchestrator", 3400, 0, 0.0003, "galick_gun_styrk", 0, "no answer from "
-                   "~deepseek/deepseek-v4-flash-latest within 15 s", 15004),
-                  ("alias", 300, 20, 0.00005, "fire ball", 1, None, 840))]
+    # added on start: the brain's steps, a failed one among them, an older brain's planner row, an alias call's
+    queued = [dict(at=iso(now()), component=c, model=m, input_tokens=i, output_tokens=o, cost_usd=cost, ref=ref,
+                   cache_read_tokens=0, cache_write_tokens=None, ok=ok, error=err, ms=ms)
+              for c, m, i, o, cost, ref, ok, err, ms in (
+                  ("brain", "google/gemini-3.8-flash", 31200, 96, 0.0069, "#816 s1", 1, None, 2900),
+                  ("brain", "google/gemini-3.8-flash", 33400, 0, None, "#816 s2", 0, "no answer from "
+                   "google/gemini-3.8-flash within 20 s; $0.002310 spent before it, the attempt in flight not counted",
+                   20012),
+                  ("brain", "google/gemini-3.8-flash", 34100, 60, 0.0031, "galick_gun_styrk s1", 0,
+                   "google/gemini-3.8-flash twice failed to match Step: - end: end reply needs the reply", 3100),
+                  ("planner", "~deepseek/deepseek-v4-flash-latest", 2400, 60, 0.00062, "castle_steve #2", 1, None,
+                   1800),
+                  ("alias", "~deepseek/deepseek-v4-flash-latest", 300, 20, 0.00005, "fire ball", 1, None, 840))]
     with open(os.path.join(box.vhome, "usage.pending.jsonl"), "a") as f:
         f.write("".join(json.dumps(q) + "\n" for q in queued))
     r = box.vfg("usage", "flush")
-    got = box.sql("SELECT component, cost_usd, ref, ok, error, ms FROM usage WHERE ref IN ('#812 #1', "
-                  "'castle_steve #2', '#816', 'galick_gun_styrk', 'fire ball') ORDER BY id")
+    got = box.sql("SELECT component, cost_usd, ref, ok, error, ms FROM usage WHERE ref IN ('#816 s1', "
+                  "'#816 s2', 'galick_gun_styrk s1', 'castle_steve #2', 'fire ball') ORDER BY id")
     rep.check(r.returncode == 0 and [tuple(g.values()) for g in got] == [
         (q["component"], q["cost_usd"], q["ref"], q["ok"], q["error"], q["ms"]) for q in queued],
         "vfg usage flush sends structured()'s queued rows, a failed call's with its cost (NULL when not known), ok, "

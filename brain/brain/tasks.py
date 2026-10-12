@@ -14,6 +14,10 @@ go out in the order they were made; the toolkit keeps the newer `updated_at` sho
 cross. A write that fails (EC2 out of reach for a moment) is sent again a few times, unless a
 newer change to the task has been written meanwhile, which carries the whole row anyway.
 `vfg route --task` reads a row back, and `vfg brain status` lists the open ones.
+
+Two views of them: show(), one line a task, for Respond; and board(), the brain's, which follows
+tasks up and cancels them: each task's status and when it was last written, what it is now, what
+it made, its copies running now and its last result.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import copy
 from collections.abc import Awaitable, Callable, Iterable
+from datetime import UTC, datetime
 from typing import Any
 
 from . import names
@@ -51,6 +56,45 @@ def made_of(made: Any) -> dict[str, list[str]]:
 def one_line(text: Any, n: int) -> str:
     text = " ".join(str(text or "").split())
     return text if len(text) <= n else text[:n - 1] + "…"
+
+
+def _when(at: str, today: str) -> str:
+    """An ISO time as HH:MM:SS, with its date when that is not `today`."""
+    at = str(at or "")
+    if len(at) < 19:
+        return at or "?"
+    return at[11:19] if at[:10] == today else f"{at[:10]} {at[11:19]}"
+
+
+def board(tasks: list[dict], copies: dict[str, dict], busy: Iterable[str] = (), *, today: str | None = None) -> str:
+    """TASKS as the brain sees it: every task, oldest created first, its status (and whether an
+    implementer is on it: `busy`), when it was last written and what it is now; then what it made,
+    its copies running now (running.json's task is its name) and its last result."""
+    if not tasks:
+        return "TASKS: none yet"
+    today = today or datetime.now(UTC).strftime("%Y-%m-%d")
+    busy = set(busy)
+    rows = []
+    for t in sorted(tasks, key=lambda t: str(t.get("created_at") or "")):
+        name = str(t.get("name") or "?")
+        made = t.get("made")
+        if isinstance(made, dict):
+            kinds = [f"{k} {', '.join(map(str, made[k]))}" for k in MADE_KINDS
+                     if isinstance(made.get(k), list) and made[k]]
+            what = "; ".join(kinds) or "nothing yet"
+        else:
+            what = "not known"  # null: never recorded
+        running = sorted(c for c, info in copies.items() if str(info.get("task") or "").strip() == name)
+        status = str(t.get("status") or "?") + (", an implementer is on it" if name in busy else "")
+        rows.append(f"- {name}, for {t.get('player') or 'nobody'}, {status}, "
+                    f"{_when(t.get('updated_at') or t.get('created_at'), today)}: "
+                    f"{' '.join(str(t.get('description') or '').split())}\n"
+                    f"  made: {what}; running now: {', '.join(running) or 'none'}")
+        result = " ".join(str(t.get("result") or "").split())
+        if result:
+            rows[-1] += f"\n  last result: {result}"
+    return ("TASKS (oldest first: name, for whom, status, when last written, what it is now; what it made, and "
+            "its copies running now; its last result):\n" + "\n".join(rows))
 
 
 class Tasks:

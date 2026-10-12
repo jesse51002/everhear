@@ -36,10 +36,10 @@ About a minute. The box's side (bridge, Jev filter, the toolkit's remote program
 | 0 | setup as the brain does it (§12): `vfg up`, the brain's watchers, its lookout, Jev's menu (`vfg jev menu set` with `vfg action list`'s lines), `vfg context --json`, then `vfg watch --after` its last seq, which keeps no cursor |
 | 1 | `POST /v1/lines` → a `lines` row → Jev → one `LINE#seq` in `vfg watch`, unprocessed |
 | 2 | typed chat in Jev's four classes and watched game events reach `vfg watch`; `not_relevant` is stored, not fed; a `conversational` line flushes the waiting context at once |
-| 3 | `vfg say` writes an `ai` line Jev never judges and an `AI say` feed row in the same call, `AI say castle_steve` for `--task castle_steve`; Jev's next state holds the AI's lines, the brain's `action`, `task` and `result` rows (not its notes), the lookout and `menu.md` |
+| 3 | `vfg say` writes an `ai` line Jev never judges and an `AI say` feed row in the same call, `AI say castle_steve` for `--task castle_steve`; Jev's next state holds the AI's lines, the brain's `action` (a loop's one record), `task` and `result` rows, a task's named in front of its text, and not an older brain's notes, the lookout and `menu.md` |
 | 4 | `vfg history` by date, source, player, each of the four classes, events and feed |
 | 5 | `vfg feed post AI` for each kind, its field a task's name or `-`, each row written processed; `GAME` of any kind, `SYS`; `ORCH`, a task number and bad `AI` fields refused; `vfg context`, `--json` (the rows, then `{tasks}`, then `{last_seq}`) and `vfg context mark` on the rows the brain reads |
-| 6 | `usage` rows: one per Jev call; `vfg usage add` as an implementer writes them, cached tokens included, the ref a `#seq` or a task's name; `structured()`'s queued rows (the planner's, the orchestrator's for a line's `#seq` or a report's task, an alias call's), a failed call's among them (its cost NULL when an attempt was cut off in flight), sent by `vfg usage flush` with `ok`, `error` and `ms` |
+| 6 | `usage` rows: one per Jev call; `vfg usage add` writes them, cached tokens included: a step of the brain's loop (`#seq s1`, `#seq s2`, a report's `<task> s1`), Respond's (`#seq`), an implementer's (its task's name), and an older brain's `orchestrator` row, which the table still takes; `structured()`'s queued rows (the brain's steps, an older brain's `planner` row, an alias call's), a failed step's among them (its cost NULL when an attempt was cut off in flight), sent by `vfg usage flush` with `ok`, `error` and `ms` |
 | 7 | killing and restarting Jev, the brain's watch (`--after` its last seq) and the bridge loses and repeats nothing, and keeps the processed marks; an ask killed while its group waits for the feed is fed once, alone, and one killed after its group's feed write is not fed again |
 | 8 | the client mod's real `BridgeClient` and `LinePayload` against the real bridge |
 | 9 | a real group (§5): Steve's earlier line goes with his ask as one `LINE`, under the ask's fields and time, and Alex's line said between them is never asked about; every line the real feed writer produced, the group included, read by the brain's `context.parse`, and `vfg context --json` built into the brain's `Context` |
@@ -81,49 +81,89 @@ python3 integration/brain_e2e.py [--keep]
 The real brain, started by `vfg brain start`, against a stand-in box on this PC: the fake SSH,
 the real feed writer and `vfg.db`, and a fake 26.3 world (`scripts/_test/fake_places_world.py`
 with players' items by slot) on the box's RCON port. Its model calls are real, through
-OpenRouter: `OPEN_ROUTER_API` from the environment, else from the first `.env` above this repo,
-or its `Internal/.env`, that holds it; given to the brain's process only, never printed or
-written. Each player's line goes into the feed as a `LINE` row through the box's `vfg_feed`, as
-Jev would put it there. It checks an action ask done in the world with one reply and no task (its
-actions `AI action -` rows, its reply `AI say -`, the brain's own copy `command_steve` with no
-task), an item ask on the right slot, a conversational line answered by Respond, a conversational
-ask handed up and acted on, two lines in the same second both answered (two `AI say -` rows, each
-player's copy named for them) with neither waiting, the rows a call read marked processed, a
-context line marked read at once with no call and a game event read by the next call, and
-`vfg brain stop`, with no row in `vfg.db`'s tasks table: none of its lines goes to the
-orchestrator. Then it prints each line's time to its reply, and what the run cost. About a minute and eight model calls, about $0.09: the first call, its 22K-token opening not yet cached, is about $0.06 of it.
-Not part of any test suite.
+OpenRouter, the loop's steps on Gemini 3.8 Flash and Respond's on DeepSeek V4 Flash:
+`OPEN_ROUTER_API` from the environment, else from the first `.env` above this repo, or its
+`Internal/.env`, that holds it; given to the brain's process only, never printed or written.
+Each player's line goes into the feed as a `LINE` row through the box's `vfg_feed`, as Jev would
+put it there. It checks an action ask done in the world in one step, its loop ended with its
+reply (`AI say -`) and one record (`AI action -`), no task, the brain's own copy `command_steve`;
+an item ask on the right slot; a conversational line answered by Respond, with no step of the
+brain; a conversational ask handed up and acted on by a loop that replies or ends silent (the
+night says it); two players' lines in the same second both answered, their loops at once, each
+reply told apart by the words its loop logged, each player's copy named for them; the rows a
+call read marked processed; a context line marked read at once with no call, and a game event
+read by the next call; and `vfg brain stop`, with no row in `vfg.db`'s tasks table: nothing was
+handed off. Then each line's time to its reply with its loop's steps, cost, cache rate and
+ending (brain.log's `loop` line), and what the run cost. About a minute and eight model calls,
+about $0.03: each step about $0.005-0.006, its 30K-token prompt 94% read from the cache.
+On 2026-10-12, two runs: 39 of 39 checks passed each time, every loop one step, replies 6.3-13.9 s
+after the line (the step's call 4.9-11.0 s). Not part of any test suite.
 
 ## The brain live, on realmc
 
 ```sh
-REALMC_ROOT=… python3 integration/brain_live.py [--name brain] [--keep-up] [--no-implementer]
-REALMC_ROOT=… python3 integration/brain_live.py --name named --keep-up     # a build's own server
+REALMC_ROOT=… python3 integration/brain_live.py [--name live] [--keep-up] [--no-implementer] [--only refused,read,…]
 ```
 
-The brain on a real 26.3 server (realmc, its world fresh from the template, with Carpet's fake
-players Steve and Alex), every ask checked in the world over RCON, in the feed's `AI` rows and in
-`vfg.db`'s tasks table. It starts from a clean slate: the stand-in's `vfg.db` (with its `-wal` and
-`-shm`) and `feed.log` set aside in `vfg/set-aside-<time>/`, never deleted, and made again by
-`vfg_bridge --init-db`; `made/<name>/` saved with `vfg made save`, then moved into
-`made/.replaced/`. Then: an action ask, with no task (`AI action -` rows, the brain's own copy
-`command_steve`); item asks (boots worn and boots carried, a sword held and one carried, a helmet
-he does not have); the brain's own copy `keep_effects_steve` started, then edited (an
-`orchestrator` call, Speed V, an `AI note - | edited keep_effects_steve: …` row) and stopped by the
-orchestrator; two players asking in the same second (two `AI say -` rows); a conversational line
-for Respond; one implementer task end to end, on the Claude subscription (Haiku 5.5): its name
-from the orchestrator, its row (player, session, the description its report's `DESCRIPTION:` line
-gave, `made` and `variables`), its script, action and copy all under that name, its implementer's
-usage rows under it too; a follow-up by its name that resumes the session and leaves a copy
-running with `VFG_TASK=<name>`; a stop of that copy by its name, the task still `done`; each
-report one chat line and one `AI result` row, with nothing the implementer wrote in the feed. It
-prints each line's time to its reply with every model call, the orchestrator's among them, the
-implementer's times, every call's cost from the `usage` rows and the cache hit rate. About 6 to 7
-minutes: the brain, Respond and the orchestrator about $0.25 of OpenRouter, the implementer about
-$0.3 of the subscription's usage; `--no-implementer` leaves the task, its follow-up and its stop
-out. It copies a complete `refs/26.3/` from another server's stand-in when one has it, and leaves
-the server down unless `--keep-up`. See [realmc/README.md](realmc/README.md) for the server and
-its owner's rules.
+Prototype_Brain_Loop's "Live, on realmc" list, on a real 26.3 server (realmc, its world fresh
+from the template, with Carpet's fake players Steve and Alex), every ask checked in the world over
+RCON, in the feed's `AI` rows, in `vfg.db`'s tasks and usage tables and in `brain.log` (each step's
+line, each loop's line, the turns'). It starts from a clean slate: the stand-in's `vfg.db` (with
+its `-wal` and `-shm`) and `feed.log` set aside in `vfg/set-aside-<time>/`, never deleted, and made
+again by `vfg_bridge --init-db`; `made/<name>/` saved with `vfg made save`, then moved into
+`made/.replaced/`. Steve holds a diamond axe, carries an iron sword and iron boots and wears
+diamond boots; Alex holds a trident; the place `home` is saved on the arena. Three brains run one
+after another on the one feed:
+
+1. **The defaults.** A one-step ask whose actions all land (its reply, one `AI action -` record,
+   no task, the copy `command_steve`); a step with two actions together (64 cobblestone and
+   twenty chickens: a `command` and a `summon_around`) and a step with two in turn (home, then
+   day); a refused command the next step fixes (asks whose first command 26.3 may refuse, in
+   turn, until one is: `/enchant` over Fire Aspect's maximum, the scale attribute by its old
+   name, a sword's enchantments in the component's old `{levels:…}` form), checked in the world;
+   Alex's items read with the tool, the next step's reply naming his trident; item asks by slot
+   (boots worn and boots carried; a helmet he does not have); the brain's own copy
+   `keep_effects_steve` started, edited (the `edit` action, Speed V) and stopped (the `stop`
+   action); Steve's second line waiting for his loop (`turn #… Steve waits for their turn`)
+   while Alex's runs beside it; three of Steve's lines waiting and a fourth turned away, never
+   answered, by a private message naming the three (`AI say - | (to Steve) Still on: …`), the
+   three taking his turn one after another; a conversational line for Respond; and one hand-off
+   on the Claude subscription (Haiku 5.5): its task's name, its `AI task` row, its brief in
+   `vfg.db` under its five headings with its done-when items, the turn ended as the implementer
+   started, its report starting a new loop (one chat line, one `AI result` row, nothing the
+   implementer wrote in the feed), what it made; then a follow-up by its name that resumes the
+   session, and a stop of its copy by its name, the task still `done`.
+2. **`VFG_LOOP_STEPS=2`, `VFG_IMPLEMENTER_MINUTES=1`.** A loop that reaches its step limit (read
+   Alex's items, then a last step that may run nothing) and ends with a reply or a hand-off; and
+   a report going ahead of Steve's waiting lines: a hand-off whose implementer reports within the
+   1-minute limit, Steve's lines fed from 15 s after it started to keep his turn busy with lines
+   waiting until the report comes, and the report's loop run before the lines still waiting when
+   it came (`turn report … waits for Steve's turn, first in line`).
+3. **`VFG_LOOP_SECONDS=2`, `VFG_IMPLEMENTER_MINUTES=1`.** A loop that reaches its time limit the
+   same way.
+
+The limits are lowered so a real ask reaches them in a step or two; 10 steps and 2 minutes are
+the same code with other numbers. At the end: every line read, no task open, a clean stop, no
+traceback or error in `brain.log`, the key in no file, every step a usage row `<ref> s<n>` and a
+line of `brain.log`, no orchestrator or planner call, and the cost under $1. It prints each line's
+time to its reply with its loop's steps, cost, cache rate and ending, the implementer tasks'
+times, every call's cost, the cache rate of the steps after a loop's first, and how many loops
+took one step and how many more. `--no-implementer` leaves out the two checks that start an
+implementer; `--only` runs the checks it names (the brain each needs is started for it). It
+copies a complete `refs/26.3/` from another server's stand-in when one has it, and leaves the
+server down unless `--keep-up`. See [realmc/README.md](realmc/README.md) for the server and its
+owner's rules.
+
+On 2026-10-12 a full run passed 77 of 77 checks in about 8 minutes, and the report check, run on its
+own again with the busy turn above, 23 of 23. Of 29 loops, 24 took one step and 5 two (Alex's
+items read, then the reply; a refused command fixed; the two limits); 25 ended with a reply, 1
+silent, 3 in a hand-off. A one-step ask's reply came 6.0-8.9 s after its line, a two-step one's
+10.3-21.9 s, a hand-off's line 6.8-10.7 s; a step cost a median $0.0056, its 32-35K-token prompt
+95% read from the cache, the steps after a loop's first too. The brain and Respond came to $0.21,
+the implementers (the torch ring, its follow-up, and a staff the minute stopped) $0.35 of the
+subscription. The brain went straight to an item modifier for `/enchant` over the maximum and
+wrote the scale attribute by its new name; the sword's enchantments in the old `{levels:…}` form
+were refused, and the next step gave the sword with the component's 26.3 form.
 
 ## Jev's gather call live, on realmc
 
@@ -141,16 +181,17 @@ between them: "the cave over there is pitch black" … "AI, give me something so
 there"; a broken pickaxe and "can you give me a new one"; an ocean monument and "I need to be able
 to breathe down there". Per scenario it checks the feed has one `LINE` for the ask, under the
 ask's fields and time, its text both pieces in order; the gather call never asked about the other
-player's line, and no group holds it; the brain's call is for that line (its usage row, its
-`brain.log` line, the task it opened, whose line is the group), and none is for the first piece
-alone; and, a bonus not counted, what the brain did is in the world (night vision or torches, a
+player's line, and no group holds it; the brain's turn is for that line (its usage rows,
+Respond's `#seq` and its loop's steps' `#seq s<n>`; `brain.log`'s Respond line with the group's
+words and its `loop` line for the asker; the task it opened, whose line is the group), and none is
+for the first piece alone; and, a bonus not counted, what the brain did is in the world (night vision or torches, a
 diamond pickaxe, water breathing). Jev is not deterministic: it prints every line's verdict with
 D2's two answers, each gather answer with its confidence, the time from the end of the ask to
-Jev's verdict, to the feed and to the brain's reply, the gather call's and the brain call's ms,
-and the money. A scenario whose first piece Jev sent to the AI on its own, or whose ask it did
+Jev's verdict, to the feed and to the brain's reply, the gather call's ms and each model call's
+(Respond's, each step's), and the money. A scenario whose first piece Jev sent to the AI on its own, or whose ask it did
 not send, is Jev's routing, not the gather's: it is reported and skipped. The run fails on any
-failed check, or when every scenario was skipped. Each run starts a new transcript, as a new box: the last run's `vfg.db`, feed,
-lookout, menu and logs move to `vfg/runs/<time>/`. `--no-brain` checks Jev alone (the groups on
+failed check, or when every scenario was skipped. Each run starts a new transcript, as a new box:
+the last run's `vfg.db`, feed, lookout, menu and logs move to `vfg/runs/<time>/`. `--no-brain` checks Jev alone (the groups on
 the feed, no OpenRouter), setting the lookout and menu the brain would.
 
 About 1.5 minutes. On 2026-10-11, three runs with the brain passed every check and the three
@@ -160,7 +201,10 @@ of TypeSafe (9 routing calls, 3 gather calls) and $0.014 of OpenRouter, or $0.07
 opening is not cached yet. In eight runs, five of them `--no-brain`, the gather call said yes to
 every first piece and no to every other line it was asked about; in the seven that printed its
 confidence, the yes was 0.42–0.58 for the cave and 0.54–0.76 for the monument, against 0.90–0.96
-for the pickaxe, and every no 1.00.
+for the pickaxe, and every no 1.00. On 2026-10-12, with the brain's loop: 16 of 16 checks and the
+three bonus passed, each ask one step ended with a reply 10.3–10.9 s after the end of the ask (its
+step 5.2–6.8 s), $0.002 of TypeSafe and $0.017 of OpenRouter; the gather's yes was 0.90 for the
+cave, 0.96 for the pickaxe and 0.72 for the monument.
 
 ## Contracts
 

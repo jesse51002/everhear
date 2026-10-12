@@ -1,4 +1,4 @@
-"""A player's items as the planner can use them. Code, no model.
+"""A player's items as the brain can use them. Code, no model.
 
 The replies to `data get entity <p> Inventory`, `... equipment` and `... SelectedItemSlot`
 become one line naming each item by the slot `item modify` takes, the held one marked:
@@ -6,7 +6,7 @@ become one line naming each item by the slot `item modify` takes, the held one m
     Steve's items, by slot: hotbar.0 stick; hotbar.4 iron_sword (held); inventory.5
     diamond_sword {sharpness 5, mending 1}; armor.feet diamond_boots
 
-Raw, Slot 14b is inventory.5 and the hand is a number in another reply, and the planner
+Raw, Slot 14b is inventory.5 and the hand is a number in another reply, and the model
 misread both on 2026-10-10: it enchanted the wrong sword, and said a player holding one had
 none. Anything that is not such a listing is left as it is.
 """

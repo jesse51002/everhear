@@ -11,17 +11,18 @@ and says which of five things happened (`Ran.kind`):
 - "ok": it ran. A once action answers with its script's result(); one past its timeout with
   what it said so far and "still running as <copy>", `running` true, and it is never run again; an until-stopped one
   once it is ready. vfg's notes (a value clamped) are added to the summary.
-- "refused": it ran and Minecraft or the script said no: `ok` false. Only this goes back to
-  the action planner, which may change it and retry. A script that found a player offline
-  says so in its facts (`offline`), and the pick is dropped with no planner call.
+- "refused": it ran and Minecraft or the script said no: `ok` false. Its result goes back to
+  the brain's next step, with Minecraft's error and the reference of every command it used
+  (act.py). A script that found a player offline says so in its facts (`offline`).
 - "partial": `ok` false with `partial` in the facts: it may have acted (RCON dropped
   mid-list, a script failed after it sent a command). Never retried; the summary names what
   ran (`ran`).
 - "timeout": vfg itself did not answer in time (exit 124). It may still have happened, so it
   is never retried.
-- "not_run": it could not be run at all: exit 2 (a value or a key vfg refused), 3 (the box's
-  scripts are not deployed), 4 (SSH down), 5 (RCON down), or no JSON line, or vfg itself
-  missing. A retry cannot fix it.
+- "not_run": it could not be run at all, so nothing of it happened: exit 2 (a value or a key vfg
+  refused), 3 (the box's scripts are not deployed), 4 (SSH down), 5 (RCON down), or no JSON line,
+  or vfg itself missing. `code` keeps the exit, so the brain can tell a refused value (fix it) from
+  a box out of reach (try again).
 """
 
 from __future__ import annotations
@@ -53,6 +54,7 @@ class Ran:
     kind: Kind = "ok"
     copy: str = ""           # the copy's name on EC2
     running: bool = False    # it keeps running after this answer
+    code: int = 0            # vfg's exit
 
 
 def timeout_for(cls, default: float) -> float:
@@ -89,7 +91,7 @@ def read(r: VfgResult, *, timeout: float | None = None) -> Ran:
         if r.code == 0:
             return Ran(True, " ".join(r.stdout.split()) or "done")
         said = str((line or {}).get("error") or (line or {}).get("summary") or "").strip() or why(r)
-        return Ran(False, f"could not run it: {said}", kind="not_run")
+        return Ran(False, f"could not run it: {said}", kind="not_run", code=r.code)
     facts = line.get("facts") if isinstance(line.get("facts"), dict) else {}
     copy, running = str(line.get("copy") or ""), bool(line.get("running"))
     if line.get("ok"):

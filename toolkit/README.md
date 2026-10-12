@@ -75,7 +75,7 @@ vfg place save castle --player Steve --by castle_steve   # the save_place action
 vfg place save home --at -368 70 912           # --dim the_nether or the_end; overworld by default
 vfg place list                                 # castle 197 68 251 overworld (castle_steve), one per line, or none; --json, --fresh
 vfg place forget castle                        # forgot castle; exit 1 if there was none
-vfg usage add --component brain --model openai/gpt-6.1-sol --in 9000 --out 120 --cost 0.0016 --ref '#812'
+vfg usage add --component brain --model google/gemini-3.8-flash --in 9000 --out 120 --cost 0.0016 --ref '#812 s1'
 vfg usage add --component implementer --model haiku --in 900 --out 120 --cache-read 15000 --cache-write 2000
 vfg usage flush                                # the queued rows, every structured() call's among them; none, nothing sent
 ```
@@ -257,7 +257,7 @@ once vfg has checked everything here (`run_incantation`):
   by the bridge with whoever casts. The entry keeps what was asked, `asked` (the values given,
   caster fields apart), beside `values`, every value a cast runs with. The aliases are the
   code's (the phrase joined, compound words split) and one `structured()` call's, 12 at most:
-  `VFG_INCANT_ALIAS_MODEL`, by default the dispatcher's planner's model and providers,
+  `VFG_INCANT_ALIAS_MODEL`, by default DeepSeek V4 Flash through its fastest providers (Respond's),
   reasoning off, 8 s at most (about 1 s and $0.00005); `off` skips it, and a failure is a note.
   Its prompt is `INCANT_ALIAS_PROMPT` in `vfg`. The call is made while one SSH call reads the
   store and the bound script's stamps: the bind warnings (a short phrase; one that sounds like,
