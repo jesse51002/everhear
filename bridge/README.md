@@ -36,7 +36,10 @@ bridge/deploy/client-token.sh                                 # prints the clien
 ```
 
 `ec2.sh retire` backs up `/opt/mc` and the history into `VFG_BACKUP_DIR`, checks both copies by
-sha256, then terminates the instance. `provision --restore` puts them back on a new box.
+sha256, then terminates the instance. `provision --restore` puts them back on a new box. The last
+two retires are kept as `mc-backup.tgz` and `vfg-backup.tgz` with their `.prev.tgz`; each
+retire's history is also kept as `vfg-backup-<UTC time>.tgz`, never deleted, mode 600 (it holds
+`.env`).
 
 **Python on the box.** `provision` runs `deploy/python.sh`, which puts uv (a pinned release, checked
 by sha256) in `/opt/vfg/uv/` and CPython 3.12, installed by uv, behind the link `/opt/vfg/python`.

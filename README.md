@@ -213,7 +213,8 @@ vfg brain start
 # 8. Play: players run the installer, pick "VFG 26.3" in the launcher, join "VFG",
 #    press K to pick a mic, and talk. `vfg brain stop` signs the AI off.
 
-# 9. Retire: back the world up into VFG_BACKUP_DIR, check it, terminate the box.
+# 9. Retire: back the world up into VFG_BACKUP_DIR, check it, terminate the box. The session's
+#    data is also kept there as vfg-backup-<UTC time>.tgz, never deleted.
 bridge/deploy/ec2.sh retire
 ```
 
