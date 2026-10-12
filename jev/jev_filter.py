@@ -8,10 +8,12 @@ transcript history; feeds the lines it keeps to the brain in batches.
     python3 -u /opt/vfg/jev/jev_filter.py              the service (systemd unit vfg-jev)
     python3 /opt/vfg/jev/jev_filter.py --judge "<text>"  judge one text, write nothing
     python3 /opt/vfg/jev/jev_filter.py --judge "<text>" --raw   ... and print Jev's answer as sent
+    python3 /opt/vfg/jev/jev_filter.py --cast "<text>" --player NAME   the cast check alone; casts nothing
 
 Configuration is the environment (see `filter.Config`); the key is
-`TYPESAFE_API_KEY`, from the environment or else `VFG_ENV_FILE`, never logged.
-The journal is stdout.
+`TYPESAFE_API_KEY`, from the environment or else `VFG_ENV_FILE`, never logged;
+the cast check reaches the bridge on 127.0.0.1 with `VFG_CLIENT_TOKEN`, from the
+same places. The journal is stdout.
 """
 import argparse
 import importlib
@@ -26,6 +28,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
+import casting                                       # noqa: E402
 from filter import Config, Filter                   # noqa: E402
 from jev_api import Jev, JevDown, JevRefused          # noqa: E402
 from jev_clock import SystemClock, iso                # noqa: E402
@@ -33,14 +36,15 @@ from prompt import Lookout, Menu, build_state, in_short, questions, route   # no
 from store import Store                               # noqa: E402
 
 KEY_NAME = "TYPESAFE_API_KEY"
+TOKEN_NAME = "VFG_CLIENT_TOKEN"   # the bridge's, for its cast path
 log = logging.getLogger("vfg-jev")
 
 
-def read_key(env_file, environ=None):
-    """The key from the environment, else from `env_file` (`KEY=value` lines).
-    Answers `(key, where)`; `key` is "" when there is none."""
+def read_key(env_file, environ=None, name=KEY_NAME):
+    """The key (or another secret, `name`) from the environment, else from `env_file`
+    (`KEY=value` lines). Answers `(key, where)`; `key` is "" when there is none."""
     environ = os.environ if environ is None else environ
-    v = (environ.get(KEY_NAME) or "").strip()
+    v = (environ.get(name) or "").strip()
     if v:
         return v, "the environment"
     try:
@@ -49,8 +53,8 @@ def read_key(env_file, environ=None):
                 line = line.strip()
                 if line.startswith("export "):
                     line = line[len("export "):].lstrip()
-                name, eq, value = line.partition("=")
-                if eq and name.strip() == KEY_NAME:
+                key, eq, value = line.partition("=")
+                if eq and key.strip() == name:
                     value = value.strip()
                     if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
                         value = value[1:-1]
@@ -88,6 +92,37 @@ def judge_once(cfg, key, text, raw=False):
     cls, conf = route(result.answers)
     tokens = "?" if result.input_tokens is None else result.input_tokens
     print("%s %.2f · %s · %dms · %stok" % (cls, conf, in_short(result.answers), result.ms, tokens))
+    return 0
+
+
+def cast_once(cfg, key, text, player, raw=False):
+    """`--cast`: the cast check on one text as a voice line `player` says now, with the
+    current store and menu and no recent lines. Prints the answer —
+    `hot fireball p 0.92 → a cast · 210ms · 900tok`, or `no p 0.88 …`, or `… has no incantations` —
+    and writes nothing, casts nothing."""
+    entries = casting.Incantations(cfg.incantations).for_player(player)
+    if not entries:
+        print("%s has no incantations in %s: no call" % (player, cfg.incantations))
+        return 0
+    jev = Jev(key, url=cfg.jev_url, model=cfg.model, timeout=cfg.timeout)
+    row = {"id": "cast", "at": iso(time.time()), "player_name": player, "source": "voice", "text": text,
+           "peak_dbfs": None}
+    asked, picked = casting.questions(row, entries, Menu(cfg.menu).text())
+    try:
+        result = jev.ask(casting.state(row, []), asked, required=casting.QUESTION)
+    except (JevDown, JevRefused) as e:
+        print("jev %s: %s" % ("refused" if isinstance(e, JevRefused) else "failed", e), file=sys.stderr)
+        if raw and jev.last_body is not None:
+            print(jev.last_body.decode("utf-8", errors="replace").replace(key, "***"), file=sys.stderr)
+        return 1
+    if raw:
+        print(jev.last_body.decode("utf-8", errors="replace").replace(key, "***"))
+    entry, name, p = casting.answer(result, picked)
+    tokens = "?" if result.input_tokens is None else result.input_tokens
+    verdict = ("" if entry is None else " → no probability" if p is None
+               else " → a cast" if p >= cfg.cast_min else " → under %.2f" % cfg.cast_min)
+    print("%s p %s%s · %dms · %stok" % (casting.short(name), "-" if p is None else "%.2f" % p, verdict,
+                                          result.ms, tokens))
     return 0
 
 
@@ -129,6 +164,17 @@ def import_feed(lib, stop):
     return None
 
 
+def make_bridge(cfg):
+    """The bridge's cast path for the cast check, or None without the token, saying so. Whether
+    the check is on is the Filter's to say (VFG_JEV_CAST_MIN over 1 turns it off)."""
+    token, where = read_key(cfg.env_file, name=TOKEN_NAME)
+    if not token:
+        log.error("no %s in the environment or %s — the cast check is off, and incantations Jev "
+                  "would have caught go to the routing call", TOKEN_NAME, where)
+        return None
+    return casting.Bridge("http://127.0.0.1:%d" % cfg.bridge_port, token)
+
+
 def serve(cfg, key, where):
     stop = Stop()
     signal.signal(signal.SIGTERM, stop)
@@ -143,7 +189,7 @@ def serve(cfg, key, where):
         return 0
     store = Store(cfg.db)
     jev = Jev(key, url=cfg.jev_url, model=cfg.model, timeout=cfg.timeout)
-    flt = Filter(store, jev, feed, SystemClock(), cfg)
+    flt = Filter(store, jev, feed, SystemClock(), cfg, bridge=make_bridge(cfg))
     stop.filter = flt
     flt.stopping = stop.now
     log.info("vfg-jev up · model %s · poll %dms · batch %gs · state %d tokens · history %gh",
@@ -174,17 +220,24 @@ def serve(cfg, key, where):
 def main(argv=None):
     ap = argparse.ArgumentParser(description="vfg-jev: the Jev filter")
     ap.add_argument("--judge", metavar="TEXT", help="judge one text as a chat line from `tester`; writes nothing")
-    ap.add_argument("--raw", action="store_true", help="with --judge: also print Jev's response body as sent")
+    ap.add_argument("--cast", metavar="TEXT", help="the cast check alone on one text as a voice line of "
+                                                   "--player; writes nothing, casts nothing")
+    ap.add_argument("--player", metavar="NAME", help="with --cast: whose line, and so whose incantations")
+    ap.add_argument("--raw", action="store_true", help="with --judge or --cast: also print Jev's response body")
     args = ap.parse_args(argv)
+    if args.cast is not None and not args.player:
+        ap.error("--cast needs --player")
     setup_logging()
     cfg, problems = Config.from_env()
     for p in problems:
         log.warning(p)
     key, where = read_key(cfg.env_file)
-    if args.judge is not None:
+    if args.judge is not None or args.cast is not None:
         if not key:
             print("no %s in the environment or %s" % (KEY_NAME, where), file=sys.stderr)
             return 1
+        if args.cast is not None:
+            return cast_once(cfg, key, args.cast, args.player, raw=args.raw)
         return judge_once(cfg, key, args.judge, raw=args.raw)
     return serve(cfg, key, where)
 

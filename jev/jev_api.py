@@ -39,12 +39,17 @@ class JevRefused(Exception):
 class Result:
     """A call's answers, parsed. `answers` maps each well-formed question to
     `(label, confidence)` — or `(None, p)` for a `noul` — and a malformed one
-    is simply absent. `input_tokens` is None when the answer gave no usage."""
+    is simply absent. `probabilities` maps a well-formed `choice` question to
+    its answer's `{label: p}`, each a probability in [0, 1] for one of the
+    question's own labels (the cast check reads the chosen one's); a question
+    whose answer gave none is absent. `input_tokens` is None when the answer
+    gave no usage."""
 
-    def __init__(self, answers, input_tokens, ms):
+    def __init__(self, answers, input_tokens, ms, probabilities=None):
         self.answers = answers
         self.input_tokens = input_tokens
         self.ms = ms
+        self.probabilities = probabilities or {}
 
     @property
     def cost_usd(self):
@@ -88,6 +93,21 @@ def parse_answer(question, answer):
     if conf is None:
         return None
     return label, conf
+
+
+def parse_probabilities(question, answer):
+    """`{label: p}` from a `choice` answer's `probabilities`: the question's own labels with a
+    probability in [0, 1]; {} when there are none."""
+    probs = answer.get("probabilities") if isinstance(answer, dict) else None
+    if question.get("type") == "noul" or not isinstance(probs, dict):
+        return {}
+    labels = question.get("criteria") or {}
+    out = {}
+    for label, v in probs.items():
+        v = _number(v)
+        if label in labels and v is not None:
+            out[label] = v
+    return out
 
 
 def _reason(body, key):
@@ -172,18 +192,21 @@ class Jev:
             raise JevDown("200 but the body is not an object")
         answers = got.get("answers")
         answers = answers if isinstance(answers, dict) else {}
-        parsed = {}
+        parsed, probabilities = {}, {}
         for name, question in questions.items():
             p = parse_answer(question, answers.get(name))
             if p is not None:
                 parsed[name] = p
+                probs = parse_probabilities(question, answers.get(name))
+                if probs:
+                    probabilities[name] = probs
         if required and required not in parsed:
             raise JevDown("malformed or missing %s in the answer" % required)
         usage = got.get("usage")
         tokens = usage.get("input_tokens") if isinstance(usage, dict) else None
         if isinstance(tokens, bool) or not isinstance(tokens, (int, float)):
             tokens = None
-        return Result(parsed, None if tokens is None else int(tokens), ms)
+        return Result(parsed, None if tokens is None else int(tokens), ms, probabilities)
 
     def probe(self):
         """The state `{"text": "ping"}` and one `noul` question; succeeds on any

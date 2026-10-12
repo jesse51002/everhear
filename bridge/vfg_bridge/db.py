@@ -34,8 +34,8 @@ CREATE TABLE IF NOT EXISTS usage (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT 
 
 # Tables added since section 4's DDL, each made by IF NOT EXISTS on every start, so a history made
 # before one gets it then, and nothing else changes.
-# casts: one row per cast an incantation got, fired or not (status fired, cooldown, duplicate or
-# failed; layer spotter or transcript).
+# casts: one row per cast an incantation got, fired or not (status fired, cooldown, duplicate,
+# failed or stale; layer spotter, transcript or jev).
 # tasks: the brain's, one row per implementer task, written only through `vfg task set`; the bridge
 # creates it and never writes it.
 ADDED = """\
@@ -289,6 +289,28 @@ class DB:
                 conn.execute("UPDATE casts SET line_id = ? WHERE id = ? AND line_id IS NULL",
                              (line_id, cast_id))
             return bool(n)
+
+        return self._in_transaction(run)
+
+    LINE_COLUMNS = ("id", "at", "ended_at", "player_name", "source", "text", "jev_class", "dropped",
+                    "cast_id", "client_line_id")
+
+    def line(self, line_id):
+        """A stored line, as a dict of LINE_COLUMNS, or None."""
+        with self.lock:
+            row = self.conn.execute("SELECT %s FROM lines WHERE id = ?" % ", ".join(self.LINE_COLUMNS),
+                                    (line_id,)).fetchone()
+        return dict(zip(self.LINE_COLUMNS, row)) if row else None
+
+    def drop_judged_cast(self, line_id, cast_id, fired):
+        """Drop a line Jev has not judged, for the Jev filter's cast of it: its cast_id becomes
+        that cast, unless the cast did not fire and the line has one already (the fired cast a
+        kept line carries). False when Jev judged it first."""
+        def run(conn):
+            return conn.execute(
+                "UPDATE lines SET dropped = 'cast', cast_id = CASE WHEN ? OR cast_id IS NULL"
+                " THEN ? ELSE cast_id END WHERE id = ? AND jev_class IS NULL",
+                (1 if fired else 0, cast_id, line_id)).rowcount == 1
 
         return self._in_transaction(run)
 

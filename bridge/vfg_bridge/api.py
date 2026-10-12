@@ -1,5 +1,6 @@
 """The speech endpoint (contracts section 2): POST /v1/lines, and GET /v1/health; and the
-incantations': POST /v1/casts and GET /v1/incantations (casts.py).
+incantations': POST /v1/casts and GET /v1/incantations (casts.py), and the Jev filter's
+POST /v1/jev/casts, taken only from the box itself.
 
 The token is checked before the body is read, so ``{}`` with a good token is
 400 and with a bad one 401.  One log line per request -- method, path, status,
@@ -124,6 +125,17 @@ def validate_cast(body):
             "started_at": started, "ended_at": ended}
 
 
+def validate_jev_cast(body):
+    """The checked fields of a POST /v1/jev/casts body; the first that fails raises BadRequest."""
+    line_id = body.get("line_id")
+    if not isinstance(line_id, str) or not 1 <= len(line_id) <= 64:
+        raise BadRequest("line_id: must be a string of 1-64 characters")
+    return {"line_id": line_id, "phrase": _short(body, "phrase", PHRASE_MAX)}
+
+
+LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+
 def _query(query):
     """player, after and wait of a GET /v1/incantations query; BadRequest otherwise."""
     params = urllib.parse.parse_qs(query, keep_blank_values=True)
@@ -210,6 +222,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._post_line()
             elif method == "POST" and path == "/v1/casts":
                 self._post_cast()
+            elif method == "POST" and path == "/v1/jev/casts":
+                self._post_jev_cast()
             elif method == "GET" and path == "/v1/incantations":
                 self._get_incantations(parts.query)
             else:
@@ -345,6 +359,39 @@ class Handler(BaseHTTPRequestHandler):
         self._send(status, doc)
         if after is not None:
             after()  # the event, the feed line, and a line it drops: off the hot path
+
+    def _post_jev_cast(self):
+        """The Jev filter's cast of a stored line (casts.Casts.jev_cast): from the box itself
+        only, with the client token."""
+        if self.client_address[0] not in LOOPBACK:
+            self._send(403, {"error": "only from the box itself"})
+            self._drain()
+            return
+        body = self._body()
+        if body is None:
+            return
+        try:
+            req = validate_jev_cast(body)
+        except BadRequest as exc:
+            self._send(400, {"error": str(exc)})
+            return
+        casts = self.server.casts
+        if casts is None:
+            self._send(503, {"error": "incantations are not set up on this bridge"})
+            return
+        try:
+            status, doc, after = casts.jev_cast(req["line_id"], req["phrase"], arrived=self._start)
+        except Unavailable as exc:
+            self._send(503, {"error": str(exc)})
+            return
+        except (sqlite3.Error, OSError) as exc:
+            log.error("a Jev cast failed: %s: %s", type(exc).__name__, exc)
+            self._send(503, {"error": "busy"})
+            return
+        self._line_id = doc.get("id") or req["line_id"]
+        self._send(status, doc)
+        if after is not None:
+            after()  # the event and the feed line: off the hot path
 
     def _get_incantations(self, query):
         if not self._authorized():
