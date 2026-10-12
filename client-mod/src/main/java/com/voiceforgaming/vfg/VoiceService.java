@@ -4,6 +4,7 @@ import com.voiceforgaming.vfg.audio.MicCapture;
 import com.voiceforgaming.vfg.audio.WindowListener.StopReason;
 import com.voiceforgaming.vfg.config.VfgConfig;
 import com.voiceforgaming.vfg.kws.Spotter;
+import com.voiceforgaming.vfg.kws.SpotterVad;
 import com.voiceforgaming.vfg.kws.SpotterWorker;
 import com.voiceforgaming.vfg.net.BridgeClient;
 import com.voiceforgaming.vfg.net.CastClient;
@@ -97,7 +98,7 @@ public final class VoiceService {
 		LOG.info("config: {}", config);
 
 		this.spotter = new SpotterWorker(config.incantations, config.incantationThreshold, config.incantationBoost,
-			this::castHeard);
+			config.incantationRecheckSeconds, this::castHeard);
 		this.pipeline = new VoicePipeline(MicCapture.OPENAL, () -> (VoiceDetector) slot.engine(),
 			() -> (Transcriber) slot.engine(), slot::turn, config.turnThreshold, config.silenceSeconds,
 			System::currentTimeMillis, () -> config.logText, new VoicePipeline.Events() {
@@ -246,7 +247,8 @@ public final class VoiceService {
 		if (!Objects.equals(before.micDevice, next.micDevice)) {
 			changeDevice(next.micDevice);
 		}
-		spotter.configure(next.incantations, next.incantationThreshold, next.incantationBoost);
+		spotter.configure(next.incantations, next.incantationThreshold, next.incantationBoost,
+			next.incantationRecheckSeconds);
 		if (!Objects.equals(next.model, requestedModel) && status.get().setup() != VoiceStatus.Setup.UNSUPPORTED) {
 			startSetup(next.model);
 		}
@@ -287,7 +289,7 @@ public final class VoiceService {
 	private void castHeard(SpotterWorker.Cast cast) {
 		CastPayload payload = CastPayload.create(playerUuid, playerName, cast.phrase(), cast.heard(),
 			cast.startedAtMillis(), cast.endedAtMillis());
-		casts.post(payload, cast.heardAtMillis());
+		casts.post(payload, cast.heardAtMillis(), cast.via().words());
 	}
 
 	private void lineClosed(LineAssembler.Line line) {
@@ -413,9 +415,10 @@ public final class VoiceService {
 			return;
 		}
 		if (c.incantations && !spotter.hasModel() && spotterSetup.compareAndSet(false, true)) {
+			Path vadFile = Assets.folder(vfgRoot, vad).resolve(Assets.VAD_FILE);
 			Thread t = new Thread(() -> {
 				try {
-					setUpSpotter(natives);
+					setUpSpotter(natives, vadFile, c.vadThreshold);
 				} finally {
 					spotterSetup.set(false);
 				}
@@ -428,21 +431,40 @@ public final class VoiceService {
 
 	/**
 	 * Installs and loads the keyword model on {@code vfg-kws-setup}, once the engine has loaded the
-	 * natives it runs on; one that will not install or load leaves the spotter off, with a log line.
-	 * It touches only its own folder and the worker, so it takes no setup lock.
+	 * natives it runs on, with the spotter's own VAD from {@code vadFile}, the file the engine's VAD
+	 * loaded; a model that will not install or load leaves the spotter off, and a VAD that will not
+	 * load leaves it on the capture's VAD, each with a log line. It touches only its own folder and
+	 * the worker, so it takes no setup lock.
 	 */
-	private void setUpSpotter(Assets.Asset natives) {
+	private void setUpSpotter(Assets.Asset natives, Path vadFile, double vadThreshold) {
 		Assets.Asset asset = Assets.kws();
 		try {
 			new AssetInstaller(vfgRoot, null).install(asset);
 			long t0 = System.nanoTime();
 			Spotter loaded = Spotter.load(Assets.folder(vfgRoot, natives), Assets.folder(vfgRoot, asset));
-			if (stopping) {
-				loaded.close();
-				return;
+			SpotterVad ownVad = null;
+			boolean handed = false;
+			try {
+				try {
+					ownVad = Spotter.vad(Assets.folder(vfgRoot, natives), vadFile, vadThreshold);
+				} catch (Throwable e) { // an Error from the natives too: the capture's VAD will do
+					LOG.warn("keyword spotter's VAD failed to load ({}); it hears speech end with the lines' VAD",
+						e.toString());
+				}
+				if (stopping) {
+					return;
+				}
+				spotter.setModel(loaded, ownVad);
+				handed = true;
+				LOG.info("keyword spotter loaded ({} ms)", (System.nanoTime() - t0) / 1_000_000);
+			} finally {
+				if (!handed) {
+					loaded.close();
+					if (ownVad != null) {
+						ownVad.close();
+					}
+				}
 			}
-			spotter.setModel(loaded);
-			LOG.info("keyword spotter loaded ({} ms)", (System.nanoTime() - t0) / 1_000_000);
 		} catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
 		} catch (AssetInstaller.SetupException e) {

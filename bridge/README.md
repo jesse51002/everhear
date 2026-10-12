@@ -88,8 +88,11 @@ and lines are stored as before. Every endpoint takes the client token.
   most 30), then `304`.
 - **`POST /v1/lines`**, for a player with incantations: Layer 2 (`match_line` at
   `VFG_INCANT_ALLOWANCE`) may fire `transcript` casts, with the line's window: its matches best
-  first, one per run of words, one per phrase (the player's own before `@a`). Then the drop rule:
-  a line that overlaps one of the player's casts and has at most one word besides its phrase is
+  first, one per run of words, one per phrase (the player's own before `@a`). A one-word phrase
+  matches only from the start of a word, so it casts in any sentence and at the start of a longer
+  word ("dash" in "dashboard"), and one of fewer than 6 speech sounds only as it is said, its
+  mishearings left to its aliases (`incantations._found`). Then the drop rule: a line that
+  overlaps one of the player's casts and has at most one word besides its phrase is
   stored with `dropped = 'cast'`, and Jev never sees it; a kept line gets `cast_id`, the cast that
   fired. The casts it overlaps get its `line_id`. A repeated `client_line_id` casts nothing.
 

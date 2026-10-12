@@ -2,6 +2,7 @@ package com.voiceforgaming.vfg.kws;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -25,21 +26,30 @@ import java.util.Set;
  * model does not have (a digit, an accented letter), since sherpa-onnx refuses the whole string
  * for one unknown token. A keyword that two incantations share goes to the first, which is the
  * player's own before an {@code @a} one in the bridge's list.
+ *
+ * <p>A keyword whose tokens start another keyword's ("fire" and "fire ball", or "fire" and the
+ * alias "fireball") is {@link #startsAnother}: said so far, it may be the start of the longer one,
+ * and {@link #specStartingNone()} leaves it out.
  */
 public final class Keywords {
 	/** What a keyword casts: the incantation's phrase, and the keyword heard (the phrase or an alias). */
 	public record Target(String phrase, String heard) {}
 
-	public static final Keywords NONE = new Keywords("", Map.of(), List.of());
+	public static final Keywords NONE = new Keywords("", "", Map.of(), List.of(), Set.of());
 
 	private final String spec;
+	private final String specStartingNone;
 	private final Map<String, Target> byTag;
 	private final List<String> skipped;
+	private final Set<String> startsAnother;
 
-	private Keywords(String spec, Map<String, Target> byTag, List<String> skipped) {
+	private Keywords(String spec, String specStartingNone, Map<String, Target> byTag, List<String> skipped,
+			Set<String> startsAnother) {
 		this.spec = spec;
+		this.specStartingNone = specStartingNone;
 		this.byTag = byTag;
 		this.skipped = skipped;
+		this.startsAnother = startsAnother;
 	}
 
 	/**
@@ -48,8 +58,9 @@ public final class Keywords {
 	 */
 	public static Keywords build(List<Incantation> incantations, SentencePiece pieces, Set<String> tokens,
 			double threshold, double boost) {
-		StringBuilder spec = new StringBuilder();
+		List<String> spec = new ArrayList<>();
 		Map<String, Target> byTag = new LinkedHashMap<>();
+		Map<String, List<String>> split = new LinkedHashMap<>();
 		List<String> skipped = new ArrayList<>();
 		String tail = " :" + number(boost) + " #" + number(threshold) + " @";
 		for (Incantation inc : incantations) {
@@ -63,19 +74,47 @@ public final class Keywords {
 				if (heard.isEmpty() || byTag.containsKey(tag)) {
 					continue;
 				}
-				List<String> split = pieces.encode(target);
-				if (split.isEmpty() || !tokens.containsAll(split)) {
+				List<String> pieced = pieces.encode(target);
+				if (pieced.isEmpty() || !tokens.containsAll(pieced)) {
 					skipped.add(heard);
 					continue;
 				}
-				if (!spec.isEmpty()) {
-					spec.append('/');
-				}
-				spec.append(String.join(" ", split)).append(tail).append(tag);
+				spec.add(String.join(" ", pieced) + tail + tag);
 				byTag.put(tag, new Target(phrase.isEmpty() ? heard : phrase, heard));
+				split.put(tag, pieced);
 			}
 		}
-		return new Keywords(spec.toString(), Map.copyOf(byTag), List.copyOf(skipped));
+		Set<String> startsAnother = new HashSet<>();
+		List<String> startingNone = new ArrayList<>();
+		int i = 0;
+		for (Map.Entry<String, List<String>> a : split.entrySet()) {
+			for (List<String> b : split.values()) {
+				if (b.size() > a.getValue().size() && b.subList(0, a.getValue().size()).equals(a.getValue())) {
+					startsAnother.add(a.getKey());
+				}
+			}
+			if (!startsAnother.contains(a.getKey())) {
+				startingNone.add(spec.get(i));
+			}
+			i++;
+		}
+		return new Keywords(String.join("/", spec), String.join("/", startingNone), Map.copyOf(byTag),
+			List.copyOf(skipped), Set.copyOf(startsAnother));
+	}
+
+	/** The string for {@code createStream} without the keywords that start another: what a re-check listens for. */
+	public String specStartingNone() {
+		return specStartingNone;
+	}
+
+	/** Whether some keyword starts another. */
+	public boolean anyStartsAnother() {
+		return !startsAnother.isEmpty();
+	}
+
+	/** Whether the keyword with this tag starts another keyword: its tokens are the first of the other's. */
+	public boolean startsAnother(String keyword) {
+		return keyword != null && startsAnother.contains(keyword);
 	}
 
 	/** Lower case, the normalised words with single spaces: how a keyword is shown and sent as {@code heard}. */

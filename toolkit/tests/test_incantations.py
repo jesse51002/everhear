@@ -72,9 +72,9 @@ def install(repo):
                     ignore=shutil.ignore_patterns("__pycache__"))
 
 
-def fake_llm(variants=None, fail=None, after=None):
-    """A stand-in for lib/py/vfg_llm: structured() answers `variants`, or raises `fail`, once
-    `after` (an Event) is set, if given; the calls it had in .calls."""
+def fake_llm(variants=None, fail=None, after=None, everyday=False):
+    """A stand-in for lib/py/vfg_llm: structured() answers `variants` and `everyday`, or raises
+    `fail`, once `after` (an Event) is set, if given; the calls it had in .calls."""
     mod = types.ModuleType("vfg_llm")
     mod.calls = []
 
@@ -84,7 +84,7 @@ def fake_llm(variants=None, fail=None, after=None):
             raise RuntimeError("answered only after the store was read")
         if fail:
             raise fail
-        return types.SimpleNamespace(value=output(variants=variants), cost=0.00012, ms=840)
+        return types.SimpleNamespace(value=output(variants=variants, everyday=everyday), cost=0.00012, ms=840)
     mod.structured = structured
     return mod
 
@@ -184,8 +184,8 @@ class TestCreate(Case):
 
     def test_refusals_before_anything_runs(self):
         before = self.calls()
-        self.assertIn("two words at least", self.refused("incantation_create", player="Steve", phrase="fireball",
-                                                         action="command", values='{"commands": ["say hi"]}'))
+        self.assertIn("a word at least", self.refused("incantation_create", player="Steve", phrase=" ! ",
+                                                      action="command", values='{"commands": ["say hi"]}'))
         self.assertIn("whose incantation", self.refused("incantation_create", player=" ", phrase="fire ball",
                                                         action="command"))
         self.assertIn("whose incantation", self.refused("incantation_create", phrase="fire ball", action="command"))
@@ -248,6 +248,31 @@ class TestCreate(Case):
         self.assertTrue(line["ok"], line)
         self.assertIn("aliases from code only: the alias call failed (no answer from test/m within 8 s)", line["notes"])
         self.assertEqual(self.entry("steve.fire_ball")["aliases"], ["fireball"])
+
+    def test_a_one_word_phrase_is_created_with_its_split_form_and_a_short_one_with_a_note(self):
+        line = self.create(phrase="Fireball!")
+        self.assertTrue(line["ok"], line)
+        self.assertEqual(line["notes"], [])     # 6 speech sounds, as "fire ball"
+        e = self.entry("steve.fireball")
+        self.assertEqual((e["phrase"], e["aliases"]), ("fireball", ["fire ball"]))
+        line = self.create(phrase="heal")
+        self.assertTrue(line["ok"], line)
+        self.assertEqual(line["notes"],
+                         ['"heal" is short (3 speech sounds), so it may fire by accident: a second word helps.'])
+        self.assertEqual(self.entry("steve.heal")["aliases"], [])
+        self.assertEqual(self.listed(player="Steve", as_json=True)[1]["phrase"], "heal")
+
+    def test_everyday_talk_is_a_note_when_the_alias_call_says_so(self):
+        self.model("test/m")
+        for everyday in (True, False):
+            llm = fake_llm(["heel", "heals"], everyday=everyday)
+            with mock.patch.dict(sys.modules, {"vfg_llm": llm}), mock.patch.object(self.vfg, "flush_usage_later"):
+                line = self.create(phrase="heal")
+            self.assertTrue(line["ok"], line)
+            note = '"heal" is everyday talk, so it will fire whenever it is said in conversation.'
+            self.assertEqual(note in line["notes"], everyday, line["notes"])
+            self.assertEqual(self.entry("steve.heal")["aliases"], ["heals"])   # heel: 3 speech sounds
+            self.assertIn("everyday talk", llm.calls[0]["prompt"])
 
     def test_bind_warnings_are_notes(self):
         self.create()
@@ -318,7 +343,27 @@ class TestEdit(Case):
         self.assertIn('Its alias "ice walls" sounds like "ice wall", so one may fire for the other.', line["notes"])
 
 
+    def test_a_one_word_phrase(self):
+        self.create(phrase="dash")
+        self.create(phrase="speed dash")
+        line = self.run_("incantation_edit", player="Steve", phrase="Dash!", cooldown_s="1", aliases="dashes,dosh")
+        self.assertTrue(line["ok"], line)
+        e = self.entry("steve.dash")
+        self.assertEqual((e["cooldown_s"], e["aliases"]), (1.0, ["dashes"]))
+        self.assertEqual(line["notes"], [
+            "left out of the aliases (the phrase itself, too short to tell apart, or past 12): dosh",
+            '"dash" is short (3 speech sounds), so it may fire by accident: a second word helps.',
+            '"dash" sounds like "speed dash", so one may fire for the other.'])
+
+
 class TestRemove(Case):
+    def test_remove_a_one_word_phrase(self):
+        self.create(phrase="shield")
+        line = self.run_("incantation_remove", player="Steve", phrase="Shield")
+        self.assertTrue(line["ok"], line)
+        self.assertEqual(line["summary"], 'removed "shield" for Steve; version 2')
+        self.assertEqual(self.store()["incantations"], [])
+
     def test_remove(self):
         self.create(player="Steve,Alex")
         self.listed()  # the cache
