@@ -15,8 +15,8 @@ from brain.world import Seen
 
 from conftest import NOW, FakeAsk, FakeRefs, catalog, made, rows
 
-LINE = "LINE#58 18:29:40 Alex voice action_oriented 0.91 -9dB | can I get a grappling hook that pulls me up"
-TYPED = "LINE#60 18:29:50 Sam chat action_oriented 0.88 - | never mind the moat"
+LINE = "LINE#58 18:29:40 Alex voice to_ai 0.91 -9dB | can I get a grappling hook that pulls me up"
+TYPED = "LINE#60 18:29:50 Sam chat to_ai 0.88 - | never mind the moat"
 HOOK = {"words": "“can I get a grappling hook that pulls me up”",
         "picture": "a fishing rod named Grappling Hook; a right-click shoots a line up to 40 blocks and pulls Alex to "
                    "the block it catches, fast, with a reel sound",
@@ -298,9 +298,9 @@ def test_the_rules_hold_no_example_from_the_benches_lines():
 
 
 async def test_a_line_is_routed_with_its_prompt_laid_out_for_the_cache():
-    ctx = rows("LINE#50 18:27:10 Sam voice conversational 0.80 -9dB | hey AI",
+    ctx = rows("LINE#50 18:27:10 Sam voice to_ai 0.80 -9dB | hey AI",
                "AI#51 18:27:12 say - | Hey Sam!",
-               "LINE#58 18:29:40 Alex voice action_oriented 0.91 -9dB | can I get a grappling hook that pulls me up")
+               "LINE#58 18:29:40 Alex voice to_ai 0.91 -9dB | can I get a grappling hook that pulls me up")
     answer = route("new_implementer", reason="a new item; no task or loop is on it", hand_offs=(hook(),),
                    reply="On it!")
     ask = FakeAsk(Route=answer)
@@ -316,8 +316,8 @@ async def test_a_line_is_routed_with_its_prompt_laid_out_for_the_cache():
     assert call["cached"] == ctx.cached(router.opening(refs), 5, marks=MARKS)
     assert call["cached"][0] == (router.opening(refs), True)               # the opening, marked
     assert "".join(text for text, _ in call["cached"][1:]).splitlines() == [
-        "18:27:10 Sam (conversational): hey AI", "18:27:12 AI: Hey Sam!",
-        "18:29:40 Alex (action_oriented): can I get a grappling hook that pulls me up"]
+        "18:27:10 Sam (to_ai): hey AI", "18:27:12 AI: Hey Sam!",
+        "18:29:40 Alex (to_ai): can I get a grappling hook that pulls me up"]
     prompt = call["prompt"]
     order = ["THIS SERVER'S OWN ACTIONS: none yet", "THE WORLD NOW:\nPLAYERS ONLINE: Alex, Sam", "TASKS: none yet",
              "WORK UNDER WAY: no brain loops", "THE LINE #58, 18:29:40: Alex said: can I get a grappling hook"]

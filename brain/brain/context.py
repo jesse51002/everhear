@@ -3,13 +3,16 @@ mark, and how the conversation is shown to a model. Pure: no I/O, so a test buil
 
 The rows (Contracts §7, and the brain plan's AI type):
 
-    LINE#812 18:22:31 Steve voice action_oriented 0.93 -8dB | build me a castle
+    LINE#812 18:22:31 Steve voice to_ai 0.93 -8dB | build me a castle
     GAME#814 18:22:40 death Steve | Steve was slain by Zombie
     SYS#816 18:25:00 | jev unavailable — passing every line as context
     AI#817 18:25:02 action - | command: give Steve diamond_pickaxe — ok: Gave 1 [Diamond Pickaxe] to Steve
     AI#818 18:25:04 task galick_gun_styrk | new: A Galick Gun for Styrkaeopteryx: …
 
-A line of a type it does not know (an old ORCH line) is kept as its plain text.
+A line of a type it does not know (an old ORCH line) is kept as its plain text. A LINE Jev classed
+`to_ai` is a line said to the AI; one fed before Prototype_Addressing_The_AI (2026-10-13) may hold
+Jev's two classes for the AI then, `action_oriented` or `conversational`, and is read as `to_ai`
+(a restored feed.log can hold them).
 
 A LINE Jev classed `context` is kept here, as in the feed and vfg.db, but no model is shown it:
 not in the conversation, not under NEW (2026-10-10: raw context lines are left out until a
@@ -36,7 +39,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 AI_KINDS = ("say", "action", "task", "result", "note")
-LIVE = ("action_oriented", "conversational")  # the classes that get a live call of their own
+TO_AI = "to_ai"  # Jev's class for a line said to the AI (Prototype_Addressing_The_AI)
+LEGACY_TO_AI = ("action_oriented", "conversational")  # its two classes for the AI before it, read as to_ai
+LIVE = (TO_AI,)  # the classes that get a live call of their own
 QUIET = ("context",)  # the LINE classes no model is shown: kept in the feed for a later memory
 MARKS = 3  # conversation marks; the opening is the fourth
 HEAD = re.compile(r"^(?P<type>[A-Z]+)#(?P<seq>\d+) (?P<hms>\d\d:\d\d:\d\d)(?: (?P<fields>.*))?$")
@@ -50,7 +55,7 @@ class Row:
     text: str                # what follows `|`; the whole line for an unknown type
     who: str = ""            # LINE: the player; GAME: the player, or ""
     source: str = ""         # LINE: voice or chat
-    cls: str = ""            # LINE: Jev's class (action_oriented, conversational, context, not_relevant)
+    cls: str = ""            # LINE: Jev's class, to_ai or context (an older class for the AI reads as to_ai)
     kind: str = ""           # GAME: its kind (death, join, cast …); AI: say, action, task, result or note
     task: str = ""           # AI: the task it is about, or ""
     processed: bool = False
@@ -113,7 +118,8 @@ def parse(line: str, *, seq: int | None = None, at: str | None = None, processed
     when = at or at_of(m.group("hms"), now or datetime.now(UTC))
     fields = (m.group("fields") or "").split()
     if kind == "LINE" and len(fields) >= 3:
-        return Row(seq, when, "LINE", text, who=fields[0], source=fields[1], cls=fields[2], processed=processed)
+        cls = TO_AI if fields[2] in LEGACY_TO_AI else fields[2]
+        return Row(seq, when, "LINE", text, who=fields[0], source=fields[1], cls=cls, processed=processed)
     if kind == "GAME" and fields:
         who = fields[1] if len(fields) > 1 and fields[1] != "-" else ""
         return Row(seq, when, "GAME", text, who=who, kind=fields[0], processed=processed)

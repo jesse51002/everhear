@@ -31,15 +31,18 @@ run at once.
 
 | Event | Comes from | What runs |
 |---|---|---|
-| `LINE` | a `LINE` Jev classed `action_oriented` or `conversational`: either class, a line said to the AI, which no longer picks the agent | the front turn, in the player's turn: the conversation agent answers, and when it hands off, the router picks who does the work and code places it (The router, below): a new loop, which runs on its own; the line added to a loop already on that thing; an implementer, new or already on it; or nowhere |
+| `LINE` | a `LINE` Jev classed `to_ai`: said to the AI | the front turn, in the player's turn: the conversation agent answers, and when it hands off, the router picks who does the work and code places it (The router, below): a new loop, which runs on its own; the line added to a loop already on that thing; an implementer, new or already on it; or nowhere |
 | `REPORT` | an implementer ending (`Implementers`' `on_report`) | at once, never queued: once the task has taken what the implementer made, its `DESCRIPTION:` line and its action's variables (Tasks, below), the conversation agent reads the report whole and writes the player's chat line, the task's record and its status; what is left, if anything, the router places (A report, below) |
 
 A loop's own event is the `LINE` the router sent it, or a `REPORT`: the work an implementer's report
 left, which the router sent it. A line the router adds to a loop already on that thing reaches the
 loop before its next step, as a `LINE ADDED TO THIS LOOP` block (Loops, below).
 
-A `LINE` is one conversation agent call, and one router call when the agent hands it off. There is
-no other call: no model is called for what nobody asked. A game event, a system notice and the
+A `to_ai` `LINE` is one conversation agent call, and one router call when the agent hands it off
+(Prototype_Addressing_The_AI: Jev passes a line only when it is said to the AI, naming it, "AI"
+or "brain", or answering what the AI asked; its two classes for the AI before, `action_oriented`
+and `conversational`, are one now, and a feed row with either old name is read as `to_ai`,
+`context.py`). There is no other call: no model is called for what nobody asked. A game event, a system notice and the
 brain's own rows wait for the next front turn or report, which reads them as NEW. A line already in
 the feed when the brain read its context, said more than two minutes before that, is history: never
 acted on. A line that arrives on the watch is live, whatever its time (the box's clock may be a
@@ -234,7 +237,7 @@ its NEW rows: the conversation agent's, and those of a new loop the router start
 prompt. It stays in the feed and `vfg.db`, and in the context's rows, for a memory that will
 summarise it later; the brain marks it processed as it arrives (and, at a start, every one still
 unmarked), so nothing waits on it. Every `GAME` row, every `SYS` row, the brain's own `AI` rows and
-the `action_oriented` and `conversational` lines are shown.
+the `to_ai` lines are shown.
 
 A step's prompt is laid out for the cache ([`call.py`](brain/call.py)):
 
@@ -613,12 +616,13 @@ From the environment, then `~/.vfg/config`:
 | `VFG_IMPL_PROVIDER` | `deepseek` when `DEEPSEEK_API_KEY` is set, else `openrouter`: DeepSeek V4.1 Flash at that provider; or `anthropic`, Haiku 5.5 on your Claude subscription, Claude Code only and untested |
 | `VFG_IMPL_MODEL` | the provider's: `deepseek-flash`, `deepseek/deepseek-v4.1-flash`, `claude-haiku-5-5`; `VFG_IMPLEMENTER_MODEL` is read when it is empty |
 | `VFG_IMPL_BASE_URL` | the provider's Claude-compatible address: `https://api.deepseek.com/anthropic`, `https://openrouter.ai/api`; none for `anthropic` |
-| `VFG_IMPL_OR_ORDER`, `VFG_IMPL_OR_IGNORE` | `digitalocean,ionstream,together` and `venice,morph,relace`: on `openrouter`, the providers each request tries first and never, fallbacks allowed, so a run keeps one provider's cache; `none` empties one |
-| `VFG_IMPL_EFFORT`, `VFG_IMPL_MAX_TURNS` | `low` (the `anthropic` provider's only), `100` model requests a run, warned at the 95th and stopped past the 100th |
-| `VFG_IMPLEMENTER_MINUTES` | `10`: warned a minute before, stopped at it and its task failed |
+| `VFG_IMPL_OR_ORDER`, `VFG_IMPL_OR_IGNORE` | `together,digitalocean,ionstream` (Together first, the fastest) and `venice,morph,relace`: on `openrouter`, the providers each request tries first and never, fallbacks allowed, so a run keeps one provider's cache; `none` empties one |
+| `VFG_IMPL_EFFORT` | `high`: how hard the model thinks, on every provider and harness, `off`, `low`, `high` or `max` (`medium` is `high`; anything else stops the brain with an error). Claude Code's relay sends it as `output_config.effort` (at `off`, `thinking` disabled), OpenCode as OpenRouter's `reasoning.effort` or DeepSeek's `reasoning_effort`, the `anthropic` provider as the CLI's `--effort`. The number it reaches depends on the host: DeepSeek's own scale, and DigitalOcean and Ionstream through OpenRouter, put `low`, `high` and `max` at 50, 75 and 100 of 100; Together puts them at 25, 50 and 100 (measured 2026-10-13). Each request's reasoning tokens are on its `request` line, `reasoning=` (`~` when estimated from the thinking's text) |
+| `VFG_IMPL_MAX_TURNS` | `100` model requests a run, warned at the 95th and stopped past the 100th |
+| `VFG_IMPLEMENTER_MINUTES` | `20`: warned a minute before, stopped at it and its task failed. A shell command an implementer runs may take 10 minutes when it sets no timeout (a `vfg test` waiting its turn), the run's limit at most |
 | `VFG_IMPL_CACHE_TTL` | `5m` (or `1h`): the `anthropic` provider's prompt cache; `VFG_SUBAGENT_CACHE_TTL` is read when it is empty |
 | `VFG_OPENCODE_BIN` | `opencode` on the PATH, else `~/.opencode/bin/opencode`: OpenCode's program; from the environment only |
-| `VFG_TEST_BOX` | none: the file of the test server's settings, where `vfg test` runs an implementer's test (`docs/CONTRACTS.md` §8); with none, its check is one action run |
+| `VFG_TEST_BOX` | `box`: the live box's own test server, where `vfg test` runs an implementer's test (`docs/CONTRACTS.md` §8); or the file of a test server's settings; `none`: no test server, and the check is one action run. With one, a run's looks at the live world are budgeted |
 | `VFG_TEST_TIMEOUT_S` | `60` s a test may run, 5 to 600, before it is stopped |
 
 A number that does not read, or is under its least, is logged and its default used. The

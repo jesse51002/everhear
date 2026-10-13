@@ -28,7 +28,7 @@ FROST = {"name": "frost_bow_alex", "description": "A frost bow for Alex: its arr
 
 def line(seq: int = 7, who: str = "Steve", text: str = "lol make it rain", *before: str):
     """A context holding `before` and the line, and the line's row."""
-    ctx = rows(*before, f"LINE#{seq} 18:29:59 {who} voice conversational 0.9 - | {text}")
+    ctx = rows(*before, f"LINE#{seq} 18:29:59 {who} voice to_ai 0.9 - | {text}")
     return ctx, ctx.rows[-1]
 
 

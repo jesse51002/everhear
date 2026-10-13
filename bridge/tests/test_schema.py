@@ -14,7 +14,7 @@ CREATE TABLE lines (id TEXT PRIMARY KEY, at TEXT NOT NULL, ended_at TEXT,
   player_uuid TEXT, player_name TEXT NOT NULL,
   source TEXT NOT NULL CHECK (source IN ('voice','chat','ai')), text TEXT NOT NULL,
   peak_dbfs REAL, mean_dbfs REAL, client_line_id TEXT UNIQUE,
-  jev_class TEXT CHECK (jev_class IN ('action_oriented','conversational','context','not_relevant')),
+  jev_class TEXT CHECK (jev_class IN ('to_ai','context','not_relevant')),
   jev_confidence REAL, jev_judged_at TEXT, fed_at TEXT);
 CREATE INDEX lines_at ON lines(at);
 CREATE INDEX lines_player_at ON lines(player_name, at);
@@ -29,12 +29,16 @@ CREATE TABLE usage (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,
 
 # The same tables as a box made them before the brain: Jev's three classes, four components.
 OLD_DDL = (CONTRACT_DDL
-           .replace("'action_oriented','conversational','context','not_relevant'",
-                    "'direct_ask','context','not_useful'")
+           .replace("'to_ai','context','not_relevant'", "'direct_ask','context','not_useful'")
            .replace(",'brain','respond','planner','alias','router'", ""))
 
 # The same tables as a box made them before the router (Prototype_Conversation_And_Router): eight components.
 BEFORE_ROUTER_DDL = CONTRACT_DDL.replace(",'router'", "")
+
+# lines as a box made it from the Jev routing (2026-10-11) until Addressing_The_AI: Jev's four
+# classes, two of them for the AI.
+FOUR_CLASSES_DDL = CONTRACT_DDL.replace("'to_ai','context','not_relevant'",
+                                        "'action_oriented','conversational','context','not_relevant'")
 
 # usage as the brain's box made it, before the one log: six components, the cache columns added.
 BRAIN_USAGE = ("CREATE TABLE usage (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,\n"
@@ -122,7 +126,7 @@ class TestSchema(Box):
         for table, column, values, renamed in db.CHECKS:  # a second start changes nothing more
             self.assertFalse(db.rebuild_check(database.conn, table, column, values, renamed))
         self.assertEqual(self.query("SELECT id, jev_class, dropped, cast_id FROM lines ORDER BY id"), [
-            ("L1", "action_oriented", None, None), ("L2", "not_relevant", AT, "C1"),
+            ("L1", "to_ai", None, None), ("L2", "not_relevant", AT, "C1"),
             ("L3", "context", None, None), ("L4", None, None, None)])
         # the old table's SQL with the new list, every added column kept (SQLite's rename quotes the name)
         self.assertEqual(self.query("SELECT sql FROM sqlite_master WHERE name = 'lines'")[0][0]
@@ -140,10 +144,11 @@ class TestSchema(Box):
         conn = sqlite3.connect(self.db_path, isolation_level=None)
         self.addCleanup(conn.close)
         conn.execute("INSERT INTO lines (id, at, player_name, source, text, jev_class)"
-                     " VALUES ('L5', ?, 'Alex', 'chat', 'thanks AI', 'conversational')", (AT,))
-        with self.assertRaises(sqlite3.IntegrityError):
-            conn.execute("INSERT INTO lines (id, at, player_name, source, text, jev_class)"
-                         " VALUES ('L6', ?, 'Alex', 'chat', 'x', 'direct_ask')", (AT,))
+                     " VALUES ('L5', ?, 'Alex', 'chat', 'thanks AI', 'to_ai')", (AT,))
+        for old in ("direct_ask", "action_oriented", "conversational"):
+            with self.assertRaises(sqlite3.IntegrityError, msg=old):
+                conn.execute("INSERT INTO lines (id, at, player_name, source, text, jev_class)"
+                             " VALUES ('L6', ?, 'Alex', 'chat', 'x', ?)", (AT, old))
         with self.assertRaises(sqlite3.IntegrityError):  # client_line_id is still unique
             conn.execute("INSERT INTO lines (id, at, player_name, source, text, client_line_id)"
                          " VALUES ('L7', ?, 'Alex', 'chat', 'x', 'c1')", (AT,))
@@ -152,6 +157,56 @@ class TestSchema(Box):
         conn.execute("INSERT INTO usage (at, component) VALUES (?, 'respond')", (AT,))
         self.assertEqual(self.query("SELECT id, component FROM usage ORDER BY id"),
                          [(7, "orchestrator"), (10, "brain"), (11, "respond")])
+
+    def test_a_history_with_jevs_four_classes_is_rebuilt_once_its_two_for_the_ai_becoming_to_ai(self):
+        # a box's vfg.db as the bridge made it on main 94e517e: lines with Jev's four classes, every
+        # column added since, the casts and tasks tables, and a feed written then
+        database = self.make_db()
+        database.close()
+        conn = sqlite3.connect(self.db_path, isolation_level=None)
+        conn.execute("DROP TABLE lines")
+        conn.executescript(FOUR_CLASSES_DDL.split(";")[0]
+                           .replace("fed_at TEXT)", "fed_at TEXT, dropped TEXT, cast_id TEXT)") + ";"
+                           "CREATE INDEX lines_at ON lines(at);"
+                           "CREATE INDEX lines_player_at ON lines(player_name, at);")
+        rows = (("L1", "action_oriented", 0.93, None), ("L2", "conversational", 0.85, None),
+                ("L3", "context", 0.7, None), ("L4", "not_relevant", 0.8, None), ("L5", None, None, "cast"),
+                ("L6", "context", None, None))                      # passed while Jev failed open
+        for n, (lid, cls, conf, dropped) in enumerate(rows, 1):
+            conn.execute("INSERT INTO lines (id, at, player_name, source, text, client_line_id, jev_class,"
+                         " jev_confidence, jev_judged_at, fed_at, dropped) VALUES (?, ?, 'Steve', 'voice', ?, ?,"
+                         " ?, ?, ?, ?, ?)", (lid, AT, "line %d" % n, "c%d" % n, cls, conf, AT if cls else None,
+                                             AT if cls in ("action_oriented", "conversational", "context") else None,
+                                             dropped))
+        conn.execute("INSERT INTO feed (at, line) VALUES (?, 'LINE#1 05:00:00 Steve voice action_oriented"
+                     " 0.93 -8dB | line 1')", (AT,))
+        conn.execute("INSERT INTO tasks (name, description, status, created_at, updated_at)"
+                     " VALUES ('castle_steve', 'A castle', 'open', ?, ?)", (AT, AT))
+        conn.close()
+
+        database = self.make_db()                        # the bridge starting on the new code
+        for table, column, values, renamed in db.CHECKS:  # a second start changes nothing more
+            self.assertFalse(db.rebuild_check(database.conn, table, column, values, renamed))
+        self.assertEqual(self.query("SELECT id, jev_class, jev_confidence, fed_at IS NOT NULL, dropped"
+                                    " FROM lines ORDER BY id"), [
+            ("L1", "to_ai", 0.93, 1, None), ("L2", "to_ai", 0.85, 1, None), ("L3", "context", 0.7, 1, None),
+            ("L4", "not_relevant", 0.8, 0, None), ("L5", None, None, 0, "cast"), ("L6", "context", None, 1, None)])
+        self.assertIn("CHECK (jev_class IN ('to_ai','context','not_relevant'))",
+                      self.query("SELECT sql FROM sqlite_master WHERE name = 'lines'")[0][0])
+        self.assertEqual({n for (n,) in self.query("SELECT name FROM sqlite_master WHERE type = 'index'"
+                                                   " AND tbl_name = 'lines' AND sql IS NOT NULL")},
+                         {"lines_at", "lines_player_at"})
+        # the feed keeps its rows as written: a reader takes an old class as to_ai (Contracts §7)
+        self.assertEqual(self.query("SELECT line FROM feed"),
+                         [("LINE#1 05:00:00 Steve voice action_oriented 0.93 -8dB | line 1",)])
+        self.assertEqual(self.query("SELECT name FROM tasks"), [("castle_steve",)])
+        conn = sqlite3.connect(self.db_path, isolation_level=None)
+        self.addCleanup(conn.close)
+        conn.execute("UPDATE lines SET jev_class = 'to_ai', jev_confidence = 0.9 WHERE id = 'L5'")  # Jev's write
+        for old in ("action_oriented", "conversational"):
+            with self.assertRaises(sqlite3.IntegrityError, msg=old):
+                conn.execute("UPDATE lines SET jev_class = ? WHERE id = 'L4'", (old,))
+        self.assertEqual(self.query("SELECT count(*) FROM lines WHERE jev_class = 'to_ai'"), [(3,)])
 
     def test_a_history_from_before_named_tasks_gains_the_table_and_keeps_everything(self):
         database = self.make_db()

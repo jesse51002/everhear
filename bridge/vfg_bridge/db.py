@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS lines (id TEXT PRIMARY KEY, at TEXT NOT NULL, ended_a
   player_uuid TEXT, player_name TEXT NOT NULL,
   source TEXT NOT NULL CHECK (source IN ('voice','chat','ai')), text TEXT NOT NULL,
   peak_dbfs REAL, mean_dbfs REAL, client_line_id TEXT UNIQUE,
-  jev_class TEXT CHECK (jev_class IN ('action_oriented','conversational','context','not_relevant')),
+  jev_class TEXT CHECK (jev_class IN ('to_ai','context','not_relevant')),
   jev_confidence REAL, jev_judged_at TEXT, fed_at TEXT);
 CREATE INDEX IF NOT EXISTS lines_at ON lines(at);
 CREATE INDEX IF NOT EXISTS lines_player_at ON lines(player_name, at);
@@ -67,9 +67,13 @@ COLUMNS = [
 # CHECK lists changed since a history was made, as (table, column, the list now,
 # {an old value: its new value}).  SQLite cannot alter a CHECK, so a history whose
 # table still has another list gets the table rebuilt once, on start.
+# Jev's classes: to_ai, context, not_relevant (Prototype_Addressing_The_AI, 2026-10-13). The two
+# classes for the AI before it, action_oriented and conversational, are both to_ai now, as is
+# direct_ask from before those; not_useful became not_relevant.
 CHECKS = [
-    ("lines", "jev_class", ("action_oriented", "conversational", "context", "not_relevant"),
-     {"direct_ask": "action_oriented", "not_useful": "not_relevant"}),
+    ("lines", "jev_class", ("to_ai", "context", "not_relevant"),
+     {"direct_ask": "to_ai", "action_oriented": "to_ai", "conversational": "to_ai",
+      "not_useful": "not_relevant"}),
     ("usage", "component", ("jev", "conversation", "orchestrator", "implementer", "brain", "respond",
                             "planner", "alias", "router"),
      {}),

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Jev's gather call live, on a real 26.3 server on this PC: the Jev routing spec's "Live, on realmc".
+"""Jev live, on a real 26.3 server on this PC: the gather call (the Jev routing spec's "Live, on
+realmc") and the rule of Prototype_Addressing_The_AI (a line goes to the AI only when it names it, or
+answers a question it asked).
 
-    REALMC_ROOT=… python3 integration/jev_live.py [--name jr] [--keep-up] [--no-brain]
+    REALMC_ROOT=… python3 integration/jev_live.py [--name jr] [--keep-up] [--no-brain] [--rule-only]
 
 Real:  a Minecraft 26.3 server with Carpet's fake players Steve and Alex (integration/realmc, its
        world fresh from the template), the bridge (as incantations_e2e.py starts it), the Jev
@@ -19,8 +21,15 @@ the brain's turn is for that line (its usage rows: the conversation agent's and 
 its loop's line for the asker; the task it opened), not for the first piece; and, a bonus, what
 the brain did is in the world (over RCON). Jev is not deterministic: every line's verdict is printed, and a scenario whose first
 piece Jev sent to the AI on its own, or whose ask it did not, is reported as Jev's routing, not
-the gather's, and skipped. PASS/FAIL per check; exit 1 when one failed or no scenario could be
-checked. Each run starts a new transcript:
+the gather's, and skipped.
+
+Then THE RULE (RULE_CASES): lines said one after another, and a question from the AI (`vfg say`),
+each checked for its class: a line naming the AI goes to it (`to_ai`), an answer to the question the
+AI asked another player goes, and an ask to a friend, an ask that names no AI and a line about the
+AI do not. With the brain on, it answers what goes, and its own lines are in Jev's history too.
+
+PASS/FAIL per check; exit 1 when one failed or no scenario could be checked. Each run starts a new
+transcript:
 the last run's vfg.db, feed, lookout, menu and logs move to vfg/runs/. --no-brain checks Jev alone
 (no OpenRouter). The server is left down unless --keep-up. Never `down --all`, `--purge-key`,
 `--regen`, `key` or `carpet`: other builders share REALMC_ROOT.
@@ -48,7 +57,7 @@ import incantations_e2e  # noqa: E402  (imports realmc and players, from REALMC_
 from brain_live import KEY, parse_iso, short, wait_for  # noqa: E402
 
 JEV_BUDGET, MODEL_BUDGET = 0.10, 0.50     # dollars of TypeSafe and of OpenRouter a run may spend
-TO_THE_AI, HELD_BACK = ("action_oriented", "conversational"), ("context", "not_relevant")
+TO_THE_AI, HELD_BACK = ("to_ai",), ("context", "not_relevant")
 JOIN = " … "
 
 # (name, asker, other, [the first piece, the other's line, the ask], what the brain may do in the world)
@@ -63,6 +72,20 @@ SCENARIOS = [
      ["I'm going down into that ocean monument", "the guardians in there hit really hard",
       "AI, I need to be able to breathe down there"],
      {"effects": ["water_breathing", "conduit_power"], "items": []}),
+]
+
+# The rule, said in this order after the scenarios: (who, text, to the AI?, why). "AI" is the AI's own line,
+# said with `vfg say`: a question it asks Steve, which Alex then answers. None is close to a line of
+# jev/prompt.py's EXAMPLES, so this tests the rule, not the examples.
+RULE_CASES = [
+    ("Steve", "Alex can you toss me some torches", False, "an ask to a friend, by the friend's name"),
+    ("Alex", "can you give me a fishing rod", False, "an ask that names no AI"),
+    ("Steve", "the AI was really quick just now", False, "about the AI, not to it"),
+    ("Alex", "brain, give me a stack of torches", True, "names the AI: brain"),
+    ("Steve", "AI, build a bridge over this river", True, "names the AI"),
+    ("AI", "Steve, should the bridge have railings, or stay open?", None, "the AI asks Steve"),
+    ("Alex", "railings, so nobody falls off", True, "answers the question the AI asked Steve"),
+    ("Steve", "I think it's going to look great", False, "talk after the answer, to no one"),
 ]
 
 JUDGE = re.compile(r"^judge (\S+) \S+ \S+ (\S+) (\S+) · (.*) · (\d+)ms")
@@ -133,6 +156,7 @@ class Run:
         self.replies = brain_live.Run(live, rep)
         self.said = []      # every line posted: {"id", "who", "text", "end"}
         self.asks = []      # each checked ask: its LINE, its gather line, its times
+        self.rule_checked = 0
         self.started = time.time()
 
     def say(self, who, text, gap=1.2):
@@ -149,7 +173,7 @@ class Run:
         return self.live.sql("SELECT * FROM lines WHERE id = ?", (line["id"],))[0]
 
     def verdicts(self):
-        """`judge` journal lines by line id: (class, confidence, D2's two answers, ms)."""
+        """`judge` journal lines by line id: (class, confidence, the two answers in short, ms)."""
         return {m.group(1): m.groups()[1:] for m in map(JUDGE.match, self.jev.journal()) if m}
 
     def gather(self, ask_id):
@@ -222,6 +246,30 @@ def scenario(run, name, asker, other, said, world):
     rep.extra(effects or any(n > 0 for n in items.values()),
               "in the world: %s %s" % (asker, ", ".join(effects + ["%+d %s" % (n, i) for i, n in items.items() if n])
                                        or "has nothing new"), "reply %r" % a["reply"])
+
+
+def rule(run):
+    """RULE_CASES in order, each line's class checked once Jev has judged it."""
+    rep, live = run.rep, run.live
+    rep.head("the rule: a line goes to the AI only when it names it, or answers a question it asked")
+    said = []
+    for who, text, to_ai, why in RULE_CASES:
+        if who == "AI":
+            time.sleep(1.5)
+            r = live.vfg("say", text)
+            rep.check(r.returncode == 0, "the AI asks: %r (vfg say)" % text, r.stdout + r.stderr)
+            continue
+        line = run.say(who, text)
+        said.append((line, to_ai, why))
+        wait_for(lambda: run.row(line)["jev_class"], 30)   # judged before the next line, as a player would wait
+    for line, to_ai, why in said:
+        r = run.row(line)
+        got = r["jev_class"]
+        rep.check(got is not None and (got in TO_THE_AI) == to_ai,
+                  "%s: %r is %s (%s)" % (line["who"], line["text"], got, why),
+                  "want %s; the journal: %r" % ("to_ai" if to_ai else "context or not_relevant",
+                                                run.verdicts().get(line["id"])))
+        run.rule_checked += 1
 
 
 def report(run):
@@ -310,6 +358,7 @@ def main():
     ap.add_argument("--name", default="jr", help="the realmc server (default jr)")
     ap.add_argument("--keep-up", action="store_true", help="leave the server running at the end")
     ap.add_argument("--no-brain", action="store_true", help="Jev only: the groups on the feed, no OpenRouter")
+    ap.add_argument("--rule-only", action="store_true", help="the rule's cases alone, no gather scenarios")
     args = ap.parse_args()
     key, where = brain_live.find_key()
     os.environ.pop(KEY, None)   # the brain's process gets it from Live.start(), nothing else does
@@ -326,7 +375,7 @@ def main():
     if r.returncode != 0:
         print("realmc up %s failed" % args.name, file=sys.stderr)
         return 1
-    rep, live, bridge, jev = Report(), None, None, None
+    rep, live, bridge, jev, run = Report(), None, None, None, None
     try:
         live = brain_live.Live(args.name, key or "")
         bridge = incantations_e2e.Bridge(srv, os.path.join(srv.dir, "bridge.log"))
@@ -336,7 +385,8 @@ def main():
         if setup(run, args.no_brain):
             if not args.no_brain:
                 wait_for(lambda: live.ai(run.start_seq), 30)   # the greeting, said before the first line
-            for step, more in [(scenario, sc) for sc in SCENARIOS] + [(report, ())]:
+            scenarios = [] if args.rule_only else [(scenario, sc) for sc in SCENARIOS]
+            for step, more in scenarios + [(rule, ()), (report, ())]:
                 try:
                     step(run, *more)
                 except Exception:
@@ -353,15 +403,19 @@ def main():
                                stderr=subprocess.STDOUT, universal_newlines=True)
             print("\nrealmc down %s: exit %d" % (args.name, d.returncode))
     failed, checked = rep.failed(), rep.scenarios
+    ruled = run.rule_checked if run else 0
     print("\n" + "=" * 72)
-    print("%d/%d checks passed; %d of %d scenarios checked (%d skipped: Jev's routing)%s" % (
-        len(rep.checks) - len(failed), len(rep.checks), checked, len(SCENARIOS), len(rep.skipped),
-        "; the world (bonus) %d/%d" % (sum(rep.bonus), len(rep.bonus)) if rep.bonus else ""))
+    print("%d/%d checks passed; %d of %d scenarios checked (%d skipped: Jev's routing); %d of %d rule lines "
+          "checked%s" % (len(rep.checks) - len(failed), len(rep.checks), checked,
+                         0 if args.rule_only else len(SCENARIOS), len(rep.skipped), ruled,
+                         sum(1 for c in RULE_CASES if c[0] != "AI"),
+                         "; the world (bonus) %d/%d" % (sum(rep.bonus), len(rep.bonus)) if rep.bonus else ""))
     for name in failed:
         print("  x %s" % name)
-    print("RESULT: %s" % ("PASS" if not failed and checked else "FAIL"))
+    ok = not failed and ruled and (checked or args.rule_only)
+    print("RESULT: %s" % ("PASS" if ok else "FAIL"))
     print("=" * 72)
-    return 1 if failed or not checked else 0
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

@@ -9,12 +9,16 @@ audio ever leaves your PC, and it never uses Minecraft's own networking, so it w
 vanilla server.
 
 Speech-to-text is [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) 1.13.8 with the
-Silero VAD and NVIDIA's Parakeet TDT 110M (English, int8; CC-BY-4.0). Moonshine base and
-tiny can be chosen instead. A line ends when a small turn model,
+Silero VAD and NVIDIA's Parakeet TDT 0.6B v2 (English, int8; CC-BY-4.0), favouring a list of
+**hotwords** for each stretch of speech: "AI" and "brain", the names in the tab list, every
+incantation phrase on the server, and a few command words (below). Parakeet TDT 110M, the
+default before 0.3.5, stays for a PC short of memory; Moonshine base and tiny can be chosen
+too. A line ends when a small turn model,
 [Smart Turn v3.2](https://huggingface.co/pipecat-ai/smart-turn-v3) (Pipecat, BSD-2-Clause),
 hears at a pause that you have finished, or after 3 s of silence (below). The jar is
-small; the engine, the models and Vosk's library (about 200 MB) download once on first start,
-pinned by SHA-256, this PC's natives alone.
+small; the engine, the models and Vosk's library download once, pinned by SHA-256, this PC's
+natives alone: about 200 MB on the first start, with which voice works (Parakeet 110M listens),
+then the 482 MB of Parakeet 0.6B in the background, swapped in once it is loaded.
 
 ## For players: install
 
@@ -24,8 +28,10 @@ Windows, and the same elsewhere:
    (<https://fabricmc.net/use/installer/>). It adds a launcher profile.
 2. Put **Fabric API `0.162.0+26.3`** and **`vfg-client-<version>.jar`** (the server's owner
    sends it) in your `.minecraft/mods/` folder.
-3. Start that profile. The first start downloads about 200 MB in the background;
-   Voice settings shows the progress.
+3. Start that profile. The first start downloads about 200 MB in the background, and voice
+   works once that is in; then Parakeet 0.6B, 482 MB, downloads while Parakeet 110M listens.
+   Voice settings shows the progress of both. It needs about 0.9 GB of memory beside the game;
+   a PC short of it can pick Parakeet 110M in Voice settings (Model).
 4. **Multiplayer → `Voice…`** (top right): the server address exactly as it is in your
    server list, the client token the owner gave you, your microphone. Press `Test mic`,
    say something, and check the `Heard:` text. Then `Done`.
@@ -66,12 +72,12 @@ in `build.gradle`, through the foojay resolver in `settings.gradle`).
 cd client-mod            # from the repo's root
 ./gradlew build         # build/libs/vfg-client-<version>.jar, about 0.5 MB; also runs the tests
 ./gradlew test          # unit tests: no natives, no internet (the fake-bridge test needs python3)
-./gradlew engineTest    # the real VAD and all three models; installs ~260 MB into build/vfg-test-assets/ once
+./gradlew engineTest    # the real VAD and all four models, hotwords too; installs ~750 MB into build/vfg-test-assets/ once
 ./gradlew speechTest    # real speech through the mod's pipeline in real time, about 4 min (below)
 ./gradlew kwsTest       # the keyword spotter and Vosk on Kokoro speech: hits, false casts, latency, CPU (below)
 ./gradlew micCheck      # your own mic through the mod's pipeline, no Minecraft (below)
 ./gradlew castCheck     # a WAV as if from the mic, posting casts and lines to a real bridge (below)
-./gradlew sttCompare    # the models side by side on the same audio: errors, speed, size, memory (below)
+./gradlew sttCompare    # the models, greedy and with hotwords, on the same audio: errors, names, false hotwords, speed, memory (below)
 ./gradlew turnCompare   # the two turn models on real and game speech: cut-offs, waits, speed (below; needs uv)
 ```
 
@@ -114,15 +120,16 @@ Other options: `--seconds N`, `--token T`, `--player NAME` (the posted `player_n
 default `MicCheck`), `--turn-threshold X`, `--silence S`, `--vad-threshold X`,
 `--threads N`; `--args="--help"` lists them.
 
-It uses the mod's default model, Parakeet TDT 110M. To hear the others on your own voice:
-`--model base` or `--model tiny` (Moonshine, which the mod can also use), or `--model
-parakeet` (Parakeet 0.6B, 482 MB once, about 0.9 GB of memory; not in the mod). With a
-Parakeet model, `--hotwords SteveJM,Alex,creeper` favours those words (experimental; the mod
-uses no hotwords):
+It uses the mod's default model, Parakeet TDT 0.6B v2 (482 MB once, about 0.9 GB of memory),
+with the mod's hotwords. To hear the others on your own voice: `--model parakeet-110m` (the
+fallback), `--model base` or `--model tiny` (Moonshine). With Parakeet, `--players SteveJM,Alex`
+are the players online and `--phrases "fire ball,freeze"` the server's incantations, hotwords as
+in the mod beside "AI", "brain" and the command words; `--no-hotwords` decodes greedily, as with
+`hotwords: false`:
 
 ```sh
 ./gradlew micCheck --args="--device 9 --model base"
-./gradlew micCheck --args="--device 9 --model parakeet --hotwords SteveJM,Alex"
+./gradlew micCheck --args="--device 9 --players SteveJM,Alex --phrases 'fire ball,freeze'"
 ```
 
 The first run downloads the engine and model into `build/vfg-test-assets/` (shared with
@@ -163,25 +170,74 @@ with each turn decision, in `build/speech-test/report.txt`.
 
 ### Compare speech-to-text models: `./gradlew sttCompare`
 
-A measurement; it changes nothing in the mod. It is how Parakeet TDT 110M was chosen as
-the default (on 2026-10-08: 11.5% word errors against Moonshine base's 19.2%, at about the
-same size, speed and memory). It builds about 17 minutes of speech — five
-real recordings, the six Minecraft phrases and eight hard ones ("that was a five second
-pause", "put a torch on the pillar", "tp me to Alex", "spawn a creeper behind SteveJM",
-netherite, redstone, ender dragon…) in all eight Kitten voices, two takes each — sends it
-through the mod's 48 kHz-to-16 kHz path, cuts it with the mod's VAD (7 s cap), and gives
-the same segments to Moonshine base, Moonshine tiny, Parakeet TDT 110M and Parakeet TDT
-0.6B v2 (and 0.6B again with hotwords), each in a process of its own. It reports word
-error rate (recordings, Minecraft phrases, hard words), speech-to-text time per segment on
-2 threads, download size, load time and resident memory, in `build/stt-compare/report.md`
-with every mistake listed. The first run downloads about 620 MB of models into
-`build/vfg-test-assets/`; it takes about 3 minutes after that. The TTS takes are kept, so a
-second run hears the same audio.
+A measurement; it changes nothing in the mod. It is how Parakeet TDT 110M was chosen as the default
+(on 2026-10-08, against Moonshine), and how Parakeet TDT 0.6B v2 with hotwords replaced it (on
+2026-10-13). Two sets, one timeline, sent through the mod's 48 kHz-to-16 kHz path and cut by the
+mod's VAD (7 s cap); the same segments go to each model and way of decoding, each in a process of
+its own: Moonshine base and tiny, and Parakeet 110M and 0.6B, each greedy and with the mod's hotwords.
 
-Hotwords (contextual biasing) work in sherpa-onnx 1.13.8 for the Parakeet (transducer)
-models only, with `modified_beam_search`, `modelingUnit=bpe` and a `bpe.vocab`. The model
-archives do not ship one, so it is made from `tokens.txt` (pieces in order, scored by
-minus their rank). Moonshine has no hotword support.
+- **The Minecraft set**: five real recordings, the six Minecraft phrases and eight hard ones ("that
+  was a five second pause", "tp me to Alex", "spawn a creeper behind SteveJM", netherite, redstone,
+  ender dragon…) in all eight Kitten voices, two takes each. Its players are Steve, Alex and SteveJM.
+- **The addressing set**, `src/test/resources/com/voiceforgaming/vfg/tools/stt-addressing.txt`: 84
+  lines with invented players (Pyrothane, DuskJR, Steve_123, Mirelle, Tobble) and incantations,
+  modelled on what speech-to-text broke in the playtest of 2026-10-12: lines that name the AI ("Hey AI,
+  give me food", "AI, set the time to day", "It always thinks I'm talking to AI"), "brain", a player,
+  an incantation or a command word ("Turn off blizzard aura", "Yes, unbind freeze", "damage to mobs"),
+  and 40 lines of everyday talk with none of them, for false hotwords. Kokoro says each in four voices
+  as it speaks ("clean") and in four others 1.25 times as fast with pink noise 10 dB under the speech
+  ("hard"). `-PsttSet=<file>` reads another set in the same form (`players:`, `phrases:`, then one line
+  each, `said => meant` where they differ): the playtest's own lines, with its players' real names,
+  are such a file, kept out of this repo.
+
+It reports, per model and way of decoding: word errors (both sets; the addressing set clean, hard and
+its no-name lines); how often "AI", "brain", each player's name, each incantation and each command
+word comes through in the lines that hold them; false hotwords (said more often than meant), in the
+lines with no name and in all; speech-to-text time per segment, and what beam search with hotwords
+adds to the same model's greedy time segment by segment (what a line's last stretch waits longer);
+load time and resident memory; then the proposed bar of the spec, every false hotword, the hotword
+lists, and every utterance with errors, in `build/stt-compare/report.md`. The latest committed-set
+report is kept in [`reports/stt-compare.md`](reports/stt-compare.md). The first run downloads about
+730 MB of models and makes about 900 TTS takes (about half an hour); the takes are kept, so a second
+run hears the same audio, in about 15 minutes. `-PsttTune=<file>` tries other decoding configurations
+(a JSON list: model, hotwords, paths, each kind's boost, command words), `-PsttJobs=N` runs N
+processes at once (their times are then not comparable), `-PsttMinecraft=false` and
+`-PsttMoonshine=false` leave those out, `-PsttOut=<dir>` writes elsewhere.
+
+**Measured** (2026-10-13, committed sets, 2 threads on a Ryzen AI 5 340 shared with other work, load
+average about 4–7; `reports/stt-compare.md`):
+
+| Model | WER Minecraft | WER addressing, clean / hard | "AI" | "brain" | names | incantations | command words | false per 100 no-name lines | STT per segment, median / p90 | added over greedy | memory after load / peak |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Moonshine base | 14.5% | 5.2% / 23.8% | 79% | 75% | 41% | 67% | 76% | 0.2 | 41 / 57 ms | | 221 / 323 MB |
+| Moonshine tiny | 20.0% | 7.5% / 26.2% | 74% | 66% | 35% | 58% | 66% | 0 | 22 / 31 ms | | 91 / 118 MB |
+| Parakeet 110M, greedy (0.3.4) | 8.8% | 4.8% / 12.9% | 91% | 81% | 41% | 78% | 70% | 0 | 31 / 42 ms | | 205 / 270 MB |
+| Parakeet 110M + hotwords (the fallback) | 7.9% | 1.7% / 8.3% | 96% | 94% | 69% | 88% | 91% | 0.4 | 38 / 58 ms | +6 / +20 ms | 201 / 273 MB |
+| Parakeet 0.6B v2, greedy | 5.2% | 3.5% / 8.8% | 93% | 81% | 54% | 82% | 88% | 0.2 | 110 / 150 ms | | 861 / 942 MB |
+| **Parakeet 0.6B v2 + hotwords (the default)** | **4.5%** | **1.6% / 5.6%** | **98%** | **91%** | **71%** | **93%** | **95%** | **0.2** | **112 / 148 ms** | **+2 / +11 ms** | **861 / 951 MB** |
+
+The addressing set's lines with "AI" are 160, "brain" 32, a name 80, an incantation 120, a command word
+120; the lines with no name 501 (both sets). "Added over greedy" is segment by segment, median / 90th
+percentile. The one false hotword the default made in a line with no name, as greedy 0.6B did too, is
+"spells" for "spills" in a lecture recording.
+
+Against the spec's proposed bar, Parakeet 0.6B with hotwords: fewer word errors than the 110M — 3.8%
+against 8.9% over both sets, **pass**; "AI" through in at least 95% of the lines holding it — 98%,
+**pass**; at most 1 false hotword in 100 lines with no name — 0.2 (1 in 501), **pass**; the players'
+names through in at least 95% of the lines holding them — 71%, **fail**. The names that fail are the
+ones Kokoro does not say as they are spelled: "Mirelle" as "Myra" or "Myral" (4 of 16 lines, none
+without hotwords) and "Tobble" as "Hobble" or "Cobble" (7 of 16); Pyrothane, DuskJR and Steve_123
+come through in 46 of 48. A boost high enough to bend more of them (2.5 a piece for every name) heard
+"Steve" in "steak" and "set". In lines that hold a hotword already, the default heard "brain" for
+"rain" or "raining" 3 times: false words that a line to the AI carries to it.
+
+On a private set made the same way from the playtest's own lines and players (kept out of this repo:
+its real names are two long, made-up ones), the default made 4.9% word errors against the 110M's 9.0%,
+heard "AI" in 99% of its lines, each incantation phrase in 100% and no false hotword in its 200 lines
+with no name; its players' names came through in 46% of lines (0% greedy on either model), and in
+lines to the AI it heard the phrase "freeze" for "please" or "food" 3 times, in fast noisy takes —
+lines short enough for the bridge's Layer 2 to cast them (CONTRACTS §2). Lowering a one-word phrase's
+boost, even to nothing, did not stop it: it is beam search's, not the boost's.
 
 ### Compare turn models: `./gradlew turnCompare`
 
@@ -237,6 +293,99 @@ id for a repeated `client_line_id` — and prints one line per accepted request.
 `--delay S` waits before answering. `--incantation "fire ball=fireball,fire bowl"` (repeatable)
 binds a phrase and its aliases for every player: it then lists them at `GET /v1/incantations`
 and answers a cast of one at `POST /v1/casts` with `fired`, and of anything else with `404`.
+
+## The speech model
+
+Parakeet TDT 0.6B v2 (int8) is the default since 0.3.5: about 20% fewer word errors than the 110M
+across the Open ASR Leaderboard's sets, 29% fewer on AMI (meeting talk, the public set closest to
+players talking), and fewer on the mod's own sets (`./gradlew sttCompare`, below). It costs a 482 MB
+download once, about 0.9 GB of memory while playing against the 110M's 0.2 GB, and a little more
+time on a line's last stretch (measured below). How setup picks the model (`setup/ModelChoice.java`):
+
+- **The 0.6B chosen and installed** loads. If it will not (an error, or memory short), Parakeet TDT
+  110M is installed if need be (108 MB) and loads in its place for this start; the log says
+  `speech engine: parakeet-0.6b-v2-en failed to load (…); falling back to parakeet-110m-en`, and
+  Voice settings says so under the status. The next start tries the 0.6B again.
+- **The 0.6B chosen and not there yet** — a first start, or the first start of 0.3.5 — has the 110M
+  listen at once (installed first if need be: a first start fetches about 200 MB before voice works,
+  as before), while the 0.6B downloads in the background on `vfg-stt-upgrade`; Voice settings shows
+  `Parakeet 0.6B: downloading 43%; 110M listens meanwhile`. A download that breaks off carries on
+  where it stopped (an HTTP range request), at the next try or the next start; a failed one is
+  tried again after 30 s, 2 min, then every 10 min. Once in, the 0.6B's recognizer is loaded and
+  swapped into the running engine between two segments, the VAD and its state kept:
+  `speech engine: parakeet-0.6b-v2-en in, in place of parakeet-110m-en (hotwords, 2154 ms)`. One that
+  will not load leaves the 110M listening, with a log line and a note.
+- **Loads of the 0.6B that never finished** (the game was killed mid-load, as an out-of-memory
+  killer does): a mark, `<game folder>/vfg/stt-loading` (`parakeet-0.6b-v2-en 1`: the model and how
+  many of its loads in a row began without finishing), is written as a load begins and deleted when
+  any load finishes, well or not, and on a clean quit. One unfinished load is tried again at the next
+  start, with a log line, since the game may have died of something else while the 0.6B loaded in the
+  background. Two in a row, and setup chooses Parakeet 110M in the config itself, with a log line and
+  a note, so the game does not die the same way at every start; picking Parakeet 0.6B again in Voice
+  settings tries it again.
+- **A download** that broke off resumes; a resume the server answers for another range (or with a
+  4xx) deletes the part, so the next try starts clean; a part already the whole size (finished, then
+  killed before its check) is hashed and used if right.
+
+## Hotwords
+
+Speech-to-text favours a list of words for each stretch of speech (sherpa-onnx's contextual
+biasing, `OfflineRecognizer.createStream(hotwords)`), so the AI's name and the server's own words
+come through: the playtest of 2026-10-12 heard "AI" as "I", "Aya" and "today", "blizzard aura" as
+"Lizora", "unbind" as "unpound". The list (`speech/Hotwords.java`):
+
+- **"AI" and "brain"**, the AI's names.
+- **Every player online**: the names in the tab list (read once a second on the client thread), as
+  the model writes them: cut where lowercase turns to a capital and at anything but a letter, digits
+  dropped (`KorbinJM` → `Korbin JM`, `Steve_123` → `Steve`), since a hotword boosts whole words and
+  players seldom say the digits.
+- **Every incantation phrase on the server**, whoever's: the bridge's `server_phrases`, beside the
+  player's own list in `GET /v1/incantations` (a bridge that does not send them: the player's own
+  phrases). Not the aliases: they are the keyword spotter's other spellings of a phrase, and a
+  hotword boosts the real word.
+- **Command words**: `unbind`, `incantation`, `incantations`, `aura`, `cooldown`, `mobs`, `spell`,
+  `spells`: each came through more often boosted on the addressing set, and none made a false word
+  that greedy search did not (`mobs`, the playtest's "Moms", 4 of 8 lines unboosted on the 0.6B).
+
+Each kind has a boost of its own (`Hotwords.Settings`), the score sherpa-onnx adds for each of a
+word's pieces as the decoder takes them, all taken back if the word is not finished. Measured from
+0.5 to 4.0 a piece on the committed sets (`./gradlew sttCompare -PsttTune=…`), **1.0 for every kind**
+is where it stops paying, but for one: **on the 0.6B, a name of 4 pieces or more gets 2.5**
+(`Hotwords.PARAKEET_06B`; "Pyrothane" is 6 pieces, "Korbin JM" 6, "Steve" 3). A long name is seldom
+matched by chance, and a made-up name needs the push: on the committed set names came through in
+71% of lines against 65%, on the playtest's own players 46% against 31%, with no false name either
+way; the 110M heard false names with it (6 in 501 lines) and keeps 1.0. Above 1.0 elsewhere nothing
+more came through on the 0.6B, while false words began —
+"brain" for "rain" at 1.5, false names on the 110M at 1.5 ("Steve" for "steak", "Alex" before a
+line), false "AI" at 2.5, and at 4.0 the Minecraft set's word errors rose to 14% on both. "Brain"
+with a capital is not listed: its first piece, `▁B`, turned "Spawn" into "Bawn" in 11 lines of the
+Minecraft set. A Parakeet model with hotwords decodes by beam search (`modified_beam_search`, 4 paths,
+sherpa-onnx's default; 8 heard a few more names and made more false ones); without, greedily, as
+before. `hotwords: false` turns them off; Moonshine never uses them.
+
+**An empty segment is heard again.** sherpa-onnx 1.13.8's beam search for TDT models keeps
+hypotheses at different frames in one beam, so now and then a path of blanks alone, which skips
+ahead in fewer and likelier steps, wins and a segment comes out empty (3 of 907 segments for the 0.6B
+on the committed sets, each one greedy search heard whole; none for the 110M). Such a segment is
+decoded again with 0.3 s of silence after it, then 0.1 s before it, which moves the frames; on the
+same sets that brought all three back, and it costs nothing on segments that come out.
+
+**Cut as the model cuts.** A hotword boosts exactly the pieces it is cut into, so it must be cut as
+the model's own tokenizer cuts the word, or the boost goes along a path the model seldom takes.
+Parakeet's tokenizer is a SentencePiece BPE model (1,024 pieces, `tokens.txt` in merge order), but
+sherpa-onnx cuts plain-text hotwords with a unigram encoder over a `bpe.vocab`: with scores of minus
+the rank it cuts "today" as `▁t od ay` where the model says `▁today`, "and" and "everything" wrongly
+too, about a third of common English words; no choice of scores did better than one word in eight.
+So the mod cuts each hotword itself with the model's BPE merges (`speech/ParakeetPieces.java`; the
+same pieces as Python's sentencepiece for all 8,142 words tried, on both models), and hands the
+pieces to sherpa-onnx by code name: the recognizer reads a copy of `tokens.txt` whose pieces are
+renamed `qbab`, `qbac`… (`tokens-hotwords.txt`, written beside it), with `modeling_unit cjkchar`, which
+looks each space-separated word of a hotword up as it is; the text is put back together from the
+pieces it answers. "AI" is `▁A I`, the first piece the word "A", which is why its boost is the lowest.
+
+**Threads.** The tab list is read on the client thread and the phrases arrive on
+`vfg-incantations`; each replaces an immutable list. `vfg-stt` builds the hotwords string once for
+each change and uses the latest for each segment it decodes.
 
 ## How a line ends
 
@@ -524,23 +673,30 @@ long after the phrase's end it came, as the mod's log does.
 `<game folder>/config/vfg-client.json`, written by Voice settings:
 
 ```json
-{ "server_address": "", "bridge_url": "", "client_token": "", "mic_device": "",
-  "model": "parakeet-110m-en", "icon_corner": "top_left", "muted": false,
+{ "config_version": 2, "server_address": "", "bridge_url": "", "client_token": "", "mic_device": "",
+  "model": "parakeet-0.6b-v2-en", "icon_corner": "top_left", "muted": false,
   "turn_model": "smart-turn-v3.2", "turn_threshold": null, "silence_seconds": 3,
   "vad_threshold": 0.5, "stt_threads": 2, "log_text": false,
   "incantations": true, "incantation_threshold": 0.25, "incantation_boost": 1.5,
   "incantation_recheck_seconds": 3, "incantation_paths": 16, "incantation_spotter_aliases": 10,
-  "vosk": true, "vosk_confirm": false }
+  "vosk": true, "vosk_confirm": false, "hotwords": true }
 ```
 
 - `client_token` is `VFG_CLIENT_TOKEN`. It lives only in this file, is shown masked, and
   is never logged.
 - An empty `bridge_url` means `http://<host of server_address>:8787`.
-- `model` is `parakeet-110m-en` (the default; `parakeet-110m` also works), `moonshine-base-en`
-  or `moonshine-tiny-en` (the lightest). A file that already says `moonshine-…` keeps it — a
-  config written by an earlier version says `moonshine-base-en`, so that player stays on
-  Moonshine until they pick Parakeet in Voice settings (Model) or edit the file. Changing it
-  downloads the new model (if it is not there yet) and reloads the engine after Done.
+- `model` is `parakeet-0.6b-v2-en` (the default; `parakeet-0.6b` also works), `parakeet-110m-en`
+  (`parakeet-110m`; less memory, more errors), `moonshine-base-en` or `moonshine-tiny-en` (the
+  lightest). Changing it downloads the new model (if it is not there yet) and reloads the engine
+  after Done; choosing the 0.6B while it is not there yet has the 110M listen while it downloads
+  (The speech model, below).
+- `config_version` is 2 from 0.3.5. A file without it that says `parakeet-110m-en`, 0.3.4's
+  default, which every save wrote, moves to `parakeet-0.6b-v2-en` once, with a log line, and is
+  written back with `config_version: 2`; a player who picks 110M after that keeps it. A file that
+  says `moonshine-…` keeps it (a config written before Parakeet says `moonshine-base-en`).
+- `hotwords` (on by default; file only): a Parakeet model favours the hotwords, decoding by beam
+  search (Hotwords, below); off, it decodes greedily with none, as 0.3.4 did. Changing it reloads
+  the engine. Moonshine never uses them.
 - File only: `turn_model` (`smart-turn-v3.2`, the default; `turn-1-mini`; or `off`, which
   ends lines on silence alone), `turn_threshold` (0.05–0.95; `null` is the model's own, 0.5
   for Smart Turn and 0.35 for turn-1-mini), `silence_seconds` (2–30, default 3: the most a
@@ -572,10 +728,9 @@ long after the phrase's end it came, as the mod's log does.
   `silence_seconds` of 5 becomes 3 (any other value stays) and the file is written back once.
 - A file that does not parse is renamed `vfg-client.json.bad` and the defaults are used.
 
-The engine and models live in `<game folder>/vfg/` (about 285 MB unpacked on Linux for Parakeet,
-Smart Turn, the keyword model and Vosk's model and library; each other model chosen adds its own
-folder). The log is
-the game's `logs/latest.log`, logger `vfg`.
+The engine and models live in `<game folder>/vfg/` (about 920 MB unpacked on Linux for both
+Parakeet models (631 and 131 MB), Smart Turn, the keyword model and Vosk's model and library; each
+other model chosen adds its own folder). The log is the game's `logs/latest.log`, logger `vfg`.
 
 ## Downloads
 
@@ -591,7 +746,8 @@ this PC's Vosk library (unless `vosk` or `incantations` is off) are fetched. Fro
 | `v1.13.8/sherpa-onnx-native-lib-osx-aarch64-1.13.8.jar` | 9460832 | `42e272180c8836127f024f3335d7afcdfb30fe0164b78330d5d449034e34ce34` |
 | `v1.13.8/sherpa-onnx-native-lib-osx-x64-1.13.8.jar` | 10782466 | `9190c28951d85efdbd376bae6b6dff12993311ad605945289e8459bf9c886a96` |
 | `asr-models/silero_vad.onnx` | 643854 | `9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6` |
-| `asr-models/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8.tar.bz2` (default) | 108035095 | `f628312e9fdf8686374cb01a69425c41732529d540860311f16f37cbc32cfe9b` |
+| `asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2` (default) | 482468385 | `157c157bc51155e03e37d2466522a3a737dd9c72bb25f36eb18912964161e1ad` |
+| `asr-models/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8.tar.bz2` (its fallback, and what listens while it downloads) | 108035095 | `f628312e9fdf8686374cb01a69425c41732529d540860311f16f37cbc32cfe9b` |
 | `asr-models/sherpa-onnx-moonshine-base-en-quantized-2026-02-27.tar.bz2` | 111266225 | `43232c1d13013d37317163baec3135bd771a186a4356f28c889bab453bb0e891` |
 | `asr-models/sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27.tar.bz2` | 29858559 | `9ec31b342d8fa3240c3b81b8f82e1cf7e3ac467c93ca5a999b741d5887164f8d` |
 
@@ -644,8 +800,9 @@ byte for byte the files the Maven jar carries:
   on the server.
 - macOS is not tested; its natives download the same way and may simply work. Vosk's library
   was loaded from its folder, through the built jar, on Linux only; Windows and macOS are untested.
-- The model is NVIDIA's Parakeet TDT 110M (from `nvidia/parakeet-tdt_ctc-110m`), CC-BY-4.0,
-  converted by sherpa-onnx; Moonshine is MIT, Silero VAD MIT, sherpa-onnx Apache-2.0. Smart
+- The models are NVIDIA's Parakeet TDT 0.6B v2 (`nvidia/parakeet-tdt-0.6b-v2`) and Parakeet TDT
+  110M (from `nvidia/parakeet-tdt_ctc-110m`), CC-BY-4.0, converted by sherpa-onnx; Moonshine is
+  MIT, Silero VAD MIT, sherpa-onnx Apache-2.0. Smart
   Turn is BSD-2-Clause (Daily) and turn-1-mini Apache-2.0 (p99lab); the jar carries their
   `LICENSE-*.txt` and `NOTICE-turn-1-mini.txt`. Vosk (`com.alphacephei:vosk` 0.3.45, its Java API
   in the jar and its downloaded library) is Apache-2.0, `LICENSE-vosk.txt`; its Windows download
@@ -677,10 +834,13 @@ src/main/java/com/voiceforgaming/vfg/
   config/VfgConfig.java             load, validate and save the config; env overrides
   config/SettingsScreen.java        the settings screen
   setup/Assets.java                 the pinned downloads, platform detection, paths
-  setup/AssetInstaller.java         download, verify, unpack, progress
+  setup/AssetInstaller.java         download (carried on where it broke off), verify, unpack, progress
+  setup/ModelChoice.java            which speech model loads now, which is swapped in later, the load mark
   audio/MicCapture.java             OpenAL capture thread, device list
   audio/Resampler.java              48 kHz to 16 kHz
-  speech/SpeechEngine.java          VAD and recognizer (the only sherpa-onnx code)
+  speech/SpeechEngine.java          VAD and recognizer (the only sherpa-onnx code); greedy, or beam search with hotwords
+  speech/Hotwords.java              the hotwords: AI, brain, the tab list, the server's phrases, command words; boosts
+  speech/ParakeetPieces.java        a Parakeet model's pieces: its own BPE cut, code names, text back
   speech/CaptureProcessor.java      windows to the VAD, segments timed and queued
   speech/SttWorker.java             the vfg-stt thread; asks the turn model at each pause
   speech/LineAssembler.java         segments into lines, finished or silence, caps
@@ -693,7 +853,7 @@ src/main/java/com/voiceforgaming/vfg/
   net/LinePayload.java              the §2 body and its JSON
   net/BridgeClient.java             the sender, retries, delivery status, connection test
   net/CastPayload.java  net/CastClient.java   the incantation invoke's body, and its sender (2 s, then dropped)
-  net/IncantationClient.java        the player's incantations, by long poll
+  net/IncantationClient.java        the player's incantations and the server's phrases, by long poll
   kws/SpotterWorker.java            the vfg-kws thread: windows in, re-checks and the live stream while speech, casts out
   kws/Spotter.java                  sherpa-onnx's KeywordSpotter and the spotter's VAD (its only sherpa-onnx code)
   kws/SpotterVad.java               the spotter's own VAD, which ends speech after 0.15 s of silence
@@ -713,9 +873,11 @@ src/main/resources/com/voiceforgaming/vfg/kws/vosk-fillers.txt   Vosk's filler w
 src/test/java/com/voiceforgaming/vfg/   unit tests; EngineSmokeTest is tagged "engine", SpeechTest "speech",
                                     kws/SpotterEngineTest "engine" and "kws"
   tools/MicCheck.java               ./gradlew micCheck
-  tools/SttCompare.java             ./gradlew sttCompare
+  tools/SttCompare.java  tools/SttScores.java   ./gradlew sttCompare, and its scores and report
   tools/TurnCompare.java            ./gradlew turnCompare
   tools/CastCheck.java              ./gradlew castCheck
   testing/                          the engine for tests, WAV files, Kitten and Kokoro TTS, the stand-in
                                     sound card, the models sttCompare measures (SttModels)
+src/test/resources/com/voiceforgaming/vfg/tools/stt-addressing.txt   sttCompare's addressing set (invented)
+reports/stt-compare.md              sttCompare's report, as last run
 ```

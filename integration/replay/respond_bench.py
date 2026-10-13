@@ -94,7 +94,8 @@ from pydantic import BaseModel, Field  # noqa: E402
 from brain import actions, config, running  # noqa: E402
 from brain.__main__ import asker  # noqa: E402
 from brain.call import library, menu_lines  # noqa: E402
-from brain.context import LIVE, Context, Row, show  # noqa: E402
+from brain.context import LEGACY_TO_AI, Context, Row, show  # noqa: E402
+from brain.context import LIVE as TO_AI  # noqa: E402
 from brain.respond import PROMPT as FRONT_PROMPT  # noqa: E402
 from brain.respond import Respond, promises  # noqa: E402
 from brain.tasks import Tasks  # noqa: E402
@@ -105,6 +106,8 @@ from trees_questions import route_d  # noqa: E402
 INPUTS = HERE / "whole_asks_2026-10-08.jsonl"
 PROMPTS = HERE / "respond_prompts"
 CLASS_OF = {"brain": "action_oriented", "respond": "conversational", "context": "context"}
+# A line said to the AI: to_ai, or Jev's two classes for it when the 10-08 lines were benched.
+LIVE = (*TO_AI, *LEGACY_TO_AI)
 SETS = ("playtest", "invented", "night", "night-to_ai")
 NIGHT_SETS = ("night", "night-to_ai")
 

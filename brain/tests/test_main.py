@@ -38,9 +38,9 @@ async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fail
     tasks = [row("castle_alex", "open", "2026-10-11T10:00:00.000Z"),  # open when the last run died
              row("ice_trail_steve", "done", "2026-10-11T09:00:00.000Z", closed_at="2026-10-11T09:02:00.000Z")]
     vfg = FakeVfg().on("context", "--since", answer=VfgResult(0, "\n".join([
-        feed(10, now - timedelta(minutes=30), "Steve voice action_oriented 0.9 - | give me bread"),  # history
+        feed(10, now - timedelta(minutes=30), "Steve voice to_ai 0.9 - | give me bread"),  # history
         feed(11, now - timedelta(minutes=29), "Alex voice context 0.9 - | so hungry", processed=True),
-        feed(12, now - timedelta(seconds=20), "Steve voice action_oriented 0.9 - | give me a diamond pickaxe"),
+        feed(12, now - timedelta(seconds=20), "Steve voice to_ai 0.9 - | give me a diamond pickaxe"),
         json.dumps({"tasks": tasks}),
         json.dumps({"last_seq": 12}),
     ]) + "\n", ""))
@@ -48,7 +48,7 @@ async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fail
 
     async def watch(after: int):
         seen_after.append(after)
-        yield f"LINE#13 {now:%H:%M:%S} Alex voice action_oriented 0.9 - | a diamond pickaxe for me too"
+        yield f"LINE#13 {now:%H:%M:%S} Alex voice to_ai 0.9 - | a diamond pickaxe for me too"
         await stop.wait()
 
     ask = FakeAsk(Step=step(act("command", "give a diamond pickaxe", cmd("give Steve diamond_pickaxe")),

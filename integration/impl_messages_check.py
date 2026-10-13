@@ -108,8 +108,9 @@ async def main(out: str, which: list[str]) -> None:
         imps.watchers = []
         return cfg, imps, counts, reports
 
-    async def next_report(reports, timeout=600):
-        return await asyncio.wait_for(reports.get(), timeout)
+    async def next_report(reports, timeout=None):
+        """The next report: a run's time limit (VFG_IMPLEMENTER_MINUTES, 20) and 2 minutes for its report."""
+        return await asyncio.wait_for(reports.get(), timeout or ImplementerConfig.load().time_limit_s + 120)
 
     async def quiet(reports, seconds):
         """Any report that comes within `seconds`."""

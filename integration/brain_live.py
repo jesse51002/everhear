@@ -5,16 +5,17 @@ realmc" list, with the checks of Prototype_Brain_Loop's that still mean somethin
     REALMC_ROOT=… python3 integration/brain_live.py [--name live] [--keep-up] [--only refused,read,…]
 
 Real:  a Minecraft 26.3 server with Carpet's fake players Steve and Alex (integration/realmc,
-       its world fresh from the template), the brain (`vfg brain start` through realmc's bin/vfg,
-       which keeps this HOME), its model calls through OpenRouter on the brain's defaults (the
+       its world fresh from the template, its test server beside it as the box's: `up NAME
+       --test-server`, where the implementers' `vfg test` plays), the brain (`vfg brain start`
+       through realmc's bin/vfg, which keeps this HOME), its model calls through OpenRouter on the brain's defaults (the
        conversation agent and the router on DeepSeek V4.1 Flash with no reasoning, the steps at low;
        OPEN_ROUTER_API: from the environment, else the first .env above this repo, or its
        Internal/.env, that holds it; given to the brain's process only, never printed or
        written), vfg, the actions and the scripts, the stand-in box's feed writer and vfg.db,
        with its tasks table, and the implementers' real runner, relay and Claude Code CLI.
 Stand-ins: SSH (realmc's bin/ssh); Jev: each player's line is put into the feed as a LINE row
-       through the stand-in's vfg_feed, as Jev puts it there, several in one write when a check
-       needs them to arrive together; the implementers' MODEL (integration/stand_in_model.py, on
+       through the stand-in's vfg_feed, as Jev puts a line said to the AI there (class to_ai),
+       several in one write when a check needs them to arrive together; the implementers' MODEL (integration/stand_in_model.py, on
        127.0.0.1, the brain told so with VFG_IMPL_PROVIDER=deepseek, DEEPSEEK_API_KEY=stand-in and
        VFG_IMPL_BASE_URL): it records what each implementer is sent and answers with a report after
        the delay a check sets, building nothing and costing nothing; and a slow provider, on cue
@@ -380,7 +381,7 @@ class Live:
 
     def lines(self, *said):
         """Players' lines into the feed in one write, as the Jev filter feeds a batch."""
-        entries = [("LINE", "%s voice %s %s -9dB" % (who, cls, "0.93" if cls == "action_oriented" else "0.88"),
+        entries = [("LINE", "%s voice %s %s -9dB" % (who, cls, "0.93" if cls == "to_ai" else "0.88"),
                     text, None) for who, cls, text in said]
         seqs = self.writer.append_batch(entries)
         at = time.time()
@@ -443,7 +444,7 @@ class Run:
             out.append(a)
         return out
 
-    def ask(self, who, text, cls="action_oriented", timeout=60):
+    def ask(self, who, text, cls="to_ai", timeout=60):
         """One line into the feed; waits for its reply (its work's, else its front turn's)."""
         a, = self.batch((who, cls, text))
         self.await_reply(a, timeout)
@@ -979,9 +980,9 @@ def side_by_side(run):
     time.sleep(4)  # Steve's last turn waits up to VFG_TURN_SETTLE_S for its rows to come back: his lane is free
     bread, shield = live.count_items("Steve", "bread"), live.count_items("Alex", "shield")
     live.cmd("kill @e[type=minecraft:chicken]")
-    s1, s2, x = run.batch(("Steve", "action_oriented", BREAD),
-                          ("Steve", "action_oriented", "summon three chickens next to me"),
-                          ("Alex", "action_oriented", "can I get a shield"))
+    s1, s2, x = run.batch(("Steve", "to_ai", BREAD),
+                          ("Steve", "to_ai", "summon three chickens next to me"),
+                          ("Alex", "to_ai", "can I get a shield"))
     for a in (s1, s2, x):
         run.await_reply(a, 90)
     m = re.search(r"Killed (\d+)", live.cmd("kill @e[type=minecraft:chicken]"))
@@ -1019,9 +1020,9 @@ def waiting(run):
     rep, live = run.rep, run.live
     rep.head("8. Three of Steve's lines wait for his turn, and a fourth is turned away by a private message naming them")
     time.sleep(4)
-    first, *chat, fourth = run.batch(("Steve", "action_oriented", "give me a stack of torches"),
-                                     *(("Steve", "conversational", t) for t in CHAT),
-                                     ("Steve", "conversational", "ok and one more thing"))
+    first, *chat, fourth = run.batch(("Steve", "to_ai", "give me a stack of torches"),
+                                     *(("Steve", "to_ai", t) for t in CHAT),
+                                     ("Steve", "to_ai", "ok and one more thing"))
     gone = "#%d" % fourth["seq"]
     away = wait_for(lambda: run.turn_log(r"%s Steve turned away, 3 waiting" % re.escape(gone)), 30)
     rep.check(away, "brain.log: %s Steve turned away, 3 waiting" % gone, short(run.log()[-2000:]))
@@ -1053,7 +1054,7 @@ def waiting(run):
 def talk(run):
     rep, live = run.rep, run.live
     rep.head("9. A line the agent answers itself, with a reply or silence: no router, no loop")
-    a = run.ask("Alex", "haha thanks AI, you're a legend", cls="conversational", timeout=30)
+    a = run.ask("Alex", "haha thanks AI, you're a legend", timeout=30)
 
     def use():  # the usage row goes out beside the reply, nobody waiting: it may come a moment after
         return sorted(u["component"] for u in live.sql("SELECT component FROM usage WHERE ref = ? OR ref LIKE ?",
@@ -1075,13 +1076,13 @@ def slow_step(run):
              "from what is running")
     time.sleep(4)
     before = live.count_items("Steve", "golden_carrot")
-    a, = run.batch(("Steve", "action_oriented", CARROTS))
+    a, = run.batch(("Steve", "to_ai", CARROTS))
     hold = slow_hold(run)
     held = wait_for(lambda: re.search(r"^(\S+) test slow call: held Step \"sixteen golden carrots\" s1 %d s$" % hold,
                                       run.log(), re.M), 40)
     rep.check(held, "the slow stand-in holds its loop's first step %d s" % hold, short(run.log()[-1500:]))
     time.sleep(5)
-    b = run.ask("Steve", "is it done yet?", cls="conversational", timeout=40)
+    b = run.ask("Steve", "is it done yet?", timeout=40)
     fb, wa = run.front(b) or {}, run.work(a)
     rep.check(b.get("reply") and wa is None and fb.get("to") in (None, "nowhere") and not claims_done(b["reply"]),
               "answered at once (%.1f s) while the loop thinks, with no new work and never as done: %r (agent %s%s)"
@@ -1110,7 +1111,7 @@ def added_lines(run):
              "(taken up, from the cache); after them, a new loop")
     time.sleep(4)
     counts = {k: live.count_items("Steve", k) for k in ("oak_log", "birch_log", "spruce_log")}
-    a, = run.batch(("Steve", "action_oriented", OAK))
+    a, = run.batch(("Steve", "to_ai", OAK))
     fa = run.await_front(a)
     if not rep.check(fa and fa.get("to") == "new_loop", "its front turn started a loop: %s" % (fa and fa.get("where")),
                      run.evidence_of(a)):
@@ -1222,7 +1223,7 @@ def implementer(run):
     # Steve's turn, busy when the report comes (about 36 s into the run): his agent's call held 17 s (under
     # its 20 s timeout) from about 26 s in.
     wait_for(lambda: time.time() >= t1 + 25, 45, 0.5)
-    d, = run.batch(("Steve", "conversational", JOKE))
+    d, = run.batch(("Steve", "to_ai", JOKE))
     reached = wait_for(lambda: [r for r in run.model.requests(tid) if re.search(r"fire", r["text"], re.I)
                                 and r["at"] > t1], 60)
     rep.check(fb.get("to") == "implementer" and fb.get("where") == tid and fu and reached,
@@ -1457,7 +1458,8 @@ def main():
     os.environ.setdefault("REALMC_ROOT", os.path.join(REALMC, ".server"))
     print("brain live: realmc %s in %s; key from %s; %s" % (args.name, os.environ["REALMC_ROOT"], where,
                                                             ", ".join(chosen)), flush=True)
-    r = subprocess.run([os.path.join(REALMC, "up"), args.name, "--fresh"], stdout=subprocess.PIPE,
+    # with its test server beside it, as the box's (VFG_TEST_BOX unset: the implementers' vfg test plays there)
+    r = subprocess.run([os.path.join(REALMC, "up"), args.name, "--fresh", "--test-server"], stdout=subprocess.PIPE,
                        stderr=subprocess.STDOUT, universal_newlines=True)
     print(short(r.stdout[-600:], 600), flush=True)
     if r.returncode != 0:

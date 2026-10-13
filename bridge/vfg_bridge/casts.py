@@ -468,7 +468,10 @@ class Casts:
 
     def listing(self, player, after=None, wait=None):
         """(200, the player's list) at once, or when ``after`` is the version, once it changes;
-        (304, None) when it has not changed in ``wait`` s."""
+        (304, None) when it has not changed in ``wait`` s. The list holds the incantations that
+        apply to the player, and ``server_phrases``, every phrase on the server (server_phrases()).
+        The version is the store's, which every write bumps whoever's entry it changed, so a held
+        request answers when any player's phrases change, not only this player's."""
         inc, _ = self._modules()
         wait = self.LIST_WAIT_DEFAULT if wait is None else min(wait, self.LIST_WAIT_MAX)
         deadline = time.monotonic() + wait
@@ -489,7 +492,16 @@ class Casts:
             cooldown = e.get("cooldown_s")
             out.append({"phrase": e["phrase"], "aliases": self.spotted(inc, e),
                         "cooldown_s": DEFAULT_COOLDOWN_S if cooldown is None else cooldown})
-        return 200, {"version": doc["version"], "player": player, "incantations": out}
+        return 200, {"version": doc["version"], "player": player, "incantations": out,
+                     "server_phrases": self.server_phrases(inc, doc["incantations"])}
+
+    @staticmethod
+    def server_phrases(inc, entries):
+        """Every incantation phrase on the server, whoever's (the player's own, @a ones and every
+        other player's), normalised, once each, sorted; phrases alone, no aliases. The mod boosts
+        them as speech-to-text hotwords, since players talk about each other's spells, and a hotword
+        boosts the real word, not another spelling of it (Prototype_Addressing_The_AI)."""
+        return sorted(set(p for p in (inc.normalize(e.get("phrase")) for e in entries) if p))
 
     @staticmethod
     def spotted(inc, entry):

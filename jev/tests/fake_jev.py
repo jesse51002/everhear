@@ -4,11 +4,11 @@ It answers every question by keyword in the line it asks about (the text
 between the last “ and ” of its instructions; a gather question quotes the ask
 first). The cast check's question (`cast`) is answered `cast_<phrase>` 0.9 when
 the line, its letters run together, holds the phrase's (`hot fire ball` holds
-`hotfireball`), else `not_a_cast` 0.9. The routing call's two questions answer so that D's walk gives:
-`build`, `make` or `there` -> action_oriented 0.9 (act 0.9, let down);
-`thanks` -> conversational 0.85 (answer 0.85); `cave` or `base` -> context 0.7
-(remember 0.7); anything else -> not_relevant 0.8 (ignore 0.8). `d_feel` is
-always answered with 0.6, so the confidence fed is always `d_what`'s. A gather
+`hotfireball`), else `not_a_cast` 0.9. The routing call's two questions answer so that the walk gives:
+`build`, `make` or `there` -> to_ai 0.9 (by name 0.9); `thanks` -> to_ai 0.85
+(answers it 0.85); `cave` or `base` -> context 0.7 (neither 0.7, remember);
+anything else -> not_relevant 0.8 (neither 0.8, ignore). `keep` is always
+answered with 0.6, so the confidence fed is always `to_the_ai`'s. A gather
 question is answered `part_of_the_ask` 0.9 when the line contains `big one`,
 else `not_part_of_it` 0.8, so no line joins an ask by accident. A `noul`
 question is answered `noul: 0.9`. The state must be a JSON object, as the live
@@ -32,11 +32,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ASKED_ABOUT = re.compile(r"^.*“(.*)”", re.S)   # the last quote: a gather question quotes the ask first
 JOINS = "big one"
-WHAT = {"action_oriented": "the_ai_must_act", "conversational": "the_ai_should_answer", "context": "remember_it",
-        "not_relevant": "ignore_it"}
-FEEL = {"action_oriented": "let_down_wanted_something_done", "conversational": "fine_a_reply_is_all",
-        "context": "not_talking_to_the_ai", "not_relevant": "not_talking_to_the_ai"}
-FEEL_CONFIDENCE = 0.6
+WHO = {"to_ai": "says_its_name", "context": "neither", "not_relevant": "neither"}
+KEEP = {"to_ai": "ignore_it", "context": "remember_it", "not_relevant": "ignore_it"}
+KEEP_CONFIDENCE = 0.6
 
 
 def asked_about(instructions):
@@ -47,9 +45,9 @@ def asked_about(instructions):
 def verdict(text):
     t = text.lower()
     if any(w in t for w in ("build", "make", "there")):
-        return "action_oriented", 0.9
+        return "to_ai", 0.9
     if "thanks" in t:
-        return "conversational", 0.85
+        return "to_ai", 0.85
     if any(w in t for w in ("cave", "base")):
         return "context", 0.7
     return "not_relevant", 0.8
@@ -57,8 +55,8 @@ def verdict(text):
 
 def choose(question, verdicts=None):
     """`(label, confidence)` for a `choice` question: a gather question's by
-    `big one`, else D's two by the line's class — `verdicts[text]`, a
-    `(class, confidence)`, or else its keywords."""
+    `big one`, else the routing call's two by the line's class — `verdicts[text]`,
+    a `(class, confidence)`, or else its keywords (`thanks` answers a question)."""
     text = asked_about(question.get("instructions"))
     labels = question.get("criteria") or {}
     if "not_a_cast" in labels:
@@ -70,9 +68,11 @@ def choose(question, verdicts=None):
     if "part_of_the_ask" in labels:
         return ("part_of_the_ask", 0.9) if JOINS in text.lower() else ("not_part_of_it", 0.8)
     cls, conf = (verdicts or {}).get(text) or verdict(text)
-    if "let_down_wanted_something_done" in labels:
-        return FEEL[cls], FEEL_CONFIDENCE
-    return WHAT[cls], conf
+    if "remember_it" in labels and "neither" not in labels:   # keep
+        return KEEP[cls], KEEP_CONFIDENCE
+    if cls == "to_ai" and "thanks" in text.lower():
+        return "answers_its_question", conf
+    return WHO[cls], conf
 
 
 def answer(question):

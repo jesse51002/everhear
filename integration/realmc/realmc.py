@@ -3,12 +3,14 @@
 it, so vfg, its remote programs and every script can be tried against the real thing, no EC2.
 Several run side by side, one per name, each with its own world, ports and stand-in.
 
-    integration/realmc/up [NAME] [--fresh | --regen] [--vanilla]   start NAME (default main)
-    integration/realmc/down [NAME | --all] [--purge-key]            stop it and the scripts it runs
+    integration/realmc/up [NAME] [--fresh | --regen] [--vanilla] [--test-server]
+                                                                    start NAME (default main)
+    integration/realmc/down [NAME | --all] [--purge-key]            stop it, its test server and scripts
     eval "$(integration/realmc/env [NAME])"                         point vfg (and `import mc`) at it
     integration/realmc/realmc.py list                               every server, running or not
     integration/realmc/realmc.py status [NAME] [--json]             one server; exit 0 if it runs
     integration/realmc/realmc.py cmd [--name NAME] <command…>       one RCON command, straight to it
+    integration/realmc/realmc.py testserver [NAME] [--fresh|--stop] NAME's test server, as the box's
     integration/realmc/realmc.py carpet                             fetch Carpet 26.3 (official release)
     integration/realmc/realmc.py key                                copy the TypeSafe key in, unprinted
 
@@ -27,7 +29,10 @@ integration/realmc/.server/ (gitignored; REALMC_ROOT puts it elsewhere):
                           .env (a link to shared/env), python/bin/python3 (the box's Python 3.12)
     <NAME>/home/          HOME for vfg; home/.vfg is its VFG_HOME (config and a fake key)
     <NAME>/box/           the box's PATH (bin/python3 is Python 3.9, Amazon Linux's own) and
-                          FAKE_UNITS (units/)
+                          FAKE_UNITS (units/: minecraft's state; minecraft-test, a unit backed by
+                          the real test server, run by `realmc.py unit`)
+    <NAME>/mc-test/       its test server (testserver NAME, up --test-server), standing in for
+    <NAME>/vfg-test/      /opt/mc-test and /opt/vfg-test, laid out by bridge/deploy/testserver.py
 
 Python 3.9+, standard library only, like toolkit/vfg. Nothing here prints the RCON password or
 the key, or writes to ~/.vfg or ~/.ssh. From the owner's ~/.vfg/config it reads two keys and
@@ -109,26 +114,19 @@ BOX_SETTINGS = [("difficulty", "hard"), ("gamemode", "survival"), ("allow-flight
                 ("max-players", "20"), ("function-permission-level", "2"), ("op-permission-level", "4"),
                 ("player-idle-timeout", "0"), ("rate-limit", "0")]
 
+# The test server beside a realmc server (testserver NAME, up --test-server) is laid out by the
+# box's own setup, bridge/deploy/testserver.py, which is also the one source of the Fabric and
+# Carpet pins every realmc server runs on.
+sys.path.insert(0, os.path.join(REPO, "bridge", "deploy"))
+import testserver  # noqa: E402
+
 # Carpet for 26.3, for fake players: gnembon/fabric-carpet's release v26.3, as GitHub lists it.
-CARPET_JAR = "fabric-carpet-26.3+v260915.jar"
-CARPET_URL = "https://github.com/gnembon/fabric-carpet/releases/download/v26.3/fabric-carpet-26.3%2Bv260915.jar"
-CARPET_SIZE = 1541420
-CARPET_SHA256 = "7c40b93e807ed914064176898037117097446c6cc76e6a80a856c8bf7f7659f9"
+CARPET_JAR, CARPET_URL = testserver.CARPET_JAR, testserver.CARPET_URL
+CARPET_SIZE, CARPET_SHA256 = testserver.CARPET_SIZE, testserver.CARPET_SHA256
 # Fabric Loader 0.19.5, what meta.fabricmc.net lists for 26.3 (no intermediary: 26.x ships
 # unobfuscated), and its libraries, with Maven's sha1s. Copied from where they already are on
 # this PC (a Minecraft launcher, another server, the Gradle cache), never fetched.
-FABRIC_MAIN = "net.fabricmc.loader.impl.launch.server.FabricServerLauncher"
-FABRIC_LIBS = [
-    ("net/fabricmc/fabric-loader/0.19.5/fabric-loader-0.19.5.jar", "ff9e65cffca4a67f31523e1807fe0855940fcbfa"),
-    ("net/fabricmc/sponge-mixin/0.17.4+mixin.0.8.7/sponge-mixin-0.17.4+mixin.0.8.7.jar",
-     "5f66cc9f59b8efaa942155a3d5a30599bf6640dd"),
-    ("org/ow2/asm/asm/9.10.1/asm-9.10.1.jar", "ada2141c0cc52ee8f5c48cd5fa4ce0e794f22236"),
-    ("org/ow2/asm/asm-analysis/9.10.1/asm-analysis-9.10.1.jar", "8d49f14d51f632cb1d87c88d1ceaf50db0d8af1b"),
-    ("org/ow2/asm/asm-commons/9.10.1/asm-commons-9.10.1.jar", "4229e4c55fd8e01c23f9fe9884075cc628aacc50"),
-    ("org/ow2/asm/asm-tree/9.10.1/asm-tree-9.10.1.jar", "e244332a17564c1d1572449399a842de35881be2"),
-    ("org/ow2/asm/asm-util/9.10.1/asm-util-9.10.1.jar", "7bb9d450e8d4cbf9f9e04096c44bbfe7fba80b15"),
-]
-MAVEN = {"net/fabricmc/": "https://maven.fabricmc.net/", "org/ow2/": "https://repo1.maven.org/maven2/"}
+FABRIC_MAIN, FABRIC_LIBS, MAVEN = testserver.FABRIC_MAIN, testserver.FABRIC_LIBS, testserver.MAVEN
 
 EULA_TEXT = (
     "# The owner accepted Minecraft's EULA (https://aka.ms/MinecraftEULA): VFG_ACCEPT_EULA=true in\n"
@@ -688,6 +686,9 @@ class Server(object):
         self.mc, self.vfg, self.home, self.vhome, self.box = j("mc"), j("vfg"), j("home"), j("home", ".vfg"), j("box")
         self.info, self.pidfile, self.lock = j("realmc.json"), j("server.pid"), j("lock")
         self.props, self.console, self.world = j("mc", "server.properties"), j("mc", "console.log"), j("mc", "world")
+        # Its test server, laid out as the box's (the contract's "-test" folders): testserver NAME.
+        self.mc_test, self.vfg_test = j("mc" + testserver.SUFFIX), j("vfg" + testserver.SUFFIX)
+        self.test_props = j("mc" + testserver.SUFFIX, "server.properties")
 
     def locked(self):
         return Locked(self.lock, self.name)
@@ -755,8 +756,10 @@ class Server(object):
 
     # -- server.properties
     def taken_ports(self):
-        ports = {25565, 25575}
-        for path in glob.glob(os.path.join(ROOT, "*", "mc", "server.properties")):
+        """Every other server's ports, test servers' too (this one's own test server's included)."""
+        ports = {25565, 25575, testserver.PORT, testserver.RCON_PORT}
+        for path in glob.glob(os.path.join(ROOT, "*", "mc", "server.properties")) + \
+                glob.glob(os.path.join(ROOT, "*", "mc" + testserver.SUFFIX, "server.properties")):
             if os.path.realpath(path) != os.path.realpath(self.props):
                 for k in ("rcon.port", "server-port"):
                     try:
@@ -919,7 +922,413 @@ class Server(object):
                 "rcon": "127.0.0.1:%s" % p.get("rcon.port", "?"), "game": "127.0.0.1:%s" % p.get("server-port", "?"),
                 "seed": info.get("seed"), "arena": info.get("arena"), "world_from": info.get("world_from"),
                 "ready_s": info.get("ready_s"), "env": os.path.join(self.vfg, ".env"),
-                "console": self.console, "props": self.props}
+                "console": self.console, "props": self.props, "test": test_status(self)}
+
+
+# ------------------------------------------------------------ the test server
+
+UNIT_FILE = os.path.join(REPO, "bridge", "deploy", "systemd", "minecraft-test.service")
+TEST_UNIT = "minecraft-test"
+
+
+def unit_settings(path=UNIT_FILE):
+    """minecraft-test.service's settings, {key: value}, its Environment= pairs among them: the
+    fake unit runs what the box's runs (MC_TEST_HEAP, Nice, RestartSec, TimeoutStopSec...)."""
+    got = {}
+    for line in testserver.read_lines(path):
+        line = line.strip()
+        if not line or line[0] in "#;[" or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        if k == "Environment":
+            for pair in v.split():
+                if "=" in pair:
+                    ek, ev = pair.split("=", 1)
+                    got[ek] = ev
+        else:
+            got[k] = v
+    return got
+
+
+class TestUnit(object):
+    """The fake systemctl's minecraft-test for one realmc server (toolkit/tests/bin/systemctl runs
+    <box>/units/minecraft-test.exec, which runs `realmc.py unit NAME minecraft-test VERB`). It
+    really does what the box's unit does: a supervisor process runs <mc-test>/reset.sh, then java
+    -Xms256M -Xmx<MC_TEST_HEAP> @launch.args at nice 10, its console appended to
+    <mc-test>/console.log, the "Server stopped" line after it; and starts it again RestartSec after
+    it ends unless it was stopped (Restart=always), giving up after StartLimitBurst starts within
+    StartLimitIntervalSec. The state file says active, activating, inactive or failed."""
+
+    def __init__(self, srv):
+        self.srv = srv
+        self.units = os.path.join(srv.box, "units")
+        j = lambda *p: os.path.join(self.units, TEST_UNIT + "".join(p))  # noqa: E731
+        self.state_file, self.exec_file, self.journal = j(), j(".exec"), j(".journal")
+        self.sup_pidfile, self.java_pidfile, self.lock = j(".pid"), j(".java.pid"), j(".lock")
+        self.stopped_file = j(".stopped")   # when it was last stopped: a restart asked for before is dropped
+        self.sup_marker = "REALMC_UNIT=%s/%s" % (srv.dir, TEST_UNIT)
+        self.java_marker = MARKER + srv.mc_test
+
+    def installed(self):
+        return os.path.exists(self.exec_file)
+
+    def install(self, java, heap=None):
+        """The .exec the fake systemctl runs, with this PC's paths baked in (fake_ssh passes only
+        PATH, HOME, USER, LOGNAME and FAKE_UNITS through)."""
+        os.makedirs(self.units, exist_ok=True)
+        q = lambda s: "'" + s.replace("'", "'\\''") + "'"  # noqa: E731
+        env = "REALMC_ROOT=%s VFG_JAVA=%s" % (q(ROOT), q(java))
+        if heap:
+            env += " REALMC_TEST_HEAP=%s" % q(heap)
+        write_file(self.exec_file, "#!/bin/sh\n# realmc %s: the fake systemctl's %s, backed by the real server "
+                   "(realmc.py unit).\n%s exec %s %s unit %s %s \"$@\"\n"
+                   % (self.srv.name, TEST_UNIT, env, q(sys.executable), q(os.path.join(HERE, "realmc.py")),
+                      q(self.srv.name), TEST_UNIT), 0o755)
+        if not os.path.exists(self.state_file):
+            self.set_state("inactive")
+
+    def set_state(self, state):
+        write_file(self.state_file, state + "\n")
+
+    def note(self, msg):
+        """A line in the unit's journal (the fake journalctl prints the last one)."""
+        with open(self.journal, "a", encoding="utf-8") as f:
+            f.write("%s %s: %s\n" % (now_iso(), TEST_UNIT, msg))
+
+    def sup_pid(self):
+        pid = read_pid(self.sup_pidfile)
+        return pid if pid and pid_has(pid, self.sup_marker) and not gone(pid) else None
+
+    def java_pid(self):
+        pid = read_pid(self.java_pidfile)
+        return pid if pid and pid_has(pid, self.java_marker) and not gone(pid) else None
+
+    def state(self):
+        """What is-active prints: the state file, unless nothing runs behind it."""
+        try:
+            with open(self.state_file) as f:
+                s = f.read().strip() or "inactive"
+        except OSError:
+            return "inactive"
+        if s in ("active", "activating", "deactivating") and not self.sup_pid():
+            return "inactive" if s == "deactivating" else "failed"   # its supervisor is gone
+        return s
+
+    def locked(self):
+        return Locked(self.lock, "%s %s" % (self.srv.name, TEST_UNIT))
+
+    def job(self):
+        """One start, stop or restart at a time, as systemd runs a unit's jobs: the unit's lock,
+        held for the whole job (a restart's stop and start both), waited for quietly."""
+        unit = self
+
+        class Job(object):
+            def __enter__(self):
+                os.makedirs(unit.units, exist_ok=True)
+                self.fd = os.open(unit.lock, os.O_RDWR | os.O_CREAT, 0o600)
+                fcntl.flock(self.fd, fcntl.LOCK_EX)
+                return self
+
+            def __exit__(self, *exc):
+                os.close(self.fd)
+        return Job()
+
+    def stopped_at(self):
+        try:
+            with open(self.stopped_file) as f:
+                return float(f.read().strip() or 0)
+        except (OSError, ValueError):
+            return 0.0
+
+    def start(self, block=True):
+        """systemctl start: the supervisor detached; with `block`, back once reset.sh ran and java
+        started (Type=simple), as systemd's start returns."""
+        if self.sup_pid():
+            return 0
+        if not os.path.exists(os.path.join(self.srv.mc_test, testserver.MARKER)):
+            self.set_state("failed")
+            self.note("no %s: lay the test server out first (realmc.py testserver %s)"
+                      % (os.path.join(self.srv.mc_test, testserver.MARKER), self.srv.name))
+            sys.stderr.write("Job for %s.service failed.\n" % TEST_UNIT)
+            return 1
+        self.set_state("activating")
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": REAL_HOME, "LANG": "C.UTF-8",
+               "REALMC_ROOT": ROOT, "REALMC_UNIT": "%s/%s" % (self.srv.dir, TEST_UNIT)}
+        for k in ("VFG_JAVA", "REALMC_TEST_HEAP"):
+            if os.environ.get(k):
+                env[k] = os.environ[k]
+        with open(self.journal, "ab") as log:
+            proc = subprocess.Popen([sys.executable, os.path.join(HERE, "realmc.py"), "unit", self.srv.name, TEST_UNIT,
+                                     "run"], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, env=env,
+                                    start_new_session=True)
+        write_file(self.sup_pidfile, "%d\n" % proc.pid)
+        if not block:
+            return 0
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            s = self.state()
+            if s == "active" and self.java_pid():
+                return 0
+            if s == "failed" or proc.poll() is not None:
+                break
+            time.sleep(0.1)
+        sys.stderr.write("Job for %s.service failed; see %s\n" % (TEST_UNIT, self.journal))
+        return 1
+
+    def stop(self):
+        """systemctl stop: SIGTERM to the supervisor, which stops java (SIGTERM, then SIGKILL past
+        TimeoutStopSec) and writes "Server stopped"; back once both are gone."""
+        sup = self.sup_pid()
+        if sup:
+            self.set_state("deactivating")
+            try:
+                os.kill(sup, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            limit = float(unit_settings().get("TimeoutStopSec", "60")) + 15
+            deadline = time.monotonic() + limit
+            while time.monotonic() < deadline and not gone(sup):
+                time.sleep(0.1)
+            if not gone(sup):
+                end(sup, 2)
+        java = self.java_pid()
+        if java:  # a supervisor killed hard left it
+            end(java, 30)
+            self.server_stopped()
+        for path in (self.sup_pidfile, self.java_pidfile):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        if self.state() != "failed":
+            self.set_state("inactive")
+        write_file(self.stopped_file, "%.6f\n" % time.time())
+        return 0
+
+    def restart(self, block=True):
+        """systemctl restart: stop, then start, under the unit's lock (the caller holds it). With
+        --no-block it goes on in the background (`unit … restart --asked T`) and returns at once;
+        that restart is dropped when the unit was stopped after it was asked for, as systemd's stop
+        job cancels a queued restart, so `down` right after a test leaves it down."""
+        if not block:
+            subprocess.Popen([sys.executable, os.path.join(HERE, "realmc.py"), "unit", self.srv.name, TEST_UNIT,
+                              "restart", "--asked", "%.6f" % time.time()], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                             env=dict(os.environ, REALMC_ROOT=ROOT))
+            return 0
+        self.stop()
+        return self.start()
+
+    def server_stopped(self):
+        # ExecStopPost: 26.3 logs nothing when SIGTERM stops it; the bridge reads this line.
+        with open(os.path.join(self.srv.mc_test, "console.log"), "a", encoding="utf-8") as f:
+            f.write("[%s] [vfg/INFO]: Server stopped\n" % datetime.now(timezone.utc).strftime("%H:%M:%S"))
+
+    def run(self):
+        """The supervisor: reset.sh, java, again after RestartSec until stopped."""
+        cfg = unit_settings()
+        heap = os.environ.get("REALMC_TEST_HEAP") or cfg.get("MC_TEST_HEAP", testserver.HEAP)
+        nice = int(cfg.get("Nice", "10"))
+        restart_s = float(cfg.get("RestartSec", "5"))
+        stop_s = float(cfg.get("TimeoutStopSec", "60"))
+        burst, window = int(cfg.get("StartLimitBurst", "30")), float(cfg.get("StartLimitIntervalSec", "300"))
+        write_file(self.sup_pidfile, "%d\n" % os.getpid())
+        stopping, child = [False], [None]
+
+        def on_term(signum, frame):
+            stopping[0] = True
+            if child[0] is not None:
+                try:
+                    os.killpg(child[0].pid, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError):
+                    pass
+
+        signal.signal(signal.SIGTERM, on_term)
+        signal.signal(signal.SIGINT, on_term)
+        java = find_java()
+        console = os.path.join(self.srv.mc_test, "console.log")
+        scope = user_scope(cfg)   # the unit's CPUQuota, CPUWeight and MemoryMax, as on the box
+        starts = []
+        while not stopping[0]:
+            now = time.monotonic()
+            starts = [t for t in starts if now - t < window] + [now]
+            if len(starts) > burst:
+                self.note("start request repeated too quickly (%d starts in %d s): failed" % (len(starts), window))
+                self.set_state("failed")
+                return 1
+            self.set_state("activating")
+            with open(console, "ab") as log:
+                r = subprocess.run([os.path.join(self.srv.mc_test, "reset.sh")], cwd=self.srv.mc_test,
+                                   stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+            if r.returncode != 0:
+                self.note("reset.sh failed (exit %d); see %s" % (r.returncode, console))
+            elif not stopping[0]:
+                env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": REAL_HOME, "LANG": "C.UTF-8",
+                       "TZ": "UTC", "REALMC_SERVER": self.srv.mc_test}
+                env.update(scope_env())
+                with open(console, "ab") as log:
+                    child[0] = subprocess.Popen(scope + testserver.java_argv(java, heap), cwd=self.srv.mc_test,
+                                                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                                env=env, start_new_session=True, preexec_fn=lambda: os.nice(nice))
+                write_file(self.java_pidfile, "%d\n" % child[0].pid)
+                self.set_state("active")
+                self.note("started java pid %d (-Xmx%s%s), the world fresh from reset.sh"
+                          % (child[0].pid, heap, ", in a user scope: " + " ".join(scope[scope.index("--scope") + 1:-1])
+                             if scope else ""))
+                code, stop_at = None, None
+                while code is None:
+                    try:
+                        code = child[0].wait(timeout=0.5)
+                    except subprocess.TimeoutExpired:
+                        if stopping[0]:
+                            stop_at = stop_at or time.monotonic()
+                            if time.monotonic() - stop_at > stop_s:
+                                self.note("java did not stop within %g s: SIGKILL" % stop_s)
+                                try:
+                                    os.killpg(child[0].pid, signal.SIGKILL)
+                                except (ProcessLookupError, PermissionError):
+                                    pass
+                child[0] = None
+                try:
+                    os.remove(self.java_pidfile)
+                except OSError:
+                    pass
+                self.server_stopped()
+                self.note("java exited (code %s)%s" % (code, "" if stopping[0] else
+                                                         "; again in %g s (Restart=always)" % restart_s))
+            if stopping[0]:
+                break
+            self.set_state("activating")
+            deadline = time.monotonic() + restart_s
+            while time.monotonic() < deadline and not stopping[0]:
+                time.sleep(0.1)
+        self.set_state("inactive")
+        try:
+            os.remove(self.sup_pidfile)
+        except OSError:
+            pass
+        return 0
+
+
+def scope_env():
+    """What systemd-run --user needs to find this user's manager, which fake_ssh's environment lacks."""
+    run_dir = "/run/user/%d" % os.getuid()
+    if not os.environ.get("XDG_RUNTIME_DIR") and os.path.isdir(run_dir):
+        return {"XDG_RUNTIME_DIR": run_dir}
+    return {k: os.environ[k] for k in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS") if os.environ.get(k)}
+
+
+def user_scope(cfg):
+    """`systemd-run --user --scope` with the unit's CPUQuota, CPUWeight and MemoryMax, the java
+    started in it (systemd-run execs it: the same pid), when this PC's user manager makes one;
+    else [] and the java runs without them."""
+    sdrun = shutil.which("systemd-run")
+    if not sdrun:
+        return []
+    env = dict(os.environ, **scope_env())
+    try:
+        ok = subprocess.run([sdrun, "--user", "--quiet", "--scope", "--", "true"], env=env, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        ok = False
+    if not ok:
+        return []
+    props = []
+    for key in ("CPUQuota", "CPUWeight", "MemoryMax"):
+        if cfg.get(key):
+            props += ["-p", "%s=%s" % (key, cfg[key])]
+    return [sdrun, "--user", "--quiet", "--scope"] + props + ["--"]
+
+
+def test_ports(srv):
+    """The test server's game and RCON ports: its own while they are still free (or it holds
+    them), else new free ones on 127.0.0.1, never another server's."""
+    mine, live = read_props(srv.test_props), read_props(srv.props)
+    avoid = set(srv.taken_ports())   # every other server's, this test server's own among them
+    for k in ("rcon.port", "server-port"):
+        for props, keep in ((mine, False), (live, True)):
+            try:
+                (avoid.add if keep else avoid.discard)(int(props.get(k, "")))
+            except ValueError:
+                pass
+    running = TestUnit(srv).sup_pid() is not None
+    ports = {}
+    for key in ("server-port", "rcon.port"):
+        try:
+            port = int(mine.get(key, ""))
+        except ValueError:
+            port = 0
+        if not (1024 < port < 65536) or port in avoid or not (running or port_free(port)):
+            port = pick_port(avoid)
+        avoid.add(port)
+        ports[key] = port
+    return ports["server-port"], ports["rcon.port"]
+
+
+def test_status(srv):
+    if not os.path.isdir(srv.mc_test):
+        return None
+    unit = TestUnit(srv)
+    p = read_props(srv.test_props)
+    t = read_json(os.path.join(srv.mc_test, "template.json"), {})
+    return {"state": unit.state(), "running": unit.state() == "active", "pid": unit.java_pid(),
+            "rcon": "127.0.0.1:%s" % p.get("rcon.port", "?"), "game": "127.0.0.1:%s" % p.get("server-port", "?"),
+            "mc": srv.mc_test, "vfg": srv.vfg_test, "marker": os.path.exists(os.path.join(srv.mc_test, testserver.MARKER)),
+            "template": t.get("made"), "unit": unit.exec_file, "console": os.path.join(srv.mc_test, "console.log")}
+
+
+def ensure_test_server(srv, fresh=False):
+    """Lay out srv's test server with bridge/deploy/testserver.py (the box's own setup, on the
+    box's Python 3.12), install its fake unit, (re)start it when something it reads changed, and
+    wait for its RCON: what testserver.sh does on the box."""
+    if not srv.exists():
+        raise Fail(3, "%s has no server yet: integration/realmc/up %s" % (srv.name, srv.name))
+    java = find_java()
+    unit = TestUnit(srv)
+    unit.install(java, os.environ.get("REALMC_TEST_HEAP"))
+    port, rcon_port = test_ports(srv)
+    heap = os.environ.get("REALMC_TEST_HEAP") or unit_settings().get("MC_TEST_HEAP", testserver.HEAP)
+    argv = [os.path.join(srv.vfg, "python", "bin", "python3"), os.path.join(REPO, "bridge", "deploy", "testserver.py"),
+            "--live-mc", srv.mc, "--live-vfg", srv.vfg, "--mc", srv.mc_test, "--vfg", srv.vfg_test,
+            "--port", str(port), "--rcon-port", str(rcon_port), "--heap", heap, "--java", java, "--from", SHARED]
+    if fresh:
+        argv.append("--fresh")
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("VFG_", "TYPESAFE_", "CLAUDE", "ANTHROPIC_"))}
+    env["HOME"] = REAL_HOME
+    rc = subprocess.run(argv, env=env).returncode
+    if rc == testserver.EXIT_STOP_FIRST:
+        say("%s: stopping its test server to make its template or AOT cache" % srv.name)
+        with unit.job():
+            unit.stop()
+        rc = subprocess.run(argv, env=env).returncode
+    if rc not in (testserver.EXIT_OK, testserver.EXIT_RESTART):
+        raise Fail(rc if rc in (2, 3) else 1, "%s: testserver.py failed (exit %d)" % (srv.name, rc))
+    t0 = time.monotonic()
+    if rc == testserver.EXIT_RESTART or unit.state() != "active":
+        say("%s: (re)starting its test server (%s): a fresh world from its template" % (srv.name, TEST_UNIT))
+        with unit.job():
+            ok = unit.restart() == 0
+        if not ok:
+            raise Fail(1, "%s: its test server did not start; see %s and %s"
+                       % (srv.name, unit.journal, os.path.join(srv.mc_test, "console.log")))
+    testserver.wait_rcon(srv.test_props, 180)
+    say("%s: test server ready in %.1f s: RCON 127.0.0.1:%d, game 127.0.0.1:%d, %s and %s"
+        % (srv.name, time.monotonic() - t0, rcon_port, port, srv.mc_test, srv.vfg_test))
+
+
+def stop_test_server(srv):
+    """down: its test scripts (vfg-test/run), then the test server; True when it ran."""
+    unit = TestUnit(srv)
+    if not unit.installed() and not unit.sup_pid():
+        return None
+    for path in glob.glob(os.path.join(srv.vfg_test, "run", "*.pid")):
+        pid = read_pid(path)
+        if pid and pid_has(pid, "VFG_SCRIPT=" + os.path.basename(path)[:-4]):
+            end(pid, 5)
+    with unit.job():   # after any start or restart under way; a restart asked for before is dropped
+        was = unit.sup_pid() is not None
+        unit.stop()
+    return was
 
 
 def carpet_jar_present():
@@ -1083,6 +1492,11 @@ def print_status(s):
     if s["mode"] != "carpet":
         say("%s: no fake players (%s)" % (s["name"], "Carpet is fetched: start it again to load it" if s["carpet"]
                                           else "fetch Carpet first: integration/realmc/realmc.py carpet"))
+    t = s.get("test")
+    if t:
+        say("%s: test server %s — RCON %s, game %s, %s (unit %s)" % (
+            s["name"], t["state"] + (" pid %d" % t["pid"] if t["pid"] else ""), t["rcon"], t["game"], t["mc"],
+            TEST_UNIT))
 
 
 def cmd_up(a):
@@ -1093,6 +1507,8 @@ def cmd_up(a):
         srv.prepare()
         if srv.pid():
             if not (a.fresh or a.regen):
+                if a.test_server:
+                    ensure_test_server(srv)
                 print_status(srv.status())
                 return 0
             say("%s: stopping it first" % srv.name)
@@ -1139,6 +1555,8 @@ def cmd_up(a):
                                          "world_from": origin, "mode": mode, "started": now_iso(),
                                          "ready_s": round(secs, 1)}, indent=2) + "\n")
         say("%s: ready in %.1f s" % (srv.name, secs))
+        if a.test_server:
+            ensure_test_server(srv)
         print_status(srv.status())
         say('point vfg at it: eval "$(integration/realmc/env%s)"' % ("" if srv.name == "main" else " " + srv.name))
     return 0
@@ -1151,6 +1569,9 @@ def cmd_down(a):
             say("%s: no such server" % srv.name)
             continue
         with srv.locked():
+            was = stop_test_server(srv)
+            if was is not None:
+                say("%s: test server %s" % (srv.name, "stopped" if was else "was not running"))
             n = srv.stop_scripts()
             if n:
                 say("%s: stopped %d script%s" % (srv.name, n, "" if n == 1 else "s"))
@@ -1204,6 +1625,11 @@ def cmd_list(a):
         print("%-12s %-8s %-8s pid %-8s rcon %-16s game %-16s %s" % (
             s["name"], "running" if s["running"] else "stopped", s["mode"] or "-", s["pid"] or "-",
             s["rcon"], s["game"], s["dir"]))
+        t = s.get("test")
+        if t:
+            print("%-12s %-8s %-8s pid %-8s rcon %-16s game %-16s %s" % (
+                " + test", "running" if t["running"] else t["state"], "carpet", t["pid"] or "-", t["rcon"], t["game"],
+                t["mc"]))
     return 0
 
 
@@ -1279,9 +1705,51 @@ def purge_key():
     say("emptied %s: it holds the names and no values again" % SHARED_ENV)
 
 
+def cmd_testserver(a):
+    """The test server beside NAME, laid out by the box's own setup: testserver.sh's work on the PC."""
+    srv = Server(a.name or default_name())
+    with srv.locked():
+        if a.stop:
+            was = stop_test_server(srv)
+            say("%s: test server %s" % (srv.name, "stopped" if was else "was not running"))
+            return 0
+        ensure_test_server(srv, fresh=a.fresh)
+        print_status(srv.status())
+    return 0
+
+
+def cmd_unit(a):
+    """What the fake systemctl runs for a unit backed by a real program (<box>/units/<unit>.exec)."""
+    if a.unit != TEST_UNIT:
+        raise Fail(2, "realmc backs only %s" % TEST_UNIT)
+    unit = TestUnit(Server(a.name))
+    if a.verb == "is-active":
+        s = unit.state()
+        print(s)
+        return 0 if s == "active" else 3
+    if a.verb == "run":
+        return unit.run()
+    if a.verb == "reset-failed":
+        if unit.state() == "failed":
+            unit.set_state("inactive")
+        return 0
+    if a.no_block and a.verb == "restart":
+        return unit.restart(block=False)
+    with unit.job():
+        if a.verb == "start":
+            return unit.start(block=not a.no_block)
+        if a.verb == "stop":
+            return unit.stop()
+        if a.asked and unit.stopped_at() > a.asked:
+            unit.note("a restart asked for at %s dropped: the unit was stopped since"
+                      % datetime.fromtimestamp(a.asked, timezone.utc).strftime("%H:%M:%S"))
+            return 0
+        return unit.restart()
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="realmc", description=__doc__.split("\n\n")[0])
-    sub = p.add_subparsers(dest="cmd", metavar="up|down|env|list|status|cmd|carpet|key")
+    sub = p.add_subparsers(dest="cmd", metavar="up|down|env|list|status|cmd|testserver|carpet|key")
     sub.required = True
 
     def named(s):
@@ -1294,6 +1762,8 @@ def main(argv=None):
     g.add_argument("--fresh", action="store_true", help="its world copied from the template again first")
     g.add_argument("--regen", action="store_true", help="the template made again from the seed first")
     s.add_argument("--vanilla", action="store_true", help="without Fabric and Carpet, even when Carpet is here")
+    s.add_argument("--test-server", action="store_true",
+                   help="and its test server, as the box has one (testserver NAME)")
     s = sub.add_parser("down", help="stop a server's scripts, then the server")
     named(s)
     s.add_argument("--all", action="store_true", help="every server")
@@ -1308,6 +1778,17 @@ def main(argv=None):
     s = sub.add_parser("cmd", help="one RCON command, straight to a server")
     s.add_argument("--name", dest="name_opt", metavar="NAME")
     s.add_argument("words", nargs=argparse.REMAINDER)
+    s = sub.add_parser("testserver", help="lay out NAME's test server (mc-test, vfg-test) with the box's "
+                                          "testserver.py, and (re)start it")
+    named(s)
+    s.add_argument("--fresh", action="store_true", help="make its template world again")
+    s.add_argument("--stop", action="store_true", help="stop it (and its tests' scripts) instead")
+    s = sub.add_parser("unit", help=argparse.SUPPRESS)
+    s.add_argument("name", metavar="NAME")
+    s.add_argument("unit", metavar="UNIT")
+    s.add_argument("verb", choices=["start", "stop", "restart", "is-active", "reset-failed", "run"])
+    s.add_argument("--no-block", action="store_true")
+    s.add_argument("--asked", type=float, default=None, help=argparse.SUPPRESS)
     sub.add_parser("carpet", help="fetch Carpet 26.3 from its GitHub release into shared/mods/")
     s = sub.add_parser("key", help="copy TYPESAFE_API_KEY from vfg-backup.tgz into shared/env, unprinted")
     s.add_argument("--from", dest="src", metavar="TGZ", help="default: VFG_BACKUP_DIR/vfg-backup.tgz")
@@ -1315,7 +1796,8 @@ def main(argv=None):
     a.name = getattr(a, "name_opt", None) or getattr(a, "name", None)
     try:
         return {"up": cmd_up, "down": cmd_down, "env": cmd_env, "list": cmd_list, "status": cmd_status,
-                "cmd": cmd_cmd, "carpet": cmd_carpet, "key": cmd_key}[a.cmd](a)
+                "cmd": cmd_cmd, "testserver": cmd_testserver, "unit": cmd_unit, "carpet": cmd_carpet,
+                "key": cmd_key}[a.cmd](a)
     except Fail as f:
         sys.stderr.write("realmc: %s\n" % f.msg)
         return f.code

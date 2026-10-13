@@ -15,7 +15,8 @@ Stand-ins: SSH (toolkit/tests/fake_ssh, which runs the remote command here), Min
        (scripts/_test/fake_places_world.py over scripts/_test/fake_rcon.py, in this process: 26.3's
        recorded replies, a world that keeps its players, effects and places, and here each
        player's items by slot), Jev (each player's line is put into the feed as a LINE row
-       through the box's vfg_feed, as Jev puts it there), the command references (refs/26.3/
+       through the box's vfg_feed, as Jev puts a line said to the AI there: class to_ai), the
+       command references (refs/26.3/
        seeded from brain/tests/fixtures/refs: the server's real command tree and a few wiki
        pages; nothing is fetched).
 
@@ -594,10 +595,11 @@ class Box:
 
     def lines(self, *said):
         """Players' lines into the feed in one write, as the Jev filter feeds a batch:
-        (player, class, text) each; returns [(seq, fed at)]."""
+        (player, class, text) each, the class to_ai for a line said to the AI; returns
+        [(seq, fed at)]."""
         entries = []
         for who, cls, text in said:
-            conf = "0.93" if cls == "action_oriented" else "0.88"
+            conf = "0.93" if cls == "to_ai" else "0.88"
             entries.append(("LINE", "%s voice %s %s -9dB" % (who, cls, conf), text, None))
         seqs = self.writer.append_batch(entries)
         at = time.time()
@@ -753,6 +755,21 @@ def start(run):
     return True
 
 
+def handed_up_first(run, a):
+    """Respond took the line first and handed it up, and the brain's loop ran it: brain.log's
+    `respond #seq handed up`, and its usage rows, Respond's then the loop's first step."""
+    rep, box = run.rep, run.box
+    handed = wait_for(lambda: re.search(r"^\S+ respond #%d handed up" % a["seq"], box.log(), re.M), 5, 0.2)
+
+    def rows():
+        return [(u["component"], u["ref"]) for u in box.usage("#%d" % a["seq"])]
+    use = wait_for(lambda: ("brain", "#%d s1" % a["seq"]) in rows(), 5, 0.2) and rows() or rows()
+    rep.check(handed and [c for c, _ in use][:1] == ["respond"] and sum(c == "respond" for c, _ in use) == 1
+              and ("brain", "#%d s1" % a["seq"]) in use,
+              "Respond took it first and handed it up; then the brain's loop: %s"
+              % ", ".join("%s %s" % x for x in use), "%r; %s" % (use, short(box.log()[-1200:])))
+
+
 def ask_action(run):
     rep, box = run.rep, run.box
     rep.head("1. An action ask: the agent hands it off, the router starts a loop, done in the world, one reply; "
@@ -760,11 +777,11 @@ def ask_action(run):
     # A context line waiting in Jev's batch is fed with the ask, in one write (§5).
     mark = len(box.world.sent)
     (ctx_seq, _), (seq, at) = box.lines(("Alex", "context", "I'm over by the lava pools"),
-                                        ("Steve", "action_oriented", "give me 64 firework rockets and speed two"))
-    a = {"seq": seq, "at": at, "who": "Steve", "text": "give me 64 firework rockets and speed two",
-         "cls": "action_oriented", "mark": mark, "reply": None}
+                                        ("Steve", "to_ai", "AI, give me 64 firework rockets and speed two"))
+    a = {"seq": seq, "at": at, "who": "Steve", "text": "AI, give me 64 firework rockets and speed two",
+         "cls": "to_ai", "mark": mark, "reply": None}
     run.asks.append(a)
-    rep.note("#%d Alex (context) and #%d Steve (action_oriented) fed in one write" % (ctx_seq, seq))
+    rep.note("#%d Alex (context) and #%d Steve (to_ai) fed in one write" % (ctx_seq, seq))
     r = run.reply(a)
     sent = run.sent(a)
     gives = [x for x in sent if re.match(r"^(execute .* run )?give Steve (minecraft:)?firework_rocket\S* 64$", x)]
@@ -807,7 +824,7 @@ def ask_item(run):
     rep, box = run.rep, run.box
     rep.head("2. An item ask: boots worn and boots carried; the worn ones changed, by their slot")
     before = len(box.world.modified)
-    a = run.line("Steve", "action_oriented", "put depth strider three on my boots")
+    a = run.line("Steve", "to_ai", "hey AI put depth strider three on my boots")
     r = run.reply(a)
     mods = box.world.modified[before:]
     rep.check(len(mods) == 1 and mods[0][1] == "armor.feet" and "depth_strider" in mods[0][2]
@@ -816,6 +833,7 @@ def ask_item(run):
               "modified %r; sent %r" % (mods, run.sent(a)))
     rep.check(r and r["fields"] == "say -", "one reply, with no task: %r" % (r and r["text"]),
               "%r; %s" % (r, short(box.log()[-1200:])))
+    handed_up_first(run, a)
     replies = one_reply(run, a)
     rep.check(len(replies) == 1 + run.ack_lines(a) and not run.tasked(a),
               "its chat lines: the agent's acknowledgement when it said one, then the loop's reply (%d); no AI task "
@@ -830,8 +848,8 @@ def ask_item(run):
 
 def ask_talk(run):
     rep, box = run.rep, run.box
-    rep.head("3. A conversational line: the conversation agent replies, no router and no loop, nothing is done")
-    a = run.line("Alex", "conversational", "haha you're the best AI, that was hilarious")
+    rep.head("3. Talk said to the AI: the conversation agent replies, no router and no loop, nothing is done")
+    a = run.line("Alex", "to_ai", "haha you're the best AI, that was hilarious")
     r = run.reply(a, timeout=30)
     rep.check(r and r["fields"] == "say -", "the agent's reply is said: %r" % (r and r["text"]),
               short(box.log()[-1200:]))
@@ -849,9 +867,9 @@ def ask_talk(run):
 
 def ask_handed_off(run):
     rep, box = run.rep, run.box
-    rep.head("4. An ask Jev classed conversational: the agent hands it off, the router starts a loop, which acts "
-             "and replies or ends silent")
-    a = run.line("Alex", "conversational", "lol can you make it night already")
+    rep.head("4. A casual ask said to the AI: the agent hands it off, the router starts a loop, which acts and "
+             "replies or ends silent")
+    a = run.line("Alex", "to_ai", "lol AI can you make it night already")
     r = run.reply(a)
     front = run.front("#%d" % a["seq"]) or {}
     rep.check(front.get("agent") == "handoff" and front.get("to") == "new_loop",
@@ -880,11 +898,11 @@ def ask_two_at_once(run):
     rep, box = run.rep, run.box
     rep.head("5. Two lines in the same second: both answered, neither waits on the other")
     mark = len(box.world.sent)
-    (s1, at), (s2, _) = box.lines(("Steve", "action_oriented", "give me a golden apple"),
-                                  ("Alex", "action_oriented", "can I get sixteen emeralds"))
-    a1 = {"seq": s1, "at": at, "who": "Steve", "text": "give me a golden apple", "cls": "action_oriented",
+    (s1, at), (s2, _) = box.lines(("Steve", "to_ai", "AI give me a golden apple"),
+                                  ("Alex", "to_ai", "AI can I get sixteen emeralds"))
+    a1 = {"seq": s1, "at": at, "who": "Steve", "text": "AI give me a golden apple", "cls": "to_ai",
           "mark": mark, "reply": None}
-    a2 = {"seq": s2, "at": at, "who": "Alex", "text": "can I get sixteen emeralds", "cls": "action_oriented",
+    a2 = {"seq": s2, "at": at, "who": "Alex", "text": "AI can I get sixteen emeralds", "cls": "to_ai",
           "mark": mark, "reply": None}
     run.asks += [a1, a2]
     rep.note("#%d and #%d fed in one write" % (s1, s2))
@@ -938,7 +956,7 @@ def quiet(run):
     rep.check(len(box.usage()) == calls, "no model call for either: there is no batch call",
               "%r" % box.usage()[calls:])
     rep.check(not marked("GAME"), "the game event waits, unread, for the next call", "%r" % box.rows(before))
-    a = run.line("Alex", "conversational", "nice, thanks!")
+    a = run.line("Alex", "to_ai", "nice, thanks AI!")
     run.reply(a, timeout=30)
     rep.check(wait_for(lambda: marked("GAME"), 10, 0.2), "the next call (the conversation agent's) read the game event",
               "%r" % box.rows(before))

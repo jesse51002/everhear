@@ -150,12 +150,16 @@ def applies_to(entry, name):
 
 def store_path():
     """VFG_INCANTATIONS, else incantations.json beside VFG_RUN_DIR (the box's root, as
-    instances.here() finds it), else /opt/vfg/incantations.json."""
+    instances.here() finds it), else /opt/vfg/incantations.json; under vfg test (VFG_TEST=1) never
+    that one, the live server's: StoreError."""
     if os.environ.get("VFG_INCANTATIONS"):
         return os.environ["VFG_INCANTATIONS"]
     run = os.environ.get("VFG_RUN_DIR")
     if run:
         return os.path.join(os.path.dirname(run.rstrip("/")), "incantations.json")
+    if os.environ.get("VFG_TEST") == "1":
+        raise StoreError("VFG_INCANTATIONS is not set under vfg test: a test never falls back to the live "
+                         "server's /opt/vfg/incantations.json")
     return "/opt/vfg/incantations.json"
 
 
@@ -293,10 +297,10 @@ class Store(object):
                 return e
         return None
 
-    def put(self, entry):
-        """Store an entry, replacing the one with the same player and phrase: (the entry as
-        stored, replaced?). The phrase is normalised and the id filled; ValueError for a bad
-        player (one name or @a: split_players first) or phrase."""
+    @staticmethod
+    def _prepared(entry):
+        """An entry normalised as it is stored: the player checked, the phrase normalised, the id
+        filled, defaults set. ValueError for a bad player (one name or @a) or phrase. No lock."""
         e = dict(entry)
         player = str(e.get("player") or "").strip()
         if player.lower() == EVERYONE:
@@ -311,13 +315,33 @@ class Store(object):
             e["everyday_aliases"] = everyday(e["aliases"], e["everyday_aliases"])
         e.setdefault("cooldown_s", DEFAULT_COOLDOWN_S)
         e.setdefault("created", now_iso())
+        return e
+
+    def put(self, entry):
+        """Store an entry, replacing the one with the same player and phrase: (the entry as
+        stored, replaced?). The phrase is normalised and the id filled; ValueError for a bad
+        player (one name or @a: split_players first) or phrase."""
+        e = self._prepared(entry)
         with _Change(self) as ch:
-            i, old = _find(ch.items, player, e["phrase"])
+            i, old = _find(ch.items, e["player"], e["phrase"])
             if old is None:
                 ch.items.append(e)
             else:
                 ch.items[i] = e
         return dict(e), old is not None
+
+    def replace_all(self, entries):
+        """Replace the whole store with `entries` (each normalised as put does), under the lock:
+        the entries as stored. A store that cannot be read (corrupt, or none) is written fresh —
+        it is meant for resetting the test server's store to exactly a task's incantations."""
+        prepared = [self._prepared(e) for e in entries]
+        try:
+            with _Change(self) as ch:
+                ch.items[:] = prepared
+        except StoreError:
+            with _Change(self, fresh=True) as ch:
+                ch.items[:] = prepared
+        return [dict(e) for e in prepared]
 
     def update(self, player, phrase, merge_values=False, drop_asked=(), **changes):
         """Change fields of one entry (values, asked, cooldown_s, aliases ...): the entry as
@@ -353,20 +377,24 @@ class _Change(object):
     (.items) to change, and written back with version + 1, unless .write was set False or the
     change raised."""
 
-    def __init__(self, store):
+    def __init__(self, store, fresh=False):
         self.store = store
         self.write = True
+        self.fresh = fresh   # start from an empty store, not the file (replace_all over a corrupt one)
 
     def __enter__(self):
         os.makedirs(os.path.dirname(os.path.abspath(self.store.path)), exist_ok=True)
-        self.fd = os.open(self.store.lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+        self.fd = os.open(self.store.lock_path, os.O_RDWR | os.O_CREAT, 0o664)
         fcntl.flock(self.fd, fcntl.LOCK_EX)
-        try:
-            self.data = self.store._read_strict()
-        except StoreError:
-            fcntl.flock(self.fd, fcntl.LOCK_UN)
-            os.close(self.fd)
-            raise
+        if self.fresh:
+            self.data = {"version": 0, "incantations": []}
+        else:
+            try:
+                self.data = self.store._read_strict()
+            except StoreError:
+                fcntl.flock(self.fd, fcntl.LOCK_UN)
+                os.close(self.fd)
+                raise
         self.items = self.data["incantations"]
         return self
 

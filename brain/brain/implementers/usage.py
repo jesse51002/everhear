@@ -6,6 +6,11 @@ is set to the same one). When the provider says what each request was billed (Op
 table's. The table's price is kept beside it (list_cost) either way, so an eval compares at list
 price.
 
+Reasoning tokens are a part of a request's output, priced once, as output; each row says how many
+of its output tokens they were (`reasoning`, for the log: `vfg usage add` has no column for it), and
+how many of its requests broke off mid-stream (`broken`: each counted from the provider's record of
+it, else as far as it was read, a floor).
+
 No harness's running totals are read. Claude Code's modelUsage is its session's running total, and
 a session resumed after the brain restarted logged its whole history again as one run's; a run
 here is the requests it made, and nothing else."""
@@ -37,15 +42,18 @@ class RunUsage:
     def add(self, r: Request) -> float:
         """Counts one request; returns its cost."""
         c = cost(r)
-        m = self._models.setdefault(r.model, {"in": 0, "out": 0, "cacheRead": 0, "cacheWrite": 0, "cost": 0.0,
-                                              "largest": 0, "requests": 0, "billed": 0.0, "billed_all": True})
+        m = self._models.setdefault(r.model, {"in": 0, "out": 0, "reasoning": 0, "cacheRead": 0, "cacheWrite": 0,
+                                              "cost": 0.0, "largest": 0, "requests": 0, "broken": 0, "billed": 0.0,
+                                              "billed_all": True})
         m["in"] += r.size
         m["out"] += r.output
+        m["reasoning"] += r.reasoning
         m["cacheRead"] += r.cache_read
         m["cacheWrite"] += r.cache_write
         m["cost"] += c
         m["largest"] = max(m["largest"], r.size)
         m["requests"] += 1
+        m["broken"] += 1 if r.broken else 0
         if r.billed is None:
             m["billed_all"] = False
         else:
@@ -54,14 +62,15 @@ class RunUsage:
 
     def rows(self) -> list[dict]:
         """The run's rows: "in" counts every input token, cacheRead and cacheWrite the parts of it read
-        from and written to the cache; largest is its largest request, in tokens."""
+        from and written to the cache; "reasoning" the part of "out" that was thinking; largest is its
+        largest request, in tokens; "broken" how many of its requests broke off mid-stream."""
         out = []
         for model, m in self._models.items():
             if not (m["in"] or m["out"]):
                 continue
             billed = m["billed_all"] and m["requests"] > 0
             out.append({"component": "implementer", "model": model, "ref": self.ref,
-                        **{k: m[k] for k in ("in", "out", "cacheRead", "cacheWrite", "largest")},
+                        **{k: m[k] for k in ("in", "out", "reasoning", "cacheRead", "cacheWrite", "largest", "broken")},
                         "cost": m["billed"] if billed else m["cost"], "list_cost": m["cost"],
                         "priced_by": "the provider" if billed else "our table"})
         return out

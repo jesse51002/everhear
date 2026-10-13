@@ -7,10 +7,12 @@ from conftest import NOW, rows
 
 
 def test_feed_lines_become_rows_and_unknown_types_stay_text():
-    line = parse("LINE#812 18:22:31 Steve voice action_oriented 0.93 -8dB | build me a castle", now=NOW)
+    line = parse("LINE#812 18:22:31 Steve voice to_ai 0.93 -8dB | build me a castle", now=NOW)
     assert (line.seq, line.at, line.who, line.source, line.cls, line.text) == \
-        (812, "2026-10-10T18:22:31.000Z", "Steve", "voice", "action_oriented", "build me a castle")
-    assert line.show() == "18:22:31 Steve (action_oriented): build me a castle"
+        (812, "2026-10-10T18:22:31.000Z", "Steve", "voice", "to_ai", "build me a castle")
+    assert line.show() == "18:22:31 Steve (to_ai): build me a castle"
+    for old in ("action_oriented", "conversational"):  # Jev's two classes for the AI before to_ai, in an old feed
+        assert parse(f"LINE#811 18:22:30 Steve voice {old} 0.9 - | hi AI", now=NOW).cls == "to_ai"
     typed = parse("LINE#813 18:22:33 Alex chat context 0.71 - was=not_relevant | that cave | by spawn", now=NOW)
     assert typed.text == "that cave | by spawn"
     assert typed.show() == "18:22:33 Alex (typed, context): that cave | by spawn"
@@ -37,7 +39,7 @@ def test_a_read_takes_what_is_unread_once_and_the_ai_rows_are_read_already():
     ctx = rows("LINE#1 18:20:00 Steve voice context 0.9 - | I'm at the cave",
                "AI#2 18:20:01 say - | nice",
                "GAME#3 18:20:02 join Alex | Alex joined the game",
-               "LINE#4 18:20:03 Alex voice action_oriented 0.9 - | give me a sword")
+               "LINE#4 18:20:03 Alex voice to_ai 0.9 - | give me a sword")
     assert not ctx.add(parse("GAME#3 18:20:02 join Alex | again", now=NOW))  # a replayed seq is not added twice
     assert [r.seq for r in ctx.take_unprocessed()] == [1, 3, 4]
     assert ctx.take_unprocessed() == [] and ctx.unprocessed() == []
@@ -76,11 +78,11 @@ def test_a_context_line_is_kept_but_never_shown_to_a_model():
     ctx = rows("LINE#1 18:20:00 Alex voice context 0.8 - | I'm by the lava pool",
                "GAME#2 18:20:01 death Alex | Alex tried to swim in lava",
                "LINE#3 18:21:00 Alex voice context 0.8 - | anyway",
-               "LINE#4 18:22:00 Steve voice conversational 0.9 - | rip Alex")
+               "LINE#4 18:22:00 Steve voice to_ai 0.9 - | rip Alex")
     assert [r.seq for r in ctx.rows] == [1, 2, 3, 4] and [r.shown for r in ctx.rows] == [False, True, False, True]
     conversation = "".join(text for text, _ in ctx.cached("OPENING", 5))
     assert "lava pool" not in conversation and "anyway" not in conversation
     assert [[r.seq for r in b] for b in ctx.blocks()] == [[2], [4]]  # 18:21's block was the context line alone
     assert [r.seq for r in ctx.take_quiet()] == [1, 3] and ctx.take_quiet() == []  # marked processed
-    assert show(ctx.rows) == "18:20:01 game, death: Alex tried to swim in lava\n18:22:00 Steve (conversational): rip Alex"
+    assert show(ctx.rows) == "18:20:01 game, death: Alex tried to swim in lava\n18:22:00 Steve (to_ai): rip Alex"
     assert [r.seq for r in ctx.take_unprocessed()] == [2, 4]

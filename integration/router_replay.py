@@ -122,7 +122,7 @@ REPO = HERE.parent
 REPLAY = HERE / "replay"
 sys.path[:0] = [str(REPO / "brain"), str(REPO / "lib" / "py"), str(REPO / "bridge"), str(REPLAY)]
 
-from brain.context import Context, Row, parse  # noqa: E402
+from brain.context import LIVE, Context, Row, parse  # noqa: E402
 from brain.world import Seen  # noqa: E402
 
 HOME = Path.home()
@@ -521,7 +521,7 @@ class NightSet:
             if not f["line"].startswith("LINE#"):
                 continue
             row = parse(f["line"], seq=f["seq"], at=f["at"])
-            if row is None or row.cls not in ("action_oriented", "conversational"):
+            if row is None or row.cls not in LIVE:  # a line said to the AI (an old class is read as to_ai)
                 continue
             src = fed.get((f["at"], row.who)) or {}
             self.lines[f["seq"]] = {"seq": f["seq"], "who": row.who, "words": row.text, "said": f["at"],

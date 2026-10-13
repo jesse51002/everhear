@@ -16,16 +16,19 @@ recorded moment:
 
     export REALMC_ROOT=…/.worktrees/script-library/integration/realmc/.server
     cd brain && uv run python ../integration/impl_replay.py --name ih-d3 --only T207,T212 [--asks 2] [--judge]
-        [--harness opencode] [--budget 0.5] [--stop-at 0.6] [--out DIR]
+        [--harness opencode] [--budget 0.5] [--stop-at 0.6] [--keep-up] [--out DIR]
 
-Each live server is paired with a test server (--test, by default NAME-test, a realmc server of its
-own with Carpet), where `vfg test` runs the implementers' tests: VFG_TEST_BOX names its config
-($REALMC_ROOT/<test>/home/.vfg/config), and it is made fresh with the live one for every task. At the
-start, one library test (--preflight railgun) checks vfg test reaches it. Every vfg test an
-implementer runs is logged (testcall) with what came back (testresult, its exit when it can be read:
-3 no test server, 4 the box did not answer, 5 Minecraft did not answer).
+Each live server has its test server beside it, laid out as the box's (`up NAME --test-server`:
+NAME/mc-test and NAME/vfg-test, the live folders + "-test", the unit minecraft-test, a fresh world at
+every start, each test in its sandbox), where `vfg test` runs the implementers' tests with
+VFG_TEST_BOX unset, exactly the box's path; it is made fresh with the live one for every task (--test
+none: no test server, VFG_TEST_BOX=none, so vfg test exits 3 and the implementers check with one
+action run). At the start, one library test (--preflight railgun) checks vfg test reaches it. Every
+vfg test an implementer runs is logged (testcall) with what came back (testresult, its exit when it
+can be read: 3 no test server, 4 the box did not answer, 5 the test server down or busy).
 
-Each task starts on a clean server (clean()): the server stopped with every copy it ran, made/<server>/
+At the end, also on a failure or Ctrl-C, the server and its test server are stopped (down()) unless
+--keep-up. Each task starts on a clean server (clean()): the server stopped with every copy it ran, made/<server>/
 moved out of the repository into ~/.vfg/impl-replay/made-aside/, the stand-in's vfg.db, feed,
 incantations, copies and deployed scripts set aside in its set-aside-<time>/, never deleted, and
 `up --fresh` (a fresh world and a fresh vfg.db); --no-fresh only sets made/<server>/ and the
@@ -66,14 +69,19 @@ from impl_wild import Tee, use_realmc  # noqa: E402
 
 
 
-def clean(name: str, made_too: bool = True) -> list[str]:
+def clean(name: str, made_too: bool = True, test_server: bool = False) -> list[str]:
     """The server as a fresh task finds it, nothing of an earlier task left: the server stopped
-    (and every copy it ran), then set aside, never deleted: made/<name>/ into
+    (and every copy it ran, and its test server), then set aside, never deleted: made/<name>/ into
     ROOT/made-aside/<name>-<time>/ (out of the repository, where an implementer would read an
     earlier run's work), and the stand-in's vfg.db with its -wal and -shm, feed.log,
     incantations.json, run/ (the copies' logs and values) and made/ (the scripts deployed to it), and
     its home's running.json and places.json, into its set-aside-<time>/; then `up --fresh`: a fresh
-    world from the template (no saved place, nothing built) and a fresh vfg.db (no history)."""
+    world from the template (no saved place, nothing built) and a fresh vfg.db (no history).
+    With `test_server`, its test server too, laid out beside it as the box's (`up --test-server`:
+    <name>/mc-test and <name>/vfg-test, the live folders + "-test"), where the implementers' vfg
+    test plays with VFG_TEST_BOX unset: what an earlier task left in vfg-test (incantations.json,
+    run/, made/, tests/, state/) set aside as test-* beside the rest, laid out again, and the test
+    server restarted: a fresh world from its own template."""
     stamp = time.strftime("%Y%m%d-%H%M%S")
     srv = realmc.Server(name)
     up = os.path.join(HERE, "realmc", "up")
@@ -88,20 +96,39 @@ def clean(name: str, made_too: bool = True) -> list[str]:
     aside = os.path.join(srv.vfg, "set-aside-%s" % stamp)
     while os.path.lexists(aside):
         aside += "-2"
-    for base, names in ((srv.vfg, ("vfg.db", "vfg.db-wal", "vfg.db-shm", "feed.log", "incantations.json", "run",
-                                   "made", "tests")),
-                        (srv.vhome, ("running.json", "places.json"))):
+    groups = [(srv.vfg, ("vfg.db", "vfg.db-wal", "vfg.db-shm", "feed.log", "incantations.json", "run", "made",
+                         "tests"), ""),
+              (srv.vhome, ("running.json", "places.json"), "home-")]
+    if test_server:
+        groups.append((srv.vfg_test, ("incantations.json", "run", "made", "tests", "state"), "test-"))
+    for base, names, prefix in groups:
         for n in names:
             if os.path.lexists(os.path.join(base, n)):
                 os.makedirs(aside, exist_ok=True)
-                shutil.move(os.path.join(base, n), os.path.join(aside, ("home-" if base == srv.vhome else "") + n))
+                shutil.move(os.path.join(base, n), os.path.join(aside, prefix + n))
     if os.path.isdir(aside):
         moved.append(aside)
     os.makedirs(os.path.join(srv.vfg, "run"), exist_ok=True)
-    r = subprocess.run([up, name, "--fresh"], capture_output=True, text=True, timeout=300)
+    r = subprocess.run([up, name, "--fresh"] + (["--test-server"] if test_server else []), capture_output=True,
+                       text=True, timeout=600)
     if r.returncode != 0:
-        raise RuntimeError("realmc up %s --fresh failed: %s" % (name, (r.stderr or r.stdout)[-400:]))
+        raise RuntimeError("realmc up %s --fresh%s failed: %s" % (name, " --test-server" if test_server else "",
+                                                                 (r.stderr or r.stdout)[-400:]))
     return moved
+
+
+def down(name: str) -> str:
+    """`realmc/down NAME` at a run's end: the server, its copies and its test server stopped (each
+    takes 2-3 GB), and the test server again if the last test's restart (vfg test's --no-block one)
+    brought it back up after down had stopped it. What was done, in a line."""
+    r = subprocess.run([os.path.join(HERE, "realmc", "down"), name], capture_output=True, text=True, timeout=300)
+    time.sleep(5)
+    again = bool(realmc.TestUnit(realmc.Server(name)).sup_pid())
+    if again:
+        subprocess.run([sys.executable, os.path.join(HERE, "realmc", "realmc.py"), "testserver", name, "--stop"],
+                       capture_output=True, text=True, timeout=300)
+    return "realmc down %s: exit %d%s" % (name, r.returncode, "; its test server, up again after it (the last "
+                                          "test's restart), stopped too" if again else "")
 
 
 def set_aside(name: str) -> list[str]:
@@ -129,16 +156,21 @@ TEST_CALL = re.compile(r"(?<![\w-])vfg test\b")
 
 def test_code(error: bool, text: str) -> str:
     """vfg test's exit, from what the harness gave back: its exit code when the shell said it, else
-    by its words (3: no test server; 4: the box did not answer; 5: Minecraft did not answer), else
-    ok or failed."""
+    by vfg's own last words (3: no test server, or not this one; 4: the box did not answer; 5: the
+    test server down, busy or its sandbox unusable), else ok or failed. A run that got as far as its
+    report (a RESULT line) ran; every run's SERVER line names an RCON port, so "RCON" alone says
+    nothing."""
     m = re.search(r"Exit code (\d+)", text)
     if m:
         return m.group(1)
-    if re.search(r"no test server|not configured", text):
+    if re.search(r"^RESULT: ", text, re.M):
+        return "error" if error else "0?"
+    if re.search(r"no test server|not configured|a test never runs there|cannot run a test as another user", text):
         return "3?"
     if re.search(r"cannot reach|did not answer in time|host key", text):
         return "4?"
-    if re.search(r"RCON|not answering|Connection refused", text):
+    if re.search(r"the test server (was |is )?(down|busy)|still did not answer RCON|restart minecraft-test failed|"
+                 r"sandbox failed its check|is not usable here|has no systemd-run", text):
         return "5?"
     return "error" if error else "0?"
 
@@ -314,13 +346,16 @@ async def main(argv=None) -> int:
                     help="dollars, the requests' and the judge's: no task starts once they cost this")
     ap.add_argument("--stop-at", type=float, default=None,
                     help="dollars: the implementers are stopped mid-run once the spend passes this")
-    ap.add_argument("--test", default=None, help="the paired test server, a realmc server of its own "
-                                                 "(default: NAME-test); none: no test server")
+    ap.add_argument("--test", default="box", choices=("box", "none"),
+                    help="box (the default): the test server beside NAME, as the box's (up NAME --test-server), "
+                         "VFG_TEST_BOX unset; none: no test server (VFG_TEST_BOX=none)")
     ap.add_argument("--preflight", default="railgun", help="a library test vfg test runs once at the start, to "
                                                            "check the test server answers; '' for none")
+    ap.add_argument("--keep-up", action="store_true", help="leave the server and its test server running at the "
+                                                           "end (by default they are stopped, also on a failure)")
     ap.add_argument("--out", default=None)
     a = ap.parse_args(argv)
-    test = None if a.test == "none" else (a.test or "%s-test" % a.name)
+    test = a.test == "box"
     out = os.path.abspath(a.out or os.path.join(ROOT, "replay-%s" % a.name))
     label = os.path.basename(out)
     os.makedirs(out, exist_ok=True)
@@ -328,10 +363,15 @@ async def main(argv=None) -> int:
     use_realmc(a.name)
     load_key()
     os.environ.update(VFG_IMPL_PROVIDER="openrouter", VFG_USAGE_QUEUE=out, VFG_IMPL_HARNESS=a.harness)
-    if test:  # vfg test's server: the paired realmc server, by its own config (TestBox reads its box keys)
-        os.environ["VFG_TEST_BOX"] = os.path.join(realmc.ROOT, test, "home", ".vfg", "config")
-    else:
+    if test:  # vfg test's server: the box's own beside NAME, VFG_TEST_BOX unset as on the box
         os.environ.pop("VFG_TEST_BOX", None)
+        if a.no_fresh:  # no clean() lays it out: once, here (nothing if it is there and up)
+            r = subprocess.run([os.path.join(HERE, "realmc", "up"), a.name, "--test-server"], capture_output=True,
+                               text=True, timeout=600)
+            if r.returncode != 0:
+                raise SystemExit("realmc up %s --test-server failed: %s" % (a.name, (r.stderr or r.stdout)[-400:]))
+    else:     # unset is the box's own test server now: none is said
+        os.environ["VFG_TEST_BOX"] = "none"
     keeper = PlayerKeeper(a.name)
     tee = Tee(os.path.join(out, "brain.log"))
     sys.stdout = tee
@@ -366,8 +406,8 @@ async def main(argv=None) -> int:
                 await imps.close(5)
     watch = asyncio.get_running_loop().create_task(ceiling())
     log("replay", "turn cap %d (warning at %d), time limit %d s; budget %s, stop at %s; test server %s (VFG_TEST_BOX %s)" % (
-        cfg.max_turns, max(1, cfg.max_turns - 5), cfg.time_limit_s, a.budget, a.stop_at, test or "none",
-        os.environ.get("VFG_TEST_BOX") or "unset"))
+        cfg.max_turns, max(1, cfg.max_turns - 5), cfg.time_limit_s, a.budget, a.stop_at,
+        realmc.Server(a.name).mc_test if test else "none", os.environ.get("VFG_TEST_BOX") or "unset: the box's own"))
     if moved:
         log("replay", "set aside: %s" % ", ".join(moved))
     t0 = time.time()
@@ -382,8 +422,7 @@ async def main(argv=None) -> int:
                 continue
             if not a.no_fresh:
                 keeper.pause.set()
-                jobs = [asyncio.to_thread(clean, a.name)] + ([asyncio.to_thread(clean, test, False)] if test else [])
-                moved = [m for got in await asyncio.gather(*jobs) for m in got]
+                moved = await asyncio.to_thread(clean, a.name, True, test)
                 log("replay", "%s: a fresh server%s; set aside: %s" % (
                     t["id"], " and a fresh test server" if test else "", ", ".join(moved) or "nothing"))
                 subprocess.run(["vfg", "action", "list", "--json"], capture_output=True, timeout=120)
@@ -420,6 +459,8 @@ async def main(argv=None) -> int:
         keeper.stop()
         sys.stdout = sys.__stdout__
         tee.flush()
+        if not a.keep_up:
+            print(down(a.name), flush=True)
     doc = write(out, a, cfg, tasks, replay, tee, t0, keeper)
     if a.judge:
         judge_summary(label, judged, doc)

@@ -105,11 +105,13 @@ flowchart TB
 - The **client mod** turns speech into text on the player's own PC (no audio leaves it) and posts
   each line to the **bridge** on the server's EC2 box. The bridge also tails the Minecraft console
   for joins, deaths and the like.
-- The **Jev filter** asks Jev (TypeSafe) what should become of each line: it is said to the AI, to
-  act on (`action_oriented`) or to answer (`conversational`), it is kept as context, or it is
-  dropped. A line to the AI goes with its speaker's earlier lines that belong to the same ask, which
-  a second Jev call gathers. It writes what it keeps to the **feed**, one line per entry, beside
-  the bridge's game events.
+- The **Jev filter** asks Jev (TypeSafe) whether each line is said to the AI or to a friend. A line
+  goes to the AI (`to_ai`) only when it names it, "AI" or "brain", and is said to it, or answers a
+  question the AI asked; Jev judges a misheard name too. Anything else is kept as context or
+  dropped, however much it sounds like an ask, and its player is told nothing. A line to the AI
+  goes with its speaker's earlier lines that belong to the same ask, which a second Jev call
+  gathers. It writes what it keeps to the **feed**, one line per entry, beside the bridge's game
+  events.
 - The **brain**, on the owner's PC, follows the feed over SSH (`vfg watch`) and runs three agents,
   each a call to an OpenRouter model (`structured()`, DeepSeek V4.1 Flash). The **conversation
   agent** answers every line to the AI at once, and hands off a line that needs something done; the
@@ -166,10 +168,13 @@ What each part takes in and puts out is in [docs/CONTRACTS.md](docs/CONTRACTS.md
 ## Requirements
 
 - An AWS account, and the AWS CLI v2 logged in to it.
-- Claude Code, logged in with a Claude subscription, for the implementers, and
-  [uv](https://docs.astral.sh/uv/) for the brain's Python. Implementers never run on an API key.
+- [uv](https://docs.astral.sh/uv/) for the brain's Python. It brings the Claude Agent SDK, with
+  the Claude Code CLI the implementers run in by default (`VFG_IMPL_HARNESS=opencode` needs
+  OpenCode 1.x installed). Implementers run DeepSeek V4.1 Flash on the OpenRouter key below, or
+  on DeepSeek's own API with `DEEPSEEK_API_KEY`; Haiku 5.5 on a Claude subscription is a
+  setting, untested.
 - A TypeSafe API key, for Jev.
-- An [OpenRouter](https://openrouter.ai) API key, for the brain's three agents.
+- An [OpenRouter](https://openrouter.ai) API key, for the brain's three agents and the implementers.
 - Minecraft Java 26.3 with Fabric, for every player (the installer sets Fabric up).
 - bash, ssh, rsync and curl on the owner's PC; `uv` runs everything there on Python 3.12, as on the box.
 - JDK 25 to build the mod (Gradle downloads one if there is none).
@@ -196,10 +201,12 @@ chmod 600 ~/.ssh/everhear.pem       # and set VFG_SSH_KEY=~/.ssh/everhear.pem
 # 2. Launch the box. It prints its IP: put it in ~/.vfg/config as VFG_SSH_HOST.
 bridge/deploy/ec2.sh launch
 
-# 3. Provision Java and Minecraft. --restore brings back the world ec2.sh retire saved.
+# 3. Provision Java and Minecraft, and the test server beside it, where implementers test what
+#    they build (deploy.sh testserver makes it again). --restore brings back the world ec2.sh
+#    retire saved.
 bridge/deploy/deploy.sh provision          # or: bridge/deploy/deploy.sh provision --restore
 
-# 4. Deploy the bridge, then the Jev filter.
+# 4. Deploy the bridge (and keep the test server current), then the Jev filter.
 bridge/deploy/deploy.sh
 jev/deploy.sh
 
@@ -240,7 +247,7 @@ Rough guidance from list prices; check the current ones for your region and plan
 | EC2 | `m7i.xlarge` on demand, about $0.20 an hour while running, plus a 30 GB gp3 disk until the box is retired. `ec2.sh stop` stops the hourly charge; `retire` ends both |
 | Jev (TypeSafe) | per call: one per line players say or type, and one more for a line to the AI when its speaker has earlier lines to gather; see TypeSafe's pricing |
 | OpenRouter | the brain's three agents: a fraction of a cent a call with the conversation cached, each step of a loop a call (a median $0.0056 a step live on realmc, on Gemini 3.8 Flash, the brain's model before DeepSeek V4.1 Flash). The 2026-10-11 session, 80 minutes of one player, came to $0.89 replayed through the Gemini loop as of its first fix round, against $1.18 on the brain before it ([the replay](integration/replay/loop/report.md)), and to $0.27 for the loops, the conversation agent and the router on DeepSeek V4.1 Flash at low ([the replay](integration/replay/loop/report-deepseek-v4.1-flash-low-final.md)) |
-| Claude | implementers run on a Claude subscription and count against its usage limits; at API prices they would be the largest cost by far. `vfg usage add` records each part's tokens and their API-price cost in the `usage` table |
+| Implementers | DeepSeek V4.1 Flash on OpenRouter (or DeepSeek's own API) by the token, its thinking billed as output: the runner records each run's tokens and cost in the `usage` table (`vfg usage add`), as billed when OpenRouter says |
 | S3 | the installer bucket holds a few MB, deleted after 8 days |
 
 ## Safety
@@ -268,6 +275,11 @@ Rough guidance from list prices; check the current ones for your region and plan
     never changes during play; and editing a made script a copy started by another task is running.
 - **The box:** RCON answers on loopback only, SSH only from the owner's IP; the game (25565) and the
   bridge (8787) are open. The client token in the installer only lets someone post speech lines.
+- **Implementers test on the test server, never on the players:** a second Minecraft server on the
+  box (`/opt/mc-test`, its game and RCON ports on loopback only, a fresh world for every test).
+  `vfg test` runs nothing on a server without the test server's marker, or one that is the live
+  server under another path or port, and runs each test in a systemd sandbox that cannot read the
+  live server's files, where the box has one.
 
 ## Status
 

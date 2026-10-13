@@ -25,12 +25,14 @@ class VfgConfigTest {
 		VfgConfig c = VfgConfig.load(file);
 		assertTrue(Files.exists(file));
 		JsonObject o = JsonParser.parseString(Files.readString(file)).getAsJsonObject();
-		assertEquals(List.of("server_address", "bridge_url", "client_token", "mic_device", "model", "icon_corner", "muted",
-			"turn_model", "turn_threshold", "silence_seconds", "vad_threshold", "stt_threads", "log_text", "incantations",
-			"incantation_threshold", "incantation_boost", "incantation_recheck_seconds", "incantation_paths",
-			"incantation_spotter_aliases", "vosk", "vosk_confirm"),
+		assertEquals(List.of("config_version", "server_address", "bridge_url", "client_token", "mic_device", "model",
+			"icon_corner", "muted", "turn_model", "turn_threshold", "silence_seconds", "vad_threshold", "stt_threads",
+			"log_text", "incantations", "incantation_threshold", "incantation_boost", "incantation_recheck_seconds",
+			"incantation_paths", "incantation_spotter_aliases", "vosk", "vosk_confirm", "hotwords"),
 			List.copyOf(o.keySet()));
-		assertEquals("parakeet-110m-en", o.get("model").getAsString());
+		assertEquals(2, o.get("config_version").getAsInt());
+		assertEquals("parakeet-0.6b-v2-en", o.get("model").getAsString());
+		assertTrue(o.get("hotwords").getAsBoolean());
 		assertEquals("top_left", o.get("icon_corner").getAsString());
 		assertEquals(3, o.get("silence_seconds").getAsInt());
 		assertEquals("3", o.get("silence_seconds").toString());
@@ -63,7 +65,7 @@ class VfgConfigTest {
 		assertEquals(3.0, c.silenceSeconds);
 		assertEquals(0.5, c.vadThreshold);
 		assertEquals(2, c.sttThreads);
-		assertEquals("parakeet-110m-en", c.model, "an unknown model falls back to the default");
+		assertEquals("parakeet-0.6b-v2-en", c.model, "an unknown model falls back to the default");
 		assertEquals("top_left", c.iconCorner);
 		assertFalse(c.muted);
 	}
@@ -81,13 +83,80 @@ class VfgConfigTest {
 	}
 
 	@Test
-	void parakeetIsTheDefaultAndItsShortNameWorks() throws Exception {
-		assertEquals("parakeet-110m-en", new VfgConfig().model);
+	void parakeet06BIsTheDefaultAndTheShortNamesWork() throws Exception {
+		assertEquals("parakeet-0.6b-v2-en", new VfgConfig().model);
+		assertEquals(List.of("parakeet-0.6b-v2-en", "parakeet-110m-en", "moonshine-base-en", "moonshine-tiny-en"),
+			VfgConfig.MODELS);
 		Path file = dir.resolve("short.json");
-		Files.writeString(file, "{ \"model\": \"parakeet-110m\" }");
+		Files.writeString(file, "{ \"config_version\": 2, \"model\": \"parakeet-110m\" }");
 		assertEquals("parakeet-110m-en", VfgConfig.load(file).model);
+		for (String shortName : List.of("parakeet-0.6b", "parakeet-0.6b-v2")) {
+			Files.writeString(file, "{ \"config_version\": 2, \"model\": \"" + shortName + "\" }");
+			assertEquals("parakeet-0.6b-v2-en", VfgConfig.load(file).model);
+		}
 		Files.writeString(file, "{ \"server_address\": \"x\" }");
-		assertEquals("parakeet-110m-en", VfgConfig.load(file).model, "a file with no model gets the default");
+		assertEquals("parakeet-0.6b-v2-en", VfgConfig.load(file).model, "a file with no model gets the default");
+	}
+
+	@Test
+	void a110MFileFromBefore035MovesTo06BOnceAndA110MPickedAfterIsKept() throws Exception {
+		Path file = dir.resolve("vfg-client.json");
+		Files.writeString(file, """
+			{ "server_address": "play.example.com", "client_token": "abc", "model": "parakeet-110m-en",
+			  "turn_model": "smart-turn-v3.2", "silence_seconds": 3, "vosk": false }
+			""");
+		VfgConfig c = VfgConfig.load(file);
+		assertEquals("parakeet-0.6b-v2-en", c.model, "0.3.4's default moves to the new one");
+		JsonObject o = JsonParser.parseString(Files.readString(file)).getAsJsonObject();
+		assertEquals(2, o.get("config_version").getAsInt(), "written back once, with its version");
+		assertEquals("parakeet-0.6b-v2-en", o.get("model").getAsString());
+		assertEquals("abc", o.get("client_token").getAsString(), "the rest kept");
+		assertFalse(o.get("vosk").getAsBoolean());
+
+		// Read again: nothing moves and nothing is written.
+		String written = Files.readString(file);
+		FileTime before = FileTime.fromMillis(1_000_000);
+		Files.setLastModifiedTime(file, before);
+		assertEquals("parakeet-0.6b-v2-en", VfgConfig.load(file).model);
+		assertEquals(written, Files.readString(file));
+		assertEquals(before, Files.getLastModifiedTime(file));
+
+		// The player picks 110M in Voice settings: saved with version 2, it stays.
+		c.model = "parakeet-110m-en";
+		c.save(file);
+		assertEquals("parakeet-110m-en", VfgConfig.load(file).model, "a 110M picked after the move is kept");
+		assertEquals("parakeet-110m-en", VfgConfig.load(file).model);
+	}
+
+	@Test
+	void onlyAFileOlderThanVersion2Moves() throws Exception {
+		Path file = dir.resolve("vfg-client.json");
+		for (String version : List.of("2", "3")) {
+			Files.writeString(file, "{ \"config_version\": " + version + ", \"model\": \"parakeet-110m-en\" }");
+			assertEquals("parakeet-110m-en", VfgConfig.load(file).model, "version " + version);
+		}
+		for (String version : List.of("1", "\"two\"", "1.5", "null")) {
+			Files.writeString(file, "{ \"config_version\": " + version + ", \"model\": \"parakeet-110m-en\" }");
+			assertEquals("parakeet-0.6b-v2-en", VfgConfig.load(file).model, "version " + version + " is read as 1");
+		}
+		Files.writeString(file, "{ \"model\": \"moonshine-base-en\" }");
+		assertEquals("moonshine-base-en", VfgConfig.load(file).model, "Moonshine never moves");
+		assertEquals(2, JsonParser.parseString(Files.readString(file)).getAsJsonObject().get("config_version").getAsInt());
+	}
+
+	@Test
+	void hotwordsAreOnByDefaultAndOffIsKept() throws Exception {
+		assertTrue(new VfgConfig().hotwords);
+		Path file = dir.resolve("vfg-client.json");
+		Files.writeString(file, "{ \"config_version\": 2, \"hotwords\": false }");
+		VfgConfig c = VfgConfig.load(file);
+		assertFalse(c.hotwords);
+		assertFalse(c.copy().hotwords);
+		assertTrue(c.toString().contains("hotwords=false"));
+		c.save(file);
+		assertFalse(JsonParser.parseString(Files.readString(file)).getAsJsonObject().get("hotwords").getAsBoolean());
+		Files.writeString(file, "{ \"config_version\": 2, \"hotwords\": \"no\" }");
+		assertTrue(VfgConfig.load(file).hotwords, "not true or false: the default");
 	}
 
 	@Test
@@ -327,7 +396,7 @@ class VfgConfigTest {
 		assertEquals("16", o.get("incantation_paths").toString());
 		assertTrue(o.get("vosk").getAsBoolean());
 		assertTrue(c.toString().endsWith(", incantation_paths=16, incantation_spotter_aliases=10, vosk=true,"
-			+ " vosk_confirm=false]"), c.toString());
+			+ " vosk_confirm=false, hotwords=true]"), c.toString());
 		assertFalse(c.voskConfirm);
 		Files.writeString(file, "{ \"turn_model\": \"off\", \"vosk_confirm\": true }");
 		VfgConfig on = VfgConfig.load(file);

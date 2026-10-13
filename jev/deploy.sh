@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Deploy vfg-jev from the owner's PC to EC2: stream this folder as a tar over SSH
 # into /opt/vfg/jev/ (without tests/ and __pycache__/), restart the unit, and
-# print whether it is active.
+# print whether it is active. It refuses a box whose bridge predates Jev's to_ai
+# class; bridge/deploy/deploy.sh runs it after the bridge when Jev is on the box.
 #
 #   jev/deploy.sh
 #
@@ -60,6 +61,13 @@ echo "copied to /opt/vfg/jev"
 sudo systemctl restart vfg-jev || { echo "restart failed: is the vfg-jev unit installed?" >&2; exit 1; }
 sleep 2
 systemctl is-active vfg-jev'
+
+# Jev's classes (to_ai, context, not_relevant) are the CHECK the bridge's schema sets: on a box whose
+# bridge predates them every verdict would be refused. bridge/deploy/deploy.sh deploys both.
+rc=0
+"${SSH[@]}" 'grep -qsF to_ai /opt/vfg/bridge/vfg_bridge/db.py' || rc=$?
+[ "$rc" -ne 255 ] || die "cannot reach $USER_@$HOST"
+[ "$rc" -eq 0 ] || die "the box's bridge predates Jev's to_ai class: run bridge/deploy/deploy.sh, which deploys Jev with it"
 
 echo "deploy: $HERE -> $USER_@$HOST:/opt/vfg/jev"
 tar -C "$HERE" --exclude=./tests --exclude=__pycache__ --exclude='*.pyc' -czf - . \

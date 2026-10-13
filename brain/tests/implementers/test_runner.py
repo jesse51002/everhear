@@ -260,7 +260,8 @@ async def test_each_request_is_logged_as_it_comes_and_a_compaction_is_noted(cfg,
     finally:
         set_quiet(True)
     out = capsys.readouterr().out
-    assert " request castle_steve deepseek-flash in=5000 cached=100000 written=0 out=40 size=105000 cost=0.00215" in out
+    assert " request castle_steve deepseek-flash in=5000 cached=100000 written=0 out=40 size=105000 cost=0.00215 " \
+           "reasoning=0" in out
     assert " implementer castle_steve: its session was compacted (auto, 990000 tokens before)" in out
     assert ' denied castle_steve Bash {"command":"rm x"}' in out
     assert " implementer castle_steve ended ok (3 turns, 1 s)" in out
@@ -419,3 +420,53 @@ def test_the_tasks_guard_knows_whether_there_is_a_test_server(tmp_path):
     assert imps._guard("t").test_server
     cfg.test_box = ""
     assert not imps._guard("t").test_server
+    # unset, the live box's own test server: there is one
+    cfg = ImplementerConfig.load({"VFG_REPO": str(tmp_path), "VFG_HOME": str(tmp_path / "h")})
+    assert Implementers(cfg, None, harness=FakeHarness(), vfg=FakeVfg())._guard("t").test_server
+    cfg = ImplementerConfig.load({"VFG_REPO": str(tmp_path), "VFG_HOME": str(tmp_path / "h"), "VFG_TEST_BOX": "none"})
+    assert not Implementers(cfg, None, harness=FakeHarness(), vfg=FakeVfg())._guard("t").test_server
+
+
+async def test_a_run_stopped_at_its_limit_counts_the_requests_it_gives_after(cfg):
+    cfg.time_limit_s = 0.3
+    r = Run(cfg)
+    r.harness.add(session(), request(1000, 9000, 0, 50), done(), gate=asyncio.Event(), deaf=True)
+    await r.imps.start("too_slow", BRIEF)
+    while not r.harness.runs:
+        await asyncio.sleep(0.01)
+    broken = request(2000, 0, 0, 300)
+    broken.broken = True  # broke off at the stop, counted from OpenRouter's record as the run ended
+
+    async def late_requests():
+        return [broken]
+    r.harness.runs[0].late_requests = late_requests
+    await r.settle()
+    [row] = r.vfg.made("usage")
+    assert row[row.index("--in") + 1] == "12000" and row[row.index("--out") + 1] == "350"
+
+
+def test_a_run_of_20_minutes_is_warned_at_19():
+    assert runner.warn_after(1200) == 1140  # the default: a minute before its 20
+    assert runner.warn_after(600) == 540
+    assert runner.warn_after(180) == 135  # under 4 minutes: at three quarters
+
+
+async def test_a_requests_reasoning_is_logged_and_marked_when_it_is_an_estimate_and_a_broken_one_said(cfg, capsys):
+    from brain.implementers.config import set_quiet
+    thought, guessed = request(5000, 100000, 0, 900), request(100, 105000, 0, 300)
+    thought.reasoning, thought.provider, thought.billed = 850, "Together", 0.0012
+    guessed.reasoning, guessed.reasoning_estimated, guessed.broken = 280, True, True  # broke off mid-stream
+    r = Run(cfg)
+    r.harness.add(session("s1"), thought, guessed, done("Done: built."))
+    set_quiet(False)
+    try:
+        await r.imps.start("castle_steve", BRIEF)
+        await r.settle()
+    finally:
+        set_quiet(True)
+    out = capsys.readouterr().out
+    assert (" request castle_steve deepseek-flash in=5000 cached=100000 written=0 out=900 size=105000 cost=0.00318 "
+            "reasoning=850 provider=Together billed=0.00120\n") in out
+    assert " cost=0.00102 reasoning=~280 broken\n" in out
+    assert " usage implementer deepseek-flash in=210100 out=1200 reasoning=1130 " in out
+    assert " ref=castle_steve broken=1\n" in out

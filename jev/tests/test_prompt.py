@@ -1,4 +1,5 @@
 """The state, the questions and the walk: what Jev is shown, and how its answers are read."""
+import hashlib
 import json
 import os
 import unittest
@@ -7,7 +8,7 @@ from support import T0, Lines, make_db, tempdir
 
 import prompt
 from jev_clock import iso
-from prompt import (D2, DEFAULT_LOOKOUT, EXAMPLES, GATHER_CRITERIA, GATHER_HEADING, GATHER_RULES, HISTORY_HEADING,
+from prompt import (DEFAULT_LOOKOUT, EXAMPLES, GATHER_CRITERIA, GATHER_HEADING, GATHER_RULES, HISTORY_HEADING, ROUTING,
                     RULES, Lookout, Menu, build_state, estimate, gather_questions, in_short, questions, read_lookout,
                     render_line, route, state_json)
 from store import Store
@@ -165,21 +166,47 @@ class TestHistoryFromTheStore(unittest.TestCase):
 
 
 class TestQuestions(unittest.TestCase):
-    def test_ds_two_questions_about_line_1(self):
+    def test_two_questions_about_line_1_to_whom_and_whether_to_keep_it(self):
         qs = questions(row(9, T0, "Steve", "voice", "put it there, by the cave"))
-        self.assertEqual(list(qs), ["d_what", "d_feel"])
-        self.assertEqual(qs["d_what"], {
+        self.assertEqual(list(qs), ["to_the_ai", "keep"])
+        self.assertEqual(qs["to_the_ai"], {
             "type": "choice",
-            "instructions": "Line [1], Steve at 18:22:31: “put it there, by the cave”. What should happen with this line?",
-            "criteria": D2["d_what"][1]})
-        self.assertEqual(qs["d_feel"]["instructions"],
-                         "Line [1], Steve at 18:22:31: “put it there, by the cave”. If the AI only replied in chat and"
-                         " nothing changed in the game, how would the speaker feel?")
-        self.assertEqual(list(qs["d_feel"]["criteria"]),
-                         ["fine_a_reply_is_all", "let_down_wanted_something_done", "not_talking_to_the_ai"])
+            "instructions": "Line [1], Steve at 18:22:31: “put it there, by the cave”. Is the speaker talking to the"
+                            " AI in line [1]?",
+            "criteria": ROUTING["to_the_ai"][1]})
+        self.assertEqual(list(qs["to_the_ai"]["criteria"]),
+                         ["says_its_name", "says_its_name_misheard", "answers_its_question", "neither"])
+        self.assertEqual(qs["keep"]["instructions"],
+                         "Line [1], Steve at 18:22:31: “put it there, by the cave”. If line [1] is not said to the AI,"
+                         " should it be remembered?")
+        self.assertEqual(list(qs["keep"]["criteria"]), ["remember_it", "ignore_it"])
+
+    def test_the_rule_is_in_the_rules_and_the_options(self):
+        # its names, the rule (by name or answering), a misheard name, about it is not to it
+        for words in ('Its names are "AI" and "brain".', "only when it says the AI's name to it, or answers a question",
+                      "mishears the name", "however much it sounds like an ask", "Talk about the AI is not talk to it"):
+            self.assertIn(words, RULES)
+        self.assertNotIn('"bot"', RULES)
+        opts = ROUTING["to_the_ai"][1]
+        self.assertIn("whoever", DEFAULT_LOOKOUT)
+        self.assertIn("of this player or of another", opts["answers_its_question"])
+        self.assertIn("about the AI, however much it sounds like an ask", opts["neither"])
+
+    def test_the_gather_call_keeps_its_benched_rules_and_examples_word_for_word(self):
+        # main's GATHER_RULES and EXAMPLES before Prototype_Addressing_The_AI (94e517e), by sha256: an edit to the
+        # routing call's RULES or EXAMPLES must not move them
+        sha = lambda text: hashlib.sha256(text.encode("utf-8")).hexdigest()  # noqa: E731
+        self.assertEqual(sha(GATHER_RULES), "bf900702be32b0a2534340c9aebeafbe0bb41780eec4d95e1a1498ca36cf4db0")
+        self.assertEqual(sha(prompt.GATHER_EXAMPLES), "c590479c4a7ed89c2ea686901f2e4a49df4fe43be1f471a728782de2c6a131cc")
+        self.assertIn("The ask, a line that goes to the AI, is marked [ask]", GATHER_RULES)
+        self.assertNotIn(prompt.MARKER_RULE, GATHER_RULES)
+        self.assertNotEqual(prompt.GATHER_EXAMPLES, EXAMPLES)
+        state, _ = build_state("L", [("ask", row(9, T0, text="make it bigger")), (1, row(3, T0 - 9, text="the big one"))],
+                               [], 8000, rules=GATHER_RULES, heading=GATHER_HEADING, examples=prompt.GATHER_EXAMPLES)
+        self.assertEqual((state["rules"], state["examples"]), (GATHER_RULES, prompt.GATHER_EXAMPLES))
 
     def test_quote_is_the_first_200_characters_on_one_line(self):
-        q = questions(row(1, T0, text="a\n" + "a" * 300))["d_what"]["instructions"]
+        q = questions(row(1, T0, text="a\n" + "a" * 300))["to_the_ai"]["instructions"]
         self.assertIn("“a " + "a" * 198 + "…”", q)
 
     def test_gather_questions_one_per_line_oldest_first(self):
@@ -198,22 +225,32 @@ class TestQuestions(unittest.TestCase):
 
 
 class TestRoute(unittest.TestCase):
-    def test_ds_walk_to_each_class_with_d_whats_confidence(self):
-        let_down, fine = ("let_down_wanted_something_done", 0.6), ("fine_a_reply_is_all", 0.6)
+    def test_the_walk_to_each_class_with_to_the_ais_confidence(self):
+        remember, ignore = ("remember_it", 0.6), ("ignore_it", 0.6)
         for answers, cls in (
-                ({"d_what": ("the_ai_must_act", 0.91), "d_feel": let_down}, "action_oriented"),
-                ({"d_what": ("the_ai_must_act", 0.91), "d_feel": fine}, "conversational"),
-                ({"d_what": ("the_ai_must_act", 0.91), "d_feel": ("not_talking_to_the_ai", 0.6)}, "conversational"),
-                ({"d_what": ("the_ai_must_act", 0.91)}, "conversational"),                  # d_feel missing
-                ({"d_what": ("the_ai_should_answer", 0.91), "d_feel": let_down}, "conversational"),
-                ({"d_what": ("remember_it", 0.91), "d_feel": let_down}, "context"),
-                ({"d_what": ("ignore_it", 0.91)}, "not_relevant")):
+                ({"to_the_ai": ("says_its_name", 0.91), "keep": ignore}, "to_ai"),
+                ({"to_the_ai": ("says_its_name_misheard", 0.91), "keep": remember}, "to_ai"),
+                ({"to_the_ai": ("answers_its_question", 0.91)}, "to_ai"),                     # keep missing
+                ({"to_the_ai": ("neither", 0.91), "keep": remember}, "context"),
+                ({"to_the_ai": ("neither", 0.91), "keep": ignore}, "not_relevant"),
+                ({"to_the_ai": ("neither", 0.91)}, "context")):                               # keep missing: kept
             self.assertEqual(route(answers), (cls, 0.91), answers)
 
+    def test_every_option_walks_to_a_class(self):
+        for who in ROUTING["to_the_ai"][1]:
+            for keep in list(ROUTING["keep"][1]) + [None]:
+                answers = {"to_the_ai": (who, 0.5)}
+                if keep:
+                    answers["keep"] = (keep, 0.5)
+                self.assertIn(route(answers)[0], prompt.LABELS)
+
     def test_both_answers_in_short_for_the_journal(self):
-        self.assertEqual(in_short({"d_what": ("the_ai_must_act", 0.91), "d_feel": ("let_down_wanted_something_done", 0.876)}),
-                         "act 0.91, let down 0.88")
-        self.assertEqual(in_short({"d_what": ("ignore_it", 0.8)}), "ignore 0.80, d_feel -")
+        self.assertEqual(in_short({"to_the_ai": ("says_its_name", 0.98), "keep": ("ignore_it", 0.224)}),
+                         "by name 0.98, ignore 0.22")
+        self.assertEqual(in_short({"to_the_ai": ("says_its_name_misheard", 0.9), "keep": ("remember_it", 0.5)}),
+                         "name misheard 0.90, remember 0.50")
+        self.assertEqual(in_short({"to_the_ai": ("answers_its_question", 0.99)}), "answers it 0.99, keep -")
+        self.assertEqual(in_short({"to_the_ai": ("neither", 0.8)}), "neither 0.80, keep -")
 
 
 class TestLookout(unittest.TestCase):
@@ -266,8 +303,8 @@ class TestLookout(unittest.TestCase):
         self.assertEqual(menu.text(), "give — gives a player items\nweather — sets the weather")
 
     def test_the_classes(self):
-        self.assertEqual(prompt.LABELS, ("action_oriented", "conversational", "context", "not_relevant"))
-        self.assertEqual(prompt.KEPT, ("action_oriented", "conversational", "context"))
+        self.assertEqual(prompt.LABELS, ("to_ai", "context", "not_relevant"))
+        self.assertEqual(prompt.KEPT, ("to_ai", "context"))
 
 
 if __name__ == "__main__":

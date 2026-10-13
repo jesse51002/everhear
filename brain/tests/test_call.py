@@ -280,7 +280,7 @@ def test_each_event_puts_its_own_tail_after_the_conversation():
     p = call.prompt(said, ctx, seen, "TASKS: none yet", new[:2], FakeRefs())
     assert p.head[0][1] and "THE CONVERSATION SO FAR" in p.head[0][0]
     assert p.head[1] == ("18:29:50 game, death: Alex tried to swim in lava\n"
-                         "18:29:58 Steve (action_oriented): give me a diamond pickaxe\n", False)
+                         "18:29:58 Steve (to_ai): give me a diamond pickaxe\n", False)
     tail = p.tail
     assert (tail.index("THE WORLD NOW") < tail.index("TASKS: none yet") < tail.index("NEW SINCE")
             < tail.index("THE EVENT"))

@@ -52,6 +52,12 @@ TASK = os.environ.get("VFG_TASK", "").strip()
 TASK_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 
 PROPERTIES = os.environ.get("VFG_MC_PROPERTIES", "/opt/mc/server.properties")
+# Under vfg test (VFG_TEST=1) the kit talks only to the test server: one whose folder (the one
+# VFG_MC_PROPERTIES is in, which vfg test sets) holds this marker, which only the test server's
+# setup writes. Any other server, the box's live /opt/mc above all, is NotTestServer, raised, never
+# sent a command; and no path falls back to the live /opt/vfg or /opt/mc (path_setting).
+TEST_MARKER = ".vfg-test-server"
+_PROPERTIES_SET = bool(os.environ.get("VFG_MC_PROPERTIES"))
 HOST = os.environ.get("VFG_RCON_HOST", "127.0.0.1")
 TIMEOUT = 10.0
 # RCON reads a command in one 1460-byte packet: a longer one is cut, so it is refused here.
@@ -113,6 +119,55 @@ def cast() -> bool:
     return TASK == "cast"
 
 
+class NotTestServer(RuntimeError):
+    """Under vfg test, a server that is not the test server, or a path that would fall back to the
+    live server's: nothing is sent or written there."""
+
+
+def testing() -> bool:
+    """Is this a test, run by vfg test on the test server (VFG_TEST=1)?"""
+    return os.environ.get("VFG_TEST") == "1"
+
+
+def path_setting(name: str, default: str) -> str:
+    """A path setting (VFG_RUN_DIR, VFG_PROTECTED ...), else its default on the box; under vfg test
+    never the default, which is the live server's: NotTestServer."""
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    if testing():
+        raise NotTestServer("%s is not set under vfg test: a test never falls back to the live server's %s"
+                            % (name, default))
+    return default
+
+
+def run_dir() -> str:
+    """Where the copies' files are: VFG_RUN_DIR, else /opt/vfg/run on the box."""
+    return path_setting("VFG_RUN_DIR", "/opt/vfg/run")
+
+
+_test_checked = []
+
+
+def _check_test_server() -> None:
+    """Under vfg test: NotTestServer unless PROPERTIES (from VFG_MC_PROPERTIES) is in the test
+    server's folder, the one with TEST_MARKER. Keyed by the resolved folder, not cached once for
+    all: a script that reassigns PROPERTIES to another server is checked again, so it cannot reach
+    the live one on the strength of an earlier test server's pass."""
+    if not testing():
+        return
+    if not _PROPERTIES_SET:
+        raise NotTestServer("VFG_MC_PROPERTIES is not set under vfg test: a test never falls back to the live "
+                            "server's /opt/mc")
+    folder = os.path.dirname(os.path.abspath(PROPERTIES))
+    if folder in _test_checked:
+        return
+    if not os.path.isfile(os.path.join(folder, TEST_MARKER)):
+        raise NotTestServer("%s is not the test server (it has no %s): under vfg test the kit sends it nothing"
+                            % (folder, TEST_MARKER))
+    _test_checked.append(folder)
+
+
 def refused_word(cmd: str) -> Optional[str]:
     """The refused word in a command (its first word, or the word after any `run`), or None."""
     words = cmd.strip().split()
@@ -131,6 +186,7 @@ def refused_word(cmd: str) -> Optional[str]:
 
 def _read_settings() -> Tuple[str, int]:
     global _settings
+    _check_test_server()
     if _settings is None:
         password, port = None, 25575
         with open(PROPERTIES, encoding="utf-8", errors="replace") as f:
@@ -354,7 +410,8 @@ def rcon(cmd: str) -> str:
 
     One connection is kept open. Responses are read as one packet, so a reply over
     about 4 KB is cut: ask narrow questions. A command over MAX_COMMAND bytes is refused.
-    Once the script is stopping, only its cleanup may send.
+    Once the script is stopping, only its cleanup may send. Under vfg test, a server that is not
+    the test server raises NotTestServer.
     """
     global _conn
     cmd = (cmd or "").strip()
@@ -362,6 +419,7 @@ def rcon(cmd: str) -> str:
         cmd = cmd[1:]
     if not cmd:
         return ""
+    _check_test_server()
     if not _tagged and _TAG_IN.search(cmd):
         _tagged.append(True)
     bad = refused_word(cmd)
@@ -553,7 +611,10 @@ def _on_failure(kind, value, tb) -> None:
 
 def _write_error(text) -> None:
     """A failure's last line, into run/<copy>.error: what vfg action run answers it failed with."""
-    path = os.path.join(os.environ.get("VFG_RUN_DIR") or "/opt/vfg/run", INSTANCE + ".error")
+    try:
+        path = os.path.join(run_dir(), INSTANCE + ".error")
+    except NotTestServer:
+        return
     tmp = "%s.tmp.%d" % (path, os.getpid())
     try:
         with open(tmp, "w", encoding="utf-8") as f:

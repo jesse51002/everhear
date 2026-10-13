@@ -22,7 +22,7 @@ repo reads, with its default. Nothing is deployed to EC2 for vfg itself: the pro
 ## One example per command
 
 ```sh
-vfg up                                         # units started if down; RCON answering
+vfg up                                         # units started if down, minecraft-test too where installed; RCON answering
 vfg watch                                      # the feed from the cursor, then follow; one at a time, the newest wins
 vfg watch --tail 20                            # for a person at a terminal
 vfg watch --after 812                          # for the brain: from seq 813 on; no cursor, no lock, no valve
@@ -70,7 +70,7 @@ vfg state                                      # who is online and where, time, 
 vfg state --json --items                       # and each player's items, health, food, armor, level, mode, effects
 vfg route --task castle_steve < brief.txt      # the examples, presets and actions for that brief, picked by Jev; JSON
 vfg prefix                                     # the implementer's static system prompt, the same bytes each time
-vfg test hot_fireball_steve                    # its test on the test server (VFG_TEST_BOX): a line per check; -n N, --timeout S
+vfg test hot_fireball_steve                    # its test on the test server, /opt/mc-test (VFG_TEST_BOX): a line per check; -n N, --timeout S
 vfg action refs --version                      # the server's version, from server.jar: 26.3
 vfg action refs                                # {"version", "commands"}: the data generator's command tree
 vfg place save castle --player Steve --by castle_steve   # the save_place action: saved castle at 197 68 251 in overworld
@@ -392,20 +392,61 @@ here (`run_incantation`):
   the test needs, each folder only when its stamp there is another (`scripts.py`'s `stale`, then
   `deploy`): the kit, the task's made script, and the scripts of the actions the test names and of
   the task's incantations, which it copies from the live server's store (those it bound, `by`,
-  and those on its action). Then `remote/test.py` runs the test there, one at a time, with the
-  actions it names as the actions cache holds them (for `t.run`). It prints one line per check,
+  and those on its action). Then `remote/test.py` runs the test there with the actions it names
+  as the actions cache holds them (for `t.run`), in this order: it refuses (exit 3) a server
+  without the marker, one whose marker names another RCON port, a vfg folder with a `.env`, and
+  one that is, holds or lies inside a live server's folders or shares its RCON port; it waits its turn
+  first-come (`<vfg>/tests/tests.lock` and a `<vfg>/tests/queue/` ticket, the oldest live ticket
+  first), at most `VFG_TEST_QUEUE_S` (300), the queue cut so the whole call ends inside 590 s once
+  `--timeout`, `VFG_TEST_WARM_GRACE` (30), one `VFG_TEST_BOOT_S` and overhead are counted, always
+  keeping at least 30 s (a `--timeout` too large for even that is exit 2); it stops what an earlier
+  test left running; it makes the server answer RCON on a fresh world with at most one restart and
+  one `VFG_TEST_BOOT_S` wait: a short `VFG_TEST_WARM_GRACE` (30) wait for the last test's restart
+  if one is in flight, else `sudo -n systemctl restart minecraft-test` once when Minecraft does not
+  answer or the world has no `world/vfg-fresh` (a test used it), waited for up to `VFG_TEST_BOOT_S`
+  (still down: exit 5), and takes the token; it runs
+  the test, sandboxed (below), whose first step inside the sandbox empties `run/` and makes the
+  store (`state/incantations.json`) hold exactly the task's incantations; and it restarts
+  `minecraft-test` with `--no-block`, so the next test's world warms up. It prints a `SERVER` line
+  first (`SERVER     /opt/mc-test (RCON 25576): no wait in the queue; a fresh world; sandboxed:
+  systemd-run as vfgtest`), then one line per check,
   `PASS`, `FAIL` or `CAN'T TELL` with the numbers that decided it, each copy's last `-n` (15) log
-  lines when one failed, and `RESULT: …`; exit 0 when none failed, else 1 with why on stderr. Past
-  `--timeout` (`VFG_TEST_TIMEOUT_S`, 60) it is stopped, its cleanup run. A task with no test gets
-  the skeleton (exit 1), as `vfg script new` writes it. The helpers are the kit's
-  (`scripts/_lib/kit/test.py`; its docstring is the guide): a stage at y 296, 3000 blocks out,
-  cleared after.
-- **The test server is a second box**: `VFG_TEST_BOX` names a file of its settings, `KEY=value`
+  lines when one failed, and `RESULT: …`; exit 0 when none failed, else 1 with why on stderr, 3
+  with no test server, 4 when the box is out of reach, 5 when the test server is down or busy.
+  Past `--timeout` (`VFG_TEST_TIMEOUT_S`, 60) it is stopped, its cleanup run. A task with no test
+  gets the skeleton (exit 1), as `vfg script new` writes it. The helpers are the kit's
+  (`scripts/_lib/kit/test.py`; its docstring is the guide): a barrier floor at y 295, 3000 blocks
+  out, cleared after.
+- **The sandbox** (`VFG_TEST_SANDBOX`, `auto`): a transient systemd unit. On the box, `system`:
+  `sudo -n systemd-run --uid=<test_user>` as the marker's `test_user` (`vfgtest`), never the box's
+  own user, the live services'; a marker with no `test_user`, or one that does not exist, is
+  exit 3 (re-run `deploy.sh testserver`). On the PC, `user`: `systemd-run --user`, as this user,
+  weaker (it shares the user, so the live server's processes stay visible), which the `SERVER`
+  line says. `auto` takes system where a system manager answers, else user, else a plain process
+  (`none`, `NOT sandboxed (<why>): a plain process`); each is taken only when its probe, run in it
+  before the test, finds the live server out of reach: the live `server.properties` unread, the
+  live vfg folder unwritten, and in system mode the live services' processes unseen — else, in
+  system mode, exit 5 (no test runs outside it). In it the live Minecraft folder is inaccessible,
+  the live vfg folder an empty read-only one with the box's Python bound back in, nothing writable
+  but the test's `run/` and `state/` and a private `/tmp` (`ProtectSystem=strict`, `PrivateTmp`),
+  no new privileges (`NoNewPrivileges`), `Nice=10`, `CPUWeight=20`, `IOWeight=20` and
+  `MemoryMax=1G`, its environment a file (`tests/sandbox.env`, mode 600) with no setting whose
+  name holds `TOKEN`, `SECRET`, `PASSWORD` or `API_KEY`; and, in system mode, the live services'
+  processes hidden (`ProtectProc=invisible`) and no network but loopback (`IPAddressDeny=any`).
+  Past its time the unit is stopped with every process the test started. `system`, `user` or
+  `none` takes that one alone (exit 5 when it is not usable).
+- **The test server is the box's own** by default (`VFG_TEST_BOX` unset, empty or `box`): the
+  live `VFG_REMOTE_VFG` and `VFG_REMOTE_MC` and `-test`, `/opt/vfg-test` and `/opt/mc-test`, unit
+  `minecraft-test`, which `bridge/deploy/deploy.sh testserver` makes (`bridge/README.md`). `none`
+  is no test server (exit 3). Anything else names a file of a test box's settings, `KEY=value`
   lines as `~/.vfg/config` has them, of which `VFG_SSH`, `VFG_SSH_HOST`, `VFG_SSH_USER`,
-  `VFG_SSH_KEY`, `VFG_REMOTE_VFG` and `VFG_REMOTE_MC` are read over the live box's. On realmc it
-  is the paired server's own config: `integration/realmc/up ih-b-test`, then
-  `VFG_TEST_BOX=$REALMC_ROOT/ih-b-test/home/.vfg/config`. A second instance on the EC2 box needs
-  only `VFG_REMOTE_VFG` and `VFG_REMOTE_MC`. None set, or the live box itself: exit 3.
+  `VFG_SSH_KEY`, `VFG_REMOTE_VFG` and `VFG_REMOTE_MC` are read over the live box's (one it leaves
+  out is the live box's). Every program vfg sends there, the deploy's too, runs only where the
+  test vfg folder's `python/bin/python3` and the marker `<mc>/.vfg-test-server` are, else exits 3
+  (`TestBox.remote_cmd`). The live box itself (the same host and the same vfg or Minecraft folder):
+  exit 3. On realmc, `integration/realmc/up NAME --test-server` lays out the same test server
+  beside a server, and after `eval "$(integration/realmc/env NAME)"` `vfg test` finds it as on the
+  box (`integration/realmc/README.md`).
 
 ## Tests
 
@@ -433,7 +474,10 @@ names one, with `vfg_llm` mocked, and no OpenRouter key passes in.
 - `test_copies.py`: `vfg action run` and its copies (`--for` among them), edits, stops, `running.json`, script save.
 - `test_task.py`: `vfg task set` and `list` on the box's `tasks` table, `vfg context --json`'s
   tasks, and a box without the table.
-- `test_test.py`: `vfg test` against a second box, its skeleton, `remote/test.py`.
+- `test_test.py`: `vfg test` against a test server (a second box, and the live box's own),
+  `remote/test.py`'s refusals, fresh worlds and restarts (`tests/bin/systemctl`'s
+  `minecraft-test`), its queue and, where `systemd-run --user` works here, its sandbox; the
+  skeleton.
 - `test_route.py`: the router, `remote/jev.py` against `fake_jev_route.py`, `vfg prefix`, `vfg action show`,
   `vfg usage add`'s added columns.
 - `test_library.py`: `vfg script new` and `check`, `vfg preset save`, five real presets in one script.

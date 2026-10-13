@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """The game eval: each scenario of $VFG_IMPL_REPLAY/scenarios.json (impl_scenarios.py) played as a
-game, on a pair of realmc servers of its own (a live one and its test server), from nothing:
+game, on a realmc server of its own with its test server beside it, laid out as the box's (`up NAME
+--test-server`: NAME/mc-test and NAME/vfg-test, the live folders + "-test", the unit minecraft-test,
+a fresh world at every start, each test in its sandbox), from nothing:
 
-1. both servers made fresh (impl_replay.clean: `up --fresh`, made/<server>/, the incantations,
-   places, running copies and history set aside), then the scenario's setup;
+1. both made fresh (impl_replay.clean: `up --fresh --test-server`, made/<server>/, the incantations,
+   places, running copies and history set aside, and what the test server held), then the
+   scenario's setup;
 2. each turn:
    (a) the player's line goes to the brain stand-in, the one-call brief writer (impl_briefs_write,
        Brain_Loop's hand-off and follow-up prompts), with the conversation so far: a hand-off on the
        first turn, then follow-ups to its task;
    (b) the implementer runs it: the real Implementers on the Claude Code adapter, on DeepSeek V4.1
-       Flash through OpenRouter, VFG_TEST_BOX naming the test server;
+       Flash through OpenRouter, with the runner's own settings (VFG_IMPL_EFFORT, high by default;
+       VFG_IMPLEMENTER_MINUTES, 20), VFG_TEST_BOX unset: its vfg test plays on the test server
+       beside the live one, exactly the box's path;
    (c) the AI tells the player what came of it: the report's first sentence;
    (d) the player tries it on the live server, as a player would (try()): on a fresh stage of the
        judge's (builder B's test templates' geometry: a husk 10 blocks ahead, a stone wall 2 behind
@@ -25,9 +30,10 @@ game, on a pair of realmc servers of its own (a live one and its test server), f
    checklist on the live server.
 
     export REALMC_ROOT=…/.worktrees/script-library/integration/realmc/.server
-    cd brain && uv run python ../integration/impl_game.py --name ih-d1 --only T207 [--stop-at 0.40] [--dry]
+    cd brain && uv run python ../integration/impl_game.py --name ih-d1 --only T207 [--stop-at 0.40] [--dry] [--keep-up]
 
---dry spends nothing: the brain stand-in and the player are stubs (the brief is the player's line;
+At the end, also on a failure or Ctrl-C, the server and its test server are stopped (impl_replay.down)
+unless --keep-up. --dry spends nothing: the brain stand-in and the player are stubs (the brief is the player's line;
 the player reveals each hidden want in turn, then is done), the implementer is a stub that binds
 the phrase to a library `command` (a Speed effect), and no judge runs; everything else is real.
 Writes OUT/<id>.json and .md (the game: every line, brief, report and perception; turns to done,
@@ -56,11 +62,10 @@ sys.path.insert(0, os.path.join(HERE, "realmc"))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(REPO, "lib", "py"))
 
-import realmc  # noqa: E402
 import impl_briefs_write as writer  # noqa: E402
 import impl_judge as judge  # noqa: E402
 from impl_data import ROOT  # noqa: E402
-from impl_replay import PlayerKeeper, clean, watched  # noqa: E402
+from impl_replay import PlayerKeeper, clean, down, watched  # noqa: E402
 from impl_scenarios import SCENARIOS  # noqa: E402
 from impl_wild import Tee, use_realmc  # noqa: E402
 from incantations_e2e import Bridge  # noqa: E402
@@ -402,11 +407,10 @@ async def play(sc: dict, a, out: str, tee, log, costs: dict) -> dict:
     from brain.implementers.config import ImplementerConfig
     from brain.implementers.runner import Implementers
     from vfg_llm import structured
-    name_live, test = a.name, "%s-test" % a.name
+    name_live = a.name
     t0 = time.monotonic()
     keeper = PlayerKeeper(name_live)
-    moved = [m for got in await asyncio.gather(asyncio.to_thread(clean, name_live),
-                                                asyncio.to_thread(clean, test, False)) for m in got]
+    moved = await asyncio.to_thread(clean, name_live, True, True)
     log("game", "%s: fresh live and test servers; set aside %s" % (sc["id"], ", ".join(moved) or "nothing"))
     subprocess.run(["vfg", "action", "list", "--json"], capture_output=True, timeout=120)
     await asyncio.to_thread(keeper.ensure)
@@ -615,13 +619,16 @@ def write(out: str, sc: dict, game: dict, tee, costs: dict, verdict: dict | None
 
 async def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--name", required=True, help="the live realmc server; its test server is NAME-test")
+    ap.add_argument("--name", required=True, help="the live realmc server; its test server is laid out beside it "
+                                                  "(up NAME --test-server)")
     ap.add_argument("--only", required=True, help="scenario ids, comma-separated, played one after another")
     ap.add_argument("--stop-at", type=float, default=0.40, help="dollars, all in: the run's budget, checked before "
                                                                      "each turn and each scenario")
     ap.add_argument("--budget-file", default=None, help="a path every process of one run shares: --stop-at is then "
                                                         "the whole run's, summed over them")
     ap.add_argument("--dry", action="store_true", help="no model: stub brain, implementer and player; no judge")
+    ap.add_argument("--keep-up", action="store_true", help="leave the server and its test server running at the "
+                                                           "end (by default they are stopped, also on a failure)")
     ap.add_argument("--out", default=None)
     a = ap.parse_args(argv)
     global SHARED
@@ -631,8 +638,8 @@ async def main(argv=None) -> int:
     use_realmc(a.name)
     writer.load_key()
     os.environ.update(VFG_IMPL_TESTS=os.path.join(out, "tests.jsonl"))  # every vfg test run, whole (impl_game_tests.py)
-    os.environ.update(VFG_IMPL_PROVIDER="openrouter", VFG_USAGE_QUEUE=out, VFG_IMPL_HARNESS="claude-code",
-                      VFG_TEST_BOX=os.path.join(realmc.ROOT, "%s-test" % a.name, "home", ".vfg", "config"))
+    os.environ.update(VFG_IMPL_PROVIDER="openrouter", VFG_USAGE_QUEUE=out, VFG_IMPL_HARNESS="claude-code")
+    os.environ.pop("VFG_TEST_BOX", None)  # unset: the live box's own test server, beside NAME, as on the box
     if a.dry:  # incantation_create names aliases with a model: off, so a dry run spends nothing
         os.environ["VFG_INCANT_ALIAS_MODEL"] = "off"
     with open(SCENARIOS, encoding="utf-8") as f:
@@ -676,6 +683,8 @@ async def main(argv=None) -> int:
     finally:
         sys.stdout = sys.__stdout__
         tee.flush()
+        if not a.keep_up:   # each server and its test server hold 2-3 GB: never left running by an eval
+            print(down(a.name), flush=True)
     for d in results:
         print("%s: %s in %d turns; %d/%d items; implementers $%.4f list, $%.4f billed; models $%.4f; %d s" % (
             d["id"], "done" if d["done"] else "not done", len(d["turns"]), d["items_done"], d["items"], d["cost_list"],

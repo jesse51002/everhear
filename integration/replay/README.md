@@ -31,7 +31,10 @@ Read, never written:
 - **The playtest's database**, the box's `vfg.db` taken after it: `tar xzf
   ~/Documents/MinecraftServers/aws-backup/vfg-backup-2026-10-08-playtest.tgz -C DIR vfg/vfg.db`
   (extract that file alone: the archive holds the box's `.env` too). Its classes are the old
-  names: `direct_ask` is `action_oriented` now, `not_useful` is `not_relevant`.
+  names: `direct_ask` is `action_oriented` now, `not_useful` is `not_relevant`. Since
+  Prototype_Addressing_The_AI, `action_oriented` and `conversational` are one class, `to_ai`, and
+  `brain/context.py` reads a feed row of either as `to_ai`; the benches here keep the classes they
+  measured (`playtest.py` puts each line's own class back on its row, and `LIVE` is theirs).
 - **The tasks the conversation wrote**: `~/.vfg/orch/inbox.jsonl`, those before 2026-10-09; each
   task's context names the LINE numbers it came from (`#812`).
 - **The route labels**: `~/.vfg/dispatch/eval/selector-actions-2026-10-10.jsonl`, on the brain's

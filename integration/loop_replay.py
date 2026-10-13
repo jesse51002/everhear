@@ -12,8 +12,9 @@ Prototype_Conversation_And_Router's "the brain on DeepSeek, on the loop replay".
 
 **What it replays.** The 110 brain calls of that night (integration/replay/loop/, built by its
 build.py from the box's vfg.db, that night's brain.log and the implementers' transcripts): the 69
-lines the brain was called for and the 41 implementer reports, in the order their calls started,
-one after another, in this process.
+lines the brain was called for (that night Jev classed them action_oriented, or conversational and
+Respond handed them up; both classes are to_ai now, and brain/context.py reads them so) and the 41
+implementer reports, in the order their calls started, one after another, in this process.
 
 **How each runs now (Prototype_Conversation_And_Router).** The night had no conversation agent in
 front and no router; this replay keeps the night's lines and reports and puts them where the new
