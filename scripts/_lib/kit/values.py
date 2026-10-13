@@ -81,7 +81,7 @@ def now(x):
 # ---- the mapping ---------------------------------------------------------------------
 
 def _run_dir(run_dir=None):
-    return run_dir or os.environ.get("VFG_RUN_DIR", "/opt/vfg/run")
+    return run_dir or mc.run_dir()
 
 
 def _poll(poll=None):

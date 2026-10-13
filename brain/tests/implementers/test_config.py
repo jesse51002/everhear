@@ -3,7 +3,10 @@ the provider, its model, address and key; and the price table."""
 import os
 from datetime import datetime, timezone
 
-from brain.implementers.config import ROOT, ImplementerConfig, Price, price_at, provider_routing
+import pytest
+
+from brain.implementers.config import (ROOT, ImplementerConfig, Price, bash_timeouts_ms, price_at, provider_routing,
+                                       read_effort)
 
 
 def test_the_defaults_then_vfgs_config_file_then_the_environment(tmp_path):
@@ -13,8 +16,8 @@ def test_the_defaults_then_vfgs_config_file_then_the_environment(tmp_path):
     assert (c.home, c.brain_dir) == (str(home), str(home / "brain"))
     assert [c.harness, c.provider, c.model, c.base_url, c.key, c.effort, c.max_turns, c.time_limit_s, c.server,
             c.route_timeout_s, c.cache_ttl] == [
-        "claude-code", "openrouter", "deepseek/deepseek-v4.1-flash", "https://openrouter.ai/api", "", "low", 100, 600.0,
-        "main", 3.0, "5m"]
+        "claude-code", "openrouter", "deepseek/deepseek-v4.1-flash", "https://openrouter.ai/api", "", "high", 100,
+        1200.0, "main", 3.0, "5m"]
     home.mkdir()
     (home / "config").write_text("# comment\nVFG_SERVER=lobby\nexport VFG_ROUTE_TIMEOUT_S='2.5'\n"
                                  "VFG_SUBAGENT_CACHE_TTL=\"1h\"\nVFG_IMPL_PROVIDER=anthropic\n")
@@ -34,11 +37,30 @@ def test_the_defaults_then_vfgs_config_file_then_the_environment(tmp_path):
 def test_effort_turns_and_minutes_are_read_from_vfgs_config_file_too(tmp_path):
     home = tmp_path / "vfg-home"
     home.mkdir()
-    (home / "config").write_text("VFG_IMPL_EFFORT=medium\nVFG_IMPL_MAX_TURNS=25\nVFG_IMPLEMENTER_MINUTES=4\n")
+    (home / "config").write_text("VFG_IMPL_EFFORT=max\nVFG_IMPL_MAX_TURNS=25\nVFG_IMPLEMENTER_MINUTES=4\n")
     c = ImplementerConfig.load({"VFG_HOME": str(home)})
-    assert (c.effort, c.max_turns, c.time_limit_s) == ("medium", 25, 240.0)
-    c = ImplementerConfig.load({"VFG_HOME": str(home), "VFG_IMPL_MAX_TURNS": "30"})  # the environment first
-    assert c.max_turns == 30
+    assert (c.effort, c.max_turns, c.time_limit_s) == ("max", 25, 240.0)
+    c = ImplementerConfig.load({"VFG_HOME": str(home), "VFG_IMPL_MAX_TURNS": "30", "VFG_IMPL_EFFORT": "off"})
+    assert (c.max_turns, c.effort) == (30, "off")  # the environment first
+
+
+def test_the_effort_is_off_low_high_or_max_high_by_default_and_medium_is_high(tmp_path):
+    for said, want in [("", "high"), ("off", "off"), ("low", "low"), ("high", "high"), ("max", "max"),
+                       (" Medium ", "high"), ("HIGH", "high")]:
+        assert read_effort(said) == want, said
+        assert ImplementerConfig.load({"VFG_HOME": str(tmp_path), "VFG_IMPL_EFFORT": said}).effort == want
+    # a mistyped effort is an error that says so, never another effort
+    for bad in ("xhigh", "none", "75", "hihg"):
+        with pytest.raises(ValueError, match="VFG_IMPL_EFFORT=%s is none of off, low, high, max" % bad):
+            ImplementerConfig.load({"VFG_HOME": str(tmp_path), "VFG_IMPL_EFFORT": bad})
+
+
+def test_a_run_gets_20_minutes_and_the_shell_tool_10_of_them_by_default(tmp_path):
+    c = ImplementerConfig.load({"VFG_HOME": str(tmp_path)})
+    assert c.time_limit_s == 1200.0 and bash_timeouts_ms(c) == (600_000, 1_200_000)
+    c = ImplementerConfig.load({"VFG_HOME": str(tmp_path), "VFG_IMPLEMENTER_MINUTES": "5"})
+    assert bash_timeouts_ms(c) == (300_000, 300_000)  # never more than the run's own limit
+    assert ImplementerConfig.load({"VFG_HOME": str(tmp_path), "VFG_IMPLEMENTER_MINUTES": "0"}).time_limit_s == 1200.0
 
 
 def test_the_provider_its_model_its_address_and_its_key(tmp_path):
@@ -93,7 +115,7 @@ def test_haikus_step_at_100k_tokens_and_an_unknown_model():
 
 def test_openrouters_provider_routing_for_the_cache(tmp_path):
     c = ImplementerConfig.load({"VFG_HOME": str(tmp_path), "OPEN_ROUTER_API": "k"})
-    assert provider_routing(c) == {"allow_fallbacks": True, "order": ["digitalocean", "ionstream", "together"],
+    assert provider_routing(c) == {"allow_fallbacks": True, "order": ["together", "digitalocean", "ionstream"],
                                    "ignore": ["venice", "morph", "relace"]}
     c = ImplementerConfig.load({"VFG_HOME": str(tmp_path), "OPEN_ROUTER_API": "k",
                                 "VFG_IMPL_OR_ORDER": " Together , deepinfra", "VFG_IMPL_OR_IGNORE": "none"})
@@ -102,5 +124,10 @@ def test_openrouters_provider_routing_for_the_cache(tmp_path):
 
 
 def test_the_test_server_setting(tmp_path):
-    assert ImplementerConfig.load({"VFG_HOME": str(tmp_path)}).test_box == ""
-    assert ImplementerConfig.load({"VFG_HOME": str(tmp_path), "VFG_TEST_BOX": "~/.vfg/test-box"}).test_box == "~/.vfg/test-box"
+    def box(**env):
+        return ImplementerConfig.load({"VFG_HOME": str(tmp_path), **env}).test_box
+    assert box() == box(VFG_TEST_BOX="") == box(VFG_TEST_BOX="  ") == box(VFG_TEST_BOX="box") == "box"  # the live box's own
+    assert box(VFG_TEST_BOX="none") == box(VFG_TEST_BOX=" None ") == ""  # no test server
+    assert box(VFG_TEST_BOX="~/.vfg/test-box") == "~/.vfg/test-box"  # a settings file, as given
+    (tmp_path / "config").write_text("VFG_TEST_BOX=none\n")
+    assert box() == "" and box(VFG_TEST_BOX="box") == "box"  # ~/.vfg/config, the environment first

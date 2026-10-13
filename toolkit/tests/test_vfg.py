@@ -1138,6 +1138,24 @@ class TestUp(BoxCase):
         self.assertOneLine(r, 1, r"^vfg: not up: vfg-jev failed \(KeyError: TYPESAFE_API_KEY\)$")
         self.assertIn("vfg-jev     failed  start failed  KeyError: TYPESAFE_API_KEY", r.stdout)
 
+    def test_the_test_server_is_reported_and_started_never_waited_for_or_failed_on(self):
+        self.unit("minecraft-test", "active")
+        r = self.vfg("up")
+        self.assertOk(r)
+        self.assertIn("minecraft-test active\n", r.stdout)
+        self.unit("minecraft-test", "inactive")         # restarting after a test, or stopped
+        r = self.vfg("up")
+        self.assertOk(r)
+        self.assertIn("minecraft-test inactive  starting (not waited for)\n", r.stdout)
+        self.unit("minecraft-test", "failed")           # it gave up: reset, started, and vfg up still 0
+        write(os.path.join(self.box.units, "minecraft-test.fail"), "")
+        write(os.path.join(self.box.units, "minecraft-test.journal"), "Error: no world.template\n")
+        began = datetime.now()
+        r = self.vfg("up")
+        self.assertOk(r)
+        self.assertIn("minecraft-test failed  start failed  Error: no world.template\n", r.stdout)
+        self.assertLess((datetime.now() - began).total_seconds(), 10)
+
 
 # ===================================================================== watch
 

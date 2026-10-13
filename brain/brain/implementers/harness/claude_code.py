@@ -1,12 +1,18 @@
 """The Claude Code adapter: an implementer is one Claude Agent SDK client, the CLI as the main agent
 with nothing around it, on the provider the settings name (config.py):
 
-- **deepseek** and **openrouter**: the CLI talks to the relay (relay.py), which puts thinking off on
-  every request and counts each one's tokens, and the relay to the provider's Claude-compatible
-  address, with the provider's key. Every model the CLI may call is the one model.
+- **deepseek** and **openrouter**: the CLI talks to the relay (relay.py), which sends every request
+  at the effort (VFG_IMPL_EFFORT; at off, thinking disabled) and counts each one's tokens, its
+  reasoning among them, and the relay to the provider's Claude-compatible address, with the
+  provider's key. Every model the CLI may call is the one model.
 - **anthropic**: Haiku 5.5 on the owner's Claude subscription, through the CLI's own login in
-  ~/.claude, at low effort, as before this adapter: no relay, never an API key, and each request's
-  tokens read from the CLI's assistant messages (one per message id).
+  ~/.claude, at the effort (the CLI's --effort; at off, its thinking disabled), as before this
+  adapter: no relay, never an API key, and each request's tokens read from the CLI's assistant
+  messages (one per message id).
+
+On every provider the CLI's Bash tool lets a command run 10 minutes when the model sets no timeout,
+and the run's limit at most (config.bash_timeouts_ms), so a `vfg test` waiting its turn is not cut
+short at the CLI's own 2 minutes.
 
 The guard is the CLI's PreToolUse hook, and the only gate: the CLI runs in bypassPermissions, where
 its own checks never refuse and a hook's deny still blocks (hooks run first). The CLI will not run
@@ -32,20 +38,22 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from claude_agent_sdk import (AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, HookMatcher, ResultMessage,
-                              SystemMessage, TextBlock, ToolResultBlock, ToolUseBlock, UserMessage)
+                              SystemMessage, TextBlock, ThinkingBlock, ToolResultBlock, ToolUseBlock, UserMessage)
 
-from ..config import ImplementerConfig, log, model_price, provider_routing
+from ..config import ImplementerConfig, bash_timeouts_ms, log, model_price, provider_routing
 from ..guard import GuardContext, brief, gate
 from .base import ERROR, OK, STOPPED, TURNS, Compacted, Done, Event, Request, Session, Text, ToolCall, ToolResult
-from .relay import Relay
+from .relay import LOOKUP_S, THINKING_CHARS, Relay
 
 TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]
 
 # How long stop() waits for the CLI to take an interrupt; and how long, at most, a run's end waits for
 # the relay to finish its requests still in flight, so each is counted in its run (it waits only
-# while one is: Relay.settle returns at once when none is).
+# while one is: Relay.settle returns at once when none is; and LOOKUP_S more for a broken one).
 INTERRUPT_TIMEOUT_S = 5.0
 SETTLE_S = 5.0
+# After a stop, how long late_requests() waits for the run's end: the CLI's interrupt, then settle.
+LATE_S = INTERRUPT_TIMEOUT_S + SETTLE_S + LOOKUP_S
 # A turn that ends with a message unread is followed by the turn that reads it; when none starts
 # within this long, the run ends and the runner resumes the session with the message.
 UNREAD_GRACE_S = 5.0
@@ -94,13 +102,17 @@ def context_window(model: str) -> int | None:
 
 
 def cli_env(cfg: ImplementerConfig, address: str | None) -> dict[str, str]:
-    """options.env: for deepseek and openrouter, the relay's address for this run, the provider's
-    key, the one model for every model the CLI may call, no traffic but the model's, and the
-    auto-compact window at the top of the model's context (CLAUDE_CODE_MAX_CONTEXT_TOKENS tells the
-    CLI how much a model it does not know reads, and the window is capped by that)."""
+    """options.env: on every provider, the Bash tool's timeouts (BASH_DEFAULT_TIMEOUT_MS and
+    BASH_MAX_TIMEOUT_MS, as Claude Code 2.1.296 reads them; config.bash_timeouts_ms); for deepseek
+    and openrouter, the relay's address for this run, the provider's key, the one model for every
+    model the CLI may call, no traffic but the model's, and the auto-compact window at the top of
+    the model's context (CLAUDE_CODE_MAX_CONTEXT_TOKENS tells the CLI how much a model it does not
+    know reads, and the window is capped by that)."""
     env = session_env(os.environ)
     env["CLAUDE_AGENT_SDK_CLIENT_APP"] = "vfg-brain/0.1"
     env["PYTHONPYCACHEPREFIX"] = os.path.join(cfg.brain_dir, "pycache")  # py_compile leaves no __pycache__ in scripts/
+    default_ms, most_ms = bash_timeouts_ms(cfg)
+    env["BASH_DEFAULT_TIMEOUT_MS"], env["BASH_MAX_TIMEOUT_MS"] = str(default_ms), str(most_ms)
     # No "<total_tokens>N tokens left</total_tokens>" note on every turn (a 15M countdown the CLI
     # adds by default): an implementer has no use for it, and the only text the CLI put before
     # each turn on which DeepSeek wrote a summary of the conversation in place of its report.
@@ -131,7 +143,7 @@ def guard_hook(g: GuardContext, denied: set | None = None, effort: bool = True):
     (its tool_use_id, and its tool and input) so the run's end can tell the guard's refusals from
     the CLI's own; a call let through (noted and recorded by gate()) gets {}, which in
     bypassPermissions lets it run. `effort`: the turn's effort is logged once,
-    on the anthropic provider only (the relay drops it on the others)."""
+    on the anthropic provider only (the relay sets it on the others, whatever the CLI says)."""
     seen_effort: set[str] = set()
     who = "implementer %s" % (g.task or "-")
 
@@ -163,11 +175,15 @@ def build_options(cfg: ImplementerConfig, system: Path, guard: GuardContext, add
     """One implementer's options: the implementer is the main thread, its tools the CLI's own, the
     guard its only gate (its refusals noted in `denied`)."""
     anthropic = cfg.provider == "anthropic"
+    off = cfg.effort == "off"
     root = as_root()
     return ClaudeAgentOptions(
         model=cfg.model,
-        effort=cfg.effort if anthropic else None,
-        thinking=None if anthropic else {"type": "disabled"},  # the CLI leaves it out anyway: the relay sets it
+        # On anthropic the CLI's own effort, or its thinking disabled at off. Elsewhere the relay sets
+        # the effort on every request, whatever the CLI asks (told disabled, the CLI leaves the field
+        # out; untold, it asks for adaptive thinking); at off the CLI is told too.
+        effort=cfg.effort if anthropic and not off else None,
+        thinking={"type": "disabled"} if off else None,
         system_prompt={"type": "file", "path": str(system)},
         cwd=cfg.repo,
         setting_sources=[],
@@ -199,12 +215,14 @@ def sdk_client(options: ClaudeAgentOptions) -> ClaudeSDKClient:
 class SdkUsage:
     """Each request's tokens from the CLI's assistant messages, for the anthropic provider (no
     relay): one request per message id, its counts the largest any of its messages carried, given
-    once the next message id comes, or at the result."""
+    once the next message id comes, or at the result; its reasoning an estimate from its thinking
+    blocks' text, which the usage does not count apart."""
 
     def __init__(self, model: str):
         self.model = model
         self._id: str | None = None
         self._usage: dict = {}
+        self._thought = 0
         self._at = 0.0
         self._done: set[str] = set()
 
@@ -214,22 +232,25 @@ class SdkUsage:
         out = []
         if msg.message_id != self._id:
             out = self.flush()
-            self._id, self._usage, self._at = msg.message_id, {}, time.time()
+            self._id, self._usage, self._thought, self._at = msg.message_id, {}, 0, time.time()
         for k, v in msg.usage.items():
             if isinstance(v, int):
                 self._usage[k] = max(v, self._usage.get(k) or 0)
+        self._thought += sum(len(b.thinking or "") for b in msg.content if isinstance(b, ThinkingBlock))
         return out
 
     def flush(self) -> list[Request]:
         if self._id is None:
             return []
-        u, mid = self._usage, self._id
+        u, mid, thought = self._usage, self._id, self._thought
         self._done.add(mid)
-        self._id, self._usage = None, {}
+        self._id, self._usage, self._thought = None, {}, 0
+        output = u.get("output_tokens") or 0
         return [Request(model=self.model, input=u.get("input_tokens") or 0,
                         cache_read=u.get("cache_read_input_tokens") or 0,
                         cache_write=u.get("cache_creation_input_tokens") or 0,
-                        output=u.get("output_tokens") or 0, at=self._at, id=mid)]
+                        output=output, at=self._at, id=mid,
+                        reasoning=min(output, round(thought / THINKING_CHARS)), reasoning_estimated=thought > 0)]
 
 
 class Mapper:
@@ -351,14 +372,16 @@ class ClaudeCodeRun:
         self._unread: list[str] = []
         self.ended = False
         self.stopping = False  # stop() was called: the next result ends it, read or not
+        self.counting = True  # the relay's requests are taken until the run's Done (or its end) is queued
 
     @property
     def session(self) -> str | None:
         return self.mapper.session
 
     def request(self, r: Request) -> None:
-        """The relay's sink: one of this run's requests, its tokens counted."""
-        if not self.ended:
+        """The relay's sink: one of this run's requests, its tokens counted; taken while the run's end
+        settles too, before its Done."""
+        if self.counting:
             self._q.put_nowait(r)
 
     async def begin(self, prompt: str) -> None:
@@ -411,6 +434,7 @@ class ClaudeCodeRun:
             if nxt is not None and not nxt.done():
                 nxt.cancel()
             self.ended = True
+            self.counting = False
             self._q.put_nowait(_END)
 
     async def _end(self, done: Done) -> None:
@@ -420,6 +444,7 @@ class ClaudeCodeRun:
             done.unread = list(self._unread)  # stopped with messages unread: the runner keeps them
         if self.relay is not None and not await self.relay.settle(self.address, SETTLE_S):
             log("relay", "%s: a request was still in flight as the run ended" % self.task)
+        self.counting = False
         self._q.put_nowait(done)
 
     def _read_one(self, text: str) -> None:
@@ -462,8 +487,26 @@ class ClaudeCodeRun:
         except Exception as e:
             log("implementer", "%s: interrupt: %s" % (self.task, e))
 
+    async def late_requests(self) -> list[Request]:
+        """After stop(), once the runner no longer reads events: the requests given since, up to the
+        run's end (its last requests in flight and a broken one's record counted first, _end), LATE_S
+        at most; each once, taken off the queue."""
+        out: list[Request] = []
+        loop = asyncio.get_running_loop()
+        until = loop.time() + LATE_S
+        while True:
+            try:
+                ev = await asyncio.wait_for(self._q.get(), max(0.0, until - loop.time()))
+            except TimeoutError:
+                return out
+            if isinstance(ev, Request):
+                out.append(ev)
+            elif ev is _END or isinstance(ev, (Done, _Broke)):
+                return out
+
     async def close(self) -> None:
         self.ended = True
+        self.counting = False
         if self._pump is not None and not self._pump.done():
             self._pump.cancel()
             await asyncio.wait({self._pump}, timeout=INTERRUPT_TIMEOUT_S)
@@ -482,8 +525,8 @@ class ClaudeCode:
         """`client_factory` makes the SDK client (tests pass a fake)."""
         self.cfg = cfg
         self.client_factory = client_factory or sdk_client
-        self.relay = Relay(cfg.base_url, extra={"provider": r} if (r := provider_routing(cfg)) else None) \
-            if cfg.provider != "anthropic" else None
+        self.relay = Relay(cfg.base_url, extra={"provider": r} if (r := provider_routing(cfg)) else None,
+                           effort=cfg.effort) if cfg.provider != "anthropic" else None
         self._said_root = False
 
     async def start(self, task: str, system: Path, brief: str, guard: GuardContext) -> ClaudeCodeRun:

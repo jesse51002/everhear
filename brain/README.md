@@ -398,12 +398,13 @@ From the environment, then `~/.vfg/config`:
 | `VFG_IMPL_PROVIDER` | `deepseek` when `DEEPSEEK_API_KEY` is set, else `openrouter`: DeepSeek V4.1 Flash at that provider; or `anthropic`, Haiku 5.5 on your Claude subscription, Claude Code only and untested |
 | `VFG_IMPL_MODEL` | the provider's: `deepseek-flash`, `deepseek/deepseek-v4.1-flash`, `claude-haiku-5-5`; `VFG_IMPLEMENTER_MODEL` is read when it is empty |
 | `VFG_IMPL_BASE_URL` | the provider's Claude-compatible address: `https://api.deepseek.com/anthropic`, `https://openrouter.ai/api`; none for `anthropic` |
-| `VFG_IMPL_OR_ORDER`, `VFG_IMPL_OR_IGNORE` | `digitalocean,ionstream,together` and `venice,morph,relace`: on `openrouter`, the providers each request tries first and never, fallbacks allowed, so a run keeps one provider's cache; `none` empties one |
-| `VFG_IMPL_EFFORT`, `VFG_IMPL_MAX_TURNS` | `low` (the `anthropic` provider's only), `100` model requests a run, warned at the 95th and stopped past the 100th |
-| `VFG_IMPLEMENTER_MINUTES` | `10`: warned a minute before, stopped at it and its task failed |
+| `VFG_IMPL_OR_ORDER`, `VFG_IMPL_OR_IGNORE` | `together,digitalocean,ionstream` (Together first, the fastest) and `venice,morph,relace`: on `openrouter`, the providers each request tries first and never, fallbacks allowed, so a run keeps one provider's cache; `none` empties one |
+| `VFG_IMPL_EFFORT` | `high`: how hard the model thinks, on every provider and harness, `off`, `low`, `high` or `max` (`medium` is `high`; anything else stops the brain with an error). Claude Code's relay sends it as `output_config.effort` (at `off`, `thinking` disabled), OpenCode as OpenRouter's `reasoning.effort` or DeepSeek's `reasoning_effort`, the `anthropic` provider as the CLI's `--effort`. The number it reaches depends on the host: DeepSeek's own scale, and DigitalOcean and Ionstream through OpenRouter, put `low`, `high` and `max` at 50, 75 and 100 of 100; Together puts them at 25, 50 and 100 (measured 2026-10-13). Each request's reasoning tokens are on its `request` line, `reasoning=` (`~` when estimated from the thinking's text) |
+| `VFG_IMPL_MAX_TURNS` | `100` model requests a run, warned at the 95th and stopped past the 100th |
+| `VFG_IMPLEMENTER_MINUTES` | `20`: warned a minute before, stopped at it and its task failed. A shell command an implementer runs may take 10 minutes when it sets no timeout (a `vfg test` waiting its turn), the run's limit at most |
 | `VFG_IMPL_CACHE_TTL` | `5m` (or `1h`): the `anthropic` provider's prompt cache; `VFG_SUBAGENT_CACHE_TTL` is read when it is empty |
 | `VFG_OPENCODE_BIN` | `opencode` on the PATH, else `~/.opencode/bin/opencode`: OpenCode's program; from the environment only |
-| `VFG_TEST_BOX` | none: the file of the test server's settings, where `vfg test` runs an implementer's test (`docs/CONTRACTS.md` §8); with none, its check is one action run |
+| `VFG_TEST_BOX` | `box`: the live box's own test server, where `vfg test` runs an implementer's test (`docs/CONTRACTS.md` §8); or the file of a test server's settings; `none`: no test server, and the check is one action run. With one, a run's looks at the live world are budgeted |
 | `VFG_TEST_TIMEOUT_S` | `60` s a test may run, 5 to 600, before it is stopped |
 
 A number that does not read, or is under its least, is logged and its default used. The

@@ -6,7 +6,8 @@ realmc" list, with the earlier specs' checks that still hold.
                                                      [--only refused,read,…]
 
 Real:  a Minecraft 26.3 server with Carpet's fake players Steve and Alex (integration/realmc,
-       its world fresh from the template), the brain (`vfg brain start` through realmc's bin/vfg,
+       its world fresh from the template, its test server beside it as the box's: `up NAME
+       --test-server`, where the implementers' `vfg test` plays), the brain (`vfg brain start` through realmc's bin/vfg,
        which keeps this HOME so the implementers' Claude CLI finds its login), its model calls,
        the loop's steps on Gemini 3.8 Flash and Respond's on DeepSeek V4 Flash, through OpenRouter
        (OPEN_ROUTER_API: from the environment, else the first .env above this repo, or its
@@ -72,7 +73,8 @@ REPO = os.path.dirname(HERE)
 REALMC = os.path.join(HERE, "realmc")
 KEY = "OPEN_ROUTER_API"
 BUDGET = 1.00      # dollars of OpenRouter the brain and Respond may spend in a run
-TASK_S = 600       # an implementer task's time limit, its report included
+TASK_S = 1260      # an implementer task's time limit (VFG_IMPLEMENTER_MINUTES, 20 min), its report
+                   # included
 MODELS = ("brain", "respond")   # the usage components on OpenRouter
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")   # a task's name
 HOME = (12, 12)    # where the saved place `home` is, on the arena (x, z)
@@ -1240,7 +1242,8 @@ def main():
     os.environ.setdefault("REALMC_ROOT", os.path.join(REALMC, ".server"))
     print("brain live: realmc %s in %s; key from %s; %s" % (args.name, os.environ["REALMC_ROOT"], where,
                                                             ", ".join(chosen)), flush=True)
-    r = subprocess.run([os.path.join(REALMC, "up"), args.name, "--fresh"], stdout=subprocess.PIPE,
+    # with its test server beside it, as the box's (VFG_TEST_BOX unset: the implementers' vfg test plays there)
+    r = subprocess.run([os.path.join(REALMC, "up"), args.name, "--fresh", "--test-server"], stdout=subprocess.PIPE,
                        stderr=subprocess.STDOUT, universal_newlines=True)
     print(short(r.stdout[-600:], 600), flush=True)
     if r.returncode != 0:

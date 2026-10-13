@@ -19,8 +19,10 @@ A run's events, in order:
   start of its text. Optional: the runner uses it only to say a stopped run's last errors.
 - **Text**: something the model said along the way.
 - **Request**: one model request's tokens, as the provider counted them: input it did not have
-  cached, read from the cache, written to it, and output; its model and when it was sent. Its size,
-  the input of all three kinds, is what Haiku's price steps on. The runner prices it (usage.py).
+  cached, read from the cache, written to it, and output, and of the output how much was the
+  model's thinking (its reasoning, an estimate from the thinking's text when the provider does not
+  count it); its model and when it was sent. Its size, the input of all three kinds, is what
+  Haiku's price steps on. The runner prices it (usage.py) and logs it, its reasoning too.
 - **Compacted**: the harness summarised the session to make room, which it is set never to do.
 - **Done**: the run ended, once and last, with no message sent to it left unread (a message that
   lands as the model ends its turn starts the next turn, and the run goes on): how (ok; error;
@@ -75,6 +77,13 @@ class Request:
     id: str | None = None
     provider: str | None = None  # who served it, when the provider says (OpenRouter's providers)
     billed: float | None = None  # what the provider says it charged, in dollars (OpenRouter's usage.cost), if it does
+    # Of `output`, the model's thinking (never more output: priced once, as output): the provider's
+    # count, else, with reasoning_estimated, an estimate from the thinking's text; 0 when it did not think.
+    reasoning: int = 0
+    reasoning_estimated: bool = False
+    # Its answer broke off mid-stream (and the harness sent the request again): its counts are the
+    # provider's record of it when there is one, else what was read before the break, a floor.
+    broken: bool = False
 
     @property
     def size(self) -> int:
