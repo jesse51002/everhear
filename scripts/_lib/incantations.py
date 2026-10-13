@@ -8,6 +8,7 @@ PC vfg imports the same file for the bind checks and the code aliases.
     entry, replaced = store.put({"player": "Steve", "phrase": "fire ball", "action": ...})
     store.for_player("Steve")              # Steve's own, then the @a ones
     store.lookup("Steve", "fireball")      # by phrase or alias, as the spotter heard it
+    incantations.cast_meta(entry, "Steve")   # the copy a cast starts (instances.Box.start), caster filled in
 
     incantations.match_line("uh come a hammer ha", entries)   # Layer 2: [Match], best first
     incantations.drop("fire ball now", entry)                 # the drop rule: True
@@ -161,6 +162,26 @@ def store_path():
 def entry_id(player, phrase):
     """steve.fire_ball; @a.fire_ball."""
     return "%s.%s" % (str(player).lower(), normalize(phrase).replace(" ", "_"))
+
+
+def cast_meta(entry, player):
+    """What instances.Box.start takes for a cast of `entry` by `player`: its action's copy, each caster
+    field the caster, task `cast`, and "asked", the values that stay the binding's (Box.with_defaults).
+    The bridge starts every cast it hears with it (vfg_bridge/casts.py), and the kit's test helpers
+    a cast on the test server (kit/test.py)."""
+    values = dict(entry.get("values") or {})
+    for field in entry.get("caster_fields") or ():
+        values[field] = player
+    meta = {"action": entry.get("action"), "script": entry.get("script") or entry.get("action"),
+            "source": entry.get("source") or "library", "server": entry.get("server") or "",
+            "values": values, "live": list(entry.get("live") or ()), "runs": entry.get("runs") or "once",
+            "task": "cast"}
+    if isinstance(entry.get("asked"), dict):
+        # What the binding asked for, and the caster: Box.start keeps these and takes the rest from
+        # the action as it is deployed now (instances.Box.with_defaults), so a value the action
+        # gained after the binding was made has its default, never a KeyError.
+        meta["asked"] = sorted(set(entry["asked"]) | set(entry.get("caster_fields") or ()))
+    return meta
 
 
 def one_word(entry):

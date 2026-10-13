@@ -256,6 +256,21 @@ def load_library_module():
     return _LIBRARY[0]
 
 
+# A preset whose function calls others: (first line, class, value, function, what it returns).
+PRESET_CALLING = '''"""%s"""
+from actions._types import Field, Live, Values
+
+
+class %s(Values):
+    %s: Live[float] = Field(4, ge=1, le=40)
+    """how much, in blocks"""
+
+
+def %s(hits, v):
+    return %s
+'''
+
+
 class LibraryCase(BoxCase):
     """A box whose repo has two example scripts with their actions, two presets and a fake kit."""
 
@@ -341,6 +356,64 @@ class TestScriptNew(LibraryCase):
         self.assertIn("from made/main/scripts/beam_boom/ (made)", r.stdout)
         self.assertIn('class Boom2(Action, preset("crater"), preset("explosion")):\n',
                       self.read("made/main/actions/boom2.py"))
+
+    def test_a_preset_brings_the_presets_it_calls_each_once(self):
+        """kick calls sling, which calls toss (as push calls launch): asked for kick, a script gets all
+        three, each once, and its action inherits each one's values; one given or held is not added again."""
+        self.write("scripts/_presets/toss.py", PRESET_CALLING % ("Toss what was hit up.", "Toss", "toss_height",
+                                                               "toss", "len(hits)"))
+        self.write("scripts/_presets/sling.py", PRESET_CALLING % ("Sling what was hit away.", "Sling", "sling_far",
+                                                                "sling", "toss(hits, v)"))
+        self.write("scripts/_presets/kick.py", PRESET_CALLING % ("Kick what was hit, then sling it.", "Kick",
+                                                               "kick_power", "kick", "sling(hits, v) + toss(hits, v)"))
+        r = self.vfg("script", "new", "kicker", "--from", "beam", "--preset", "kick")
+        self.assertOk(r)
+        self.assertEqual(r.stdout.splitlines()[1:4], [
+            "  + kick (library): kick_power", "  + sling (library, which kick needs): sling_far",
+            "  + toss (library, which kick needs): toss_height"])
+        text = self.read("made/main/scripts/kicker/main.py")
+        for name in ("kick", "sling", "toss"):
+            self.assertEqual(text.count("# --- preset: %s (" % name), 1, name)
+        compile(text, "kicker", "exec")
+        self.assertIn('class Kicker(Action, preset("kick"), preset("sling"), preset("toss")):\n',
+                      self.read("made/main/actions/kicker.py"))
+        # given too: not twice
+        r = self.vfg("script", "new", "slinger", "--preset", "toss", "--preset", "sling")
+        self.assertOk(r)
+        self.assertEqual(self.read("made/main/scripts/slinger/main.py").count("# --- preset: toss ("), 1)
+        self.assertNotIn("which", r.stdout)
+        # a script copied --from that holds sling but not toss (made before sling called it) gets toss
+        old = self.read("made/main/scripts/slinger/main.py")
+        start = old.index("# --- preset: toss (")
+        end = old.index("# --- preset: sling (")
+        self.write("made/main/scripts/slinger/main.py", old[:start] + old[end:])
+        r = self.vfg("script", "new", "slinger_2", "--from", "slinger")
+        self.assertOk(r)
+        self.assertIn("  + toss (library, which sling needs): toss_height", r.stdout)
+        self.assertEqual(self.read("made/main/scripts/slinger_2/main.py").count("# --- preset: toss ("), 1)
+        # a name it takes or sets itself is no need
+        lob = PRESET_CALLING % ("Lob it.", "Lob", "lob_far", "lob", "[toss for toss in hits] or kick")
+        self.write("scripts/_presets/lob.py", lob.replace("def lob(hits, v):", "def lob(hits, v, kick=None):"))
+        r = self.vfg("script", "new", "lobber", "--preset", "lob")
+        self.assertOk(r)
+        self.assertNotIn("which", r.stdout)
+
+    def test_new_from_a_script_ends_with_its_outline(self):
+        r = self.vfg("script", "new", "beam_boom", "--from", "beam", "--preset", "crater")
+        self.assertOk(r)
+        text = self.read("made/main/scripts/beam_boom/main.py").split("\n")
+        tail = r.stdout.rstrip("\n").split("\n")
+        at = tail.index("outline of made/main/scripts/beam_boom/main.py (line, then what is there):")
+        self.assertTrue(tail[at - 1].startswith("next: "))
+        outline = tail[at + 1:]
+        self.assertTrue(outline and all(re.match(r"  \d+ (ASKS = |def |class )", x) for x in outline), outline)
+        self.assertIn("ASKS = ", outline[0])
+        self.assertIn("  %d def crater(at, v)" % (text.index("def crater(at, v):") + 1), outline)
+        for x in outline:  # each line number points at what it names
+            n, what = x.split(" ", 3)[2], x.split(" ", 3)[3]
+            self.assertTrue(text[int(n) - 1].startswith(what.split("(")[0].split(" = ")[0]), x)
+        r = self.vfg("script", "new", "blank_one")  # from nothing: no outline
+        self.assertNotIn("outline of", r.stdout)
 
     def test_a_scripts_action_is_carried_with_its_presets_inherited(self):
         r = self.vfg("script", "new", "galick_pit", "--from", "galick", "--preset", "explosion")

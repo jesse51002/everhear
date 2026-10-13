@@ -50,6 +50,9 @@ import freeze as freeze_preset  # noqa: E402
 import lightning as lightning_preset  # noqa: E402
 import lock_on as lock_preset  # noqa: E402
 import push as push_preset  # noqa: E402
+import launch as launch_preset  # noqa: E402
+
+push_preset.launch = launch_preset.launch       # push throws a player by launch: a script holds both
 
 signal.signal(signal.SIGINT, signal.default_int_handler)
 signal.signal(signal.SIGTERM, signal.SIG_DFL)
@@ -73,6 +76,24 @@ TAG = "lh"                  # every test mob carries it
 def vals(preset, **given):
     """A preset's values as a script would have them: its defaults, then these, checked."""
     return values(meta=values_meta(preset, given=given), run_dir=TMP, instance="livehits")
+
+
+def push_vals(**given):
+    """push's values and launch's, which push reads to throw a player."""
+    return values(meta=values_meta(push_preset, launch_preset, given=given), run_dir=TMP, instance="livehits")
+
+
+def landed(sel, seconds=8.0):
+    """Where `sel` comes to rest after a throw (two reads 0.25 s apart the same), and the top it reached."""
+    last, top, end = where(sel), -1e9, time.time() + seconds
+    while time.time() < end:
+        time.sleep(0.25)
+        now = where(sel)
+        top = max(top, now[1])
+        if max(abs(a - b) for a, b in zip(now, last)) < 1e-3:
+            return now, top
+        last = now
+    return last, top
 
 
 def start(folder, name, presets, **given):
@@ -405,11 +426,12 @@ for n in loop(every=0.5):
 
 
 class LiveScript(Live):
-    """All eight copied into one script, as `vfg script new` does, run as on EC2 and stopped."""
+    """All eight (and launch, which push throws a player by) copied into one script, as `vfg
+    script new` does, run as on EC2 and stopped."""
 
     def test_eight_presets_in_one_script_run_and_stop_clean(self):
         text = library.SKELETON.replace("from kit import result, values", "from kit import values, aim, loop\nimport mc")
-        names = ("damage_hits", "freeze", "push", "around", "lock_on", "lightning", "explosion", "crater")
+        names = ("damage_hits", "freeze", "push", "around", "lock_on", "lightning", "explosion", "crater", "launch")
         fields = set(["player"])            # its action's: the presets' values and a player
         for name in names:
             item = library.parse(os.path.join(PRESETS, name + ".py"), "preset")
@@ -492,8 +514,8 @@ class LivePlayers(Live):
         self.assertEqual(freeze_preset.freeze(hits, vals(freeze_preset, freeze_seconds=2)), 1)
         self.assertIn('"minecraft:slowness"', mc.rcon("data get entity Alex active_effects"))
         before = where("Alex")
-        self.assertEqual(push_preset.push(hits, "Steve", vals(push_preset, push_strength=6)), 1)
-        self.assertGreater(where("Alex")[0] - before[0], 2.5)
+        self.assertEqual(push_preset.push(hits, "Steve", push_vals(push_strength=6)), 1)
+        self.assertGreater(landed("Alex")[0][0] - before[0], 2.5)       # thrown by launch, frozen as he is
 
     def test_lightning_and_tnt_spare_who_set_them_off(self):
         platform(-31, -31, 31, -9, "obsidian")          # TNT leaves the floor under him
@@ -527,17 +549,12 @@ class LivePlayers(Live):
     def test_a_player_lifted_and_pulled_in(self):
         start = where("Alex")
         hits = around_preset.around("Steve", vals(around_preset, around_radius=12, around_what="players"))
-        self.assertEqual(push_preset.push(hits, "Steve", vals(push_preset, push_way="up", push_strength=4)), 1)
-        top = start[1]
-        for _ in range(15):
-            time.sleep(0.1)
-            top = max(top, where("Alex")[1])
-        self.assertGreater(top - start[1], 2.0)
-        time.sleep(2.0)                                 # down again
+        self.assertEqual(push_preset.push(hits, "Steve", push_vals(push_way="up", push_strength=4)), 1)
+        at, top = landed("Alex")
+        self.assertAlmostEqual(top - start[1], 4.0, delta=0.5)          # launched 4 up, and down again
         hits = around_preset.around("Steve", vals(around_preset, around_radius=12, around_what="players"))
-        before = where("Alex")
-        self.assertEqual(push_preset.push(hits, "Steve", vals(push_preset, push_way="toward", push_strength=5)), 1)
-        self.assertLess(where("Alex")[0] - before[0], -3.0)
+        self.assertEqual(push_preset.push(hits, "Steve", push_vals(push_way="toward", push_strength=5)), 1)
+        self.assertLess(landed("Alex")[0][0] - at[0], -3.0)
 
 
 STAFF = '''

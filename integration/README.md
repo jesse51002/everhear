@@ -65,6 +65,53 @@ About 25 s, most of it the server's start and stop; `--speech` adds about 15 s, 
 models loading. On 2026-10-10: a posted cast's effect landed 31–46 ms after the post, a
 transcript cast's 39–57 ms after its line, and "Fire ball!" spoken 0.53 s after the phrase ended.
 
+## Implementers on DeepSeek, on realmc
+
+Prototype_Implementer_Harness's tests, each script's docstring saying how to run it. All but
+`impl_briefs.py`, `impl_data.py`, `impl_cache.py` and `impl_game_tests.py` call models, through OpenRouter, with
+`OPEN_ROUTER_API` read from `Internal/.env` into the process alone; none is part of any test suite.
+**Their data and outputs are outside the repository**, in `$VFG_IMPL_REPLAY` (default
+`~/.vfg/impl-replay/`), since they hold answers an implementer must not read: what is there is in
+[replay/impl/README.md](replay/impl/README.md).
+
+- `impl_data.py` rebuilds the replay's data, `$VFG_IMPL_REPLAY/tasks.json`: the six implementer
+  tasks of 2026-10-11 as they happened, 20 of 2026-10-08, the ten wild asks and one that needs `op`.
+- `impl_briefs_write.py` writes each ask's brief once, in Brain_Loop's shapes, a stand-in for the
+  brain's own, and keeps it in `tasks.json`.
+- `impl_briefs.py`, Test 1: every system prompt and brief rebuilt offline with no implementer
+  model, each part's size logged; passes at most 3 router scripts and 7 actions in full a brief,
+  and T212's first request under 110K tokens.
+- `impl_check.py`: Hot fireball through the real runner and the Claude Code adapter, its first ask
+  and a follow-up that resumes its session, and an `op` the guard refuses.
+- `impl_check_opencode.py`: the same through the OpenCode adapter, with what OpenRouter billed for
+  each request, recorded by a pass-through on 127.0.0.1.
+- `impl_messages.py`, Tests 3 and 4: two messages into one run, one sent as it reports, the three
+  parts of one line making one run, and a cancel of a follow-up and of a new task, each put back.
+  `impl_messages_check.py` is the earlier check of the same, with code's put-back alone and a run
+  warned at its limit.
+- `impl_replay.py`, Test 2: tasks replayed as they happened, each follow-up at its recorded moment,
+  each task on a fresh server (`up --fresh`, what the last one made set aside), on either adapter
+  (`--harness opencode`). Each server is paired with a test server, `<name>-test` (`--test`), a
+  realmc server of its own made fresh with it, where the implementers' `vfg test` runs
+  (`VFG_TEST_BOX` its config), checked first with one library test (`--preflight railgun`); `--judge` scores each task with `impl_judge.py`, which casts its action twice,
+  each from fresh state on a stage of the test templates' geometry, and has a judge model mark its
+  DONE WHEN items: done only when both casts show it (flaky when one does), the judge's own probes
+  winning over the implementer's words; a research task, or a scenario not buildable, is scored
+  apart, outside the total (`--night`: what Haiku made on 2026-10-11).
+- `impl_scenarios.py` derives one scenario per replayed task, once, into
+  `$VFG_IMPL_REPLAY/scenarios.json` for a person to review: the player, his opening line, his goal,
+  his hidden wants in order, the setup, the DONE WHEN list and how he tries it.
+- `impl_game.py`, the game eval: each scenario played from nothing on a fresh live server and its
+  test server: each turn the stand-in brain writes the brief, the real runner builds it, the player
+  tries it on the live server and a simulated player says his next line (a complaint, his next
+  want, or done); then `impl_judge.py` marks the whole checklist. `--dry` spends nothing.
+- `impl_game_tests.py` reads a game eval's runs of `vfg test` against the judge: what each fix
+  changed (the test, the script, both), false passes, and lowered bars.
+- `impl_cache.py`, Test 6: the cache hit rate over each task's session, read from a replay's
+  `request` lines.
+- `impl_wild.py`, Test 5: the ten wild asks, none refused by the model or the harness, and the
+  guard still refusing `op`.
+
 ## Settings
 
 | Key | Used for |
@@ -128,7 +175,8 @@ after another on the one feed:
    while Alex's runs beside it; three of Steve's lines waiting and a fourth turned away, never
    answered, by a private message naming the three (`AI say - | (to Steve) Still on: …`), the
    three taking his turn one after another; a conversational line for Respond; and one hand-off
-   on the Claude subscription (Haiku 5.5): its task's name, its `AI task` row, its brief in
+   on the implementers' default, DeepSeek V4.1 Flash through OpenRouter (`docs/CONTRACTS.md` §10;
+   the 2026-10-12 run below was on Haiku 5.5, the subscription): its task's name, its `AI task` row, its brief in
    `vfg.db` under its five headings with its done-when items, the turn ended as the implementer
    started, its report starting a new loop (one chat line, one `AI result` row, nothing the
    implementer wrote in the feed), what it made; then a follow-up by its name that resumes the

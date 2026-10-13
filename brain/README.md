@@ -369,7 +369,8 @@ tried again every 5 minutes while it fails); until they are in, the opening says
 not loaded, and a refused command's result comes without its reference.
 
 The OpenRouter key: `OPEN_ROUTER_API` in the environment, else alone in `~/.vfg/openrouter.key`
-(mode 600), as `structured()` reads it.
+(mode 600), as `structured()` reads it; the implementers read it too on the `openrouter` provider, and
+`DEEPSEEK_API_KEY`, from the environment only, on `deepseek` (Settings, below).
 
 ## Settings
 
@@ -393,9 +394,17 @@ From the environment, then `~/.vfg/config`:
 | `VFG_SERVER` | `main`: whose `made/<server>/actions/` are on the menu |
 | `VFG_RUNNING_TTL_S` | `30` s between background fetches of the running copies; `0`: never |
 | `VFG_DISPATCH_ACTION_TIMEOUT_S` | `20` s per once action, unless its class sets `timeout_s` |
-| `VFG_IMPL_MODEL`, `VFG_IMPL_EFFORT`, `VFG_IMPL_MAX_TURNS` | `claude-haiku-5-5`, `low`, `40`: the implementers, on your Claude subscription |
-| `VFG_IMPLEMENTER_MINUTES` | `10`: past it an implementer is stopped and its task failed |
-| `VFG_IMPL_CACHE_TTL` | `5m` (or `1h`): an implementer's prompt cache; `VFG_SUBAGENT_CACHE_TTL` is read when it is empty |
+| `VFG_IMPL_HARNESS` | `claude-code`, or `opencode`: the harness an implementer runs in (`brain/implementers/harness/`) |
+| `VFG_IMPL_PROVIDER` | `deepseek` when `DEEPSEEK_API_KEY` is set, else `openrouter`: DeepSeek V4.1 Flash at that provider; or `anthropic`, Haiku 5.5 on your Claude subscription, Claude Code only and untested |
+| `VFG_IMPL_MODEL` | the provider's: `deepseek-flash`, `deepseek/deepseek-v4.1-flash`, `claude-haiku-5-5`; `VFG_IMPLEMENTER_MODEL` is read when it is empty |
+| `VFG_IMPL_BASE_URL` | the provider's Claude-compatible address: `https://api.deepseek.com/anthropic`, `https://openrouter.ai/api`; none for `anthropic` |
+| `VFG_IMPL_OR_ORDER`, `VFG_IMPL_OR_IGNORE` | `digitalocean,ionstream,together` and `venice,morph,relace`: on `openrouter`, the providers each request tries first and never, fallbacks allowed, so a run keeps one provider's cache; `none` empties one |
+| `VFG_IMPL_EFFORT`, `VFG_IMPL_MAX_TURNS` | `low` (the `anthropic` provider's only), `100` model requests a run, warned at the 95th and stopped past the 100th |
+| `VFG_IMPLEMENTER_MINUTES` | `10`: warned a minute before, stopped at it and its task failed |
+| `VFG_IMPL_CACHE_TTL` | `5m` (or `1h`): the `anthropic` provider's prompt cache; `VFG_SUBAGENT_CACHE_TTL` is read when it is empty |
+| `VFG_OPENCODE_BIN` | `opencode` on the PATH, else `~/.opencode/bin/opencode`: OpenCode's program; from the environment only |
+| `VFG_TEST_BOX` | none: the file of the test server's settings, where `vfg test` runs an implementer's test (`docs/CONTRACTS.md` §8); with none, its check is one action run |
+| `VFG_TEST_TIMEOUT_S` | `60` s a test may run, 5 to 600, before it is stopped |
 
 A number that does not read, or is under its least, is logged and its default used. The
 `VFG_ORCHESTRATOR_*` and `VFG_PLAN_*` keys went with the orchestrator call and the retry planner; one

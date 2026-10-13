@@ -12,8 +12,8 @@ layer ``jev``).  All go through one lock, so each cast's checks see every cast b
    past its line: its window is the whole line's, and would swallow the next words;
 3. the incantation's own ``cooldown_s`` since it last fired for that player, then
    VFG_CAST_GAP_S since any of the player's casts fired, are ``cooldown``;
-4. otherwise its copy is started (instances.Box.start, from the entry, with no round trip
-   to the PC), and the cast is ``fired``, or ``failed`` when the copy could not start;
+4. otherwise its copy is started (instances.Box.start, with the kit's incantations.cast_meta of
+   the entry, with no round trip to the PC), and the cast is ``fired``, or ``failed`` when the copy could not start;
    ``stale`` when the bridge itself has held it VFG_CAST_WAIT_S since its request came
    (on this lock, or on instances' copies.lock), so it never fires seconds late.
 
@@ -140,8 +140,8 @@ class Casts:
     def _modules(self):
         mods = self.kit.modules()
         if mods is None:
-            raise Unavailable("incantations are not on this box: the kit in %s has no"
-                              " incantations module" % self.kit.path)
+            raise Unavailable("incantations are not on this box: %s" % (
+                getattr(self.kit, "why", None) or "the kit in %s has no incantations module" % self.kit.path))
         return mods
 
     def _store(self, inc):
@@ -169,7 +169,7 @@ class Casts:
             entry = self._store(inc).lookup(player, phrase)
             if entry is None:
                 return 404, {"error": "%s has no incantation %r" % (player, phrase)}, None
-            cast = self._try(ins, entry, player, heard, "spotter", started, ended, client_cast_id,
+            cast = self._try((inc, ins), entry, player, heard, "spotter", started, ended, client_cast_id,
                              arrived)
         return 202, answer(cast), lambda: self._after(inc, cast, entry)
 
@@ -188,10 +188,12 @@ class Casts:
         except Exception:
             self.log.exception("could not drop the line of cast %s", cast["id"])
 
-    def _try(self, ins, entry, player, heard, layer, started, ended, client_cast_id, arrived,
+    def _try(self, mods, entry, player, heard, layer, started, ended, client_cast_id, arrived,
              line_id=None, late=None):
-        """Check, start and store one cast; call under the lock. Answers the stored row.
-        ``late``: why it is too late to fire (a Jev cast's line too old), so it is ``stale``."""
+        """Check, start and store one cast; call under the lock. Answers the stored row. ``mods``:
+        the kit's (incantations, instances). ``late``: why it is too late to fire (a Jev cast's
+        line too old), so it is ``stale``."""
+        inc, ins = mods
         now = self.clock()
         cast = {"id": ulid.new(), "at": timeutil.format_time(now),
                 "started_at": timeutil.format_time(started), "ended_at": timeutil.format_time(ended),
@@ -207,7 +209,7 @@ class Casts:
         if status is None:
             try:
                 box = ins.Box(self.base, self.mc, owner=self.owner, poll=self.poll)
-                copy, _, proc = box.start(self.meta(entry, player), wait=left)
+                copy, _, proc = box.start(inc.cast_meta(entry, player), wait=left)
             except ins.Busy as exc:  # copies.lock held past the wait: too late to fire
                 status, why = "stale", _one_line(exc)
             except Exception as exc:  # NotDeployed, CopyError, OSError: the cast failed
@@ -247,17 +249,6 @@ class Casts:
                 return "cooldown", "%.1f s left of the %g s between a player's casts" % (
                     left, self.gap_s)
         return None, None
-
-    @staticmethod
-    def meta(entry, player):
-        """What instances.Box.start takes, from a store entry; each caster field is the caster."""
-        values = dict(entry.get("values") or {})
-        for field in entry.get("caster_fields") or ():
-            values[field] = player
-        return {"action": entry.get("action"), "script": entry.get("script") or entry.get("action"),
-                "source": entry.get("source") or "library", "server": entry.get("server") or "",
-                "values": values, "live": list(entry.get("live") or ()),
-                "runs": entry.get("runs") or "once", "task": "cast"}
 
     def _reap(self, box, copy, proc):
         """Wait for a cast's copy, so it never stays a zombie; then its pid file goes, if still its."""
@@ -324,7 +315,7 @@ class Casts:
                 with self.lock:
                     if self.db.cast_by_client_id(key) is not None:
                         continue
-                    cast = self._try(ins, m.entry, player, heard, "transcript", started, ended,
+                    cast = self._try((inc, ins), m.entry, player, heard, "transcript", started, ended,
                                      key, arrived)
                 made.append(cast)
         with self.lock:  # a spotter's cast being started right now is stored first
@@ -389,7 +380,7 @@ class Casts:
                 ended = timeutil.parse_time(line["ended_at"] or line["at"])
                 heard = " ".join(inc.words(line["text"]))[:200] or None
                 late = self._too_old(line) or self._said_early(inc, entry, line["text"], started, ended)
-                cast = self._try(ins, entry, player, heard, "jev", started, ended, key, arrived,
+                cast = self._try((inc, ins), entry, player, heard, "jev", started, ended, key, arrived,
                                  line_id=line_id, late=late)
                 new = True
             if keep:

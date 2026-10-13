@@ -1,13 +1,13 @@
 """Tests for the hits presets (damage_hits, freeze, push, around, lock_on, lightning,
 explosion, crater) against the fake RCON server and fake_world, with pydantic for a preset's
-values class:
+values class (launch, which push throws a player by, has test_presets_launch.py):
 
     uv run --no-project --python 3.12 --with pydantic python scripts/_test/test_presets_hits.py
 
 Each preset is loaded from scripts/_presets/ as it is and run in this process against a
 fresh fake world (test_kit's KitCase, with a few more commands the hits presets send:
 effect, data modify and merge, tp, damage by someone who must be there, a tag added twice,
-and a volume selector). It sends the commands it should, and a script that copies all eight
+and a volume selector). It sends the commands it should, and a script that copies all nine
 leaves nothing behind after a stop (its values class is checked with every preset's, in
 test_presets_values.py).
 """
@@ -38,7 +38,7 @@ import library  # noqa: E402
 import mc  # noqa: E402
 from kit import aim, loop, values, world  # noqa: E402
 
-NAMES = ["damage_hits", "freeze", "push", "around", "lock_on", "lightning", "explosion", "crater"]
+NAMES = ["damage_hits", "freeze", "push", "around", "lock_on", "lightning", "explosion", "crater", "launch"]
 
 
 def load(name):
@@ -355,20 +355,21 @@ class PushTests(HitsCase):
         P["push"].push(hits, frm, vals("push", push_way="toward", push_strength=20))
         self.assertAlmostEqual(z["motion"][0], -(10.0 - 1.5) / 5.0, places=3)     # never past frm
 
-    def test_a_player_moved_into_room_to_stand_once(self):
-        self.world.add_player("Alex", (6.5, 64.0, 0.5))
-        hits = P["around"].around("Steve", vals("around", around_what="players"))
-        self.assertEqual(P["push"].push(hits + hits, "Steve", vals("push", push_strength=6)), 1)
-        self.assertEqual([round(c, 1) for c in self.world.players["Alex"]["pos"]], [12.5, 64.1, 0.5])
-        self.world.solid.update({(OVERWORLD, 18, 64, 0), (OVERWORLD, 18, 65, 0)})
-        hits = P["around"].around("Steve", vals("around", around_what="players", around_radius=20))
-        P["push"].push(hits, "Steve", vals("push", push_strength=6))            # no room 6 out: 3 out
-        self.assertEqual(round(self.world.players["Alex"]["pos"][0], 1), 15.5)
-        self.world.solid.update({(OVERWORLD, 21, 64, 0), (OVERWORLD, 21, 65, 0)})
-        hits = P["around"].around("Steve", vals("around", around_what="players", around_radius=20))
-        self.assertEqual(P["push"].push(hits, "Steve", vals("push", push_strength=6)), 0)   # no room at all
-        P["push"].push(hits, "Steve", vals("push", push_way="up", push_strength=6))
-        self.assertEqual(self.world.players["Alex"]["effects"]["levitation"], (1, 7))
+    def test_a_player_is_launched_through_the_launch_preset_once(self):
+        calls = []
+        P["push"].launch = lambda h, v, **kw: calls.append((h.name, kw)) or 1     # a script holds launch beside it
+        try:
+            self.world.add_player("Alex", (6.5, 64.0, 0.5))
+            hits = P["around"].around("Steve", vals("around", around_what="players"))
+            self.assertEqual(P["push"].push(hits + hits, "Steve", vals("push", push_strength=6)), 1)
+            self.assertEqual(calls, [("Alex", {"way": "away", "strength": 6, "frm": (0.5, 64.0, 0.5)})])
+            P["push"].push(hits, "Steve", vals("push", push_way="toward", push_strength=20))
+            self.assertEqual(calls[-1][1]["strength"], 6.0 - 1.5)                          # never past Steve
+            P["push"].push(hits, "Steve", vals("push", push_way="up", push_strength=9))
+            self.assertEqual(calls[-1][1], {"way": "up", "strength": 9, "frm": (0.5, 64.0, 0.5)})
+            self.assertEqual(self.world.players["Alex"]["pos"], [6.5, 64.0, 0.5])          # never teleported
+        finally:
+            del P["push"].launch
 
 
 class PushMoreTests(HitsCase):
@@ -508,7 +509,7 @@ class OffAndTunnelTests(HitsCase):
         self.assertFalse(self.sent("forceload add"))
 
 
-# ---- all eight copied into one script, run as on EC2, stopped -------------------------------
+# ---- all eight, and launch, copied into one script, run as on EC2, stopped -------------------
 
 WIRING = '''
 eye = "Steve"

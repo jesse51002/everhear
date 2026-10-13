@@ -18,8 +18,8 @@ vfg_<name>: no entity, bossbar, forceload or objective. A seed (README.md beside
 README checked too, and must end as its README says; one that ends by itself runs to its end,
 on a clock ten times as fast (fast_clock/). The scripts under the six core actions (CORE) need
 values their defaults leave empty, so test_core.py runs them instead. The kit's tests
-(test_kit.py), instances.py's (test_instances.py), incantations.py's (test_incantations.py),
-test_core.py and every test_presets_*.py and
+(test_kit.py), instances.py's (test_instances.py), incantations.py's (test_incantations.py), the
+test helpers' (test_kit_test.py), test_core.py and every test_presets_*.py and
 test_examples_*.py beside this file run with them. A script that ends by itself cleans up at
 once, without mc's 0.4 s grace for a last blast (VFG_EXIT_GRACE_S=0).
 """
@@ -572,7 +572,8 @@ def _add_kit_and_preset_tests():
     import glob
     import importlib
     for path in [os.path.join(HERE, "test_kit.py"), os.path.join(HERE, "test_instances.py"),
-                 os.path.join(HERE, "test_incantations.py"), os.path.join(HERE, "test_core.py")] \
+                 os.path.join(HERE, "test_incantations.py"), os.path.join(HERE, "test_core.py"),
+                 os.path.join(HERE, "test_kit_test.py")] \
             + sorted(glob.glob(os.path.join(HERE, "test_presets_*.py"))) \
             + sorted(glob.glob(os.path.join(HERE, "test_examples_*.py"))):
         mod = importlib.import_module(os.path.basename(path)[:-3])

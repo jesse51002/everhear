@@ -784,13 +784,20 @@ def usage_row(a, started):
         raise Fail(2, "--in and --out are whole numbers, 0 or more")
     if (a.cache_read or 0) < 0 or (a.cache_write or 0) < 0:
         raise Fail(2, "--cache-read and --cache-write are whole numbers, 0 or more")
+    if (getattr(a, "largest", None) or 0) < 0:
+        raise Fail(2, "--largest is a whole number, 0 or more")
     if a.cost is not None and (a.cost < 0 or math.isnan(a.cost) or math.isinf(a.cost)):
         raise Fail(2, "--cost is a number, 0 or more")
     if a.ref is not None and len(a.ref) > 64:
         raise Fail(2, "--ref is at most 64 characters")
-    return {"at": now_iso(started), "component": a.component, "model": a.model.strip(),
-            "input_tokens": a.in_, "output_tokens": a.out, "cost_usd": a.cost, "ref": a.ref,
-            "cache_read_tokens": a.cache_read, "cache_write_tokens": a.cache_write}
+    row = {"at": now_iso(started), "component": a.component, "model": a.model.strip(),
+           "input_tokens": a.in_, "output_tokens": a.out, "cost_usd": a.cost, "ref": a.ref,
+           "cache_read_tokens": a.cache_read, "cache_write_tokens": a.cache_write}
+    # A run's largest request (an implementer's): only when given, so the row stays the one
+    # lib/py/vfg_llm.py queues for a call, with ok, error and ms after it.
+    if getattr(a, "largest", None) is not None:
+        row["largest_tokens"] = a.largest
+    return row
 
 
 def send_usage(cfg, a, rows):
@@ -1194,9 +1201,10 @@ def script_problem(cfg, name, root=None):
     return None
 
 
-def tree(root, name):
+def tree(root, name, extra=()):
     """What a deploy sends of <root>/<name>, in its order: (path in the tar, its os.stat, the
-    file's bytes, or None for a folder); no caches, no dotfiles, no links."""
+    file's bytes, or None for a folder); no caches, no dotfiles, no links; then `extra`, files
+    made for the deploy (action_defaults)."""
     for dirpath, dirnames, filenames in os.walk(os.path.join(root, name)):
         dirnames[:] = sorted(d for d in dirnames
                              if not d.startswith(".") and d != "__pycache__"
@@ -1209,6 +1217,51 @@ def tree(root, name):
                 continue
             with open(path, "rb") as f:
                 yield rel + "/" + fn, os.stat(path), f.read()
+    for entry in extra:
+        yield entry
+
+
+# Written into each deployed script folder: its actions' defaults as they are here, so the box
+# can give a binding made before its action gained a value that value's default
+# (instances.Box.with_defaults). The same bytes are in the folder's stamp, so a change to an
+# action's defaults alone deploys its script again.
+ACTION_DEFAULTS = "action_defaults.json"
+_ACTS_FOR_DEPLOY = {}
+
+
+class _Made(object):
+    """A made file's stat, as tree gives one: not executable, made now."""
+    st_mode = 0o100644
+    st_mtime = 0
+
+
+def action_defaults(cfg, root, name):
+    """[the action_defaults.json entry tree adds to <root>/<name>], or [] for _lib, a folder no
+    action runs, or actions that cannot be read (the deploy goes on without it). {action:
+    {"values": every field's default, the action's defaults and fixed values over them,
+    "live": its live fields}} for every action whose script is `name`."""
+    if name.startswith("_") or os.path.exists(os.path.join(root, name, ACTION_DEFAULTS)):
+        return []
+    key = (cfg.repo, server_name(cfg))
+    if key not in _ACTS_FOR_DEPLOY:
+        try:
+            _ACTS_FOR_DEPLOY[key] = actions_lib().cache(cfg.repo, key[1], cfg.home).get("actions") or {}
+        except Exception as e:  # Fail, or a cache that cannot be built: the deploy still goes
+            warn("action defaults not deployed: %s" % (getattr(e, "msg", None) or one_line(str(e))))
+            _ACTS_FOR_DEPLOY[key] = {}
+    got = {}
+    for act, e in sorted(_ACTS_FOR_DEPLOY[key].items()):
+        if not isinstance(e, dict) or (e.get("script") or act) != name:
+            continue
+        fields = e.get("fields") or {}
+        values = dict((k, f.get("default")) for k, f in fields.items())
+        values.update(e.get("defaults") or {})
+        values.update(e.get("fixed") or {})
+        got[act] = {"values": values, "live": sorted(k for k, f in fields.items() if f.get("live"))}
+    if not got:
+        return []
+    data = (json.dumps(got, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    return [(name + "/" + ACTION_DEFAULTS, _Made(), data)]
 
 
 def stamp(entries):
@@ -1230,7 +1283,7 @@ def pack(cfg, names, root=None):
     stamps = {}
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
         for name in names:
-            entries = list(tree(root, name))
+            entries = list(tree(root, name, action_defaults(cfg, root, name)))
             stamps[name] = stamp(entries)
             for path, st, data in entries:
                 ti = tarfile.TarInfo(path)
@@ -1278,7 +1331,7 @@ def tars_for(cfg, source, names):
 def stamps_for(cfg, source, names):
     """What the box checks before it starts a copy with no deploy: [{"root", "stamps"}], the
     stamps of what tars_for would send, read from the files, never packed."""
-    return [{"root": root, "stamps": dict((n, stamp(tree(here, n))) for n in folders)}
+    return [{"root": root, "stamps": dict((n, stamp(tree(here, n, action_defaults(cfg, here, n)))) for n in folders)}
             for root, here, folders in deployed(cfg, source, names)]
 
 
@@ -1305,7 +1358,13 @@ def cmd_script_deploy(cfg, a):
         raise Fail(1, "no scripts folder at %s" % tilde(root))
     made = made_scripts_dir(cfg)
     skipped, lib_names, made_names = [], [], []
-    if a.name:
+    if getattr(a, "kit", False):
+        # the kit alone (_lib/, stamped): bridge/deploy/deploy.sh sends it with the bridge, which imports it
+        if a.name:
+            raise Fail(2, "--kit sends the kit alone: no script name with it")
+        if not os.path.isdir(os.path.join(root, "_lib")):
+            raise Fail(1, "no scripts/_lib/ in %s" % tilde(cfg.repo))
+    elif a.name:
         if not NAME_RE.match(a.name):
             raise Fail(2, "%s is not a script name" % a.name)
         if not os.path.isdir(os.path.join(root, a.name)) and os.path.isdir(os.path.join(made, a.name)):
@@ -1735,6 +1794,36 @@ def cmd_action_list(cfg, a):
     return 0
 
 
+def cmd_action_show(cfg, a):
+    """One action in full, as an implementer's brief gives it (menu.describe): its line, its
+    script, how it runs, and every value with its type, limits, default and description. From the
+    actions cache, built again first when an action file is newer, so an action saved a minute ago
+    is there. An action that is not there exits 1 with why, or the names near it."""
+    va = actions_lib()
+    try:
+        data = va.cache(cfg.repo, server_name(cfg), cfg.home)
+    except Exception as e:
+        raise Fail(1, "the actions cache could not be read: %s: %s" % (type(e).__name__, one_line(str(e))))
+    acts = data.get("actions") or {}
+    menu = lib_module("menu")
+    entry = acts.get(a.name)
+    if not isinstance(entry, dict):
+        why = (data.get("errors") or {}).get(a.name)
+        if why:
+            raise Fail(1, "action %s did not load: %s — vfg action check %s" % (a.name, one_line(str(why)), a.name))
+        near = menu.near(a.name, sorted(acts))
+        raise Fail(1, "no action %s in actions/ or made/%s/actions/%s" % (
+            a.name, server_name(cfg), "; near it: " + ", ".join(near) if near else " — vfg action list names them"))
+    out(menu.describe(a.name, entry))
+    return 0
+
+
+def one_line(text, most=300):
+    """`text` on one line, at most `most` characters."""
+    text = " ".join(str(text).split())
+    return text if len(text) <= most else text[:most - 1] + "…"
+
+
 def action_rel(cfg, cat, name):
     """An action's file, from the repo: actions/railgun.py, made/main/actions/tnt_crouch.py."""
     try:
@@ -1933,7 +2022,8 @@ def copy_script(src_folder, dest, text):
     shutil.rmtree(tmp, ignore_errors=True)
     try:
         if src_folder:
-            shutil.copytree(src_folder, tmp, ignore=shutil.ignore_patterns("__pycache__", ".*", "*.pyc"))
+            # its test.py stays the library's: the new script's own is made/<server>/tests/<name>.py
+            shutil.copytree(src_folder, tmp, ignore=shutil.ignore_patterns("__pycache__", ".*", "*.pyc", "test.py"))
         else:
             os.makedirs(tmp)
         with open(os.path.join(tmp, "main.py"), "w", encoding="utf-8") as f:
@@ -2069,6 +2159,10 @@ def cmd_script_new(cfg, a):
     if not ACTION_NAME_RE.match(a.name):
         raise Fail(2, "%s is not a name for a script and its action (a-z, 0-9 and _, starting with a "
                       "letter, at most 48)" % a.name)
+    if a.kind and a.library:
+        raise Fail(2, "--kind writes a task's test (made/<server>/tests/); a library script's test.py is written by hand")
+    if a.kind and a.kind not in test_kinds(cfg):
+        raise Fail(2, "no test template %s: the kinds are %s" % (a.kind, ", ".join(test_kinds(cfg)) or "none"))
     library, lib = load_library(cfg)
     taken = lib.taken(a.name, "script")
     if taken:
@@ -2098,6 +2192,13 @@ def cmd_script_new(cfg, a):
         text = src.text
     else:
         text = library.SKELETON
+    # and every preset those (or the ones --from holds) need besides, once each: push calls launch
+    needs = library.needed(lib, presets, src.holds if src else [])
+    for it, by in needs:
+        if it.problem:
+            raise Fail(1, "%s (which %s needs): %s" % (it.rel, by, it.problem))
+    by_need = dict((it.name, by) for it, by in needs)
+    presets = presets + [it for it, _by in needs]
     added = []
     for p in presets:
         try:
@@ -2116,14 +2217,45 @@ def cmd_script_new(cfg, a):
     out("made %s/ %s" % (rel, "from %s/ (%s)" % (os.path.dirname(src.rel), src.source) if src
                           else "from nothing"))
     for p, keys, imports in added:
-        out("  + %s (%s): %s" % (p.name, p.source, ", ".join(keys) if keys else "no values"))
+        out("  + %s (%s%s): %s" % (p.name, p.source, ", which %s needs" % by_need[p.name] if p.name in by_need else "",
+                                   ", ".join(keys) if keys else "no values"))
     out("made %s: class %s(%s)" % (os.path.relpath(action_path, cfg.repo), library.camel(a.name),
                                    ", ".join(["Action"] + ['preset("%s")' % p for p in inherit])))
     report_check(cfg, library, lib, os.path.join(dest, "main.py"), "script", a.name,
                  "library" if a.library else "made")
+    test = None if a.library else write_test_skeleton(cfg, a.name, a.kind)
+    if test:
+        out("made %s: its test, %s: one check per DONE WHEN item, then vfg test %s"
+            % (os.path.relpath(test, cfg.repo), "the %s template" % a.kind if a.kind else
+               "a skeleton (or the template of its kind: vfg test %s --kind %s)" % (a.name, "|".join(test_kinds(cfg))),
+               a.name))
     out("next: edit its first line, ASKS and the wiring; the action's line, takes and descriptions; "
         "then vfg script check %s" % a.name)
+    if src:
+        out("\n".join(script_outline(text, os.path.join(rel, "main.py"))))
     return 0
+
+
+def script_outline(text, rel):
+    """What a copied script holds, by line, so the parts needed are read once: its ASKS line and each
+    top-level function and class, with its arguments or bases."""
+    import ast
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    lines = text.split("\n")
+    out = ["outline of %s (line, then what is there):" % rel]
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "ASKS" for t in node.targets):
+            asks = lines[node.lineno - 1].strip()
+            out.append("  %d %s" % (node.lineno, asks if len(asks) <= 120 else asks[:117] + "..."))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            out.append("  %d def %s(%s)" % (node.lineno, node.name, ast.unparse(node.args)))
+        elif isinstance(node, ast.ClassDef):
+            bases = ", ".join(ast.unparse(b) for b in node.bases)
+            out.append("  %d class %s%s" % (node.lineno, node.name, "(%s)" % bases if bases else ""))
+    return out
 
 
 def check_targets(cfg, library, lib, target):
@@ -2486,7 +2618,7 @@ def cmd_action_refs(cfg, a):
 
 
 def cmd_action(cfg, a):
-    return {"run": cmd_action_run, "list": cmd_action_list, "check": cmd_action_check,
+    return {"run": cmd_action_run, "list": cmd_action_list, "check": cmd_action_check, "show": cmd_action_show,
             "refs": cmd_action_refs}[a.op](cfg, a)
 
 
@@ -3522,7 +3654,8 @@ def flush_usage_later(cfg):
 
 
 def cmd_route(cfg, a):
-    """The example scripts and presets for one implementer's brief, as JSON. With --task, the
+    """The example scripts, presets and actions for one implementer's brief, as JSON (lib/route.py:
+    at most 3 scripts and 7 actions). With --task, the
     task's row is read from the box first (at most ROUTE_TASK_S, out of the budget): Jev gets its
     description and the player's words beside the brief; without it, or when it cannot be read,
     the brief alone."""
@@ -3564,9 +3697,414 @@ def cmd_route(cfg, a):
 
 
 def cmd_prefix(cfg, a):
-    """The implementer's static system prompt, exactly: the same bytes every time."""
-    out_bytes(lib_module("prefix").build(cfg.repo).encode("utf-8"))
+    """The implementer's static system prompt, exactly: the same bytes every time. Its last part is
+    the library's actions, from the actions cache (built first when it is stale); when that cannot
+    be read, a line saying so stands in for them, and stderr says why."""
+    try:
+        acts = actions_lib().cache(cfg.repo, server_name(cfg), cfg.home)
+    except Fail as f:
+        warn("the library's actions are not in the prefix: %s" % f.msg)
+        acts = None
+    except Exception as e:  # a cache that cannot be built: the prefix still goes
+        warn("the library's actions are not in the prefix: %s: %s" % (type(e).__name__, one_line(str(e))))
+        acts = None
+    out_bytes(lib_module("prefix").build(cfg.repo, acts).encode("utf-8"))
     return 0
+
+
+# ------------------------------------------------------------------ tests
+
+# An ability's test (Prototype_Implementer_Harness): a script that tries it on the TEST server, a
+# second Minecraft server with Carpet's fake players and never the live one, and checks it item
+# by item with the kit's test helpers (scripts/_lib/kit/test.py). A task's test is
+# made/<server>/tests/<task>.py; a library script's, scripts/<name>/test.py.
+#
+# The test server is a second box: VFG_TEST_BOX names a file of its settings, KEY=value lines as
+# ~/.vfg/config has them, and the keys that choose a box (TEST_BOX_KEYS) are read from it over
+# the live box's; any other line is ignored. A realmc server's is its own config
+# (<realmc>/.server/<name>/home/.vfg/config); a second instance on the EC2 box needs only
+# VFG_REMOTE_VFG and VFG_REMOTE_MC. Set nowhere, vfg test says so and exits 3.
+TEST_BOX_KEYS = ("VFG_SSH", "VFG_SSH_HOST", "VFG_SSH_USER", "VFG_SSH_KEY", "VFG_REMOTE_VFG", "VFG_REMOTE_MC")
+TEST_TIMEOUT = 60.0
+TEST_SKELETON = '''"""The test of {name}: one check per DONE WHEN item of its brief. Run it with vfg test {name}."""
+# KIND: start from the template of its kind instead: vfg test {name} --kind {kinds} (written over this)
+from kit import test
+
+t = test.Test("Steve")                    # TODO: the player it is for, as the brief names them
+target = t.mob("husk", 0, 0, 10)          # TODO: what it acts on, (right, up, forward) from them; or t.blocks(...)
+t.cast("TODO: the phrase")                # TODO: their incantation; or t.run("{name}", player="Steve")
+t.watch(5)
+t.check("TODO: the first DONE WHEN item", t.hurt(target))
+t.check("TODO: the next DONE WHEN item", test.verdict(None, "TODO"))
+t.check("no error in its log", t.no_errors())
+t.done()
+'''
+
+
+def read_settings(path):
+    """KEY=value lines (export allowed, quotes taken off), as Config reads ~/.vfg/config."""
+    found = {}
+    with open(path, encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            if line.startswith("export "):
+                line = line[7:].lstrip()
+            key, value = (x.strip() for x in line.split("=", 1))
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            found[key] = value
+    return found
+
+
+class TestBox(Config):
+    """The live config, with the test box's keys (TEST_BOX_KEYS) from VFG_TEST_BOX's file over it."""
+
+    def __init__(self, path):
+        Config.__init__(self)
+        self.box_file = path
+        self.box = dict((k, v) for k, v in read_settings(path).items() if k in TEST_BOX_KEYS and v)
+
+    def get(self, key):
+        if key in self.box:
+            value = self.box[key]
+            return os.path.expanduser(value) if key in self.PATHS and value.startswith("~") else value
+        return Config.get(self, key)
+
+
+def test_box(cfg):
+    """The test server's config; Fail 3 when there is none, or when it is the live box itself."""
+    path = os.path.expanduser(cfg.get("VFG_TEST_BOX"))
+    if not path:
+        raise Fail(3, "no test server: VFG_TEST_BOX names none (a file of its box's settings); "
+                      "check it on the live server with one vfg action run instead")
+    try:
+        box = TestBox(path)
+    except OSError as e:
+        raise Fail(3, "not configured: VFG_TEST_BOX's file cannot be read (%s)" % (e.strerror or e))
+    if box.get("VFG_SSH_HOST") == cfg.get("VFG_SSH_HOST") and (box.rvfg == cfg.rvfg or box.rmc == cfg.rmc):
+        raise Fail(3, "not configured: VFG_TEST_BOX names the live server itself (%s on %s); a test never "
+                      "runs there" % (box.rvfg if box.rvfg == cfg.rvfg else box.rmc, box.get("VFG_SSH_HOST")))
+    return box
+
+
+def test_runs(text):
+    """The actions a test starts or binds by name: t.run("railgun", ...)'s and t.bind's first word."""
+    import ast
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return set(re.findall(r"""\.(?:run|bind)\(\s*["']([a-z][a-z0-9_]*)["']""", text))
+    return set(n.args[0].value for n in ast.walk(tree)
+               if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr in ("run", "bind")
+               and n.args and isinstance(n.args[0], ast.Constant) and isinstance(n.args[0].value, str))
+
+
+def test_path(cfg, name):
+    """(the test file, "made" or "library"), or (None, None)."""
+    made = os.path.join(cfg.repo, "made", server_name(cfg), "tests", name + ".py")
+    if os.path.isfile(made):
+        return made, "made"
+    lib = os.path.join(scripts_dir(cfg), name, "test.py")
+    if os.path.isfile(lib):
+        return lib, "library"
+    return None, None
+
+
+def test_kinds(cfg):
+    """The kinds of ability with a test template: scripts/_lib/kit/templates/<kind>.py, the kit's own
+    (kit.test.kinds() lists the same folder)."""
+    try:
+        return sorted(f[:-3] for f in os.listdir(os.path.join(scripts_dir(cfg), "_lib", "kit", "templates"))
+                      if f.endswith(".py") and not f.startswith("_"))
+    except OSError:
+        return []
+
+
+def test_skeleton(cfg, name):
+    return TEST_SKELETON.format(name=name, kinds="|".join(test_kinds(cfg)) or "(none here)")
+
+
+def test_template(cfg, name, kind):
+    """The template of `kind`, filled for `name`: its player and phrase from the incantations it
+    bound (the cache, no call), else Steve and its name in words; its item from its action. A line
+    naming the item is left as a comment when its action names none."""
+    kinds = test_kinds(cfg)
+    if kind not in kinds:
+        raise Fail(2, "no test template %s: the kinds are %s" % (kind, ", ".join(kinds) or "none"))
+    text = read_text(os.path.join(scripts_dir(cfg), "_lib", "kit", "templates", kind + ".py"))
+    got = read_incant_cache(cfg)
+    rows = [e for e in (got[0]["incantations"] if got else []) if isinstance(e, dict)
+            and (e.get("by") == name or e.get("action") == name)]
+    mine = [e for e in rows if e.get("player") and e.get("player") != "@a"]
+    player = (mine[0]["player"] if mine else "Steve")
+    phrase = (mine or rows)[0].get("phrase") if (mine or rows) else name.replace("_", " ")
+    item = ""
+    try:
+        act = (actions_lib().cache(cfg.repo, server_name(cfg), cfg.home).get("actions") or {}).get(name) or {}
+        item = (act.get("defaults") or {}).get("item") or ((act.get("fields") or {}).get("item") or {}).get("default") or ""
+    except Exception:
+        pass
+    lines = []
+    for ln in text.split("\n"):
+        if "{item}" in ln and not (isinstance(item, str) and item):
+            ln = "# " + ln.replace("{item}", "<its item>") + "  (its action names no item)"
+        lines.append(ln)
+    text = "\n".join(lines)
+    out_ = []
+    for ln in text.split("\n"):
+        filled = ln
+        for k, v in (("{name}", name), ("{player}", player), ("{phrase}", phrase or ""), ("{item}", str(item))):
+            filled = filled.replace(k, v)
+        if filled != ln and "  # " in filled and not filled.lstrip().startswith("#"):   # its comment kept in line
+            code, note = filled.split("  # ", 1)
+            filled = code.rstrip().ljust(ln.index("  # ") + 1) + " # " + note
+        out_.append(filled)
+    return "\n".join(out_)
+
+
+def write_test_skeleton(cfg, name, kind=None):
+    """made/<server>/tests/<name>.py: the template of `kind` (test_template), else TEST_SKELETON,
+    unless there is one: its path, or None. A kind's template goes over the bare skeleton too."""
+    path = os.path.join(cfg.repo, "made", server_name(cfg), "tests", name + ".py")
+    text = test_template(cfg, name, kind) if kind else test_skeleton(cfg, name)
+    if os.path.exists(path) and not (kind and read_text(path) == test_skeleton(cfg, name)):
+        return None
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    atomic_write(path, text, 0o644)
+    return path
+
+
+# What a test changed since its last run, shown before its results (visibility only: the test is
+# the implementer's to change). The last run's file is kept on this PC, $VFG_HOME/tests/<server or
+# library>/<name>.py; the changes are read from its t.check(...) calls, the things it puts on the
+# stage and how it starts the ability.
+TEST_STAGE = ("mob", "blocks", "ground", "region", "player", "stand_in")
+TEST_TRIGGER = ("cast", "run", "bind", "use", "sneak", "look")
+
+
+def test_memory(cfg, source, name):
+    return os.path.join(cfg.home, "tests", "library" if source == "library" else server_name(cfg), name + ".py")
+
+
+def _test_calls(tree_):
+    """(checks {(item, n): verdict node}, stage {key: call}, trigger [call]) of a test's AST."""
+    import ast
+    checks, stage, trigger, seen = {}, {}, [], {}
+    named = dict((id(n.value), n.targets[0].id) for n in ast.walk(tree_)
+                 if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name))
+    calls = sorted((n for n in ast.walk(tree_) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)),
+                   key=lambda n: (n.lineno, n.col_offset))
+    for n in calls:
+        attr = n.func.attr
+        if attr == "check" and len(n.args) >= 2:
+            item = n.args[0].value if isinstance(n.args[0], ast.Constant) else ast.unparse(n.args[0])
+            k = seen[("c", item)] = seen.get(("c", item), -1) + 1
+            checks[(str(item), k)] = n.args[1]
+        elif attr in TEST_STAGE and isinstance(n.func.value, ast.Name):
+            what = named.get(id(n)) or "%s %s" % (attr, n.args[0].value if n.args and isinstance(n.args[0], ast.Constant)
+                                                  else "")
+            k = seen[("s", what)] = seen.get(("s", what), -1) + 1
+            stage[(what.strip(), k)] = n
+        elif attr in TEST_TRIGGER and isinstance(n.func.value, ast.Name):
+            trigger.append(ast.unparse(n))
+    return checks, stage, trigger
+
+
+def _numbers(node):
+    """(the node's source with each number as #, its numbers in order)."""
+    import ast
+    import copy
+    nums, node = [], copy.deepcopy(node)
+    for n in ast.walk(node):
+        if isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.USub) and isinstance(n.operand, ast.Constant) \
+                and isinstance(n.operand.value, (int, float)) and not isinstance(n.operand.value, bool):
+            n.operand.value = -n.operand.value
+            n.op = ast.UAdd()
+    for n in ast.walk(node):
+        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)) and not isinstance(n.value, bool):
+            nums.append(n.value)
+            n.value = 0
+    return ast.unparse(node), nums
+
+
+def test_changes(old, new):
+    """One line per meaningful change from the test `old` to `new`: a check removed, added or
+    renamed, a bar lowered or raised (a number in a check's call smaller or larger), a check
+    changed otherwise, a target moved or changed or removed, the trigger changed. [] when either
+    does not parse."""
+    import ast
+    try:
+        (oc, os_, ot), (nc, ns, nt) = _test_calls(ast.parse(old)), _test_calls(ast.parse(new))
+    except SyntaxError:
+        return []
+    short = lambda n: (lambda t: t if len(t) <= 120 else t[:117] + "...")(ast.unparse(n))  # noqa: E731
+    lines = []
+    gone = [k for k in oc if k not in nc]
+    came = [k for k in nc if k not in oc]
+    for k in list(gone):   # the same verdict under another item: renamed
+        same = [c for c in came if ast.unparse(nc[c]) == ast.unparse(oc[k])]
+        if same:
+            lines.append('check renamed: "%s" -> "%s"' % (k[0], same[0][0]))
+            gone.remove(k)
+            came.remove(same[0])
+    lines += ['check removed: "%s" (%s)' % (k[0], short(oc[k])) for k in gone]
+    lines += ['check added: "%s" (%s)' % (k[0], short(nc[k])) for k in came]
+    for k in oc:
+        if k not in nc or ast.unparse(oc[k]) == ast.unparse(nc[k]):
+            continue
+        (shape0, n0), (shape1, n1) = _numbers(oc[k]), _numbers(nc[k])
+        if shape0 == shape1:
+            down, up = any(b < a for a, b in zip(n0, n1)), any(b > a for a, b in zip(n0, n1))
+            word = "bar lowered" if down and not up else "bar raised" if up and not down else "bars changed"
+        else:
+            word = "check changed"
+        lines.append('%s: "%s": %s -> %s' % (word, k[0], short(oc[k]), short(nc[k])))
+    for k, call in os_.items():
+        if k not in ns:
+            lines.append("target removed: %s (%s)" % (k[0], short(call)))
+            continue
+        if ast.unparse(call) == ast.unparse(ns[k]):
+            continue
+        pos0 = [ast.unparse(x) for x in call.args] + [ast.unparse(w) for w in call.keywords
+                                                       if w.arg in ("right", "up", "forward", "size")]
+        pos1 = [ast.unparse(x) for x in ns[k].args] + [ast.unparse(w) for w in ns[k].keywords
+                                                        if w.arg in ("right", "up", "forward", "size")]
+        lines.append("target %s: %s: %s -> %s" % ("moved" if pos0 != pos1 else "changed", k[0], short(call),
+                                                  short(ns[k])))
+    if ot != nt:
+        lines.append("trigger: %s -> %s" % ("; ".join(ot)[:150] or "none", "; ".join(nt)[:150] or "none"))
+    return lines
+
+
+def deploy_for_test(box, a, lib_names, made_names):
+    """The kit and these scripts onto the test server, each only when its stamp there is another:
+    the folders sent, as "scripts/_lib"... ([] when it had them all)."""
+    groups = [("scripts", scripts_dir(box), with_lib(box, sorted(lib_names)))]
+    if made_names:
+        groups.append((made_root(box), made_scripts_dir(box), sorted(made_names)))
+    stamps = [{"root": r, "stamps": dict((n, stamp(tree(here, n, action_defaults(box, here, n)))) for n in names)}
+              for r, here, names in groups]
+    stale = set(remote_json(box, a, {"op": "stale", "stamps": stamps}).get("stale") or [])
+    tars, sent = [], []
+    for root, here, names in groups:
+        need = [n for n in names if "%s/%s" % (root, n) in stale]
+        if need:
+            tar, stamps_ = pack(box, need, here)
+            tars.append({"root": root, "tar": tar, "stamps": stamps_})
+            sent += ["%s/%s" % (root, n) for n in need]
+    if tars:
+        rc, o, e = remote(box, a, "scripts.py", {"op": "deploy", "tars": tars}, 120, libs=SCRIPTS_LIBS)
+        if rc != 0:
+            finish(rc, b"", e)
+    return sent
+
+
+def cmd_test(cfg, a):
+    """vfg test <name>: the test of a task (or of a library script) on the test server, its
+    report printed; exit 0 when no check failed. With no test yet, a made task gets the skeleton."""
+    name = a.name
+    if not NAME_RE.match(name or ""):
+        raise Fail(2, "%s is not a task's or a script's name" % name)
+    if a.n is not None and not 0 <= a.n <= 500:
+        raise Fail(2, "-n is a number of log lines, 0 to 500")
+    timeout = a.test_timeout if a.test_timeout is not None else setting(cfg, "VFG_TEST_TIMEOUT_S", TEST_TIMEOUT, 5, 600)
+    if not 5 <= timeout <= 600:
+        raise Fail(2, "--timeout is 5 to 600 seconds")
+    path, source = test_path(cfg, name)
+    kind = getattr(a, "kind", None)
+    if kind and source != "library":
+        made = write_test_skeleton(cfg, name, kind)
+        if made:
+            raise Fail(1, "wrote the %s template %s: one t.check per DONE WHEN item at its TODO, the rest edited as "
+                          "the ability needs, then vfg test %s" % (kind, os.path.relpath(made, cfg.repo), name))
+        warn("%s has a test already: --kind writes a template only where there is none or the bare skeleton; "
+             "its template is scripts/_lib/kit/templates/%s.py" % (name, kind))
+    elif kind:
+        test_template(cfg, name, kind)  # a kind that is none says so
+        warn("%s is a library script: its test.py is written by hand; --kind is for a task's" % name)
+    if path is None:
+        if os.path.isdir(os.path.join(scripts_dir(cfg), name)):
+            raise Fail(1, "the library script %s has no test.py" % name)
+        made = write_test_skeleton(cfg, name)
+        raise Fail(1, "no test for %s yet: wrote the skeleton %s; or the template of its kind: vfg test %s --kind "
+                      "%s; fill in one check per DONE WHEN item, then vfg test %s"
+                   % (name, os.path.relpath(made, cfg.repo), name, "|".join(test_kinds(cfg)), name))
+    box = test_box(cfg)
+    text = read_text(path)
+    # The task's incantations, as the live server has them: those it bound, and those on its action.
+    entries = []
+    try:
+        store, _ = fetch_incantations(cfg, a)
+        entries = [e for e in store.get("incantations") or [] if isinstance(e, dict)
+                   and (e.get("by") == name or e.get("action") == name)]
+    except Fail as f:
+        warn("the live server's incantations were not read (%s): the test server has only its own" % f.msg)
+    # The actions it runs (t.run's), the task's own and those its incantations fire, as the actions
+    # cache holds them: their scripts go to the test server, and t.run reads them there.
+    acts = actions_lib().cache(cfg.repo, server_name(cfg), cfg.home).get("actions") or {}
+    wanted = test_runs(text) | {name} | set(e.get("action") for e in entries)
+    named = dict((n, acts[n]) for n in sorted(x for x in wanted if x) if isinstance(acts.get(n), dict))
+    lib_names, made_names = set(), set()
+    if source == "library":
+        lib_names.add(name)
+    for e in list(named.values()) + entries:
+        script = e.get("script") or e.get("action")
+        if script:
+            (made_names if e.get("source") == "made" else lib_names).add(script)
+    if os.path.isdir(os.path.join(made_scripts_dir(cfg), name)):
+        made_names.add(name)
+    lib_names = set(n for n in lib_names if not script_problem(cfg, n))
+    made_names = set(n for n in made_names if not script_problem(cfg, n, made_scripts_dir(cfg)))
+    sent = deploy_for_test(box, a, lib_names, made_names)
+    if sent:
+        out("test server: deployed %s" % ", ".join(x.split("/")[-1] for x in sent))
+    args = {"task": name, "server": server_name(cfg), "file": os.path.relpath(path, cfg.repo), "test": text,
+            "actions": named, "incantations": entries, "timeout": timeout, "owner": cfg.get("VFG_OWNER"),
+            "poll": live_poll(cfg), "tail": 15 if a.n is None else a.n}
+    if box.get("VFG_SSH_HOST") == cfg.get("VFG_SSH_HOST"):
+        # the same machine: the box checks itself that its server is not the live one under another path
+        args["live"] = {"vfg": cfg.rvfg, "mc": cfg.rmc}
+    memory = test_memory(cfg, source, name)
+    try:
+        last = read_text(memory)
+    except (OSError, Fail):
+        last = None
+    if last is not None and last != text:
+        changed = test_changes(last, text)
+        if changed:
+            out("\n".join("CHANGED    %s" % ln for ln in ["since the last run of this test:"] + changed))
+    rc, o, e = Ssh(box).call(program("test.py", dict(args, vfg=box.rvfg, mc=box.rmc)), timeout + 30,
+                             keep_master=True)
+    if rc != 0:
+        finish(rc, o, e)
+    lines = o.decode("utf-8", "replace").rstrip("\n").split("\n")
+    try:
+        end = json.loads(lines[-1])
+    except ValueError:
+        raise Fail(1, "the test server answered something that is not the test's end")
+    try:   # it ran: what it was is the next run's to compare with
+        os.makedirs(os.path.dirname(memory), mode=0o700, exist_ok=True)
+        atomic_write(memory, text)
+    except OSError as x:
+        warn("this test's last run was not kept (%s): the next run shows no changes" % (x.strerror or x))
+    # what the kit logged as it went (forceloads, cleanups) is not the report
+    report = [ln for ln in lines[:-1] if not re.match(r"^\d\d:\d\d:\d\d test_[a-z0-9_-]+ ", ln)]
+    if report:
+        out("\n".join(report))
+    if end.get("timed_out"):
+        raise Fail(1, "the test ran past its %g s and was stopped: shorten its waits, or --timeout" % timeout)
+    code = end.get("code")
+    result = [ln for ln in report if ln.startswith("RESULT: ")]
+    if code == 0:
+        return 0
+    if code == 1 and result:
+        raise Fail(1, "the test failed: %s" % result[-1][len("RESULT: "):])
+    if code == 2 and result:
+        raise Fail(1, "the test checked nothing: call t.check for each DONE WHEN item, then t.done()")
+    last = [ln for ln in report if ln.strip()]
+    raise Fail(1, "the test did not finish (exit %s): %s" % (code, last[-1].strip()[:300] if last else "no output"))
 
 
 # ------------------------------------------------------------------ watch
@@ -4018,6 +4556,8 @@ def build_parser():
     w.add_argument("--from", dest="source", metavar="SCRIPT", help="the script to copy, ours or the server's")
     w.add_argument("--preset", action="append", metavar="NAME", help="a preset to copy in (repeats)")
     w.add_argument("--library", action="store_true", help="into scripts/ and actions/ instead (coding sessions only)")
+    w.add_argument("--kind", metavar="KIND", help="its test from the template of its kind (scripts/_lib/kit/"
+                   "templates/<kind>.py: cast-projectile, cast-launch, item-use, area-blast, build, world-event)")
     w = ss.add_parser("check", help="refuse what would break, in a script, a preset or an action: "
                       "a value read that its action or values class lacks, a value with no "
                       "description, two presets with one name, a script with no action; no "
@@ -4026,6 +4566,8 @@ def build_parser():
     w = ss.add_parser("deploy", help="copy scripts/ and made/<VFG_SERVER>/scripts/ (or one) and "
                       "_lib/ to /opt/vfg/")
     w.add_argument("name", nargs="?")
+    w.add_argument("--kit", action="store_true", help="the kit (scripts/_lib/) alone, as the bridge's "
+                   "deploy.sh sends it")
     w = ss.add_parser("list", help="the running copies: each one's action, task and the values that "
                       "differ, from $VFG_HOME/running.json")
     w.add_argument("--json", action="store_true", help="running.json as it is")
@@ -4063,17 +4605,30 @@ def build_parser():
                    "held slot (in --json, each player's \"items\": the three replies), and their health, "
                    "food, armor points, XP level, game mode and effects")
 
-    s = sub.add_parser("route", help="the example scripts and presets for an implementer's brief "
+    s = sub.add_parser("route", help="the example scripts, presets and actions for an implementer's brief "
                        "(on stdin), picked by Jev; prints JSON")
     s.add_argument("--task", metavar="NAME", help="the task the brief is for; its description and the "
                    "player's words come from the box's tasks table")
     s.add_argument("--ref", metavar="REF", help="the usage row's ref (default: the task's name)")
 
-    sub.add_parser("prefix", help="print the implementer's static system prompt: how a script is "
-                   "written, the kit, and every library script's and preset's first line and values")
+    s = sub.add_parser("test", help="run a task's test (made/<VFG_SERVER>/tests/<name>.py) or a library "
+                       "script's (scripts/<name>/test.py) on the test server, VFG_TEST_BOX, never the live one: "
+                       "its script and incantations first, then one line per check; exit 0 when none failed",
+                       usage="vfg test <name> [-n N] [--timeout S] [--kind KIND]")
+    s.add_argument("name")
+    s.add_argument("--kind", metavar="KIND", help="write the test template of its kind (scripts/_lib/kit/templates/"
+                   "<kind>.py: cast-projectile, cast-launch, item-use, area-blast, build, world-event) where it has "
+                   "no test or the bare skeleton, filled with its player, phrase and item")
+    s.add_argument("-n", type=int, metavar="N", help="on a failure, the last N lines of each copy's log (15)")
+    s.add_argument("--timeout", dest="test_timeout", type=float, metavar="S",
+                   help="seconds the test may run (VFG_TEST_TIMEOUT_S, else 60)")
 
-    s = sub.add_parser("action", help="run, list and check the actions; read the server's command references")
-    as_ = s.add_subparsers(dest="op", metavar="run|list|check|refs")
+    sub.add_parser("prefix", help="print the implementer's static system prompt: how a script is "
+                   "written, the kit, every library script's and preset's first line and values, and "
+                   "every library action's menu line")
+
+    s = sub.add_parser("action", help="run, list, check and show the actions; read the server's command references")
+    as_ = s.add_subparsers(dest="op", metavar="run|list|check|show|refs")
     as_.required = True
     w = as_.add_parser("run", help="run an action: its values checked here, then a copy started on "
                        "EC2; prints one JSON line {ok, copy, action, running, summary, facts, notes, "
@@ -4094,6 +4649,9 @@ def build_parser():
                        "what it does")
     w.add_argument("--json", action="store_true", help="the actions cache, $VFG_HOME/actions.json")
     w = as_.add_parser("check", help="what is wrong with an action, or ok")
+    w.add_argument("name")
+    w = as_.add_parser("show", help="one action in full, as a brief gives it: its line, its script, how it "
+                       "runs, and every value with its type, limits, default and description")
     w.add_argument("name")
     w = as_.add_parser("refs", help="the server's command tree from its data generator, as one JSON "
                        "object {version, commands} (300 s)")
@@ -4157,6 +4715,8 @@ def build_parser():
     w.add_argument("--ref", metavar="REF", help="what the row is for: a task's name, a line's #seq; at most 64")
     w.add_argument("--cache-read", type=int, metavar="N", help="input tokens read from the cache")
     w.add_argument("--cache-write", type=int, metavar="N", help="input tokens written to the cache")
+    w.add_argument("--largest", type=int, metavar="N", help="the run's largest request, in tokens: its input, "
+                   "cached or not (an implementer's run)")
     return p
 
 
@@ -4272,13 +4832,17 @@ def run(argv, started):
         return cmd_route(cfg, a)
     if a.command == "prefix":
         return cmd_prefix(cfg, a)
+    if a.command == "test":
+        return cmd_test(cfg, a)
     if a.command == "usage":
         return cmd_usage(cfg, a, started)
     raise Fail(2, "unknown command")
 
 
-# The commands that may load the actions (pydantic).
-NEEDS_ACTIONS = ("action", "cmd", "script", "place", "state", "preset", "incantation")
+# The commands that may load the actions (pydantic). vfg prefix ends with the library's actions,
+# from the cache it builds again when stale; vfg route reads the cache as it is, and builds it only
+# when there is none.
+NEEDS_ACTIONS = ("action", "cmd", "script", "place", "state", "preset", "incantation", "prefix", "test")
 
 
 def under_uv(argv):

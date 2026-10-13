@@ -2,8 +2,8 @@ from actions._types import Action, Field, Literal, Live, Players, preset
 
 
 # The script's push is bent (its staff's mode picks the way, so it has no push_way value):
-# the action takes push_strength alone, not preset("push").
-class GravityCrush(Action, preset("around"), preset("freeze")):
+# the action takes push_strength alone, not preset("push"); push throws a player by the launch preset.
+class GravityCrush(Action, preset("around"), preset("freeze"), preset("launch")):
     """Give a player a gravity crush staff: right-click to slam every mob round where he looks to the ground and pin it there, flyers too."""
 
     script = "gravity_staff"
@@ -23,4 +23,4 @@ class GravityCrush(Action, preset("around"), preset("freeze")):
     cooldown: Live[float] = Field(0, ge=0, le=60)
     """seconds between uses"""
     push_strength: Live[float] = Field(30, ge=0.5, le=40)
-    """for lift, pull and push: about how far it moves each one, in blocks: a mob is thrown, a player moved there at once, or floated up"""
+    """for lift, pull and push: about how far it throws each one, in blocks: along the ground, or how high for lift"""

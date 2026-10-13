@@ -28,6 +28,12 @@ A copy's files in run/ (VFG_RUN_DIR):
     <copy>.error        a crash's last line (NameError: name 'x' is not defined), which mc.py
                         writes as it cleans up after an error nothing caught
 
+A deployed script folder holds action_defaults.json, which vfg writes into each deploy of it:
+{action: {"values": {field: its default, fixed values over them}, "live": [...]}} for each action
+over that script, as the actions are on the PC then. start() lays a copy's values over its action's
+(with_defaults): a binding made before its action gained a value still runs, with that value's
+default.
+
 A copy's name is `as=` when the run gives one (refused while that copy runs), else its stem:
 the base the run gives (`vfg action run … --for Steve`: the brain's own copy,
 <action>_<player>), else the action's name; the stem itself, else the next free <stem>_2,
@@ -51,6 +57,7 @@ COPY_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,47}$")
 # What run/ may hold from before copies (vfg script run's instances, beam-a): read, never made.
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 SOURCES = ("library", "made")
+DEFAULTS = "action_defaults.json"   # in a deployed script folder: what vfg wrote of its actions
 STOP_WAIT = 5.0       # SIGTERM, then SIGKILL after this many seconds
 # A copy runs on the Python this runs on: the box's 3.12, /opt/vfg/python/bin/python3.
 PYTHON = sys.executable or "python3"
@@ -58,6 +65,52 @@ CHECK_S = 2.0         # an until-stopped copy is checked this long after its sta
 # The box's secrets (/opt/vfg/.env, Contracts §11): a copy started by the bridge for a cast would
 # inherit them from its environment, and no script needs them.
 SECRETS = ("VFG_CLIENT_TOKEN", "TYPESAFE_API_KEY")
+
+
+# The launch preset (scripts/_presets/launch.py) spares what it throws fall damage with a
+# fall_damage_multiplier modifier, which is saved with a player, and stamps each throw with the
+# game time in an objective. launch_sweep() is the one place that takes away what a throw left:
+# the preset calls it at each throw and at its own cleanup, and Box.stop after stopping (or
+# killing) a copy that holds the preset, so a copy killed mid-flight leaves nobody spared for good.
+LAUNCH_MOD, LAUNCH_SCORE = "vfg:launch", "vfg_launch"
+LAUNCH_STAND, LAUNCH_CHARGE = "vfg_launch_stand", "vfg_launch_charge"
+LAUNCH_STALE = 40     # ticks: a stamp this old on someone standing on the ground is a throw that landed
+_GAME_TIME = re.compile(r"game time is (\d+)")
+
+
+def launch_tags(copy):
+    """(the tag on what a copy threw that is in flight, the tag once it has left the ground, the
+    tag once it has landed)."""
+    g = "vfg_%s_launch" % copy
+    return g, g + "_air", g + "_down"
+
+
+def launch_sweep(rcon, copy=None):
+    """Take away what a throw of the launch preset left, with rcon (a callable: command -> reply).
+
+    With `copy` (a copy stopped, killed, or starting again): everything it threw that still
+    carries its tag gets Slow Falling for 30 s while in the air or riding, then the modifier and
+    its tags come off, and its stands are killed (a rider is set down). Then, whoever threw them:
+    the modifier comes off whoever has stood on the ground 2 s past their last throw, and a stand
+    or a staged wind charge thrown as long ago is killed. What is in the air, or newer, is left."""
+    if copy:
+        g, air, down = launch_tags(copy)
+        rcon("effect give @e[tag=%s,nbt={OnGround:0b}] minecraft:slow_falling 30 0 true" % g)
+        rcon("execute as @e[tag=vfg_%s_lr] on passengers run effect give @s minecraft:slow_falling 30 0 true" % copy)
+        for sel in ("@e", "@a"):
+            rcon("execute as %s[tag=%s] run attribute @s minecraft:fall_damage_multiplier modifier remove %s"
+                 % (sel, g, LAUNCH_MOD))
+            for tag in (g, air, down):
+                rcon("tag %s[tag=%s] remove %s" % (sel, tag, tag))
+        rcon("kill @e[tag=vfg_%s_lr]" % copy)
+    m = _GAME_TIME.search(rcon("time query gametime") or "")
+    if not m:
+        return
+    old = "scores={%s=..%d}" % (LAUNCH_SCORE, int(m.group(1)) - LAUNCH_STALE)
+    rcon("execute as @e[%s,nbt={OnGround:1b}] run attribute @s minecraft:fall_damage_multiplier modifier remove %s"
+         % (old, LAUNCH_MOD))
+    rcon("kill @e[type=armor_stand,tag=%s,%s,nbt={OnGround:1b}]" % (LAUNCH_STAND, old))
+    rcon("kill @e[type=wind_charge,tag=%s,%s]" % (LAUNCH_CHARGE, old))
 
 
 class CopyError(Exception):
@@ -202,6 +255,30 @@ class Box(object):
             return os.path.join(self.base, "made", meta["server"], "scripts", meta["script"])
         return os.path.join(self.base, "scripts", meta["script"])
 
+    def with_defaults(self, meta):
+        """`meta` with its values laid over its action's as vfg deployed them with its script
+        (DEFAULTS): a value the action has and the values lack takes the action's default. With
+        "asked" (a cast's, incantations.cast_meta: the values its binding asked for and the caster
+        fields) only those keep the bound value; the others follow the action as it is now, as
+        vfg's refresh of the binding would make them. Without "asked" (a run, an older binding)
+        every value given stays. A live field the action has now is live. No file, or no entry
+        for the action: the meta as it is. "asked" never reaches the meta file."""
+        meta = dict(meta)
+        asked = meta.pop("asked", None)
+        got = read_json(os.path.join(self.folder(meta), DEFAULTS), None)
+        mine = got.get(meta.get("action")) if isinstance(got, dict) else None
+        if not (isinstance(mine, dict) and isinstance(mine.get("values"), dict)):
+            return meta
+        defaults = mine["values"]
+        given = meta.get("values") if isinstance(meta.get("values"), dict) else {}
+        keep = None if asked is None else set(asked)
+        values = dict((k, v if keep is None or k in keep or k not in defaults else defaults[k]) for k, v in given.items())
+        values.update((k, v) for k, v in defaults.items() if k not in values)
+        meta["values"] = values
+        live = list(meta.get("live") or [])
+        meta["live"] = live + [k for k in mine.get("live") or [] if k in values and k not in live]
+        return meta
+
     def names(self):
         """Every copy with a meta or a pid file in run/, by name."""
         try:
@@ -280,6 +357,7 @@ class Box(object):
         main_py = os.path.join(self.folder(meta), "main.py")
         if not os.path.isfile(main_py):
             raise NotDeployed("%s is not deployed (no %s)" % (meta["script"], main_py))
+        meta = self.with_defaults(meta)
         with self.lock(wait):
             name = self.pick(meta["action"], as_, base)
             for ext in (".values.json", ".result.json", ".error"):
@@ -364,10 +442,13 @@ class Box(object):
         """SIGTERM its process group, SIGKILL after STOP_WAIT s; False when it was not running.
 
         Its cleanup (mc.py) removes everything tagged vfg_<copy>; after a SIGKILL that never
-        ran, the kill is sent from here when the box was given an rcon."""
+        ran, the kill is sent from here when the box was given an rcon. A copy whose script holds
+        the launch preset gets launch_sweep(rcon, copy) after it, killed or not: what it threw
+        is set down and nobody keeps its fall guard."""
         pid = self.pid(name)
         if not pid:
             return False
+        launched = self.rcon is not None and self._holds_launch(name)
         try:
             os.killpg(pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -388,12 +469,25 @@ class Box(object):
         except (ProcessLookupError, PermissionError):
             pass
         remove(self.path(name, ".pid"))
+        if launched:
+            try:
+                launch_sweep(self.rcon, name)
+            except Exception:
+                pass
         if killed and self.rcon is not None:
             try:
                 self.rcon("kill @e[tag=vfg_%s]" % name)
             except Exception:
                 pass
         return True
+
+    def _holds_launch(self, name):
+        """True when the copy's script calls launch_sweep: it holds the launch preset."""
+        try:
+            with open(os.path.join(self.folder(self.meta(name)), "main.py"), encoding="utf-8", errors="replace") as f:
+                return "launch_sweep(" in f.read()
+        except (OSError, KeyError):
+            return False
 
     def edit(self, name, values, changed=None, live_only=None, wait=CHECK_S):
         """Change values on a running copy; they were checked on the PC (check_edit, against

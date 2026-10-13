@@ -16,6 +16,9 @@ log = logging.getLogger("vfg_bridge")
 
 NAMES = ("instances", "incantations")  # instances first: incantations may import it
 STAMP = ".vfg-stamp"
+# What this bridge calls in them: a kit without one is older than the bridge (deploy.sh sends both,
+# so only a hand deploy can part them), and is not used: casts answer 503 saying so.
+NEEDS = {"incantations": ("cast_meta",), "instances": ("Box",)}
 
 
 class Kit:
@@ -26,6 +29,7 @@ class Kit:
         self._stamp = self      # never a stamp: the first call loads
         self._mods = None
         self._seen = (None, None)  # the stamp file's key, and what it said
+        self.why = None            # why modules() answers None, for a 503
 
     def stamp(self):
         """What .vfg-stamp says, read again only when its file changes (vfg replaces it whole)."""
@@ -65,8 +69,8 @@ class Kit:
         """Fresh module objects, so a call still running on the old ones finishes on them."""
         missing = [n for n in NAMES if not os.path.isfile(os.path.join(self.path, n + ".py"))]
         if missing:
-            self.log.warning("the kit in %s has no %s: casts answer 503, and lines skip Layer 2"
-                             " and the drop rule", self.path, " or ".join(missing))
+            self.why = "the kit in %s has no %s" % (self.path, " or ".join(missing))
+            self.log.warning("%s: casts answer 503, and lines skip Layer 2 and the drop rule", self.why)
             return None
         if self.path not in sys.path:
             sys.path.append(self.path)  # for what the two import from the kit themselves
@@ -80,9 +84,17 @@ class Kit:
                 spec.loader.exec_module(module)
                 loaded[name] = module
         except Exception:
-            self.log.exception("the kit in %s did not import: casts answer 503, and lines skip"
-                               " Layer 2 and the drop rule", self.path)
+            self.why = "the kit in %s did not import" % self.path
+            self.log.exception("%s: casts answer 503, and lines skip Layer 2 and the drop rule", self.why)
             return None
+        old = ["%s.%s" % (n, f) for n, fs in sorted(NEEDS.items()) for f in fs if not hasattr(loaded[n], f)]
+        if old:
+            self.why = ("the kit in %s is older than this bridge (no %s): deploy it again, "
+                        "vfg script deploy --kit (deploy.sh does)" % (self.path, ", ".join(old)))
+            self.log.warning("%s; until then casts answer 503, and lines skip Layer 2 and the drop rule",
+                             self.why)
+            return None
+        self.why = None
         return loaded["incantations"], loaded["instances"]
 
     def warm(self):

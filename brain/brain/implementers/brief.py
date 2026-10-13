@@ -1,7 +1,12 @@
-"""The brief an implementer starts with: the orchestrator's brief, then a line naming its task and
+"""The brief an implementer starts with: the brain's brief, then a line naming its task and
 saying that what it makes takes the task's name, the server's saved places read fresh, and the
 EXAMPLES block (examples.py). The places and the block are read at once; whichever fails is logged
-and left out, and the brief still goes."""
+and left out, and the brief still goes. One log line per brief says each part's size in
+characters:
+
+    brief ice_beam_steve: 31204 chars: the brain's brief 812, task and places 260, header 905,
+    made 310, actions 9120 (5 in full, by Jev), made actions 402 (3), scripts 17033 (2), tests 1210 (1),
+    presets 2362 (1), named 0 (0), running 0 (0); route jev, state ok, 1320 ms"""
 import asyncio
 import re
 
@@ -41,6 +46,22 @@ async def saved_places(run: VfgRunner) -> str:
     return line
 
 
+def sizes_line(task: str, total: int, brain: int, head: int, sizes: dict | None) -> str:
+    """The brief's parts in characters, in its order (examples.compose names the block's)."""
+    parts = ["the brain's brief %d" % brain, "task and places %d" % head]
+    if not sizes:
+        parts.append("no EXAMPLES block")
+        return "%s: %d chars: %s" % (task, total, ", ".join(parts))
+    n = lambda k: sizes.get(k + "_n", 0)  # noqa: E731
+    parts += ["header %d" % sizes.get("header", 0), "made %d" % sizes.get("made", 0),
+              "actions %d (%d in full%s)" % (sizes.get("actions", 0), n("actions"),
+                                             ", " + sizes["actions_how"] if sizes.get("actions_how") else ""),
+              "made actions %d (%d)" % (sizes.get("made_actions", 0), n("made_actions"))]
+    parts += ["%s %d (%d)" % (k, sizes.get(k, 0), n(k)) for k in ("scripts", "tests", "presets", "named", "running")]
+    return "%s: %d chars: %s; route %s, state %s, %s ms" % (
+        task, total, ", ".join(parts), sizes.get("route", "?"), sizes.get("state", "?"), sizes.get("ms", "?"))
+
+
 def task_line(name: str) -> str:
     """The task's name, and that the script, the action and the copy it makes are named so too
     (Prototype_Named_Tasks)."""
@@ -49,8 +70,9 @@ def task_line(name: str) -> str:
 
 
 async def compose(brief: str, task: str, cfg: ImplementerConfig, run: VfgRunner) -> str:
-    """The orchestrator's brief, the task line and the saved places, then the EXAMPLES block for the brief."""
-    places, block = await asyncio.gather(saved_places(run), examples.build(cfg, brief, task, run),
+    """The brain's brief, the task line and the saved places, then the EXAMPLES block for the brief."""
+    sizes: dict = {}
+    places, block = await asyncio.gather(saved_places(run), examples.build(cfg, brief, task, run, sizes=sizes),
                                          return_exceptions=True)
     head = task_line(task)
     if isinstance(places, BaseException):
@@ -60,5 +82,9 @@ async def compose(brief: str, task: str, cfg: ImplementerConfig, run: VfgRunner)
     out = "%s\n\n%s" % (brief.rstrip(), head)
     if isinstance(block, BaseException):
         log("brief", "%s: the EXAMPLES block failed, left out: %s" % (task, block))
-        return out
-    return "%s\n\n%s" % (out, block)
+        block, sizes = "", {}
+    else:
+        out = "%s\n\n%s" % (out, block)
+    # the task line and the places count the blank lines between the parts
+    log("brief", sizes_line(task, len(out), len(brief.rstrip()), len(out) - len(brief.rstrip()) - len(block), sizes))
+    return out

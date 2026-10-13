@@ -1,18 +1,20 @@
 # usage.py: vfg usage add and vfg usage flush. ARGS:
 #   {"vfg": "/opt/vfg", "rows": [{"at", "component", "model", "input_tokens",
 #    "output_tokens", "cost_usd", "ref", "cache_read_tokens", "cache_write_tokens",
-#    "ok", "error", "ms"}, ...]}
+#    "ok", "error", "ms", "largest_tokens"}, ...]}
 # Inserts every row in one transaction (rows queued on the PC come first) and
 # prints the id of the last one, the row this call was made for. ok, error and ms
 # are a structured() call's (lib/py/vfg_llm.py); a row from `vfg usage add` has
-# none of them. The added columns are the bridge's to add (it migrates usage on
-# start); until it has, rows go in without them and one line on stderr says what
-# was dropped.
+# none of them. largest_tokens is an implementer run's largest request
+# (`vfg usage add --largest`). The added columns are the bridge's to add (it
+# migrates usage on start); until it has, rows go in without them and one line on
+# stderr says what was dropped.
 import sqlite3
 
 BASE = ("at", "component", "model", "input_tokens", "output_tokens", "cost_usd", "ref")
 ADDED = (("cache counts", ("cache_read_tokens", "cache_write_tokens"), "cache columns"),
-         ("call outcomes", ("ok", "error", "ms"), "ok, error and ms columns"))
+         ("call outcomes", ("ok", "error", "ms"), "ok, error and ms columns"),
+         ("largest requests", ("largest_tokens",), "largest_tokens column"))
 
 
 def main():

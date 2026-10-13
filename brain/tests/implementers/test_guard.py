@@ -1,14 +1,16 @@
-"""The guard: one table of calls and the verdict each gets, then the hook, the rule on a script
-another task's running copy uses, and what a task made, as the guard records it."""
+"""The guard: one table of calls and the verdict each gets, then gate() (every adapter's one call),
+the rule on a script another task's running copy uses, what a task made, as the guard records it,
+and the snapshot gate() gives each call it lets through."""
 import os
 
 from brain.implementers import guard
 from brain.implementers.guard import (DENY, VFG_FORMS, VFG_USAGE, GuardContext, Redirect, check_bash, decide,
-                                      made_by, made_now, make_guard, split_shell)
+                                      gate, made_by, made_now, split_shell)
 
 from .fakes import FakeVfg, bad, ok
 
 REPO = "/home/k/everhear"
+SCOPE = DENY.read_scope("main")
 
 
 def call(tool, **inp):
@@ -60,7 +62,31 @@ TABLE = [
     (bash("vfg action list --json | head -n 50"), None),
     (bash("vfg action list railgun"), usage("action list")),
     (bash("vfg action check a b"), usage("action check")),
+    # any action in full, the brief having at most seven: vfg action show <name>, alone or joined
+    (bash("vfg action show nuke"), None),
+    (bash("vfg action show incantation_create && vfg action show incantation_edit"), None),
+    (bash("vfg action show nuke | head -n 20"), None),
+    (bash("vfg action show"), usage("action show")),
+    (bash("vfg action show nuke railgun"), usage("action show")),
     (bash("vfg action refs"), usage("action")),
+    # a task's test, on the test server: vfg test <name>, with -n N and --timeout S
+    (bash("vfg test hot_fireball_steve"), None),
+    (bash("vfg test hot_fireball_steve -n 3 --timeout 90 2>&1 | tail -n 40"), None),
+    (bash("vfg test hot_fireball_steve --timeout=60"), None),
+    (bash("vfg test"), usage("test")),
+    (bash("vfg test hot_fireball_steve --live"), usage("test")),
+    (bash("vfg test hot_fireball_steve -n many"), usage("test")),
+    (bash("vfg test hot_fireball_steve -n 3 -n 4"), usage("test")),
+    (bash("vfg test ../x"), usage("test")),
+    # the test templates' kinds, on vfg script new and vfg test
+    (bash("vfg script new hot_fireball_steve --from fireball --kind cast-projectile"), None),
+    (bash("vfg script new --kind=cast-launch high_step_steve --from launch_pad"), None),
+    (bash("vfg test speed_dash_steve --kind cast-launch -n 40"), None),
+    (bash("vfg test speed_dash_steve --kind=world-event"), None),
+    (bash("vfg script new x --kind rocket"), usage("script new")),
+    (bash("vfg script new x --kind"), usage("script new")),
+    (bash("vfg test x --kind=rocket"), usage("test")),
+    (bash("vfg test x --kind build --kind area-blast"), usage("test")),
     (bash("vfg script run x 2>&1 | head -n 5"), DENY.script_run),
     (bash("vfg script new galick_ice --from galick_gun --preset replace_blocks"), None),
     (bash("vfg script new storm --library --preset lightning"), DENY.library_flag),
@@ -129,34 +155,57 @@ TABLE = [
     (bash("vfg state >"), DENY.redirect),
     (bash("cd /x/repo/scripts && ls"), DENY.cd),
     (bash("mkdir -p made/main/scripts/staff && vfg state 2>&1 | head -40"), DENY.mkdir("main")),
-    (bash("sed -n 1,20p scripts/README.md"), DENY.read),
-    (bash("find . -name main.py"), DENY.find),
+    (bash("awk 'NR<20' scripts/README.md"), DENY.read),
+    (bash("find . -name main.py"), DENY.find("main")),
     (bash("cp scripts/zeus/main.py made/main/scripts/z/main.py"), DENY.files("main")),
     (bash("ps -eo pid,args | grep -i '[t]nt_rain'"), DENY.ps),
     (bash("python3 made/main/scripts/x/main.py"), DENY.python),
     (call("Bash", command="sleep 30", run_in_background=True), DENY.background),
-    # ls, grep, head, tail and py_compile, inside the repository only
+    # ls, cat, sed -n, grep, head, tail and py_compile: in scripts/, actions/ and made/<server>/ only
     (bash("ls -la made/main/scripts"), None),
-    (bash("ls /etc"), DENY.outside_bash),
-    (bash("ls made/../../"), DENY.outside_bash),
-    (bash("ls ~/.ssh"), DENY.outside_bash),
+    (bash("ls actions scripts/_lib/kit made/main"), None),
+    (bash("ls"), None),  # the repository's folders by name, nothing in them
+    (bash("ls -R"), SCOPE),
+    (bash("ls -laR"), SCOPE),
+    (bash("ls made"), SCOPE),
+    (bash("ls made/other/scripts"), SCOPE),
+    (bash("ls integration/replay"), SCOPE),
+    (bash("ls /etc"), SCOPE),
+    (bash("ls made/../../"), SCOPE),
+    (bash("ls ~/.ssh"), SCOPE),
     (bash("grep -rn crater scripts/_presets"), None),
-    (bash("grep -r crater"), None),
+    (bash("grep -r crater"), SCOPE),
+    (bash("grep -rn hot_fireball integration/replay/"), SCOPE),
+    (bash("grep -rn fire scripts actions made/main"), None),
     (bash("grep -A3 -n -e root -e crater made/main/scripts/x/main.py"), None),
     (bash("grep crater"), DENY.grep_file),
-    (bash("grep TYPESAFE ~/.vfg/config"), DENY.outside_bash),
+    (bash("grep TYPESAFE ~/.vfg/config"), SCOPE),
+    (bash("head -n 40 brain/brain/implementers/guard.py"), SCOPE),
+    (bash("cat scripts/README.md actions/_types.py made/main/scripts/x/main.py"), None),
+    (bash("cat -n scripts/_lib/mc.py | head -n 80"), None),
+    (bash("cat docs/CONTRACTS.md"), SCOPE),
+    (bash("cat"), DENY.cat),
+    (bash("vfg state | cat"), DENY.pipe),
+    (bash("sed -n '1,80p' scripts/zeus/main.py"), None),
+    (bash("sed -n 120p made/main/scripts/x/main.py && sed -n '40,$p' actions/zeus.py"), None),
+    (bash("sed -n 1,20p /etc/passwd"), SCOPE),
+    (bash("sed -i s/a/b/ made/main/scripts/x/main.py"), DENY.sed),
+    (bash("sed -n '/def/p' scripts/zeus/main.py"), DENY.sed),
+    (bash("sed -n 1,5p"), DENY.sed),
+    (bash("sed -n 1,5p -e x scripts/zeus/main.py"), DENY.sed),
     (bash("grep -f /etc/passwd scripts/README.md"), DENY.pattern_file),
     (bash("tail -20 scripts/README.md"), None),
     (bash("tail -f made/main/scripts/x/main.py"), DENY.tail_follow),
     (bash("vfg script logs x -n 5 | tail -F"), DENY.tail_follow),
-    (bash("python3 -m py_compile ~/.vfg/config"), DENY.outside_bash),
+    (bash("python3 -m py_compile ~/.vfg/config"), SCOPE),
+    (bash("python3 -c 'import os'"), DENY.python),
     # what bash expands and the guard does not follow: ~name, braces, globs outside quotes
     (bash("head ~jm/.ssh/id_ed25519"), DENY.wild),
     (bash("ls ~+/.."), DENY.wild),
     (bash("grep -r . {/var/home/jm/.vfg,x}"), DENY.wild),
     (bash("ls /{u..w}ar"), DENY.wild),
     (bash("echo made/main/scripts/*"), DENY.wild),
-    (bash("ls /?tc /[e]tc"), DENY.wild),
+    (bash("ls /?tc /[e]tc"), SCOPE),  # a glob in a read: expanded, and /etc is outside
     (bash("FOO=1 ls ~jm"), DENY.wild),
     (bash("grep -n 'def .*' scripts/README.md"), None),
     (bash('grep -n "a*b{c,d}" made/main/scripts/x/main.py'), None),
@@ -173,13 +222,30 @@ TABLE = [
     (call("Write", file_path=REPO + "/made/other/actions/x.py"), DENY.made_only("main")),
     (call("Write", file_path=REPO + "/made/x.py"), DENY.made_only("main")),
     (call("Write", file_path="/tmp/x.py"), DENY.made_only("main")),
-    (call("Glob", pattern="*", path="~/.ssh"), DENY.outside),
-    (call("Grep", pattern=".", path=REPO + "/../.."), DENY.outside),
+    (call("Glob", pattern="*", path="~/.ssh"), SCOPE),
+    (call("Grep", pattern=".", path=REPO + "/../.."), SCOPE),
     (call("Grep", pattern="tnt", path=REPO + "/scripts"), None),
-    (call("Glob", pattern="scripts/*/README.md"), None),
+    (call("Grep", pattern="tnt", path="made/main/scripts/"), None),
+    (call("Grep", pattern="hot_fireball"), SCOPE),  # no path: the whole repository
+    (call("Grep", pattern="hot_fireball", path="integration/replay"), SCOPE),
+    (call("Glob", pattern="*/README.md", path="scripts"), None),
+    (call("Glob", pattern="scripts/*/README.md"), SCOPE),
+    (call("Glob", pattern="../../**/*.py", path="scripts"), SCOPE),
+    (call("Glob", pattern="/etc/*", path="scripts"), SCOPE),
     (call("Read", file_path="scripts/README.md"), None),
-    (call("Read", file_path="~/.vfg/config"), DENY.read_outside),
-    (call("Read", file_path="/etc/passwd"), DENY.read_outside),
+    (call("Read", file_path=REPO + "/scripts/_lib/kit/area.py"), None),
+    (call("Read", file_path="actions/_types.py"), None),
+    (call("Read", file_path="made/main/actions/x.py"), None),
+    (call("Read", file_path="scripts/zeus/test.py"), None),  # a library script's test
+    (call("Read", file_path="made/main/tests/hot_fireball_steve.py"), None),  # a task's test
+    (bash("cat made/main/tests/hot_fireball_steve.py scripts/zeus/test.py"), None),
+    (call("Write", file_path="made/main/tests/hot_fireball_steve.py"), None),
+    (call("Edit", file_path=REPO + "/made/main/tests/hot_fireball_steve.py"), None),
+    (call("Write", file_path="scripts/zeus/test.py"), DENY.library("main")),
+    (call("Read", file_path="integration/replay/tasks.jsonl"), SCOPE),
+    (call("Read", file_path="made/other/actions/x.py"), SCOPE),
+    (call("Read", file_path="~/.vfg/config"), SCOPE),
+    (call("Read", file_path="/etc/passwd"), SCOPE),
 ]
 
 
@@ -203,14 +269,34 @@ def test_split_shell_keeps_words_redirections_pipes_and_what_bash_would_expand()
     assert check_bash("vfg cmd 'list' && vfg cmd 'data get entity Steve Pos'") is None
 
 
-async def test_the_hook_denies_in_the_sdks_shape_and_lets_the_rest_through():
-    hook = make_guard(GuardContext(repo=REPO, task="torch_ring_steve"))
-    base = {"session_id": "s", "hook_event_name": "PreToolUse"}
-    denied = await hook({**base, "tool_name": "Bash", "tool_input": {"command": "curl x"}}, "u1", None)
-    assert denied == {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                             "permissionDecisionReason": DENY.shape}}
-    assert await hook({**base, "tool_name": "Bash", "tool_input": {"command": "vfg state"}}, "u2", None) == {}
-    assert await hook({"hook_event_name": "PostToolUse", "tool_name": "Bash"}, "u3", None) == {}
+async def test_gate_gives_the_reason_to_refuse_or_none():
+    g = GuardContext(repo=REPO, task="torch_ring_steve")
+    assert await gate(bash("curl x"), g) == DENY.shape
+    assert await gate(bash("vfg state"), g) is None
+    assert await gate(call("Read", file_path="/etc/passwd"), g) == SCOPE
+
+
+class Noting:
+    """A snapshot: the calls gate() gave it, before they ran."""
+
+    def __init__(self, breaks=False):
+        self.seen = []
+        self.breaks = breaks
+
+    async def before(self, c):
+        self.seen.append(c["tool_input"])
+        if self.breaks:
+            raise OSError("disk full")
+
+
+async def test_gate_gives_each_call_it_lets_through_to_the_snapshot_before_it_records_it(tmp_path):
+    g = GuardContext(repo=str(tmp_path), task="torch_ring_steve", snapshot=Noting())
+    assert await gate(bash("vfg script new torch_ring_steve --from torch_ring"), g) is None
+    assert await gate(bash("curl x"), g) == DENY.shape  # refused: not noted
+    assert g.snapshot.seen == [{"command": "vfg script new torch_ring_steve --from torch_ring"}]
+    assert g.made["scripts"] == ["torch_ring_steve"]
+    g.snapshot = Noting(breaks=True)  # a snapshot that breaks never blocks the call
+    assert await gate(bash("vfg state"), g) is None
 
 
 # ---------------------------------------------------------------- a script another task's copy runs
@@ -240,8 +326,7 @@ def made_repo(tmp_path) -> str:
 
 
 async def verdict(g, tool, **inp):
-    out = await make_guard(g)({"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": inp}, "u", None)
-    return out.get("hookSpecificOutput", {}).get("permissionDecisionReason") if out else None
+    return await gate({"tool_name": tool, "tool_input": inp}, g)
 
 
 async def test_another_tasks_running_copy_keeps_its_script_from_being_changed(tmp_path):
@@ -334,6 +419,7 @@ MADE_BY = [
     ("vfg preset save a b", []),
     ("vfg script set torch_ring_steve radius=5", []),
     ("vfg script stop torch_ring_steve", []),
+    ("vfg script new --kind cast-launch dash_steve --from launch_pad", [("scripts", "dash_steve"), ("actions", "dash_steve")]),
     ("vfg state", []),
     ("echo vfg script new torch_ring_steve", []),
 ]
@@ -344,28 +430,26 @@ def test_made_by_reads_what_one_command_makes():
     assert wrong == []
 
 
-async def test_the_hook_records_what_the_calls_it_lets_through_make_in_order_and_once(tmp_path):
+async def test_gate_records_what_the_calls_it_lets_through_make_in_order_and_once(tmp_path):
     g = GuardContext(repo=str(tmp_path), task="torch_ring_steve")
-    hook = make_guard(g)
 
     async def run(command):
-        return await hook({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": command}},
-                          "u", None)
+        return await gate({"tool_name": "Bash", "tool_input": {"command": command}}, g)
 
     assert await run("vfg script new torch_ring_steve --from torch_ring && vfg action check torch_ring_steve && "
-                     "vfg action run torch_ring_steve as=torch_ring_steve --task torch_ring_steve") == {}
+                     "vfg action run torch_ring_steve as=torch_ring_steve --task torch_ring_steve") is None
     assert await run("vfg action run torch_ring_steve as=torch_ring_steve --task torch_ring_steve; "
-                     "vfg preset save torch_ring_steve follow_player follow 2>&1 | tail -n 3") == {}
+                     "vfg preset save torch_ring_steve follow_player follow 2>&1 | tail -n 3") is None
     # a call the guard denies records nothing, even the commands in it that would run alone
-    assert (await run("vfg script new other_ring && curl x"))["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert (await run("vfg action run torch_ring as=ring_9"))["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert await run("vfg script new other_ring && curl x") is not None
+    assert await run("vfg action run torch_ring as=ring_9") is not None
     # a name already in made/main/ is another's, and vfg refuses it: nothing of that command is recorded
     (tmp_path / "made" / "main" / "scripts" / "beam_alex").mkdir(parents=True)
     for kind, name in (("actions", "railgun_steve"), ("presets", "crater")):
         (tmp_path / "made" / "main" / kind).mkdir(parents=True, exist_ok=True)
         (tmp_path / "made" / "main" / kind / (name + ".py")).write_text("")
     assert await run("vfg script new beam_alex --from beam; vfg script save railgun_2 railgun_steve; "
-                     "vfg preset save torch_ring_steve dig crater") == {}
+                     "vfg preset save torch_ring_steve dig crater") is None
     assert g.made == {"scripts": ["torch_ring_steve"], "actions": ["torch_ring_steve"], "presets": ["follow"],
                       "copies": ["torch_ring_steve"]}
 
@@ -377,17 +461,16 @@ async def test_a_write_of_a_new_made_action_or_preset_is_recorded_and_an_edit_is
     g = GuardContext(repo=repo, task="gatling_gun_steve")
 
     async def call(tool, path):
-        return await make_guard(g)({"hook_event_name": "PreToolUse", "tool_name": tool,
-                                    "tool_input": {"file_path": path, "content": "x"}}, "u", None)
+        return await gate({"tool_name": tool, "tool_input": {"file_path": path, "content": "x"}}, g)
 
-    assert await call("Write", "made/main/actions/gatling_gun_steve.py") == {}  # new: recorded
-    assert await call("Write", os.path.join(repo, "made/main/presets/spin_up.py")) == {}  # new, by its whole path
-    assert await call("Edit", "made/main/actions/railgun_steve.py") == {}  # an Edit makes nothing new
-    assert await call("Write", "made/main/actions/railgun_steve.py") == {}  # nor a Write over a file that is there
-    assert await call("Write", "made/main/scripts/gatling_gun_steve/main.py") == {}  # a script comes by vfg script new
-    assert await call("Write", "made/main/actions/_helpers.py") == {}  # not an action's name
-    assert await call("Write", "made/main/actions/sub/deep.py") == {}
-    assert (await call("Write", "actions/gatling.py"))["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert await call("Write", "made/main/actions/gatling_gun_steve.py") is None  # new: recorded
+    assert await call("Write", os.path.join(repo, "made/main/presets/spin_up.py")) is None  # new, by its whole path
+    assert await call("Edit", "made/main/actions/railgun_steve.py") is None  # an Edit makes nothing new
+    assert await call("Write", "made/main/actions/railgun_steve.py") is None  # nor a Write over a file that is there
+    assert await call("Write", "made/main/scripts/gatling_gun_steve/main.py") is None  # a script comes by vfg script new
+    assert await call("Write", "made/main/actions/_helpers.py") is None  # not an action's name
+    assert await call("Write", "made/main/actions/sub/deep.py") is None
+    assert await call("Write", "actions/gatling.py") is not None
     assert g.made == {"scripts": [], "actions": ["gatling_gun_steve"], "presets": ["spin_up"], "copies": []}
 
 
@@ -406,3 +489,157 @@ def test_made_now_keeps_what_is_on_disk_and_every_copy(tmp_path):
     now["copies"].append("x")  # a copy: the record is not changed through it
     assert g.made["copies"] == ["torch_ring_steve", "torch_ring_steve_2"]
     assert made_now(GuardContext(repo=str(tmp_path))) == {"scripts": [], "actions": [], "presets": [], "copies": []}
+
+
+def test_no_web_on_any_harness():
+    g = GuardContext(repo=REPO)
+    assert decide(call("WebFetch", url="https://example.com"), g) == DENY.web
+    assert decide(call("WebSearch", query="minecraft fireball"), g) == DENY.web
+    assert decide(call("TodoWrite", todos=[]), g) is None
+
+
+def test_a_glob_in_a_read_is_allowed_when_every_match_stays_readable(tmp_path):
+    repo = str(tmp_path)
+    for rel in ("scripts/zeus/main.py", "scripts/zeus/README.md", "made/main/scripts/x/main.py", "integration/replay/t.py",
+                "lib/py/vfg_llm.py"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("x")
+    for command, want in [
+        ("cat scripts/zeus/*.py", None),
+        ("ls made/main/scripts/*/", None),
+        ("grep -n fire scripts/*/main.py made/main/scripts/*/main.py", None),
+        ("head -n 5 scripts/nothing_*.py", None),  # no match: bash leaves the word, which is readable
+        ("python3 -m py_compile made/main/scripts/*/main.py", None),
+        ("sed -n 1,5p scripts/zeus/[mR]*", None),
+        ("grep -n 'def .*' scripts/zeus/main.py", None),  # quoted: no glob
+        ("cat */replay/*.py", SCOPE),
+        ("ls *", SCOPE),  # the repository's top: integration/, lib/
+        ("grep -n x scripts/../lib/*/*.py", SCOPE),
+        ("head -n 3 /etc/pass*", SCOPE),
+        ("cat {scripts,lib}/x", DENY.wild),  # a brace: still refused
+        ("echo scripts/*", DENY.wild),  # globs in a read only
+    ]:
+        assert check_bash(command, repo, "main") == want, command
+
+
+async def test_a_test_rerun_with_nothing_changed_is_refused_and_four_runs_is_the_most(tmp_path):
+    repo = str(tmp_path)
+    g = GuardContext(repo=repo, task="speed_dash_steve")
+    g.made["presets"] = ["dash_push"]
+
+    def put(rel, text):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text)
+
+    async def test_run(command="vfg test speed_dash_steve"):
+        return await gate(bash(command), g)
+
+    put("made/main/tests/speed_dash_steve.py", "t1")
+    put("made/main/scripts/speed_dash_steve/main.py", "s1")
+    assert await test_run() is None
+    assert await test_run("vfg test speed_dash_steve -n 2 2>&1 | tail -n 30") == DENY.test_again  # nothing changed
+    assert await test_run("vfg test speed_dash_steve -n 60") == DENY.test_again  # more lines: with the next change
+    assert g.tests_run == 1  # a refused call counts nothing
+    put("made/main/scripts/speed_dash_steve/main.py", "s2")  # the ability
+    assert await test_run() is None
+    put("made/main/presets/dash_push.py", "p1")  # a preset the task made
+    assert await test_run() is None
+    put("made/main/tests/speed_dash_steve.py", "t2")  # the test
+    assert await test_run() is None
+    put("made/main/actions/speed_dash_steve.py", "a1")  # its action
+    assert await test_run() == DENY.test_cap  # a fifth: report what still fails
+    assert await test_run("vfg test speed_dash_steve && curl x") == DENY.shape  # the guard's own refusal first
+    g.new_run()  # the next run (a follow-up) has its own four
+    assert await test_run() is None
+    assert await gate(bash("vfg script logs speed_dash_steve -n 40"), g) is None
+    assert "vfg script logs" not in DENY.test_again and "-n 60" in DENY.test_again  # the test's log is the test server's
+
+
+async def test_once_the_test_runs_are_spent_a_hand_probe_of_the_live_world_is_refused(tmp_path):
+    g = GuardContext(repo=str(tmp_path), task="high_step_steve")
+    looks = ["vfg cmd 'data get entity Steve Pos'", "sleep 2 && vfg cmd 'execute if entity @e[tag=vfg_x]'",
+             "vfg cmd 'list'", "vfg cmd 'scoreboard players get Steve vfg_click'",
+             "vfg cmd 'execute as Steve at @s run data get entity @s Motion'", "vfg cmd '/data get block 0 84 0'"]
+    acts = ["vfg cmd 'effect give Steve slow_falling 5 0 true'", "vfg cmd 'execute as Steve at @s run summon zombie ~ ~ ~'"]
+    for c in looks + acts:  # with test runs left: all of them run (the rules keep the live world out of testing)
+        assert await gate(bash(c), g) is None, c
+    g.tests_run = 4
+    for c in looks:
+        assert await gate(bash(c), g) == DENY.tests_spent, c
+    for c in acts:  # a command that acts is a build step
+        assert await gate(bash(c), g) is None, c
+    assert await gate(bash("vfg script stop high_step_steve"), g) is None
+    g.new_run()
+    assert await gate(bash(looks[0]), g) is None
+    assert guard.probe("execute unless block 0 84 0 air") and not guard.probe("execute if block 0 84 0 air run say hi")
+
+
+async def test_with_a_test_server_a_run_takes_three_looks_at_the_live_world(tmp_path):
+    g = GuardContext(repo=str(tmp_path), task="high_step_steve", test_server=True)
+    assert await gate(bash("vfg cmd 'data get entity Steve Pos'"), g) is None
+    assert await gate(bash("vfg cmd 'list' && sleep 1 && vfg cmd 'execute if entity @e[tag=vfg_x]'"), g) is None  # two
+    assert g.probes_run == 3
+    assert await gate(bash("sleep 2 && vfg cmd 'scoreboard players get Steve vfg_click'"), g) == DENY.probes_spent
+    assert await gate(bash("vfg cmd 'effect give Steve slow_falling 5 0 true'"), g) is None  # a build step
+    assert g.probes_run == 3  # a refused call counts nothing
+    g.new_run()
+    assert await gate(bash("vfg cmd 'list'"), g) is None
+    free = GuardContext(repo=str(tmp_path), task="high_step_steve")  # no test server: a look may be all the check
+    for _ in range(5):
+        assert await gate(bash("vfg cmd 'data get entity Steve Pos'"), free) is None
+
+
+def test_an_incantation_never_binds_a_made_script_that_waits_for_a_crouch_or_a_click(tmp_path):
+    repo = str(tmp_path)
+
+    def made(name, runs, script_text, base=None):
+        (tmp_path / "made/main/actions").mkdir(parents=True, exist_ok=True)
+        head = "from actions.%s import Base\nclass X(Base):\n" % base if base else "class X(Action):\n"
+        (tmp_path / "made/main/actions" / (name + ".py")).write_text(
+            head + '    script = "%s"\n' % name + ('    runs = "%s"  # or "once"\n' % runs if runs else ""))
+        (tmp_path / "made/main/scripts" / name).mkdir(parents=True, exist_ok=True)
+        (tmp_path / "made/main/scripts" / name / "main.py").write_text(script_text)
+
+    def bind(name, tool="incantation_create"):
+        return check_bash("vfg action run %s player=Steve phrase='hot fireball' action=%s --task %s"
+                          % (tool, name, name), repo, "main")
+
+    made("hot_fireball_steve", "until_stopped", "def projectile_lands(player, v):\n    pass\nfor at, p, w in loop(projectile_lands(v['player'], v)):\n    pass\n")
+    made("staff_steve", "until_stopped", "for p in loop(items.clicks(v['player'], v['item'])):\n    fire(p)\n")
+    made("crouch_steve", "until_stopped", "def sneak(player, v):\n    pass\n")
+    made("high_step_steve", "until_stopped", "box = under_feet(p, v)\nif ok(v['pad_block']):\n    launch(p, v)\n")
+    made("stat_steve", "until_stopped", "s = items.Stat(*items.SNEAK)\n")
+    made("fireball_once", "once", "for p in loop(items.clicks(v['player'], v['item'])):\n    pass\n")  # once: acts as it starts
+    made("ice_walk_steve", "until_stopped", "for p, at in loop(walk_steps(v['player'], v)):\n    ice(at)\n")  # no input
+    made("dash_steve", "until_stopped", "launch(v['player'], v)\n")
+    for name in ("hot_fireball_steve", "staff_steve", "crouch_steve", "high_step_steve", "stat_steve"):
+        assert bind(name) == DENY.waits_for_trigger, name
+    for name in ("fireball_once", "ice_walk_steve", "dash_steve", "railgun"):  # railgun: a library action, not read
+        assert bind(name) is None, name
+    assert bind("staff_steve", "incantation_edit") is None  # an edit names no action
+    # a variant takes runs from the library action it subclasses
+    (tmp_path / "actions").mkdir(exist_ok=True)
+    (tmp_path / "actions/boom_bow.py").write_text('class BoomBow(Action):\n    script = "boom_bow"\n    runs = "until_stopped"\n')
+    made("bow_steve", None, "def projectile_lands(player, v):\n    pass\n", base="boom_bow")
+    assert bind("bow_steve") == DENY.waits_for_trigger
+
+
+async def test_a_comment_or_a_docstring_alone_is_no_change_for_a_rerun(tmp_path):
+    g = GuardContext(repo=str(tmp_path), task="t1")
+
+    def put(rel, text):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text)
+
+    put("made/main/tests/t1.py", 'from kit import test\nt = test.Test("Steve")\nt.check("a", t.moved(4))\n')
+    put("made/main/scripts/t1/main.py", '"""A dash."""\nlaunch(v)\n')
+    assert await gate(bash("vfg test t1"), g) is None
+    put("made/main/tests/t1.py", 'from kit import test\n# try again\nt = test.Test("Steve")   \n\nt.check("a", t.moved(4))  # bar\n')
+    put("made/main/scripts/t1/main.py", '"""A dash, forward."""\n\nlaunch(v)  # go\n')
+    assert await gate(bash("vfg test t1"), g) == DENY.test_again  # comments, blank lines, a docstring: unchanged
+    put("made/main/tests/t1.py", 'from kit import test\nt = test.Test("Steve")\nt.check("a", t.moved(2))\n')
+    assert await gate(bash("vfg test t1"), g) is None  # a real edit (the bar)
+    put("made/main/scripts/t1/main.py", "launch(v\n")  # does not parse: judged as it is
+    assert await gate(bash("vfg test t1"), g) is None
+    assert guard.code_print(b"x = 1  # a\n", "a.py") == guard.code_print(b"\n\nx=1\n", "b.py")
+    assert guard.code_print(b"# a\n", "notes.txt") != guard.code_print(b"# b\n", "notes.txt")

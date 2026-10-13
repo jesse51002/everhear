@@ -58,6 +58,7 @@ COLUMNS = [
     ("usage", "ok", "INTEGER"),                  # a structured() call's row: 1 answered, 0 failed
     ("usage", "error", "TEXT"),                  # why it failed, short; NULL when it answered
     ("usage", "ms", "INTEGER"),                  # how long the call took, its retries included
+    ("usage", "largest_tokens", "INTEGER"),      # vfg usage add --largest: an implementer run's largest request
     ("lines", "dropped", "TEXT"),                # 'cast': only an incantation; Jev never sees it
     ("lines", "cast_id", "TEXT"),                # the cast the line overlaps
     ("feed", "processed_at", "TEXT"),            # the brain's mark: vfg context mark

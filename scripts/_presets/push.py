@@ -3,7 +3,7 @@ import math
 import random
 
 import mc
-from kit import aim, world
+from kit import aim
 from actions._types import Field, Literal, Live, Values  # the values class: read on the PC only
 
 
@@ -11,7 +11,7 @@ class Push(Values):
     push_way: Live[Literal["away", "toward", "up"]] = "away"
     """which way: away from where the push comes from, toward it (never past it), or up into the air"""
     push_strength: Live[float] = Field(6, ge=0.5, le=40)
-    """about how far it moves each one, in blocks: a mob is thrown, a player moved there at once, or floated up"""
+    """about how far it throws each one, in blocks: along the ground, or how high for up"""
 
 
 def push(hits, frm, v, *, way=None):
@@ -19,11 +19,12 @@ def push(hits, frm, v, *, way=None):
     push_strength blocks: "away" from frm, "toward" it (never past it), or "up" into the
     air; way, when given, is the way for this call (a script whose own value picks it), else
     push_way. frm: a place, or a player's name for where they stand. A mob is thrown (its
-    Motion), so it flies, lands and slides; a player is moved there at once, and only into
-    room to stand, since a player's Motion cannot be set; "up" floats a player up instead. A
-    hit with a uuid (a projectile, from around's "projectiles") is sent off on its new
-    heading and becomes this script's (tagged TAG), so it is turned only once. Pets and
-    villagers are never moved. Returns how many were moved."""
+    Motion), so it flies, lands and slides; a player is launched through the air by the launch
+    preset (wind charges at their feet, landing safely), so a script that copies push copies
+    launch too, and its action inherits launch's values. A hit with a uuid (a projectile,
+    from around's "projectiles") is sent off on its new heading and becomes this script's
+    (tagged TAG), so it is turned only once. Pets and villagers are never moved. Returns how
+    many were moved."""
     way, s = way or v["push_way"], v["push_strength"]
     if isinstance(frm, str):
         frm = mc.pos(frm)
@@ -47,7 +48,7 @@ def push(hits, frm, v, *, way=None):
                 continue
         else:
             s_here = s
-        n += _push_player(h, ux, uz, s_here, way) if h.player else _push_mob(h, ux, uz, s_here, way)
+        n += launch(h, v, way=way, strength=s_here, frm=frm) if h.player else _push_mob(h, ux, uz, s_here, way)
     return n
 
 
@@ -66,20 +67,3 @@ def _push_mob(h, ux, uz, s, way):
     if h.uuid:
         mc.rcon("tag %s add %s" % (h.uuid, mc.TAG))
     return 1 if "Modified" in reply else 0
-
-
-def _push_player(h, ux, uz, s, way):
-    """Move a player: up by levitation (about 0.75 blocks a second for each level), else to
-    the spot s blocks along, or half as far, whichever has room to stand."""
-    if way == "up":
-        level = max(0, int(round(s / 0.75)) - 1)
-        return 1 if "Applied" in mc.rcon("effect give %s levitation 1 %d true" % (h.name, min(level, 127))) else 0
-    x, y, z = h.pos[:3]
-    for k in (s, s / 2.0):
-        tx, ty, tz = x + ux * k, y + 0.1, z + uz * k
-        bx, by, bz = int(math.floor(tx)), int(math.floor(ty)), int(math.floor(tz))
-        reply = mc.rcon(world.prefix(world.dim(h.pos)) + "if block %d %d %d #minecraft:replaceable if block %d %d %d "
-                        "#minecraft:replaceable run tp %s %.3f %.3f %.3f" % (bx, by, bz, bx, by + 1, bz, h.name, tx, ty, tz))
-        if "Teleported" in reply:
-            return 1
-    return 0

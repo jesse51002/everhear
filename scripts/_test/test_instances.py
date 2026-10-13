@@ -112,6 +112,35 @@ class InstancesTests(unittest.TestCase):
         with self.assertRaises(instances.NotDeployed):
             self.box.start(dict(self.meta(), script="nowhere"))
 
+    def test_a_value_the_action_gained_after_its_binding_takes_its_default(self):
+        # vfg deploys action_defaults.json beside the script: the action as it is on the PC now
+        with open(os.path.join(self.base, "scripts", "nap", instances.DEFAULTS), "w") as f:
+            json.dump({"nap": {"values": {"player": "@a", "power": 3, "reach": 30, "ice_floor": True},
+                               "live": ["cooldown", "reach"]}}, f)
+        import incantations
+        bound = {"player": "Steve", "phrase": "big nap", "action": "nap", "script": "nap", "source": "library",
+                 "values": {"player": "", "power": 9, "reach": 20}, "asked": {"power": 9},
+                 "caster_fields": ["player"], "live": ["cooldown"], "runs": "until_stopped"}
+        name, _pid, proc = self.box.start(incantations.cast_meta(bound, "Alex"))
+        self.addCleanup(proc.wait)
+        meta = self.box.meta(name)
+        # asked and the caster stay the binding's; reach follows the action now; ice_floor, which the
+        # binding never had, takes its default; nothing else of "asked" reaches the meta
+        self.assertEqual(meta["values"], {"player": "Alex", "power": 9, "reach": 30, "ice_floor": True})
+        self.assertEqual((meta["live"], meta["task"]), (["cooldown", "reach"], "cast"))
+        self.assertNotIn("asked", meta)
+        # a binding from before "asked" was kept, and a run: what they give stays, and only what is missing is filled
+        old = dict(bound, values={"player": "", "power": 9, "reach": 20})
+        old.pop("asked")
+        self.assertEqual(self.box.with_defaults(incantations.cast_meta(old, "Alex"))["values"],
+                         {"player": "Alex", "power": 9, "reach": 20, "ice_floor": True})
+        self.assertEqual(self.box.with_defaults(self.meta(power=1))["values"],
+                         {"power": 1, "player": "@a", "reach": 30, "ice_floor": True})
+        # another action's entry, or none deployed: the meta as it is
+        self.assertEqual(self.box.with_defaults(dict(self.meta(power=1), action="other"))["values"], {"power": 1})
+        os.remove(os.path.join(self.base, "scripts", "nap", instances.DEFAULTS))
+        self.assertEqual(self.box.with_defaults(self.meta(power=1))["values"], {"power": 1})
+
     def test_an_edit_lands_live_or_restarts_with_the_rest_kept(self):
         name, pid, proc = self.start(cooldown=2, length=60)
         got = self.box.edit(name, {"cooldown": 0, "length": 60}, ["cooldown"], True)
@@ -152,6 +181,34 @@ class InstancesTests(unittest.TestCase):
         for t in threads:
             t.join(10)
         self.assertEqual(self.box.live(name), {"cooldown": 0, "colour": "blue"})
+
+    def test_a_stop_sweeps_what_a_copy_holding_launch_threw_killed_or_not(self):
+        throw = os.path.join(self.base, "scripts", "throw")
+        os.makedirs(throw)
+        with open(os.path.join(throw, "main.py"), "w") as f:       # holds launch, and ignores the stop
+            f.write("import signal\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                    "# instances.launch_sweep(mc.rcon)\n" + NAP)
+        sent = []
+        box = instances.Box(self.base, os.path.join(self.base, "mc"), rcon=lambda c: sent.append(c) or "")
+        saved, instances.STOP_WAIT = instances.STOP_WAIT, 0.5
+        try:
+            name, _, proc = box.start(dict(self.meta(), action="throw", script="throw"))
+            self.addCleanup(proc.wait)
+            self.up(name)
+            self.assertTrue(box.stop(name))
+            nap, _, proc = box.start(self.meta())
+            self.addCleanup(proc.wait)
+            self.up(nap)
+            self.assertTrue(box.stop(nap))
+        finally:
+            instances.STOP_WAIT = saved
+        self.assertIn("kill @e[tag=vfg_throw_lr]", sent)                     # its stands, riders set down
+        self.assertIn("execute as @e[tag=vfg_throw_launch] run attribute @s minecraft:fall_damage_multiplier "
+                      "modifier remove vfg:launch", sent)
+        self.assertIn("time query gametime", sent)                           # and the heal for everyone
+        self.assertLess(sent.index("kill @e[tag=vfg_throw_lr]"), sent.index("kill @e[tag=vfg_throw]"))
+        self.assertEqual(sent[-1], "kill @e[tag=vfg_throw]")                 # killed: the tag sweep last
+        self.assertFalse([c for c in sent if "vfg_nap" in c])               # nap holds no launch: nothing
 
     def test_a_stop_ends_only_that_copy(self):
         a, pa, _ = self.start()
