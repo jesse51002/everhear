@@ -100,7 +100,7 @@ def cli_env(cfg: ImplementerConfig, address: str | None) -> dict[str, str]:
     CLI how much a model it does not know reads, and the window is capped by that)."""
     env = session_env(os.environ)
     env["CLAUDE_AGENT_SDK_CLIENT_APP"] = "vfg-brain/0.1"
-    env["PYTHONPYCACHEPREFIX"] = os.path.join(cfg.brain_dir, "pycache")  # py_compile leaves no __pycache__ in scripts/
+    env["PYTHONPYCACHEPREFIX"] = os.path.join(cfg.brain_dir, "pycache")  # py_compile leaves no __pycache__ in made/
     # No "<total_tokens>N tokens left</total_tokens>" note on every turn (a 15M countdown the CLI
     # adds by default): an implementer has no use for it, and the only text the CLI put before
     # each turn on which DeepSeek wrote a summary of the conversation in place of its report.

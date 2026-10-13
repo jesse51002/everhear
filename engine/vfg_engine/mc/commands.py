@@ -19,8 +19,9 @@ import math
 import re
 import uuid as _uuid
 
-from ..io import (AddModifier, Command, Damage, GiveEffect, GiveItem, Gamerule, Message, OpResult,
-                  Particle, Remove, RemoveModifier, Sound, Summon, TakeItem, Teleport)
+from ..io import (AddModifier, Bossbar, Command, Damage, EntityData, Fill, Forceload, GiveEffect, GiveItem,
+                  Gamerule, Ignite, Message, Motion, OpResult, Particle, Remove, RemoveModifier, SetBlock,
+                  Sound, Spawnpoint, StopSound, Summon, TakeItem, Teleport)
 from .rcon import MAX_COMMAND
 
 # Server commands that are the owner's to run, never the engine's or content's. The one list is
@@ -34,6 +35,13 @@ MESSAGE_WHERE = ("chat", "actionbar", "title", "subtitle")
 _NAME = re.compile(r"^[A-Za-z0-9_]{1,16}$")
 _ID = re.compile(r"^[a-z0-9_.-]+:[a-z0-9_./-]+$")
 _SOUND_SOURCE = "master"
+FILL_MOST = 32768            # blocks one fill changes at most (Minecraft's limit)
+FORCELOAD_MOST = 256         # chunks one forceload names at most
+FILL_MODES = ("replace", "keep", "destroy", "hollow", "outline")
+BOSSBAR_COLORS = ("blue", "green", "pink", "purple", "red", "white", "yellow")
+LAVA_SECONDS = 15.0          # how long lava sets a player alight; the burning_time modifier scales it
+_BLOCK = re.compile(r"^#?[a-z0-9_.-]+(:[a-z0-9_./-]+)?(\[[a-z0-9_=,]*\])?(\{.*\})?$")
+_BB_TAG = "everhear.bb"      # players a bossbar is shown to, tagged for the one command that names them
 
 
 class OpRefused(ValueError):
@@ -154,6 +162,27 @@ def top_level_keys(inner: str) -> set[str]:
     return keys
 
 
+def block_state(text: str, what: str = "block") -> str:
+    """A block (or a #tag in a filter) as a command takes it: an id, its [properties], its {data}."""
+    text = (text or "").strip()
+    if not _BLOCK.match(text):
+        raise OpRefused("%r is not a %s (an id, with [properties] or {data})" % (text, what))
+    return text
+
+
+def block_pos(p) -> tuple[int, int, int]:
+    if len(p) != 3:
+        raise OpRefused("a block position is three whole numbers, not %r" % (p,))
+    return tuple(int(math.floor(float(c))) for c in p)
+
+
+def _players_or_all(players) -> list[str]:
+    for p in players:
+        if not _NAME.match(p or ""):
+            raise OpRefused("%r is not a player's name" % (p,))
+    return list(players) or ["@a"]
+
+
 def _in_dim(dim: str, cmd: str) -> str:
     """The command run in a dimension. The RCON source is in the overworld, so it goes bare there,
     and a failure keeps Minecraft's own words."""
@@ -246,11 +275,111 @@ def command_for(op) -> list[str]:
         count = int(op.count)
         if not 0 <= count <= 10000:
             raise OpRefused("count %r is outside 0..10000" % (op.count,))
-        return [_in_dim(op.dim, "particle %s %s %s %s %d" % (resource(op.name, "particle"), vec(op.pos), vec(op.delta),
-                                                            num(op.speed), count))]
+        force, to = getattr(op, "force", False), tuple(getattr(op, "to", ()) or ())
+        head = "particle %s %s %s %s %d" % (resource(op.name, "particle"), vec(op.pos), vec(op.delta), num(op.speed), count)
+        if not force and not to:
+            return [_in_dim(op.dim, head)]
+        mode = "force" if force else "normal"
+        return [_in_dim(op.dim, "%s %s %s" % (head, mode, who)) for who in _players_or_all(to)]
     if isinstance(op, Sound):
-        return [_in_dim(op.dim, "playsound %s %s @a %s %s %s" % (resource(op.name, "sound"), _SOUND_SOURCE, vec(op.pos),
-                                                                num(op.volume), num(op.pitch)))]
+        to = tuple(getattr(op, "to", ()) or ())
+        return [_in_dim(op.dim, "playsound %s %s %s %s %s %s" % (resource(op.name, "sound"), _SOUND_SOURCE, who,
+                                                                vec(op.pos), num(op.volume), num(op.pitch)))
+                for who in _players_or_all(to)]
+    if isinstance(op, Fill):
+        a, b = block_pos(op.a), block_pos(op.b)
+        size = (abs(a[0] - b[0]) + 1) * (abs(a[1] - b[1]) + 1) * (abs(a[2] - b[2]) + 1)
+        if size > FILL_MOST:
+            raise OpRefused("the box is %d blocks, over the %d one fill changes (the block queue splits it)"
+                            % (size, FILL_MOST))
+        if op.mode not in FILL_MODES:
+            raise OpRefused("mode is one of %s, not %r" % (", ".join(FILL_MODES), op.mode))
+        cmd = "fill %d %d %d %d %d %d %s" % (a + b + (block_state(op.block),))
+        if op.replace:
+            if op.mode == "keep":
+                raise OpRefused("a replace filter goes with mode replace, destroy, hollow or outline, not keep")
+            cmd += " replace %s" % block_state(op.replace, "block filter")
+        # strict (no block updates) is a mode of its own: it goes with replace, not with the others
+        if op.mode == "replace":
+            cmd += " strict" if op.strict else ""
+        else:
+            cmd += " " + op.mode
+        return [_in_dim(op.dim, cmd)]
+    if isinstance(op, SetBlock):
+        if op.mode not in ("replace", "keep", "destroy"):
+            raise OpRefused("mode is one of replace, keep, destroy, not %r" % (op.mode,))
+        cmd = "setblock %d %d %d %s" % (block_pos(op.pos) + (block_state(op.block),))
+        if op.mode == "replace":
+            cmd += " strict" if op.strict else ""
+        else:
+            cmd += " " + op.mode
+        return [_in_dim(op.dim, cmd)]
+    if isinstance(op, Forceload):
+        (x1, z1), (x2, z2) = [tuple(int(math.floor(float(c))) for c in p) for p in (op.a, op.b)]
+        chunks = (abs((x1 >> 4) - (x2 >> 4)) + 1) * (abs((z1 >> 4) - (z2 >> 4)) + 1)
+        if chunks > FORCELOAD_MOST:
+            raise OpRefused("%d chunks, over the %d one forceload names" % (chunks, FORCELOAD_MOST))
+        return [_in_dim(op.dim, "forceload %s %d %d %d %d" % ("add" if op.add else "remove", x1, z1, x2, z2))]
+    if isinstance(op, Motion):
+        t = target(op.target)
+        if _NAME.match(t):
+            raise OpRefused("a player's Motion cannot be set (26.3 writes no player's data): launch a player with "
+                            "wind charges (engine/MINECRAFT.md)")
+        return ["data merge entity %s {Motion:[%sd,%sd,%sd]}" % ((t,) + tuple(num(c) for c in op.vec))]
+    if isinstance(op, EntityData):
+        snbt = (op.snbt or "").strip()
+        if not (snbt.startswith("{") and snbt.endswith("}")):
+            raise OpRefused("entity data is a compound, {...}, not %r" % snbt[:40])
+        if {"UUID"} & top_level_keys(snbt[1:-1]):
+            raise OpRefused("an entity's UUID is not changed")
+        return ["data merge entity %s %s" % (target(op.target), snbt)]
+    if isinstance(op, Bossbar):
+        bid = resource(op.id if ":" in op.id else "everhear:" + op.id, "bossbar")
+        if op.remove:
+            return ["bossbar remove %s" % bid]
+        cmds = []
+        if op.name is not None:          # made if missing, renamed if there
+            cmds += ["bossbar add %s %s" % (bid, text_component(op.name)),
+                     "bossbar set %s name %s" % (bid, text_component(op.name))]
+        if op.color is not None:
+            if op.color not in BOSSBAR_COLORS:
+                raise OpRefused("color is one of %s, not %r" % (", ".join(BOSSBAR_COLORS), op.color))
+            cmds.append("bossbar set %s color %s" % (bid, op.color))
+        if op.max is not None:
+            if int(op.max) < 1:
+                raise OpRefused("max is at least 1, not %r" % (op.max,))
+            cmds.append("bossbar set %s max %d" % (bid, int(op.max)))
+        if op.value is not None:
+            cmds.append("bossbar set %s value %d" % (bid, max(0, int(op.value))))
+        if op.players is not None:
+            names = list(op.players)
+            for p in names:
+                if not _NAME.match(p or ""):
+                    raise OpRefused("%r is not a player's name" % (p,))
+            if not names:
+                cmds.append("bossbar set %s players" % bid)
+            elif len(names) == 1:
+                cmds.append("bossbar set %s players %s" % (bid, names[0]))
+            else:                        # one selector names several players: a tag for the moment
+                cmds += ["tag %s add %s" % (p, _BB_TAG) for p in names]
+                cmds += ["bossbar set %s players @a[tag=%s]" % (bid, _BB_TAG), "tag @a[tag=%s] remove %s" % (_BB_TAG, _BB_TAG)]
+        if not cmds:
+            raise OpRefused("a bossbar op that changes nothing")
+        return cmds
+    if isinstance(op, StopSound):
+        tail = " * %s" % resource(op.name, "sound") if op.name else ""
+        return ["stopsound %s%s" % (who, tail) for who in _players_or_all(tuple(op.players))]
+    if isinstance(op, Spawnpoint):
+        if not _NAME.match(op.player or ""):
+            raise OpRefused("%r is not a player's name" % (op.player,))
+        return [_in_dim(op.dim, "spawnpoint %s %d %d %d" % ((op.player,) + block_pos(op.pos)))]
+    if isinstance(op, Ignite):
+        seconds = float(op.seconds)
+        if not 0 < seconds <= 1638:
+            raise OpRefused("a fire lasts more than 0 and at most 1638 seconds (a short's ticks), not %r" % (op.seconds,))
+        ticks = max(1, int(round(seconds * 20)))
+        factor = seconds / LAVA_SECONDS - 1.0
+        return ['function everhear:ignite {t:"%s",f:%s,k:%d}' % (target(op.target), num(factor), ticks)]
     if isinstance(op, Message):
         if op.where not in MESSAGE_WHERE:
             raise OpRefused("where is one of %s, not %r" % (", ".join(MESSAGE_WHERE), op.where))
@@ -302,6 +431,13 @@ _ERRORS = [
     ("Unknown item", "no such item"),
     ("Unknown particle", "no such particle"),
     ("That position is out of the world", "the position is outside the world"),
+    ("That position is out of this world", "the position is outside the world"),
+    ("That position is not loaded", "that part of the world is not loaded"),
+    ("Too many blocks in the specified area", "too many blocks for one fill"),
+    ("Too many chunks in the specified area", "too many chunks for one forceload"),
+    ("Unknown block type", "no such block"),
+    ("Unable to modify player data", "a player's data cannot be written"),
+    ("No bossbar exists with the ID", "no such bossbar (give it a name to make it)"),
     ("Invalid position", "the position is outside the world"),
 ]
 _MODIFIER_PRESENT = re.compile(r"^Modifier \S+ is already present on attribute")
@@ -331,13 +467,14 @@ def reply_error(reply: str) -> str | None:
 
 
 def result_for(op, reply: str) -> OpResult:
-    """The OpResult of one op from its command's reply (for a Message to several players, the
+    """The OpResult of one op from its command's reply (for an op of several commands, the
     replies joined by " | ")."""
-    if isinstance(op, Message):
-        replies = reply.split(" | ") if reply else [""]
-        bad = [reply_error(r) for r in replies]
-        bad = [b for b in bad if b]
+    if isinstance(op, (Message, Sound, Particle, StopSound, Bossbar)) and " | " in reply:
+        bad = [b for b in (reply_error(r) for r in reply.split(" | ")) if b]
         return OpResult(not bad, reply, "; ".join(sorted(set(bad))) or None)
+    if isinstance(op, Message):
+        err = reply_error(reply)
+        return OpResult(err is None, reply, err)
     err = reply_error(reply)
     if err is not None:
         return OpResult(False, reply, err)
@@ -352,6 +489,14 @@ def result_for(op, reply: str) -> OpResult:
         return OpResult(False, reply, "Minecraft gave no reply (it did not take)")
     if isinstance(op, Gamerule) and not (r.startswith("Game rule") or r == ""):
         return OpResult(False, reply, "Minecraft did not set it")
+    if isinstance(op, Ignite):
+        if r.endswith("returned 1"):
+            return OpResult(True, reply)
+        return OpResult(False, reply, "no such target, or no air at a player's feet or head to light them from")
+    if isinstance(op, SetBlock) and r.startswith("Could not set the block"):
+        if op.mode == "keep":
+            return OpResult(False, reply, "something is there already (keep)")
+        return OpResult(True, reply)      # it is that block already
     return OpResult(True, reply)
 
 

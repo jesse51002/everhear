@@ -34,6 +34,9 @@ class Rig:
         self.io = FakeIo()
         self.clock = Clock()
         folders = [str(self.dir)] + ([EXAMPLES] if examples else [])
+        # Content is cut at 50 ms only in the tests about the cut (they pass cut_ms=50): on a loaded
+        # box an ordinary call can take longer than that, and must not fail a test about anything else.
+        settings.setdefault("cut_ms", 2000.0)
         self.settings = Settings(content=tuple(folders),
                                  state=str(tmp_path / "state.json") if state else None,
                                  export=str(tmp_path / "incantations.json") if export else None,

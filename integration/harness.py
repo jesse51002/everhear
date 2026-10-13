@@ -11,12 +11,14 @@ Real:  bridge (vfg_bridge + vfg_feed, run on the box's Python 3.12), the Jev fil
        brain/context.py, which reads what the feed writer wrote (path 9).
 Stand-ins: Minecraft (console.log lines appended here, shapes from the bridge's own
        fixture console-26.3.log; toolkit/tests/fake_rcon.py, in this process), SSH
-       (toolkit/tests/fake_ssh, which runs the remote command here), systemd (toolkit/tests/bin),
-       Jev's API (jev/tests/fake_jev.py), the brain (its vfg calls made here, as it makes them).
+       (toolkit/tests/fake_ssh, which runs the remote command here), systemd (toolkit/tests/bin,
+       its four units active), Jev's API (jev/tests/fake_jev.py), the brain (its vfg calls made
+       here, as it makes them). No game engine runs: the bridge's and Jev's engine socket and
+       export point into the temp folder, so no player has an incantation.
 
 Nothing touches ~/.vfg, ~/.ssh or any remote host: HOME and VFG_HOME point into the temp
-folder, and every port is on 127.0.0.1. Prints PASS/FAIL per check and per path, and exits
-non-zero when anything failed.
+folder, the fake repo links this repo's actions/ and engine/, and every port is on 127.0.0.1.
+Prints PASS/FAIL per check and per path, and exits non-zero when anything failed.
 """
 import argparse
 import datetime as dt
@@ -208,8 +210,9 @@ class Box:
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         for f in glob.glob(os.path.join(JEV, "*.py")):
             shutil.copy2(f, self.jev_dir)
-        # The repo vfg reads the actions from (vfg action list, the brain's menu for Jev).
-        for name in ("actions", "scripts"):
+        # The repo vfg reads from: the actions (vfg action list, the brain's menu for Jev) and the
+        # engine's library (vfg task set refuses a new task named as one of its classes).
+        for name in ("actions", "engine"):
             os.symlink(os.path.join(REPO, name), os.path.join(self.repo, name))
         fd = os.open(self.env_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         os.write(fd, ("VFG_CLIENT_TOKEN=%s\nTYPESAFE_API_KEY=%s\n" % (self.token, self.jev_key)).encode())
@@ -233,7 +236,7 @@ class Box:
                     "VFG_REPO=%s\n" % (self.fake_key, os.path.join(TOOLKIT, "tests", "fake_ssh"),
                                         self.vfg_dir, self.mc_dir, self.repo))
         os.chmod(cfg, 0o600)
-        for u in ("minecraft", "vfg-bridge", "vfg-jev"):
+        for u in ("minecraft", "vfg-bridge", "vfg-jev", "vfg-engine"):
             with open(os.path.join(self.units, u), "w") as f:
                 f.write("active\n")
 
@@ -253,6 +256,10 @@ class Box:
             "VFG_DB": self.db, "VFG_FEED": self.feed, "VFG_WATCH": self.watch_json, "VFG_STATE": self.state,
             "VFG_CONSOLE_LOG": self.console_log, "VFG_BRIDGE_BIND": "127.0.0.1", "VFG_BRIDGE_PORT": "0",
             "VFG_LOOKOUT": self.lookout, "VFG_MENU": self.menu, "VFG_LIB": self.lib, "VFG_ENV_FILE": self.env_file,
+            # the game engine's socket and export, which the bridge and Jev read: in the temp box, where
+            # no engine runs (no incantation, casts answer 404)
+            "VFG_BASE": self.vfg_dir, "VFG_ENGINE_SOCKET": os.path.join(self.vfg_dir, "engine", "engine.sock"),
+            "VFG_ENGINE_EXPORT": os.path.join(self.vfg_dir, "engine", "incantations.json"),
             "VFG_JEV_URL": self.fake_jev_url or "", "PYTHONUNBUFFERED": "1",
             "PATH": self.ec2bin + os.pathsep + os.environ.get("PATH", ""),
         })
@@ -558,8 +565,11 @@ def feed_lines_with_text(box, text):
 def path0(box, rep, ctx):
     rep.path("0", "setup as the brain does it (§12): up, watchers, lookout, Jev's menu, context, watch --after")
     r = box.vfg("up", timeout=150)
-    rep.check(r.returncode == 0 and "rcon ok" in r.stdout, "vfg up: three units active (fake systemctl), RCON answers",
-              r.stdout + r.stderr)
+    units = [l.split()[0] for l in r.stdout.splitlines() if re.match(r"^\S+\s+active\b", l)]
+    rep.check(r.returncode == 0 and "rcon ok" in r.stdout
+              and set(units) >= {"minecraft", "vfg-bridge", "vfg-jev", "vfg-engine"},
+              "vfg up: the four units active (minecraft, vfg-bridge, vfg-jev, vfg-engine; fake systemctl), RCON "
+              "answers", r.stdout + r.stderr)
     r = box.vfg("watchers", "set", WATCHERS)
     want = {"events": WATCHERS.split(","), "players": [], "contains": []}
     with open(box.watch_json) as f:
@@ -575,14 +585,17 @@ def path0(box, rep, ctx):
         got = f.read().strip()
     rep.check(r.returncode == 0 and got == lookout, "vfg lookout set writes brain/prompts/lookout.md to lookout.md",
               r.stderr)
-    # The brain's menu for Jev is one `name — what it does` line per action: vfg action list's lines.
+    # The brain's menu for Jev is one `name — what it does` line per action: vfg action list's lines,
+    # every action one of the game engine's ops (actions/engine_*.py).
     r = box.vfg("action", "list")
     menu = r.stdout.strip()
     lines = menu.splitlines()
-    rep.check(r.returncode == 0 and len(lines) >= 6 and all(re.match(r"^[a-z0-9_]+ — \S", l) for l in lines)
-              and any(l.startswith("command — ") for l in lines),
-              "vfg action list: %d `name — what it does` lines, the core actions among them" % len(lines),
-              r.stdout[-800:] + r.stderr)
+    names = sorted(l.split(" — ", 1)[0] for l in lines)
+    files = sorted(f[:-3] for f in os.listdir(os.path.join(REPO, "actions")) if re.match(r"^[a-z][a-z0-9_]*\.py$", f))
+    rep.check(r.returncode == 0 and all(re.match(r"^engine_[a-z0-9_]+ — \S", l) for l in lines)
+              and names == files and "engine_start" in names,
+              "vfg action list: %d `name — what it does` lines, one per actions/engine_*.py, engine_start among "
+              "them" % len(lines), "%s\nfiles %s" % (r.stdout[-800:] + r.stderr, files))
     ctx["menu"] = menu
     r = box.vfg("jev", "menu", "set", menu)
     shown = box.vfg("jev", "menu", "show")
@@ -1482,10 +1495,11 @@ def path10(box, rep, ctx):
     cols = [c["name"] for c in box.sql("PRAGMA table_info(tasks)")]
     rep.check(tuple(cols) == columns, "its columns are the spec's, in order", "%r" % cols)
 
-    # The rows as the brain's Tasks sends them: the whole row on every write, made with all four kinds.
+    # The rows as the brain's Tasks sends them: the whole row on every write, made with its three kinds
+    # (the engine classes it wrote, the bindings it made, its grants as player:ability), variables null.
     t0 = now()
     ago = lambda s: iso(t0 - dt.timedelta(seconds=s))  # noqa: E731
-    empty = {"scripts": [], "actions": [], "presets": [], "copies": []}
+    empty = {"content": [], "bindings": [], "grants": []}
     castle = {"name": "castle_steve", "description": "A stone castle at spawn for Steve, about 40×40 — oak doors",
               "player": "Steve", "status": "open", "line": "build me a castle",
               "brief": "a stone castle at spawn, about 40x40, stone and oak", "made": empty, "variables": None,
@@ -1495,20 +1509,18 @@ def path10(box, rep, ctx):
               "vfg task set '<the whole row>' adds castle_steve: every column as given",
               r.stdout + r.stderr + "%r" % stored())
     raw = box.sql("SELECT made, variables FROM tasks WHERE name = 'castle_steve'")
-    rep.check(raw == [{"made": '{"scripts":[],"actions":[],"presets":[],"copies":[]}', "variables": None}],
+    rep.check(raw == [{"made": '{"content":[],"bindings":[],"grants":[]}', "variables": None}],
               "made is stored as compact JSON text, variables null until they are read", "%r" % raw)
 
     done = dict(castle, status="done", description="A stone castle at spawn for Steve, 40x40, with a keep",
-                made={"scripts": ["castle_steve"], "actions": ["castle_steve"], "presets": [],
-                      "copies": ["castle_steve"]},
-                variables=[{"name": "size", "type": "number", "default": 40, "ge": 8, "le": 64, "choices": None,
-                            "live": False, "fixed": False, "description": "the castle's width in blocks"}],
+                made={"content": ["castle_steve", "castle_gate"], "bindings": ["steve.castle_up"],
+                      "grants": ["Steve:castle_gate"]},
                 session="5b0c6c1e-6f43-4a51-9d0e-2b8f1f0b9c11",
                 result="castle_steve done: castle built at spawn, 40x40",
                 updated_at=ago(30), closed_at=ago(30))
     r = task_set(done)
     rep.check(r.returncode == 0 and r.stdout.strip() == "updated castle_steve" and stored() == [done],
-              "its report's write updates it: done, its description, made, variables, session, result, closed_at; "
+              "its report's write updates it: done, its description, made, session, result, closed_at; "
               "created_at kept", r.stdout + r.stderr + "%r" % stored())
     r = task_set(dict(done, status="failed", result="castle_steve failed: an older write", updated_at=ago(60)))
     rep.check(r.returncode == 0 and r.stdout.strip() == "kept castle_steve: a newer write is there"
@@ -1577,18 +1589,26 @@ def path10(box, rep, ctx):
               "done again with no closed_at given: closed_at is now", r.stdout + r.stderr + "%r" % t2)
 
     before = box.sql("SELECT * FROM tasks ORDER BY name")
-    for row, code, said, what in (
-            ({"name": "railgun", "description": "a railgun for Steve", "player": "Steve"}, 1,
-             "railgun is a library action's name", "a new task named as a library action"),
+    library = sorted(f[:-3] for f in os.listdir(os.path.join(REPO, "engine", "library"))
+                     if re.match(r"^[a-z][a-z0-9_]{1,31}\.py$", f))
+    taken = [({"name": "engine_start", "description": "a start for Steve", "player": "Steve"}, 1,
+              "engine_start is a library class's or an action's name", "a new task named as an action")]
+    if library:
+        taken.append(({"name": library[0], "description": "one for Steve", "player": "Steve"}, 1,
+                      "%s is a library class's or an action's name" % library[0],
+                      "a new task named as a library class (engine/library/%s.py)" % library[0]))
+    else:
+        rep.note("engine/library/ has no class yet: the refusal of a library class's name is not checked")
+    for row, code, said, what in taken + [
             ({"name": "frost_bow_alex", "player": "Alex"}, 1, "a new task needs a description",
              "a new task with no description"),
             ({"name": "cast", "description": "x"}, 2, "cast is the bridge's task", "cast, the bridge's task"),
             ({"name": "Galick", "description": "x"}, 2, "", "a name that is not a task's"),
             ({"name": "castle_steve", "colour": "red"}, 2, "", "a key that is not a column"),
             ({"name": "castle_steve", "status": "running"}, 2, "", "a status not open, done or failed"),
-            ({"name": "castle_steve", "made": {"weapons": []}}, 2, "", "made with a kind not its four"),
+            ({"name": "castle_steve", "made": {"scripts": []}}, 2, "", "made with a kind not its three"),
             ("[1, 2]", 2, "", "JSON that is not one object"),
-            ("{not json", 2, "", "text that is not JSON")):
+            ("{not json", 2, "", "text that is not JSON")]:
         r = task_set(row)
         rep.check(r.returncode == code and len(r.stderr.strip().splitlines()) == 1 and said in r.stderr
                   and box.sql("SELECT * FROM tasks ORDER BY name") == before,

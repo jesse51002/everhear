@@ -36,7 +36,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from .actions import Catalog
-from .call import library, menu_lines
+from .call import menu_lines, rules_text
 from .config import log
 from .context import Context, Row, show
 from .world import Seen
@@ -134,16 +134,16 @@ class Respond:
         self.catalog = catalog
         self.ask = ask  # structured() with Respond's model, reasoning and timeout
         self.checkpoint = checkpoint
-        rules = prompt.read_text(encoding="utf-8").rstrip("\n")
+        rules = rules_text(prompt)
         self.rules = rules.replace("{owner}", owner or "not named (VFG_OWNER is not set)")
         self._opening: tuple[tuple, str] | None = None
 
     def opening(self) -> str:
-        names = library(self.catalog)
+        names = self.catalog.names()
         key = tuple(names)
         if self._opening is None or self._opening[0] != key:
-            text = (f"{self.rules}\n\nWHAT THE BRAIN CAN DO (its actions; anything else is made new by a "
-                    f"coding implementer):\n{menu_lines(self.catalog, names)}\n\n"
+            text = (f"{self.rules}\n\nWHAT THE BRAIN CAN DO (its actions, on what ENGINE lists; anything else is "
+                    f"made new by a coding implementer):\n{menu_lines(self.catalog, names)}\n\n"
                     "THE CONVERSATION SO FAR (oldest first; each row: its time in UTC, who, and for a "
                     "player's line Jev's class):\n")
             self._opening = (key, text)

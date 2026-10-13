@@ -26,7 +26,8 @@ import sys
 
 # The datapack's version: everhear:meta's `version`, which McIo.open checks. Raise it whenever the
 # pack changes in a way the engine reads (a storage layout, an event's fields, a function's name).
-VERSION = 1
+# 2: land and mine events, ranged hits, death's place, the world id, probe/ground/ray/entities/ignite.
+VERSION = 2
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PACK = os.path.join(HERE, "everhear")
@@ -121,9 +122,12 @@ def main(argv=None):
                   "The block here as its index in everhear:meta blocks, into #b (0: a block this pack does not know).")
 
     melee = {"damage": {"type": {"is_direct": True}}}
+    ranged = {"damage": {"type": {"is_direct": False}}}
     for adv, trigger, base, reward, about in (
             ("hit", "minecraft:player_hurt_entity", melee, "everhear:ev/hit",
              "A player hit an entity in melee (the damage's direct source is the player)."),
+            ("hit_ranged", "minecraft:player_hurt_entity", ranged, "everhear:ev/hit_ranged",
+             "A player hit an entity with something they shot or threw (an arrow, a trident)."),
             ("kill", "minecraft:player_killed_entity", {}, "everhear:ev/kill",
              "A player killed an entity.")):
         criteria, requirements = bit_criteria(trigger, base, tbits)

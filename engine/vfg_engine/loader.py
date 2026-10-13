@@ -127,6 +127,9 @@ def _check(cls, tree, path, module, call, now):
     why = checks.check_code(cls, tree)
     if why:
         return None, ("code", why)
+    why = checks.check_args(cls)
+    if why:
+        return None, ("args", why)
     ok, made = call(cls.State)
     if not ok:
         words = " ".join(str(made).split()).split(" For further information")[0]

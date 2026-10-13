@@ -21,6 +21,10 @@ Exit codes, as the bridge's:
 
 ``--fake-io`` runs the engine on the testing FakeIo instead of Minecraft: for trying content and
 the control socket on a PC with no server.
+
+Under VFG_TEST=1 (the per-test engine vfg_engine.livetest starts) it refuses, exit 78, a server
+whose folder (the one holding VFG_MC_PROPERTIES) has no `.vfg-test-server` marker, or whose marker
+names another RCON port: a test's engine never talks to the live server.
 """
 
 from __future__ import annotations
@@ -139,6 +143,17 @@ def claim(path: str) -> int:
 
 # -- the engine --------------------------------------------------------------------
 
+def test_server_check(fake_io: bool = False, environ=None) -> None:
+    """Under VFG_TEST=1, ConfigError unless VFG_MC_PROPERTIES is a test server's (its marker)."""
+    env = os.environ if environ is None else environ
+    if env.get("VFG_TEST") != "1" or fake_io:
+        return
+    from .livetest import test_server_refusal
+    why = test_server_refusal(env.get("VFG_MC_PROPERTIES") or "/opt/mc/server.properties")
+    if why:
+        raise ConfigError("VFG_TEST=1: %s" % why)
+
+
 def build(fake_io: bool = False):
     """The engine, from the environment: the core's Settings and Engine, on McIo (or the testing
     FakeIo). ConfigError when a setting is wrong."""
@@ -234,6 +249,7 @@ def main(argv=None, make=None) -> int:
         previous[signum] = signal.signal(signum, on_signal)
     lock = None
     try:
+        test_server_check(args.fake_io)
         lock = claim(where["lock"])
         engine = make(args.fake_io)
         # Made before the engine starts, while this is the only thread: the socket is bound

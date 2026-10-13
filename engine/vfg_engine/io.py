@@ -50,6 +50,8 @@ class PlayerSnap:
     carried: tuple[str, ...]     # EverHear item ids of every stack anywhere in the inventory (held ones too)
     effects: tuple[Effect, ...]
     looking_at: Look
+    on_ground: bool = True       # (part 2) standing on a block
+    sprinting: bool = False      # (part 2)
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,8 @@ class EntitySnap:
     health: float | None
     tags: frozenset[str] = frozenset()
     name: str | None = None
+    owner: str | None = None     # (part 2) a tamed mob's or a projectile's owner (a player's name or a uuid)
+    in_ground: bool = False      # (part 2) an arrow or trident stuck in a block
 
 
 @dataclass(frozen=True)
@@ -146,6 +150,8 @@ class Particle:
     delta: Vec = (0.0, 0.0, 0.0)
     speed: float = 0.0
     count: int = 1
+    force: bool = False          # (part 2) seen from far away ("force" mode)
+    to: tuple[str, ...] = ()     # (part 2) only these players; () = everyone near
 
 @dataclass(frozen=True)
 class Sound:
@@ -154,6 +160,7 @@ class Sound:
     pos: Vec
     volume: float = 1.0
     pitch: float = 1.0
+    to: tuple[str, ...] = ()     # (part 2) players; () = everyone near
 
 @dataclass(frozen=True)
 class Message:
@@ -178,8 +185,43 @@ class Gamerule:
 class Command:
     text: str                    # anything else, as a raw command (content's escape hatch)
 
+# ---- part 2 (DESIGN2 §6) ------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Fill:            # fill a b block [replace filter] ; strict: no block updates
+    dim: str; a: tuple[int, int, int]; b: tuple[int, int, int]; block: str
+    replace: str | None = None; strict: bool = True; mode: str = "replace"   # "replace"|"keep"|"destroy"|"hollow"|"outline"
+@dataclass(frozen=True)
+class SetBlock:
+    dim: str; pos: tuple[int, int, int]; block: str; strict: bool = True; mode: str = "replace"
+@dataclass(frozen=True)
+class Forceload:
+    dim: str; a: tuple[int, int]; b: tuple[int, int]; add: bool = True     # chunk-aligned x z corners
+@dataclass(frozen=True)
+class Motion:
+    target: str; vec: Vec
+@dataclass(frozen=True)
+class EntityData:
+    target: str; snbt: str                 # data merge entity
+@dataclass(frozen=True)
+class Bossbar:
+    id: str; name: str | None = None; color: str | None = None; value: int | None = None
+    max: int | None = None; players: tuple[str, ...] | None = None; remove: bool = False
+@dataclass(frozen=True)
+class StopSound:
+    players: tuple[str, ...] = (); name: str | None = None
+@dataclass(frozen=True)
+class Spawnpoint:
+    player: str; dim: str; pos: Vec
+@dataclass(frozen=True)
+class Ignite:
+    target: str; seconds: float            # a player or an entity uuid set on fire for this long
+# Sound gains `to: tuple[str, ...] = ()` (players; () = everyone near); Particle gains `force: bool = False`
+# and `to: tuple[str, ...] = ()`. Summon.nbt is passed through by self.spawn.
+
 Op = (AddModifier | RemoveModifier | GiveEffect | GiveItem | TakeItem | Summon | Remove | Damage
-      | Particle | Sound | Message | Teleport | Gamerule | Command)
+      | Particle | Sound | Message | Teleport | Gamerule | Command
+      | Fill | SetBlock | Forceload | Motion | EntityData | Bossbar | StopSound | Spawnpoint | Ignite)
 
 
 @dataclass(frozen=True)
@@ -193,6 +235,7 @@ class Mirror(Protocol):
     """The second thread's copy of the entities around players, at most about 0.1 s old."""
     @property
     def age_s(self) -> float: ...
+    radius: float                # (part 2) how far round each player it reaches, in blocks
     def entities_near(self, dim: str, pos: Vec, radius: float) -> list[EntitySnap]: ...
     def get(self, uuid: str) -> EntitySnap | None: ...
 
@@ -208,3 +251,14 @@ class Io(Protocol):
     def read_modifiers(self, target: str) -> dict[tuple[str, str], float]: ...
         # every everhear:* modifier on the target: (attribute, id) -> amount
     def read_gamerule(self, name: str) -> str | None: ...
+    # part 2 (DESIGN2 §6): reads on demand, each counted against the calling content's 50 ms
+    def probe(self, dim: str, points: Sequence[tuple[int, int, int]], test: str) -> list[bool]: ...
+    def ground_y(self, dim: str, x: int, z: int) -> int | None: ...
+    def ray(self, dim: str, origin: Vec, direction: Vec, length: float, through_blocks: bool = False) -> Look: ...
+    def entities(self, dim: str, center: Vec, radius: float, types: Sequence[str] | None = None) -> list[EntitySnap]: ...
+    def loaded(self, dim: str, x: int, z: int) -> bool: ...
+    def mspt(self) -> float: ...
+    def world_id(self) -> str: ...
+    def watch_mined(self, blocks: Iterable[str]) -> list[str]: ...
+        # the block kinds whose breaking is a `mine` event, all of them (replaces the last list);
+        # returns the ids that are no 26.3 block

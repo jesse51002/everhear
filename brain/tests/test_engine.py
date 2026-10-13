@@ -1,42 +1,32 @@
-"""The game engine in the brain: the ENGINE part of THE WORLD NOW, engine bindings among the
+"""The game engine in the brain: its part of THE WORLD NOW read in one call, its bindings among the
 incantations, the Config read (read_configs) and its rewrite (engine_config) gated on it, the engine
-actions run through `vfg action run` as any action, and the engine not running a "did not run"."""
+actions run through `vfg action run`, and the engine not running a "did not run"."""
 
 import json
 
 from brain.act import CHANGED_NOTHING, DID_NOT_RUN, LANDED, READ, REFUSED
 from brain.call import step_type
 from brain.vfg import VfgResult
-from brain.world import Seen, World, engine_lines, incantation_lines
+from brain.world import Seen, World, incantation_lines
 
 from conftest import Tick, act, engine_catalog, ran, step
 
 SEEN = Seen(places="SAVED PLACES: none", known=set())
-CLASSES = {"ok": True, "classes": [
+CLASSES = [
     {"id": "fireball", "kind": "ability", "file": "/opt/vfg/made/main/content/fireball.py",
      "summary": "Burns for burn_s seconds, then explodes in a radius; both scale with power."},
-    {"id": "fire_staff", "kind": "item", "file": "/opt/vfg/made/main/content/fire_staff.py",
-     "summary": "Right-click to cast Fireball. Holding it adds 20% speed."},
-    {"id": "giant", "kind": "mark", "file": "/opt/vfg/engine/examples/marks.py", "summary": "Twice the size."},
-    {"id": "horde", "kind": "scenario", "file": "/opt/vfg/made/main/content/horde.py", "summary": "Waves of zombies."},
-    {"id": "ice_queen", "kind": "actor", "file": "/opt/vfg/made/main/content/ice_queen.py", "summary": ""}]}
-INSTANCES = {"ok": True, "instances": [
-    {"instance": "ability:fireball#1", "kind": "ability", "id": "fireball", "user": "Steve", "started": 1.0},
-    {"instance": "item:fire_staff#2", "kind": "item", "id": "fire_staff", "user": "Steve", "started": 1.0},
-    {"instance": "mark:giant#3", "kind": "mark", "id": "giant", "user": "Alex", "started": 1.0},
-    {"instance": "ability:ground_slam#4", "kind": "ability", "id": "ground_slam",
-     "user": "0e5b7c1a-3d2f-4a6b-9c8d-7e6f5a4b3c2d", "started": 1.0},
-    {"instance": "scenario:horde#5", "kind": "scenario", "id": "horde", "user": None, "started": 1.0}]}
-ENGINE = ("ENGINE (the game engine's own abilities, items, scenarios, actors and marks, one version for everyone; "
-          "the engine_ actions grant, give, start and bind them):\n"
-          "- abilities: fireball (Burns for burn_s seconds, then explodes in a radius; both scale with power.)\n"
-          "- items: fire_staff (Right-click to cast Fireball. Holding it adds 20% speed.)\n"
-          "- scenarios: horde (Waves of zombies.)\n"
-          "- actors: ice_queen (no summary)\n"
-          "- marks: giant\n"
-          "- Alex has: mark giant\n"
-          "- Steve has: ability fireball, item fire_staff\n"
-          "- running for the world: scenario horde as scenario:horde#5")
+    {"id": "horde", "kind": "scenario", "file": "/opt/vfg/engine/library/horde.py", "summary": "Waves of zombies.",
+     "args": [{"name": "count", "type": "int", "default": 10, "bounds": {"ge": 1, "le": 100},
+               "description": "how many"}]}]
+INSTANCES = [{"instance": "ability:fireball#1", "kind": "ability", "id": "fireball", "user": "Steve", "started": 1.0},
+             {"instance": "scenario:horde#5", "kind": "scenario", "id": "horde", "user": None, "started": 1.0}]
+ENGINE = ("ENGINE (every class the game engine has, one version for everyone: a scenario is started, an ability "
+          "granted, an item given, a mark applied; under each scenario and mark its args, each by its name):\n"
+          "SCENARIOS:\n"
+          "- horde: Waves of zombies.\n"
+          "    args.count: int 1..100, default 10: how many\n"
+          "ABILITIES:\n"
+          "- fireball: Burns for burn_s seconds, then explodes in a radius; both scale with power.")
 CONFIG = ("made/main/content/fireball.py, lines 8 to 17: the Config of Fireball, as written\n"
           "    class Config(AbilityConfig):\n"
           "        # the blast\n"
@@ -58,47 +48,45 @@ def answer(k, *prefix: str, now) -> None:
     k.vfg.on(*prefix, answer=now)
 
 
-def test_the_engine_part_is_each_kind_by_name_then_who_has_what_kept_small():
-    assert engine_lines(CLASSES, INSTANCES) == ENGINE
-    many = {"classes": [{"id": "a%02d" % i, "kind": "ability", "summary": "x" * 200} for i in range(15)]}
-    shown = engine_lines(many, None)
-    assert shown.count("a0") + shown.count("a1") == 12 and shown.endswith("…), and 3 more")
-    assert engine_lines({"classes": []}, INSTANCES) == "ENGINE: no abilities, items, scenarios or actors yet"
-
-
-def test_an_engine_binding_shows_the_ability_it_casts():
+def test_an_engine_binding_shows_the_ability_it_casts_or_the_scenario_it_starts():
     shown = incantation_lines([
-        {"player": "Steve", "phrase": "fire ball", "action": None, "engine": True, "ability": "fireball",
-         "values": {}, "cooldown_s": 5.0, "aliases": ["fireball"], "everyday_aliases": []},
-        {"player": "Alex", "phrase": "pearl toss", "action": "command", "values": {"count": 4}}])
-    assert shown.splitlines()[1:] == ['- "fire ball" for Steve: casts the engine ability fireball',
-                                      '- "pearl toss" for Alex: command count=4']
+        {"player": "Steve", "phrase": "fire ball", "ability": "fireball", "scenario": None, "args": {},
+         "cooldown_s": 5.0, "aliases": ["fireball"], "everyday_aliases": []},
+        {"player": "Alex", "phrase": "horde", "ability": None, "scenario": "horde", "args": {"count": 4}}])
+    assert shown.splitlines()[1:] == ['- "fire ball" for Steve: casts fireball',
+                                      '- "horde" for Alex: starts horde {"count":4}']
 
 
-async def test_the_world_reads_the_engine_in_one_call_at_most_every_ten_seconds_and_says_when_it_is_down(kit, tmp_path):
+async def test_the_world_reads_the_engine_in_one_call_shared_while_young_and_says_when_it_is_down(kit):
     k = kit()
     tick = Tick(100.0)
-    world = World(k.vfg, tmp_path / "running.json", k.cat, clock=tick)
-    overview = {"ok": True, "classes": CLASSES["classes"], "instances": INSTANCES["instances"]}
+    world = World(k.vfg, clock=tick)
+    overview = {"ok": True, "classes": CLASSES, "instances": INSTANCES, "places": [], "incantations": []}
     k.vfg.on("engine", "overview", answer=answered(overview))
     seen = await world.seen()
     assert seen.engine == ENGINE and seen.show().endswith(ENGINE)
-    assert k.vfg.of("engine") == [["engine", "overview", "--json"]]   # classes and instances: one SSH call
-    tick.t += 5
+    assert seen.running.splitlines()[1:] == ["- scenario:horde#5: scenario horde, for the world",
+                                             "- ability:fireball#1: ability fireball, granted to Steve"]
+    assert k.vfg.of("engine") == [["engine", "overview", "--json"]]   # every part: one SSH call
+    tick.t += 1.5
     await world.seen()
-    assert len(k.vfg.of("engine")) == 1              # young enough: not read again
+    assert len(k.vfg.of("engine")) == 1              # young enough (as the state): not read again
     world.engine_changed()                           # an engine action ran
     answer(k, "engine", "overview", now=VfgResult(6, "", "vfg: the engine is not running: no control socket"))
-    assert (await world.seen()).engine == "ENGINE: not running (vfg-engine is down): no engine action works now"
+    assert (await world.seen()).engine == ("ENGINE: not running (vfg-engine is down): nothing the engine has can be "
+                                           "started, granted or bound now")
     tick.t += 11
     answer(k, "engine", "overview", now=VfgResult(4, "", "vfg: EC2 did not answer within 40 s"))
-    assert (await world.seen()).engine == "ENGINE: unknown (it could not be read: vfg: EC2 did not answer within 40 s)"
+    seen = await world.seen()          # unread: what was read before it went down is gone, and it says why
+    assert seen.engine == "ENGINE: unknown (it could not be read: vfg: EC2 did not answer within 40 s)"
     assert (await world.glance()).engine.startswith("ENGINE: unknown")
     tick.t += 11                                     # the engine gave its classes, refused its instances
-    half = {"ok": False, "classes": CLASSES["classes"], "error": "instances: the engine failed on instances"}
+    half = {"ok": False, "classes": CLASSES, "places": [], "incantations": [],
+            "error": "instances: the engine failed on instances"}
     answer(k, "engine", "overview", now=VfgResult(1, json.dumps(half) + "\n", "vfg: instances: the engine failed"))
-    shown = (await world.seen()).engine
-    assert shown.startswith(ENGINE.split("\n- Alex")[0]) and "has:" not in shown
+    seen = await world.seen()
+    assert seen.engine == ENGINE
+    assert seen.running == "RUNNING NOW: unknown (it could not be read: instances: the engine failed on instances)"
     await world.close()
 
 
@@ -167,7 +155,7 @@ async def test_a_rewrite_runs_only_after_its_config_was_read_in_an_earlier_step(
                              player="Steve", seen=SEEN, refs=k.brain.refs, ref="#9 s3", earlier=[first, read])
     assert [x.state for x in third.actions] == [LANDED] and third.landed
     [argv] = k.vfg.of("action", "run")
-    assert argv == ["action", "run", "engine_config", "class_id=fireball", "config=" + NEW, "--for", "Steve"]
+    assert argv == ["action", "run", "engine_config", "class_id=fireball", "config=" + NEW]
     answer(k, "action", "run", "engine_config", now=ran(True, "fireball's Config is already as written: nothing "
                                                         "changed", changed=[]))
     again = await k.acts.run(Step.model_validate_json(json.dumps(step(rewrite, reply="harder now"))), n=4,
@@ -175,7 +163,7 @@ async def test_a_rewrite_runs_only_after_its_config_was_read_in_an_earlier_step(
     assert again.actions[0].state == CHANGED_NOTHING
 
 
-async def test_engine_actions_run_as_actions_and_the_engine_down_did_not_run(kit, tmp_path):
+async def test_engine_actions_run_as_actions_and_the_engine_down_did_not_run(kit):
     k = kit(cat=engine_catalog())
     k.vfg.on("action", "run", "engine_grant", answer=ran(True, "granted fireball to Steve"))
     k.world.engine_at = 50.0
@@ -183,10 +171,9 @@ async def test_engine_actions_run_as_actions_and_the_engine_down_did_not_run(kit
     got = await k.acts.run(step_type(k.cat).model_validate_json(json.dumps(step(grant, end="next"))), n=1,
                            player="Steve", seen=SEEN, refs=k.brain.refs, ref="#9 s1")
     assert got.actions[0].state == LANDED
-    assert k.vfg.of("action", "run") == [["action", "run", "engine_grant", "player=Steve", "ability=fireball", "--for",
-                                          "Steve"]]
+    assert k.vfg.of("action", "run") == [["action", "run", "engine_grant", "player=Steve", "ability=fireball"]]
     assert k.world.engine_at == float("-inf")          # the next loop reads the engine again
-    line = {"ok": False, "copy": "", "action": "engine_give", "running": False, "summary": "", "facts": {},
+    line = {"ok": False, "action": "engine_give", "running": False, "summary": "", "facts": {},
             "notes": [], "error": "the engine is not running: no control socket at /opt/vfg/engine/engine.sock"}
     k.vfg.on("action", "run", "engine_give", answer=VfgResult(6, json.dumps(line) + "\n", ""))
     give = act("engine_give", "give Alex a fire staff", {"player": "Alex", "item": "fire_staff"})

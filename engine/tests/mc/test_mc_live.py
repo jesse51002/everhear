@@ -255,8 +255,11 @@ def test_a_hit_on_a_player_names_both(calm):
     io.rcon.command("tp Alex -1.5 85 0.5 -90 0")
     p.look_at("Steve", -1.5, 86.5, 0.5)
     time.sleep(0.1)
-    p.attack("Steve")
-    evs = collect(io, lambda e: kinds(e, "hit") and kinds(e, "hurt", "Alex"))
+    # a player who just joined cannot be hurt for a few seconds: swing until the hit lands
+    evs, end = [], time.monotonic() + 5
+    while time.monotonic() < end and not (kinds(evs, "hit") and kinds(evs, "hurt", "Alex")):
+        p.attack("Steve")
+        evs += collect(io, lambda e: kinds(e, "hit") and kinds(e, "hurt", "Alex"), timeout=0.6)
     hit, hurt = kinds(evs, "hit", "Steve"), kinds(evs, "hurt", "Alex")
     assert [(h.data["target"], h.data["target_type"]) for h in hit] == [("Alex", "minecraft:player")]
     assert [(h.data["attacker"], h.data["attacker_type"]) for h in hurt] == [("Steve", "minecraft:player")]
@@ -304,6 +307,7 @@ def test_death_of_a_fake_player_is_reported_when_it_comes_back(calm):
     evs = collect(io, lambda e: kinds(e, "respawn"))
     d, r = kinds(evs, "death", "Alex"), kinds(evs, "respawn", "Alex")
     assert len(d) == 1 and len(r) == 1 and d[0].n < r[0].n and d[0].game_tick == r[0].game_tick
+    assert d[0].data["dim"] == "minecraft:overworld" and len(d[0].data["pos"]) == 3     # where it died
 
 
 def test_the_queue_survives_a_dropped_connection(fresh):
@@ -605,3 +609,269 @@ def test_a_cut_mid_reply_never_leaks_into_the_next(mc):
     # recovered on the same socket; a cut in the few bytecodes between a send and its record may
     # cost a reconnect instead (never a wrong reply)
     assert io.rcon.stats.connects - connects <= 1
+
+
+# ---- part 2: reads on demand --------------------------------------------------------------------
+
+OW = "minecraft:overworld"
+
+
+def test_world_id_is_kept(mc):
+    io, _ = mc
+    wid = io.world_id()
+    assert len(wid) == 16 and int(wid, 16) >= 0
+    io.rcon._break("a reconnect")
+    assert io.world_id() == wid
+
+
+def test_probe(fresh):
+    io, p = fresh
+    floor = [(x, 84, z) for x in range(-3, 4) for z in range(-3, 4)]
+    assert io.probe(OW, floor, "minecraft:grass_block") == [True] * len(floor)
+    assert io.probe(OW, floor, "solid") == [True] * len(floor)
+    above = [(x, 85, z) for x in range(-3, 4) for z in range(2, 4)]          # clear of the players
+    assert io.probe(OW, above, "open") == [True] * len(above)
+    assert io.probe(OW, above, "solid") == [False] * len(above)
+    io.flush([I.SetBlock(OW, (2, 83, 2), "minecraft:dirt")])
+    assert io.probe(OW, [(0, 84, 0), (2, 83, 2)], "#minecraft:dirt") == [False, True]   # grass is not in #dirt
+    assert io.probe(OW, [(5000, 84, 0)], "minecraft:grass_block") == [False]         # not loaded
+
+
+def test_ground_y(fresh):
+    io, p = fresh
+    assert io.ground_y(OW, 0, 0) == 85 and io.ground_y(OW, 10, -10) == 85
+    assert io.ground_y(OW, 5000, 0) is None
+
+
+def test_a_ray_on_demand(fresh):
+    io, p = fresh
+    summon_husk(io, 40, (0.5, 86, 2.5))                                    # in the way: entities never stop it
+    look = io.ray(OW, (0.5, 86.62, 0.5), (0, -0.5, 3 ** 0.5 / 2), 50)
+    assert (look.kind, look.block, look.block_id) == ("block", (0, 84, 3), "minecraft:grass_block")
+    assert look.distance == pytest.approx(3.24, abs=1 / 32)
+    up = io.ray(OW, (0.5, 86.62, 0.5), (0, 1, 0), 40)
+    assert up.kind == "none" and up.distance == pytest.approx(40, abs=0.5), up
+    far = io.ray(OW, (0.5, 200, 0.5), (1, 0, 0), 1000)                     # stops where the loaded world ends
+    assert far.kind == "none" and 40 < far.distance < 1000
+    through = io.ray(OW, (0.5, 86, 0.5), (0, -1, 0), 10, through_blocks=True)
+    assert through.kind == "none" and through.pos == pytest.approx((0.5, 76, 0.5))
+
+
+def test_entities_live_and_far(fresh):
+    io, p = fresh
+    u = summon_husk(io, 41, (70.5, 100, 0.5), extra=",NoGravity:1b")       # past the mirror's 32 blocks
+    found = io.entities(OW, (70.5, 100, 0.5), 3, types=["minecraft:husk"])
+    assert [e.uuid for e in found] == [u] and found[0].pos == (70.5, 100.0, 0.5)
+    assert u not in {e.uuid for e in io.entities(OW, ARENA, 10)}
+    assert io.mirror().get(u) is None
+    assert "Steve" not in {e.name for e in io.entities(OW, ARENA, 3)}         # players are the snapshot's
+    assert "Steve" in {e.name for e in io.entities(OW, ARENA, 3, types=["minecraft:player"])}
+
+
+def test_loaded_and_mspt(fresh):
+    io, _ = fresh
+    assert io.loaded(OW, 0, 0) and not io.loaded(OW, 5000, 0)
+    assert 0 < io.mspt() < 50
+
+
+def test_owner_and_in_ground(fresh):
+    io, p = fresh
+    steve = [int(x) for x in __import__("vfg_engine.mc.commands", fromlist=["uuid_ints"]).uuid_ints(io.names.uuid_of("Steve"))]
+    wolf = "0000ee00-0000-4000-8000-00000000002a"
+    io.flush([I.Summon("minecraft:wolf", OW, (3.5, 85, -3.5), wolf, tags=(TEST_TAG,),
+                       nbt="{NoAI:1b,Tame:1b,Owner:[I;%d,%d,%d,%d]}" % tuple(steve))])
+    e = io.snapshot(track=[wolf]).tracked[wolf]
+    assert (e.owner, e.in_ground) == ("Steve", False)
+    io.flush([I.Summon("minecraft:arrow", OW, (5.5, 86, 5.5), husk_uuid(43), tags=(TEST_TAG,),
+                       nbt="{Owner:[I;%d,%d,%d,%d],Motion:[0.0d,-1.0d,0.0d]}" % tuple(steve))])
+    time.sleep(0.4)
+    arrow = io.entities(OW, (5.5, 85, 5.5), 2, types=["minecraft:arrow"])[0]
+    assert (arrow.owner, arrow.in_ground) == ("Steve", True)
+
+
+def test_on_ground_and_sprinting(fresh):
+    io, p = fresh
+    s = io.snapshot().players["Steve"]
+    assert (s.on_ground, s.sprinting) == (True, False)
+    p.sprint("Steve")
+    p.move("Steve", "forward")
+    time.sleep(0.3)
+    assert io.snapshot().players["Steve"].sprinting is True
+    p.move("Steve", None)
+    p.sprint("Steve", False)
+    io.flush([I.Teleport("Steve", OW, (0.5, 95, 0.5))])
+    time.sleep(0.1)                                  # OnGround is the player's own, from its next tick
+    assert io.snapshot().players["Steve"].on_ground is False
+
+
+# ---- part 2: writes ----------------------------------------------------------------------------
+
+def test_fill_and_setblock(fresh):
+    io, p = fresh
+    a, b = (8, 85, 8), (10, 87, 10)
+    try:
+        r = io.flush([I.Fill(OW, a, b, "minecraft:stone"), I.Fill(OW, a, b, "minecraft:stone"),
+                      I.Fill(OW, a, b, "minecraft:dirt", replace="minecraft:stone"),
+                      I.SetBlock(OW, (9, 88, 9), "minecraft:oak_stairs[facing=north]"),
+                      I.SetBlock(OW, (9, 88, 9), "minecraft:stone", mode="keep"),
+                      I.Fill(OW, (0, 0, 0), (40, 40, 40), "minecraft:stone")])
+        assert [(x.ok, x.error) for x in r] == [(True, None), (True, None), (True, None), (True, None),
+                                                (False, "something is there already (keep)"),
+                                                (False, "refused: the box is 68921 blocks, over the 32768 one fill "
+                                                        "changes (the block queue splits it)")]
+        assert r[0].reply == "Successfully filled 27 block(s)" and r[1].reply == "No blocks were filled"
+        assert io.probe(OW, [(9, 86, 9), (9, 88, 9)], "minecraft:dirt") == [True, False]
+        assert io.probe(OW, [(9, 88, 9)], "minecraft:oak_stairs[facing=north]") == [True]
+    finally:
+        io.flush([I.Fill(OW, a, (10, 88, 10), "minecraft:air")])
+
+
+def test_forceload(fresh):
+    io, _ = fresh
+    r = io.flush([I.Forceload(OW, (400, 400), (415, 415)), I.Forceload(OW, (400, 400), (415, 415), add=False)])
+    assert [x.ok for x in r] == [True, True]
+    assert "Marked chunk [25, 25]" in r[0].reply and "Unmarked chunk [25, 25]" in r[1].reply
+
+
+def test_motion_and_entity_data(fresh):
+    io, p = fresh
+    u = summon_husk(io, 44, (-6.5, 85, 6.5), ai=True)
+    r = io.flush([I.Motion(u, (0, 1.0, 0)), I.EntityData(u, "{Glowing:1b}"), I.Motion("Steve", (0, 1, 0)),
+                  I.EntityData("Steve", "{Glowing:1b}")])
+    assert [x.ok for x in r] == [True, True, False, False]
+    assert "wind charges" in r[2].error and r[3].error == "a player's data cannot be written"
+    time.sleep(0.25)
+    e = io.snapshot(track=[u]).tracked[u]
+    assert e.pos[1] > 86
+    assert io.query("data get entity %s Glowing" % u).endswith("1b")
+
+
+def test_bossbar(fresh):
+    io, _ = fresh
+    try:
+        r = io.flush([I.Bossbar("ge_test", "Ice Queen", "blue", 150, 300, ("Steve", "Alex")),
+                      I.Bossbar("ge_test", "Ice Queen II", value=75), I.Bossbar("ge_test", players=())])
+        assert all(x.ok for x in r), r
+        assert io.query("bossbar get everhear:ge_test value").endswith("75")
+        assert io.query("bossbar get everhear:ge_test max").endswith("300")
+        assert "no longer has any players" in r[2].reply
+    finally:
+        r = io.flush([I.Bossbar("ge_test", remove=True), I.Bossbar("ge_test", value=1)])
+    assert r[0].ok and r[1].error == "no such bossbar (give it a name to make it)"
+
+
+def test_stopsound_spawnpoint_sound_to_particle_force(fresh):
+    io, _ = fresh
+    r = io.flush([I.StopSound(), I.StopSound(("Steve",), "minecraft:music.game"),
+                  I.Spawnpoint("Steve", OW, (2.5, 85, 2.5)),
+                  I.Sound("minecraft:entity.blaze.shoot", OW, (0.5, 86, 0.5), to=("Steve",)),
+                  I.Sound("minecraft:entity.blaze.shoot", OW, (0.5, 86, 0.5), to=("Steve", "Nobody")),
+                  I.Particle("minecraft:flame", OW, (0.5, 86, 0.5), force=True),
+                  I.Particle("minecraft:flame", OW, (0.5, 86, 0.5), to=("Alex",))])
+    assert [x.ok for x in r] == [True, True, True, True, False, True, True], r
+    assert r[2].reply.startswith("Set spawn point to 2, 85, 2") and r[3].reply.endswith("to Steve")
+    assert r[4].error == "no player found"
+
+
+def test_ignite_a_player_and_a_mob(calm):
+    io, p = calm
+    u = summon_husk(io, 45, (6.5, 85, -6.5), extra=',equipment:{head:{id:"minecraft:leather_helmet",count:1}}')
+    r = io.flush([I.Ignite("Steve", 3), I.Ignite(u, 10)])
+    assert [x.ok for x in r] == [True, True], r
+    time.sleep(0.3)
+    fire = int(io.query("data get entity Steve Fire").split(": ")[-1].rstrip("s"))
+    assert 40 <= fire <= 60
+    assert io.snapshot().players["Steve"].health == 20.0            # the lava's own damage was not taken
+    assert io.read_modifiers("Steve") == {}                         # everhear:ignite off again
+    assert io.probe(OW, [(0, 85, 0), (0, 86, 0)], "minecraft:lava") == [False, False]
+    assert int(io.query("data get entity %s Fire" % u).split(": ")[-1].rstrip("s")) > 150
+    # and then it burned: on_fire hurts once the second of Fire Resistance is over (fast
+    # regeneration from a full hunger bar heals it back, so the hurts are what is read)
+    hurts = kinds(collect(io, lambda e: False, timeout=3.2), "hurt", "Steve")
+    assert len(hurts) >= 1 and all(h.data.get("attacker") is None for h in hurts)
+    r = io.flush([I.Ignite(husk_uuid(999), 3)])
+    assert r[0].error == "no such target, or no air at a player's feet or head to light them from"
+
+
+# ---- part 2: events ----------------------------------------------------------------------------
+
+def shoot(io, p, item, base="minecraft:bow", hold=1.1):
+    io.rcon.command("clear Steve")
+    io.rcon.command('item replace entity Steve weapon.mainhand with %s[custom_data={everhear:{item:"%s"}}]' % (base, item))
+    if base == "minecraft:bow":
+        io.rcon.command("give Steve arrow 16")
+    time.sleep(0.1)
+    p.use("Steve", "continuous")
+    time.sleep(hold)
+    p.stop("Steve")
+
+
+def test_land_an_arrow_in_a_block(fresh):
+    io, p = fresh
+    p.look("Steve", 0, -10)
+    shoot(io, p, "boom_bow")
+    land = kinds(collect(io, lambda e: kinds(e, "land")), "land", "Steve")
+    assert len(land) == 1
+    d = land[0].data
+    assert (d["item"], d["hit"], d["projectile_type"], d["dim"]) == ("boom_bow", "block", "minecraft:arrow", OW)
+    assert d["block"] and len(d["projectile"]) == 36 and len(d["pos"]) == 3
+
+
+def test_a_ranged_hit_and_its_land(fresh):
+    io, p = fresh
+    u = summon_husk(io, 46, (0.5, 85, 8.5), extra=',equipment:{head:{id:"minecraft:leather_helmet",count:1}}')
+    p.look_at("Steve", 0.5, 86.3, 8.5)
+    time.sleep(0.1)
+    shoot(io, p, "boom_bow")
+    evs = collect(io, lambda e: kinds(e, "land"))
+    hit, land = kinds(evs, "hit", "Steve"), kinds(evs, "land", "Steve")
+    assert [(h.data["target"], h.data["ranged"], h.data["item"]) for h in hit] == [(u, True, "boom_bow")]
+    assert [(x.data["hit"], x.data["target"], x.data["item"]) for x in land] == [("entity", u, "boom_bow")]
+    assert land[0].n > hit[0].n
+
+
+def test_a_trident_lands_and_the_kill_shot_still_lands(fresh):
+    io, p = fresh
+    p.look("Steve", 0, -10)
+    shoot(io, p, "boom_trident", base="minecraft:trident")
+    land = kinds(collect(io, lambda e: kinds(e, "land")), "land", "Steve")
+    assert [(x.data["item"], x.data["hit"], x.data["projectile_type"]) for x in land] == [
+        ("boom_trident", "block", "minecraft:trident")]
+    u = summon_husk(io, 47, (0.5, 85, 8.5))
+    io.flush([I.EntityData(u, "{Health:1.0f}")])
+    p.look_at("Steve", 0.5, 86.3, 8.5)
+    time.sleep(0.1)
+    shoot(io, p, "boom_bow")
+    evs = collect(io, lambda e: kinds(e, "land"))
+    assert kinds(evs, "kill", "Steve") and kinds(evs, "hit", "Steve")[0].data["ranged"] is True
+    land = kinds(evs, "land", "Steve")
+    assert [(x.data["hit"], x.data["item"]) for x in land] == [("entity", "boom_bow")] and land[0].data["projectile"]
+
+
+def test_mine_a_watched_block(fresh):
+    io, p = fresh
+    assert io.watch_mined(["minecraft:sponge"]) == []
+    try:
+        for block, watched in (("minecraft:sponge", True), ("minecraft:oak_planks", False)):
+            io.flush([I.SetBlock(OW, (0, 85, 2), block)])
+            p.look_at("Steve", 0.5, 85.5, 2.5)
+            time.sleep(0.15)
+            io.snapshot()
+            p.player("Steve", "attack", "continuous")
+            end = time.monotonic() + 8
+            got = []
+            while io.probe(OW, [(0, 85, 2)], block)[0] and time.monotonic() < end:
+                io.snapshot()
+                got += io.events()
+                time.sleep(0.1)
+            p.stop("Steve")
+            got += collect(io, lambda e: kinds(e, "mine"), timeout=0.6 if watched else 0.4)
+            mine = kinds(got, "mine", "Steve")
+            if watched:
+                assert [(m.data["block"], m.data["count"], m.data.get("pos")) for m in mine] == [
+                    ("minecraft:sponge", 1, (0, 85, 2))]
+            else:
+                assert mine == []
+    finally:
+        io.watch_mined([])
+        io.flush([I.SetBlock(OW, (0, 85, 2), "minecraft:air")])

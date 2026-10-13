@@ -1,6 +1,6 @@
 """Refs: what a drafted Minecraft command is checked against before it runs.
 
-Per server version, cached in `$VFG_DISPATCH_DIR/refs/<version>/`: the server's own command tree
+Per server version, cached in the brain's folder, `$VFG_BRAIN_DIR/refs/<version>/`: the server's own command tree
 (`vfg action refs`), as usage lines like `give <targets> <item> [<count>]`, and each command's
 minecraft.wiki page as plain text from the wiki's API, cut to its Java Edition Usage, Syntax,
 Arguments and Examples (CC BY-NC-SA: each cached file names its source on line 1). The cache holds

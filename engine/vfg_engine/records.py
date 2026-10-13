@@ -19,6 +19,7 @@ class Sub:
     method: str
     about: str = "user"          # "user" | "anyone"
     run: int | None = None       # made during this run (an ability's cast); ends with it
+    blocks: list | None = None   # a Mine listen: the block kinds it watches
 
 
 @dataclass
@@ -35,17 +36,22 @@ class Timer:
 @dataclass
 class Owned:
     """What one instance (or one run) made, which goes when it ends."""
-    modifiers: dict[str, list] = field(default_factory=dict)   # attribute -> [amount, operation]
+    modifiers: dict[str, list] = field(default_factory=dict)   # attribute (on its user), or
+                                                               # "<uuid>|<attribute>" -> [amount, operation]
     potions: dict[str, list] = field(default_factory=dict)     # keep_potion: effect -> [amplifier, particles, next_due]
     spawned: list[str] = field(default_factory=list)           # uuids
     grants: list[list[str]] = field(default_factory=list)      # [who, ability]
     marks: list[str] = field(default_factory=list)             # mark instance ids (a scenario's)
     holds: list[str] = field(default_factory=list)             # world settings held
     areas: dict[str, dict] = field(default_factory=dict)       # name -> {dim, center, radius, box, inside}
+    kept: list[str] = field(default_factory=list)              # spawns left in the world unless stopped
+    bossbars: list[str] = field(default_factory=list)          # boss bar ids
+    forceloads: list[list] = field(default_factory=list)       # [dim, x1, z1, x2, z2] forceloaded
+    undo: list[list] = field(default_factory=list)             # [dim, a, b, block] placed with undo=True
 
     def empty(self) -> bool:
         return not any((self.modifiers, self.potions, self.spawned, self.grants, self.marks,
-                        self.holds, self.areas))
+                        self.holds, self.areas, self.kept, self.bossbars, self.forceloads, self.undo))
 
 
 @dataclass
@@ -79,7 +85,9 @@ class Record:
     created: float
     source: str | None = None    # who caused it (a being, or an instance id)
     owner: str | None = None     # the instance whose end ends this one (a lent grant, a spawn)
-    args: dict = field(default_factory=dict)        # a scenario's start args; an item's slot
+    args: dict = field(default_factory=dict)        # a scenario's or mark's Args, validated (plain data)
+    notes: dict = field(default_factory=dict)       # the engine's own: an item's slot, a mark's seconds,
+                                                    # an actor's body, a scenario's result, ...
     ends: float | None = None    # when it ends by itself (a mark, a scenario); None: never
     paused_at: float | None = None  # its user went offline: timers and end wait
     stack: int | None = None     # a stacking mark's copy number

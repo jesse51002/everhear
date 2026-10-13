@@ -1,15 +1,14 @@
 """The game engine, as the bridge sees it (the game engine spec, "Incantations"): the incantations
 bound to its abilities, read from its export without asking, and a cast, sent to its control socket.
 
-The engine owns those bindings, per player. It writes them to /opt/vfg/engine/incantations.json
-on every change, whole and atomically: ``{"version": n, "incantations": [{"id", "player",
-"phrase", "aliases", "everyday_aliases", "ability", "cooldown_s"}, ...]}``. A cast is one control
+The engine owns every incantation: a phrase bound, per player, to an ability (or to a scenario
+with its args). It writes them to /opt/vfg/engine/incantations.json on every change, whole and
+atomically: ``{"version": n, "incantations": [{"id", "player", "phrase", "aliases",
+"everyday_aliases", "ability" | "scenario" and "args", "cooldown_s"}, ...]}``. A cast is one control
 request on /opt/vfg/engine/engine.sock: one JSON line in, ``{"op": "cast", "args": {"player",
 "phrase", "cast_id"}, "timeout_s"}``, and one JSON line out, the engine's reply (engine/README.md,
 "The control socket"). Standard library only, as the whole bridge is: this is its own small client.
 
-Each entry read from the export is marked ``"engine": True``, which is how casts.py tells an
-engine binding from an entry of today's store.
 """
 
 import json
@@ -52,9 +51,14 @@ def _entry(raw):
     """An export entry as casts.py uses it, or None (with why) when it is not one."""
     if not isinstance(raw, dict):
         return None, "not an object"
-    for key in ("player", "phrase", "ability"):
+    for key in ("player", "phrase"):
         if not isinstance(raw.get(key), str) or not raw[key].strip():
             return None, "%s is not a name" % key
+    what = [k for k in ("ability", "scenario") if isinstance(raw.get(k), str) and raw[k].strip()]
+    if len(what) != 1:
+        return None, "it binds neither an ability nor a scenario (or both)"
+    if raw.get("args") is not None and not isinstance(raw.get("args"), dict):
+        return None, "args is not an object"
     aliases, everyday = _strings(raw.get("aliases")), _strings(raw.get("everyday_aliases"))
     if aliases is None or everyday is None:
         return None, "aliases and everyday_aliases are lists of phrases"
@@ -62,7 +66,7 @@ def _entry(raw):
     if cooldown is not None and (isinstance(cooldown, bool) or not isinstance(cooldown, (int, float))
                                  or not math.isfinite(cooldown) or cooldown < 0):
         return None, "cooldown_s is not a number of seconds"
-    entry = dict(raw, aliases=aliases, everyday_aliases=everyday, engine=True)
+    entry = dict(raw, aliases=aliases, everyday_aliases=everyday)
     entry["id"] = str(raw.get("id") or "%s.%s" % (raw["player"].lower(),
                                                    "_".join(raw["phrase"].lower().split())))
     entry["cooldown_s"] = 0.0 if cooldown is None else float(cooldown)

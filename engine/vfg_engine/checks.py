@@ -12,6 +12,8 @@ loader names the check that failed.
                changes with power
     triggers   an item: its base is one an EverHear item may use, and it can report each trigger
                the class listens for (vfg_engine.bases)
+    args       a Scenario's or Mark's Args: every field has a default and a description, and the
+               defaults fit; only a Scenario or a Mark declares Args
     config     an actor: its entity_type exists in 26.3 (vfg_engine.registries)
 """
 
@@ -52,6 +54,30 @@ def check_base(cls) -> str | None:
     from .content import State
     if not (isinstance(state, type) and issubclass(state, State)):
         return "%s.State must subclass vfg_engine.State" % cls.__name__
+    if "Args" in cls.__dict__ and kinds[0] not in ("scenario", "mark"):
+        return ("%s declares Args, but only a Scenario or a Mark takes args: an %s's numbers are its "
+                "Config, one for everyone" % (cls.__name__, kinds[0]))
+    return None
+
+
+def check_args(cls) -> str | None:
+    """A Scenario's or Mark's Args: an Args subclass, every field with a default and a description."""
+    from .args import Args, validate
+    args = getattr(cls, "Args", None)
+    if args is None:
+        return None
+    if not (isinstance(args, type) and issubclass(args, Args)):
+        return "%s.Args must subclass vfg_engine.Args" % cls.__name__
+    for name, info in args.model_fields.items():
+        if info.is_required():
+            return "%s.Args.%s has no default: every arg needs one" % (cls.__name__, name)
+        if not (info.description or "").strip():
+            return ("%s.Args.%s has no description: the brain reads it (Field(..., description=...), "
+                    "or a docstring under the field)" % (cls.__name__, name))
+    try:
+        validate(args, {})
+    except ValueError as exc:
+        return "%s.Args' defaults do not fit: %s" % (cls.__name__, exc)
     return None
 
 

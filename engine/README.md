@@ -16,7 +16,9 @@ engine/
     __main__.py          python -m vfg_engine: settings, lock, socket, loop, signals, logs, exit codes
     server.py            the control socket
     ctl.py               python -m vfg_engine.ctl: one request from the shell
+    livetest.py          python -m vfg_engine.livetest: one test of content, on the test server
   datapack/everhear/     the datapack, copied into the world
+  library/               the server's base content, shipped with the engine (the library port's)
   examples/              the spec's Fire Staff, Fireball and two marks, as working content
   deploy/                vfg-engine.service, requirements.txt (hashed), install.sh
   tests/core, mc, box    the core on FakeIo; against a real 26.3 server; the process and socket
@@ -27,7 +29,7 @@ engine/
 On the box it is the systemd unit `vfg-engine`, as `ec2-user`, after `minecraft`:
 `PYTHONPATH=/opt/vfg/engine /opt/vfg/engine/.venv/bin/python -m vfg_engine`, with
 `/opt/vfg/.env` in its environment. The engine has **its own venv**, on the box's Python 3.12, with
-pydantic pinned by hash; the bridge, Jev and the kit stay standard library only.
+pydantic pinned by hash; the bridge and Jev stay standard library only.
 
 It takes the engine's lock (`engine.sock.lock`: two engines on one world would both write to it),
 makes the control socket, starts the engine (connects to RCON, checks the datapack, rebuilds every
@@ -61,6 +63,7 @@ echo '{"op": "classes"}' | VFG_ENGINE_SOCKET=/tmp/e.sock uv run python -m vfg_en
 | Path | What |
 |---|---|
 | `/opt/vfg/engine/vfg_engine/` | the package (`deploy.sh` rsyncs `engine/vfg_engine/`) |
+| `/opt/vfg/engine/library/` | the library: the server's base content, the first content folder |
 | `/opt/vfg/engine/examples/` | the example content, deployed but loaded only if `VFG_ENGINE_CONTENT` names it |
 | `/opt/vfg/engine/.venv/` | the venv: Python 3.12 (`/opt/vfg/python`), pydantic and its four dependencies |
 | `/opt/vfg/engine/state.json` | the saved state: every instance, binding and world-setting hold |
@@ -78,7 +81,7 @@ From the environment, which the unit fills from `/opt/vfg/.env` (names in `bridg
 |---|---|
 | `VFG_ENGINE_TICK_HZ` | `10` ticks a second |
 | `VFG_ENGINE_SLOW_MS`, `VFG_ENGINE_CUT_MS` | `5`: a content call over it is logged slow; `50`: cut |
-| `VFG_ENGINE_CONTENT` | content folders, colon-separated; the unit's default `/opt/vfg/made/main/content` (an `.env` value wins) |
+| `VFG_ENGINE_CONTENT` | content folders, colon-separated; the unit's default `/opt/vfg/engine/library:/opt/vfg/made/main/content`, the library first (an `.env` value wins) |
 | `VFG_ENGINE_STATE` | `/opt/vfg/engine/state.json` |
 | `VFG_ENGINE_EXPORT` | `/opt/vfg/engine/incantations.json` (the bridge reads the same key) |
 | `VFG_ENGINE_SOCKET` | `/opt/vfg/engine/engine.sock` (the bridge and `ctl` read the same key); at most 107 bytes |
@@ -133,16 +136,19 @@ The ops are the core's (DESIGN, THE CONTROL OPS); every reply has `ok`, and `err
 |---|---|---|
 | `status` | — | `tick`, `tick_hz`, `tick_ms` (p50/p95), `players`, `instances`, `classes`, `slow`, `started_at` |
 | `reload` | `paths?` (files; none: every content folder) | `loaded`, `errors: [{file, check, error}]`, `switched`, `stopped` |
-| `classes` | — | `classes: [{id, kind, file, summary}]` |
-| `meta` | `id?` | `rows`: required fields, damage at power 0, 10 and 20, the class's own fields |
+| `classes` | — | `classes: [{id, kind, class, file, summary, args?}]`: a Scenario's or Mark's `args` each `{name, type, default, bounds, description}` |
+| `meta` | `id?` | `rows`: required fields, damage at power 0, 10 and 20, the class's own fields, and its `args` |
 | `world` | — | `settings: [{name, value, original, holds}]` |
 | `instances` | `kind?`, `user?` | `instances: [{instance, kind, id, user, started, ends?}]` |
 | `grant`, `revoke` | `who`, `ability` | — |
 | `give`, `take` | `player`, `item`, `base?` | — |
-| `apply`, `clear` | `who`, `mark`, `seconds?` | — |
-| `start`, `stop` | `scenario` / `instance` or `scenario`, `args?` | `instance` |
+| `apply`, `clear` | `who`, `mark`, `seconds?`, `args?` (apply) | `instance`; `cleared` |
+| `start` | `scenario`, `args?`, `wait_s?` (0 to 30) | `instance`; with `wait_s`, `ended` and `result` (`{summary, facts}`) once it ends, `running: true` and its result once it reports one, or `running: true`, `note: "still running"` when the wait runs out |
+| `stop` | `instance` or `scenario` (every run of it) | `stopped` |
 | `spawn` | `actor`, `at?` or `near?` | `uuid` |
-| `bind`, `unbind` | `player`, `phrase`, `ability`, `aliases?`, `everyday_aliases?`, `by?` | `id` |
+| `bind`, `unbind` | `player`, `phrase`, and `ability`, or `scenario` with `args` (`"caster"` for a Player or Place arg) and `cooldown_s?`; `aliases?`, `everyday_aliases?`, `by?` | `id`, `version`, `entry` |
+| `places` | — | `version`, `world`, `places: {name: {dim, pos, yaw, by, at}}` (this world's) |
+| `places_import` | `places`: a list of `{name, dim, pos (or x y z), yaw?, by?}`, or a dict by name; `force?` | `imported`, `skipped` (a name already saved), `refused` (with why), `version`, `world`: once per world unless `force` |
 | `incantations` | `player?` | `version`, `incantations` |
 | `cast` | `player`, `phrase`, `cast_id` | `status`: `fired`, `charging`, `cooldown` (`remaining_s`), `not_granted`, `unknown`, `failed` |
 | `config_get` | `class` | `file`, `start`, `end`, `source` |
@@ -175,13 +181,13 @@ From the repo's root on the owner's PC (`bridge/README.md` has the rest of the b
 
 ```sh
 bridge/deploy/deploy.sh provision   # once: Python 3.12 and uv in /opt/vfg, /opt/vfg/engine, made/main/content
-bridge/deploy/deploy.sh             # the bridge, the kit and the engine; restarts all three units
+bridge/deploy/deploy.sh             # the bridge and the engine; restarts all three units
 bridge/deploy/deploy.sh engine      # the engine alone; restarts vfg-engine only
 ```
 
 `deploy.sh engine` (and `deploy.sh`, which does the same in its course):
 
-1. rsyncs `engine/vfg_engine/` and `engine/examples/` to `/opt/vfg/engine/`, `engine/datapack/everhear/`
+1. rsyncs `engine/vfg_engine/`, `engine/library/` and `engine/examples/` to `/opt/vfg/engine/`, `engine/datapack/everhear/`
    to `/opt/vfg/engine/datapack/`, and `install.sh` and `requirements.txt` to `/opt/vfg/engine/deploy/`;
 2. runs `install.sh` there as `ec2-user`: the venv is made when it is missing or the box's Python
    changed under it (`uv venv`, the box's uv), then `uv pip sync --require-hashes --no-build` makes it
@@ -200,22 +206,96 @@ answers; `deploy.sh env` restarts it with the others.
 
 ## The bridge's side
 
-The bridge reads the export and casts through the socket; nothing else of the engine. A phrase the
-engine binds for a player comes first, hides the old store's entry with the same phrase, and its cast
-skips the bridge's cooldowns: [bridge/README.md](../bridge/README.md), *Incantations*.
+The bridge reads the export and casts through the socket; nothing else of the engine. Every
+incantation is the engine's; the bridge keeps no cooldown of its own: [bridge/README.md](../bridge/README.md),
+*Incantations*.
+
+## Tests of content: livetest
+
+`python -m vfg_engine.livetest` runs **one test of content against one engine started for it**, on
+the test server (Prototype_Implementer_Quality's: `/opt/mc-test`, a fresh world each test, in a
+sandbox), and prints one JSON result. `vfg test` calls it through the test server's remote program;
+a builder runs it on a realmc server the same way. Its module docstring is the test file's guide.
+
+```sh
+python -m vfg_engine.livetest --properties /opt/mc-test/server.properties --state-dir /opt/vfg-test/state/engine \
+    --content /opt/vfg/engine/library --content /opt/vfg-test/made/main/content \
+    --test /opt/vfg-test/tests/fire_staff_steve.py [--bindings FILE] [--boot 60] [--timeout S] \
+    [--caster Steve] [--others Alex]
+```
+
+1. **Only a test server.** The folder holding `--properties` must have the `.vfg-test-server` marker
+   (only the test server's setup writes it), and a marker that names `rcon_port` must name this
+   server's: else exit 3, nothing started. The engine it starts runs with `VFG_TEST=1`, under which
+   `python -m vfg_engine` refuses the same way (exit 78), so neither talks to the live server.
+2. **The test file** must define `test(t)`; one that does not load is exit 2, nothing started.
+3. **One engine for the test**: `python -m vfg_engine` (the runner's own Python and package) with
+   `VFG_MC_PROPERTIES` the test server's, `VFG_ENGINE_CONTENT` the `--content` folders joined, and its
+   state, export, log and output (`engine.out`) in `--state-dir`, which is emptied of an earlier
+   test's first; its socket there too, or in a folder of its own under `/tmp` when that path is
+   longer than a Unix socket's (107 bytes). It dies with the runner (`PR_SET_PDEATHSIG`). Its socket
+   must answer within `--boot` s (60), else exit 4 with its last words; then a `reload` gives the
+   classes loaded and the load errors, printed as `ENGINE` lines; `--bindings` (a JSON list of `bind`
+   args: `player`, `phrase`, `ability` or `scenario` and `args`, `aliases`) are bound.
+4. **The stage**: a barrier floor 81 x 81 high in the sky at 3000 296 3000, forceloaded, night,
+   clear, no mobs spawning; Steve (the caster, facing north) and Alex, 4 to his left, Carpet fake
+   players the engine sees before `test(t)` is called.
+5. **The test runs**, then the engine is stopped (SIGTERM: its state saved; its exit code reported),
+   the stage cleared (its players, its mobs, every block round it, the forceload).
+
+Its stdout is the report (`ENGINE`, `AT`, `CAST`, `START`, then `PASS` / `FAIL` / `CAN'T TELL — item
+— why`, `RESULT: n passed, n failed, n can't tell`), then, last, one JSON line:
+
+```json
+{"code": 0, "passed": 6, "failed": 0, "cant_tell": 0, "checks": [{"item": "...", "ok": true, "why": "..."}],
+ "engine": {"loaded": ["test_zap"], "errors": [], "boot_s": 0.6, "exit": 0}, "seconds": 6.1}
+```
+
+with `"error"` in words when it did not run to the end, and `"stopped": true` after SIGTERM (or
+`--timeout`). The exit code is `"code"`:
+
+| Code | Means |
+|---|---|
+| `0` | every check passed |
+| `1` | a check failed |
+| `2` | the test could not run as written: no `test(t)`, an error in it, an op the engine refused, a call made wrong, no check made |
+| `3` | not a test server (no marker, or another server's) |
+| `4` | the engine did not start, or did not answer within `--boot` |
+| `5` | stopped: SIGTERM (the sandbox's limit), or `--timeout` |
+
+**`t`, the test's API** (the module docstring has it in full, with examples): the engine's ops
+(`t.give`, `t.take`, `t.grant`, `t.revoke`, `t.apply`, `t.clear`, `t.start(scenario, wait=0,
+**args)`, `t.stop`, `t.spawn`, `t.bind`, `t.cast(phrase)` as the bridge sends a heard cast,
+`t.instances`, `t.op(name, **args)`); Carpet's presses (`t.use(hold=0, draw=0)`, `t.sneak`, `t.look`,
+`t.hotbar`, `t.attack`, `t.jump`); the stage (`t.mob`, `t.blocks`, `t.region`, `t.ground`,
+`t.player`, `t.stand_in`, `t.cmd`, `t.wait`, `t.watch`, `t.at`, `t.xyz`); and checks for
+`t.check(item, verdict)`: `t.hurt`, `t.killed`, `t.unhurt`, `t.others_unhurt`, `t.burning`,
+`t.moved`, `t.near`, `t.gone`, `t.turned`, `t.built`, `t.block`, `t.fire_near`, `t.effect`, `t.holds`,
+`t.weather`, `t.running`, `t.said`, `t.no_errors` (no error in the engine's log since the test began),
+and `verdict(ok, why)`. A call made wrong says how it is called, in one line. It replaces the old
+kit's test helpers (`scripts/_lib/kit/test.py`).
+
+**On a realmc server**: the server's folder needs the marker (a realmc test server has one; for a
+plain realmc server, write `{"rcon_port": <its port>}` to `<NAME>/mc/.vfg-test-server` yourself, and
+take it out after), the datapack installed (as below), then run it with the engine venv's Python:
+`PYTHONPATH=engine engine/.venv/bin/python -m vfg_engine.livetest --properties $REALMC_DIR/mc/server.properties
+--state-dir <a scratch folder> --content <folder> --test <file>`.
 
 ## Test it
 
 ```sh
 cd engine && uv run --group dev python -m pytest tests/core -q      # the core, on FakeIo
-cd engine && uv run --group dev python -m pytest tests/box -q       # the process, the socket, ctl
+cd engine && uv run --group dev python -m pytest tests/box -q       # the process, the socket, ctl, livetest
 cd engine && uv run --group dev python -m pytest tests/mc -q        # against a realmc 26.3 server; skip without one
 ```
 
 `tests/box` runs the socket and `ctl` against a fake engine, and the process (`main`) in a subprocess
 on one: a reply on every error, the timeouts and the queue, the stop answering what waits, mode 600,
 one engine at a time, SIGTERM and SIGINT with the state saved, the JSON log, and exit codes 0, 1 and 78;
-then the real core as a process on FakeIo with `examples/`, through `ctl`, across a restart.
+then the real core as a process on FakeIo with `examples/`, through `ctl`, across a restart; and the
+livetest runner: its refusals (no marker, the engine under `VFG_TEST=1` too), a test file it cannot
+run, an engine that does not start, and whole runs (the real engine on FakeIo, a fake RCON) to PASS,
+FAIL, a raising test and `--timeout`, the stage cleared after.
 
 **On a realmc server** (`integration/realmc/README.md`), the engine runs as on the box, from the
 stand-in's `vfg/engine/`: send the files there as `deploy.sh` does, run `install.sh` with the

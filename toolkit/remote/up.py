@@ -1,7 +1,6 @@
 # up.py: vfg up. ARGS: {"mc": "/opt/mc", "vfg": "/opt/vfg", "wait": 90}
 # Starts minecraft, vfg-bridge, vfg-jev and vfg-engine (the game engine spec's one engine process)
 # if they are down, then waits until all four are active and RCON answers `list`.
-import glob
 import subprocess
 
 UNITS = ["minecraft", "vfg-bridge", "vfg-jev", "vfg-engine"]
@@ -95,13 +94,6 @@ def main():
         rows.append((u, "  ".join(cols)))
     seq = last_feed_seq(os.path.join(ARGS["vfg"], "feed.log"))
     rows.append(("feed", "no feed.log yet" if seq is None else "last seq %d" % seq))
-    running = []
-    for pidfile in sorted(glob.glob(os.path.join(ARGS["vfg"], "run", "*.pid"))):
-        name = os.path.basename(pidfile)[:-4]
-        pid = read_pid(pidfile)
-        if pid and pid_with_marker(pid, "VFG_SCRIPT=" + name):
-            running.append(name)
-    rows.append(("scripts", "running: " + (" ".join(running) if running else "none")))
     for name, text in rows:
         print("%-12s%s" % (name, text))
     sys.stdout.flush()

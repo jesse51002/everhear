@@ -9,10 +9,13 @@ harness.py's box: vfg's main() in this process, its remote programs too, remote/
 to the fake engine's socket at <vfg>/engine/engine.sock. The rewrite is the engine's own,
 engine/vfg_engine/rewrite.py, as vfg loads it: its static checks are the ones a Config is held to.
 """
+import contextlib
 import json
 import os
 import shutil
 import sys
+import threading
+import types
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -104,7 +107,7 @@ class TestReads(Case):
         self.assertOk(r)
         self.assertEqual(r.stdout.splitlines(), [
             "engine     running since 2026-10-12T18:40:00.000Z", "tick       4821 at 10 a second; p50 1.2 ms, p95 3.4 ms",
-            "players    2: Alex, Steve", "instances  0", "classes    5", "slow       0", "orphans    0"])
+            "players    2: Alex, Steve", "instances  0", "classes    6", "slow       0", "orphans    0"])
         self.assertOk(self.vfg("engine", "grant", "Steve", "fireball"))
         self.assertOk(self.vfg("engine", "start", "horde"))
         self.assertIn("instances  2: ability 1, scenario 1\n", self.vfg("engine", "status").stdout)
@@ -138,7 +141,7 @@ class TestReads(Case):
         self.assertOneLine(self.vfg("engine", "status", VFG_REMOTE_VFG=deep), 6,
                            r"^vfg: the engine is not running: no control socket at .*engine\.sock ")
 
-    def test_classes_by_kind_with_their_files(self):
+    def test_classes_by_kind_with_their_files_and_args(self):
         r = self.vfg("engine", "classes")
         self.assertOk(r)
         self.assertEqual(r.stdout.splitlines(), [
@@ -146,29 +149,46 @@ class TestReads(Case):
             "item      fire_staff  Right-click to cast Fireball. Holding it adds 20% speed.  "
             "(made/main/content/fire_staff.py)",
             "mark      giant       Twice the size for a while.  (/opt/vfg/engine/vfg_engine/examples/marks.py)",
+            "                       factor (float 1..16; default 2.0): how much bigger",
             "actor     ice_queen   A boss of ice.  (made/main/content/ice_queen.py)",
-            "scenario  horde       Waves of zombies round every player.  (made/main/content/horde.py)"])
+            "scenario  command     Runs Minecraft commands, at once.  (/opt/vfg/engine/library/command.py)",
+            "                       commands (list[Command]; default []): the commands",
+            "scenario  horde       Waves of zombies round every player.  (made/main/content/horde.py)",
+            "                       count (int 1..100; default 10): how many",
+            "                       at (Place; default null): where"])
         self.engine.classes = []
         self.assertEqual(self.vfg("engine", "classes").stdout, "none\n")
 
-    def test_overview_is_the_classes_and_the_instances_in_one_call(self):
+    def test_overview_is_the_classes_instances_places_and_incantations_in_one_call(self):
         self.assertOk(self.vfg("engine", "grant", "Steve", "fireball"))
+        self.engine.places = {"home": {"dim": "minecraft:overworld", "pos": [1.0, 64.0, 2.0], "yaw": 0.0,
+                                       "by": "home_steve", "at": 1791830460.0}}
+        self.assertOk(self.vfg("engine", "bind", "Steve", "fire ball", "fireball"))
         before = len(self.box.programs())
         got = self.engine_json("overview")
         self.assertEqual(len(self.box.programs()), before + 1)       # one SSH call
-        self.assertEqual(self.box.programs()[-1]["requests"], [{"op": "classes", "args": {}},
-                                                               {"op": "instances", "args": {}}])
+        self.assertEqual([x["op"] for x in self.box.programs()[-1]["requests"]],
+                         ["classes", "instances", "places", "incantations"])
         self.assertEqual((got["ok"], [c["id"] for c in got["classes"]], [i["id"] for i in got["instances"]]),
-                         (True, ["fireball", "fire_staff", "giant", "horde", "ice_queen"], ["fireball"]))
+                         (True, ["fireball", "fire_staff", "giant", "horde", "command", "ice_queen"], ["fireball"]))
+        self.assertEqual(got["places"], [{"name": "home", "dim": "minecraft:overworld", "pos": [1.0, 64.0, 2.0],
+                                          "yaw": 0.0, "by": "home_steve", "at": 1791830460.0}])   # a list, by name
+        self.assertEqual([(e["phrase"], e["ability"], e["scenario"]) for e in got["incantations"]],
+                         [("fire ball", "fireball", None)])
+        self.assertEqual(self.vfg("engine", "places").stdout, "home 1 64 2 overworld (home_steve)\n")
+        self.assertEqual(self.engine_json("places")["places"], got["places"])      # --json: rows by name too
         r = self.vfg("engine", "overview")
-        self.assertEqual(r.stdout.split("\n\n")[0], self.vfg("engine", "classes").stdout.rstrip("\n"))
-        self.assertTrue(r.stdout.split("\n\n")[1].startswith("instance            kind     id"))
+        parts = r.stdout.rstrip("\n").split("\n\n")
+        self.assertEqual(parts[0], self.vfg("engine", "classes").stdout.rstrip("\n"))
+        self.assertTrue(parts[1].startswith("instance            kind     id"), parts[1])
+        self.assertEqual(parts[2:], [self.vfg("engine", "places").stdout.rstrip("\n"),
+                                     self.vfg("engine", "incantations").stdout.rstrip("\n")])
         self.engine.refuse["instances"] = "the engine failed on instances: KeyError"
         r = self.vfg("engine", "overview", "--json")
         self.assertEqual(r.returncode, 1)
         got = json.loads(r.stdout)
-        self.assertEqual((got["ok"], len(got["classes"]), "instances" in got, got["error"]),
-                         (False, 5, False, "instances: the engine failed on instances: KeyError"))
+        self.assertEqual((got["ok"], len(got["classes"]), "instances" in got, len(got["places"]), got["error"]),
+                         (False, 6, False, 1, "instances: the engine failed on instances: KeyError"))
         self.engine.stop()
         self.assertOneLine(self.vfg("engine", "overview", "--json"), 6, "the engine is not running")
 
@@ -231,10 +251,20 @@ class TestOps(Case):
         self.assertEqual(self.vfg("engine", "clear", "Steve", "giant").stdout, "took giant off Steve\n")
 
     def test_start_stop_and_spawn(self):
-        r = self.vfg("engine", "start", "horde", "waves=3", "mob=zombie")
-        self.assertEqual((r.returncode, r.stdout), (0, "started horde as scenario:horde#1\n"))
-        self.assertEqual(self.engine.ops("start"), [{"scenario": "horde", "args": {"waves": 3, "mob": "zombie"}}])
-        self.assertOneLine(self.vfg("engine", "start", "horde", "waves"), 2, "is not key=value")
+        r = self.vfg("engine", "start", "horde", "count=3", "mobs=[\"zombie\", \"husk\"]")
+        self.assertEqual((r.returncode, r.stdout), (0, "horde is running as scenario:horde#1\n"))
+        # a word is the engine's to read as its arg's type; a list or an object is JSON
+        self.assertEqual(self.engine.ops("start"), [{"scenario": "horde", "args": {"count": "3",
+                                                                                   "mobs": ["zombie", "husk"]},
+                                                     "wait_s": 15.0}])
+        self.assertOneLine(self.vfg("engine", "start", "horde", "count"), 2, "is not key=value")
+        self.assertOneLine(self.vfg("engine", "start", "horde", "mobs=[zombie"), 2, "reads as JSON but is not")
+        r = self.vfg("engine", "start", "command", "commands=[\"say hi\"]", "--json")      # a one-off: its result
+        self.assertEqual(json.loads(r.stdout)["result"], {"summary": "ran say hi", "facts": {"replies": ["ran say hi"]}})
+        self.assertEqual(self.vfg("engine", "start", "command", "commands=[\"say hi\"]").stdout, "ran say hi\n")
+        self.vfg("engine", "start", "command", "--wait", "0")
+        self.assertNotIn("wait_s", self.engine.ops("start")[-1])                         # no wait: not sent
+        self.assertOneLine(self.vfg("engine", "start", "command", "--wait", "31"), 2, "--wait is 0 to 30")
         r = self.vfg("engine", "stop", "--instance", "scenario:horde#1")
         self.assertEqual((r.returncode, r.stdout), (0, "stopped scenario:horde#1\n"))
         self.assertOk(self.vfg("engine", "start", "horde"))
@@ -518,17 +548,12 @@ class IceQueenBoss(Ability):
 
 
 class TestBindings(Case):
-    def store(self, entries):
-        write(os.path.join(self.box.rvfg, "incantations.json"), json.dumps({"version": 3, "incantations": entries}))
-
-    def test_bind_makes_its_aliases_warns_and_lists_it_beside_the_action_incantations(self):
-        self.store([{"id": "steve.fire_bowl", "player": "Steve", "phrase": "fire bowl", "aliases": [],
-                     "everyday_aliases": [], "action": "command", "values": {"commands": ["say hi"]},
-                     "cooldown_s": 3.0}])
+    def test_bind_makes_its_aliases_warns_and_lists_it(self):
+        self.assertOk(self.vfg("engine", "bind", "Steve", "fire bowl", "fireball"))
         r = self.vfg("engine", "bind", "Steve", "Fire Ball!", "fireball")
         self.assertEqual(r.returncode, 0, r)
         self.assertEqual(r.stdout, '"fire ball" for Steve now casts fireball; aliases fireball\n')
-        self.assertIn('sounds like "fire bowl"', r.stderr)
+        self.assertIn('sounds like "fire bowl"', r.stderr)      # against Steve's other phrases
         self.assertIn("vfg: Steve does not have fireball yet: saying it casts nothing until it is granted", r.stderr)
         self.assertOk(self.vfg("engine", "grant", "Steve", "fireball"))
         r = self.vfg("engine", "bind", "Steve", "Fire Ball!", "fireball", "--by", "fire_steve")
@@ -536,35 +561,39 @@ class TestBindings(Case):
         self.assertIn('replaces Steve\'s "fire ball", which cast fireball', r.stderr)
         self.assertEqual(self.engine.ops("bind")[-1]["by"], "fire_steve")
         self.assertOneLine(self.vfg("engine", "bind", "Steve", "x y", "fireball", "--by", "Bad Task"), 2, "--by")
-        bound = self.engine.ops("bind")[0]
+        bound = self.engine.ops("bind")[1]
         self.assertEqual(self.engine.ops("instances")[0], {"kind": "ability", "user": "Steve"})
         self.assertEqual(bound, {"player": "Steve", "phrase": "fire ball", "ability": "fireball", "aliases": ["fireball"],
                                  "everyday_aliases": [], "by": ""})
-        self.assertEqual([p.get("store") for p in self.box.programs("ask")][:1], [True])
-        r = self.vfg("incantation", "list", "--fresh")
-        self.assertEqual(r.stdout.splitlines(), [
-            'Steve: "fire ball" → ability fireball (engine) cooldown 5s; aliases fireball',
-            'Steve: "fire bowl" → command {"commands":["say hi"]} cooldown 3s; no aliases'])
-        got = json.loads(self.vfg("incantation", "list", "--json").stdout)
-        self.assertEqual(got[0], {"player": "Steve", "phrase": "fire ball", "action": None, "engine": True,
-                                  "ability": "fireball", "values": {}, "cooldown_s": 5.0, "aliases": ["fireball"],
-                                  "everyday_aliases": []})
-        self.assertNotIn("engine", got[1])
         self.assertEqual(self.vfg("engine", "incantations").stdout,
-                         'Steve: "fire ball" → ability fireball (engine) cooldown 5s; aliases fireball\n')
+                         'Steve: "fire bowl" → casts fireball cooldown 5s; aliases firebowl\n'
+                         'Steve: "fire ball" → casts fireball cooldown 5s; aliases fireball\n')
         r = self.vfg("engine", "unbind", "Steve", "fire ball")
         self.assertEqual(r.stdout, 'removed Steve\'s incantation "fire ball"\n')
-        self.assertEqual(len(json.loads(self.vfg("incantation", "list", "--json").stdout)), 1)  # the cache, written through
+        self.assertEqual(len(self.engine_json("incantations")["incantations"]), 1)
 
-    def test_the_cache_takes_the_binding_as_the_engine_stored_it(self):
-        self.vfg("incantation", "list", "--fresh")              # a cache, its engine part empty
+    def test_a_phrase_bound_to_a_scenario_with_its_args_caster_for_whoever_says_it(self):
+        r = self.vfg("engine", "bind", "Alex", "drop horde", "--scenario", "horde", "at=caster", "count=4",
+                     "--cooldown", "10")
+        self.assertEqual((r.returncode, r.stdout), (0, '"drop horde" for Alex now starts horde {"at":"caster",'
+                                                       '"count":"4"}; aliases drophorde\n'))
+        self.assertEqual(self.engine.ops("bind"), [{"player": "Alex", "phrase": "drop horde", "scenario": "horde",
+                                                    "args": {"at": "caster", "count": "4"}, "aliases": ["drophorde"],
+                                                    "everyday_aliases": [], "by": "", "cooldown_s": 10.0}])
+        self.assertEqual(self.vfg("engine", "incantations").stdout,
+                         'Alex: "drop horde" → starts horde {"at":"caster","count":"4"} cooldown 10s; '
+                         'aliases drophorde\n')
+        got = self.engine_json("incantations")["incantations"][0]      # the export's shape: the other one null
+        self.assertEqual((got["ability"], got["scenario"], got["args"]), (None, "horde", {"at": "caster", "count": "4"}))
+        r = self.vfg("engine", "bind", "Alex", "x y", "--scenario", "horde", "count=caster")
+        self.assertOneLine(r, 1, "caster fills a Player or a Place arg, and count is int$")
+        r = self.vfg("engine", "bind", "Alex", "x y", "--scenario", "giant")
+        self.assertOneLine(r, 1, r"^vfg: the engine has no scenario giant \(its scenarios: command, horde\)")
+
+    def test_the_binding_comes_back_as_the_engine_stored_it(self):
         self.engine.alias_cap = 0                               # this engine keeps no alias
         r = self.vfg("engine", "bind", "Steve", "fire ball", "fireball")
         self.assertEqual(r.stdout, '"fire ball" for Steve now casts fireball; no aliases\n')
-        lists = len(self.box.programs("list"))
-        self.assertEqual(self.vfg("incantation", "list").stdout,  # from the cache, written through
-                         'Steve: "fire ball" → ability fireball (engine) cooldown 5s; no aliases\n')
-        self.assertEqual(len(self.box.programs("list")), lists)
         r, line = self.action("engine_bind", "player=Steve", "phrase=ice beam", "ability=fireball")
         self.assertEqual(line["facts"]["entry"], {"id": "steve.ice_beam", "player": "Steve", "phrase": "ice beam",
                                                   "aliases": [], "everyday_aliases": [], "ability": "fireball",
@@ -574,6 +603,12 @@ class TestBindings(Case):
         before = len(self.box.programs())
         self.assertOneLine(self.vfg("engine", "bind", "@a", "fire ball", "fireball"), 2, "never @a")
         self.assertOneLine(self.vfg("engine", "bind", "Steve", " ! ", "fireball"), 2, "a word at least")
+        self.assertOneLine(self.vfg("engine", "bind", "Steve", "zap"), 2, "or a scenario .*, one of them$")
+        self.assertOneLine(self.vfg("engine", "bind", "Steve", "zap", "fireball", "--scenario", "horde"), 2,
+                           "one of them$")
+        # an ability's cooldown is its Config's: --cooldown on one is refused, never dropped in silence
+        self.assertOneLine(self.vfg("engine", "bind", "Steve", "zap", "fireball", "--cooldown", "9"), 2,
+                           "^vfg: --cooldown is a scenario's incantation's: an ability's cooldown is its Config's")
         self.assertEqual(len(self.box.programs()), before)
         r = self.vfg("engine", "bind", "Steve", "zap", "lightning")
         self.assertOneLine(r, 1, r"^vfg: the engine has no ability lightning \(its abilities: fireball\)")
@@ -581,30 +616,179 @@ class TestBindings(Case):
         self.engine.refuse["bind"] = "Steve has no fireball: grant it first"
         self.assertOneLine(self.vfg("engine", "bind", "Steve", "fire ball", "fireball"), 1, "grant it first$")
 
-    def test_an_action_incantation_notes_an_engine_binding_of_the_same_phrase(self):
-        self.assertOk(self.vfg("engine", "bind", "Steve", "fire ball", "fireball"))
+
+class TestAliases(Case):
+    """The phrase's aliases as a bind makes them: the code's (the phrase joined and split), then the
+    alias call's variants through the code's checks (bridge/vfg_bridge/sounds.py), while the engine
+    is read. The alias model is off unless a test names one, vfg_llm mocked."""
+
+    def model(self, name):
+        self.box.write_config("VFG_SSH_HOST=fakebox\nVFG_SSH_KEY=%s\nVFG_INCANT_ALIAS_MODEL=%s\n" % (self.box.key, name))
+
+    def bind(self, phrase="fire ball", llm=None, player="Steve", **patch):
+        """`vfg engine bind` through its action: its one JSON line."""
         vfg = vfg_module()
-        with self.box.environ():
-            inc = vfg.incantations_module()
-            store, _ = vfg.fetch_incantations(vfg.Config(), type("A", (), {"timeout": None})())
-            self.assertEqual([e["ability"] for e in store["engine"]["incantations"]], ["fireball"])
-            rows = store["engine"]["incantations"]
-            self.assertTrue(vfg.incant_find(inc, rows, "steve", "fire ball"))
+        with contextlib.ExitStack() as stack:
+            if llm is not None:
+                stack.enter_context(mock.patch.dict(sys.modules, {"vfg_llm": llm}))
+            flush = stack.enter_context(mock.patch.object(vfg, "flush_usage_later"))
+            for k, v in patch.items():
+                stack.enter_context(mock.patch.object(vfg, k, v))
+            r, line = self.action("engine_bind", "player=" + player, "phrase=" + phrase, "ability=fireball")
+        self.assertTrue(line["ok"], line)
+        return line, flush
+
+    def aliases(self, phrase):
+        return next(e for e in self.engine.bindings if e["phrase"] == phrase)
+
+    def test_the_models_variants_come_while_the_engine_is_read_and_are_merged_after_the_codes(self):
+        reading = threading.Event()
+        vfg = vfg_module()
+        ask = vfg.engine_ask
+
+        def ask_and_say(cfg, a, requests, timeout=None):
+            reading.set()
+            return ask(cfg, a, requests, timeout) if timeout is not None else ask(cfg, a, requests)
+        # It answers only once the engine is being read: the two at once. Thirty that sound like it
+        # (fyre bawl, fier boll ...), among them the phrase itself, a repeat, one far longer and one
+        # that sounds unlike it.
+        alike = [a + " " + b for a in ("fyre", "fier", "fire") for b in ("bawl", "bal", "boll", "bol", "pall",
+                                                                          "paul", "bull", "bell", "baul", "balle")]
+        llm = fake_llm(["fire bowl", "Fire-Ball", "fireball", "fire bowl", "fire ball now please", "ice cream"] + alike,
+                       after=reading)
+        self.model("test/m")
+        line, flush = self.bind(llm=llm, engine_ask=ask_and_say)
+        flush.assert_called_once()                # the call's own usage row, sent nobody waiting
+        aliases = self.aliases("fire ball")["aliases"]
+        self.assertEqual(aliases[:3], ["fireball", "fire bowl", "fyre bawl"])     # the code's first
+        self.assertEqual(len(aliases), 24)
+        # What the code's checks dropped is in the facts, never a note.
+        self.assertEqual(line["facts"]["alias_call"], {
+            "model": "test/m", "cost": 0.00012, "ms": 840,
+            "dropped": ["fire ball: the phrase itself", "fire bowl: a repeat",
+                        "fire ball now please: 6 speech sounds longer", "ice cream: sounds unlike it (0.82)"]
+            + ["%s: past the 24" % x for x in alike[22:]]})
+        self.assertEqual([n for n in line["notes"] if "alias" in n or "dropped" in n], [])
+        call = llm.calls[0]
+        self.assertEqual((call["model"], call["reasoning"], call["timeout"], call.get("providers")),
+                         ("test/m", "low", 20.0, None))
+        self.assertEqual((call["component"], call["call_id"]), ("alias", "fire ball"))
+        prompt = call["prompt"]
+        self.assertIn('The incantation: "fire ball"\nHow it sounds (the CMU pronouncing dictionary, ARPAbet, stress '
+                      'left out):\n  fire = F AY ER\n  ball = B AO L\n', prompt)
+        self.assertIn("Always exactly 20, the likeliest first.", prompt)
+        schema = call["output"].model_json_schema()
+        self.assertEqual(schema["$defs"]["Variant"]["required"], ["text", "sounds", "common_phrase"])
+        self.assertIn("exactly 20", schema["properties"]["variants"]["description"])
+
+    def test_the_model_off_is_no_call_and_the_codes_aliases(self):
+        line, flush = self.bind()
+        flush.assert_not_called()                 # no call, no row to send
+        self.assertNotIn("alias_call", line["facts"])
+        self.assertEqual(self.aliases("fire ball")["aliases"], ["fireball"])
+
+    def test_a_made_up_word_is_said_from_its_letters_in_the_prompt(self):
+        self.model("test/m")
+        llm = fake_llm(["garlic gun", "galic gun"])
+        self.bind("galick gun", llm=llm)
+        self.assertIn('  galick = not in the dictionary (a made-up word); a guess from its letters: G AE L IH K. '
+                      'Think how a player would say it.\n  gun = G AH N\n', llm.calls[0]["prompt"])
+        self.assertEqual(self.aliases("galick gun")["aliases"], ["galickgun", "garlic gun", "galic gun"])
+
+    def test_a_failed_alias_call_is_a_note(self):
+        self.model("test/m")
+        line, flush = self.bind(llm=fake_llm(fail=RuntimeError("no answer from test/m within 8 s")))
+        flush.assert_called_once()                # a failed call's row is queued too
+        self.assertIn("aliases from code only: the alias call failed (no answer from test/m within 8 s)", line["notes"])
+        self.assertEqual(self.aliases("fire ball")["aliases"], ["fireball"])
+
+    def test_a_one_word_phrase_is_bound_with_its_split_form_and_a_short_one_with_a_note(self):
+        line, _ = self.bind("Fireball!")
+        self.assertEqual([n for n in line["notes"] if "short" in n], [])     # 6 speech sounds, as "fire ball"
+        self.assertEqual(self.aliases("fireball")["aliases"], ["fire ball"])
+        line, _ = self.bind("heal")
+        self.assertIn('"heal" is short (3 speech sounds), so it may fire by accident: a second word helps.',
+                      line["notes"])
+        self.assertEqual(self.aliases("heal")["aliases"], [])
+
+    def test_everyday_talk_is_a_note_when_the_alias_call_says_so(self):
+        self.model("test/m")
+        for everyday in (True, False):
+            llm = fake_llm(["heel", "heals"], everyday=everyday)
+            line, _ = self.bind("heal", llm=llm)
+            note = '"heal" is everyday talk, so it will fire whenever it is said in conversation.'
+            self.assertEqual(note in line["notes"], everyday, line["notes"])
+            self.assertEqual(self.aliases("heal")["aliases"], ["heals"])   # heel: 3 speech sounds
+            self.assertIn("everyday talk", llm.calls[0]["prompt"])
+
+    def test_the_variants_marked_everyday_talk_are_kept_as_everyday_aliases(self):
+        self.model("test/m")
+        llm = fake_llm(["ice been", "Ice cream", "I Scream!", "nice beam", "eyes beam", "icebeam"],
+                       everyday_variants=["Ice cream", "I Scream!", "nice beam", "eyes beam", "icebeam"])
+        self.bind("ice beam", llm=llm)
+        e = self.aliases("ice beam")
+        self.assertEqual(e["aliases"], ["icebeam", "ice been", "ice cream", "i scream", "nice beam", "eyes beam"])
+        # Among the aliases only, and never the phrase's own words run together (the code's).
+        self.assertEqual(e["everyday_aliases"], ["ice cream", "i scream", "nice beam", "eyes beam"])
+        self.assertTrue(self.vfg("engine", "incantations").stdout.rstrip().endswith(
+            "; everyday, not spotted: ice cream, i scream, nice beam, eyes beam"))
+        prompt = llm.calls[0]["prompt"]
+        for words in ('"ice cream", "i scream", "nice beam" and "eyes beam" are', '("ice been", "juicy stake"',
+                      '"destroyed everything"'):
+            self.assertIn(words, prompt)
+        self.model("off")                          # the model off: none
+        self.bind("ice beam")
+        self.assertEqual(self.aliases("ice beam")["everyday_aliases"], [])
+
+    def test_bind_warnings_are_notes_against_the_players_own_phrases_only(self):
+        self.bind()
+        line, _ = self.bind("fire wall")
+        self.assertIn('"fire wall" sounds like "fire ball", so one may fire for the other.', line["notes"])
+        line, _ = self.bind("fire wall", player="Alex")            # Alex has no "fire ball": no warning
+        self.assertFalse(any("sounds like" in n for n in line["notes"]), line["notes"])
+        line, _ = self.bind("go go", player="Alex")
+        self.assertTrue(any(n.startswith('"go go" is short') for n in line["notes"]), line["notes"])
+
+
+def fake_llm(variants=None, fail=None, after=None, everyday=False, everyday_variants=()):
+    """A stand-in for lib/py/vfg_llm: structured() answers `variants`, those in
+    `everyday_variants` marked common_phrase, and `everyday`, or raises `fail`, once `after` (an
+    Event) is set, if given; the calls it had in .calls."""
+    mod = types.ModuleType("vfg_llm")
+    mod.calls = []
+
+    async def structured(prompt, output, **kw):
+        mod.calls.append(dict(kw, prompt=prompt, output=output))
+        if after is not None and not after.wait(5):
+            raise RuntimeError("answered only after the engine was read")
+        if fail:
+            raise fail
+        said = [{"text": v, "sounds": "", "common_phrase": v in everyday_variants} for v in variants or []]
+        return types.SimpleNamespace(value=output(variants=said, everyday=everyday), cost=0.00012, ms=840)
+    mod.structured = structured
+    return mod
 
 
 class TestActions(Case):
     def test_the_menus_engine_actions_go_to_the_engine(self):
-        r, line = self.action("engine_grant", "player=Steve", "ability=fireball", "--for", "Steve")
+        r, line = self.action("engine_grant", "player=Steve", "ability=fireball")
         self.assertEqual(r.returncode, 0, r)
-        self.assertEqual(line, {"ok": True, "copy": "", "action": "engine_grant", "running": False,
+        self.assertEqual(line, {"ok": True, "action": "engine_grant", "running": False,
                                 "summary": "granted fireball to Steve", "facts": {"instance": "ability:fireball#1"},
                                 "notes": []})
         self.assertEqual(self.engine.ops("grant"), [{"who": "Steve", "ability": "fireball"}])
         r, line = self.action("engine_give", "player=Alex", "item=fire_staff")
         self.assertEqual((line["ok"], line["summary"]), (True, "gave Alex fire_staff"))
-        r, line = self.action("engine_start", "scenario=horde")
-        self.assertEqual((line["summary"], line["facts"]), ("started horde as scenario:horde#1",
-                                                            {"instance": "scenario:horde#1"}))
+        r, line = self.action("engine_start", "scenario=horde", "args.count=5")
+        self.assertEqual((line["summary"], line["facts"], line["running"]),
+                         ("horde is running as scenario:horde#1", {"instance": "scenario:horde#1"}, True))
+        self.assertEqual(self.engine.ops("start")[-1], {"scenario": "horde", "args": {"count": "5"}, "wait_s": 15.0})
+        r, line = self.action("engine_start", "scenario=command", 'args={"commands": ["say hi"]}')
+        self.assertEqual((line["summary"], line["facts"], line["running"]),   # a one-off: its result
+                         ("ran say hi", {"replies": ["ran say hi"], "instance": "scenario:command#2"}, False))
+        r, line = self.action("engine_apply", "player=Steve", "mark=giant", "args.factor=3", "seconds=30")
+        self.assertEqual(self.engine.ops("apply")[-1], {"who": "Steve", "mark": "giant", "seconds": 30.0,
+                                                        "args": {"factor": "3"}})
         r, line = self.action("engine_stop", "scenario=horde")
         self.assertEqual((line["summary"], line["facts"]), ("stopped horde (scenario:horde#1)",
                                                             {"stopped": ["scenario:horde#1"]}))
@@ -620,8 +804,7 @@ class TestActions(Case):
         r, line = self.action("engine_grant", "player=@a", "ability=fireball")
         self.assertEqual(r.returncode, 2)
         r, line = self.action("engine_grant", "player=Steve", "ability=fireball", "as=mine")
-        self.assertEqual((r.returncode, line["error"]), (2, "as=mine: engine_grant is the engine's to run, with no copy "
-                                                            "to name"))
+        self.assertEqual((r.returncode, line["error"]), (2, "engine_grant has no value as; its values: player, ability"))
         r, line = self.action("engine_stop", "scenario=horde", "instance=scenario:horde#1")
         self.assertEqual(r.returncode, 2)
         self.engine.stop()
@@ -657,14 +840,70 @@ class TestActions(Case):
         self.assertIn("radius=12 is over its max 8", line["error"])
         self.assertIn("Field(5, ge=1, le=8)", self.pc())
 
-    def test_an_incantation_never_fires_an_engine_action(self):
-        shutil.copy(os.path.join(REPO, "actions", "incantation_create.py"),
-                    os.path.join(self.box.repo, "actions", "incantation_create.py"))
-        shutil.copytree(os.path.join(REPO, "scripts", "incantations"), os.path.join(self.box.repo, "scripts", "incantations"),
-                        ignore=shutil.ignore_patterns("__pycache__"))
-        r, line = self.action("incantation_create", "player=Steve", "phrase=zap", "action=engine_grant")
-        self.assertEqual(r.returncode, 2)
-        self.assertIn("is bound with engine_bind", line["error"], line)
+OLD_STORE = {"version": 7, "incantations": [
+    {"id": "krownjm.freeze", "player": "KrownJM", "phrase": "freeze", "action": "blizzard_freeze",
+     "values": {"radius": 6}, "aliases": ["frieze"], "everyday_aliases": [], "cooldown_s": 3.0, "by": "blizzard_krown"},
+    {"id": "krownjm.fireball", "player": "KrownJM", "phrase": "fireball", "action": "fireball_cast", "values": {},
+     "aliases": ["fire ball"], "everyday_aliases": [], "cooldown_s": 3.0},
+    {"id": "@a.zoo", "player": "@a", "phrase": "zoo time", "action": "old_thing", "values": {}, "aliases": [],
+     "everyday_aliases": []}]}
+OLD_PLACES = ('Storage everhear:places has the following contents: {base: {pos: [197, 68, 251], by: "castle_steve", '
+              'dim: "minecraft:overworld"}, nether_hub: {pos: [10, 70, -3], dim: "minecraft:the_nether"}}')
+
+
+class TestMigrate(Case):
+    """vfg engine migrate: the old everhear:places and the old incantation store moved into the
+    engine once, the bindings through lib/migrate_map.py (KrownJM's three among its rows), what has
+    no row left behind and said. The table itself: test_migrate_map.py."""
+
+    def setUp(self):
+        super().setUp()
+        self.engine.classes += [{"id": "blizzard", "kind": "ability", "file": "/opt/vfg/made/main/content/blizzard.py",
+                                 "summary": "A freezing storm round the caster."}]
+        self.rcon.responder = lambda cmd: OLD_PLACES if cmd == "data get storage everhear:places" else None
+        write(os.path.join(self.box.rvfg, "incantations.json"), json.dumps(OLD_STORE))
+
+    def test_a_dry_run_says_what_would_move_and_moves_nothing(self):
+        r = self.vfg("engine", "migrate", "--dry-run")
+        self.assertEqual(r.returncode, 1, r)            # old_thing has no row: left behind
+        self.assertEqual(r.stdout.splitlines(), [
+            "places: 2 found",
+            'would move KrownJM "freeze" (blizzard_freeze): KrownJM "freeze" casts blizzard',
+            '  note: its values {"radius":6} stay behind: blizzard\'s Config is one version for everyone',
+            'would move KrownJM "fireball" (fireball_cast): KrownJM "fireball" casts fireball',
+            'left @a "zoo time" (old_thing): old_thing has no engine class in the migration table'])
+        self.assertEqual((self.engine.ops("places_import"), self.engine.ops("bind")), ([], []))
+
+    def test_the_places_are_imported_once_and_the_bindings_bound_with_their_aliases(self):
+        r = self.vfg("engine", "migrate", "--json")
+        self.assertEqual(r.returncode, 1, r)
+        got = json.loads(r.stdout)
+        self.assertEqual(got["places"], {"found": 2, "imported": ["base", "nether_hub"], "skipped": [], "refused": [],
+                                         "version": 1, "world": "w1", "ok": True})
+        self.assertEqual(sorted(self.engine.places), ["base", "nether_hub"])
+        self.assertEqual(self.engine.places["base"]["by"], "castle_steve")
+        self.assertEqual(self.engine.ops("bind"), [
+            {"player": "KrownJM", "phrase": "freeze", "ability": "blizzard", "aliases": ["frieze"],
+             "everyday_aliases": [], "by": "blizzard_krown"},
+            {"player": "KrownJM", "phrase": "fireball", "ability": "fireball", "aliases": ["fire ball"],
+             "everyday_aliases": [], "by": ""}])
+        self.assertEqual([b["ok"] for b in got["bindings"]], [True, True])
+        self.assertEqual(got["left"], [{"from": '@a "zoo time" (old_thing)',
+                                        "why": "old_thing has no engine class in the migration table"}])
+        r = self.vfg("engine", "migrate")                 # again: the places once only, unless forced
+        self.assertIn("places: 2 found, refused: this world's places were imported already", r.stdout)
+        self.vfg("engine", "migrate", "--force")
+        self.assertEqual(self.engine.ops("places_import")[-1]["force"], True)
+
+    def test_an_everyones_binding_is_split_over_the_players_named(self):
+        store = dict(OLD_STORE, incantations=[dict(OLD_STORE["incantations"][1], player="@a")])
+        write(os.path.join(self.box.rvfg, "incantations.json"), json.dumps(store))
+        r = self.vfg("engine", "migrate", "--dry-run")
+        self.assertIn("no player is named to split it over: give --players", r.stdout)
+        r = self.vfg("engine", "migrate", "--players", "Steve,Alex")
+        self.assertOk(r)
+        self.assertEqual([b["player"] for b in self.engine.ops("bind")], ["Steve", "Alex"])
+        self.assertOneLine(self.vfg("engine", "migrate", "--players", "@a"), 2)
 
 
 class TestRealEngine(Case):
@@ -730,8 +969,9 @@ class TestRealEngine(Case):
         r = self.vfg("engine", "bind", "Steve", "fire ball", "fireball")
         self.assertOk(r)
         self.assertEqual(r.stdout, '"fire ball" for Steve now casts fireball; aliases fireball\n')
-        listed = json.loads(self.vfg("incantation", "list", "--fresh", "--json").stdout)
-        self.assertEqual([(e["phrase"], e["ability"], e["cooldown_s"]) for e in listed], [("fire ball", "fireball", 5.0)])
+        listed = self.engine_json("incantations")["incantations"]
+        self.assertEqual([(e["phrase"], e["ability"], e["scenario"], e["cooldown_s"]) for e in listed],
+                         [("fire ball", "fireball", None, 5.0)])
         self.assertOk(self.vfg("engine", "unbind", "Steve", "fire ball"))
         self.assertOneLine(self.vfg("engine", "grant", "Steve", "nothing_here"), 1)
 

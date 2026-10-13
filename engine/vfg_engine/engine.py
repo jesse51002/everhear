@@ -18,9 +18,11 @@ Each tick, in order:
    a respawn's modifier check). Then the bus's inputs: ops and casts (a cast's on_cast runs here).
 4. Abilities: items', actors' and abilities' timers and ticks; charges done fire; runs end.
 5. Marks: their ends, their timers, the potions they keep up.
-6. Write: world settings, every queued op (a tick's damage on one target by one dealer as one
+6. Write: the block queue's share of this tick, world settings, every queued op (a tick's damage on one target by one dealer as one
    op: merge_damage), then the modifiers (read back where due, removes before adds), in one
-   Io.flush. State is saved about once a second.
+   Io.flush. Then the slow commands content asked for (self.ask), whose replies come next tick,
+   and the answers to `start`s waiting for their scenario's result. State is saved about once a
+   second.
 """
 
 from __future__ import annotations
@@ -75,6 +77,9 @@ class Engine:
         self.ops = Ops(self)
         self.intake = Intake(self.settings.stale_s)
         self._inbox: queue.SimpleQueue = queue.SimpleQueue()
+        self.waits: list[dict] = []          # starts waiting for their scenario's result
+        self._mined: list[str] = []          # the block kinds last given to Io.watch_mined
+        self.waiting: set = set()            # their futures: answered in a later tick
         self.tick_n = 0
         self.tick_ms: collections.deque = collections.deque(maxlen=200)
         self.started_at: float | None = None
@@ -107,10 +112,16 @@ class Engine:
         self.intake.before_open(self.io, int((doc or {}).get("last_n") or 0))
         self.io.open()
         self.intake.after_open(self.io)
+        try:
+            rt.places.world = str(self.io.world_id())
+        except Exception as exc:          # an Io without world_id (or a failed read): one world
+            log.warning("world_id not read (%s): places are kept as one world's", exc)
         if doc:
             self._restore(doc)
         result = reload(rt)
         stopped = attach(rt, (doc or {}).get("records") or [])
+        rt.block_queue.load((doc or {}).get("blocks"), set(rt.records))
+        self._mined = None                   # the first tick tells the Io what is watched
         for uuid, cooldowns in ((doc or {}).get("actor_cooldowns") or {}).items():
             if uuid in rt.actors:
                 rt.actors[uuid].cooldowns = {k: float(v) for k, v in cooldowns.items()}
@@ -179,9 +190,10 @@ class Engine:
         try:
             self._phases(inputs)
         finally:
-            # every request taken off the bus this tick gets an answer, whatever failed
+            # every request taken off the bus this tick gets an answer, whatever failed (a start
+            # waiting for its scenario's result answers in a later tick)
             for op, _args, fut in inputs:
-                if not fut.done():
+                if not fut.done() and fut not in self.waiting:
                     why = "; ".join(self._failed) or "it was not handled"
                     _answer(fut, {"ok": False, "error": "the engine's tick failed before answering %s: %s"
                                                         % (op, why)})
@@ -218,8 +230,9 @@ class Engine:
                 got["joins"], got["middle"], got["leaves"] = derive.take(rt, snap)
         self._step("read", read)
 
-        # 2. scenarios
+        # 2. scenarios, and the replies to last tick's slow commands (self.ask)
         self._step("scenarios", scenarios.step, rt)
+        self._step("answers", self._answers)
 
         # 3. events, then the bus's inputs
         for ev in got["joins"]:
@@ -247,9 +260,76 @@ class Engine:
         if check:
             self._last_check = rt.now
             self._step("sweep", actors.sweep, rt)
+        self._step("blocks", rt.block_queue.step)
+        self._step("mined", self._watch_mined, check)
         self._step("write", self._write, check)
+        self._step("asks", self._asks)
+        self._step("waits", self._waits)
         if self.settings.state and rt.now - self._last_save >= self.settings.save_every_s:
             self._step("save", self.save)
+
+    def _watch_mined(self, again: bool = False):
+        """Tell the Io which block kinds' breaking is a `mine` event: when the set the live
+        instances watch changes, and with every periodic check (so a reconnect or a new world
+        hears it again within check_every_s)."""
+        want = sorted(self.rt.mined_blocks())
+        if want == self._mined and not (again and want):
+            return
+        if not callable(getattr(self.io, "watch_mined", None)):
+            self._mined = want
+            return
+        unknown = self.io.watch_mined(want)
+        if unknown:
+            log.warning("mining not watched for %s: not blocks in Minecraft 26.3", ", ".join(unknown))
+        self._mined = want
+
+    def _asks(self):
+        """The slow commands content asked for (self.ask), after the batch and outside any call's
+        cut; each reply is handed over next tick."""
+        rt = self.rt
+        asks, rt.asks = rt.asks, []
+        for iid, command, method in asks:
+            try:
+                reply = self.io.query(command)
+            except Exception as exc:
+                log.warning("%s: its slow command failed (%s): %s", iid, exc, command[:80])
+                reply = ""
+            rt.answers.append((iid, method, reply))
+
+    def _answers(self):
+        rt = self.rt
+        answers, rt.answers = rt.answers, []
+        for iid, method, reply in answers:
+            rec = rt.records.get(iid)
+            if rec is not None and not rec.ending:
+                rt.call(rec, method, reply)
+
+    def wait_for(self, iid: str, seconds: float, reply, fut=None):
+        """Answer a `start` once its scenario ends, or after `seconds` with "still running"."""
+        self.waits.append({"instance": iid, "until": self.rt.now + seconds, "reply": reply, "fut": fut})
+        if fut is not None:
+            self.waiting.add(fut)
+
+    def _waits(self):
+        rt = self.rt
+        keep = []
+        for w in self.waits:
+            iid = w["instance"]
+            rec = rt.records.get(iid)
+            if rec is None or rec.ending:
+                got = rt.results.get(iid) or {}
+                result = {k: got[k] for k in ("summary", "facts") if k in got} or None
+                w["reply"]({"ok": True, "instance": iid, "ended": got.get("reason", "ended"), "result": result})
+            elif rec.notes.get("result") is not None:     # it reported, and goes on
+                w["reply"]({"ok": True, "instance": iid, "running": True, "result": rec.notes["result"]})
+            elif rt.now >= w["until"]:
+                w["reply"]({"ok": True, "instance": iid, "running": True, "note": "still running",
+                            "result": None})
+            else:
+                keep.append(w)
+                continue
+            self.waiting.discard(w["fut"])
+        self.waits = keep
 
     def _join(self, ev):
         self._joined(ev.who)
@@ -274,7 +354,11 @@ class Engine:
         if not fut.set_running_or_notify_cancel():
             log.info("op %s skipped: its asker cancelled it before it ran", op)
             return
-        self.ops.handle(op, args, _replier(fut))
+        self.ops.current = fut
+        try:
+            self.ops.handle(op, args, _replier(fut))
+        finally:
+            self.ops.current = None
 
     def _react(self, ev):
         rt, kind, who = self.rt, ev.kind, ev.who
@@ -395,7 +479,8 @@ class Engine:
                 "records": [r.to_dict() for r in rt.records.values() if not r.ending] + rt.orphans,
                 "raw_spawned": rt.raw_spawned, "confirmed": sorted(rt.confirmed),
                 "last_n": self.intake.last_n, "modifiers": rt.modifiers.to_list(), "world": rt.world_settings.to_dict(),
-                "incantations": rt.bindings.to_dict(), "broken": rt.broken}
+                "incantations": rt.bindings.to_dict(), "broken": rt.broken,
+                "places": rt.places.to_dict(), "blocks": rt.block_queue.to_list()}
 
     def save(self, force: bool = False):
         """Write the state if it changed (atomically: a crash leaves the old or the new file).
@@ -431,6 +516,7 @@ class Engine:
         rt.world_settings.load(doc.get("world"))
         rt.bindings.load(doc.get("incantations"))
         rt.broken = dict(doc.get("broken") or {})
+        rt.places.load(doc.get("places"))
 
 
 def merge_damage(queued: list) -> list:

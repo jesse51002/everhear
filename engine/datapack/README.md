@@ -14,23 +14,31 @@ everhear/
   data/everhear/
     function/load, tick, meta          objectives, the queue, the version and tables; every tick's checks
     function/ev/*                      the detectors, and ev/push (the queue's one way in)
-    function/io/*                      what the engine calls: events, take, snap, player, tick, mirror, entity
-    function/ray/*                     each player's raycast
+    function/io/*                      what the engine calls: events, take, snap, player, tick, mirror, entity,
+                                       probe, ground, ray, entities
+    function/ray/*                     each player's raycast, and the free ray (ray/free)
+    function/land/*                    a player's arrow or trident coming down (land events)
+    function/mine/*                    blocks of the watched kinds mined (mine events)
+    function/ignite, ignite/*          Ignite: a mob's Fire, a player lit by two ticks of lava
+    function/world_id                  the world's id, made once
+    function/probe/*                   probe's tests: is, not, two
     function/remove, remove_one        Remove: gone without loot or a death message
     function/type/entity, type/block   an entity's type / the block here as a number   (generated)
-    advancement/hit, kill              player_hurt_entity / player_killed_entity, type bits (generated)
+    advancement/hit, hit_ranged, kill  player_hurt_entity (direct / not) / player_killed_entity, type bits (generated)
     advancement/hurt, milk             entity_hurt_player / consume_item of a milk bucket
-    predicate/sneaking                 entity flags is_sneaking
+    predicate/sneaking, sprinting      entity flags is_sneaking, is_sprinting
     tags/entity_type/bit/0..7          one tag per bit of a type's index                 (generated)
     tags/block/bit/0..10               one tag per bit of a block's index                (generated)
     tags/block/ray_through             blocks the ray passes through
     tags/entity_type/ray_ignore        entities the ray passes through
+    tags/entity_type/projectiles       arrow, spectral_arrow, trident: what lands
+    tags/block/not_solid, open         probe's "solid" (not one of these) and "open" (two of these)
   ../generate.py                       writes the generated files from the server's registries
 ```
 
 **Install:** copy `everhear/` to `<world>/datapacks/everhear` and run `reload` (a pack copied
 there is enabled on the next reload or start). `McIo.open()` checks it is enabled and that
-`everhear:meta version` is the version the engine reads (1), and says what to do when not.
+`everhear:meta version` is the version the engine reads (2), and says what to do when not.
 
 **A new Minecraft version:** run the server jar's data generator and `generate.py` on its
 registries (the commands are in its docstring), check the pack format against the jar's
@@ -83,10 +91,12 @@ own UUID added as `data["uuid"]`.
 | Kind | How it is noticed | `data` |
 |---|---|---|
 | `use` | each tick, `minecraft.used:minecraft.carrot_on_a_stick` / `…warped_fungus_on_a_stick` above 0: the used stack is the main hand's if it is that base, else the off hand's; it is an event only when that stack has an EverHear id | `item`, `slot` (`mainhand`/`offhand`), `count` (uses since the last tick: 1, unless something clicks every tick) |
-| `hit` | advancement `player_hurt_entity`, direct damage only (`is_direct`: melee, a sweep, or a `damage … by <player>`), at once. The target is the entity near the player (16 blocks), attacked by them (`on attacker`) and hurt this tick (`HurtTime` 10) that no hit this tick reported yet (a sweep: one each) | `target` (uuid, or a player's name), `target_type`, `item` (the EverHear id in the main hand, if any) |
+| `hit` | advancement `player_hurt_entity`, at once: `hit` for direct damage (`is_direct`: melee, a sweep, a `damage … by <player>`), `hit_ranged` for the rest (an arrow, a trident, a TNT the player owns). The target is the entity attacked by the player (`on attacker`) and hurt this tick (`HurtTime` 10) that no hit this tick reported yet (a sweep: one each): looked for within 16 blocks, then anywhere loaded (0.16 ms with 126 entities), then among dead players | `target` (uuid, or a player's name), `target_type`, `ranged` (false for melee), `item` (melee: the EverHear id in the main hand; ranged: the id of the weapon the projectile came from, else the main hand's) |
+| `land` | each tick, a player's arrow or trident (`#everhear:projectiles` whose `on origin` is a player; others are tagged done at once) that is `inGround`, or a trident with `DealtDamage`; and, for one that hits an entity, the ranged hit's reward (an arrow is gone right after it hits): the projectile nearest the target of the thrower's, within 6 blocks, or the thrower's only one in flight when the shot killed (nothing selects the dead) | `item` (the EverHear id on the weapon: an arrow's `weapon`, a trident's own `item`), `projectile` (uuid), `projectile_type`, `pos`, `dim`, `hit` (`block` or `entity`), `block` (for a block, its `inBlockState`), `target`, `target_type` (for an entity) |
+| `mine` | each tick, for each watched kind (`everhear:config mine`, which McIo.watch_mined sets, one objective `everhear.mn.<index>` on `minecraft.mined:<block>` each), a player whose count went up | `block`, `count`; `pos` is not Minecraft's (no statistic says where): McIo adds the latest block of the kind mined that the player looked at in their last few snapshots (half a second) |
 | `hurt` | advancement `entity_hurt_player`, at once | `amount` (health lost, after armour and absorption: the `damage_taken` statistic), `absorbed` (what absorption hearts took), `attacker` and `attacker_type` only when this damage set the attacker (`ticks_since_last_hurt_by_mob` is 0) |
 | `kill` | advancement `player_killed_entity`, at once | `target_type`; `target` only for a player killed (a dead player is still selected by `@a`); `item` |
-| `death` | each tick, `deathCount` above 0 | — |
+| `death` | each tick, `deathCount` above 0 | `pos` (the block, `LastDeathLocation.pos`), `dim` |
 | `respawn` | each tick, a player marked dead who is alive again (`@e`, unlike `@a`, never selects the dead) | — |
 | `milk` | advancement `consume_item` of a milk bucket, at once | — |
 
@@ -94,7 +104,10 @@ What 26.3 cannot give, or this pack does not:
 
 - **A killed mob's UUID.** It is dead before any reward runs, and `@e` selects only the living, so
   `kill` of a mob, and the killing blow's `hit` (which comes after its `kill`: Minecraft runs the
-  death first), carry no target. The engine knows its own mobs die from `gone`.
+  death first), carry no target. The engine knows its own mobs die from `gone`. A killing shot's
+  `land` still comes when the thrower has one projectile in flight (it is that one); with several,
+  which one it was cannot be told, and there is no `land` for it.
+- **Where a block was mined**: the statistic has no place (McIo uses the player's last look).
 - **The damage of a hit**, and **the damage type of a hurt**: no statistic or selector has them.
 - **A right-click with other bases.** Only the two "on a stick" items count a click (see
   `vfg_engine/bases.py`). A `consumable` component makes any base report through `using_item`,
@@ -127,12 +140,14 @@ A player's compound reads the player's data once (each read of an entity's data 
 | `h`, `mh` | health, max health (the attribute) |
 | `g`, `s` | game mode (0 survival … 3 spectator), sneaking (predicate `everhear:sneaking`) |
 | `fx` | `active_effects` as Minecraft keeps them, `hidden_effect` chains included |
+| `og`, `sp` | on the ground (`OnGround`, from the player's own last tick), sprinting (predicate `everhear:sprinting`) |
 | `hd` | the EverHear id in each of `mainhand`, `offhand`, `head`, `chest`, `legs`, `feet` |
 | `inv` | the EverHear ids in the 36 inventory slots (the main hand's slot among them) |
 | `l` | the raycast, below |
 
 An entity's compound (`everhear:io/entity`): `u`, `y` (type index), `d`, `p`, `h` (living things
-only: an item's `Health` is its own), `g` (tags), `c` (custom name). The engine leaves out any
+only: an item's `Health` is its own), `g` (tags), `c` (custom name), `o` (`Owner`: a tamed mob's or
+a projectile's), `ig` (`inGround`: a projectile stuck in a block). The engine leaves out any
 whose health is 0: a dying mob stays in the world, selectable by its UUID, for a second.
 
 **The raycast** (`everhear:ray/start`), from the eyes along the look, half a block a step, stops at
@@ -151,6 +166,30 @@ for every entity within R blocks of any player, each once (a tag for the pass), 
 are the snapshot's, and reading a player saves all its data, its recipe book too) or markers. McIo's mirror thread runs it every 0.1 s, slower when a pass would take more than a
 tenth of the server's time.
 
+## Reads on demand
+
+Each is one function, then one `data get` of `everhear:out` (costs measured in MINECRAFT.md):
+
+| Function | Takes | Gives |
+|---|---|---|
+| `io/probe` | `everhear:io pr = {d, f, b, p: [{x,y,z}…]}` | `everhear:out probe`: a byte per point. `f` is `is` (the block is `b`), `not` (it is not `b`: "solid" is not `#everhear:not_solid`) or `two` (it and the one above are `b`: "open" is two of `#everhear:open`, air) |
+| `io/ground {d, x, z}` | — | returns the `motion_blocking_no_leaves` height (where feet stand; above the roof in the nether), or -99999 for a chunk not loaded |
+| `io/ray {d, x, y, z, yaw, pitch, n}` | — | `everhear:out ray`, as a player's raycast but blocks only, any origin, `n`/32 blocks (up to 1000), `u:1b` when it stopped at an unloaded chunk |
+| `io/entities` | `everhear:io en = {d, x, y, z, r, t: [{t}…]}` | `everhear:out ents`: an entity compound each within `r`, players and markers aside unless their type is listed |
+
+`execute in D if loaded X 0 Z`, `tick query` and `data get storage everhear:meta world` are read
+directly (loaded, mspt, world id).
+
+## Ignite
+
+`function everhear:ignite {t, f, k}`: a mob's `Fire` is set to `k` ticks. A player's data cannot be
+written ("Unable to modify player data"), and a fire block takes a second to light one (their `Fire`
+rests at -20), so a player is lit by lava, for two ticks, where they stand (feet, else head, when it
+is air): one second of Fire Resistance stops lava's own 4 damage, and the `burning_time` modifier
+`everhear:ignite` (`f` = seconds/15 − 1, on base) turns lava's 15 s into `k` ticks. A marker keeps
+the spot; `ignite/clear`, two ticks later, takes the lava (if it is still lava) and the modifier
+away. Returns 1, or 0 for no such target or no air round a player.
+
 ## Remove
 
 `function everhear:remove {u:"<uuid>"}` removes an entity and leaves nothing: its custom name and
@@ -162,14 +201,16 @@ is no such entity, it is already dying, or it is a player (never removed).
 
 | Where | What |
 |---|---|
-| `everhear:meta` | `version`, `mc`, `types`, `blocks` |
+| `everhear:meta` | `version`, `mc`, `types`, `blocks`, `world` (`{a, b, t}`: two random numbers and the game time, made once per world) |
+| `everhear:config` | `mine`: the watched kinds, `[{o, b}…]` |
 | `everhear:events q` | the queue |
-| `everhear:out` | `ev` (the page), `snap` (the snapshot): what the engine reads |
+| `everhear:out` | `ev` (the page), `snap` (the snapshot), `probe`, `ray`, `ents`: what the engine reads |
 | `everhear:mirror` | the mirror's pass |
-| `everhear:io` | `track` (the engine's), and the functions' scratch: `new`, `tmp`, `cur`, `ent`, `tq` |
+| `everhear:io` | `track`, `pr`, `en` (the engine's), and the functions' scratch: `new`, `tmp`, `cur`, `ent`, `tq`, `pj`, `land`, `mq`, `pq`, `pt`, `eq`, `et`, `y` |
 | `everhear.q` | `#n`, `#len`, `#over`, `#max`, `#upto`, `#h` |
 | `everhear.t` | scratch (`#y`, `#b`, `#rs`, `#rhit`, `#hits`, `#ago`) and `#rmax` |
 | `everhear.use_c`, `everhear.use_w` | uses of the two bases (`minecraft.used:…`) |
 | `everhear.deaths`, `everhear.dead` | `deathCount`; dead now |
 | `everhear.dmg`, `everhear.abs` | `damage_taken`, `damage_absorbed` since the last hurt |
-| tags | `everhear.hit` (hit this tick), `everhear.me`, `everhear.ray_self`, `everhear.m` (the pass's): all short-lived |
+| `everhear.mn.<index>` | `minecraft.mined:<block>` for each watched kind (made by McIo.watch_mined) |
+| tags | `everhear.hit` (hit this tick), `everhear.me`, `everhear.ray_self`, `everhear.m` (the pass's), `everhear.ign`, `everhear.bb`: short-lived; `everhear.ours` / `everhear.done` on projectiles (followed / done with); `everhear.lava` on ignite's markers |

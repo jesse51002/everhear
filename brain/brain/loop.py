@@ -54,7 +54,6 @@ from vfg_llm import LlmError
 
 from . import actions
 from .act import LANDED, WROTE, Acts, StepRun, record_of, short, spent
-from .actions import variables_of
 from .call import NEXT, Call, Event, StepBase, describe, step_type
 from .config import log
 from .context import LIVE, Context, Row, parse
@@ -109,7 +108,7 @@ def iso(t: datetime) -> str:
 class Loop:
     """One event's loop as it runs: its steps, what they spent, and how it ended."""
     event: Event
-    player: str                     # whose items the tail shows and whose copies the actions are
+    player: str                     # whose items the tail shows: the speaker, or a report's task's player
     line: str                       # the words that started it: a new task's `line`
     started: float                  # the brain's clock at its start
     runs: list[StepRun] = field(default_factory=list)
@@ -286,9 +285,8 @@ class Brain:
         self.later.flush_usage()
 
     def reload(self) -> list[str]:
-        """Before each loop: every action file that changed is loaded again, so an action an
-        implementer saved a moment ago is on the menu, and Jev's menu with it, and every task whose
-        action changed has its variables read again. The names that changed."""
+        """Before each loop: every action file that changed is loaded again (a coding session's edit),
+        and Jev's menu with it. The names that changed."""
         try:
             changed = actions.refresh(self.catalog)
         except Exception as e:  # noqa: BLE001 — the actions as they were are still good
@@ -296,28 +294,7 @@ class Brain:
             return []
         if changed and self.menu is not None:
             self.menu(jev_menu(self.catalog))
-        for t in self.tasks.all() if changed else []:
-            if self.action_of(t) in changed:
-                self.refresh_variables(t["name"])
         return changed
-
-    def action_of(self, task: dict) -> str | None:
-        """The action a task made: the one named after it, else the last it made that is loaded."""
-        if self.catalog.get(task["name"]) is not None:
-            return task["name"]
-        made = (task.get("made") or {}).get("actions") or []
-        return next((a for a in reversed(made) if self.catalog.get(a) is not None), None)
-
-    def refresh_variables(self, name: str) -> None:
-        """The task's `variables`, read again from its action (none loaded: left as they are)."""
-        task = self.tasks.get(name)
-        action = self.action_of(task) if task is not None else None
-        if action is None:
-            return
-        try:
-            self.tasks.set_variables(name, variables_of(self.catalog, action))
-        except Exception as e:  # noqa: BLE001 — the variables as they were are still good
-            log("tasks", f"{name}: reading {action}'s variables failed ({type(e).__name__}: {e})")
 
     # ------------------------------------------------------------- a turn
 
@@ -368,15 +345,14 @@ class Brain:
         if new is None:
             new = self.take()
         self.reload()
-        seen = await self.world.seen(items=[row.who], full=True)
+        seen = await self.world.seen(items=[row.who])
         event = Event("LINE", row, handed_up=handed_up)
         await self.run_loop(event, seen, [r for r in new if r.seq != row.seq], player=row.who, line=row.text,
                             started=started)
 
     async def conversational(self, row: Row, started: float | None = None) -> None:
         """A conversational line: Respond replies, or hands it up to the brain, whose loop runs in
-        this same turn, its clock from the turn's start. The actions are reloaded first, so a
-        changed action file refreshes its tasks' variables at any call."""
+        this same turn, its clock from the turn's start. The actions are reloaded first."""
         self.waiting.pop(row.seq, None)
         started = self.clock() if started is None else started
         new = self.take()
@@ -400,8 +376,8 @@ class Brain:
 
     async def report(self, name: str, status: str, text: str, description: str = "", made: dict | None = None,
                      following: bool = False, started: float | None = None) -> None:
-        """An implementer ended: its task takes what it made, its DESCRIPTION line (when it gave
-        one; else the description it had stays) and the variables of its action; then a loop reads
+        """An implementer ended: its task takes what it made and its DESCRIPTION line (when it gave
+        one; else the description it had stays); then a loop reads
         the report whole, writes the player's line and the record, and may act on it, reading what
         no call has read yet, as every loop does. When a follow-up to the task already runs
         (`following`), the task stays open with the result so far, and the loop is told, so its
@@ -420,11 +396,10 @@ class Brain:
 
         try:
             self.reload()
-            self.refresh_variables(name)
             task = self.tasks.get(name) or {"name": name, "player": None, "line": "", "brief": "", "description": ""}
             player = task.get("player") or ""
             new = self.take()
-            seen = await self.world.seen(items=[player] if player else False, full=True)
+            seen = await self.world.seen(items=[player] if player else False)
             event = Event("REPORT", task=task, status=status, report=text, following=following)
             loop = Loop(event, player, task.get("line") or "", started)
             await self.run_loop(event, seen, new, player=player, line=loop.line, loop=loop)
@@ -449,7 +424,7 @@ class Brain:
         on (a report's: report() closes its task with it)."""
         loop = loop or Loop(event, player, line, self.clock() if started is None else started)
         report = event.kind == "REPORT"
-        tasks = board(self.tasks.all(), seen.copies, self.implementers.running(),
+        tasks = board(self.tasks.all(), seen.instances, self.implementers.running(),
                       today=self.now().astimezone(UTC).strftime("%Y-%m-%d"))
         prompt = self.call.prompt(event, self.ctx, seen, tasks, new, self.refs)
         ref = event.ref()

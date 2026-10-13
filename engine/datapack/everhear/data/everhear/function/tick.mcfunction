@@ -5,5 +5,10 @@ execute as @a[scores={everhear.use_w=1..}] run function everhear:ev/use {base:"m
 execute as @a[scores={everhear.deaths=1..}] run function everhear:ev/death
 # @e, unlike @a, never selects a dead player: these are back.
 execute as @e[type=minecraft:player,scores={everhear.dead=1..}] run function everhear:ev/respawn
+# A player's arrow or trident that came down in a block (everhear:land/*; one that hits an entity is
+# the ranged hit's, everhear:ev/hit_ranged).
+execute as @e[type=#everhear:projectiles,tag=!everhear.done] run function everhear:land/check
+# Blocks of the watched kinds that players mined (everhear:mine/*; the engine sets the kinds).
+execute if data storage everhear:config mine[0] run function everhear:mine/scan
 # The entities a hit reported last tick may be hit again.
 execute if score #hits everhear.t matches 1 run function everhear:ev/hits_clear

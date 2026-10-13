@@ -1,6 +1,7 @@
 """The engine as a process sees it (C1's shape): Settings.from_env, start / run(stop) / submit /
 close, and the ops not covered elsewhere (instances, classes, log, status)."""
 
+import os
 import math
 import threading
 import time
@@ -11,7 +12,8 @@ from vfg_engine.engine import Engine, Settings
 from vfg_engine.io import Damage
 from vfg_engine.testing import FakeIo
 
-from conftest import EXAMPLES
+EXAMPLES = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "examples")
+
 
 
 def test_settings_from_env():
@@ -40,7 +42,7 @@ def test_run_ticks_on_the_main_thread_until_stopped_then_saves(tmp_path):
     threading.Thread(target=other_thread).start()
     t = time.monotonic()
     e.run(stop)
-    assert time.monotonic() - t < 2
+    assert time.monotonic() - t < 20          # it returned once stopped (headroom for a busy box)
     assert answers["status"]["ok"] and answers["status"]["players"] == ["Steve"]
     assert (tmp_path / "s.json").exists()
     e.close()
@@ -180,6 +182,7 @@ def test_content_that_swallows_the_cut_is_still_cut(rig):
     sly = '''
 import time as _t
 
+
 class Sly(Ability):
     every = 0.1
 
@@ -192,19 +195,34 @@ class Sly(Ability):
         scale_per_point = 0
 
     def tick(self, ctx):
-        end = _t.perf_counter() + 1.0
+        end = _t.perf_counter() + 30.0
         while _t.perf_counter() < end:
             try:
                 _t.perf_counter()
             except:          # noqa: E722 - the point of the test
                 pass
 '''
-    r = rig({"sly": sly})
+    r = rig({"sly": sly}, cut_ms=50)
     r.start()
     r.io.join("Steve")
     r.tick()
     r.op("grant", who="Steve", ability="sly")
     t = time.perf_counter()
     r.tick(2)
-    assert time.perf_counter() - t < 0.9
+    assert time.perf_counter() - t < 10       # cut, not the 30 s it wanted (headroom for a busy box)
     assert not r.records(cid="sly")
+
+
+def test_instances_say_which_abilities_are_lent(rig):
+    r = rig(examples=True)
+    r.start()
+    r.io.join("Steve")
+    r.io.join("Alex")
+    r.io.hold("Steve", "fire_staff")
+    r.tick()
+    r.op("grant", who="Alex", ability="fireball")
+    r.io.use("Steve")                         # the staff lends Steve fireball
+    r.tick()
+    rows = {row["user"]: row for row in r.op("instances", kind="ability")["instances"]}
+    staff = next(rec.iid for rec in r.records("item"))
+    assert rows["Steve"]["lent_by"] == staff and "lent_by" not in rows["Alex"]

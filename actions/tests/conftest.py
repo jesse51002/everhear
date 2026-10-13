@@ -3,9 +3,8 @@
     uv run --no-project --with pytest --with pydantic pytest actions/tests
 
 No network and no real server. places.py is pure, so it runs here against scripts/_test's
-FakeWorld, which speaks Minecraft 26.3's recorded replies (scripts/_test/mc_26_3.py). The
-scripts under the core actions are tested where every script is, in scripts/_test
-(test_core.py, run by run_tests.py).
+FakeWorld, which speaks Minecraft 26.3's recorded replies (scripts/_test/mc_26_3.py); its test
+goes with scripts/ (the engine keeps the places now).
 """
 from __future__ import annotations
 

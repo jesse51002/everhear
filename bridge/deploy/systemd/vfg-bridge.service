@@ -12,9 +12,6 @@ ExecStart=/opt/vfg/python/bin/python3 -m vfg_bridge
 Restart=always
 RestartSec=3
 RestartPreventExitStatus=78
-# Stopping or restarting the bridge ends the bridge alone: the copies it started for casts
-# run on, as copies started over SSH do.
-KillMode=process
 
 [Install]
 WantedBy=multi-user.target

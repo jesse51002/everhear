@@ -8,9 +8,10 @@ User=ec2-user
 WorkingDirectory=/opt/vfg/engine
 EnvironmentFile=/opt/vfg/.env
 Environment=PYTHONPATH=/opt/vfg/engine PYTHONUNBUFFERED=1
-# The box's content folder, where vfg deploys made/main/content/; a VFG_ENGINE_CONTENT in .env
-# wins over it (systemd lets EnvironmentFile= override Environment=).
-Environment=VFG_ENGINE_CONTENT=/opt/vfg/made/main/content
+# The box's content folders: the library, shipped with the engine, then where vfg deploys
+# made/main/content/; a VFG_ENGINE_CONTENT in .env wins over it (EnvironmentFile= overrides
+# Environment=).
+Environment=VFG_ENGINE_CONTENT=/opt/vfg/engine/library:/opt/vfg/made/main/content
 ExecStart=/opt/vfg/engine/.venv/bin/python -m vfg_engine
 # Started again after a crash, or when Minecraft was not up yet (exit 1); never after a bad
 # setting (exit 78), which a restart does not mend.

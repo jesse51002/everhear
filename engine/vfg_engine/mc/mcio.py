@@ -21,6 +21,9 @@ number, so a page read twice (a reconnect between the two exchanges) is handed o
 restart of the engine an event read but not yet taken can come again (at most a page); close()
 takes everything read first, so a clean stop hands nothing over twice.
 
+The reads on demand (part 2: probe, ground_y, ray, entities, loaded, mspt, world_id) are each one
+datapack function and one `data get` at most; watch_mined sets which blocks' mining is an event.
+
 Errors: RCON being down raises RconError (an OSError, in words) from events, snapshot, query,
 read_modifiers and read_gamerule; flush never raises for it, and says per op what did not go.
 A datapack missing or of another version raises DatapackError from open().
@@ -31,12 +34,13 @@ Standard library only, besides vfg_engine.io.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import time
 from typing import Iterable, Sequence
 
-from ..io import OpResult, Snapshot
+from ..io import Look, OpResult, Snapshot
 from . import commands, datapack, reading, snbt
 from .mirror import McMirror
 from .rcon import PROPERTIES, Rcon, RconError
@@ -51,6 +55,14 @@ MIRROR_INTERVAL = float(os.environ.get("VFG_ENGINE_MIRROR_S") or 0.1)
 MIRROR_BUDGET = float(os.environ.get("VFG_ENGINE_MIRROR_BUDGET") or 0.1)
 _TRACK_CHUNK = 24          # tracked uuids per command (each {u:"…"} is 45 bytes; a command 1446)
 _GAMERULE = re.compile(r"^Game rule (\S+) is (?:currently|now|already) set to:? (.+)$")
+_RETURNED = re.compile(r"returned (-?\d+)$")
+_MSPT = re.compile(r"Average time per tick: ([\d.]+) ?ms")
+# probe's named tests: (the datapack's test function, its block or tag)
+PROBE_TESTS = {"solid": ("not", "#everhear:not_solid"), "open": ("two", "#everhear:open")}
+_PROBE_CHUNK = 50          # points per command ({x:…,y:…,z:…} each, under RCON's 1446 bytes)
+RAY_LONGEST = 1000.0       # blocks: a ray of 2000 steps
+LOOKS_KEPT = 5             # snapshots' looks kept per player for a mine's place (half a second)
+NOT_LOADED = -99999        # everhear:io/ground's answer for a chunk not loaded
 
 
 class McIo:
@@ -71,6 +83,11 @@ class McIo:
         self._track_sent: tuple[str, ...] | None = None
         self._track_connects = -1
         self._ahead = None                 # (snapshot doc, tracked list, monotonic time) from events()
+        self._looks: dict[str, list] = {}   # player -> [(block id, block)], their last few snapshots' looks
+        self._mspt = (0.0, None)           # (monotonic time, value): tick query at most once a second
+        self._world = (None, None)         # (connects, id)
+        self.mined: tuple[str, ...] = ()   # the block kinds watch_mined set
+        self._mined_on = None              # (connection, world id) they were set on
         self._opened = False
         self._mirror = McMirror(self, interval=mirror_interval, radius=mirror_radius, budget=mirror_budget)
         self._mirror_on = bool(mirror)
@@ -169,9 +186,19 @@ class McIo:
         if unknown:
             self.refresh_names()
             self.names.not_players.update(u for u in unknown if self.names.name(u) is None)
-        out = [reading.event(d, self.tables, self.names) for d in docs]
+        out = [self._placed(reading.event(d, self.tables, self.names)) for d in docs]
         self.timing["events_ms"] = (time.perf_counter() - start) * 1000
         return out
+
+    def _placed(self, ev):
+        """A mine event's place: Minecraft's statistic says nothing of where, so it is the latest block
+        of the kind mined that the player looked at in their last few snapshots (half a second)."""
+        if ev.kind == "mine":
+            for block_id, block in reversed(self._looks.get(ev.player, ())):
+                if block_id == ev.data.get("block"):
+                    ev.data["pos"] = block
+                    break
+        return ev
 
     # ---- snapshot ----------------------------------------------------------------------------
 
@@ -203,7 +230,12 @@ class McIo:
                 continue
             u = commands.uuid_str(p["u"])
             name = self.names.name(u) or u
-            players[name] = reading.player(p, name, self.tables)
+            players[name] = snap = reading.player(p, name, self.tables)
+            look = snap.looking_at
+            if look.kind == "block":
+                seen = self._looks.setdefault(name, [])
+                seen.append((look.block_id, look.block))
+                del seen[:-LOOKS_KEPT]
         tracked = {}
         for e in doc.get("e") or []:
             snap = reading.entity(e, self.tables, self.names)
@@ -269,6 +301,164 @@ class McIo:
             return None
         m = _GAMERULE.match(self._cmd("gamerule %s" % name).strip())
         return m.group(2).strip() if m else None
+
+    # ---- reads on demand (part 2): each one function and one read, counted against the caller's call
+
+    def probe(self, dim: str, points, test: str) -> list[bool]:
+        """For each point, whether it passes `test`: a block id or #tag ("is" it), "solid" (not in
+        #everhear:not_solid: air, liquids, plants, torches, signs…), or "open" (it and the block above
+        in #everhear:open: air). A point in an unloaded chunk is False. One function for every point."""
+        pts = [commands.block_pos(q) for q in points]
+        if not pts:
+            return []
+        if test in PROBE_TESTS:
+            f, b = PROBE_TESTS[test]
+        else:
+            f, b = "is", commands.block_state(test, "block test")
+            if "{" in b or '"' in b:
+                raise commands.OpRefused("a probe tests a block id, [properties] or #tag, not block data")
+        d = commands.resource(dim, "dimension")
+        entries = ["{x:%d,y:%d,z:%d}" % q for q in pts]
+        with self.rcon.held():
+            self._cmd('data modify storage everhear:io pr set value {d:"%s",f:"%s",b:"%s",p:[%s]}'
+                      % (d, f, b, ",".join(entries[:_PROBE_CHUNK])))
+            for i in range(_PROBE_CHUNK, len(entries), _PROBE_CHUNK):
+                self._cmd("data modify storage everhear:io pp set value [%s]" % ",".join(entries[i:i + _PROBE_CHUNK]))
+                self._cmd("data modify storage everhear:io pr.p append from storage everhear:io pp[]")
+            self._cmd("function everhear:io/probe")
+            out = snbt.data_reply(self._cmd("data get storage everhear:out probe"))
+        if not isinstance(out, list) or len(out) != len(pts):
+            raise commands.OpRefused("the probe answered %d of %d points" % (len(out) if isinstance(out, list) else 0, len(pts)))
+        return [bool(v) for v in out]
+
+    def ground_y(self, dim: str, x: int, z: int) -> int | None:
+        """Where feet stand in the column x z: the first block above the highest that blocks
+        movement, leaves aside (Minecraft's motion_blocking_no_leaves height). None when its chunk is
+        not loaded. In the nether that is above the roof."""
+        reply = self._cmd('function everhear:io/ground {d:"%s",x:%d,z:%d}'
+                          % (commands.resource(dim, "dimension"), int(math.floor(x)), int(math.floor(z))))
+        m = _RETURNED.search(reply.strip())
+        if not m:
+            raise commands.OpRefused("no height for %s %s: %s" % (x, z, reply[:120]))
+        y = int(m.group(1))
+        return None if y == NOT_LOADED else y
+
+    def ray(self, dim: str, origin, direction, length: float, through_blocks: bool = False) -> Look:
+        """A ray from `origin` along `direction`, `length` blocks (at most 1000), half a block a step,
+        to the first block that is not see-through (#everhear:ray_through, taken as a full cube; its
+        face found to 1/32); entities do not stop it. Look "block", or "none" at its end (or where it
+        reached an unloaded chunk, shorter). through_blocks: nothing stops it (no command is sent)."""
+        dx, dy, dz = (float(c) for c in direction)
+        norm = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if norm < 1e-9:
+            raise commands.OpRefused("a ray needs a direction")
+        dx, dy, dz = dx / norm, dy / norm, dz / norm
+        length = max(0.0, min(float(length), RAY_LONGEST))
+        origin = tuple(float(c) for c in origin)
+        if through_blocks:
+            return Look("none", tuple(o + d * length for o, d in zip(origin, (dx, dy, dz))), length)
+        yaw = math.degrees(math.atan2(-dx, dz))
+        pitch = math.degrees(-math.asin(max(-1.0, min(1.0, dy))))
+        with self.rcon.held():
+            self._cmd('function everhear:io/ray {d:"%s",x:%s,y:%s,z:%s,yaw:%s,pitch:%s,n:%d}'
+                      % ((commands.resource(dim, "dimension"),) + tuple(commands.num(c) for c in origin)
+                         + (commands.num(yaw), commands.num(pitch), int(round(length * reading.RAY_UNIT)))))
+            doc = snbt.data_reply(self._cmd("data get storage everhear:out ray"))
+        return reading.look(doc, origin, (dx, dy, dz), self.tables)
+
+    def entities(self, dim: str, center, radius: float, types=None) -> list:
+        """Every entity within `radius` of `center`, now, in loaded chunks: living or not, players and
+        markers aside (players are the snapshot's), or only those of `types` ("minecraft:player"
+        among them brings players). Dying ones are left out. Each costs the server about 25 µs."""
+        kinds = [commands.resource(t, "entity type") for t in (types or ())]
+        c = tuple(commands.num(v) for v in center)
+        with self.rcon.held():
+            self._cmd('data modify storage everhear:io en set value {d:"%s",x:%s,y:%s,z:%s,r:%s,t:[%s]}'
+                      % ((commands.resource(dim, "dimension"),) + c + (commands.num(max(0.0, float(radius))),
+                                                                        ",".join('{t:"%s"}' % t for t in kinds))))
+            self._cmd("function everhear:io/entities")
+            docs = snbt.data_reply(self._cmd("data get storage everhear:out ents"))
+        out = []
+        for e in docs or []:
+            snap = reading.entity(e, self.tables, self.names)
+            if snap is not None:
+                out.append(snap)
+        return out
+
+    def loaded(self, dim: str, x: int, z: int) -> bool:
+        """Whether the chunk holding x z is loaded."""
+        reply = self._cmd("execute in %s if loaded %d 0 %d" % (commands.resource(dim, "dimension"),
+                                                                 int(math.floor(x)), int(math.floor(z))))
+        return reply.startswith("Test passed")
+
+    def mspt(self) -> float:
+        """The server's average milliseconds per tick (`tick query`), read at most once a second."""
+        at, value = self._mspt
+        if value is None or time.monotonic() - at > 1.0:
+            m = _MSPT.search(self._cmd("tick query"))
+            value = float(m.group(1)) if m else 0.0
+            self._mspt = (time.monotonic(), value)
+        return value
+
+    def world_id(self) -> str:
+        """The world's id, as the datapack keeps it (made the first time it loads in a world): a
+        fresh world has a new one. Read again after every reconnect (the server may have restarted
+        on another world)."""
+        connects, wid = self._world
+        if wid is None or connects != self.rcon.stats.connects:
+            wid = self._read_world()
+        return wid
+
+    def _read_world(self) -> str:
+        """The world id read now. A dead connection is found by this command (and dropped: the
+        next reconnects), so after it the connection count is current."""
+        doc = snbt.data_reply(self._cmd("data get storage everhear:meta world"))
+        wid = "%08x%08x" % (int(doc.get("a", 0)) & 0xFFFFFFFF, int(doc.get("b", 0)) & 0xFFFFFFFF)
+        self._world = (self.rcon.stats.connects, wid)
+        return wid
+
+    def watch_mined(self, blocks) -> list[str]:
+        """The block kinds whose mining is a `mine` event, all of them (the list replaces the last).
+        Each gets a minecraft.mined:<block> objective, zeroed when it is made. On a new connection or
+        a new world (a restarted server, a fresh world: the objectives may be gone) every objective
+        is made again, so the core's resend, every few seconds, puts mining back. Returns the ids
+        that are no 26.3 block (not watched)."""
+        # Read now, not from the cache: a server restarted under a live socket is noticed only when a
+        # command fails, so the count of connections is current only after one has gone out.
+        wid = self._read_world()
+        here = (self.rcon.stats.connects, wid)
+        if here != self._mined_on:
+            self.mined = ()
+        wanted, unknown = [], []
+        for b in blocks:
+            bid = commands.resource(str(b), "block")
+            try:
+                i = self.tables.blocks.index(bid)
+            except ValueError:
+                unknown.append(bid)
+                continue
+            if bid not in wanted:
+                wanted.append(bid)
+        entries = []
+        with self.rcon.held():
+            for bid in wanted:
+                obj = "everhear.mn.%d" % self.tables.blocks.index(bid)
+                if bid not in self.mined:
+                    # the criterion names the block with dots: minecraft.mined:minecraft.sponge
+                    out = self._cmd("scoreboard objectives add %s minecraft.mined:%s" % (obj, bid.replace(":", ".")))
+                    if out.startswith("Created new objective"):
+                        self._cmd("scoreboard players reset * %s" % obj)
+                    elif "already exists" not in out:
+                        unknown.append(bid)
+                        continue
+                entries.append('{o:"%s",b:"%s"}' % (obj, bid))
+            self._cmd("data modify storage everhear:config mine set value []")
+            for i in range(0, len(entries), 20):
+                self._cmd("data modify storage everhear:io mw set value [%s]" % ",".join(entries[i:i + 20]))
+                self._cmd("data modify storage everhear:config mine append from storage everhear:io mw[]")
+        self.mined = tuple(b for b in wanted if b not in unknown)
+        self._mined_on = here
+        return unknown
 
     # ---- writes ------------------------------------------------------------------------------
 

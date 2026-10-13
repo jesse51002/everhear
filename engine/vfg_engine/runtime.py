@@ -21,6 +21,7 @@ from __future__ import annotations
 import collections
 import logging
 import math
+import re
 from typing import Callable
 
 from . import abilities, actors, marks, scenarios
@@ -32,7 +33,9 @@ from .events import Event, event_kind
 from .guard import Guard
 from .handle import Handle
 from .incantations import Bindings
-from .io import (Damage, EntitySnap, Look, Particle, PlayerSnap, Remove, Snapshot, Sound)
+from .io import (Bossbar, Damage, EntitySnap, Forceload, Look, Particle, PlayerSnap, Remove, Snapshot,
+                 Sound)
+from .places import Places
 from .modifiers import Modifiers
 from .records import Owned, Record
 from .worldsettings import WorldSettings
@@ -41,11 +44,13 @@ log = logging.getLogger("vfg_engine")
 
 RUN_ENDS_KEPT = 500       # why recent runs ended, for the cast op's answer
 PLAYER = "minecraft:player"
+OVERWORLD = "minecraft:overworld"
 EMPTY = Snapshot(game_tick=0, players={}, tracked={})
 
 
 class _NoMirror:
     age_s = math.inf
+    radius = 0.0
 
     def entities_near(self, dim, pos, radius):
         return []
@@ -66,6 +71,8 @@ class Runtime:
 
         self.classes = {}                        # id -> loader.ClassInfo
         self.files: dict[str, set[str]] = {}     # file -> the ids loaded from it
+        self.candidates: dict[str, dict] = {}    # id -> {file: ClassInfo}: every folder's version;
+                                                 # the latest folder's runs (reload.effective)
         self.modules: set[str] = set()           # the content modules this engine put in sys.modules
 
         self.records: dict[str, Record] = {}
@@ -77,6 +84,16 @@ class Runtime:
         self.raw_spawned: dict[str, str] = {}    # uuid of a vanilla entity spawned -> its owner
         self.confirmed: set[str] = set()         # uuids whose summon took
         self.removing: dict[str, float] = {}     # uuid -> when its Remove was sent (actors.sweep)
+        self.mobs: dict[str, ActorBeing] = {}    # uuid -> body of a vanilla mob that bears a mark
+        self.seen: set[str] = set()              # watched uuids seen at least once (then missing: gone)
+        self.places = Places()
+        self.asks: list = []                     # (instance, command, method) to run after the batch
+        self.answers: list = []                  # (instance, method, reply) handed over next tick
+        self.results: collections.OrderedDict = collections.OrderedDict()   # ended scenarios' results
+        self.read_costs: dict[str, tuple[int, float]] = {}   # live read kind -> (count, total ms)
+        self._mspt = (0.0, -math.inf)            # (value, when read)
+        from .blocks import BlockQueue
+        self.block_queue = BlockQueue(self)
 
         self.modifiers = Modifiers()
         self.world_settings = WorldSettings()
@@ -117,7 +134,7 @@ class Runtime:
     def being(self, key) -> Being | None:
         if key is None:
             return None
-        return self.actors.get(key) or self.player(key)
+        return self.actors.get(key) or self.mobs.get(key) or self.player(key)
 
     def target_of(self, x) -> str | None:
         """What an op names someone by, from a name, a uuid, a being, a snapshot or a look."""
@@ -165,8 +182,22 @@ class Runtime:
                 if r.user == user and (kind is None or r.kind == kind) and not r.ending]
 
     def tracked(self) -> list[str]:
-        """The uuids the snapshot reports on: every actor and every entity content spawned."""
-        return list(self.actors) + [u for u in self.raw_spawned if u not in self.actors]
+        """The uuids the snapshot reports on: every actor, every entity content spawned, every mob
+        bearing a mark and every entity an instance holds a modifier on."""
+        out = dict.fromkeys(self.actors)
+        out.update(dict.fromkeys(self.raw_spawned))
+        out.update(dict.fromkeys(self.mobs))
+        for rec in self.records.values():
+            for owned in [rec.owned] + [r.owned for r in rec.runs.values()]:
+                for key in owned.modifiers:
+                    if "|" in key:
+                        target = key.split("|", 1)[0]
+                        if self.player(target) is None:
+                            out[target] = None
+        for target, _attr, _id in self.modifiers.actual:   # until what we put on it is taken off
+            if self.player(target) is None:
+                out[target] = None
+        return list(out)
 
     def online(self, key) -> bool:
         """Whether ops can reach this target now: a player online and alive, or an existing entity."""
@@ -206,10 +237,23 @@ class Runtime:
             raise ValueError("%s.State() could not be made: %s" % (info.name, _one_line(out.error)))
         return out.value
 
+    def args_of(self, rec: Record):
+        """The instance's Args model, from its saved args (a Place arg saved as its Spot)."""
+        handle = self.handles.get(rec.iid)
+        if handle is None:
+            return None
+        cached = getattr(handle, "args_model", None)
+        if cached is None or cached[0] is not rec.args:
+            cls = getattr(self.classes[rec.cid].cls, "Args", None)
+            model = cls.model_validate(rec.args) if cls is not None else None
+            handle.args_model = cached = (rec.args, model)
+        return cached[1]
+
     def _make_object(self, rec, info):
         obj = info.cls.__new__(info.cls)
         handle = self.handles.get(rec.iid) or Handle(self, rec)
         handle.record = rec
+        handle.args_model = None
         object.__setattr__(obj, "_h", handle)
         self.objects[rec.iid] = obj
         self.handles[rec.iid] = handle
@@ -328,14 +372,21 @@ class Runtime:
         if rec.ending or rec.iid not in self.records:
             return
         rec.ending = True
+        stopped = reason.startswith("stopped")
         for n in list(rec.runs):
             self.end_run(rec, n, reason)
         if rec.started:
             self.call(rec, "stop", reason)
-        self.release(rec.iid, rec.owned)
+        self.release(rec.iid, rec.owned, stopped)
+        self.block_queue.drop(rec.iid)
         for other in list(self.records.values()):
             if other.owner == rec.iid:
-                self.end_record(other, "its owner %s ended" % rec.iid)
+                self.end_record(other, ("stopped: its owner %s was stopped" if stopped
+                                        else "its owner %s ended") % rec.iid)
+        if rec.kind == "scenario":
+            self.results[rec.iid] = dict(rec.notes.get("result") or {}, reason=reason)
+            while len(self.results) > RUN_ENDS_KEPT:
+                self.results.popitem(last=False)
         self.records.pop(rec.iid, None)
         self.objects.pop(rec.iid, None)
         self.handles.pop(rec.iid, None)
@@ -345,6 +396,8 @@ class Runtime:
             del being.grants[rec.cid]
         if rec.kind == "actor":
             actors.ended(self, rec, reason)
+        if rec.user in self.mobs and not self.records_of(rec.user):
+            self.mobs.pop(rec.user, None)          # a mob that bears no mark any more
         log.info("%s ended (%s)", rec.iid, reason)
 
     def end_run(self, rec: Record, n: int, reason: str):
@@ -358,14 +411,31 @@ class Runtime:
         self.run_ends[(rec.iid, n)] = reason
         while len(self.run_ends) > RUN_ENDS_KEPT:
             self.run_ends.popitem(last=False)
-        if not rec.runs and rec.args.get("release_after_runs") and not rec.ending:
-            self.end_record(rec, "%s; its last cast is done" % rec.args["release_after_runs"])
+        if not rec.runs and rec.notes.get("release_after_runs") and not rec.ending:
+            self.end_record(rec, "%s; its last cast is done" % rec.notes["release_after_runs"])
 
-    def release(self, holder: str, owned: Owned):
-        """Take away what an instance (or a run) made."""
+    def release(self, holder: str, owned: Owned, stopped: bool = False):
+        """Take away what an instance (or a run) made. Spawns made with keep=True stay in the
+        world unless it was stopped."""
         owned.modifiers.clear()
         owned.potions.clear()
         owned.areas.clear()
+        for uuid in list(owned.kept):
+            if stopped:
+                actors.unspawn(self, uuid, "its owner %s was stopped" % holder)
+            else:
+                self.raw_spawned.pop(uuid, None)      # left in the world, no longer tracked
+                self.confirmed.discard(uuid)
+        owned.kept.clear()
+        for bar in owned.bossbars:
+            self.queue(Bossbar(bar, remove=True))
+        owned.bossbars.clear()
+        for dim, x1, z1, x2, z2 in owned.forceloads:
+            self.queue(Forceload(dim, (x1, z1), (x2, z2), add=False))
+        owned.forceloads.clear()
+        if owned.undo:
+            self.block_queue.undo(owned.undo)
+            owned.undo.clear()
         if owned.holds:
             self.world_settings.release_prefix(holder)
             owned.holds.clear()
@@ -382,7 +452,8 @@ class Runtime:
                 # a cast already made finishes (a fireball thrown, then the staff dropped); the
                 # grant goes when its last run ends, and casts nothing new meanwhile
                 lent.owner = None
-                lent.args["release_after_runs"] = "lent by %s, which ended" % holder
+                lent.notes["lent_by"] = holder
+                lent.notes["release_after_runs"] = "lent by %s, which ended" % holder
             else:
                 self.end_record(lent, "lent by %s, which ended" % holder)
         owned.grants.clear()
@@ -393,7 +464,14 @@ class Runtime:
 
     # ---- events and timers ---------------------------------------------------------------
 
+    def mined_blocks(self) -> set[str]:
+        """Every block kind a live instance's Mine listen watches."""
+        return {b for rec in self.records.values() if not rec.ending
+                for s in rec.subs if s.kind == "mine" and s.blocks for b in s.blocks}
+
     def hears(self, rec: Record, sub, ev: Event) -> bool:
+        if getattr(sub, "blocks", None) and getattr(ev, "block", None) not in sub.blocks:
+            return False
         if rec.kind == "scenario" or sub.about == "anyone":
             return True
         if getattr(ev, "instance", None) == rec.iid:          # an area this instance watches
@@ -402,7 +480,7 @@ class Runtime:
             return True
         if ev.who is None or ev.who != rec.user:
             return False
-        if rec.kind == "item" and event_kind(ev) in ("use", "held", "unheld"):
+        if rec.kind == "item" and event_kind(ev) in ("use", "held", "unheld", "land"):
             return getattr(ev, "item", None) == rec.cid          # this item's, not another's
         return True
 
@@ -411,6 +489,8 @@ class Runtime:
         for rec in list(self.records.values()):
             if rec.iid not in self.records or rec.paused_at is not None or not rec.started or rec.ending:
                 continue
+            if rec.notes.get("lingering") is not None and kind != "land":
+                continue                       # a let-go item hears only its projectiles' Land
             for sub in list(rec.subs):
                 if sub.kind != kind or not self.hears(rec, sub, ev):
                     continue
@@ -423,7 +503,8 @@ class Runtime:
 
     def run_timers(self, kinds):
         for rec in list(self.records.values()):
-            if rec.kind not in kinds or rec.paused_at is not None or not rec.started or rec.ending:
+            if (rec.kind not in kinds or rec.paused_at is not None or not rec.started or rec.ending
+                    or rec.notes.get("lingering") is not None):
                 continue
             for timer in sorted(rec.timers, key=lambda t: t.due):
                 if rec.iid not in self.records or rec.ending:
@@ -454,8 +535,19 @@ class Runtime:
     def query(self, command: str) -> str:
         """ctx.query: one command now. The cut waits for the reply (Guard.engine_code), and the
         time counts against the call."""
+        return self.read("query", lambda io: io.query(str(command)))
+
+    def read(self, kind: str, fn):
+        """A live read for content (ctx.query, ctx.world.probe...): the cut waits for its reply,
+        its time counts against the call, and what each kind costs is kept for `status`."""
+        import time
+        start = time.perf_counter()
         with self.guard.engine_code():
-            return self.io.query(str(command))
+            try:
+                return fn(self.io)
+            finally:
+                n, total = self.read_costs.get(kind, (0, 0.0))
+                self.read_costs[kind] = (n + 1, total + (time.perf_counter() - start) * 1000.0)
 
     def potion_reply(self, op, result):
         # Potions are given and forgotten: the reply is only kept, in the log ("Applied effect",
@@ -469,13 +561,15 @@ class Runtime:
     def desired(self) -> dict:
         out = {}
         for rec in self.records.values():
-            if rec.user is None or rec.ending:
+            if rec.ending or rec.notes.get("lingering"):
                 continue
-            for attr, (amount, op) in rec.owned.modifiers.items():
-                out[(rec.user, attr, modifier_id(rec))] = (amount, op)
-            for run in rec.runs.values():
-                for attr, (amount, op) in run.owned.modifiers.items():
-                    out[(rec.user, attr, modifier_id(rec, run))] = (amount, op)
+            for run, owned in [(None, rec.owned)] + [(r, r.owned) for r in rec.runs.values()]:
+                for key, (amount, op) in owned.modifiers.items():
+                    if "|" in key:                   # on another entity
+                        target, attr = key.split("|", 1)
+                        out[(target, attr, modifier_id(rec, run, on=True))] = (amount, op)
+                    elif rec.user is not None:
+                        out[(rec.user, key, modifier_id(rec, run))] = (amount, op)
         return out
 
     # ---- damage --------------------------------------------------------------------------
@@ -521,11 +615,70 @@ class Runtime:
 
     # ---- making things (the kind modules do the work) --------------------------------------
 
-    def spawn(self, what, at, dim, owner=None, source=None) -> str:
-        return actors.spawn(self, what, at, dim, owner, source)
+    def spawn(self, what, at, dim, owner=None, source=None, nbt=None, keep=False) -> str:
+        return actors.spawn(self, what, at, dim, owner, source, nbt=nbt, keep=keep)
 
-    def apply_mark(self, who, mark, seconds, source=None, owner=None) -> str:
-        return marks.apply(self, who, mark, seconds, source, owner)
+    def apply_mark(self, who, mark, seconds, source=None, owner=None, args=None) -> str:
+        return marks.apply(self, who, mark, seconds, source, owner, args=args)
+
+    # ---- places and names ------------------------------------------------------------------
+
+    def where(self, at, dim: str | None = None) -> tuple[str, tuple, float]:
+        """(dim, pos, yaw) of a Spot, a being, a snapshot, a position (in `dim`, else the
+        overworld), a saved place's name, a player's name or "x y z [dim]"."""
+        from .args import Spot, resolve_place, _COORDS, DIMS
+        if isinstance(at, Spot):
+            return at.dim, tuple(at.pos), at.yaw
+        if isinstance(at, dict) and "pos" in at:
+            return at.get("dim") or dim or OVERWORLD, tuple(float(c) for c in at["pos"]), float(at.get("yaw") or 0.0)
+        if isinstance(at, Being):
+            try:
+                return at.dim, tuple(at.pos), float(getattr(at, "yaw", 0.0) or 0.0)
+            except LookupError:
+                raise ValueError("%s is not online" % at.key) from None
+        if isinstance(at, PlayerSnap):
+            return at.dim, tuple(at.pos), float(at.yaw)
+        if isinstance(at, EntitySnap):
+            return at.dim, tuple(at.pos), 0.0
+        if isinstance(at, Look):
+            return dim or OVERWORLD, tuple(at.pos), 0.0
+        if isinstance(at, str):
+            s = at.strip()
+            m = _COORDS.match(s.lower())
+            if m:
+                return (DIMS.get(m.group(4) or "overworld", OVERWORLD),
+                        tuple(float(g) for g in m.groups()[:3]), 0.0)
+            b = self.being(self.target_of(s))
+            if b is not None and not b.is_player:
+                return self.where(b)
+            spot = resolve_place(self, s)
+            return spot.dim, tuple(spot.pos), spot.yaw
+        if isinstance(at, (tuple, list)) and len(at) == 3:
+            return dim or OVERWORLD, tuple(float(c) for c in at), 0.0
+        raise ValueError("%r is not a place: a Spot, a player, a position or \"x y z [dim]\"" % (at,))
+
+    def player_names(self, who) -> list[str]:
+        """Names from a Players arg ("@a", "@r", "Steve,Alex") or a list of names or beings."""
+        if isinstance(who, str):
+            from .args import players
+            from .ctx import Ctx
+            return players(Ctx(self), who)
+        return [n for n in (self.target_of(p) for p in who) if n]
+
+    def bossbar_id(self, rec: Record, bar: str) -> str:
+        clean = re.sub(r"[^a-z0-9_.-]+", "_", str(bar).lower()).strip("_") or "bar"
+        return "everhear:%s_%s_%s" % (rec.cid, rec.iid.rsplit("#", 1)[-1], clean)
+
+    def mspt(self) -> float:
+        """The server's milliseconds per tick, read at most every half second (0.0 when unknown)."""
+        value, at = self._mspt
+        if self.now - at >= 0.5:
+            try:
+                value = float(self.io.mspt())
+            except Exception as exc:
+                log.debug("mspt not read: %s", exc)
+            self._mspt = (value, self.now)
+        return value
 
     def grant(self, who, ability, owner=None):
         return abilities.grant(self, who, ability, owner)
@@ -552,10 +705,13 @@ def _one_line(x) -> str:
     return " ".join(str(x).split()).split(" For further information")[0][:300]
 
 
-def modifier_id(rec: Record, run=None) -> str:
+def modifier_id(rec: Record, run=None, on: bool = False) -> str:
     """everhear:item/<id>, everhear:mark/<id> (or /<n> for a stacking mark's copies),
-    everhear:ability/<id> (or /<run> for one cast's), everhear:actor/<id>."""
+    everhear:ability/<id> (or /<run> for one cast's), everhear:actor/<id>; on another entity
+    (on=), the instance's number too (/i<n>), so two instances never share one there."""
     base = "everhear:%s/%s" % (rec.kind, rec.cid)
+    if on:
+        base = "%s/i%s" % (base, rec.iid.rsplit("#", 1)[-1])
     if rec.kind == "mark" and rec.stack is not None:
         return "%s/%d" % (base, rec.stack)
     if run is not None:

@@ -335,14 +335,6 @@ class DB:
             self.conn.execute("UPDATE lines SET cast_id = ? WHERE id = ? AND cast_id IS NULL",
                               (cast_id, line_id))
 
-    def last_fired(self, player_name, since):
-        """{incantation_id: the ``at`` it last fired} of a player's casts started at ``since`` or later."""
-        with self.lock:
-            rows = self.conn.execute(
-                "SELECT incantation_id, max(at) FROM casts WHERE player_name = ? AND started_at >= ?"
-                " AND status = 'fired' GROUP BY incantation_id", (player_name, since)).fetchall()
-        return dict(rows)
-
     def last_console_at(self):
         """The latest ``at`` stored from the console (events and chat lines), or None."""
         with self.lock:

@@ -106,6 +106,68 @@ entity a pass: with ~600 entities near twenty players a pass is ~15 ms, so its b
 the server's time) slows it to about 0.15 s. Levers: `VFG_ENGINE_RAY_BLOCKS` (48),
 `VFG_ENGINE_MIRROR_RADIUS` (32), `VFG_ENGINE_MIRROR_S` (0.1), `VFG_ENGINE_MIRROR_BUDGET` (0.1).
 
+## Part 2: the reads, ops and events added for the library and the kit
+
+### Reads on demand (McIo, a tight loop on ge-mc: the round trips and the server's own time)
+
+| Read | How | Cost |
+|---|---|---|
+| `probe(dim, points, test)` | the points into `everhear:io pr` (50 a command), `function everhear:io/probe` (a macro call per point: `execute in … positioned x y z if block …`), one `data get` | 1 point 0.09 ms, 10 0.22 ms, 100 2.0 ms (~20 µs a point) |
+| `ground_y(dim, x, z)` | `function everhear:io/ground {d,x,z}`: `positioned over motion_blocking_no_leaves`, a marker's `Pos[1]`, returned; -99999 (None) for a chunk not loaded | 0.06 ms |
+| `ray(dim, origin, direction, length)` | `function everhear:io/ray {…}`: half a block a step from the origin, blocks only, the face found to 1/32; `through_blocks` sends nothing | 10 blocks 0.2 ms, 50 0.26, 250 0.45, 500 0.68, 1000 1.3 ms (2000 steps: no recursion limit met) |
+| `entities(dim, center, radius, types)` | `everhear:io en`, `function everhear:io/entities` (an entity compound each), one `data get` | 60 husks in 32 blocks 2.5 ms (~40 µs an entity, read and parsed); 2 in 5 blocks 0.19 ms |
+| `loaded(dim, x, z)` | `execute in D if loaded X 0 Z` | 0.03 ms |
+| `mspt()` | `tick query`'s "Average time per tick", read at most once a second | 0.08 ms uncached |
+| `world_id()` | `everhear:meta world` (two random numbers made the first time the pack loads in a world; kept across reloads and restarts, new in a fresh world), read again after a reconnect | 0.03 ms, then cached |
+
+### Ops
+
+| Op | 26.3 command | Replies seen | Cost (flush of one) |
+|---|---|---|---|
+| Fill | `[execute in D run] fill x1 y1 z1 x2 y2 z2 <block> [replace <filter>] [strict \| keep \| destroy \| hollow \| outline]`; strict goes only with replace (26.3 has no "destroy strict"); over 32,768 blocks refused before sending | `Successfully filled N block(s)` · `No blocks were filled` (ok: nothing to change) · `That position is not loaded` · `That position is out of this world!` · `Too many blocks in the specified area (maximum 32768, but specified N)` · `Unknown block type …` | 27 blocks 0.04 ms; 32,768 blocks 8.6 ms (2.3 ms when nothing changes) |
+| SetBlock | `setblock x y z <block> [strict \| keep \| destroy]` | `Changed the block at x, y, z` · `Could not set the block` (ok when it is that block already; with keep, "something is there") | 0.03 ms |
+| Forceload | `forceload add\|remove x1 z1 x2 z2`; over 256 chunks refused | `Marked chunk [4, 4] in … to be force loaded` · `No chunks were marked…` · `Unmarked chunk…` | — |
+| Motion | `data merge entity <uuid> {Motion:[xd,yd,zd]}`; a player refused (see launching) | `Modified entity data of Husk` · `Nothing changed…` (ok) · `Unable to modify player data`. A NoAI mob has no physics: Motion does nothing to it | 0.04 ms |
+| EntityData | `data merge entity <target> {…}` (UUID refused) | as Motion | 0.03 ms |
+| Bossbar | `bossbar add <id> "<name>"` and `bossbar set <id> name …` (made if missing, renamed if there), `set … color/max/value/players`, several players by a moment's tag (`tag P add everhear.bb`, `players @a[tag=everhear.bb]`, tag removed); `bossbar remove <id>`. An id without a namespace is `everhear:` | `Created custom bossbar [Ice Queen]` · `A bossbar already exists…` · `Custom bossbar […] has changed value to 150` · `… now has 1 player(s): Steve` · `… no longer has any players` · `No bossbar exists with the ID …` · `Nothing changed. That's already the color…` | 0.02 ms a command |
+| StopSound | `stopsound <player\|@a> [* <sound>]` | `Stopped all sounds` · `Stopped sound '…'` · `No player was found` | 0.02 ms |
+| Spawnpoint | `[execute in D run] spawnpoint <player> x y z` | `Set spawn point to 0, 85, 0 [0.0, 0.0] in minecraft:overworld for Steve` | 0.05 ms |
+| Ignite | `function everhear:ignite {t, f, k}` (below) | `… returned 1` · `… returned 0` | a mob 0.07 ms, a player 0.6 ms |
+| Sound `to` | `playsound <name> master <player> …`, one per player (`@a` when none) | `Played sound … to Steve` · `No player was found` | 0.04 ms |
+| Particle `force`/`to` | `particle … force\|normal <player\|@a>`, one per player | `Displaying particle …` · `No player was found` | 0.04 ms |
+
+### Events added
+
+| Fact | How known |
+|---|---|
+| An arrow keeps its bow as `weapon` (with the bow's custom_data), `inGround: 1b` once stuck, `inBlockState: "minecraft:grass_block"` (a plain string), `Owner`. A trident keeps its own stack as `item` and has `DealtDamage: 1b` once it struck (it was 1b after landing in grass too). A tamed wolf has `Owner`. | measured (Carpet's Steve shooting) |
+| An arrow that hits an entity is still there when the ranged hit's advancement reward runs, within a few blocks of its target; it is gone right after. | measured (land with hit "entity" and the arrow's uuid) |
+| A ranged hit's damage is not direct (`is_direct` false: the direct entity is the projectile): `hit_ranged`. Primed TNT with `owner` set credits its blast to that player, so each entity it hurts is that player's ranged hit too. | measured; the `owner` key from the bytecode and a summon |
+| `minecraft.mined:<block>` (the criterion names the block with dots: `minecraft.mined:minecraft.sponge`) counts a block broken in survival, not in creative; it says nothing of where. | measured (a sponge mined by Carpet's `attack continuous`, 1.2 s) |
+| `LastDeathLocation: {dimension, pos: [I; x, y, z]}` is in a player's data after a death (a Carpet player's too, when it comes back). | measured |
+| The datapack's tick with nothing to do: 0.03 ms; with 4 watched kinds: 0.03 ms; with 20 of a player's arrows in flight: 0.12 ms (each read once a tick until it comes down). A hit's far search (`@e` with `on attacker`, 126 entities loaded): 0.16 ms. | measured |
+
+### Setting things on fire
+
+| Fact | How known |
+|---|---|
+| A mob takes `Fire` ticks: `data merge entity <uuid> {Fire:200s}`. A player cannot: `Unable to modify player data`. | measured |
+| A fire block at a player's feet does not light them for about a second: a player's `Fire` rests at -20 and goes up 1 a tick in fire (2 ticks: -18, 1 damage), and Minecraft lights it for 8 s only when it reaches 0. | measured |
+| `/damage … by <a mob holding a Fire Aspect sword>` does not light anyone (an enchantment's attack effects belong to a real attack). A 0-damage burning arrow does nothing. | measured |
+| A player's body and saddle slots take no item (`No targets accepted item…`), so an enchantment's tick effect cannot be hidden on them. | measured |
+| **Lava for two ticks at the feet lights a player at once**, for 15 s, with 4 damage. With one second of Fire Resistance the 4 damage is not taken (lava lights whatever is not fire-immune by its type, Fire Resistance or not), and the `burning_time` attribute scales the 15 s: a modifier of seconds/15 − 1 (`add_multiplied_base`) gave exactly 60, 300 and 801 ticks for 3, 15 and 40 s. Burning then hurts from the second second (3 s: 2 health). This is Ignite for a player (`everhear:ignite`), with the modifier `everhear:ignite` taken off two ticks later. | measured |
+| A fire on a player cannot be cut short by the engine (no command puts a player out); Ignite sets the length once. | not measured: water or powder snow would, and the engine does not place them |
+
+### For the kit: launching a player, a breaking blast, lightning
+
+| Fact | How known |
+|---|---|
+| **Players take no Motion** (`Unable to modify player data`). **Wind charges are the reliable launch**: one set off on the ground at the feet (summoned 0.6 above, `Motion [0,-1,0]`, it bursts on the ground the next tick) lifts a player +6 blocks; 2 in a ring of 0.4: +17; 4: +56; 8 (ring 0.5): +150, and no fall damage was taken within the 4 s watched (a wind charge jump spares the fall above where it left from). The push is the explosion's knockback, which the client applies to itself, so it works for a real player as for Carpet's. The old preset `scripts/_presets/launch.py` has the measured model (1.22 × (1 − d / 2.4) along the line from the burst to the eyes, 2.4 blocks' reach) for charges staged behind a player to throw them along the ground. | measured |
+| Levitation XXI for 1 s lifts +19 blocks but the fall then cost 15 health; `/damage … at` a point under the feet gives no lift (knockback is along the ground only). Riding an invisible armor stand given Motion carries a player too (the old preset's "ride"); not measured here. | measured / not measured |
+| **A breaking explosion**: `summon tnt x y z {fuse:0s,explosion_power:P,owner:[I;…]}` goes off on the next tick; in dirt it broke 243 blocks at P 4 (vanilla TNT), 1208 at 8, 3044 at 12. A creeper `{Fuse:0s,ignited:1b,ExplosionRadius:R}` matches TNT at P = R (3: 126, 8: 1178; `powered:1b` doubles it: R 4 → 1165). In stone (resistance 6) the same TNT broke 46 and 67. `owner` credits the damage to that player; `block_state` sets what the TNT looks like. | measured |
+| **Lightning**: `summon lightning_bolt x y z` hurts everything within about 3 blocks (husks at 0.5, 1.5, 2.5: 5 lightning damage each, the nearest set alight for 160 ticks; at 3.5 and beyond: nothing) and lit 3 fire blocks. A bolt reads no NBT (`readAdditionalSaveData` is empty), so it cannot be made visual-only or credited to anyone: content that counts its damage deals its own `Damage(by=…)` and keeps the bolt for the look (with the spared kept 4 blocks away). | measured; bytecode (`LightningBolt`) |
+| The gamerules for fire are `fire_spread_radius_around_player` (128 here); there is no `do_fire_tick` in 26.3. | measured |
+
 ## Not measured
 
 - **Death on a real client.** A Carpet fake player that is killed leaves (`Steve lost connection:

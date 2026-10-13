@@ -22,20 +22,20 @@ is required in the schema (all_required), so the model writes each field, its de
 rather than leave one out: on the first pilot Gemini answered a report with `end` and `status` alone,
 and no reply. A validator sends back only what code cannot carry out, or would carry out wrongly
 (structured() asks once more, at the price of the whole prompt again): an action not on the menu,
-values its action refuses (a command that places blocks among them), an instruction that does
+values its action refuses, an instruction that does
 nothing, a teleport that moves nobody, an ending with nothing to end on, a hand-off with a brief
 missing, a Config to read that is no class's name, and on the last step any action or read. A field
 that would have no effect is dropped and logged, never sent back: a status outside a report's loop,
 a reply or a record on a `next` step.
 
 The prompt, in the order the cache needs, its text fixed for the whole loop:
-1. the opening, marked: the rules (prompts/brain.md, the owner named), the menu, every library
-   action in full and Minecraft's command list;
+1. the opening, marked: the rules (prompts/brain.md, the owner named), the menu, every action in
+   full (the game engine's ops) and Minecraft's command list;
 2. the conversation, a minute-block at a time, marked at checkpoints (context.py), fewer of them
    than Respond's (LOOP_MARKS);
-3. the tail, the event's own, read once at the loop's start: this server's own actions, the world
-   (the speaker's items by slot; other players' come from the read tool), RUNNING NOW and TASKS in
-   full (running.py, tasks.py), what is new since the last read, and the event;
+3. the tail, the event's own, read once at the loop's start: the world (the speaker's items by slot;
+   other players' come from the read tool; RUNNING NOW, SAVED PLACES, INCANTATIONS and ENGINE, the
+   game engine's: world.py), TASKS (tasks.py), what is new since the last read, and the event;
 4. THE LOOP SO FAR: each earlier step, what it ran, read and would have ended with, and what each
    came to (act.py), one block a step, the last one marked;
 then a trailer, never cached: the step's number, the time used, and on the last step the notice.
@@ -96,26 +96,19 @@ class ActBase(BaseModel):
                                                                   "key and value per field it sets")
 
     def values(self, cls=None) -> dict[str, Any]:
-        """The action as `vfg action run` takes it: {field: value}; for edit, the copy and the
-        values to change, {"copy": …, "values": {…}}, whether each came as a key of its own or
-        as `values.<name>`, or some each way. A Value cannot hold an object, so a field that
-        holds another action's values (incantation_create's) comes as `values.<name>` keys,
-        gathered here into {"values": {…}}. A field of `cls` (the action) that holds an object,
-        given as text that reads as a JSON object (`"{\"power\": 6}"`, as Gemini wrote
-        incantation_edit's `values` twice on the 10-11 replay), is read as that object here,
-        never sent back to the model; a text field is never read so."""
+        """The action as `vfg action run` takes it: {field: value}. A Value cannot hold an object, so
+        the field that holds a scenario's or a mark's args (Args) comes as `args.<name>` keys,
+        gathered here into {"args": {…}}; an args field given as text that reads as a JSON object
+        (`"{\"at\": \"home\"}"`) is read as that object, never sent back to the model; a text field
+        is never read so."""
         given = {v.key.strip(): v.value for v in self.action}
         for k, v in given.items():
-            if k == "values" or holds_object(cls, k):
+            if holds_object(cls, k):
                 given[k] = as_object(v)
-        inner = {k.split(".", 1)[1].strip(): given.pop(k) for k in list(given) if k.startswith("values.")}
+        inner = {k.split(".", 1)[1].strip(): given.pop(k) for k in list(given) if k.startswith("args.")}
         if inner:
-            given["values"] = {**(given["values"] if isinstance(given.get("values"), dict) else {}), **inner}
-        if self.to != "edit":
-            return given
-        copy = given.pop("copy", "")
-        nested = given.pop("values", None)
-        return {"copy": copy, "values": {**given, **nested} if isinstance(nested, dict) else given}
+            given["args"] = {**(given["args"] if isinstance(given.get("args"), dict) else {}), **inner}
+        return given
 
 
 def holds_object(cls, key: str) -> bool:
@@ -246,7 +239,8 @@ def step_type(catalog: Catalog, *, last: bool = False, report: bool = False,
                 raise ValueError(f"the {self.to} action has no instruction")
             if PLACEHOLDER.match(said):
                 raise ValueError(f"the instruction {self.instruction!r} does nothing: leave the action out")
-            if self.to == "teleport" and NO_MOVE.search(said):
+            # TODO(library): the teleport scenario's id, once the library has it.
+            if self.to == "engine_start" and self.values(cls).get("scenario") == "teleport" and NO_MOVE.search(said):
                 raise ValueError(f"{self.instruction!r} moves nobody: leave it out")
             keys = [v.key.strip() for v in self.action]
             if len(set(keys)) < len(keys):
@@ -292,10 +286,9 @@ def step_type(catalog: Catalog, *, last: bool = False, report: bool = False,
                     raise ValueError(f"hand-off name {name!r}: lowercase letters, digits and underscores, starting "
                                      "with a letter, 2 to 32 characters")
                 if name in RESERVED:
-                    raise ValueError(f"{name} is the bridge's task for an incantation's copies, never a task's "
-                                     "name: name the thing, then whose")
-                if catalog.get(name) is not None and catalog.source(name) == "library":
-                    raise ValueError(f"{name} is a library action's name: add whose it is, as frost_bow_alex")
+                    raise ValueError(f"{name} is never a task's name: name the thing, then whose")
+                if catalog.get(name) is not None:
+                    raise ValueError(f"{name} is an action's name: add whose it is, as frost_bow_alex")
                 missing = [k for k in ("description", "words", "picture", "assumed", "cast")
                            if not getattr(h, k).strip()]
                 if missing:
@@ -403,12 +396,11 @@ class Prompt:
         return blocks + [(text, i == len(self.steps) - 1) for i, text in enumerate(self.steps)]
 
 
-def library(catalog: Catalog) -> list[str]:
-    return [n for n in catalog.names() if catalog.source(n) == "library"]
-
-
-def made(catalog: Catalog) -> list[str]:
-    return [n for n in catalog.names() if catalog.source(n) != "library"]
+def rules_text(prompt: Path) -> str:
+    """A prompt file as the model reads it: its `# TODO` lines, notes for whoever edits it (the
+    library's ids to check once it exists), left out."""
+    lines = prompt.read_text(encoding="utf-8").rstrip("\n").split("\n")
+    return "\n".join(line for line in lines if not line.startswith("# TODO"))
 
 
 def menu_lines(catalog: Catalog, names: list[str]) -> str:
@@ -422,22 +414,22 @@ class Call:
         self.ask = ask  # structured() with the brain's model, reasoning, providers and timeout
         self.hidden = hidden
         self.checkpoint = checkpoint
-        rules = prompt.read_text(encoding="utf-8").rstrip("\n")
+        rules = rules_text(prompt)
         who = owner or "not named (VFG_OWNER is not set)"
         self.rules = rules.replace("{owner}", who)
         self._opening: tuple[tuple, str] | None = None
 
     def opening(self, refs) -> str:
-        """The rules, the menu, every library action in full and the command list: the same for
-        every step while the library and the references stay as they are."""
-        names = library(self.catalog)
+        """The rules, the menu, every action in full and the command list: the same for every step
+        while the actions and the references stay as they are."""
+        names = self.catalog.names()
         key = (id(refs), tuple((n, id(self.catalog.get(n))) for n in names))
         if self._opening is None or self._opening[0] != key:
             commands = (refs.menu(exclude=self.hidden) if refs is not None
                         else "(not loaded yet: write commands from what you know of 26.3)")
             full = "\n".join(view(n, self.catalog.get(n)) for n in names)
-            text = (f"{self.rules}\n\nTHE MENU (each action: its name and what it does; this server's own "
-                    f"actions are at the end, after the conversation):\n{menu_lines(self.catalog, names)}\n\n"
+            text = (f"{self.rules}\n\nTHE MENU (each action: its name and what it does; what each can start, "
+                    f"grant, give or apply is under ENGINE, in THE WORLD NOW):\n{menu_lines(self.catalog, names)}\n\n"
                     f"THE ACTIONS IN FULL:\n{full}\n"
                     f"MINECRAFT COMMANDS (name — what it does):\n{commands}\n\n"
                     "THE CONVERSATION SO FAR (oldest first; each row: its time in UTC, who, and for a "
@@ -445,19 +437,11 @@ class Call:
             self._opening = (key, text)
         return self._opening[1]
 
-    def own_actions(self) -> str:
-        names = made(self.catalog)
-        if not names:
-            return "THIS SERVER'S OWN ACTIONS: none yet"
-        full = "\n".join(view(n, self.catalog.get(n)) for n in names)
-        return (f"THIS SERVER'S OWN ACTIONS (made by implementers; on the menu like the rest):\n"
-                f"{menu_lines(self.catalog, names)}\n\n{full}")
-
     def tail(self, event: Event, seen: Seen, tasks: str, new: list[Row]) -> str:
         """Everything after the conversation that is the event's own, read once at the loop's
         start: the world as it was then (seen, its RUNNING NOW in full), TASKS, NEW and the event."""
         unread = show(new) or "nothing"
-        return (f"\n{self.own_actions()}\n\n{seen.show()}\n\n{tasks}\n\n"
+        return (f"\n{seen.show()}\n\n{tasks}\n\n"
                 f"NEW SINCE THE LAST READ (rows no call had read; they end the conversation above):\n{unread}\n\n"
                 f"THE EVENT:\n{event.show()}\n")
 

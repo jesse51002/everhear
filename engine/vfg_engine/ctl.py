@@ -128,7 +128,8 @@ def main(argv=None, stdin=None, stdout=None) -> int:
     parser.add_argument("--socket", help="the engine's control socket (default VFG_ENGINE_SOCKET, else %s)"
                                          % DEFAULT_SOCKET)
     parser.add_argument("--timeout", type=float,
-                        help="seconds the engine may take (default 10, reload 120; at most %g)" % MAX_TIMEOUT_S)
+                        help="seconds the engine may take (default 10, reload 120, start its wait_s + 5; at most %g)"
+                             % MAX_TIMEOUT_S)
     args = parser.parse_args(argv)
     stdin = sys.stdin if stdin is None else stdin
     stdout = sys.stdout if stdout is None else stdout
@@ -149,7 +150,7 @@ def main(argv=None, stdin=None, stdout=None) -> int:
         req["timeout_s"] = args.timeout
     engine_wait = req.get("timeout_s")
     if not isinstance(engine_wait, (int, float)) or isinstance(engine_wait, bool):
-        engine_wait = default_timeout(req["op"].strip())
+        engine_wait = default_timeout(req["op"].strip(), req.get("args"))
     try:
         reply = request(socket_path(args.socket), req, min(float(engine_wait), MAX_TIMEOUT_S) + MARGIN_S)
     except NotRunning as exc:

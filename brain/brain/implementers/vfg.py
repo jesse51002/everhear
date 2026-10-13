@@ -2,9 +2,12 @@
 
 The shape is the brain's own runner's (brain/vfg.py) with stdin added, which vfg route reads the
 brief from: `await vfg("route", "--task", "galick_gun_styrk", timeout=3.75, stdin=brief)`.
-Everything here that runs vfg takes a runner of this shape, so the tests pass a fake."""
+Everything here that runs vfg takes a runner of this shape, so the tests pass a fake. A read of
+the engine, `vfg engine <read> --json`, prints the engine's reply as it came (CONTRACT2), which
+engine_read gives as a dict."""
 import asyncio
 import contextlib
+import json
 import os
 import signal
 from dataclasses import dataclass
@@ -58,3 +61,21 @@ def why(r: VfgResult) -> str:
         return "timed out"
     line = (r.stderr.strip() or r.stdout.strip()).split("\n")[0]
     return "exit %d%s" % (r.code, ": " + line[:200] if line else "")
+
+
+async def engine_read(run: VfgRunner, *args: str, timeout: float) -> tuple[dict | None, str | None]:
+    """`vfg engine <args> --json`: (the engine's reply, None) when it answered ok; else (None, why
+    not), the engine's own words when it said any (exit 1: it refused; 6: it is not running)."""
+    r = await run("engine", *args, "--json", timeout=timeout)
+    try:
+        data = json.loads(r.stdout) if r.stdout.strip() else None
+    except ValueError:
+        data = None
+    if r.code == 0 and isinstance(data, dict) and data.get("ok") is not False:
+        return data, None
+    if isinstance(data, dict) and data.get("error"):
+        return None, "exit %d: %s" % (r.code, str(data["error"]).split("\n")[0][:200])
+    if r.code == 0:
+        out = r.stdout.strip().split("\n")[0][:120]
+        return None, "vfg printed no reply from the engine%s" % (": " + out if out else "")
+    return None, why(r)

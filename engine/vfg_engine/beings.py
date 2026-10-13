@@ -80,7 +80,7 @@ class Being:
     def has(self, ability: str) -> bool:
         iid = self.grants.get(ability)
         rec = self._rt.records.get(iid) if iid else None
-        return rec is not None and not rec.args.get("release_after_runs")
+        return rec is not None and not rec.notes.get("release_after_runs")
 
     def cast(self, ability: str) -> str:
         """Cast an ability by name: "fired", "charging", "cooldown", "not_granted" (only when the
@@ -151,6 +151,14 @@ class Player(Being):
     @property
     def sneaking(self):
         return self._snap().sneaking
+
+    @property
+    def on_ground(self):
+        return self._snap().on_ground
+
+    @property
+    def sprinting(self):
+        return self._snap().sprinting
 
 
 class ActorBeing(Being):

@@ -52,7 +52,7 @@ def serve(cfg):
     from .casts import Casts
     from .console import Tail
     from .db import DB
-    from .kit import Kit
+    from .sounds import warm
     from .watch import WatchFile
 
     db = DB(cfg.db)
@@ -64,8 +64,7 @@ def serve(cfg):
     watch.ensure()
     watch.check()
     tail = Tail(cfg.console_log, cfg.state, db, watch, vfg_feed)
-    kit = Kit(cfg.kit)
-    casts = Casts.from_config(cfg, db, kit, vfg_feed)
+    casts = Casts.from_config(cfg, db, vfg_feed)
     httpd = make_server(cfg.bind, cfg.port, db, cfg.client_token, casts=casts)
 
     stop = threading.Event()
@@ -82,7 +81,7 @@ def serve(cfg):
                                    name="http", daemon=True)
     tail_thread.start()
     http_thread.start()
-    threading.Thread(target=kit.warm, name="warm", daemon=True).start()  # the dictionary, now
+    threading.Thread(target=warm, name="warm", daemon=True).start()  # the phoneme dictionary, now
     host, port = httpd.server_address[:2]
     log.info("vfg-bridge serving on %s:%d, db %s, console %s", host, port, cfg.db,
              cfg.console_log)

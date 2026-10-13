@@ -149,6 +149,10 @@ def test_a_timeout_after_the_engine_took_it(server, ticking):
 def test_the_default_timeouts(monkeypatch):
     assert srv.parse(b'{"op": "status"}')[2] == 10.0
     assert srv.parse(b'{"op": "reload"}')[2] == 120.0
+    assert srv.parse(b'{"op": "start", "args": {"scenario": "meteor", "wait_s": 20}}')[2] == 25.0
+    assert srv.parse(b'{"op": "start", "args": {"scenario": "meteor", "wait_s": 2}}')[2] == 10.0
+    assert srv.parse(b'{"op": "start", "args": {"wait_s": "soon"}}')[2] == 10.0
+    assert srv.parse(b'{"op": "start", "args": {"wait_s": 20}, "timeout_s": 3}')[2] == 3.0   # the request's own wins
     assert srv.parse(b'{"op": "status", "timeout_s": 9999}')[2] == 600.0
     assert srv.parse(b'{"op": "status", "timeout_s": 0}')[2] == srv.MIN_TIMEOUT_S
 

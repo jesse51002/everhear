@@ -7,7 +7,8 @@ import os
 from vfg_engine import rewrite
 from vfg_engine.io import Damage
 
-from conftest import EXAMPLES
+EXAMPLES = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "examples")
+
 
 FIREBALL = os.path.join(EXAMPLES, "fireball.py")
 

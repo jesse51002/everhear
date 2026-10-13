@@ -9,24 +9,22 @@ import importlib.util
 import json
 
 import pytest
-import vfg_actions
 from pydantic import ValidationError
 from vfg_llm import LlmError
 
 from brain import config, loop
 from brain.act import CANCEL
-from brain.actions import variables_of
 from brain.call import PROMPT
 from brain.respond import Response, promises
 from brain.tasks import Tasks
 from brain.turns import turned_away_line
 from brain.vfg import VfgResult
 
-from conftest import STATE, act, cmd, follow_up, hand_off, made, ran, rows, step
+from conftest import STATE, act, cmd, follow_up, hand_off, ran, rows, start, step
 
 ASK = "LINE#{seq} 18:29:58 Steve voice action_oriented 0.93 -8dB | give me a diamond pickaxe"
 TALK = "LINE#{seq} 18:29:59 Steve voice conversational 0.88 - | haha thanks AI"
-PICKAXE = act("command", "give Steve a diamond pickaxe", cmd("give Steve diamond_pickaxe"))
+PICKAXE = act("engine_start", "give Steve a diamond pickaxe", cmd("give Steve diamond_pickaxe"))
 GIVE = step(PICKAXE, reply="there you go")
 
 
@@ -191,9 +189,9 @@ async def test_history_is_the_old_feed_at_the_start_and_a_line_on_the_watch_is_l
 # ------------------------------------------------------------------ the loop
 
 async def test_an_ask_whose_actions_all_land_is_one_step_its_reply_said_and_one_record_written(kit, capsys):
-    k = kit(Step=step(act("command", "give KrownJM a full set of netherite armor",
+    k = kit(Step=step(act("engine_start", "give KrownJM a full set of netherite armor",
                           cmd("give KrownJM minecraft:netherite_helmet", "give KrownJM minecraft:netherite_boots")),
-                      act("command", "give KrownJM 64 cobblestone", cmd("give KrownJM minecraft:cobblestone 64")),
+                      act("engine_start", "give KrownJM 64 cobblestone", cmd("give KrownJM minecraft:cobblestone 64")),
                       reply="suited up, and 64 cobble", record="gave KrownJM netherite armor and 64 cobblestone"))
     k.brain.feed(line(5, "KrownJM", "give me netherite armor and 64 cobblestone"))
     await k.settle()
@@ -203,16 +201,16 @@ async def test_an_ask_whose_actions_all_land_is_one_step_its_reply_said_and_one_
     assert k.vfg.rows() == [("action -", "gave KrownJM netherite armor and 64 cobblestone")]  # ONE record
     assert k.vfg.calls.index(k.vfg.of("say")[0]) > k.vfg.calls.index(k.vfg.of("action", "run")[-1])
     out = capsys.readouterr().out
-    assert "brain #5 s1 7 ms $0.002000, 1000 in, 90% cached, 40 out | together: command" in out
+    assert "brain #5 s1 7 ms $0.002000, 1000 in, 90% cached, 40 out | together: engine_start" in out
     assert "loop #5 KrownJM: 1 step(s), $0.002000, 90% cached, reply at 0.0 s, 0.0 s, ended reply" in out
 
 
 async def test_a_refused_command_comes_back_with_its_error_and_reference_and_the_next_step_fixes_it(kit):
     fixed = ('item modify entity KrownJM hotbar.0 {type:"minecraft:set_enchantments",'
              'enchantments:{"minecraft:fire_aspect":5},add:true}')
-    k = kit(Step=[step(act("command", "Fire Aspect V on KrownJM's axe", cmd("enchant KrownJM minecraft:fire_aspect 5")),
+    k = kit(Step=[step(act("engine_start", "Fire Aspect V on KrownJM's axe", cmd("enchant KrownJM minecraft:fire_aspect 5")),
                        reply="your axe burns now", record="gave KrownJM's axe Fire Aspect 5"),
-                  step(act("command", "Fire Aspect V on KrownJM's axe by item modifier", cmd(fixed)),
+                  step(act("engine_start", "Fire Aspect V on KrownJM's axe by item modifier", cmd(fixed)),
                        reply="your axe burns now", record="gave KrownJM's axe Fire Aspect 5 by item modifier; /enchant "
                                                           "refuses a level over the maximum")])
     k.vfg.on("action", "run", answer=[ran(False, "Fire Aspect V is higher than the maximum level of II"),
@@ -254,7 +252,7 @@ async def test_read_items_comes_back_in_the_next_step_which_then_acts_on_it(kit)
             "items": ["Alex has the following entity data: [{Slot: 2b, id: \"minecraft:bow\", count: 1}]",
                       "Alex has the following entity data: 0"]}
     k = kit(Step=[step(end="next", read=("Alex",)),
-                  step(act("command", "Power V on Alex's bow", cmd(
+                  step(act("engine_start", "Power V on Alex's bow", cmd(
                       'item modify entity Alex hotbar.2 {type:"minecraft:set_enchantments",'
                       'enchantments:{"minecraft:power":5},add:true}')), reply="Alex's bow has Power V",
                        record="put Power V on Alex's bow, hotbar.2")])
@@ -309,17 +307,18 @@ async def test_a_follow_up_resumes_its_implementer_and_a_cancel_sends_the_cancel
 
 
 async def test_a_silent_ending_says_nothing_and_still_leaves_its_record(kit):
-    k = kit(Step=step(act("teleport", "teleport Steve home", {"player": "Steve", "to": "place", "target": "home"}),
-                      act("command", "make it day", cmd("time set day")), order="in_turn", end="silent",
+    k = kit(Step=step(act("engine_start", "teleport Steve home", start("teleport", players="Steve", at="home")),
+                      act("engine_start", "make it day", cmd("time set day")), order="in_turn", end="silent",
                       record="took Steve home and set the time to day"))
     k.brain.feed(line(5, text="home, then make it day"))
     await k.settle()
-    assert [a[2] for a in k.vfg.of("action", "run")] == ["teleport", "command"]
+    assert [a[2:4] for a in k.vfg.of("action", "run")] == [["engine_start", "scenario=teleport"],
+                                                          ["engine_start", "scenario=command"]]
     assert k.vfg.said() == [] and k.vfg.rows() == [("action -", "took Steve home and set the time to day")]
 
 
 async def test_the_tenth_step_is_the_last_it_runs_nothing_and_must_end(kit, capsys):
-    more = step(act("command", "give Steve bread", cmd("give Steve bread")), end="next")
+    more = step(act("engine_start", "give Steve bread", cmd("give Steve bread")), end="next")
     k = kit(Step=[more] * 9 + [step(reply="that took too long, sorry: you got 9 bread")])
     k.brain.feed(line(5, text="keep giving me bread"))
     await k.settle()
@@ -342,7 +341,7 @@ async def test_a_step_that_starts_past_two_minutes_is_the_last(kit):
         k.tick.t += 70                                     # each call takes 70 s, by the loop's clock
         return answers.pop(0)
 
-    answers = [step(act("command", "give Steve bread", cmd("give Steve bread")), end="next")] * 2 + \
+    answers = [step(act("engine_start", "give Steve bread", cmd("give Steve bread")), end="next")] * 2 + \
               [step(end="handoff", reply="handing the rest on", hand_offs=(hand_off("bread_rain_steve"),))]
     k = kit(Step=slow)
     k.brain.feed(line(5, text="rain bread on me"))
@@ -359,7 +358,7 @@ async def test_a_call_that_fails_mid_loop_tells_the_player_and_records_what_ran(
                       "its values: player, phrase, action, values, cooldown_s")
     failed.cost, failed.ms, failed.prompt_tokens, failed.cached_tokens, failed.completion_tokens = \
         0.004, 9400, 18000, 0, 900
-    k = kit(Step=[step(act("command", "give Steve 64 steak", cmd("give Steve minecraft:cooked_beef 64")), end="next"),
+    k = kit(Step=[step(act("engine_start", "give Steve 64 steak", cmd("give Steve minecraft:cooked_beef 64")), end="next"),
                   failed])
     k.brain.feed(line(7, text="make juicy steak give me 64 steak"))
     await k.settle()
@@ -385,7 +384,7 @@ async def test_a_call_that_fails_mid_loop_tells_the_player_and_records_what_ran(
 async def test_each_steps_prompt_is_the_next_steps_cached_prefix_at_most_four_marks(kit):
     convo = rows(*(f"LINE#{i} 18:{i:02d}:00 Alex voice conversational 0.9 - | line {i}" for i in range(1, 25)),
                  processed=True)
-    more = step(act("command", "give Steve bread", cmd("give Steve bread")), end="next")
+    more = step(act("engine_start", "give Steve bread", cmd("give Steve bread")), end="next")
     k = kit(convo, Step=[more, more, step(reply="three loaves")])
     k.brain.feed(line(30, text="bread, bread, bread"))
     await k.settle()
@@ -399,40 +398,13 @@ async def test_each_steps_prompt_is_the_next_steps_cached_prefix_at_most_four_ma
         assert [t for t, _ in after["cached"]][:len(texts)] == texts  # step n's whole prompt but its trailer
         assert len(after["cached"]) == len(texts) + 1                 # and one block more: step n's results
     assert [c["prompt"] for c in calls] == [f"\nSTEP {n} of at most 10; 0 s of 120 used.\n" for n in (1, 2, 3)]
-    assert calls[0]["cached"][-1][0].startswith("\nTHIS SERVER'S OWN ACTIONS")  # step 1's end mark: the tail
+    assert calls[0]["cached"][-1][0].startswith("\nTHE WORLD NOW:\n")  # step 1's end mark: the tail
 
 
 # ------------------------------------------------------------------ reports
 
-GUN = '''
-    from actions._types import Action, Field, Live, Players
-
-
-    class GalickGunStyrk(Action):
-        """Give a player a Galick Gun: hold right-click to charge, release to fire a beam."""
-
-        script = "galick_gun_styrk"
-        runs = "until_stopped"
-        takes = ["player", "cooldown"]
-
-        player: Players = "@a"
-        """who gets one"""
-        cooldown: Live[float] = Field(5, ge=0, le=60)
-        """seconds between shots"""
-'''
-MADE = {"scripts": ["galick_gun_styrk"], "actions": ["galick_gun_styrk"], "presets": [],
-        "copies": ["galick_gun_styrk"]}
-
-
-def fake_variables(monkeypatch, seen: list | None = None):
-    """vfg_actions.variables() as the tasks read them: each field's name."""
-    def variables(cls):
-        if seen is not None:
-            seen.append(cls.__name__)
-        return [{"name": k, "fixed": False, "default": None, "live": False} for k in cls.model_fields
-                if k in cls.takes]
-
-    monkeypatch.setattr(vfg_actions, "variables", variables, raising=False)
+MADE = {"content": ["galick_gun_styrk"], "bindings": ["styrkaeopteryx.galick_gun"],
+        "grants": ["Styrkaeopteryx:galick_gun_styrk"]}
 
 
 def gun(k, line: str = "make me a galick gun") -> str:
@@ -441,10 +413,8 @@ def gun(k, line: str = "make me a galick gun") -> str:
     return "galick_gun_styrk"
 
 
-async def test_a_report_takes_its_description_made_and_variables_and_closes_with_one_record_and_one_line(
-        kit, monkeypatch):
-    fake_variables(monkeypatch)
-    k = kit(rows("GAME#1 18:29:50 death Steve | Steve fell from a high place"), cat=made("galick_gun_styrk", GUN),
+async def test_a_report_takes_its_description_and_what_it_made_and_closes_with_one_record_and_one_line(kit):
+    k = kit(rows("GAME#1 18:29:50 death Steve | Steve fell from a high place"),
             Step=step(reply="your galick gun's ready: hold right-click", status="done",
                       record="galick_gun_styrk done: a Galick Gun, hold right-click to fire"))
     name = gun(k)
@@ -464,8 +434,7 @@ async def test_a_report_takes_its_description_made_and_variables_and_closes_with
     assert (t["status"], t["result"], t["session"]) == ("done", "galick_gun_styrk done: a Galick Gun, hold "
                                                                 "right-click to fire", "sess-1")
     assert t["description"] == "A Galick Gun for Styrkaeopteryx: hold right-click 1.5 s, a 100-block beam."
-    assert t["made"] == MADE and t["closed_at"]
-    assert [v["name"] for v in t["variables"]] == ["player", "cooldown"]
+    assert t["made"] == MADE and t["closed_at"] and t["variables"] is None
     assert k.written(name)[-1] == t                       # every change written through, the last one whole
     assert k.vfg.rows() == [("result galick_gun_styrk", t["result"])]  # ONE record: no AI action row
     assert k.vfg.said() == [["your galick gun's ready: hold right-click", "--task", "galick_gun_styrk"]]
@@ -550,38 +519,21 @@ async def test_an_unexpected_error_never_leaves_a_task_open_and_the_player_hears
                             ["done: make me a galick gun", "--task", "galick_gun_styrk"]]
 
 
-def test_a_tasks_variables_are_its_actions_as_vfg_actions_reads_them(monkeypatch):
-    fake_variables(monkeypatch)
-    cat = made("galick_gun_styrk", GUN)
-    assert [v["name"] for v in variables_of(cat, "galick_gun_styrk")] == ["player", "cooldown"]
-    assert variables_of(cat, "no_such_action") is None
-
-
-async def test_a_changed_action_file_refreshes_its_tasks_variables_at_any_call_respond_included(kit, monkeypatch):
-    seen = []
-    fake_variables(monkeypatch, seen)
-    k = kit(cat=made("galick_gun_styrk", GUN), Response={"reply": "anytime!", "hand_up": False, "reason": "thanks"})
-    name = gun(k)
-    k.tasks.merge_made(name, MADE)
-    monkeypatch.setattr(loop.actions, "refresh", lambda catalog: ["galick_gun_styrk"])
-    k.brain.feed(TALK.format(seq=1))
-    await k.settle()
-    assert seen == ["GalickGunStyrk"] and k.tasks.get(name)["variables"][1]["name"] == "cooldown"
-    assert [c["output"] for c in k.ask.calls] == ["Response"]
-    assert "galick_gun_styrk for Styrkaeopteryx, open: A Galick Gun" in k.ask.calls[0]["prompt"]  # TASKS, Respond's
-
-
 async def test_the_brains_tasks_and_running_now_are_in_full(kit):
     k = kit(Step=GIVE)
-    gun(k)
-    k.running({"railgun_steve": {"action": "railgun", "values": {"player": "Steve", "cooldown": 5},
-                                 "live": ["cooldown"], "task": None}})
+    name = gun(k)
+    k.tasks.merge_made(name, MADE)
+    k.running({"instance": "ability:galick_gun_styrk#4", "kind": "ability", "id": "galick_gun_styrk",
+               "user": "Styrkaeopteryx"},
+              {"instance": "scenario:horde#2", "kind": "scenario", "id": "horde", "user": None})
     k.brain.feed(ASK.format(seq=5))
     await k.settle()
     tail = k.ask.calls[0]["cached"][-1][0]
     assert "- galick_gun_styrk, for Styrkaeopteryx, open, 18:30:00: A Galick Gun for Styrkaeopteryx" in tail
-    assert "  made: nothing yet; running now: none" in tail
-    assert "- railgun_steve: railgun, the brain started it\n  live: " in tail and "cooldown=5 (0..60)" in tail
+    assert ("  made: content galick_gun_styrk; bindings styrkaeopteryx.galick_gun; grants "
+            "Styrkaeopteryx:galick_gun_styrk; running now: ability:galick_gun_styrk#4") in tail
+    assert "- ability:galick_gun_styrk#4: ability galick_gun_styrk, granted to Styrkaeopteryx\n" in tail
+    assert "- scenario:horde#2: scenario horde, for the world" in tail
 
 
 # ------------------------------------------------------------------ the watch
@@ -826,7 +778,7 @@ async def test_a_stop_drops_what_waits_and_a_report_dropped_closes_its_task_in_c
 
 
 async def test_something_unexpected_mid_loop_still_records_what_earlier_steps_did(kit):
-    k = kit(Step=[step(PICKAXE, end="next"), step(act("command", "give Steve bread", cmd("give Steve bread")),
+    k = kit(Step=[step(PICKAXE, end="next"), step(act("engine_start", "give Steve bread", cmd("give Steve bread")),
                                                   reply="there")])
     runs = k.acts.run
 
@@ -921,15 +873,19 @@ async def test_a_line_or_a_report_that_waited_for_its_turn_logs_how_long(kit, ca
 
 
 async def test_a_reply_written_up_front_never_claims_a_change_that_changed_nothing(kit):
-    k = kit(Step=[step(act("edit", "no cooldown on Steve's railgun", {"copy": "railgun_steve", "values.cooldown": 0}),
+    config = "    class Config(AbilityConfig):\n        cooldown_s = 0\n"
+    reading = dict(step(end="next"), read_configs=["fireball"])
+    k = kit(Step=[reading,
+                  step(act("engine_config", "no cooldown on fireball", {"class_id": "fireball", "config": config}),
                        reply="fixed: no more cooldown"),
-                  step(reply="your railgun had no cooldown already", record="Steve's railgun: cooldown already 0")])
-    k.running({"railgun_steve": {"action": "railgun", "values": {"player": "Steve", "cooldown": 0},
-                                 "live": ["cooldown"], "task": None}})
-    k.vfg.on("action", "run", "edit", answer=ran(True, "railgun_steve: nothing changed", copy="railgun_steve",
-                                                 changed=[]))
-    k.brain.feed(line(5, text="take the cooldown off my railgun"))
+                  step(reply="fireball had no cooldown already", record="fireball: cooldown already 0")])
+    k.vfg.on("engine", "config", "get", answer=VfgResult(0, "made/main/content/fireball.py, lines 8 to 9\n" + config,
+                                                         ""))
+    k.vfg.on("action", "run", "engine_config", answer=ran(True, "fireball's Config is already as written: nothing "
+                                                          "changed", changed=[]))
+    k.brain.feed(line(5, text="take the cooldown off fireball"))
     await k.settle()
-    assert "- edit: no cooldown on Steve's railgun copy=railgun_steve cooldown=0\n  CHANGED NOTHING: " \
-           "railgun_steve: nothing changed" in k.ask.of("Step")[1]["cached"][-1][0]
-    assert k.vfg.said() == [["your railgun had no cooldown already"]]  # never "fixed"
+    assert ("- engine_config: no cooldown on fireball class_id=fireball config=" in k.ask.of("Step")[2]["cached"][-1][0])
+    assert "  CHANGED NOTHING: fireball's Config is already as written: nothing changed" in \
+        k.ask.of("Step")[2]["cached"][-1][0]
+    assert k.vfg.said() == [["fireball had no cooldown already"]]  # never "fixed"

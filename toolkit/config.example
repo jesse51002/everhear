@@ -6,7 +6,7 @@
 
 # --- You ---
 # Your Minecraft name: the server's owner. Only the owner may ask for op, bans, the
-# whitelist, stopping the server and the like; the brain and every script read it. Required.
+# whitelist, stopping the server and the like; the brain reads it. Required.
 VFG_OWNER=
 
 # --- The EC2 box ---
@@ -45,7 +45,7 @@ VFG_CLIENT_JAR_DIR=
 # --- The vfg toolkit ---
 # What vfg say puts first, in aqua. Default: "[AI] " (quote it to keep the space).
 VFG_CHAT_PREFIX=
-# Where brain/run and scripts/ are. Default: the repo the toolkit is in
+# Where brain/run, actions/, engine/library/ and made/ are. Default: the repo the toolkit is in
 VFG_REPO=
 # The bridge's folder on EC2. Default: /opt/vfg
 VFG_REMOTE_VFG=
@@ -57,9 +57,15 @@ VFG_WATCH_CATCHUP=
 VFG_WATCH_MAX_PER_MIN=
 # The ssh binary. Default: ssh
 VFG_SSH=
-# Seconds vfg place list answers from its cache, $VFG_HOME/places.json, before it asks the
-# server again; vfg place save and forget update the cache as they go. Default: 30
-VFG_PLACES_TTL_S=
+# Seconds vfg engine start and vfg action run engine_start wait for a one-off scenario's
+# result, 0 to 30. Default: 15
+VFG_ENGINE_START_WAIT_S=
+# The model of an incantation's alias call (vfg engine bind), through OpenRouter; off for none
+# (the code's aliases alone). Default: google/gemini-3.8-flash
+VFG_INCANT_ALIAS_MODEL=
+# Where vfg made save keeps its saves of made/<server>/. Default:
+# /var/home/jm/Documents/EverHear/Internal/made
+VFG_MADE_ARCHIVE=
 
 # --- The brain (brain/run; vfg brain start runs it) ---
 # The file holding your OpenRouter API key alone, mode 600; lib/py's structured() reads
@@ -103,8 +109,6 @@ VFG_BRAIN_CHECKPOINT=
 # in the box's vfg.db, written only by the brain.
 # Default: $VFG_HOME/brain
 VFG_BRAIN_DIR=
-# Seconds between fetches of the running copies the brain's menu lists. Default: 30
-VFG_RUNNING_TTL_S=
 
 # --- Implementers (started by the brain, on DeepSeek V4.1 Flash) ---
 # The harness an implementer runs in: claude-code or opencode. Default: claude-code
@@ -133,31 +137,20 @@ VFG_IMPL_EFFORT=
 VFG_IMPL_MAX_TURNS=
 VFG_IMPLEMENTER_MINUTES=
 
-# --- Scripts (vfg script, vfg preset, vfg state) ---
+# --- The server's content and the actions (vfg engine, vfg action run) ---
 # The server this PC drives, and the name of its folder under made/, where what its
-# implementers make is kept apart from the library in scripts/. Default: main
+# implementers make (made/<server>/content/ and tests/) is kept apart from the library,
+# engine/library/. Default: main
 VFG_SERVER=
-# How often a running script looks again for the values vfg script set wrote, in seconds.
-# Default: 0.5
-VFG_LIVE_POLL_S=
-# Seconds vfg action run waits for a once action on EC2, its deploy included, when the action
-# sets no timeout_s of its own; past it the answer is that it still runs. Default: 20
+# Seconds the brain waits for a vfg action run, when the action sets no timeout_s of its own;
+# past it (and 10 s of grace) the action is "failed": it may still have happened. Default: 20
 VFG_DISPATCH_ACTION_TIMEOUT_S=
-
-# --- Tests (vfg test) ---
-# The test server, a second box where vfg test runs an ability's test, never the live one: a file
-# of its settings (VFG_SSH, VFG_SSH_HOST, VFG_SSH_USER, VFG_SSH_KEY, VFG_REMOTE_VFG and
-# VFG_REMOTE_MC, read over these). On realmc: the paired server's home/.vfg/config.
-# Default: none, and vfg test says so
-VFG_TEST_BOX=
-# Seconds a test may run before it is stopped. Default: 60
-VFG_TEST_TIMEOUT_S=
 
 # --- The router (vfg route) and the implementers' cache ---
 # Seconds vfg route waits for Jev before it picks by words instead. Default: 3
 VFG_ROUTE_TIMEOUT_S=
-# What loads an example script for an implementer (runs_it and close together)
-# or a preset (use), from 0 to 1. Default: 0.3
+# What loads an example class for an implementer (Jev's runs_it and close together), from 0
+# to 1. Default: 0.3
 VFG_ROUTE_LOAD=
 # How long an implementer's prompt cache lives on the anthropic provider, 5m or 1h (DeepSeek
 # caches on its own). An hour doubles the price of every cache write.
@@ -168,9 +161,9 @@ VFG_IMPL_CACHE_TTL=
 # A file of the test server's settings, KEY=value lines as this file has them, of which VFG_SSH,
 # VFG_SSH_HOST, VFG_SSH_USER, VFG_SSH_KEY, VFG_REMOTE_VFG and VFG_REMOTE_MC are read over the live
 # box's: a second Minecraft server with Carpet's fake players, where an implementer's test runs,
-# never the live one. On realmc, the paired server's own config,
-# $REALMC_ROOT/<name>-test/home/.vfg/config; a second instance on the EC2 box needs only
-# VFG_REMOTE_VFG and VFG_REMOTE_MC. Default: none (vfg test exits 3)
+# never the live one; its folder holds the .vfg-test-server marker livetest asks for. A
+# second instance on the EC2 box needs only VFG_REMOTE_VFG and VFG_REMOTE_MC.
+# Default: none (vfg test exits 3)
 VFG_TEST_BOX=
 # Seconds a test may run before it is stopped, 5 to 600. Default: 60
 VFG_TEST_TIMEOUT_S=

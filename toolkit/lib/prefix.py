@@ -1,20 +1,15 @@
 """prefix: the part of an implementer's system prompt that is the same on every spawn.
 
-The provider's cache reuses a prompt's start only when it is the same bytes,
-so this is built from files that change only in a coding session, in a fixed
-order, with nothing in it that changes between spawns — no date, no count, no
-absolute path, nothing from made/ (what implementers make goes in each brief):
+The provider's cache reuses a prompt's start only when it is the same bytes, so this is built from
+files that change only in a coding session, in a fixed order, with nothing in it that changes
+between spawns — no date, no count, no absolute path, nothing from made/ (what implementers make
+goes in each brief):
 
-  1. how a script and a preset are written: scripts/README.md, whole;
-  2. the kit, in full: scripts/_lib/mc.py, then every file in scripts/_lib/kit/
-     by name;
-  3. every library preset and example script, sorted by name: a preset's first
-     line and its values class, as written; a script's first line only (its values
-     are its action's), and whether it has a test beside it (scripts/<name>/test.py);
-  4. every library action's menu line, sorted by name (menu.line, as `vfg action list`
-     prints it), from the actions cache: the brief gives the ones picked for the job in
-     full, and `vfg action show <name>` any other. This server's made actions change
-     during play, so they are in each brief instead.
+  1. how a content class is written: engine/WRITING.md, whole;
+  2. the kit, the helpers every class may import: engine/KIT.md, whole, when it is there;
+  3. every library class (engine/library/<id>.py), by id: its kind and first line, then its
+     `class Config` and `class Args` as written (the brief gives the ones picked for the job in
+     full, and any other is one read away).
 
 `vfg prefix` prints it. An implementer gets it after its rules.
 
@@ -22,23 +17,14 @@ Python 3.9+, standard library only, like toolkit/vfg.
 """
 import os
 
-import library
-import menu
-import route
+import content
 
-HEAD_HOW = "HOW A SCRIPT AND A PRESET ARE WRITTEN"
-HEAD_KIT = ("THE KIT, IN FULL — what every script and preset imports and nobody copies; "
-            "it is here so you never open it")
-HEAD_LIBRARY = ("THE LIBRARY — every preset and example script, by name: its first line, and a "
-                "preset's values. A preset is scripts/_presets/<name>.py, an example script "
-                "scripts/<name>/main.py, and its values are its action's (vfg action show <action>); "
-                "the ones picked for your job are in your first message, in full, and any other you "
-                "can read.")
-HEAD_ACTIONS = ("THE LIBRARY'S ACTIONS, one menu line each. Your brief has the ones picked for your job "
-                "in full; for any other: vfg action show <name>.")
-# When the actions could not be read (vfg prefix says why on stderr): the same words every time.
-NO_ACTIONS = ("THE LIBRARY'S ACTIONS: not read here. vfg action list names every action, and vfg action "
-              "show <name> prints one in full.")
+HEAD_HOW = "HOW A CONTENT CLASS IS WRITTEN"
+HEAD_KIT = "THE KIT: the helpers every class may import"
+HEAD_LIBRARY = ("THE LIBRARY — every library class, by id: its kind and first line, then its Config and Args as "
+                "written. A class is engine/library/<id>.py; the ones picked for your job are in your first "
+                "message, in full, and any other you can read.")
+NO_LIBRARY = "THE LIBRARY: none yet. engine/examples/ holds four working classes to read."
 
 
 def _text(path):
@@ -48,82 +34,29 @@ def _text(path):
     return data if data.endswith("\n") else data + "\n"
 
 
-def _file(repo, rel):
-    return "=== %s ===\n%s" % (rel, _text(os.path.join(repo, rel)))
-
-
-def kit_files(repo):
-    """mc.py, then every file in _lib/kit/ by name: no caches, no dotfiles, no subfolders."""
-    rels = []
-    if os.path.isfile(os.path.join(repo, "scripts", "_lib", "mc.py")):
-        rels.append("scripts/_lib/mc.py")
-    kit = os.path.join(repo, "scripts", "_lib", "kit")
-    for fn in sorted(os.listdir(kit)) if os.path.isdir(kit) else []:
-        if fn.startswith(".") or fn.endswith((".pyc", ".pyo")) or not os.path.isfile(os.path.join(kit, fn)):
+def library_block(repo):
+    """Every library class: `=== fireball (ability) — Burns, then explodes ===`, then its Config and
+    Args as written; a file that does not read says why."""
+    lib = content.Content(repo, None)
+    parts = []
+    for c in lib._in(lib.library, "library"):
+        if c.problem:
+            parts.append("=== %s — not read: %s ===\n" % (c.rel, c.problem))
             continue
-        rels.append("scripts/_lib/kit/" + fn)
-    return rels
+        head = "=== %s (%s) — %s ===\n" % (c.id, c.kind, c.first_line or "(no first line)")
+        parts.append(head + "".join(x if x.endswith("\n") else x + "\n" for x in (c.config, c.args) if x))
+    return parts
 
 
-def class_lines(preset):
-    """`  crater_radius: Live[int] = Field(8, ge=2, le=64) — how wide the crater is, in blocks`:
-    each field of a preset's values class as written, with the description under it."""
-    import ast
-    lines = []
-    for node in preset.tree.body:
-        if not library._values_class(node, preset.name):
-            continue
-        body = node.body
-        for i, n in enumerate(body):
-            if not isinstance(n, ast.AnnAssign):
-                continue
-            line = "  " + " ".join((ast.get_source_segment(preset.text, n) or "").split())
-            nxt = body[i + 1] if i + 1 < len(body) else None
-            if isinstance(nxt, ast.Expr) and isinstance(nxt.value, ast.Constant) and isinstance(nxt.value.value, str):
-                line += " — " + " ".join(nxt.value.value.split())
-            lines.append(line)
-    return lines
-
-
-def library_lines(repo):
-    lib = library.Library(repo, "main")
-    cards = [c for c in route.load_cards(repo, None) if c["source"] == "library" and c["kind"] != "action"]
-    cards.sort(key=lambda c: (c["name"], c["kind"] != "script"))
+def build(repo):
+    """The prefix, as `vfg prefix` prints it."""
     out = []
-    for c in cards:
-        tested = c["kind"] == "script" and os.path.isfile(os.path.join(repo, os.path.dirname(c["path"]), "test.py"))
-        out.append("%s (%s)" % (c["name"], "example script, with its test.py" if tested else
-                                "example script" if c["kind"] == "script" else "preset"))
-        out.append("  " + (c["first"] or "(no first line)"))
-        if c["kind"] != "preset":
-            continue
-        it = lib.preset(c["name"])
-        if it is not None:
-            out += class_lines(it)
-    return out
-
-
-def action_lines(actions):
-    """`nuke — Drop a nuke on ...`: every library action in the actions cache, by name."""
-    acts = (actions or {}).get("actions") or {}
-    return [menu.line(n, e) for n, e in sorted(acts.items()) if isinstance(e, dict) and e.get("source") == "library"]
-
-
-def build(repo, actions=None):
-    """The prefix, as text: the same bytes for the same library files. `actions` is the actions
-    cache (vfg_actions.cache); None when it could not be read."""
-    parts = [HEAD_HOW, ""]
-    readme = "scripts/README.md"
-    if os.path.isfile(os.path.join(repo, readme)):
-        parts.append(_file(repo, readme))
-    parts += [HEAD_KIT, ""]
-    for rel in kit_files(repo):
-        parts.append(_file(repo, rel))
-    parts += [HEAD_LIBRARY, ""]
-    parts += library_lines(repo)
-    if actions is None:
-        parts += ["", NO_ACTIONS]
-    else:
-        parts += ["", HEAD_ACTIONS, ""]
-        parts += action_lines(actions) or ["(none)"]
-    return "\n".join(parts) + "\n"
+    writing = os.path.join(repo, "engine", "WRITING.md")
+    if os.path.isfile(writing):
+        out.append("%s\n=== engine/WRITING.md ===\n%s" % (HEAD_HOW, _text(writing)))
+    kit = os.path.join(repo, "engine", "KIT.md")
+    if os.path.isfile(kit):
+        out.append("%s\n=== engine/KIT.md ===\n%s" % (HEAD_KIT, _text(kit)))
+    classes = library_block(repo)
+    out.append("%s\n%s" % (HEAD_LIBRARY, "".join(classes)) if classes else NO_LIBRARY + "\n")
+    return "\n".join(out)

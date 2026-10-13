@@ -101,9 +101,8 @@ def request(input: int = 0, read: int = 0, write: int = 0, out: int = 0, model: 
 
 class FakeRun:
     """One run: its scripted events. Each ToolCall goes through the guard before it is given, and
-    `effect(name, input)` does what an allowed one would (writes the files vfg script new makes,
-    say). With a gate, it holds the last event until the gate opens; stop() opens it, unless told
-    to ignore stops. `breaks` is raised once the events are out. send() takes a message while the
+    `effect(name, input)` does what an allowed one would (writes the file a Write names, say). With a
+    gate, it holds the last event until the gate opens; stop() opens it, unless told to ignore stops. `breaks` is raised once the events are out. send() takes a message while the
     run is live (until its Done is given), and `on_send(run, text)` does what reading it would."""
 
     def __init__(self, kind: str, task: str, system, prompt: str, resumed: str | None, guard, events,

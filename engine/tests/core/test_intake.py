@@ -69,7 +69,7 @@ def test_the_engines_own_damage_does_not_trigger_a_hit_loop(rig):
     r.io.hit("Steve", zombie)                     # one real hit
     r.tick(10)
     assert len(r.io.ops_of(Damage)) == 1          # answered once, not for ever
-    assert r.io.entities[zombie].health == 98.0
+    assert r.io.by_uuid[zombie].health == 98.0
     r.io.hit("Steve", zombie)                     # a later real hit is still heard
     r.tick(3)
     assert len(r.io.ops_of(Damage)) == 2

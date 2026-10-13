@@ -13,11 +13,13 @@ import logging
 import statistics
 
 from . import abilities, actors, items, marks, meta, rewrite, scenarios
-from .reload import reload
+from . import args as argtypes
+from .reload import reload, shadows
 
 log = logging.getLogger("vfg_engine")
 
 CASTS_KEPT = 1000          # cast_ids remembered, so a repeated one answers as the first did
+MAX_WAIT_S = 30.0          # how long a start may wait for its scenario's result
 
 
 class OpError(Exception):
@@ -45,6 +47,7 @@ class Ops:
         self.engine = engine
         self.rt = engine.rt
         self._casts: collections.OrderedDict = collections.OrderedDict()
+        self.current = None        # the Future of the op being handled (a start that waits keeps it)
 
     def handle(self, op: str, args, reply):
         """Answer one op: reply(doc) now, or later for the ones that wait on Minecraft."""
@@ -89,18 +92,40 @@ class Ops:
                 "players": sorted(n for n, p in rt.players.items() if p.online),
                 "instances": dict(kinds), "classes": len(rt.classes),
                 "slow": [{"instance": k, "why": v} for k, v in sorted(rt.guard.flagged.items())],
-                "orphans": len(rt.orphans), "started_at": e.started_at}
+                "orphans": len(rt.orphans), "started_at": e.started_at,
+                "reads": {k: {"n": n, "ms_avg": round(ms / n, 3)} for k, (n, ms) in sorted(rt.read_costs.items())},
+                "blocks": {"jobs": len(rt.block_queue.jobs)}, "world": rt.places.world}
+
+    @staticmethod
+    def _args_schema(info):
+        cls = getattr(info.cls, "Args", None)
+        return argtypes.schema(cls) if cls is not None and info.kind in ("scenario", "mark") else None
 
     def op_classes(self, args, reply):
-        return {"classes": [{"id": i.id, "kind": i.kind, "class": i.name, "file": i.file,
-                             "summary": i.config.summary}
-                            for i in sorted(self.rt.classes.values(), key=lambda i: (i.kind, i.id))]}
+        """Every class: id, kind, summary, file; a Scenario's or Mark's args (name, type, default,
+        bounds, description), so the brain can call it."""
+        out = []
+        for i in sorted(self.rt.classes.values(), key=lambda i: (i.kind, i.id)):
+            row = {"id": i.id, "kind": i.kind, "class": i.name, "file": i.file, "summary": i.config.summary}
+            under = shadows(self.rt, i.id)
+            if under:
+                row["shadows"] = under
+            schema = self._args_schema(i)
+            if schema is not None:
+                row["args"] = schema
+            out.append(row)
+        return {"classes": out}
 
     def op_meta(self, args, reply):
         cid = args.get("id")
         if cid and cid not in self.rt.classes:
             raise OpError("%r is not a loaded class" % cid)
-        return {"rows": meta.rows(self.rt.classes, cid, self.rt.guarded)}
+        rows = meta.rows(self.rt.classes, cid, self.rt.guarded)
+        for row in rows:
+            schema = self._args_schema(self.rt.classes[row["id"]])
+            if schema is not None:
+                row["args"] = schema
+        return {"rows": rows}
 
     def op_world(self, args, reply):
         return {"settings": self.rt.world_settings.listing()}
@@ -120,6 +145,12 @@ class Ops:
                 row["runs"] = [{"run": n, "ends": x.ends, "charging": not x.fired} for n, x in r.runs.items()]
             if r.stack is not None:
                 row["stack"] = r.stack
+            if r.args:
+                row["args"] = r.args
+            if r.kind == "ability" and (r.owner or r.notes.get("lent_by")):
+                row["lent_by"] = r.owner or r.notes["lent_by"]     # lent, not granted: never revoke it
+            if r.notes.get("lingering") is not None:
+                row["lingering"] = True
             out.append(row)
         return {"instances": out}
 
@@ -136,8 +167,12 @@ class Ops:
         with open(info.file, encoding="utf-8") as f:
             source = f.read()
         start, end = rewrite.find_config(source, info.name)
-        return {"id": info.id, "class": info.name, "file": info.file, "start": start, "end": end,
-                "source": "\n".join(source.splitlines()[start - 1:end]) + "\n"}
+        doc = {"id": info.id, "class": info.name, "file": info.file, "start": start, "end": end,
+               "source": "\n".join(source.splitlines()[start - 1:end]) + "\n"}
+        under = shadows(self.rt, info.id)
+        if under:
+            doc["shadows"] = under
+        return doc
 
     def op_incantations(self, args, reply):
         rt = self.rt
@@ -177,7 +212,8 @@ class Ops:
 
     def op_apply(self, args, reply):
         who, mark = str(_need(args, "who")), str(_need(args, "mark"))
-        iid = marks.apply(self.rt, self.rt.target_of(who), mark, args.get("seconds"), source=None)
+        iid = marks.apply(self.rt, self.rt.target_of(who), mark, args.get("seconds"), source=None,
+                          args=args.get("args") or {})
         return {"instance": iid}
 
     def op_clear(self, args, reply):
@@ -188,8 +224,31 @@ class Ops:
         return {"cleared": n}
 
     def op_start(self, args, reply):
+        """Start a scenario with its args. With wait_s (at most 30), the answer waits for its result:
+        `ended` and the result when it ends; `running: true` and the result as soon as it reports
+        one and goes on; `running: true`, "still running" when the wait runs out first."""
         scenario = str(_need(args, "scenario"))
-        return {"instance": scenarios.start(self.rt, scenario, args.get("args") or {})}
+        try:
+            wait_s = float(args.get("wait_s") or 0)
+        except (TypeError, ValueError):
+            raise OpError("wait_s is a number of seconds, 0 to 30") from None
+        if not 0 <= wait_s <= MAX_WAIT_S:
+            raise OpError("wait_s is 0 to %g seconds, not %g" % (MAX_WAIT_S, wait_s))
+        iid = scenarios.start(self.rt, scenario, args.get("args") or {})
+        if not wait_s:
+            return {"instance": iid}
+        self.engine.wait_for(iid, wait_s, reply, self.current)
+        return None
+
+    def op_places(self, args, reply):
+        p = self.rt.places
+        return {"version": p.version, "world": p.world, "places": p.all()}
+
+    def op_places_import(self, args, reply):
+        """The old `everhear:places` list, once per world (force=true to again)."""
+        p = self.rt.places
+        got = p.import_old(args.get("places") or [], self.rt.now, bool(args.get("force")))
+        return {**got, "version": p.version, "world": p.world}
 
     def op_stop(self, args, reply):
         rt = self.rt
@@ -242,17 +301,46 @@ class Ops:
 
     def op_bind(self, args, reply):
         rt = self.rt
-        player, phrase, ability = _need(args, "player"), _need(args, "phrase"), str(_need(args, "ability"))
-        info = rt.classes.get(ability)
-        if info is None or info.kind != "ability":
-            raise OpError("%r is not a loaded ability: bind it once the ability exists" % ability)
-        if not abilities.triggered(info.cls):
-            raise OpError("%s is passive: an incantation needs an ability with on_cast" % ability)
-        entry = rt.bindings.bind(player, phrase, ability, args.get("aliases") or (),
-                                 args.get("everyday_aliases") or (), args.get("by"), rt.now)
+        player, phrase = _need(args, "player"), _need(args, "phrase")
+        ability, scenario = args.get("ability"), args.get("scenario")
+        if bool(ability) == bool(scenario):
+            raise OpError("bind takes an ability, or a scenario with its args")
+        fixed = None
+        if ability:
+            info = rt.classes.get(ability)
+            if info is None or info.kind != "ability":
+                raise OpError("%r is not a loaded ability: bind it once the ability exists" % ability)
+            if not abilities.triggered(info.cls):
+                raise OpError("%s is passive: an incantation needs an ability with on_cast" % ability)
+        else:
+            fixed = self._binding_args(scenario, args.get("args") or {})
+        entry = rt.bindings.bind(player, phrase, ability or None, args.get("aliases") or (),
+                                 args.get("everyday_aliases") or (), args.get("by"), rt.now,
+                                 scenario=scenario or None, args=fixed, cooldown_s=args.get("cooldown_s"))
         rt.export_incantations()
         row = next(e for e in rt.bindings.listing(rt.cooldown_of, entry["player"]) if e["id"] == entry["id"])
         return {"id": entry["id"], "version": rt.bindings.version, "entry": row}
+
+    def _binding_args(self, scenario, fixed: dict) -> dict:
+        """A scenario binding's fixed args, checked now: "caster" is allowed only for a Player or
+        Place arg (it is filled at each cast); every other arg is checked as a start would be."""
+        rt = self.rt
+        info = rt.classes.get(scenario)
+        if info is None or info.kind != "scenario":
+            raise OpError("%r is not a loaded scenario" % scenario)
+        if not isinstance(fixed, dict):
+            raise OpError("args is a dict of the scenario's args")
+        rest = {}
+        for name, value in fixed.items():
+            if value == argtypes.CASTER:
+                kind = argtypes.kind_of_field(info.cls.Args, name)
+                if kind not in ("player", "place"):
+                    raise OpError('%s: "caster" fills only a player or a place arg, and %s is %s'
+                                  % (name, name, kind or "not an arg of %s" % scenario))
+            else:
+                rest[name] = value
+        argtypes.validate(info.cls.Args, rest, rt)
+        return dict(fixed)
 
     def op_unbind(self, args, reply):
         rt = self.rt
@@ -277,6 +365,8 @@ class Ops:
         entry = rt.bindings.lookup(player, phrase)
         if entry is None:
             return {"ok": True, "status": "unknown"}
+        if entry.get("scenario"):
+            return self._cast_scenario(entry, player)
         out = {"ok": True, "incantation": entry["id"], "ability": entry["ability"]}
         being = rt.player(player)
         if entry["ability"] not in rt.classes:
@@ -296,3 +386,23 @@ class Ops:
             if why and why.startswith(("error:", "cut:")):
                 out.update(status="failed", error=why)
         return out
+
+    def _cast_scenario(self, entry, player) -> dict:
+        """A phrase bound to a scenario: start it with the binding's args, "caster" filled with
+        whoever spoke; "cooldown" within the binding's cooldown_s."""
+        rt = self.rt
+        out = {"ok": True, "incantation": entry["id"], "scenario": entry["scenario"]}
+        being = rt.player(player)
+        if being is None or not being.online:
+            return {**out, "status": "failed", "error": "%s is not online" % player}
+        key = "incantation:" + entry["id"]
+        until = being.cooldowns.get(key, 0.0)
+        if until > rt.now:
+            return {**out, "status": "cooldown", "remaining_s": round(until - rt.now, 2)}
+        given = {k: (being.key if v == argtypes.CASTER else v) for k, v in (entry.get("args") or {}).items()}
+        try:
+            iid = scenarios.start(rt, entry["scenario"], given, source=being.key)
+        except ValueError as exc:
+            return {**out, "status": "failed", "error": str(exc)}
+        being.cooldowns[key] = rt.now + float(entry.get("cooldown_s") or 0.0)
+        return {**out, "status": "fired", "instance": iid}

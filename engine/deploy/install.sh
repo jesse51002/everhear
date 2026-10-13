@@ -11,7 +11,9 @@
 #    box's RCON lock), and enabled if the world had it disabled. With Minecraft down, it loads when
 #    the server starts. Unchanged, nothing is sent to Minecraft.
 #
-# Idempotent: run again, it changes nothing that is already right. VFG_DIR, MC_DIR and UV override
+# The venv is left readable by every user (dirs 755, files 644, executables 755): the test server's
+# sandboxed tests run the engine from it, read-only, as their own user (vfgtest). Nothing secret is
+# in it. Idempotent: run again, it changes nothing that is already right. VFG_DIR, MC_DIR and UV override
 # /opt/vfg, /opt/mc and the uv used (a stand-in box, such as integration/realmc's). Never prints the
 # RCON password.
 set -euo pipefail
@@ -24,6 +26,7 @@ UV=${UV:-$VFG/uv/uv}
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PACK=everhear
 
+umask 022
 log() { printf 'engine: %s\n' "$*"; }
 die() { printf 'engine: %s\n' "$*" >&2; exit 1; }
 
@@ -42,6 +45,7 @@ if [[ ! -x $ENGINE/.venv/bin/python || $(cat "$ENGINE/.venv/.vfg-python" 2>/dev/
   printf '%s\n' "$python_home" > "$ENGINE/.venv/.vfg-python"
 fi
 "$UV" pip sync --quiet --python "$ENGINE/.venv/bin/python" --require-hashes --no-build "$HERE/requirements.txt"
+chmod -R u+rwX,go+rX,go-w "$ENGINE/.venv"   # readable by the sandboxed tests' user too
 "$ENGINE/.venv/bin/python" -c 'import sys, pydantic; sys.exit(sys.version_info[:2] != (3, 12))' \
   || die "$ENGINE/.venv is not Python 3.12 with pydantic"
 log "venv: $("$ENGINE/.venv/bin/python" -c 'import pydantic; print("pydantic", pydantic.VERSION)')"

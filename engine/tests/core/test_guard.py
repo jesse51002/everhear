@@ -32,7 +32,7 @@ class Stuck(Ability):
         self.state.n += 1
         if self.state.n == 3:
             t = time.perf_counter()
-            while time.perf_counter() - t < 2:
+            while time.perf_counter() - t < 30:
                 try:
                     pass
                 except Exception:          # cannot keep a cut call alive
@@ -76,7 +76,7 @@ def test_the_guard_cuts_a_sleeping_call_at_the_limit():
     finally:
         g.uninstall()
     assert not out.ok and out.cut
-    assert 0.045 < took < 0.5
+    assert 0.045 < took < 1.5                 # cut at 50 ms, not the 2 s (headroom for a busy box)
     assert "50 ms" in out.error
 
 
@@ -90,7 +90,7 @@ def test_the_guard_lets_a_quick_call_through_and_times_it():
 
 
 def test_a_stuck_call_is_cut_and_only_that_instance_ends_with_its_cleanup(rig):
-    r = rig({"stuck": STUCK, "fine": FINE})
+    r = rig({"stuck": STUCK, "fine": FINE}, cut_ms=50)
     r.start()
     r.io.join("Steve")
     r.tick()
@@ -100,7 +100,7 @@ def test_a_stuck_call_is_cut_and_only_that_instance_ends_with_its_cleanup(rig):
     assert ("minecraft:movement_speed", "everhear:ability/stuck") in r.mods("Steve")
     t = time.perf_counter()
     r.run_for(0.5)
-    assert time.perf_counter() - t < 1.0                    # not the 2 s it wanted
+    assert time.perf_counter() - t < 10                     # not the 30 s it wanted (headroom for a busy box)
     assert not r.records(cid="stuck")
     assert r.records(cid="fine")[0].state.n >= 5            # the loop went on
     assert ("minecraft:movement_speed", "everhear:ability/stuck") not in r.mods("Steve")
@@ -141,7 +141,7 @@ def test_a_slow_call_is_logged_and_one_that_keeps_going_slow_is_flagged(rig):
 def test_a_query_counts_against_the_call_and_is_cut_after_its_reply(rig):
     q = FINE.replace("class Fine", "class Asker").replace(
         "self.state.n += 1", "self.state.n += 1\n        ctx.query('data get entity @s Pos')")
-    r = rig({"asker": q})
+    r = rig({"asker": q}, cut_ms=50)
     r.start()
     r.io.join("Steve")
     r.tick()

@@ -25,4 +25,10 @@ execute store result score #len everhear.q if data storage everhear:events q[]
 # How far each player's raycast reaches, in 1/32 of a block (48 blocks); the engine may set it.
 execute unless score #rmax everhear.t matches 1.. run scoreboard players set #rmax everhear.t 1536
 
+# The world's id (McIo.world_id): made the first time the pack loads in a world and kept in its storage,
+# so a fresh world has a new one and a reload or a restart keeps it.
+execute unless data storage everhear:meta world run function everhear:world_id
+# The kinds of block whose mining is an event (everhear:mine/*): the engine sets the list.
+execute unless data storage everhear:config mine run data modify storage everhear:config mine set value []
+
 function everhear:meta

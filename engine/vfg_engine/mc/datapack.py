@@ -15,7 +15,7 @@ from . import snbt
 from .reading import Tables
 
 # everhear:meta's `version` this engine reads. Raised with engine/datapack/generate.py's VERSION.
-VERSION = 1
+VERSION = 2
 NAME = "file/everhear"
 # Where the pack is in the repo; on the box it is copied to /opt/mc/world/datapacks/everhear.
 SOURCE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),

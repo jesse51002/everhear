@@ -15,6 +15,8 @@ export REALMC_REAL_HOME="$real_home"
 export REALMC_DIR="$state" HOME="$state/home" VFG_HOME="$state/home/.vfg"
 export VFG_SSH="$bin/ssh" VFG_SSH_HOST=realmc VFG_SSH_USER=ec2-user VFG_SSH_KEY="$state/home/.vfg/fake_key"
 export VFG_REMOTE_VFG="$state/vfg" VFG_REMOTE_MC="$state/mc" VFG_REPO="$repo"
+# vfg made save|restore archives into the stand-in unless told otherwise, never the PC's own archive.
+export VFG_MADE_ARCHIVE="${VFG_MADE_ARCHIVE:-$state/made-archive}"
 if [ "${1:-}" = brain ]; then
   # `vfg brain start` starts the brain, whose implementers' Claude CLI finds its login under
   # ~/.claude and whose uv finds its Python and cache under ~/.cache: it keeps the caller's HOME.

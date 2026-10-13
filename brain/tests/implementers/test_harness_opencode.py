@@ -679,8 +679,8 @@ async def test_the_guards_endpoint_wants_its_secret_and_an_open_run(cfg, system)
                                         "args": {"command": "vfg cmd 'op Steve'"}}, headers=ok)
         assert owner.json() == {"deny": OWNER} and "c2" in run.denied
         library = await c.post(url, json={"tool": "write", "session": run.session, "call": "c3",
-                                          "args": {"filePath": "scripts/x.py", "content": "x"}}, headers=ok)
-        assert library.json()["deny"] == DENY.library(cfg.server)
+                                          "args": {"filePath": "engine/library/x.py", "content": "x"}}, headers=ok)
+        assert library.json()["deny"] == DENY.made_only(cfg.server)
         web = await c.post(url, json={"tool": "webfetch", "session": run.session, "call": "c4",
                                       "args": {"url": "https://example.com"}}, headers=ok)
         assert web.json() == {"deny": DENY.web} and "c4" in run.denied

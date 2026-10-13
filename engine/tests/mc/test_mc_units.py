@@ -98,6 +98,46 @@ def test_numbers_without_exponents():
      ["tp Steve 0.5 85 0.5 ~ 20"]),
     (I.Gamerule("mob_griefing", "false"), ["gamerule mob_griefing false"]),
     (I.Command("/time query gametime"), ["time query gametime"]),
+    # part 2
+    (I.Fill("minecraft:overworld", (0, 84, 0), (2, 86, 2), "stone"), ["fill 0 84 0 2 86 2 stone strict"]),
+    (I.Fill("minecraft:overworld", (0, 84, 0), (2, 86, 2), "stone", strict=False), ["fill 0 84 0 2 86 2 stone"]),
+    (I.Fill("minecraft:the_nether", (0, 84, 0), (2, 86, 2), "air", replace="#minecraft:logs", mode="destroy"),
+     ["execute in minecraft:the_nether run fill 0 84 0 2 86 2 air replace #minecraft:logs destroy"]),
+    (I.Fill("minecraft:overworld", (0, 84, 0), (2, 86, 2), "dirt", replace="minecraft:stone"),
+     ["fill 0 84 0 2 86 2 dirt replace minecraft:stone strict"]),
+    (I.Fill("minecraft:overworld", (0, 84, 0), (4, 88, 4), "glass", mode="hollow"), ["fill 0 84 0 4 88 4 glass hollow"]),
+    (I.SetBlock("minecraft:overworld", (1.7, 85, -0.2), "oak_stairs[facing=north]"),
+     ["setblock 1 85 -1 oak_stairs[facing=north] strict"]),
+    (I.SetBlock("minecraft:overworld", (1, 85, 1), "chest", mode="keep"), ["setblock 1 85 1 chest keep"]),
+    (I.Forceload("minecraft:overworld", (64, 64), (79, 79)), ["forceload add 64 64 79 79"]),
+    (I.Forceload("minecraft:overworld", (64, 64), (79, 79), add=False), ["forceload remove 64 64 79 79"]),
+    (I.Motion("0000ee00-0000-4000-8000-000000000001", (0, 1.5, -0.25)),
+     ["data merge entity 0000ee00-0000-4000-8000-000000000001 {Motion:[0d,1.5d,-0.25d]}"]),
+    (I.EntityData("0000ee00-0000-4000-8000-000000000001", "{Glowing:1b,Fire:100s}"),
+     ["data merge entity 0000ee00-0000-4000-8000-000000000001 {Glowing:1b,Fire:100s}"]),
+    (I.Bossbar("queen", "Ice Queen", "blue", 150, 300, ("Steve",)),
+     ['bossbar add everhear:queen "Ice Queen"', 'bossbar set everhear:queen name "Ice Queen"',
+      "bossbar set everhear:queen color blue", "bossbar set everhear:queen max 300",
+      "bossbar set everhear:queen value 150", "bossbar set everhear:queen players Steve"]),
+    (I.Bossbar("everhear:queen", players=("Steve", "Alex")),
+     ["tag Steve add everhear.bb", "tag Alex add everhear.bb", "bossbar set everhear:queen players @a[tag=everhear.bb]",
+      "tag @a[tag=everhear.bb] remove everhear.bb"]),
+    (I.Bossbar("queen", players=()), ["bossbar set everhear:queen players"]),
+    (I.Bossbar("queen", remove=True), ["bossbar remove everhear:queen"]),
+    (I.StopSound(), ["stopsound @a"]),
+    (I.StopSound(("Steve",), "minecraft:music.game"), ["stopsound Steve * minecraft:music.game"]),
+    (I.Spawnpoint("Steve", "minecraft:the_nether", (0.5, 70, -0.5)),
+     ["execute in minecraft:the_nether run spawnpoint Steve 0 70 -1"]),
+    (I.Ignite("Steve", 3), ['function everhear:ignite {t:"Steve",f:-0.8,k:60}']),
+    (I.Ignite("0000ee00-0000-4000-8000-000000000001", 10),
+     ['function everhear:ignite {t:"0000ee00-0000-4000-8000-000000000001",f:-0.333333,k:200}']),
+    (I.Sound("minecraft:entity.blaze.shoot", "minecraft:overworld", (0, 86, 0), to=("Steve", "Alex")),
+     ["playsound minecraft:entity.blaze.shoot master Steve 0 86 0 1 1",
+      "playsound minecraft:entity.blaze.shoot master Alex 0 86 0 1 1"]),
+    (I.Particle("flame", "minecraft:overworld", (0, 86, 0), force=True),
+     ["particle minecraft:flame 0 86 0 0 0 0 0 1 force @a"]),
+    (I.Particle("flame", "minecraft:overworld", (0, 86, 0), to=("Steve",)),
+     ["particle minecraft:flame 0 86 0 0 0 0 0 1 normal Steve"]),
 ])
 def test_each_op_is_its_command(op, cmds):
     assert C.command_for(op) == cmds
@@ -117,6 +157,15 @@ def test_each_op_is_its_command(op, cmds):
     (I.Command("execute as @a run op Steve"), "server owner's"),
     (I.Message((), "x", "popup"), "where is one of"),
     (I.Gamerule("Mob Griefing", "x"), "snake_case"),
+    (I.Fill("minecraft:overworld", (0, 0, 0), (40, 40, 40), "stone"), "over the 32768"),
+    (I.Fill("minecraft:overworld", (0, 0, 0), (1, 1, 1), "stone", replace="dirt", mode="keep"), "not keep"),
+    (I.Fill("minecraft:overworld", (0, 0, 0), (1, 1, 1), "stone; say hi"), "not a block"),
+    (I.Forceload("minecraft:overworld", (0, 0), (512, 512)), "over the 256"),
+    (I.Motion("Steve", (0, 1, 0)), "wind charges"),
+    (I.EntityData("Steve", "Glowing:1b"), "compound"),
+    (I.Bossbar("queen", color="orange"), "color is one of"),
+    (I.Bossbar("queen"), "changes nothing"),
+    (I.Ignite("Steve", 0), "more than 0"),
 ])
 def test_ops_that_cannot_be_commands_are_refused(op, why):
     with pytest.raises(C.OpRefused, match=why):
@@ -189,6 +238,38 @@ ADD = I.AddModifier("Steve", "scale", "everhear:mark/giant", 1, "add_multiplied_
     (I.Gamerule("nope", "1"), "Incorrect argument for commandgamerule nope<--[HERE]", False,
      "Minecraft did not understand the command"),
     (I.Command("say hi"), "", True, None),
+    (I.Fill("minecraft:overworld", (0, 0, 0), (1, 1, 1), "stone"), "Successfully filled 27 block(s)", True, None),
+    (I.Fill("minecraft:overworld", (0, 0, 0), (1, 1, 1), "stone"), "No blocks were filled", True, None),
+    (I.Fill("minecraft:overworld", (0, 0, 0), (1, 1, 1), "stone"), "That position is not loaded", False,
+     "that part of the world is not loaded"),
+    (I.Fill("minecraft:overworld", (0, 0, 0), (1, 1, 1), "stone"), "That position is out of this world!", False,
+     "the position is outside the world"),
+    (I.Fill("minecraft:overworld", (0, 0, 0), (1, 1, 1), "nope"),
+     "Unknown block type 'minecraft:nope'... 22 92 22 minecraft:nope<--[HERE]", False, "no such block"),
+    (I.SetBlock("minecraft:overworld", (0, 0, 0), "stone"), "Changed the block at 20, 90, 20", True, None),
+    (I.SetBlock("minecraft:overworld", (0, 0, 0), "stone"), "Could not set the block", True, None),
+    (I.SetBlock("minecraft:overworld", (0, 0, 0), "stone", mode="keep"), "Could not set the block", False,
+     "something is there already (keep)"),
+    (I.Forceload("minecraft:overworld", (0, 0), (1, 1)), "Marked chunk [4, 4] in minecraft:overworld to be force loaded",
+     True, None),
+    (I.Forceload("minecraft:overworld", (0, 0), (1, 1)), "No chunks were marked for force loading", True, None),
+    (I.Motion("0000ee00-0000-4000-8000-000000000001", (0, 1, 0)), "Modified entity data of Husk", True, None),
+    (I.Motion("0000ee00-0000-4000-8000-000000000001", (0, 1, 0)),
+     "Nothing changed. The specified properties already have these values", True, None),
+    (I.EntityData("Steve", "{Fire:1s}"), "Unable to modify player data", False, "a player's data cannot be written"),
+    (I.Bossbar("queen", "Q"), 'A bossbar already exists with the ID \'everhear:queen\' | Custom bossbar [Q] has been renamed',
+     True, None),
+    (I.Bossbar("queen", value=3), "No bossbar exists with the ID 'everhear:queen'", False,
+     "no such bossbar (give it a name to make it)"),
+    (I.StopSound(), "Stopped all sounds", True, None),
+    (I.StopSound(("Nobody",)), "No player was found", False, "no player found"),
+    (I.Spawnpoint("Steve", "minecraft:overworld", (0, 85, 0)),
+     "Set spawn point to 0, 85, 0 [0.0, 0.0] in minecraft:overworld for Steve", True, None),
+    (I.Ignite("Steve", 3), "Running function everhear:igniteFunction everhear:ignite returned 1", True, None),
+    (I.Ignite("Steve", 3), "Running function everhear:igniteFunction everhear:ignite returned 0", False,
+     "no such target, or no air at a player's feet or head to light them from"),
+    (I.Sound("x", "minecraft:overworld", (0, 0, 0), to=("Steve", "Nobody")),
+     "Played sound minecraft:x to Steve | No player was found", False, "no player found"),
     (I.Command("frobnicate"), "Unknown or incomplete command. See below for error...<--[HERE]", False,
      "Minecraft did not understand the command"),
 ])
@@ -202,6 +283,7 @@ def test_each_reply_reads_as_a_result(op, reply, ok, error):
 
 TABLES = R.Tables(types=[""] * 200, blocks=[""] * 1300)
 TABLES.types[70], TABLES.types[157], TABLES.types[108] = "minecraft:husk", "minecraft:zombie", "minecraft:player"
+TABLES.types[7], TABLES.types[150], TABLES.types[155] = "minecraft:arrow", "minecraft:trident", "minecraft:wolf"
 TABLES.blocks[448], TABLES.blocks[383] = "minecraft:grass_block", "minecraft:dirt"
 
 
@@ -224,7 +306,25 @@ def test_list_uuids():
     ({"d": {"item": "fire_staff", "count": 1, "slot": "mainhand"}, "t": 17795, "u": STEVE, "k": "use", "n": 1},
      "use", {"item": "fire_staff", "slot": "mainhand", "count": 1}),
     ({"d": {"item": "fire_staff", "target_type": 157, "target": [1, 2, 3, 5]}, "t": 1, "u": STEVE, "k": "hit", "n": 2},
-     "hit", {"item": "fire_staff", "target": "00000001-0000-0002-0000-000300000005", "target_type": "minecraft:zombie"}),
+     "hit", {"item": "fire_staff", "target": "00000001-0000-0002-0000-000300000005", "target_type": "minecraft:zombie",
+             "ranged": False}),
+    ({"d": {"item": "boom_bow", "target_type": 70, "target": [6, 6, 6, 1], "ranged": 1}, "t": 1, "u": STEVE, "k": "hit",
+      "n": 3}, "hit", {"item": "boom_bow", "target": "00000006-0000-0006-0000-000600000001",
+                       "target_type": "minecraft:husk", "ranged": True}),
+    ({"d": {"item": "boom_bow", "hit": "block", "pos": [0.5, 88.8, 18.9], "dim": "minecraft:overworld",
+            "projectile_type": 7, "projectile": [1, 2, 3, 4], "block": "minecraft:grass_block"}, "t": 1, "u": STEVE,
+      "k": "land", "n": 5},
+     "land", {"item": "boom_bow", "hit": "block", "pos": (0.5, 88.8, 18.9), "dim": "minecraft:overworld",
+              "projectile_type": "minecraft:arrow", "projectile": "00000001-0000-0002-0000-000300000004",
+              "block": "minecraft:grass_block"}),
+    ({"d": {"item": "boom_trident", "hit": "entity", "pos": [0.5, 86.0, 8.1], "dim": "minecraft:overworld",
+            "projectile_type": 150, "projectile": [1, 2, 3, 4], "target": [6, 6, 6, 2], "target_type": 70},
+      "t": 1, "u": STEVE, "k": "land", "n": 6},
+     "land", {"item": "boom_trident", "hit": "entity", "pos": (0.5, 86.0, 8.1), "dim": "minecraft:overworld",
+              "projectile_type": "minecraft:trident", "projectile": "00000001-0000-0002-0000-000300000004",
+              "target": "00000006-0000-0006-0000-000600000002", "target_type": "minecraft:husk"}),
+    ({"d": {"block": "minecraft:sponge", "count": 1}, "t": 1, "u": STEVE, "k": "mine", "n": 8},
+     "mine", {"block": "minecraft:sponge", "count": 1}),
     ({"d": {"target_type": 70}, "t": 1, "u": STEVE, "k": "kill", "n": 4},
      "kill", {"target_type": "minecraft:husk"}),
     ({"d": {"target_type": 108, "target": STEVE}, "t": 1, "u": STEVE, "k": "kill", "n": 4},
@@ -236,6 +336,8 @@ def test_list_uuids():
     ({"d": {"amount": 1.0, "absorbed": 0.0}, "t": 1, "u": STEVE, "k": "hurt", "n": 14},
      "hurt", {"amount": 1.0, "absorbed": 0.0}),
     ({"d": {}, "t": 31623, "u": STEVE, "k": "death", "n": 12}, "death", {}),
+    ({"d": {"pos": [-5, 85, 0], "dim": "minecraft:overworld"}, "t": 31623, "u": STEVE, "k": "death", "n": 12},
+     "death", {"pos": (-5, 85, 0), "dim": "minecraft:overworld"}),
     ({"d": {}, "t": 31623, "u": STEVE, "k": "respawn", "n": 13}, "respawn", {}),
     ({"d": {}, "t": 32494, "u": STEVE, "k": "milk", "n": 16}, "milk", {}),
 ])
@@ -250,7 +352,7 @@ SNAP = ('Storage everhear:io has the following contents: {p: [{d: "minecraft:ove
         'b: 448, d: 104, k: "block"}, inv: ["fire_staff", "rod"], p: [0.5d, 85.0d, 0.5d], r: [0.0f, 30.0f], '
         'fx: [{duration: 599, show_icon: 1b, amplifier: 1b, id: "minecraft:speed"}, {duration: 1180, amplifier: '
         '2b, id: "minecraft:poison", hidden_effect: {duration: -1, amplifier: 0b, id: "minecraft:poison"}}], '
-        's: 0b, u: [I; -2040022415, -1202044924, -1353431686, -1758138665], mh: 20.0f, hd: {mainhand: '
+        's: 0b, og: 1b, sp: 1b, u: [I; -2040022415, -1202044924, -1353431686, -1758138665], mh: 20.0f, hd: {mainhand: '
         '"fire_staff", head: "crown", offhand: "ice_wand"}}], e: [], time: 25401}')
 
 
@@ -262,6 +364,7 @@ def test_a_players_compound_is_a_playersnap():
     assert (p.yaw, p.pitch, p.health, p.max_health, p.alive, p.sneaking, p.gamemode) == (
         0.0, 30.0, 20.0, 20.0, True, False, "survival")
     assert p.facing == pytest.approx((0.0, -0.5, math.sqrt(3) / 2))
+    assert (p.on_ground, p.sprinting) == (True, True)
     assert p.held == {"mainhand": "fire_staff", "head": "crown", "offhand": "ice_wand"}
     assert sorted(p.carried) == ["crown", "fire_staff", "ice_wand", "rod"]
     assert p.effects == (I.Effect("minecraft:speed", 1, 599),
@@ -288,6 +391,12 @@ def test_entities_dead_and_alive():
     assert item.health is None
     assert R.entity({"p": [0, 85, 0], "u": [1, 2, 3, 4], "h": 0.0, "y": 70}, TABLES) is None   # dying: gone
     assert R.text_of({"text": "Ice ", "extra": [{"text": "Queen", "color": "aqua"}]}) == "Ice Queen"
+    wolf = R.entity({"p": [-8.1, 85.0, 3.2], "d": "minecraft:overworld", "u": [1, 2, 3, 9], "h": 8.0, "y": 155,
+                     "o": STEVE}, TABLES, names())
+    assert (wolf.owner, wolf.in_ground) == ("Steve", False)
+    arrow = R.entity({"p": [0.5, 88.8, 18.9], "d": "minecraft:overworld", "u": [1, 2, 3, 4], "y": 7, "o": [9, 9, 9, 9],
+                      "ig": 1}, TABLES, names())
+    assert (arrow.owner, arrow.in_ground, arrow.health) == ("00000009-0000-0009-0000-000900000009", True, None)
 
 
 def test_facing_matches_minecraft():

@@ -1,0 +1,11 @@
+{
+  "values": [
+    "#minecraft:replaceable", "#minecraft:flowers", "#minecraft:saplings", "#minecraft:crops",
+    "#minecraft:rails", "#minecraft:buttons", "#minecraft:all_signs", "#minecraft:banners",
+    "minecraft:torch", "minecraft:wall_torch", "minecraft:soul_torch", "minecraft:soul_wall_torch",
+    "minecraft:redstone_torch", "minecraft:redstone_wall_torch", "minecraft:redstone_wire",
+    "minecraft:tripwire", "minecraft:tripwire_hook", "minecraft:lever", "minecraft:cobweb",
+    "minecraft:sweet_berry_bush", "minecraft:sugar_cane", "minecraft:kelp", "minecraft:kelp_plant",
+    "minecraft:end_portal", "minecraft:nether_portal", "minecraft:powder_snow"
+  ]
+}

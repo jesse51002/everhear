@@ -12,13 +12,12 @@
 #                                     VFG_BOX_ENV names (default ~/.vfg/box.env), into /opt/vfg/.env;
 #                                     a client token made on the box if there is still none; restarts
 #                                     the vfg units that are installed.
-#   deploy.sh                         the bridge: vfg_feed.py, vfg_bridge/, tests/, the three vfg units,
-#                                     and the kit it imports (scripts/_lib, by vfg script deploy --kit,
-#                                     stamped as vfg sends it); the game engine, as `engine` does;
-#                                     applies the schema and restarts vfg-engine, vfg-bridge (and
-#                                     vfg-jev if deployed).
-#   deploy.sh engine                  the game engine alone: engine/vfg_engine/ and engine/examples/
-#                                     to /opt/vfg/engine/, its venv (/opt/vfg/engine/.venv, pydantic
+#   deploy.sh                         the bridge: vfg_feed.py, vfg_bridge/, tests/, the three vfg units;
+#                                     the game engine, as `engine` does; applies the schema and
+#                                     restarts vfg-engine, vfg-bridge (and vfg-jev if deployed).
+#   deploy.sh engine                  the game engine alone: engine/vfg_engine/, engine/library/ (the
+#                                     server's base content) and engine/examples/ to
+#                                     /opt/vfg/engine/, its venv (/opt/vfg/engine/.venv, pydantic
 #                                     pinned by hash) and its datapack (into /opt/mc/world/datapacks/,
 #                                     loaded over RCON when it changed) by engine/deploy/install.sh,
 #                                     and vfg-engine.service; restarts vfg-engine, which saves its
@@ -179,16 +178,19 @@ done
 REMOTE
 }
 
-# send_engine -- the engine's package, examples, datapack and install pieces to /opt/vfg/engine/, then
-# engine/deploy/install.sh there as ec2-user: the venv, and the datapack into the world.
+# send_engine -- the engine's package, library, examples, datapack and install pieces to
+# /opt/vfg/engine/, then engine/deploy/install.sh there as ec2-user: the venv, and the datapack
+# into the world. The library is the first of the unit's content folders (VFG_ENGINE_CONTENT).
 send_engine() {
   [[ -d $ENGINE/vfg_engine && -d $ENGINE/datapack/everhear && -f $ENGINE/deploy/requirements.txt ]] \
     || die "run it from the repo: no engine in $ENGINE"
   remote 'test -x /opt/vfg/uv/uv && mkdir -p /opt/vfg/engine/datapack /opt/vfg/engine/deploy' \
     || die "the box has no /opt/vfg/uv/uv, which makes the engine's venv: deploy.sh provision first"
-  log "sending engine/vfg_engine/, examples/, datapack/everhear/ and deploy/ to /opt/vfg/engine/"
-  local folders=("$ENGINE/vfg_engine")
-  if [[ -d $ENGINE/examples ]]; then folders+=("$ENGINE/examples"); fi
+  log "sending engine/vfg_engine/, library/, examples/, datapack/everhear/ and deploy/ to /opt/vfg/engine/"
+  local folders=("$ENGINE/vfg_engine") folder
+  for folder in library examples; do
+    if [[ -d $ENGINE/$folder ]]; then folders+=("$ENGINE/$folder"); fi
+  done
   push --recursive --delete --exclude='__pycache__/' --exclude='*.pyc' --chmod=D755,F644 \
     "${folders[@]}" "$SSH_USER@$SSH_HOST:/opt/vfg/engine/" || die "could not send the engine"
   push --recursive --delete --chmod=D755,F644 "$ENGINE/datapack/everhear" \
@@ -233,11 +235,7 @@ cmd_deploy() {
   push --recursive --delete --exclude='__pycache__/' --exclude='*.pyc' --chmod=D755,F644 \
     "$BRIDGE/vfg_bridge" "$BRIDGE/tests" "$SSH_USER@$SSH_HOST:/opt/vfg/bridge/" \
     || die "could not send the bridge"
-  # The bridge imports incantations.py and instances.py from the deployed kit: this repo's go with
-  # it, before the restart, so a bridge never runs on a kit older than itself.
-  log "sending the kit, scripts/_lib/, to /opt/vfg/scripts/"
-  retry 3 "$BRIDGE/../toolkit/vfg" script deploy --kit || die "could not send the kit"
-  # The bridge casts the engine's incantations through its socket: the engine goes with it.
+  # Every cast is the engine's, through its socket: the engine goes with the bridge.
   send_engine
   remote 'rm -rf /tmp/vfg-units && mkdir -m 700 /tmp/vfg-units'
   push --chmod=F644 "$HERE/systemd/vfg-bridge.service" "$HERE/systemd/vfg-jev.service" \

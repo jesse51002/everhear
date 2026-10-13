@@ -24,8 +24,19 @@ template again from the seed first. `--vanilla` starts it without Fabric and Car
 repo's `toolkit/vfg` with `HOME` and `VFG_HOME` in the stand-in and the keys that choose the box
 (`VFG_SSH*`, `VFG_REMOTE_*`, `VFG_REPO`) pinned, so nothing reads `~/.vfg` or `~/.ssh`. `HOME`
 itself is not exported, so `uv`, `git` and the rest of the shell keep yours. It also exports
-`VFG_MC_PROPERTIES`, so `PYTHONPATH=scripts/_lib python3 …` scripts reach the same server, and
-`REALMC_NAME`, the default for every command below.
+`VFG_MC_PROPERTIES`, so `PYTHONPATH=scripts/_lib python3 …` scripts reach the same server,
+`REALMC_NAME`, the default for every command below, and `VFG_MADE_ARCHIVE`, `<NAME>/made-archive`,
+so `vfg made save` and `restore` use the stand-in's own archive, never the PC's (`bin/vfg` sets it
+too when it is not set).
+
+**The box's units**, as `vfg up` and `vfg state` ask after them (`<NAME>/box/bin/systemctl`, a
+link to `stand_in_systemctl`, first on the box's PATH): `minecraft` is what realmc keeps true (up
+or down); `vfg-engine` is active only while `<vfg>/engine/engine.sock` answers the engine's
+`status`; `vfg-bridge` and `vfg-jev` only while a bridge (`python -m vfg_bridge`) or a Jev filter
+(`jev_filter.py`) runs with this stand-in's `VFG_DB`. realmc starts none of the three: a `start`
+of one fails saying how to run it (`vfg up` shows it), so `vfg up` reports what really runs. The
+engine on a stand-in: `engine/README.md`, *On a realmc server*; the bridge and Jev:
+`integration/engine_e2e.py` and `integration/jev_live.py`.
 
 `vfg brain …` keeps your `HOME`: `vfg brain start` starts the brain, whose implementers' Claude
 CLI finds its login under `~/.claude` (in the stand-in's `HOME` it says "Not logged in") and whose
@@ -247,6 +258,7 @@ integration/realmc/
   players.py             Carpet's fake players over RCON
   smoke.sh               the smoke test
   bin/vfg, bin/ssh       vfg pointed at a server's stand-in; toolkit/tests/fake_ssh on its PATH
+  stand_in_systemctl     the box's systemctl: minecraft from realmc's state, the vfg units as they run
   .server/               gitignored
     shared/              server.jar, libraries/, versions/, mods/ (Carpet), env (the .env)
     template/world/      the world every server's starts from; template.json says where the arena is
@@ -255,5 +267,7 @@ integration/realmc/
                          scripts/, made/, run/, .env, python/bin/python3 (the box's Python 3.12),
                          set-aside-<time>/ (an earlier vfg.db and feed.log, brain_live's clean slate)
     <NAME>/home/.vfg/    the VFG_HOME vfg uses for it
-    <NAME>/box/          the box's PATH (python3 is 3.9, Amazon Linux's own) and the fake systemctl's units
+    <NAME>/box/          the box's PATH (python3 is 3.9, Amazon Linux's own; systemctl, the stand-in's)
+                         and the fake systemctl's units
+    <NAME>/made-archive/ VFG_MADE_ARCHIVE: vfg made save's saves
 ```

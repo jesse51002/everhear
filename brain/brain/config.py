@@ -15,7 +15,7 @@ from pathlib import Path
 
 from vfg_llm import _config as read_config_file  # the one KEY=value parser, shared with structured()
 
-# The repo this brain/ is in: actions/ and scripts/ live beside it.
+# The repo this brain/ is in: actions/, engine/ and made/ live beside it.
 REPO = Path(__file__).resolve().parents[2]
 SERVER = "main"
 # The cheap model, and the providers that answer it fastest, first (the incantation alias call's).
@@ -29,7 +29,7 @@ class Config:
     home: Path                      # VFG_HOME, default ~/.vfg
     brain_dir: Path                 # VFG_BRAIN_DIR, default ~/.vfg/brain: brain.log, lock, refs/
     repo: Path                      # VFG_REPO, default this repo
-    server: str = SERVER            # VFG_SERVER: whose made/<server>/actions/ are on the menu too
+    server: str = SERVER            # VFG_SERVER: the server whose made/<server>/content/ its implementers write
     owner: str = ""                 # VFG_OWNER: the owner's Minecraft name, whose word wins
     # The brain's loop: every step on Gemini 3.8 Flash, reasoning low (Prototype_Brain_Loop). It is the
     # orchestrator's model of Prototype_Named_Tasks: it kept one thing to one task on the follow-up replay.
@@ -56,8 +56,7 @@ class Config:
     # A step on Gemini 3.8 Flash low thinks first (a median 731 tokens out on the first pilot), a median 9.7 s
     # and a hand-off's step up to 16.5 s; at 20 s two of them timed out.
     timeout_s: float = 45.0
-    running_ttl_s: float = 30.0     # VFG_RUNNING_TTL_S: how often running.json is fetched again; 0: never
-    action_timeout_s: float = 20.0  # VFG_DISPATCH_ACTION_TIMEOUT_S: a once action's, unless its class says
+    action_timeout_s: float = 20.0  # VFG_DISPATCH_ACTION_TIMEOUT_S: an engine op's, unless its action says
     stop_grace_s: float = 10.0      # how long in-flight calls and actions may finish on SIGTERM
 
     @staticmethod
@@ -69,9 +68,6 @@ class Config:
     def lock_file(self) -> Path:
         return self.brain_dir / "lock"
 
-    @property
-    def running_file(self) -> Path:
-        return self.home / "running.json"
 
 
 def load(env: dict[str, str] | None = None) -> Config:
@@ -127,7 +123,6 @@ def load(env: dict[str, str] | None = None) -> Config:
         checkpoint=number("VFG_BRAIN_CHECKPOINT", 5, int, 1),
         history_hours=number("VFG_BRAIN_HISTORY_HOURS", 6.0, float, 0),
         timeout_s=number("VFG_BRAIN_TIMEOUT_S", 45.0, float, 1),
-        running_ttl_s=number("VFG_RUNNING_TTL_S", 30.0, float, 0),
         action_timeout_s=number("VFG_DISPATCH_ACTION_TIMEOUT_S", 20.0, float, 1),
     )
 

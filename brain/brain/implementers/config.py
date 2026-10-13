@@ -140,11 +140,10 @@ def openrouter_key(env: Mapping[str, str], file: Mapping[str, str], home: str) -
 
 @dataclass
 class ImplementerConfig:
-    # The implementers' working directory and the scripts folder's parent, resolved: VFG_REPO,
-    # else the repo this brain/ is in.
+    # The implementers' working directory, which holds engine/ and made/, resolved: VFG_REPO, else
+    # the repo this brain/ is in.
     repo: str
-    # vfg's own folder, VFG_HOME (~/.vfg): the actions cache and running.json that vfg keeps,
-    # which every implementer's brief is read from.
+    # vfg's own folder, VFG_HOME (~/.vfg): its config file, and the brain's folder by default.
     home: str
     # The brain's folder, VFG_BRAIN_DIR (VFG_HOME/brain): py_compile's cache and the implementer's
     # system prompt file go in it.
@@ -168,9 +167,9 @@ class ImplementerConfig:
     # stopped and reported failed (VFG_IMPLEMENTER_MINUTES).
     max_turns: int = 100
     time_limit_s: float = 600.0
-    # The script library's settings, read as vfg reads them (vfg_setting): the server whose
-    # made/<server>/ implementers write in, how long vfg route may take, and the prompt cache's
-    # life on the anthropic provider (VFG_IMPL_CACHE_TTL, before it VFG_SUBAGENT_CACHE_TTL).
+    # vfg's settings, read as vfg reads them (vfg_setting): the server whose made/<server>/content/
+    # implementers write in, how long vfg route may take, and the prompt cache's life on the
+    # anthropic provider (VFG_IMPL_CACHE_TTL, before it VFG_SUBAGENT_CACHE_TTL).
     server: str = "main"
     route_timeout_s: float = 3.0
     cache_ttl: str = "5m"
@@ -199,9 +198,9 @@ class ImplementerConfig:
         key = ((env.get("DEEPSEEK_API_KEY") or "").strip() if provider == "deepseek"
                else openrouter_key(env, file, home) if provider == "openrouter" else "")
         return cls(
-            repo=_real(env.get("VFG_REPO") or ROOT),
+            repo=_real(expand_home(vfg_setting(env, file, "VFG_REPO")) or ROOT),
             home=home,
-            brain_dir=os.path.abspath(expand_home(env.get("VFG_BRAIN_DIR") or os.path.join(home, "brain"))),
+            brain_dir=os.path.abspath(expand_home(vfg_setting(env, file, "VFG_BRAIN_DIR") or os.path.join(home, "brain"))),
             prompt=os.path.join(BRAIN, "prompts", "implementer.md"),
             harness=harness,
             provider=provider,

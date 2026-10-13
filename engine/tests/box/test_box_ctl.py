@@ -119,3 +119,24 @@ def test_the_socket_flag_and_a_bad_timeout(sub_env, running):
     assert ctl(env, '{"op": "status"}', "--socket", sub_env["VFG_ENGINE_SOCKET"])[0] == 0
     code, reply = ctl(sub_env, '{"op": "status"}', "--timeout", "0")
     assert (code, reply["reason"]) == (2, "bad_request")
+
+
+def test_a_start_waits_as_long_as_its_wait_s(sub_env, running, engine):
+    """The engine answers a waited start once the scenario ends: ctl waits for it past 10 s."""
+    from vfg_engine import ctl as ctlmod
+    seen = []
+    real = ctlmod.request
+
+    def spy(path, req, wait):
+        seen.append(wait)
+        return {"ok": True}
+    ctlmod.request = spy
+    try:
+        import io as _io
+        out = _io.StringIO()
+        code = ctlmod.main(["--socket", sub_env["VFG_ENGINE_SOCKET"]],
+                           stdin=_io.StringIO('{"op": "start", "args": {"scenario": "m", "wait_s": 20}}'), stdout=out)
+    finally:
+        ctlmod.request = real
+    assert code == 0 and seen == [25.0 + ctlmod.MARGIN_S]
+

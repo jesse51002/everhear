@@ -6,7 +6,8 @@ An ability is granted to a being (a player or an actor): one instance per grant.
 
 - the engine checks the cooldown before anything runs, and starts it when the cast is accepted
   (or when the run ends, with `cooldown_from = "end"`; DESIGN, Decided 1);
-- with `charge_s` above 0 the cast is "charging", and on_cast runs once the charge is done;
+- with `charge_s` above 0 the cast is "charging", `on_charge(ctx, ev)` runs each tick meanwhile
+  (ev.progress from 0 to 1), and on_cast runs once the charge is done;
 - the run ends at `duration_s` after it fires, unless it runs UNTIL_STOPPED, and what it made
   (its modifiers, listens, timers, holds, spawns) goes with it; its `every` ticks while it runs;
 - a second cast while a run is going is the ability's decision: `ctx.running` lists the other
@@ -75,9 +76,9 @@ def cast(rt, being, ability: str, by: str = "op", phrase=None, cast_id=None, len
         return "unknown", {"error": "%r is not a loaded ability" % ability}
     iid = being.grants.get(ability)
     draining = rt.records.get(iid) if iid else None
-    if draining is not None and draining.args.get("release_after_runs"):
+    if draining is not None and draining.notes.get("release_after_runs"):
         if lend_owner is not None and lend_owner in rt.records:    # lent again before it went
-            del draining.args["release_after_runs"]
+            del draining.notes["release_after_runs"]
             draining.owner = lend_owner
             rt.records[lend_owner].owned.grants.append([being.key, ability])
         else:
@@ -160,10 +161,22 @@ def step(rt):
                 break
             if not run.fired and run.fire_at <= rt.now:
                 fire(rt, rec, n)
+            elif not run.fired:
+                charging(rt, rec, run)
             elif run.fired and run.ends is not None and run.ends <= rt.now:
                 rt.end_run(rec, n, "duration")
             elif run.fired and run.ends is None:
                 check_drift(rt, rec, run, final=False)
+
+
+def charging(rt, rec: Record, run: Run):
+    """While charge_s counts down: the ability's on_charge(ctx, ev) each tick, if it has one (the
+    charge show); ev.progress goes from 0 to 1. What it makes belongs to the cast's run."""
+    if not callable(getattr(rt.classes[rec.cid].cls, "on_charge", None)) or not rec.started:
+        return
+    span = max(run.fire_at - run.started, 1e-9)
+    progress = min(1.0, max(0.0, (rt.now - run.started) / span))
+    rt.call(rec, "on_charge", make("cast", rec.user, dict(run.cast), progress=progress, **run.cast), run=run)
 
 
 def run_ended(rt, rec: Record, run: Run, reason: str):

@@ -7,7 +7,8 @@ One connection carries one request. In: one line of JSON, at most 1 MiB,
     {"op": "give", "args": {"player": "Steve", "item": "fire_staff"}, "timeout_s": 10}
 
 ``op`` is required, ``args`` an object (none is ``{}``), ``timeout_s`` how long to wait for the
-engine (by default 10 s, ``reload`` 120 s; at most 600). Out: one line of JSON, then the server
+engine (by default 10 s; ``reload`` 120 s; ``start`` its ``wait_s`` and 5 s more, 10 at least; at
+most 600). Out: one line of JSON, then the server
 closes the connection. It is the engine's reply, ``{"ok": true, ...}`` or ``{"ok": false,
 "error": "..."}``, or one the socket made itself, which also says ``reason``:
 
@@ -42,6 +43,7 @@ MAX_REQUEST = 1 << 20
 READ_TIMEOUT_S = 10.0        # how long a connection may take to send its line
 DEFAULT_TIMEOUT_S = 10.0
 OP_TIMEOUT_S = {"reload": 120.0}   # every check of every class, and each live instance's state
+START_MARGIN_S = 5.0         # a start's answer waits up to its wait_s for a one-shot scenario to end
 MIN_TIMEOUT_S = 0.01
 MAX_TIMEOUT_S = 600.0
 WAIT_SLICE_S = 0.05          # how often a waiting request looks whether the server is closing
@@ -62,7 +64,13 @@ def one_line(exc) -> str:
     return text[:ERROR_MAX]
 
 
-def default_timeout(op: str) -> float:
+def default_timeout(op: str, args=None) -> float:
+    """How long a request waits for the engine when it does not say: a start as long as its
+    wait_s (the engine answers once a one-shot scenario ends, or that runs out) and a margin."""
+    if op == "start" and isinstance(args, dict):
+        wait = args.get("wait_s")
+        if isinstance(wait, (int, float)) and not isinstance(wait, bool) and wait == wait and wait > 0:
+            return max(DEFAULT_TIMEOUT_S, min(float(wait), MAX_TIMEOUT_S) + START_MARGIN_S)
     return OP_TIMEOUT_S.get(op, DEFAULT_TIMEOUT_S)
 
 
@@ -93,7 +101,7 @@ def parse(line: bytes) -> tuple[str, dict, float]:
         raise BadRequest("args: must be a JSON object")
     timeout = req.get("timeout_s")
     if timeout is None:
-        timeout = default_timeout(op)
+        timeout = default_timeout(op.strip(), args)
     elif isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout != timeout:
         raise BadRequest("timeout_s: must be a number of seconds")
     timeout = min(max(float(timeout), MIN_TIMEOUT_S), MAX_TIMEOUT_S)

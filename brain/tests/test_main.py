@@ -49,7 +49,7 @@ async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fail
         yield f"LINE#13 {now:%H:%M:%S} Alex voice action_oriented 0.9 - | a diamond pickaxe for me too"
         await stop.wait()
 
-    ask = FakeAsk(Step=step(act("command", "give a diamond pickaxe", cmd("give Steve diamond_pickaxe")),
+    ask = FakeAsk(Step=step(act("engine_start", "give a diamond pickaxe", cmd("give Steve diamond_pickaxe")),
                             reply="there you go"))
     run = asyncio.create_task(serve(cfg, stop, vfg=vfg, watch=watch, catalog=catalog(), refs=FakeRefs(), ask=ask,
                                     make_implementers=lambda on_report, on_session: impl))
@@ -64,7 +64,7 @@ async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fail
     assert firsts[0] == ["up"] and {"watchers", "lookout", "jev", "context"} <= {c[0] for c in vfg.calls[1:6]}
     assert vfg.of("watchers")[0][2] == "join,leave,death,advancement,server"
     assert "Names of places, bases, builds and coordinates" in vfg.of("lookout")[0][2]
-    assert "command — Run vanilla commands" in vfg.of("jev", "menu", "set")[0][3]
+    assert "engine_start — Start one of the engine's scenarios" in vfg.of("jev", "menu", "set")[0][3]
     assert vfg.of("context", "--since") == [["context", "--since", "-6h", "--json"]] and seen_after == [12]
     assert ["context", "mark", "10"] in vfg.calls  # history: marked read, never acted on
     assert len(ask.calls) == 2 and "give me bread" not in ask.calls[0]["cached"][-1][0].split("THE EVENT")[1]
@@ -121,7 +121,7 @@ async def test_with_no_implementers_a_new_task_reports_its_failure_with_five_arg
     none = NoImplementers(on_report, "No module named claude_agent_sdk")
     await none.start("galick_gun_styrk", "a Galick Gun")
     await none.follow_up("castle_steve", "a moat", session="sess-1", brief="a castle")
-    empty = {"scripts": [], "actions": [], "presets": [], "copies": []}
+    empty = {"content": [], "bindings": [], "grants": []}
     assert got == [("galick_gun_styrk", "failed", "Failed: no implementers here (No module named claude_agent_sdk).",
                     "", empty),
                    ("castle_steve", "failed", "Failed: no implementers here (No module named claude_agent_sdk).",

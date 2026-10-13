@@ -132,7 +132,7 @@ class Bench:
     def __init__(self, args):
         self.pt = Playtest(Path(args.db))
         cfg = config.load()
-        catalog = actions.load(cfg.repo, cfg.server)
+        catalog = actions.load(cfg.repo)
         out = Path(args.out)
         out.mkdir(parents=True, exist_ok=True)
         menu_path = out / "menu.md"

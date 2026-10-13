@@ -228,7 +228,7 @@ def server_env(cfg: ImplementerConfig, dirs: Dirs, guard_url: str, guard_secret:
         "VFG_GUARD_URL": guard_url,
         "VFG_GUARD_SECRET": guard_secret,
         "VFG_SHELL_ENV": json.dumps(shell),
-        "PYTHONPYCACHEPREFIX": os.path.join(cfg.brain_dir, "pycache"),  # py_compile leaves no __pycache__ in scripts/
+        "PYTHONPYCACHEPREFIX": os.path.join(cfg.brain_dir, "pycache"),  # py_compile leaves no __pycache__ in made/
     })
     return env
 

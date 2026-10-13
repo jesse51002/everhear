@@ -9,9 +9,12 @@ of its own, its replies shaped as the engine's (engine/vfg_engine/ops.py). No py
     engine.hold.add("status")                 # answer as the socket does past timeout_s
     engine.stop()
 
-What it holds: a registry (`classes`, each {id, kind, file, summary}; a content class's file is in
-<vfg>/made/main/content/), grants, gives, scenarios started, bindings (the export written to
-<vfg>/engine/incantations.json on every change, as the engine writes it). A reload reads the files
+What it holds: a registry (`classes`, each {id, kind, file, summary} and a scenario's or a mark's
+`args`; a content class's file is in <vfg>/made/main/content/), grants, gives, scenarios started
+(`command` a one-shot that ends at once with its result, the rest running until stopped),
+bindings to an ability or to a scenario with its args (the export written to
+<vfg>/engine/incantations.json on every change, as the engine writes it), and the places of one
+world (`places_import` once, unless forced). A reload reads the files
 it is given (every file in the content dir when none): one holding the line `# REFUSE <check>:
 <error>` fails that check, the rest load. config_get reads the deployed file through the rewrite
 module the test hands it (the engine's own, engine/vfg_engine/rewrite.py).
@@ -43,9 +46,18 @@ class FakeEngine(object):
             {"id": "fire_staff", "kind": "item", "file": os.path.join(self.content, "fire_staff.py"),
              "summary": "Right-click to cast Fireball. Holding it adds 20% speed.", "base": "minecraft:carrot_on_a_stick"},
             {"id": "giant", "kind": "mark", "file": "/opt/vfg/engine/vfg_engine/examples/marks.py",
-             "summary": "Twice the size for a while."},
+             "summary": "Twice the size for a while.",
+             "args": [{"name": "factor", "type": "float", "default": 2.0, "bounds": {"ge": 1, "le": 16},
+                       "description": "how much bigger"}]},
             {"id": "horde", "kind": "scenario", "file": os.path.join(self.content, "horde.py"),
-             "summary": "Waves of zombies round every player."},
+             "summary": "Waves of zombies round every player.",
+             "args": [{"name": "count", "type": "int", "default": 10, "bounds": {"ge": 1, "le": 100},
+                       "description": "how many"},
+                      {"name": "at", "type": "Place", "default": None, "bounds": {}, "description": "where"}]},
+            {"id": "command", "kind": "scenario", "file": "/opt/vfg/engine/library/command.py",
+             "summary": "Runs Minecraft commands, at once.",
+             "args": [{"name": "commands", "type": "list[Command]", "default": [], "bounds": {},
+                       "description": "the commands"}]},
             {"id": "ice_queen", "kind": "actor", "file": os.path.join(self.content, "ice_queen.py"),
              "summary": "A boss of ice."},
         ]
@@ -55,6 +67,9 @@ class FakeEngine(object):
         self.running = []       # scenario instances
         self.bindings = []
         self.version = 0
+        self.places = {}        # {name: {dim, pos, yaw, by, at}}
+        self.places_version = 0
+        self.imported = False
         self.lock = threading.Lock()
         self.server = None
 
@@ -181,19 +196,25 @@ class FakeEngine(object):
         self.find(item, "item")
         return {}
 
-    def op_apply(self, who, mark, seconds=None):
+    def op_apply(self, who, mark, seconds=None, args=None):
         self.find(mark, "mark")
         self.marks.append((who, mark, seconds))
-        return {}
+        return {"instance": "mark:%s#%d" % (mark, len(self.marks))}
 
     def op_clear(self, who, mark):
         return {}
 
-    def op_start(self, scenario, args=None):
+    def op_start(self, scenario, args=None, wait_s=0):
         self.find(scenario, "scenario")
         inst = "scenario:%s#%d" % (scenario, len(self.running) + 1)
+        if scenario == "command":          # a one-shot: it ends at once, with its result
+            said = ["ran %s" % c for c in (args or {}).get("commands") or []]
+            result = {"summary": "; ".join(said) or "ran nothing", "facts": {"replies": said}}
+            return {"instance": inst, "ended": "ended", "result": result} if wait_s else {"instance": inst}
         self.running.append({"instance": inst, "kind": "scenario", "id": scenario, "user": None,
                              "started": 1791830460.0, "ends": 1791830580.0, "args": args or {}})
+        if wait_s:
+            return {"instance": inst, "running": True, "note": "still running", "result": None}
         return {"instance": inst}
 
     def op_stop(self, instance=None, scenario=None):
@@ -207,14 +228,27 @@ class FakeEngine(object):
         self.find(actor, "actor")
         return {"uuid": "0e5b7c1a-3d2f-4a6b-9c8d-7e6f5a4b3c2d"}
 
-    def op_bind(self, player, phrase, ability, aliases=(), everyday_aliases=(), by=None):
-        self.find(ability, "ability")
+    def op_bind(self, player, phrase, ability=None, scenario=None, args=None, aliases=(), everyday_aliases=(),
+                by=None, cooldown_s=None):
+        if bool(ability) == bool(scenario):
+            raise Refused("bind takes an ability, or a scenario with its args")
+        if ability:
+            self.find(ability, "ability")
+        else:
+            c = self.find(scenario, "scenario")
+            kinds = dict((a["name"], a["type"]) for a in c.get("args") or [])
+            for k, v in (args or {}).items():
+                if k not in kinds:
+                    raise Refused("%s has no arg %s" % (scenario, k))
+                if v == "caster" and kinds[k] not in ("Player", "Place"):
+                    raise Refused("caster fills a Player or a Place arg, and %s is %s" % (k, kinds[k]))
         if player.startswith("@"):
             raise Refused("incantations are per player")
         kept = list(aliases)[:self.alias_cap]
         entry = {"id": "%s.%s" % (player.lower(), phrase.replace(" ", "_")), "player": player, "phrase": phrase,
-                 "aliases": kept, "everyday_aliases": [x for x in everyday_aliases if x in kept], "ability": ability,
-                 "cooldown_s": 5.0, "by": by}
+                 "aliases": kept, "everyday_aliases": [x for x in everyday_aliases if x in kept],
+                 "ability": ability or None, "scenario": scenario or None, "args": dict(args or {}),
+                 "cooldown_s": 5.0 if ability else (3.0 if cooldown_s is None else float(cooldown_s)), "by": by}
         self.bindings = [e for e in self.bindings if e["id"] != entry["id"]] + [entry]
         self.write_export()
         row = next(e for e in self.listing(player) if e["id"] == entry["id"])
@@ -230,7 +264,7 @@ class FakeEngine(object):
 
     def listing(self, player=None):
         return [dict((k, e[k]) for k in ("id", "player", "phrase", "aliases", "everyday_aliases", "ability",
-                                         "cooldown_s"))
+                                         "scenario", "args", "cooldown_s"))
                 for e in self.bindings if player is None or e["player"].lower() == player.lower()]
 
     def op_incantations(self, player=None):
@@ -243,6 +277,27 @@ class FakeEngine(object):
         with open(tmp, "w") as f:
             json.dump({"version": self.version, "incantations": self.listing()}, f)
         os.replace(tmp, self.export)
+
+    def op_places(self):
+        return {"version": self.places_version, "world": "w1", "places": dict(self.places)}
+
+    def op_places_import(self, places=(), force=False):
+        if self.imported and not force:
+            raise Refused("this world's places were imported already (force to import again)")
+        items = [dict(v, name=k) for k, v in places.items()] if isinstance(places, dict) else list(places)
+        imported, skipped = [], []
+        for it in items:
+            if it["name"] in self.places:
+                skipped.append(it["name"])
+                continue
+            self.places[it["name"]] = {"dim": it.get("dim") or "minecraft:overworld",
+                                       "pos": [float(c) for c in it["pos"]], "yaw": 0.0,
+                                       "by": it.get("by") or "import", "at": 1791830460.0}
+            imported.append(it["name"])
+        self.imported = True
+        self.places_version += 1 if imported else 0
+        return {"imported": imported, "skipped": skipped, "refused": [], "version": self.places_version,
+                "world": "w1"}
 
     def op_log(self, n=40):
         return {"lines": [{"t": 1791830463.0, "level": "info", "msg": "loaded fireball", "file": "fireball.py"},

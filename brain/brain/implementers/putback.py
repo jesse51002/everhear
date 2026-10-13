@@ -1,38 +1,41 @@
 """What a run changes, noted before it changes it, and put back by code after a cancel or a run that
 reached its limit (Prototype_Implementer_Harness, _“Never mind”_ and _A run that reaches its
-limit_). The guard sees every tool call before it runs (guard.gate), and gives each one it lets
-through to the run's Snapshot first:
+limit_; in the engine's world, CONTRACT2's "Put-back of a run"). The guard sees every tool call
+before it runs (guard.gate), and gives each one it lets through to the run's Snapshot first:
 
-- **a made file**, before the run first writes it: a Write or an Edit under made/<server>/, and
-  the files `vfg script new` (its script's folder, its action and its skeleton test), `vfg test`
-  (a skeleton test, when there is none), `vfg script save` (an action) and `vfg preset save` (a
-  preset) make. Its bytes are kept, or that it was not there.
-- **a running copy**, before the run first changes it: `vfg script set|stop <copy>`, `vfg action run
-  … as=<copy>`, and the edit and stop actions' copy=<copy>. Its entry in running.json is kept, or
-  that it was not running; and, at the run's first such call, the names of every copy then
-  running, so a copy the run starts under a name the box picks is known as new.
-- **a saved place**, before the run first saves it: its entry (`vfg place list --json`), or that
-  there was none.
+- **a made file**, before the run first writes it: a Write or an Edit of a class's file,
+  made/<server>/content/<id>.py, or of its test, made/<server>/tests/<id>.py. Its bytes are kept,
+  or that it was not there.
+- **a binding**, before the run first binds or unbinds it (`vfg engine bind|unbind <player>
+  <phrase> ...`): the engine's bindings, read once at the run's first such call (`vfg engine
+  incantations --json`), keep what it was, or that there was none.
+- **a grant**, before the run first grants or revokes it (`vfg engine grant|revoke <player>
+  <ability>`): who had which ability, read once at the run's first such call (`vfg engine instances
+  --kind ability --json`), keeps whether the player had it.
 
-After the implementer's report, put_back() makes each of them what it was: a made file not back to
-its bytes is written back, a file or folder the run created is removed, a copy the run started is
-stopped, a copy it changed or stopped is set back or started again with its values, and a place it
-saved is forgotten or saved again where it was. An incantation it bound, edited or removed stays
-the implementer's to undo. A snapshot is kept with its task until the task's next real run, so a
-cancel after the run ended works against it; and on disk (save, load), so it does after a restart."""
+After the implementer's report, put_back() makes each of them what it was, in this order: a made
+file not back to its bytes is written back, and one the run created is removed; then one `vfg
+engine reload` with no file, when the run wrote a class's file, so a removed class unloads and a
+changed one reverts; then, from the engine's bindings as they are now, a binding the run made is
+unbound and one it replaced or unbound is bound again as it was; then a grant it made is revoked
+and one it revoked is granted again. A scenario it started, an item it gave, a mark it applied and
+a place it saved stay the implementer's to undo (a class that goes with its file takes its running
+instances with it). A snapshot is kept with its task until the task's next real run, so a cancel
+after the run ended works against it; and on disk (save, load), so it does after a restart."""
 import base64
 import copy as copying
 import json
 import os
-import shutil
 from dataclasses import dataclass, field
+from typing import Any
 
-from . import actions
 from .config import log
-from .guard import MADE_NAME, made_script, new_script_name, realish, run_words, split_shell, within
-from .vfg import VfgRunner, why
+from .guard import _expand_home, binding_id, engine_call, grant_key, made_file, realish, split_shell
+from .vfg import VfgRunner, engine_read, why
 
 VFG_TIMEOUT_S = 60.0
+# The engine's reload op waits up to 120 s for its own answer (engine/README.md).
+RELOAD_TIMEOUT_S = 150.0
 
 # what put_back() did, item by item, and what it could not do
 Done = list[str]
@@ -42,19 +45,19 @@ Done = list[str]
 class Snapshot:
     repo: str
     server: str
-    home: str
     task: str | None
     vfg: VfgRunner
     # a made file's real path -> its bytes before the run's first write, None when it was not there
     files: dict[str, bytes | None] = field(default_factory=dict)
-    # a script folder `vfg script new` makes -> whether it was there before
-    dirs: dict[str, bool] = field(default_factory=dict)
-    # a copy -> its running.json entry before the run first changed it, None when it was not running
-    copies: dict[str, dict | None] = field(default_factory=dict)
-    # every copy running at the run's first call that can start one; None until then
-    running_before: set[str] | None = None
-    # a place -> its entry before the run first saved it, None when there was none
-    places: dict[str, dict | None] = field(default_factory=dict)
+    # the engine's bindings by id, as `vfg engine incantations --json` listed them at the run's first
+    # bind or unbind; None until then
+    incantations: dict[str, dict] | None = None
+    # the bindings the run bound or unbound: id -> [player, phrase], as it gave them
+    bound: dict[str, list[str]] = field(default_factory=dict)
+    # who had which ability ("steve:fireball", grant_key) at the run's first grant or revoke; None until then
+    granted: list[str] | None = None
+    # the grants the run made or revoked: grant_key -> [player, ability], as it gave them
+    grants: dict[str, list[str]] = field(default_factory=dict)
 
     # ------------------------------------------------------------------ before a call runs
 
@@ -63,47 +66,23 @@ class Snapshot:
         name = call.get("tool_name")
         inp = call.get("tool_input") or {}
         if name in ("Write", "Edit") and inp.get("file_path"):
-            path = realish(os.path.abspath(os.path.join(self.repo, str(inp["file_path"]))))
-            if within(self.made, path):
-                self._file(path)
+            path = str(inp["file_path"])
+            if made_file(self.repo, self.server, path):
+                self._file(os.path.abspath(os.path.join(self.repo, _expand_home(path))))
         elif name == "Bash":
             for cmd in split_shell(str(inp.get("command") or "")):
                 await self._command(cmd.words)
 
-    @property
-    def made(self) -> str:
-        return os.path.join(self.repo, "made", self.server)
-
     async def _command(self, words: list[str]) -> None:
-        if words[:1] != ["vfg"]:
+        if words[:2] != ["vfg", "engine"]:
             return
-        what = words[1:3]
-        if what == ["script", "new"]:
-            name = new_script_name(words)
-            if name:
-                self._dir(os.path.join(self.made, "scripts", name))
-                self._file(os.path.join(self.made, "actions", name + ".py"))
-                self._file(os.path.join(self.made, "tests", name + ".py"))  # its skeleton test
-        elif words[1:2] == ["test"] and len(words) >= 3 and MADE_NAME.fullmatch(words[2]):
-            self._file(os.path.join(self.made, "tests", words[2] + ".py"))  # a skeleton when there is none
-        elif what == ["script", "save"]:
-            name = new_script_name(words)
-            if name:
-                self._file(os.path.join(self.made, "actions", name + ".py"))
-        elif what == ["preset", "save"] and len(words) == 6:
-            self._file(os.path.join(self.made, "presets", words[5] + ".py"))
-        elif what in (["script", "set"], ["script", "stop"]) and len(words) >= 4:
-            self._copy(words[3])
-        elif what == ["action", "run"]:
-            action, as_ = run_words(words[3:])
-            self._running()
-            if as_:
-                self._copy(as_)
-            given = dict(w.split("=", 1) for w in words[3:] if "=" in w and not w.startswith("-"))
-            if action in ("edit", "stop") and given.get("copy"):
-                self._copy(given["copy"])
-        elif what == ["place", "save"] and len(words) >= 4:
-            await self._place(words[3])
+        call = engine_call(words[2:])
+        if call is None:
+            return
+        if call.op in ("bind", "unbind"):
+            await self._binding(call.words[0], call.words[1])
+        elif call.op in ("grant", "revoke"):
+            await self._grant(call.words[0], call.words[1])
 
     def _file(self, path: str) -> None:
         path = realish(path)
@@ -117,33 +96,38 @@ class Snapshot:
         except OSError as e:  # a folder, say: nothing to keep
             log("putback", "%s: %s is not kept: %s" % (self.task, path, e))
 
-    def _dir(self, path: str) -> None:
-        path = realish(path)
-        if path not in self.dirs:
-            self.dirs[path] = os.path.exists(path)
-
-    def _running(self) -> None:
-        if self.running_before is None:
-            self.running_before = set(actions.read_running(self.home) or {})
-
-    def _copy(self, name: str) -> None:
-        self._running()
-        if name not in self.copies:
-            self.copies[name] = copying.deepcopy((actions.read_running(self.home) or {}).get(name))
-
-    async def _place(self, name: str) -> None:
-        if name in self.places:
+    async def _binding(self, player: str, phrase: str) -> None:
+        bid = binding_id(player, phrase)
+        if bid is None or bid in self.bound:
             return
-        r = await self.vfg("place", "list", "--json", "--fresh", timeout=VFG_TIMEOUT_S)  # not the cache
-        try:
-            found = json.loads(r.stdout) if r.code == 0 else None
-        except ValueError:
-            found = None
-        if not isinstance(found, dict):
-            log("putback", "%s: the places could not be read before %s was saved (%s): it is not put back"
-                % (self.task, name, why(r)))
+        if self.incantations is None:
+            data, failed = await engine_read(self.vfg, "incantations", timeout=VFG_TIMEOUT_S)
+            if data is None:
+                log("putback", "%s: the engine's bindings could not be read before %s was bound or unbound (%s): "
+                    "it is not put back" % (self.task, bid, failed))
+                return
+            self.incantations = {e["id"]: copying.deepcopy(e) for e in data.get("incantations") or []
+                                 if isinstance(e, dict) and isinstance(e.get("id"), str)}
+        self.bound[bid] = [player, phrase]
+
+    async def _grant(self, player: str, ability: str) -> None:
+        key = grant_key(player, ability)
+        if key in self.grants:
             return
-        self.places[name] = copying.deepcopy(found.get(name))
+        if self.granted is None:
+            data, failed = await engine_read(self.vfg, "instances", "--kind", "ability", timeout=VFG_TIMEOUT_S)
+            if data is None:
+                log("putback", "%s: the engine's grants could not be read before %s was granted or revoked (%s): "
+                    "it is not put back" % (self.task, key, failed))
+                return
+            self.granted = granted(data)
+        self.grants[key] = [player, ability]
+
+
+def granted(data: dict) -> list[str]:
+    """Who has which ability, as grant_key names each, from `vfg engine instances --kind ability --json`."""
+    return sorted({grant_key(i.get("user"), i.get("id")) for i in data.get("instances") or []
+                   if isinstance(i, dict) and i.get("user") and i.get("id") and i.get("kind", "ability") == "ability"})
 
 
 # ------------------------------------------------------------------ after the report
@@ -169,20 +153,35 @@ def _write(path: str, data: bytes) -> None:
     os.replace(tmp, path)
 
 
-def given_words(home: str, action: str, values: dict) -> list[str]:
-    """A copy's values as `vfg action run` words, as it would have been given them: running.json
-    keeps every value (default <- defaults <- fixed <- given), so the fixed ones, which vfg refuses
-    to be given, and those equal to the action's own default (the actions cache) are left out."""
-    try:
-        with open(os.path.join(home, "actions.json"), encoding="utf-8") as f:
-            entry = (json.load(f).get("actions") or {}).get(action) or {}
-    except (OSError, ValueError, AttributeError):
-        entry = {}
-    fixed = set(entry.get("fixed") or {})
-    fields = entry.get("fields") or {}
-    own = {k: f.get("default") for k, f in fields.items() if isinstance(f, dict) and "default" in f}
-    return ["%s=%s" % (k, actions.word(v)) for k, v in sorted(values.items())
-            if k not in fixed and not (k in own and own[k] == v)]
+def word(v: Any) -> str:
+    """A value as key=<this> gives it: true/false, whole numbers without .0, text as it is, lists and
+    objects as JSON (vfg reads a value starting with [ or { as JSON)."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, float) and v.is_integer() and abs(v) < 1e15:
+        return "%d" % v
+    if isinstance(v, str):
+        return v
+    return json.dumps(v, ensure_ascii=False, separators=(",", ":"))
+
+
+def bind_words(e: dict) -> list[str]:
+    """`vfg engine bind`'s words that bind a listed entry again: its player and phrase, then its
+    ability, or its scenario and that scenario's fixed args; --by when the listing names it."""
+    out = ["engine", "bind", str(e.get("player")), str(e.get("phrase"))]
+    if e.get("ability"):
+        out.append(str(e["ability"]))
+    else:
+        out += ["--scenario", str(e.get("scenario"))]
+        out += ["%s=%s" % (k, word(v)) for k, v in sorted((e.get("args") or {}).items())]
+    if e.get("by"):
+        out += ["--by", str(e["by"])]
+    return out
+
+
+def _target(e: dict) -> tuple:
+    """What a binding casts or starts: two that differ in it are not the same binding."""
+    return e.get("ability"), e.get("scenario"), json.dumps(e.get("args") or {}, sort_keys=True)
 
 
 async def put_back(s: Snapshot) -> tuple[Done, Done]:
@@ -190,25 +189,9 @@ async def put_back(s: Snapshot) -> tuple[Done, Done]:
     did: Done = []
     failed: Done = []
     rel = lambda p: os.path.relpath(p, s.repo)  # noqa: E731
-    now = actions.read_running(s.home) or {}
 
-    # copies the run started: stopped first, so nothing runs a file about to change
-    started = [n for n, e in now.items()
-               if (n in s.copies and s.copies[n] is None)
-               or (s.running_before is not None and n not in s.running_before and n not in s.copies
-                   and s.task is not None and e.get("task") == s.task)]
-    for name in sorted(started):
-        r = await s.vfg("script", "stop", name, timeout=VFG_TIMEOUT_S)
-        (did if r.code == 0 else failed).append("stopped %s" % name if r.code == 0
-                                                else "could not stop %s (%s)" % (name, why(r)))
-
-    # made files and folders
-    new_dirs = [p for p, there in s.dirs.items() if not there]  # the run's own: they go whole
-    gone = [p for p in new_dirs if os.path.exists(p)]
-    restored_scripts: set[str] = set()
+    # made files: as they were before the run, or gone
     for path, before in sorted(s.files.items()):
-        if any(path == d or path.startswith(d + "/") for d in new_dirs):
-            continue
         current = _read(path)
         try:
             if before is None and os.path.lexists(path):
@@ -217,75 +200,79 @@ async def put_back(s: Snapshot) -> tuple[Done, Done]:
             elif before is not None and current != before:
                 _write(path, before)
                 did.append("restored %s" % rel(path))
-            else:
-                continue
-            script = made_script(path, _Where(s.repo, s.server))
-            if script:
-                restored_scripts.add(script)
-            if os.path.dirname(path) == realish(os.path.join(s.made, "actions")):
-                restored_scripts.add(os.path.basename(path)[:-3])
         except OSError as e:
             failed.append("could not put back %s (%s)" % (rel(path), e))
-    for path in sorted(gone):
-        try:
-            shutil.rmtree(path)
-            did.append("removed %s/" % rel(path))
-        except OSError as e:
-            failed.append("could not remove %s/ (%s)" % (rel(path), e))
 
-    # copies the run changed or stopped: as they were, on the code as it was
-    now = actions.read_running(s.home) or {}
-    for name, before in sorted(s.copies.items()):
-        if before is None:
-            continue
-        cur = now.get(name)
-        values = before.get("values") or {}
-        if (cur is None or cur.get("started") != before.get("started")
-                or before.get("script") in restored_scripts or before.get("action") in restored_scripts):
-            if cur is not None:
-                await s.vfg("script", "stop", name, timeout=VFG_TIMEOUT_S)
-            words = given_words(s.home, before.get("action") or "", values)
-            task = ["--task", before["task"]] if before.get("task") else []
-            r = await s.vfg("action", "run", str(before.get("action")), *words, "as=%s" % name, *task,
-                            timeout=VFG_TIMEOUT_S)
-            (did if r.code == 0 else failed).append(
-                "started %s again as it was" % name if r.code == 0 else "could not start %s again (%s)" % (name, why(r)))
-        elif (cur.get("values") or {}) != values:
-            changed = {k: v for k, v in values.items() if (cur.get("values") or {}).get(k) != v}
-            r = await s.vfg("script", "set", name, *["%s=%s" % (k, actions.word(v)) for k, v in sorted(changed.items())],
-                            timeout=VFG_TIMEOUT_S)
-            (did if r.code == 0 else failed).append(
-                "set %s back (%s)" % (name, ", ".join(sorted(changed))) if r.code == 0
-                else "could not set %s back (%s)" % (name, why(r)))
+    # the engine runs the classes as their files are now: a removed one unloads, a changed one reverts
+    if any((made_file(s.repo, s.server, p) or ("",))[0] == "content" for p in s.files):
+        r = await s.vfg("engine", "reload", timeout=RELOAD_TIMEOUT_S)
+        (did if r.code == 0 else failed).append(
+            "reloaded the engine" if r.code == 0
+            else "could not reload the engine (%s), so it may still run the run's classes" % why(r))
 
-    # places the run saved
-    for name, before in sorted(s.places.items()):
-        if before is None:
-            r = await s.vfg("place", "forget", name, timeout=VFG_TIMEOUT_S)
-            ok = r.code == 0
-            (did if ok else failed).append("forgot the place %s" % name if ok
-                                           else "could not forget the place %s (%s)" % (name, why(r)))
-            continue
-        pos = before.get("pos") or []
-        if len(pos) != 3:
-            failed.append("could not save the place %s again: its old position is unknown" % name)
-            continue
-        by = ["--by", before["by"]] if before.get("by") else []
-        r = await s.vfg("place", "save", name, "--at", *[actions.word(v) for v in pos],
-                        "--dim", str(before.get("dim") or "overworld"), *by, timeout=VFG_TIMEOUT_S)
-        (did if r.code == 0 else failed).append("saved the place %s where it was" % name if r.code == 0
-                                                else "could not save the place %s again (%s)" % (name, why(r)))
+    await _bindings_back(s, did, failed)
+    await _grants_back(s, did, failed)
     return did, failed
+
+
+async def _bindings_back(s: Snapshot, did: Done, failed: Done) -> None:
+    """Each binding the run made, unbound; each it replaced or unbound, bound again as it was; read
+    from the engine as they are now, so one the implementer put back itself is left alone."""
+    if not s.bound:
+        return
+    data, why_not = await engine_read(s.vfg, "incantations", timeout=VFG_TIMEOUT_S)
+    if data is None:
+        failed.append("could not read the bindings to put them back (%s)" % why_not)
+        return
+    now = {e["id"]: e for e in data.get("incantations") or [] if isinstance(e, dict) and isinstance(e.get("id"), str)}
+    for bid, (player, phrase) in sorted(s.bound.items()):
+        before, cur = (s.incantations or {}).get(bid), now.get(bid)
+        if before is None and cur is not None:
+            r = await s.vfg("engine", "unbind", str(cur.get("player") or player), str(cur.get("phrase") or phrase),
+                            timeout=VFG_TIMEOUT_S)
+            (did if r.code == 0 else failed).append("unbound %s" % bid if r.code == 0
+                                                    else "could not unbind %s (%s)" % (bid, why(r)))
+        elif before is not None and (cur is None or _target(cur) != _target(before)):
+            r = await s.vfg(*bind_words(before), timeout=VFG_TIMEOUT_S)
+            if r.code != 0:
+                failed.append("could not bind %s again (%s)" % (bid, why(r)))
+            elif before.get("aliases"):
+                # CONTRACT: vfg engine bind takes no aliases, so a binding bound again has none.
+                did.append("bound %s again, but for its aliases (%s)" % (bid, ", ".join(map(str, before["aliases"]))))
+            else:
+                did.append("bound %s again as it was" % bid)
+
+
+async def _grants_back(s: Snapshot, did: Done, failed: Done) -> None:
+    """Each grant the run made, revoked; each it revoked, granted again; read from the engine as
+    they are now (a class unloaded by the reload took its grants with it)."""
+    if not s.grants:
+        return
+    data, why_not = await engine_read(s.vfg, "instances", "--kind", "ability", timeout=VFG_TIMEOUT_S)
+    if data is None:
+        failed.append("could not read the grants to put them back (%s)" % why_not)
+        return
+    now, before = set(granted(data)), set(s.granted or [])
+    for key, (player, ability) in sorted(s.grants.items()):
+        if key in now and key not in before:
+            r = await s.vfg("engine", "revoke", player, ability, timeout=VFG_TIMEOUT_S)
+            (did if r.code == 0 else failed).append(
+                "revoked %s from %s" % (ability, player) if r.code == 0
+                else "could not revoke %s from %s (%s)" % (ability, player, why(r)))
+        elif key in before and key not in now:
+            r = await s.vfg("engine", "grant", player, ability, timeout=VFG_TIMEOUT_S)
+            (did if r.code == 0 else failed).append(
+                "granted %s to %s again" % (ability, player) if r.code == 0
+                else "could not grant %s to %s again (%s)" % (ability, player, why(r)))
 
 
 # ------------------------------------------------------------------ on disk
 
 def save(s: Snapshot, path: str) -> None:
     """The snapshot as JSON, the files' bytes in base64, mode 600 in a 700 folder."""
-    data = {"repo": s.repo, "server": s.server, "home": s.home, "task": s.task,
+    data = {"repo": s.repo, "server": s.server, "task": s.task,
             "files": {p: None if b is None else base64.b64encode(b).decode("ascii") for p, b in s.files.items()},
-            "dirs": s.dirs, "copies": s.copies,
-            "running_before": None if s.running_before is None else sorted(s.running_before), "places": s.places}
+            "incantations": s.incantations, "bound": s.bound, "granted": s.granted, "grants": s.grants}
     os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     tmp = "%s.%d.tmp" % (path, os.getpid())
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -295,15 +282,15 @@ def save(s: Snapshot, path: str) -> None:
 
 
 def load(path: str, vfg: VfgRunner) -> Snapshot | None:
-    """A snapshot save() wrote, or None when there is none or it cannot be read."""
+    """A snapshot save() wrote, or None when there is none or it cannot be read (one from before the
+    engine, with copies and places, among them)."""
     try:
         with open(path, encoding="utf-8") as f:
             d = json.load(f)
-        rb = d.get("running_before")
-        return Snapshot(repo=d["repo"], server=d["server"], home=d["home"], task=d.get("task"), vfg=vfg,
+        return Snapshot(repo=d["repo"], server=d["server"], task=d.get("task"), vfg=vfg,
                         files={p: None if b is None else base64.b64decode(b) for p, b in d["files"].items()},
-                        dirs=dict(d["dirs"]), copies=dict(d["copies"]), running_before=None if rb is None else set(rb),
-                        places=dict(d["places"]))
+                        incantations=d["incantations"], bound=dict(d["bound"]), granted=d["granted"],
+                        grants=dict(d["grants"]))
     except FileNotFoundError:
         return None
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
@@ -311,17 +298,10 @@ def load(path: str, vfg: VfgRunner) -> Snapshot | None:
         return None
 
 
-@dataclass
-class _Where:
-    """What guard.made_script reads of a GuardContext."""
-    repo: str
-    server: str
-
-
 def line(did: Done, failed: Done) -> str:
     """The report's line saying what code put back."""
     if not did and not failed:
-        return "Code put back: nothing; the run had changed no made file, copy or place."
+        return "Code put back: nothing; the run had changed no made file, binding or grant."
     out = "Code put back: %s." % ("; ".join(did) if did else "nothing")
     if failed:
         out += " It could not: %s." % "; ".join(failed)

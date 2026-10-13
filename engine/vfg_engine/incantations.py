@@ -1,7 +1,10 @@
 """Incantations: per-player phrases bound to abilities (the game engine spec, "Incantations").
 
-An incantation triggers an ability; it does not grant one. Bindings are per player, never for
-everyone (`@a` is refused). The engine owns the store, kept in its saved state, and writes the
+An incantation triggers an ability (a cast; it does not grant one), or starts a scenario with
+fixed args (DESIGN2 §3: a phrase that starts `meteor` at the caster; an arg left as "caster" is
+filled with whoever spoke). Bindings are per player, never for everyone (`@a` is refused). A
+scenario binding has a cooldown of its own (`cooldown_s`, default 3 s), as the old incantations did;
+an ability binding's is the ability's. The engine owns the store, kept in its saved state, and writes the
 export the bridge reads (VFG_ENGINE_EXPORT, `{"version": n, "incantations": [...]}`) atomically
 whenever the list changes, the version going up by one each time.
 
@@ -19,6 +22,7 @@ from .statefile import write_json
 
 MAX_PHRASE = 80           # characters, normalised (the kit's)
 MAX_ALIASES = 24          # the kit's limit on aliases per entry
+DEFAULT_COOLDOWN_S = 3.0  # a scenario binding's, as the old store's
 PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
 EVERYONE = "@a"
 
@@ -64,9 +68,19 @@ class Bindings:
 
     # ---- change --------------------------------------------------------------------------
 
-    def bind(self, player, phrase, ability: str, aliases=(), everyday_aliases=(), by=None,
-             now: float = 0.0) -> dict:
+    def bind(self, player, phrase, ability: str | None, aliases=(), everyday_aliases=(), by=None,
+             now: float = 0.0, scenario: str | None = None, args: dict | None = None,
+             cooldown_s: float | None = None) -> dict:
+        """One binding: `phrase` casts `ability`, or starts `scenario` with `args`."""
         player = check_player(player)
+        if (ability is None) == (scenario is None):
+            raise ValueError("a binding names an ability, or a scenario with its args")
+        if scenario is not None:
+            cooldown_s = DEFAULT_COOLDOWN_S if cooldown_s is None else float(cooldown_s)
+            if not 0 <= cooldown_s <= 600:
+                raise ValueError("cooldown_s is 0 to 600, not %r" % cooldown_s)
+        else:
+            cooldown_s = None
         p = check_phrase(phrase)
         own = []
         for a in aliases or ():
@@ -83,7 +97,8 @@ class Bindings:
             if n and n not in everyday:
                 everyday.append(n)
         entry = {"id": entry_id(player, p), "player": player, "phrase": p, "aliases": own,
-                 "everyday_aliases": everyday, "ability": ability, "by": by, "created": now}
+                 "everyday_aliases": everyday, "ability": ability, "scenario": scenario,
+                 "args": dict(args or {}), "cooldown_s": cooldown_s, "by": by, "created": now}
         self.entries = [e for e in self.entries if e["id"] != entry["id"]]
         self.entries.append(entry)
         return entry
@@ -113,12 +128,15 @@ class Bindings:
         return None
 
     def listing(self, cooldown_of, player=None) -> list[dict]:
-        """The entries as the `incantations` op and the export give them: the ability's
-        cooldown_s from its Config now (None while the ability is not loaded)."""
+        """The entries as the `incantations` op and the export give them: an ability binding's
+        cooldown_s is the ability's Config now (None while it is not loaded); a scenario
+        binding's is its own."""
         rows = self.for_player(player) if player else list(self.entries)
         return [{"id": e["id"], "player": e["player"], "phrase": e["phrase"], "aliases": list(e["aliases"]),
-                 "everyday_aliases": list(e["everyday_aliases"]), "ability": e["ability"],
-                 "cooldown_s": cooldown_of(e["ability"])} for e in rows]
+                 "everyday_aliases": list(e["everyday_aliases"]), "ability": e.get("ability"),
+                 "scenario": e.get("scenario"), "args": dict(e.get("args") or {}), "by": e.get("by"),
+                 "cooldown_s": cooldown_of(e["ability"]) if e.get("ability") else e.get("cooldown_s")}
+                for e in rows]
 
     def export(self, cooldown_of) -> bool:
         """Write the export if the list changed since it was last written; True when it did. The

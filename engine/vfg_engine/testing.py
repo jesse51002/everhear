@@ -11,7 +11,11 @@
   and disappear; every datapack event is numbered and handed over once (`last_n`, as McIo's: a
   counter behind it when opened is a new world);
 - the engine's `Damage` with `by=<player>` comes back as that player's own `hit` on the target,
-  and a player target's `hurt`, as 26.3 reports it.
+  and a player target's `hurt`, as 26.3 reports it;
+- (part 2) a block world: `fill`/`setblock` (32,768 blocks at most, only loaded chunks), stone
+  up to `ground` and bedrock at the floor below an empty sky, `probe`, `ground_y`, `ray`,
+  `loaded` and `forceload`; motion, entity data, fire, boss bars, spawn points; `entities`,
+  `mspt` and `world_id`; and the land, mine, ranged-hit and death-place events.
 
 Tests drive it with the helpers (join, hold, throw, use, kill, advance, ...) and read what the
 engine sent in `sent`.
@@ -25,11 +29,15 @@ import uuid as uuidlib
 from dataclasses import dataclass, field, replace
 
 from . import registries
-from .io import (AddModifier, Command, Damage, Effect, EntitySnap, GiveEffect, GiveItem, Gamerule,
-                 Look, Message, OpResult, Particle, PlayerSnap, RawEvent, Remove, RemoveModifier,
-                 Snapshot, Sound, Summon, TakeItem, Teleport)
+from .io import (AddModifier, Bossbar, Command, Damage, Effect, EntityData, EntitySnap, Fill, Forceload,
+                 GiveEffect, GiveItem, Gamerule, Ignite, Look, Message, Motion, OpResult, Particle,
+                 PlayerSnap, RawEvent, Remove, RemoveModifier, SetBlock, Snapshot, Sound, Spawnpoint,
+                 StopSound, Summon, TakeItem, Teleport)
 
 SLOTS = ("mainhand", "offhand", "head", "chest", "legs", "feet")
+_AIR = {"minecraft:air", "minecraft:cave_air", "minecraft:void_air"}
+_NOT_SOLID = _AIR | {"minecraft:water", "minecraft:lava", "minecraft:short_grass", "minecraft:snow"}
+_NO_MOTION = _AIR | {"minecraft:short_grass", "minecraft:tall_grass", "minecraft:snow"}   # the heightmap passes these
 
 
 @dataclass
@@ -46,6 +54,8 @@ class FakePlayer:
     sneaking: bool = False
     gamemode: str = "survival"
     online: bool = True
+    on_ground: bool = True
+    sprinting: bool = False
     slots: dict = field(default_factory=dict)          # slot -> EverHear item id
     inventory: list = field(default_factory=list)      # the other stacks' EverHear ids
     effects: dict = field(default_factory=dict)        # effect id -> the top Effect (its chain under it)
@@ -63,11 +73,17 @@ class FakeEntity:
     tags: frozenset = frozenset()
     name: str | None = None
     modifiers: dict = field(default_factory=dict)
+    nbt: str | None = None                # the SNBT it was summoned with
+    data: list = field(default_factory=list)     # every `data merge` it was given
+    motion: tuple | None = None
+    owner: str | None = None
+    in_ground: bool = False
 
 
 class FakeMirror:
     def __init__(self, io):
         self._io = io
+        self.radius = io.mirror_radius
 
     @property
     def age_s(self):
@@ -75,7 +91,7 @@ class FakeMirror:
 
     def _all(self):
         """Every entity (players are the snapshot's, as with McMirror)."""
-        return [self._io._esnap(e) for e in self._io.entities.values()]
+        return [self._io._esnap(e) for e in self._io.by_uuid.values()]
 
     def entities_near(self, dim, pos, radius):
         return [e for e in self._all() if e.dim == dim and math.dist(e.pos, pos) <= radius]
@@ -131,7 +147,7 @@ class FakeIo:
 
     def __init__(self):
         self.players: dict[str, FakePlayer] = {}
-        self.entities: dict[str, FakeEntity] = {}
+        self.by_uuid: dict[str, FakeEntity] = {}     # every entity but players, by uuid
         self.gamerules: dict[str, str] = {"mob_griefing": "true", "keep_inventory": "false",
                                           "pvp": "true", "fall_damage": "true"}
         self.game_tick = 0
@@ -149,6 +165,21 @@ class FakeIo:
         self.flush_raises: Exception | None = None
         self.snapshot_raises: Exception | None = None
         self.read_backs: list[str] = []
+        # part 2: the block world and the rest
+        self.ground = 63                     # the top of the stone; the floor is bedrock at -64
+        self.blocks: dict[tuple, str] = {}   # (dim, x, y, z) -> block id, where it differs
+        self.unloaded: set[tuple] = set()    # (dim, chunk x, chunk z) not loaded
+        self.forceloaded: set[tuple] = set()
+        self.block_tags: dict[str, set] = {"minecraft:logs": {"minecraft:oak_log", "minecraft:spruce_log"}}
+        self.fire: dict[str, float] = {}     # target -> seconds it was set on fire for
+        self.bossbars: dict[str, dict] = {}
+        self.spawnpoints: dict[str, tuple] = {}
+        self.stopped_sounds: list = []
+        self.mspt_value = 20.0
+        self.world = "fake-world-1"
+        self.watched_mined: list[str] = []
+        self.mirror_radius = 32
+        self.watch_calls = 0
 
     # ---- Io ------------------------------------------------------------------------------
 
@@ -172,7 +203,7 @@ class FakeIo:
             raise self.snapshot_raises
         self.game_tick += 2
         players = {p.name: self._psnap(p) for p in self.players.values() if p.online}
-        tracked = {u: self._esnap(self.entities[u]) for u in track if u in self.entities}
+        tracked = {u: self._esnap(self.by_uuid[u]) for u in track if u in self.by_uuid}
         return Snapshot(self.game_tick, players, tracked)
 
     def mirror(self):
@@ -227,7 +258,7 @@ class FakeIo:
         p = self.players.get(target)
         if p is not None:
             return p if p.online else None
-        return self.entities.get(target)
+        return self.by_uuid.get(target)
 
     def _apply(self, op) -> OpResult:
         if isinstance(op, AddModifier):
@@ -276,18 +307,18 @@ class FakeIo:
             p.inventory = [i for i in p.inventory if i != op.item_id]
             return OpResult(True, "Removed items from %s" % op.player)
         if isinstance(op, Summon):
-            if op.uuid in self.entities:
+            if op.uuid in self.by_uuid:
                 return OpResult(False, "", "an entity with that uuid exists")
             if op.entity_type not in registries.ENTITY_TYPES:
                 return OpResult(False, "", "unknown entity type")
             health = 20.0
             if op.nbt and "Health:" in op.nbt:
                 health = float(op.nbt.split("Health:", 1)[1].split("f", 1)[0])
-            self.entities[op.uuid] = FakeEntity(op.uuid, op.entity_type, op.dim, op.pos, health,
-                                                frozenset(op.tags))
+            self.by_uuid[op.uuid] = FakeEntity(op.uuid, op.entity_type, op.dim, op.pos, health,
+                                                frozenset(op.tags), nbt=op.nbt)
             return OpResult(True, "Summoned new %s" % op.entity_type)
         if isinstance(op, Remove):
-            if self.entities.pop(op.uuid, None) is None:
+            if self.by_uuid.pop(op.uuid, None) is None:
                 return OpResult(False, "", "no entity found")
             return OpResult(True, "Removed 1 entity")
         if isinstance(op, Damage):
@@ -305,7 +336,165 @@ class FakeIo:
             return OpResult(True, "Gamerule %s is now set to: %s" % (op.name, op.value))
         if isinstance(op, (Particle, Sound, Message, Command)):
             return OpResult(True, "")
+        if isinstance(op, Fill):
+            return self._fill(op)
+        if isinstance(op, SetBlock):
+            return self._fill(Fill(op.dim, op.pos, op.pos, op.block, None, op.strict, op.mode))
+        if isinstance(op, Forceload):
+            chunks = {(op.dim, cx, cz) for cx in range(min(op.a[0], op.b[0]) >> 4, (max(op.a[0], op.b[0]) >> 4) + 1)
+                      for cz in range(min(op.a[1], op.b[1]) >> 4, (max(op.a[1], op.b[1]) >> 4) + 1)}
+            if op.add:
+                self.forceloaded |= chunks
+            else:
+                self.forceloaded -= chunks
+            return OpResult(True, "Marked %d chunk(s)" % len(chunks))
+        if isinstance(op, Motion):
+            h = self._holder(op.target)
+            if h is None:
+                return OpResult(False, "", "no entity found")
+            h.motion = tuple(op.vec)
+            return OpResult(True, "Modified entity data")
+        if isinstance(op, EntityData):
+            e = self.by_uuid.get(op.target)
+            if e is None:
+                return OpResult(False, "", "no entity found")
+            e.data.append(op.snbt)
+            return OpResult(True, "Modified entity data of %s" % op.target)
+        if isinstance(op, Ignite):
+            if self._holder(op.target) is None:
+                return OpResult(False, "", "no entity found")
+            self.fire[op.target] = op.seconds
+            return OpResult(True, "Set %s on fire" % op.target)
+        if isinstance(op, Bossbar):
+            if op.remove:
+                if self.bossbars.pop(op.id, None) is None:
+                    return OpResult(False, "", "no bossbar %s" % op.id)
+                return OpResult(True, "Removed bossbar")
+            bar = self.bossbars.setdefault(op.id, {"name": op.id, "color": "white", "value": 0, "max": 100,
+                                                   "players": ()})
+            for key in ("name", "color", "value", "max", "players"):
+                if getattr(op, key) is not None:
+                    bar[key] = getattr(op, key)
+            return OpResult(True, "Bossbar %s set" % op.id)
+        if isinstance(op, StopSound):
+            self.stopped_sounds.append((op.players, op.name))
+            return OpResult(True, "Stopped sound")
+        if isinstance(op, Spawnpoint):
+            if op.player not in self.players:
+                return OpResult(False, "", "no player")
+            self.spawnpoints[op.player] = (op.dim, tuple(op.pos))
+            return OpResult(True, "Set spawn point")
         return OpResult(False, "", "unknown op %r" % (op,))
+
+    # ---- blocks (part 2) -----------------------------------------------------------------
+
+    def block_at(self, dim, x, y, z) -> str:
+        got = self.blocks.get((dim, x, y, z))
+        if got is not None:
+            return got
+        if y == -64:
+            return "minecraft:bedrock"
+        if y < -64 or y > 319:
+            return "minecraft:void_air"
+        return "minecraft:stone" if y <= self.ground else "minecraft:air"
+
+    def set_block(self, dim, pos, block):
+        self.blocks[(dim, int(pos[0]), int(pos[1]), int(pos[2]))] = block
+
+    def _chunk_loaded(self, dim, x, z) -> bool:
+        key = (dim, int(x) >> 4, int(z) >> 4)
+        return key not in self.unloaded or key in self.forceloaded
+
+    def _fill(self, op: Fill) -> OpResult:
+        lo = [min(op.a[i], op.b[i]) for i in range(3)]
+        hi = [max(op.a[i], op.b[i]) for i in range(3)]
+        volume = (hi[0] - lo[0] + 1) * (hi[1] - lo[1] + 1) * (hi[2] - lo[2] + 1)
+        if volume > 32768:
+            return OpResult(False, "", "Too many blocks in the specified area (maximum 32768, specified %d)" % volume)
+        for x in (lo[0], hi[0]):
+            for z in (lo[2], hi[2]):
+                if not self._chunk_loaded(op.dim, x, z):
+                    return OpResult(False, "", "That position is not loaded")
+        changed = 0
+        for x in range(lo[0], hi[0] + 1):
+            for y in range(lo[1], hi[1] + 1):
+                for z in range(lo[2], hi[2] + 1):
+                    edge = x in (lo[0], hi[0]) or y in (lo[1], hi[1]) or z in (lo[2], hi[2])
+                    now = self.block_at(op.dim, x, y, z)
+                    want = op.block
+                    if op.mode == "keep" and now != "minecraft:air":
+                        continue
+                    if op.mode == "outline" and not edge:
+                        continue
+                    if op.mode == "hollow" and not edge:
+                        want = "minecraft:air"
+                    if op.replace is not None and not self._matches(now, op.replace):
+                        continue
+                    if now != want:
+                        self.blocks[(op.dim, x, y, z)] = want
+                        changed += 1
+        if not changed:
+            return OpResult(False, "", "No blocks were filled")
+        return OpResult(True, "Successfully filled %d block(s)" % changed)
+
+    def _matches(self, block, test) -> bool:
+        if test.startswith("#"):
+            return block in self.block_tags.get(test[1:], set())
+        return block == (test if ":" in test else "minecraft:" + test)
+
+    # ---- reads (part 2) ------------------------------------------------------------------
+
+    def probe(self, dim, points, test):
+        out = []
+        for x, y, z in points:
+            block = self.block_at(dim, x, y, z)
+            if test == "solid":
+                out.append(block not in _NOT_SOLID)
+            elif test == "open":
+                out.append(block in _AIR and self.block_at(dim, x, y + 1, z) in _AIR)
+            else:
+                out.append(self._matches(block, test))
+        return out
+
+    def ground_y(self, dim, x, z):
+        """Where feet stand on column x, z, as 26.3's motion_blocking_no_leaves heightmap gives it:
+        one above the highest block that blocks movement (fluids count, leaves and plants do not)."""
+        if not self._chunk_loaded(dim, x, z):
+            return None
+        for y in range(319, -65, -1):
+            block = self.block_at(dim, x, y, z)
+            if block not in _NO_MOTION and not block.endswith("_leaves"):
+                return y + 1
+        return None
+
+    def ray(self, dim, origin, direction, length, through_blocks=False):
+        n = math.sqrt(sum(c * c for c in direction)) or 1.0
+        d = tuple(c / n for c in direction)
+        steps = int(length / 0.1)
+        for i in range(1, steps + 1):
+            p = tuple(origin[k] + d[k] * i * 0.1 for k in range(3))
+            cell = tuple(math.floor(c) for c in p)
+            block = self.block_at(dim, *cell)
+            if not through_blocks and block not in _NOT_SOLID:
+                return Look("block", p, i * 0.1, cell, block)
+        end = tuple(origin[k] + d[k] * length for k in range(3))
+        return Look("none", end, float(length))
+
+    def entities(self, dim, center, radius, types=None):
+        return [self._esnap(e) for e in self.entities_by_type(types)
+                if e.dim == dim and math.dist(e.pos, center) <= radius and self._chunk_loaded(dim, e.pos[0], e.pos[2])]
+
+    def entities_by_type(self, types):
+        return [e for e in self.by_uuid.values() if not types or e.type in types]
+
+    def loaded(self, dim, x, z):
+        return self._chunk_loaded(dim, x, z)
+
+    def mspt(self):
+        return self.mspt_value
+
+    def world_id(self):
+        return self.world
 
     def _damage(self, op: Damage) -> OpResult:
         attacker = self.players.get(op.by) if op.by else None
@@ -323,14 +512,14 @@ class FakeIo:
             if p.health <= 0:
                 self.kill(p.name)
             return OpResult(True, "Applied %g damage to %s" % (op.amount, op.target))
-        e = self.entities.get(op.target)
+        e = self.by_uuid.get(op.target)
         if e is None:
             return OpResult(False, "", "no entity found")
         dies = e.health is not None and e.health - op.amount <= 0
         if e.health is not None:
             e.health -= op.amount
         if dies:
-            del self.entities[op.target]
+            del self.by_uuid[op.target]
             if attacker is not None:
                 # a mob is dead before the datapack reads it: its kill, and the killing blow's hit
                 # after it, name no target (datapack/README.md)
@@ -354,10 +543,10 @@ class FakeIo:
                           pitch=p.pitch, facing=facing, health=p.health, max_health=p.max_health,
                           alive=p.alive, sneaking=p.sneaking, gamemode=p.gamemode,
                           held=dict(p.slots), carried=carried, effects=tuple(p.effects.values()),
-                          looking_at=look)
+                          looking_at=look, on_ground=p.on_ground, sprinting=p.sprinting)
 
     def _esnap(self, e: FakeEntity) -> EntitySnap:
-        return EntitySnap(e.uuid, e.type, e.dim, e.pos, e.health, e.tags, e.name)
+        return EntitySnap(e.uuid, e.type, e.dim, e.pos, e.health, e.tags, e.name, e.owner, e.in_ground)
 
     # ---- test helpers --------------------------------------------------------------------
 
@@ -410,7 +599,7 @@ class FakeIo:
         self.players[name].pos = tuple(float(c) for c in pos)
 
     def kill(self, name):
-        """The player dies: effects go (as in vanilla), held items drop, a death event."""
+        """The player dies: effects go (as in vanilla), held items drop, a death event (with where)."""
         p = self.players[name]
         p.alive, p.health = False, 0.0
         p.effects.clear()
@@ -418,7 +607,7 @@ class FakeIo:
         p.inventory.clear()
         if self.death_drops_modifiers:
             p.modifiers.clear()
-        self._event("death", name)
+        self._event("death", name, {"pos": list(p.pos), "dim": p.dim})
 
     def respawn(self, name):
         p = self.players[name]
@@ -431,11 +620,41 @@ class FakeIo:
 
     def add_entity(self, type="minecraft:zombie", pos=(0.0, 64.0, 0.0), health=20.0, dim="minecraft:overworld"):
         u = str(uuidlib.uuid4())
-        self.entities[u] = FakeEntity(u, type, dim, tuple(pos), health)
+        self.by_uuid[u] = FakeEntity(u, type, dim, tuple(pos), health)
         return u
 
     def kill_entity(self, uuid):
-        self.entities.pop(uuid, None)
+        self.by_uuid.pop(uuid, None)
+
+    def land(self, name, item=None, pos=(0.0, 64.0, 0.0), target=None, target_type=None,
+             projectile_type="minecraft:arrow") -> str:
+        """`name`'s arrow or trident (shot from EverHear `item`, or none) landed at `pos` or hit
+        `target`; its uuid."""
+        u = str(uuidlib.uuid4())
+        data = {"item": item, "projectile": u, "projectile_type": projectile_type, "pos": list(pos),
+                "dim": self.players[name].dim, "hit": "block" if target is None else "entity"}
+        if target is not None:
+            data.update(target=target, target_type=target_type)
+        self._event("land", name, data)
+        return u
+
+    def watch_mined(self, blocks):
+        self.watched_mined = list(blocks)
+        self.watch_calls += 1
+        return [b for b in self.watched_mined if b not in registries.BLOCKS]
+
+    def mine(self, name, block, pos) -> bool:
+        """`name` broke a `block` at `pos`: a `mine` event only when that kind is watched (as on
+        26.3, where each watched kind is a minecraft.mined objective). Whether it was reported."""
+        if block not in self.watched_mined:
+            return False
+        self._event("mine", name, {"block": block, "pos": list(pos), "count": 1})
+        return True
+
+    def shoot(self, name, target, target_type="minecraft:zombie"):
+        """A ranged hit: `name`'s arrow hit `target`."""
+        self._event("hit", name, {"target": target, "target_type": target_type, "ranged": True,
+                                  "item": self.players[name].slots.get("mainhand")})
 
     def new_world(self):
         """The world is replaced: the datapack's counter starts again at 0, its queue empty."""
@@ -462,7 +681,7 @@ class FakeIo:
     def attribute_value(self, target, attribute, base=1.0) -> float:
         """Vanilla's value: base plus add_value, times (1 + add_multiplied_base), times each
         (1 + add_multiplied_total)."""
-        h = self.players.get(target) or self.entities.get(target)
+        h = self.players.get(target) or self.by_uuid.get(target)
         mods = [v for (a, _), v in h.modifiers.items() if a == attribute]
         value = base + sum(m[0] for m in mods if m[1] == "add_value")
         value *= 1 + sum(m[0] for m in mods if m[1] == "add_multiplied_base")

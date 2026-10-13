@@ -57,7 +57,8 @@ def test_bind_cast_unbind(rig):
     reply = r.op("bind", player="Steve", phrase="Zap it!", ability="zap", aliases=["zapp it", "zap"],
                  everyday_aliases=["zap"], by="test")
     entry = {"id": "steve.zap_it", "player": "Steve", "phrase": "zap it", "aliases": ["zapp it", "zap"],
-             "everyday_aliases": ["zap"], "ability": "zap", "cooldown_s": 2.5}
+             "everyday_aliases": ["zap"], "ability": "zap", "scenario": None, "args": {}, "by": "test",
+             "cooldown_s": 2.5}
     assert reply == {"ok": True, "id": "steve.zap_it", "version": 2, "entry": entry}
     assert r.op("cast", player="steve", phrase="ZAP IT", cast_id="1")["status"] == "fired"
     assert r.op("cast", player="Steve", phrase="zapp it", cast_id="2")["status"] == "cooldown"
@@ -128,3 +129,10 @@ def test_a_restart_with_nothing_changed_keeps_the_export_version(rig):
     assert r.op("incantations")["version"] == before["version"]
     r.op("bind", player="Alex", phrase="zap", ability="zap")   # a change still bumps it
     assert json.loads(path.read_text())["version"] == before["version"] + 1
+
+
+def test_the_export_says_who_bound_it(rig):
+    r = _zapper(rig)
+    r.op("bind", player="Steve", phrase="zap", ability="zap", by="task-41")
+    doc = json.loads((r.tmp / "incantations.json").read_text())
+    assert [e["by"] for e in doc["incantations"]] == ["task-41"]

@@ -1,21 +1,19 @@
-"""The world as a call sees it: every online player's place, state (health, food, armor, XP
-level, game mode, effects) and items by slot, the time and the weather (one `vfg state --json
---items`), the running copies (running.json, kept fresh by running.Refresher), the saved places
-(`vfg place list`), the incantations (`vfg incantation list --json`, the engine's bindings among
-them, marked), and the game engine's part (`vfg engine overview --json`, its classes and instances
-in one SSH call, the game engine spec): which abilities, items, scenarios, actors and marks it has,
-and who has what, kept small.
+"""The world as a call sees it (the game engine spec): every online player's place, state (health,
+food, armor, XP level, game mode, effects) and items by slot, the time and the weather (one `vfg
+state --json --items`), and the game engine's part (one `vfg engine overview --json`, one SSH
+call): RUNNING NOW, every instance the engine runs (a scenario, an ability granted, an item held,
+a mark borne, an actor); SAVED PLACES, the engine's own places; INCANTATIONS, its bindings; and
+ENGINE, every class it has, each with its summary, a scenario's and a mark's args with them.
 
-A brain loop reads the world once, at its start (Prototype_Brain_Loop), so it fetches the state
-then, unless a snapshot younger than STATE_FRESH_S is there to share; past STATE_WAIT_S it goes
-on with the last good one, and the fetch finishes for the next call. It is shown the items of the
-speaker alone (a report's: its task's player's), and RUNNING NOW in full; another player's items
-come from the loop's read tool (items()), from a state fetched for it. Respond takes the last
-snapshot without waiting: banter needs no fresh position. Respond's players have their place and
-state, no items. The incantations change rarely and are fetched at most every
-INCANTATIONS_TTL_S; until `vfg incantation` exists they are "none". The engine's part is fetched
-at most every ENGINE_TTL_S, and again after an engine action ran (engine_changed); while the engine
-is not running it says so, in one line.
+A brain loop reads the world once, at its start (Prototype_Brain_Loop), so it fetches the state and
+the engine then, unless a read younger than STATE_FRESH_S is there to share; past STATE_WAIT_S it
+goes on with the last good one, and the fetch finishes for the next call. An engine action that ran
+makes the next loop read the engine afresh (engine_changed). It is shown the items of the speaker
+alone (a report's: its task's player's); another player's items come from the loop's read tool
+(items()), from a state fetched for it, and a class's Config as written from the other
+(config()). Respond takes the last of each without waiting: banter needs no fresh position, and
+its players have their place and state, no items. While the engine is not running the engine's
+parts say so, in one line each.
 """
 
 from __future__ import annotations
@@ -23,14 +21,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import re
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from pathlib import Path
+from datetime import UTC, datetime
 from typing import Any
 
-from . import running
 from .config import log
 from .listing import readable
 from .vfg import Vfg, why
@@ -38,16 +34,13 @@ from .vfg import Vfg, why
 STATE_FRESH_S = 2.0
 STATE_WAIT_S = 3.0
 STATE_TIMEOUT_S = 15.0
-INCANTATIONS_TTL_S = 30.0
-ENGINE_TTL_S = 10.0
-ENGINE_TIMEOUT_S = 10.0
+ENGINE_TIMEOUT_S = 15.0
 ENGINE_DOWN = 6          # vfg's exit when the engine is not running
-ENGINE_SHOWN = 12        # the classes of one kind shown; the rest are counted
-ENGINE_SUMMARY = 80      # a class's summary, in characters
-ENGINE_KINDS = (("ability", "abilities"), ("item", "items"), ("scenario", "scenarios"), ("actor", "actors"),
-                ("mark", "marks"))
-ENGINE_NONE = "ENGINE: unknown"
-PLAYER_NAME = re.compile(r"^[A-Za-z0-9_]{1,16}$")
+SUMMARY_MAX = 120        # a class's summary, in characters
+DESCRIPTION_MAX = 80     # an arg's description
+RUNNING_MAX = 40         # the instances RUNNING NOW shows; the rest are counted
+KINDS = (("scenario", "SCENARIOS"), ("ability", "ABILITIES"), ("item", "ITEMS"), ("mark", "MARKS"),
+         ("actor", "ACTORS"))
 
 
 @dataclass
@@ -55,12 +48,13 @@ class Seen:
     """What one call is shown of the world."""
     players: str = "PLAYERS ONLINE: unknown"
     clock: str = "TIME: unknown. WEATHER: unknown."
-    running: str = "RUNNING NOW: none"
+    running: str = "RUNNING NOW: unknown"
     places: str = "SAVED PLACES: unknown"
-    incantations: str = "INCANTATIONS: none"
-    engine: str = ""
-    copies: dict[str, dict] = field(default_factory=dict)
-    known: set[str] | None = None  # the saved places' names; None when the list could not be read
+    incantations: str = "INCANTATIONS: unknown"
+    engine: str = "ENGINE: unknown"
+    instances: list[dict] = field(default_factory=list)  # the engine's instances, as overview gives them
+    classes: list[dict] = field(default_factory=list)    # the engine's classes, as overview gives them
+    known: set[str] | None = None  # the saved places' names; None when they could not be read
 
     def show(self) -> str:
         parts = ("THE WORLD NOW:", self.players, self.clock, self.running, self.places, self.incantations, self.engine)
@@ -146,64 +140,114 @@ def clock(world: dict[str, Any] | None) -> str:
     return f"TIME: {now}. WEATHER: {world.get('weather') or 'unknown'}."
 
 
-def incantation_lines(data: Any) -> str:
-    """`vfg incantation list --json` as one line each: the phrase, whose, and what it fires; an
-    engine binding, the ability it casts."""
-    items = data.get("incantations", data) if isinstance(data, dict) else data
-    if isinstance(items, dict):
-        items = [{"phrase": k, **(v if isinstance(v, dict) else {"action": v})} for k, v in items.items()]
-    rows = []
-    for x in items if isinstance(items, list) else []:
-        if not isinstance(x, dict):
-            rows.append(f"- {x}")
-            continue
-        if x.get("engine"):
-            rows.append(f"- \"{x.get('phrase', '?')}\" for {x.get('player') or '?'}: casts the engine ability "
-                        f"{x.get('ability') or '?'}")
-            continue
-        values = x.get("values") if isinstance(x.get("values"), dict) else {}
-        said = " ".join(f"{k}={json.dumps(v) if isinstance(v, (list, dict)) else v}" for k, v in values.items())
-        rows.append(f"- \"{x.get('phrase', '?')}\" for {x.get('player') or '?'}: {x.get('action') or '?'}"
-                    + (f" {said}" if said else ""))
-    if not rows:
-        return "INCANTATIONS: none"
-    return "INCANTATIONS (a phrase a player says that fires an action at once, without you):\n" + "\n".join(rows)
+def short(text: Any, n: int) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= n else text[:n - 1] + "…"
 
 
-def engine_lines(classes: Any, instances: Any) -> str:
-    """ENGINE, from `vfg engine overview --json`'s classes and instances: each kind's
-    classes by name with a short summary (marks by name alone), at most ENGINE_SHOWN a kind; then
-    what each player has (their abilities, items and marks) and what runs for the world (its
-    scenarios and actors)."""
-    got = [c for c in (classes or {}).get("classes") or [] if isinstance(c, dict) and c.get("id")] \
-        if isinstance(classes, dict) else []
+def utc(t: Any) -> str:
+    """An engine time (epoch seconds) as HH:MM:SS UTC, as the conversation's rows are; "" for none."""
+    if isinstance(t, bool) or not isinstance(t, (int, float)) or t < 1e9:
+        return ""
+    return datetime.fromtimestamp(t, UTC).strftime("%H:%M:%S")
+
+
+def value(v: Any) -> str:
+    """A value as an action writes it: text as it is, anything else as compact JSON."""
+    return v if isinstance(v, str) else json.dumps(v, ensure_ascii=False, separators=(",", ":"))
+
+
+def args_of(c: dict) -> list[dict]:
+    """A class's Args as `classes` gives them, [{"name", "type", "default", "bounds", "description"}]."""
+    spec = c.get("args")
+    if isinstance(spec, dict):
+        spec = [dict(v, name=k) for k, v in spec.items() if isinstance(v, dict)]
+    return [x for x in spec or [] if isinstance(x, dict) and x.get("name")]
+
+
+def arg_line(x: dict) -> str:
+    """`    args.count: whole number 1..100, default 10: how many fall`."""
+    kind = str(x.get("type") or "?")
+    b = x.get("bounds") if isinstance(x.get("bounds"), dict) else {}
+    lo, hi = b.get("ge", b.get("gt")), b.get("le", b.get("lt"))
+    if lo is not None or hi is not None:
+        kind += f" {'' if lo is None else value(lo)}..{'' if hi is None else value(hi)}"
+    default = f", default {value(x['default'])}" if "default" in x and x["default"] is not None else ""
+    said = short(x.get("description"), DESCRIPTION_MAX)
+    return f"    args.{x['name']}: {kind}{default}" + (f": {said}" if said else "")
+
+
+def engine_lines(classes: list[dict]) -> str:
+    """ENGINE: every class the engine has, by kind, scenarios first: its id and summary, and under a
+    scenario and a mark its args, one line each."""
+    got = [c for c in classes if isinstance(c, dict) and c.get("id")]
     if not got:
-        return "ENGINE: no abilities, items, scenarios or actors yet"
+        return "ENGINE: no classes yet (nothing to start, grant, give or apply)"
     rows = []
-    for kind, words in ENGINE_KINDS:
+    for kind, head in KINDS:
         mine = sorted((c for c in got if c.get("kind") == kind), key=lambda c: str(c["id"]))
         if not mine:
             continue
-        shown = [str(c["id"]) if kind == "mark" else
-                 f"{c['id']} ({short(str(c.get('summary') or '').strip() or 'no summary', ENGINE_SUMMARY)})"
-                 for c in mine[:ENGINE_SHOWN]]
-        more = f", and {len(mine) - ENGINE_SHOWN} more" if len(mine) > ENGINE_SHOWN else ""
-        rows.append(f"- {words}: {', '.join(shown)}{more}")
-    have: dict[str, list[str]] = {}
-    world: list[str] = []
-    for i in (instances or {}).get("instances") or [] if isinstance(instances, dict) else []:
-        if not isinstance(i, dict) or not i.get("id"):
+        rows.append(f"{head}:")
+        for c in mine:
+            rows.append(f"- {c['id']}: {short(c.get('summary') or 'no summary', SUMMARY_MAX)}")
+            rows += [arg_line(x) for x in args_of(c)] if kind in ("scenario", "mark") else []
+    return ("ENGINE (every class the game engine has, one version for everyone: a scenario is started, an "
+            "ability granted, an item given, a mark applied; under each scenario and mark its args, each by its "
+            "name):\n" + "\n".join(rows))
+
+
+def running_lines(instances: list[dict]) -> str:
+    """RUNNING NOW: every instance the engine runs, by kind: its name (what engine_stop takes for a
+    scenario's), its class, whose it is, and when it ends."""
+    got = [i for i in instances if isinstance(i, dict) and i.get("instance")]
+    if not got:
+        return "RUNNING NOW: nothing (no scenario runs, and nobody has an ability, an item or a mark)"
+    order = dict((k, n) for n, (k, _) in enumerate(KINDS))
+    got.sort(key=lambda i: (order.get(i.get("kind"), len(order)), str(i.get("instance"))))
+    rows = []
+    for i in got[:RUNNING_MAX]:
+        kind, user = str(i.get("kind") or "?"), i.get("user")
+        whose = {"ability": f"granted to {user}", "item": f"held by {user}", "mark": f"on {user}",
+                 "actor": "in the world", "scenario": "for the world"}.get(kind, str(user or ""))
+        if kind in ("ability", "item", "mark") and not user:
+            whose = "nobody's"
+        ends = utc(i.get("ends"))
+        rows.append(f"- {i['instance']}: {kind} {i.get('id') or '?'}, {whose}" + (f", ends {ends} UTC" if ends else ""))
+    if len(got) > RUNNING_MAX:
+        rows.append(f"- and {len(got) - RUNNING_MAX} more")
+    return ("RUNNING NOW (every instance the engine runs: its name, its class, whose, when it ends; a scenario "
+            "is stopped by its name, an ability revoked, a mark cleared, an item taken):\n" + "\n".join(rows))
+
+
+def places_lines(places: list[dict]) -> tuple[str, set[str]]:
+    """SAVED PLACES, `castle 197 68 251 overworld (castle_steve)` each, and their names."""
+    got = [p for p in places if isinstance(p, dict) and p.get("name")]
+    if not got:
+        return "SAVED PLACES: none", set()
+    shown = []
+    for p in sorted(got, key=lambda p: str(p["name"])):
+        pos = p.get("pos") if isinstance(p.get("pos"), (list, tuple)) else []
+        at = " ".join(str(round(c)) for c in pos if isinstance(c, (int, float)) and not isinstance(c, bool)) or "?"
+        dim = str(p.get("dim") or "?").removeprefix("minecraft:")
+        shown.append(f"{p['name']} {at} {dim}" + (f" ({p['by']})" if p.get("by") else ""))
+    return "SAVED PLACES: " + "; ".join(shown), {str(p["name"]) for p in got}
+
+
+def incantation_lines(items: list[dict]) -> str:
+    """INCANTATIONS: each binding, a line: the phrase, whose, and the ability it casts or the
+    scenario it starts with its set args."""
+    rows = []
+    for x in items:
+        if not isinstance(x, dict):
             continue
-        user, kind = str(i.get("user") or ""), str(i.get("kind") or "")
-        if kind in ("scenario", "actor"):
-            world.append(f"{kind} {i['id']} as {i.get('instance') or '?'}")
-        elif PLAYER_NAME.match(user):
-            have.setdefault(user, []).append(f"{kind} {i['id']}")
-    rows += [f"- {who} has: {', '.join(dict.fromkeys(what))}" for who, what in sorted(have.items())]
-    if world:
-        rows.append(f"- running for the world: {', '.join(world)}")
-    return ("ENGINE (the game engine's own abilities, items, scenarios, actors and marks, one version for "
-            "everyone; the engine_ actions grant, give, start and bind them):\n" + "\n".join(rows))
+        does = (f"starts {x['scenario']}" + (f" {value(x['args'])}" if x.get("args") else "") if x.get("scenario")
+                else f"casts {x.get('ability') or '?'}")
+        rows.append(f"- \"{x.get('phrase', '?')}\" for {x.get('player') or '?'}: {does}")
+    if not rows:
+        return "INCANTATIONS: none"
+    return ("INCANTATIONS (a phrase a player says that casts an ability or starts a scenario at once, without "
+            "you):\n" + "\n".join(rows))
 
 
 def parsed(r, refused: bool = False) -> dict | None:
@@ -218,27 +262,16 @@ def parsed(r, refused: bool = False) -> dict | None:
     return got if isinstance(got, dict) else None
 
 
-def short(text: str, n: int) -> str:
-    text = " ".join(text.split())
-    return text if len(text) <= n else text[:n - 1] + "…"
-
-
 class World:
-    def __init__(self, vfg: Vfg, running_file: Path, catalog, *, refresher: running.Refresher | None = None,
-                 clock=time.monotonic):
+    def __init__(self, vfg: Vfg, *, clock=time.monotonic):
         self.vfg = vfg
-        self.running_file = running_file
-        self.catalog = catalog
-        self.refresher = refresher
         self.clock = clock
         self.state: dict[str, Any] | None = None   # the last good `vfg state --json --items`
         self.state_at = float("-inf")
         self.fetching: asyncio.Task | None = None
-        self.incantations = "INCANTATIONS: none"
-        self.incantations_at = float("-inf")
-        self.engine = ENGINE_NONE
+        self.engine: dict[str, Any] | None = None  # the last `vfg engine overview --json`, or why not
         self.engine_at = float("-inf")
-        self.later: set[asyncio.Task] = set()
+        self.engine_fetching: asyncio.Task | None = None
 
     async def fresh_state(self, wait: float = STATE_WAIT_S, younger: float = STATE_FRESH_S) -> dict[str, Any] | None:
         """The state now: a snapshot younger than `younger` s, else a fetch, waited for up to
@@ -268,78 +301,81 @@ class World:
         self.state, self.state_at = got, self.clock()
         return got
 
-    async def places(self) -> tuple[str, set[str] | None]:
-        """The `SAVED PLACES: …` line, from `vfg place list` (vfg answers from its 30 s cache), and
-        the places' names (None when the list could not be read)."""
-        r = await self.vfg("place", "list", timeout=10)
-        if r.code != 0:
-            log("world", f"vfg place list failed ({why(r)})")
-            return "SAVED PLACES: unknown (the list could not be read)", None
-        lines = [x.strip() for x in r.stdout.splitlines() if x.strip() and x.strip() != "none"]
-        return "SAVED PLACES: " + ("; ".join(lines) or "none"), {x.split()[0] for x in lines}
-
-    async def fetch_incantations(self) -> str:
-        if self.clock() - self.incantations_at < INCANTATIONS_TTL_S:
-            return self.incantations
-        self.incantations_at = self.clock()
-        r = await self.vfg("incantation", "list", "--json", timeout=10)
-        try:
-            self.incantations = incantation_lines(json.loads(r.stdout)) if r.code == 0 else "INCANTATIONS: none"
-        except ValueError:
-            self.incantations = "INCANTATIONS: none"
-        return self.incantations
-
-    async def fetch_engine(self) -> str:
-        """The ENGINE part: its classes and who has what (its instances), from one `vfg engine
-        overview --json` (one SSH call), at most every ENGINE_TTL_S; "not running" while the
-        engine is down, "unknown" when its classes could not be read. Instances the engine would
-        not give leave the classes shown, and a log line."""
-        if self.clock() - self.engine_at < ENGINE_TTL_S:
+    async def fresh_engine(self, wait: float = STATE_WAIT_S, younger: float = STATE_FRESH_S) -> dict[str, Any] | None:
+        """The engine's part now, as fresh_state is the state: an overview younger than `younger` s
+        (and none since an engine action ran), else a fetch, waited for up to `wait` s."""
+        if self.engine is not None and self.clock() - self.engine_at < younger:
             return self.engine
-        self.engine_at = self.clock()
+        if self.engine_fetching is None or self.engine_fetching.done():
+            self.engine_fetching = asyncio.create_task(self._fetch_engine(), name="engine")
+        if wait > 0:
+            try:
+                await asyncio.wait_for(asyncio.shield(self.engine_fetching), wait)
+            except TimeoutError:
+                log("world", f"vfg engine overview took over {wait:g} s: the last one there is")
+        return self.engine
+
+    async def _fetch_engine(self) -> dict[str, Any] | None:
+        """One `vfg engine overview --json`: {"classes", "instances", "places", "incantations"} as it
+        gave them, a part it refused left out (its error logged); or {"down": why} while the engine
+        is not running, {"error": why} when it could not be read (the last good parts kept)."""
         r = await self.vfg("engine", "overview", "--json", timeout=ENGINE_TIMEOUT_S)
         if r.code == ENGINE_DOWN:
-            self.engine = "ENGINE: not running (vfg-engine is down): no engine action works now"
+            self.engine, self.engine_at = {"down": why(r)}, self.clock()
             return self.engine
-        got = parsed(r, refused=True)   # exit 1: the engine refused one of the two, the other kept
-        if got is None or not isinstance(got.get("classes"), list):
+        got = parsed(r, refused=True)   # exit 1: the engine refused a part, the others kept
+        if got is None:
             log("world", f"vfg engine overview failed ({why(r)})")
-            self.engine = f"{ENGINE_NONE} (it could not be read: {why(r)})"
+            last = self.engine if self.engine and "down" not in self.engine else {}
+            self.engine = dict(last, error=why(r))
             return self.engine
         if not got.get("ok"):
             log("world", f"vfg engine overview: {got.get('error') or why(r)}")
-        self.engine = engine_lines(got, got if isinstance(got.get("instances"), list) else None)
-        return self.engine
+        self.engine, self.engine_at = got, self.clock()
+        return got
 
     def engine_changed(self) -> None:
-        """An engine action ran: the next loop reads the engine again."""
+        """An engine action ran: the next loop reads the engine afresh."""
         self.engine_at = float("-inf")
 
-    def copies(self) -> dict[str, dict]:
-        return running.read(self.running_file)
+    def instances(self) -> list[dict]:
+        """The engine's instances as last read."""
+        got = (self.engine or {}).get("instances")
+        return [i for i in got if isinstance(i, dict)] if isinstance(got, list) else []
 
-    async def seen(self, *, wait: float = STATE_WAIT_S, items: bool | Iterable[str] = True,
-                   full: bool = False) -> Seen:
-        """The world for one call: the state, the places, the incantations and the engine's part at
-        once; `items` as players() takes it, and with `full` RUNNING NOW as the brain sees it
-        (running.full)."""
-        state, (places, known), incantations, engine = await asyncio.gather(
-            self.fresh_state(wait), self.places(), self.fetch_incantations(), self.fetch_engine())
-        copies = self.copies()
-        shown = running.full(copies, self.catalog) if full else running.block(copies, self.catalog)
-        return Seen(players=players(state, items), clock=clock(state), running=shown, places=places,
-                    incantations=incantations, engine=engine, copies=copies, known=known)
+    def classes(self) -> list[dict]:
+        """The engine's classes as last read."""
+        got = (self.engine or {}).get("classes")
+        return [c for c in got if isinstance(c, dict)] if isinstance(got, list) else []
 
-    async def config(self, name: str) -> tuple[bool, str]:
-        """The read tool for an engine class's Config: (True, `made/main/content/fireball.py, lines 8
-        to 17: the Config of Fireball, as written` and the class as written), or (False, why not),
-        from `vfg engine config get`, never a copy kept from before (it may have been rewritten)."""
-        r = await self.vfg("engine", "config", "get", name.strip(), timeout=ENGINE_TIMEOUT_S + 10)
-        if r.code == 0 and r.stdout.strip():
-            return True, r.stdout.rstrip("\n")
-        if r.code == ENGINE_DOWN:
-            return False, "the engine is not running: nothing read"
-        return False, why(r)
+    def engine_parts(self) -> tuple[str, str, str, str, set[str] | None]:
+        """(RUNNING NOW, SAVED PLACES, INCANTATIONS, ENGINE, the places' names) from the last read."""
+        e = self.engine or {}
+        if "down" in e:
+            down = "not running (vfg-engine is down): nothing the engine has can be started, granted or bound now"
+            return (f"RUNNING NOW: unknown, the engine is {down}", "SAVED PLACES: unknown (the engine is not running)",
+                    "INCANTATIONS: unknown (the engine is not running)", f"ENGINE: {down}", None)
+        why_not = f" (it could not be read: {short(e.get('error'), 200)})" if e.get("error") else ""
+
+        def part(key, show, empty):
+            got = e.get(key)
+            return show([x for x in got if isinstance(x, dict)]) if isinstance(got, list) else empty + why_not
+        running = part("instances", running_lines, "RUNNING NOW: unknown")
+        incantations = part("incantations", incantation_lines, "INCANTATIONS: unknown")
+        engine = part("classes", engine_lines, "ENGINE: unknown")
+        if isinstance(e.get("places"), list):
+            places, known = places_lines([p for p in e["places"] if isinstance(p, dict)])
+        else:
+            places, known = "SAVED PLACES: unknown" + why_not, None
+        return running, places, incantations, engine, known
+
+    async def seen(self, *, wait: float = STATE_WAIT_S, items: bool | Iterable[str] = True) -> Seen:
+        """The world for one call: the state and the engine at once; `items` as players() takes it."""
+        state, _ = await asyncio.gather(self.fresh_state(wait), self.fresh_engine(wait))
+        running, places, incantations, engine, known = self.engine_parts()
+        return Seen(players=players(state, items), clock=clock(state), running=running, places=places,
+                    incantations=incantations, engine=engine, instances=self.instances(), classes=self.classes(),
+                    known=known)
 
     async def items(self, player: str) -> tuple[bool, str]:
         """The read tool: (True, `Alex's items, by slot: …`) from a state fetched for it, or (False,
@@ -357,24 +393,29 @@ class World:
                 return True, items_line(p)
         return False, f"{player} is not online"
 
-    async def glance(self) -> Seen:
-        """For Respond: the last state, never waited for (one is fetched for the next call), with
-        no items, the running copies, the incantations and the engine's part as last fetched; no places."""
-        state = await self.fresh_state(wait=0)
-        copies = self.copies()
-        return Seen(players=players(state, items=False), clock=clock(state),
-                    running=running.block(copies, self.catalog), places="", incantations=self.incantations,
-                    engine=self.engine if self.engine != ENGINE_NONE else "", copies=copies)
+    async def config(self, name: str) -> tuple[bool, str]:
+        """The read tool for an engine class's Config: (True, `made/main/content/fireball.py, lines 8
+        to 17: the Config of Fireball, as written` and the class as written), or (False, why not),
+        from `vfg engine config get`, never a copy kept from before (it may have been rewritten)."""
+        r = await self.vfg("engine", "config", "get", name.strip(), timeout=ENGINE_TIMEOUT_S + 10)
+        if r.code == 0 and r.stdout.strip():
+            return True, r.stdout.rstrip("\n")
+        if r.code == ENGINE_DOWN:
+            return False, "the engine is not running: nothing read"
+        return False, why(r)
 
-    def refetch_running(self) -> None:
-        """After a run, an edit or a stop: fetch the running copies again, in the background."""
-        if self.refresher is not None:
-            t = asyncio.create_task(self.refresher.fetch(), name="running refetch")
-            self.later.add(t)
-            t.add_done_callback(self.later.discard)
+    async def glance(self) -> Seen:
+        """For Respond: the last state and the last engine read, never waited for (they are fetched
+        for the next call), with no items."""
+        state = await self.fresh_state(wait=0)
+        await self.fresh_engine(wait=0)
+        running, places, incantations, engine, known = self.engine_parts()
+        return Seen(players=players(state, items=False), clock=clock(state), running=running, places="",
+                    incantations=incantations, engine=engine, instances=self.instances(), classes=self.classes(),
+                    known=known)
 
     async def close(self) -> None:
-        for t in [self.fetching, *self.later]:
+        for t in (self.fetching, self.engine_fetching):
             if t is not None and not t.done():
                 t.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):

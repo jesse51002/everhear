@@ -22,7 +22,10 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 
+from . import args as argtypes
+from .beings import ActorBeing
 from .handle import KEEP_POTION_EVERY_S, KEEP_POTION_S
 from .io import GiveEffect
 from .records import Record
@@ -30,14 +33,30 @@ from .records import Record
 log = logging.getLogger("vfg_engine")
 
 UNTIL_STOPPED_WORD = "until stopped"
+UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
-def apply(rt, who: str, mark: str, seconds=None, source=None, owner=None) -> str:
-    """Put `mark` on `who`; the instance id (the one refreshed, for a refreshing mark already
-    there). ValueError when there is no such mark or no such bearer."""
+def mob_body(rt, uuid: str):
+    """The body of a vanilla mob (one the engine did not spawn) a mark is put on: tracked while it
+    is marked; when it is gone its marks end."""
+    body = rt.mobs.get(uuid)
+    if body is None:
+        snap = rt.snapshot.tracked.get(uuid) or rt.io_mirror().get(uuid)
+        body = rt.mobs[uuid] = ActorBeing(rt, uuid, None, snap.dim if snap else "minecraft:overworld",
+                                          snap.pos if snap else (0.0, 0.0, 0.0))
+        body.snap = snap
+        rt.confirmed.add(uuid)        # not in the next snapshot: gone
+    return body
+
+
+def apply(rt, who: str, mark: str, seconds=None, source=None, owner=None, args=None) -> str:
+    """Put `mark` on `who` (a player, an actor, or any mob by uuid) with its Args; the instance id
+    (the one refreshed, for a refreshing mark already there). ValueError, in words, when there is
+    no such mark, no such bearer, or the args do not fit."""
     info = rt.classes.get(mark)
     if info is None or info.kind != "mark":
         raise ValueError("%r is not a loaded mark" % mark)
+    given = argtypes.validate(info.cls.Args, args, rt).model_dump(mode="json")
     if seconds is not None:
         seconds = float(seconds)
         if not (seconds >= 0):
@@ -46,13 +65,18 @@ def apply(rt, who: str, mark: str, seconds=None, source=None, owner=None) -> str
             seconds = UNTIL_STOPPED_WORD          # saved as words: JSON has no infinity
     bearer = rt.being(who)
     if bearer is None:
-        if "-" in str(who):
-            raise ValueError("%r is not a player or an actor the engine spawned" % who)
-        bearer = rt.ensure_player(who)
+        if UUID_RE.match(str(who)):
+            bearer = mob_body(rt, str(who).lower())
+        elif "-" in str(who):
+            raise ValueError("%r is not a player's name or an entity's uuid" % who)
+        else:
+            bearer = rt.ensure_player(who)
     there = [r for r in rt.records_of(bearer.key, "mark") if r.cid == mark]
     if there and info.config.again == "refresh":
         rec = there[0]
-        rec.args["seconds"] = seconds
+        rec.notes["seconds"] = seconds
+        if args is not None:
+            rec.args = given
         if rec.started:
             rt.later(lambda: set_end(rt, rec))
         return rec.iid
@@ -60,14 +84,14 @@ def apply(rt, who: str, mark: str, seconds=None, source=None, owner=None) -> str
     if info.config.again == "stack":
         stack = max([r.stack or 0 for r in there] + [0]) + 1
     rec = rt.add(Record(rt.new_iid("mark", mark), "mark", mark, bearer.key, rt.now, source=source,
-                        owner=owner, stack=stack, args={"seconds": seconds}))
+                        owner=owner, stack=stack, args=given, notes={"seconds": seconds}))
     rt.later(lambda: rt.start(rec))
     return rec.iid
 
 
 def set_end(rt, rec: Record):
     """The mark's end: the seconds it was applied for, else its duration_s, from now."""
-    seconds = rec.args.get("seconds")
+    seconds = rec.notes.get("seconds")
     if seconds is None:
         ok, seconds = rt.formula(rec, "duration_s")
         if not ok:
@@ -102,10 +126,11 @@ def step(rt):
             continue
         for owned in [rec.owned] + [r.owned for r in rec.runs.values()]:
             for effect, keep in owned.potions.items():
-                amplifier, particles, due = keep
+                amplifier, particles, due = keep[:3]
+                seconds = keep[3] if len(keep) > 3 else KEEP_POTION_S
                 if due <= rt.now and rt.online(rec.user):
-                    rt.queue(GiveEffect(rec.user, effect, KEEP_POTION_S, amplifier, particles), rt.potion_reply)
-                    keep[2] = rt.now + KEEP_POTION_EVERY_S
+                    rt.queue(GiveEffect(rec.user, effect, seconds, amplifier, particles), rt.potion_reply)
+                    keep[2] = rt.now + (1.0 if seconds >= 10 else KEEP_POTION_EVERY_S)
 
 
 def died(rt, who: str):

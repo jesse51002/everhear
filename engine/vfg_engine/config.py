@@ -21,9 +21,10 @@ from __future__ import annotations
 
 import inspect
 import math
+import re
 from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError
 from pydantic._internal._model_construction import ModelMetaclass
 
 __all__ = ["AbilityConfig", "MarkConfig", "ItemConfig", "ActorConfig", "ScenarioConfig",
@@ -121,6 +122,16 @@ class MarkConfig(BaseConfig):
     again: Literal["refresh", "stack"] = "refresh"
 
 
+_COLORS = ("black", "dark_blue", "dark_green", "dark_aqua", "dark_red", "dark_purple", "gold", "gray",
+           "dark_gray", "blue", "green", "aqua", "red", "light_purple", "yellow", "white")
+
+
+def _color(v):
+    if v is None or v in _COLORS or re.match(r"^#[0-9a-fA-F]{6}$", v):
+        return v
+    raise ValueError("%r is not a colour: one of %s, or #rrggbb" % (v, ", ".join(_COLORS)))
+
+
 class ItemConfig(BaseConfig):
     """Required: summary, base (the vanilla item it is made on), name, active_in: where it
     counts as held, "mainhand", "offhand", "hands" (either), "worn" (an armour slot) or
@@ -131,12 +142,20 @@ class ItemConfig(BaseConfig):
     base: str
     name: str
     active_in: Literal["mainhand", "offhand", "hands", "worn", "inventory"]
+    # its look (all optional), given as the stack's components; never vanilla attribute_modifiers
+    model: str | None = None                       # item_model: "minecraft:blaze_rod" looks like a blaze rod
+    color: Annotated[str | None, AfterValidator(_color)] = None   # its name's colour: "gold", "#ff8800"
+    lore: list[str] = []                           # lines under its name
+    glint: bool | None = None                      # the enchanted shimmer, on or off
+    enchantments: dict[str, Annotated[int, Field(ge=1, le=255)]] = {}   # "sharpness": 5
+    unbreakable: bool = False
 
 
 class ActorConfig(BaseConfig):
     """Required: summary, entity_type ("minecraft:wither_skeleton"), health, size (its scale,
-    1 is vanilla's), damage (its melee hit). Optional: the name shown over it, the abilities it
-    is granted when it spawns, and its equipment (slot -> vanilla item id)."""
+    1 is vanilla's), damage (its melee hit). Optional: the name shown over it (name_visible: always
+    shown), the abilities it is granted when it spawns, its equipment (slot -> vanilla item id; it
+    never drops), glowing, and extra SNBT for its summon (nbt)."""
 
     REQUIRED = ("summary", "entity_type", "health", "size", "damage")
 
@@ -145,7 +164,10 @@ class ActorConfig(BaseConfig):
     size: Annotated[float, Field(ge=0.0625, le=16)]
     name: str | None = None
     abilities: list[str] = []
-    equipment: dict[str, str] = {}
+    equipment: dict[str, str] = {}      # slot -> vanilla item; it never drops
+    glowing: bool = False
+    name_visible: bool = False
+    nbt: str | None = None              # extra SNBT for its summon, merged last but the spawn's own
 
 
 class ScenarioConfig(BaseConfig):

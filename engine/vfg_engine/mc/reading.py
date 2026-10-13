@@ -20,7 +20,8 @@ from .commands import uuid_str
 GAMEMODES = {0: "survival", 1: "creative", 2: "adventure", 3: "spectator"}
 SLOTS = ("mainhand", "offhand", "head", "chest", "legs", "feet")
 # The mirror's own tag, which the datapack puts on each entity it reads in a pass.
-OWN_TAGS = frozenset({"everhear.m", "everhear.hit", "everhear.me", "everhear.ray_self"})
+OWN_TAGS = frozenset({"everhear.m", "everhear.hit", "everhear.me", "everhear.ray_self", "everhear.ours",
+                      "everhear.done", "everhear.ign", "everhear.lava", "everhear.bb"})
 RAY_UNIT = 32.0          # the raycast's distances are in 1/32 of a block
 
 
@@ -83,7 +84,7 @@ def facing(yaw: float, pitch: float) -> tuple[float, float, float]:
     return (-math.sin(y) * math.cos(p), -math.sin(p), math.cos(y) * math.cos(p))
 
 
-def _vec(v, default=(0.0, 0.0, 0.0)) -> tuple[float, float, float]:
+def _vec(v, default=(0.0, 0.0, 0.0)):
     try:
         return (float(v[0]), float(v[1]), float(v[2]))
     except (TypeError, ValueError, IndexError):
@@ -139,6 +140,25 @@ def event(doc: dict, tables: Tables, names: Names) -> RawEvent:
         data["target_type"] = tables.type(d.get("target_type"))
         if d.get("item"):
             data["item"] = d["item"]
+        if kind == "hit":
+            data["ranged"] = bool(d.get("ranged", 0))
+    elif kind == "land":
+        data.update(item=d.get("item"), hit=str(d.get("hit", "block")), pos=_vec(d.get("pos"), None),
+                    dim=d.get("dim"), projectile_type=tables.type(d.get("projectile_type")))
+        if isinstance(d.get("projectile"), list) and len(d["projectile"]) == 4:
+            data["projectile"] = uuid_str(d["projectile"])
+        if d.get("block"):
+            data["block"] = str(d["block"])
+        if "target" in d:
+            data["target"] = who(d["target"], names)
+            data["target_type"] = tables.type(d.get("target_type"))
+    elif kind == "mine":
+        data.update(block=str(d.get("block", "")), count=int(d.get("count", 1) or 1))
+    elif kind == "death":
+        if isinstance(d.get("pos"), list) and len(d["pos"]) == 3:
+            data["pos"] = tuple(int(c) for c in d["pos"])
+        if d.get("dim"):
+            data["dim"] = str(d["dim"])
     elif kind == "hurt":
         data["amount"] = round(float(d.get("amount", 0.0)), 3)
         data["absorbed"] = round(float(d.get("absorbed", 0.0)), 3)
@@ -183,6 +203,7 @@ def player(doc: dict, name: str, tables: Tables) -> PlayerSnap:
         name=name, uuid=uuid_str(doc["u"]), dim=str(doc.get("d", "unknown")), pos=pos, eye=eye,
         yaw=yaw, pitch=pitch, facing=face, health=health, max_health=float(doc.get("mh", 20.0)),
         alive=health > 0, sneaking=bool(doc.get("s", 0)), gamemode=GAMEMODES.get(int(doc.get("g", 0)), "survival"),
+        on_ground=bool(doc.get("og", 0)), sprinting=bool(doc.get("sp", 0)),
         held=held, carried=tuple(carried), effects=tuple(effect(e) for e in doc.get("fx") or [] if isinstance(e, dict)),
         looking_at=look(doc.get("l"), eye, face, tables))
 
@@ -203,5 +224,7 @@ def entity(doc: dict, tables: Tables, names: Names | None = None) -> EntitySnap 
     if kind == "minecraft:player" and names is not None:
         name = names.name(u) or name
     tags = frozenset(str(t) for t in doc.get("g") or []) - OWN_TAGS
+    owner = who(doc.get("o"), names) if names is not None else (
+        uuid_str(doc["o"]) if isinstance(doc.get("o"), list) and len(doc["o"]) == 4 else None)
     return EntitySnap(uuid=u, type=kind, dim=str(doc.get("d", "unknown")), pos=_vec(doc.get("p")),
-                      health=health, tags=tags, name=name)
+                      health=health, tags=tags, name=name, owner=owner, in_ground=bool(doc.get("ig", 0)))

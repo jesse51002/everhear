@@ -6,44 +6,53 @@ saying what to send instead, which goes back to the model as that tool's error; 
 call runs. The adapters turn their harness's own permission checks off, so the guard is the only
 gate.
 
-What a call it lets through makes (a script, an action, a preset, a copy) it records (made_by),
-and the runner gives the brain that record, checked against the disk (made_now), with the report.
-Before such a call runs, it gives it to the run's snapshot (putback.py), which keeps what the call
-is about to change so code can put it back after a cancel or a run that reached its limit."""
+An implementer writes engine classes (made/<server>/content/<id>.py) and their tests, and sets up
+what the job needs through `vfg engine` in exactly the forms the PC's contract gives (CONTRACT2:
+"The vfg commands an implementer may run"). What a call it lets through makes (a class, a binding,
+a grant) it records (made_by, note_written), and the runner gives the brain that record, checked
+against the disk and the engine (made_now), with the report. Before such a call runs, it gives it
+to the run's snapshot (putback.py), which keeps what the call is about to change so code can put it
+back after a cancel or a run that reached its limit."""
 import ast
 import glob
 import hashlib
 import json
 import os
 import re
-import time
+import unicodedata
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, Callable
 
-from . import actions
 from .config import ROOT, log
-from .examples import server_state
-from .vfg import VfgRunner
+from .vfg import VfgRunner, engine_read
 
 
-_COMMANDS = []
+_COMMANDS: list[frozenset] = []
+
+# The engine's list of the owner's commands, which it checks every command it sends against.
+COMMANDS_PY = os.path.join("engine", "vfg_engine", "mc", "commands.py")
 
 
 def refused() -> frozenset:
-    """Server commands that are the owner's to run: the one list, scripts/_lib/commands.py, which
-    mc.py, vfg and the actions use too. Loaded by path (it is deployed with the kit, not a
-    package), on first use."""
+    """Server commands that are the owner's to run: REFUSED in engine/vfg_engine/mc/commands.py,
+    the list the engine holds every command it sends to (`vfg cmd` goes through the library's
+    command scenario). Read as text, since that module imports the rest of the engine; on first
+    use. A file without the list is an error: the guard never runs without it."""
     if not _COMMANDS:
-        import importlib.util
-        path = os.path.join(ROOT, "scripts", "_lib", "commands.py")
-        spec = importlib.util.spec_from_file_location("vfg_commands", path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        _COMMANDS.append(mod)
-    return _COMMANDS[0].REFUSED
+        path = os.path.join(ROOT, COMMANDS_PY)
+        with open(path, encoding="utf-8") as f:
+            tree = ast.parse(f.read(), path)
+        for node in tree.body:
+            named = any(isinstance(t, ast.Name) and t.id == "REFUSED" for t in getattr(node, "targets", ()))
+            if named and isinstance(node.value, ast.Call) and len(node.value.args) == 1:
+                _COMMANDS.append(frozenset(ast.literal_eval(node.value.args[0])))
+                break
+        else:
+            raise RuntimeError("%s has no REFUSED = frozenset(...): the owner's commands are unknown" % path)
+    return _COMMANDS[0]
 
-# Server-wide settings an implementer may not change (scripts/_lib/mc.py does not refuse them:
-# seeded games use the world border).
+# Server-wide settings an implementer may not change (the engine does not refuse them: a seeded game
+# scenario may use the world border).
 SERVER_WIDE = frozenset(["setworldspawn", "defaultgamemode", "difficulty", "worldborder"])
 
 
@@ -55,38 +64,21 @@ class DENY:
         return "%s changes the whole server: implementers may not run it. Leave it out and say so in your report." % word
 
     @staticmethod
-    def library(server: str) -> str:
-        return ("scripts/ is the library (its _presets/ and _lib/ too) and is read-only during play. Copy what you "
-                "need into this server's folder instead: vfg script new <name> --from <script> --preset <preset> "
-                "makes made/%s/scripts/<name>/main.py and its action, and you edit those." % server)
-
-    @staticmethod
-    def library_actions(server: str) -> str:
-        return ("actions/ is the library's and read-only during play. A new action goes in made/%s/actions/<name>.py: "
-                "vfg script new writes one with its script, and a variant is a class there that subclasses a library "
-                "action (from actions.railgun import Railgun)." % server)
-
-    @staticmethod
     def made_only(server: str) -> str:
-        return ("You write only in this server's folder, made/%s/: a script and its action made with vfg script new, "
-                "a variant in made/%s/actions/, a preset with vfg preset save." % (server, server))
+        return ("Refused: you write only made/%s/content/<id>.py, one class a file, and made/%s/tests/<id>.py, its "
+                "test. engine/ is read-only: copy what you need from engine/library/ into your own class."
+                % (server, server))
 
     @staticmethod
-    def running(name: str, inst: dict, server: str) -> str:
-        who = inst.get("copy") or inst.get("instance") or name
-        task = inst.get("task")
-        return ("Refused: %s%s runs made/%s/scripts/%s/, and code a running copy uses is not changed: "
-                "vfg script new <your task> --from %s copies it, with its action, for you to Edit; then vfg script stop "
-                "%s and run the new action." % (who, " (%s)" % task if task and task != who else "", server, name,
-                                                 name, who))
+    def content_name(server: str) -> str:
+        return ("Refused: a class's file is made/%s/content/<id>.py and its test made/%s/tests/<id>.py, the id a "
+                "letter, then up to 63 of a-z, 0-9 and _ (the class's name in snake_case)." % (server, server))
 
-    library_flag = "--library is for coding sessions: leave it out, and vfg script new writes into this server's folder."
     expansion = "Write the server command literally inside single quotes: no $( ), backticks or variables in a vfg cmd."
     # An implementer's Bash: each says what to send instead, in one line.
-    shape = ("Refused: that program does not run here. These do: vfg action|cmd|script|preset save|state|place|history ..., "
-             "python3 -m py_compile <file>, sleep N, echo, and ls, cat, sed -n 'A,Bp', grep, head, tail on files in scripts/, "
-             "actions/ and made/; "
-             "join them with && or ;, and pipe vfg into head -n N, tail -n N or grep <pattern>.")
+    shape = ("Refused: that program does not run here. These do: vfg engine|cmd|test|state|history ..., "
+             "python3 -m py_compile <file>, sleep N, echo, and ls, cat, sed -n 'A,Bp', grep, head, tail on files in "
+             "engine/ and made/; join them with && or ;, and pipe vfg into head -n N, tail -n N or grep <pattern>.")
     variables = ("Refused: no $( ), backticks or variables, $? included: write every value out; each command's output "
                  "and exit status come back to you as they are.")
     loop = "Refused: no for, while or if: write each command out, joined with ; (vfg cmd 'a'; vfg cmd 'b')."
@@ -103,121 +95,122 @@ class DENY:
 
     @staticmethod
     def find(server: str) -> str:
-        return ("Refused: use the Glob tool with a path (path made/%s/scripts, pattern */main.py), or ls <folder>."
-                % server)
+        return "Refused: use the Glob tool with a path (path engine/library, pattern *.py), or ls <folder>."
 
     @staticmethod
     def read_scope(server: str) -> str:
-        return ("Refused: you read and search only scripts/, actions/ and made/%s/: give a path in one of them "
-                "(made/%s/scripts/, scripts/_lib/, actions/)." % (server, server))
-    ps = "Refused: vfg script list shows every running copy, and vfg script stop <copy> stops one."
-    python = ("Refused: only python3 -m py_compile <file> runs; a script runs on the server through its action: "
-              "vfg action run <action> key=value ... --task <your task>.")
+        return ("Refused: you read and search only engine/ and made/%s/: give a path in one of them "
+                "(engine/WRITING.md, engine/library/, made/%s/content/)." % (server, server))
+    ps = "Refused: vfg engine instances shows what runs, and vfg engine stop <scenario> stops a scenario."
+    python = ("Refused: only python3 -m py_compile <file> runs; your class runs in the engine: vfg engine reload <id>, "
+              "then vfg engine start, grant, give or apply.")
     wild = ("Refused: no {a,b} or ~name in a command, and no unquoted * ? [ ] after echo or sleep, since bash would "
             "expand them where the guard cannot see: put a pattern in single quotes ('def .*') and name each file by "
             "its path.")
     grep_file = "Refused: grep reads a file you name, or what a vfg command pipes into it: name one."
     pattern_file = "Refused: no pattern files: give grep its pattern on the command line, or with -e."
-    json_object = ("Refused: a JSON object of two keys or more in one word is refused by the permission check, quoted or "
-                   "not: give each value as a word of its own, values.<name>=<value> "
-                   "(vfg action run incantation_edit player=Steve phrase='fire ball' values.power=6 values.breaks=true "
-                   "--task <your task>).")
-    tail_follow = "Refused: tail -f never ends: use tail -n N, or vfg script logs <copy> -n 40."
-
-    @staticmethod
-    def mkdir(server: str) -> str:
-        return ("Refused: no mkdir: vfg script new <name> --from <script> --preset <preset> makes made/%s/scripts/<name>/ "
-                "with the code copied in, and its action made/%s/actions/<name>.py; then Read and Edit them."
-                % (server, server))
+    tail_follow = "Refused: tail -f never ends: use tail -n N, or vfg engine log -n 40."
 
     @staticmethod
     def files(server: str) -> str:
-        return ("Refused: files change only by Edit and Write in made/%s/, and vfg script new <name> --from <script> "
-                "copies a script with its action." % server)
+        return ("Refused: files change only by Write and Edit, in made/%s/content/<id>.py and made/%s/tests/<id>.py."
+                % (server, server))
 
     @staticmethod
     def vfg(words: list[str]) -> str:
         """How to send a vfg command the guard did not let through."""
         b, c = (words + [None, None, None])[1:3]
         if b and b.startswith("-"):
-            return "Refused: vfg takes no option before its command: vfg cmd '<command>', vfg action run ..., as it is."
+            return "Refused: vfg takes no option before its command: vfg cmd '<command>', vfg engine ..., as it is."
         form = VFG_USAGE.get("%s %s" % (b, c)) or VFG_USAGE.get(str(b))
         if form:
             return "Refused: send it as %s." % form
-        if b == "script":
-            return "Refused: vfg script takes new|set|stop|logs|list|check|save|deploy; a script runs through its action."
+        if b == "engine":
+            return DENY.engine(c)
         return "Refused: vfg %s is not an implementer's. These are: %s." % (b, VFG_FORMS)
 
-    script_run = ("Refused: vfg script run is gone: a script runs only through its action, vfg action run <action> "
-                  "key=value ... [as=<copy>] --task <your task>.")
-    action_task = ("Refused: say which task it is for, by the name YOUR TASK gives: vfg action run <action> key=value ... "
-                   "--task <your task>.")
-    follow = "vfg script logs --follow never ends: use vfg script logs <copy> -n 40, and sleep between looks."
-    background = "Run commands in the foreground: scripts already run detached on the server (vfg action run)."
+    @staticmethod
+    def engine(word: str | None) -> str:
+        return ("Refused: vfg engine %s is not an implementer's. vfg engine takes reload, classes, meta, config get, "
+                "instances, log, places, incantations and status (each read with --json if you need it), and start, "
+                "stop, grant, revoke, give, take, apply, clear, bind and unbind." % (word or "alone"))
+
+    engine_flag = "Refused: vfg engine takes its command first, and --json after it: vfg engine classes --json."
+    config = ("Refused: vfg engine config set and undo are the brain's: change the number in your class's file, then "
+              "vfg engine reload <id>.")
+    spawn = ("Refused: vfg engine spawn is not an implementer's: a scenario spawns its actors (self.spawn); start one "
+             "with vfg engine start <scenario>.")
+    per_player = ("Refused: name one player (Steve), never @a or @r: send one command a player, joined with ; "
+                  "(vfg engine grant Steve fireball; vfg engine grant Alex fireball).")
+
+    @staticmethod
+    def by(task: str | None) -> str:
+        return ("Refused: a binding says whose it is, by your task's name: vfg engine bind <player> '<phrase>' "
+                "<ability> --by %s." % (task or "<your task>"))
+
+    background = "Run commands in the foreground: what you start runs in the engine (vfg engine start)."
     test_again = ("Refused: nothing changed since the last test run: read the log lines its FAIL printed (add -n 60 to "
                   "your next vfg test for more), then change the ability or the test.")
     test_cap = "Refused: that is a fifth test run in this run, and the rules allow four: report what still fails."
     tests_spent = "Refused: your test runs are spent: report what still fails, item by item."
-    waits_for_trigger = ("Refused: an incantation fires its action once at the cast: make the script act as it starts, "
-                         "with no crouch or click to wait for.")
     probes_spent = ("Refused: the live world is not for testing: write the check into your test (vfg test <your task>), "
                     "or report.")
-    web = "Implementers have no web access: work from the repository (scripts/, actions/, the kit) and vfg."
+    web = "Implementers have no web access: work from the repository (engine/ and made/) and vfg."
 
 
-# Every vfg command an implementer runs, and how each is sent.
-VFG_FORMS = ("vfg action run <action> key=value ... --task <your task> | vfg action list | vfg action check <name> | "
-             "vfg action show <name> | "
-             "vfg cmd '<command>' | vfg script new|set|stop|logs|list|check|save|deploy ... | "
-             "vfg preset save <script> <function> <name> | vfg test <your task> | vfg state | vfg place save|list ... | "
-             "vfg history ...")
+# Every vfg command an implementer runs, and how each is sent (CONTRACT2).
+VFG_FORMS = ("vfg engine reload [<id> ...] | vfg engine classes|meta [<id>]|config get <id>|instances|log -n N|places|"
+             "incantations|status [--json] | vfg engine start <scenario> key=value ... | vfg engine stop <scenario> | "
+             "vfg engine grant|revoke <player> <ability> | vfg engine give|take <player> <item> | "
+             "vfg engine apply <player> <mark> key=value ... [--seconds S] | vfg engine clear <player> <mark> | "
+             "vfg engine bind <player> '<phrase>' <ability> --by <your task> | vfg engine unbind <player> '<phrase>' | "
+             "vfg cmd '<command>' | vfg test <id> | vfg state | vfg history ...")
 VFG_USAGE = {
-    "action": "vfg action run <action> key=value ... [as=<copy>] --task <your task>, vfg action list, "
-              "vfg action check <name>, or vfg action show <name>",
-    "action run": "vfg action run <action> key=value ... [as=<copy>] --task <your task>",
-    "action list": "vfg action list, or vfg action list --json",
-    "action check": "vfg action check <name>",
-    "action show": "vfg action show <name>",
+    "engine reload": "vfg engine reload <id> ..., or vfg engine reload alone for every class",
+    "engine classes": "vfg engine classes, with --json or nothing after it",
+    "engine meta": "vfg engine meta <id>, or vfg engine meta alone, with --json if you need it",
+    "engine config": "vfg engine config get <id>, with --json if you need it",
+    "engine instances": ("vfg engine instances, with --kind K (ability, item, mark, actor or scenario), "
+                         "--user <player> or --json after it"),
+    "engine log": "vfg engine log -n N, with --json if you need it",
+    "engine places": "vfg engine places, with --json or nothing after it",
+    "engine incantations": "vfg engine incantations, with --player <player> or --json after it",
+    "engine status": "vfg engine status, with --json or nothing after it",
+    "engine start": "vfg engine start <scenario> key=value ..., with --wait S if you need it",
+    "engine stop": "vfg engine stop <scenario>, or vfg engine stop --instance <instance>",
+    "engine grant": "vfg engine grant <player> <ability>",
+    "engine revoke": "vfg engine revoke <player> <ability>",
+    "engine give": "vfg engine give <player> <item>",
+    "engine take": "vfg engine take <player> <item>",
+    "engine apply": "vfg engine apply <player> <mark> key=value ..., with --seconds S if you need it",
+    "engine clear": "vfg engine clear <player> <mark>",
+    "engine bind": ("vfg engine bind <player> '<phrase>' <ability> --by <your task>, or vfg engine bind <player> "
+                    "'<phrase>' --scenario <scenario> key=value ... [--cooldown S] --by <your task>"),
+    "engine unbind": "vfg engine unbind <player> '<phrase>'",
     "cmd": "vfg cmd '<command>'",
     "state": "vfg state, or vfg state --json, with nothing after it",
-    "preset": "vfg preset save <script> <function> <name>",
-    "place": "vfg place save <name> --at <x> <y> <z> --by <your task>, or vfg place list",
-    "script list": "vfg script list, with --json or --fresh or nothing after it",
-    "script new": "vfg script new <name> --from <script> --preset <preset> ... --kind <kind>, the kind one of "
-                  "cast-projectile, cast-launch, item-use, area-blast, build, world-event",
-    "script save": "vfg script save <copy> <new_name>",
-    "script set": "vfg script set <copy> key=value ...",
-    "script stop": "vfg script stop <copy>",
-    "script logs": "vfg script logs <copy> -n 40",
-    "script deploy": "vfg script deploy, or vfg script deploy <name>",
-    "test": "vfg test <name>, with -n N, --timeout S or --kind <kind> (cast-projectile, cast-launch, item-use, "
-            "area-blast, build, world-event) after it if you need them",
+    "test": "vfg test <id>, with -n N or --timeout S after it if you need them",
+    # a saved place is the engine's now: the library's save_place scenario names one
+    "place": "vfg engine start save_place name=<name> at='<x> <y> <z>'",
 }
 
 
-# What a task made, by kind: the keys of on_report's `made` and of the task's row (Prototype_Named_Tasks).
-MADE_KINDS = ("scripts", "actions", "presets", "copies")
+# What a task made, by kind: the keys of on_report's `made` and of the task's row (CONTRACT2, "A
+# task's made").
+MADE_KINDS = ("content", "bindings", "grants")
 
 
 @dataclass
 class GuardContext:
     """One implementer's: the runner keeps it with the task, so a follow-up keeps what it made."""
     repo: str
-    # VFG_SERVER: implementers write only in made/<server>/.
+    # VFG_SERVER: implementers write only in made/<server>/content/ and made/<server>/tests/.
     server: str = "main"
-    # The task the implementer works on: its name, which the script, the action and the copy it
-    # makes take too.
+    # The task the implementer works on: its name, which the class it makes takes, and every
+    # binding it makes (--by).
     task: str | None = None
-    # The copies running now (running.json, else `vfg state --json`), each with its script and task,
-    # or None when that cannot be told; no callable, no check (running_copies is the runner's).
-    running: Callable[[], Awaitable[list[dict] | None]] | None = None
-    # The scripts in made/<server>/scripts/ this implementer made itself, or was let change once;
-    # its own to change while it works. It starts with the task's name: the task's own script, which
-    # a follow-up changes in place while the brain's own copies of its action run.
-    own: set[str] = field(default_factory=set)
-    # What it made, by kind, each name once in the order it was made: made_by's record of the
-    # commands let through, and each new action or preset it wrote. made_now checks it against the
-    # disk.
+    # What it made, by kind, each once in the order it was made: the classes it wrote, the
+    # bindings and grants it sent. made_now checks it against the disk and the engine.
     made: dict[str, list[str]] = field(default_factory=lambda: {k: [] for k in MADE_KINDS})
     # The run's putback.Snapshot, which the runner sets as each run starts: what a call let through
     # is about to change, noted before it runs. None: nothing is noted.
@@ -234,10 +227,6 @@ class GuardContext:
         self.tests_run = 0
         self.tested = {}
         self.probes_run = 0
-
-    def __post_init__(self):
-        if self.task:
-            self.own.add(self.task)
 
 
 def command_word_in(cmd: str, words_set: frozenset) -> str | None:
@@ -427,7 +416,8 @@ def split_shell(line: str) -> list[ShellCommand]:
 
 
 def allowed_form(words: list[str]) -> bool:
-    """One of the vfg commands an implementer may run, in a form vfg takes."""
+    """One of the commands an implementer may run, besides `vfg engine` (engine_reason), in a form
+    vfg takes."""
     a, b, c = (words + [None, None, None])[:3]
     if a == "sleep":
         return len(words) >= 2
@@ -441,88 +431,185 @@ def allowed_form(words: list[str]) -> bool:
         return True
     if b == "test":
         return test_form(words[2:])
-    if b == "place":
-        return c == "list" or (c == "save" and len(words) >= 4)
     if b == "state":
         return words[2:] in ([], ["--json"])
-    if b == "preset":
-        return c == "save" and len(words) == 6
-    if b == "action":
-        if c == "list":
-            return words[3:] in ([], ["--json"])
-        if c in ("check", "show"):
-            return len(words) == 4
-        return c == "run" and len(words) >= 4
-    if b != "script":
-        return False
-    if c == "list":
-        return len(set(words[3:])) == len(words[3:]) and set(words[3:]) <= {"--json", "--fresh"}
-    if c in ("deploy", "check"):
-        return c == "check" or len(words) <= 4
-    if c == "new":
-        return len(words) >= 4 and kind_ok(words[3:])
-    if c == "save":
-        return len(words) == 5
-    if c == "set":
-        return len(words) >= 5
-    return c in ("stop", "logs") and len(words) >= 4
-
-
-# The test templates' kinds (scripts/_lib/kit/templates/), for vfg script new and vfg test --kind.
-TEST_KINDS = frozenset(["cast-projectile", "cast-launch", "item-use", "area-blast", "build", "world-event"])
-
-
-def kind_ok(args: list[str]) -> bool:
-    """Every --kind K (or --kind=K) among these words names a template's kind."""
-    for i, a in enumerate(args):
-        if a == "--kind" and (i + 1 >= len(args) or args[i + 1] not in TEST_KINDS):
-            return False
-        if a.startswith("--kind=") and a[len("--kind="):] not in TEST_KINDS:
-            return False
-    return True
+    return False
 
 
 def test_form(args: list[str]) -> bool:
-    """`vfg test <name>`, then -n N, --timeout S and --kind K (or --timeout=S, --kind=K) at most once
-    each: numbers, and a template's kind."""
-    if not args or not MADE_NAME.fullmatch(args[0]):
+    """`vfg test <id>`, then -n N and --timeout S (or --timeout=S) at most once each, numbers."""
+    if not args or not CONTENT_ID.fullmatch(args[0]):
         return False
     seen, i = set(), 1
     while i < len(args):
-        flag, _, value = args[i].partition("=") if args[i].startswith(("--timeout=", "--kind=")) else (args[i], "", None)
-        if flag not in ("-n", "--timeout", "--kind") or flag in seen:
+        flag, _, value = args[i].partition("=") if args[i].startswith("--timeout=") else (args[i], "", None)
+        if flag not in ("-n", "--timeout") or flag in seen:
             return False
         if value is None:
             if i + 1 >= len(args):
                 return False
             value, i = args[i + 1], i + 1
-        if not (value in TEST_KINDS if flag == "--kind" else re.fullmatch(r"\d+(\.\d+)?", value)):
+        if not NUMBER.fullmatch(value):
             return False
         seen.add(flag)
         i += 1
     return True
 
 
+# A class's id, which is its file's name too (engine/WRITING.md): a letter, then up to 63 of a-z,
+# 0-9 and _.
+CONTENT_ID = re.compile(r"[a-z][a-z0-9_]{0,63}", re.ASCII)
+# A player's name, as the engine takes one.
+PLAYER_NAME = re.compile(r"[A-Za-z0-9_]{1,16}", re.ASCII)
 # A task's name (Prototype_Named_Tasks): galick_gun_styrk.
 TASK_NAME = re.compile(r"[a-z][a-z0-9_]{1,31}", re.ASCII)
+# One of a scenario's or a mark's args: key=value.
+PAIR = re.compile(r"[a-z_][a-z0-9_]*=", re.ASCII)
+NUMBER = re.compile(r"\d+(\.\d+)?", re.ASCII)
+# The engine's kinds of class.
+KINDS = ("ability", "item", "mark", "actor", "scenario")
 
 
-def task_given(words: list[str]) -> bool:
-    """Does `vfg action run ...` say its task by its name: --task galick_gun_styrk or
-    --task=galick_gun_styrk?"""
-    for i, a in enumerate(words):
-        if a == "--task" and i + 1 < len(words) and TASK_NAME.fullmatch(words[i + 1]):
-            return True
-        if a.startswith("--task=") and TASK_NAME.fullmatch(a[len("--task="):]):
-            return True
-    return False
+@dataclass
+class EngineCall:
+    """One `vfg engine` command as sent: its op, its words in order, its flags with their values
+    (--json's is ""), and its key=value args as given."""
+    op: str
+    words: list[str]
+    flags: dict[str, str]
+    pairs: list[str]
+
+
+def _who(w: str) -> bool:
+    """A player's name; an @ selector is let through here for engine_reason to refuse with what to send."""
+    return bool(PLAYER_NAME.fullmatch(w)) or w.startswith("@")
+
+
+def _ids(call: EngineCall, at: int = 0) -> bool:
+    return all(CONTENT_ID.fullmatch(w) for w in call.words[at:])
+
+
+def _bind(c: EngineCall) -> bool:
+    """bind <player> <phrase> <ability>, or bind <player> <phrase> --scenario <scenario> key=value ..."""
+    if not _who(c.words[0]) or not phrase_of(c.words[1]):
+        return False
+    if "--scenario" in c.flags:   # a scenario binding: its args set once, and its own cooldown
+        return len(c.words) == 2 and bool(CONTENT_ID.fullmatch(c.flags["--scenario"])) \
+            and bool(NUMBER.fullmatch(c.flags.get("--cooldown", "0")))
+    return len(c.words) == 3 and not c.pairs and "--cooldown" not in c.flags and _ids(c, 2)
+
+
+@dataclass(frozen=True)
+class EngineForm:
+    """How one `vfg engine` command is sent (CONTRACT2): how many words follow it, the flags it takes
+    with a value, whether key=value args may follow its words, whether it is a read (which takes
+    --json too), and the check of what was given."""
+    least: int
+    most: int
+    flags: tuple = ()
+    pairs: bool = False
+    read: bool = False
+    check: Callable[[EngineCall], bool] = _ids
+
+
+ENGINE_FORMS = {
+    "reload": EngineForm(0, 64),
+    "classes": EngineForm(0, 0, read=True),
+    "meta": EngineForm(0, 1, read=True),
+    "config": EngineForm(2, 2, read=True, check=lambda c: c.words[0] == "get" and _ids(c, 1)),
+    "instances": EngineForm(0, 0, ("--kind", "--user"), read=True,
+                            check=lambda c: c.flags.get("--kind", "ability") in KINDS
+                            and _who(c.flags.get("--user", "x"))),
+    "log": EngineForm(0, 0, ("-n",), read=True, check=lambda c: c.flags.get("-n", "1").isdigit()),
+    "places": EngineForm(0, 0, read=True),
+    "incantations": EngineForm(0, 0, ("--player",), read=True, check=lambda c: _who(c.flags.get("--player", "x"))),
+    "status": EngineForm(0, 0, read=True),
+    "start": EngineForm(1, 1, ("--wait",), pairs=True,
+                        check=lambda c: _ids(c) and bool(NUMBER.fullmatch(c.flags.get("--wait", "0")))),
+    "stop": EngineForm(0, 1, ("--instance",), check=lambda c: (len(c.words) == 1) != ("--instance" in c.flags)
+                       and _ids(c)),
+    "grant": EngineForm(2, 2, check=lambda c: _who(c.words[0]) and _ids(c, 1)),
+    "revoke": EngineForm(2, 2, check=lambda c: _who(c.words[0]) and _ids(c, 1)),
+    "give": EngineForm(2, 2, check=lambda c: _who(c.words[0]) and _ids(c, 1)),
+    "take": EngineForm(2, 2, check=lambda c: _who(c.words[0]) and _ids(c, 1)),
+    "apply": EngineForm(2, 2, ("--seconds",), pairs=True,
+                        check=lambda c: _who(c.words[0]) and _ids(c, 1)
+                        and bool(NUMBER.fullmatch(c.flags.get("--seconds", "1")))),
+    "clear": EngineForm(2, 2, check=lambda c: _who(c.words[0]) and _ids(c, 1)),
+    "bind": EngineForm(2, 3, ("--scenario", "--by", "--cooldown"), pairs=True, check=_bind),
+    "unbind": EngineForm(2, 2, check=lambda c: _who(c.words[0]) and bool(phrase_of(c.words[1]))),
+}
+# The ops whose first word is a player.
+PLAYER_FIRST = frozenset(["grant", "revoke", "give", "take", "apply", "clear", "bind", "unbind"])
+
+
+def engine_call(args: list[str]) -> EngineCall | None:
+    """`vfg engine`'s words after `engine` as one call in a form an implementer sends (ENGINE_FORMS),
+    or None when they are in none. A flag's value is the next word or follows = (--seconds=10); each
+    flag at most once; key=value args come after the words, and nothing after them."""
+    if not args or args[0] not in ENGINE_FORMS:
+        return None
+    form = ENGINE_FORMS[args[0]]
+    call = EngineCall(args[0], [], {}, [])
+    rest = args[1:]
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a.startswith("-"):
+            name, eq, value = a.partition("=")
+            if name in call.flags:
+                return None
+            if name == "--json" and form.read and not eq:
+                value = ""
+            elif name not in form.flags:
+                return None
+            elif not eq:
+                if i + 1 >= len(rest):
+                    return None
+                i += 1
+                value = rest[i]
+            call.flags[name] = value
+        elif form.pairs and len(call.words) >= form.least and PAIR.match(a):
+            call.pairs.append(a)
+        elif call.pairs:
+            return None
+        else:
+            call.words.append(a)
+        i += 1
+    if not form.least <= len(call.words) <= form.most or not form.check(call):
+        return None
+    return call
+
+
+def engine_reason(args: list[str], task: str | None) -> str | None:
+    """Why `vfg engine <args>` is refused, in one line saying what to send instead; or None. A
+    binding names the task it is for (--by), which is this one's when its name is known."""
+    op = args[0] if args else None
+    if op == "config" and args[1:2] in (["set"], ["undo"]):
+        return DENY.config
+    if op == "spawn":
+        return DENY.spawn
+    if op and op.startswith("-"):
+        return DENY.engine_flag
+    call = engine_call(args)
+    if call is None:
+        return DENY.vfg(["vfg", "engine"] + args[:1])
+    who = ([call.words[0]] if op in PLAYER_FIRST else []) + [call.flags[f] for f in ("--user", "--player")
+                                                              if f in call.flags]
+    if any(w.startswith("@") for w in who):
+        return DENY.per_player
+    if op == "bind":
+        by = call.flags.get("--by")
+        if not by or not TASK_NAME.fullmatch(by) or (task is not None and by != task):
+            return DENY.by(task)
+    return None
 
 
 def command_values(words: list[str]) -> list[str]:
-    """The server commands a `vfg action run` or a `vfg script set` gives: the value of every key
-    that names commands (command, commands, …), whole, item by item as a JSON list, and comma by
-    comma as a list on the command line."""
-    if words[1:3] not in (["action", "run"], ["script", "set"]):
+    """The server commands a `vfg engine start`, `apply` or `bind` gives in its args (the library's
+    command scenario, say): the value of every key that names commands (command, commands, …),
+    whole, item by item as a JSON list, and comma by comma as a list on the command line."""
+    if words[1:2] != ["engine"] or words[2:3] not in (["start"], ["apply"], ["bind"]):
         return []
     out = []
     for a in words[3:]:
@@ -577,13 +664,28 @@ def scan_args(args: list[str], short_arg: str = "", long_arg: tuple[str, ...] = 
     return flags, ops
 
 
-# What an implementer reads and searches: the library and this server's folder, nothing else of the
-# repository (the replays and tests there hold answers, and the code is not theirs).
+# What an implementer reads and searches: the engine (WRITING.md, KIT.md, the library, the
+# examples, the core) and this server's folder, nothing else of the repository (the replays and
+# tests there hold answers, and the rest of the code is not theirs).
 def readable(repo: str | None, server: str, p: str) -> bool:
-    """Is `p` (relative to the repository) in scripts/, actions/ or made/<server>/?"""
+    """Is `p` (relative to the repository) in engine/ or made/<server>/?"""
     if repo is None:
         return False
-    return any(within(os.path.join(repo, d), p, repo) for d in ("scripts", "actions", os.path.join("made", server)))
+    return any(within(os.path.join(repo, d), p, repo) for d in ("engine", os.path.join("made", server)))
+
+
+def made_file(repo: str, server: str, p: str) -> tuple[str, str] | None:
+    """("content", id) when `p` (relative to the repository) is made/<server>/content/<id>.py,
+    ("tests", id) when it is made/<server>/tests/<id>.py; else None. The only files an implementer
+    writes."""
+    real = realish(os.path.abspath(os.path.join(repo, _expand_home(p))))
+    stem, ext = os.path.splitext(os.path.basename(real))
+    if ext != ".py" or not CONTENT_ID.fullmatch(stem):
+        return None
+    for kind in ("content", "tests"):
+        if os.path.dirname(real) == realish(os.path.join(repo, "made", server, kind)):
+            return kind, stem
+    return None
 
 
 def glob_only(shape: str) -> bool:
@@ -624,7 +726,7 @@ LOOP_WORDS = frozenset(["for", "while", "until", "do", "done", "if", "then", "el
 READERS = frozenset(["less", "more", "awk", "nl", "strings", "od", "xxd", "hexdump", "file", "stat"])
 FINDERS = frozenset(["find", "tree", "locate", "fd", "du"])
 FILE_CHANGERS = frozenset(["rm", "rmdir", "mv", "cp", "touch", "chmod", "chown", "ln", "tee", "truncate", "dd",
-                           "install", "unlink"])
+                           "install", "unlink", "mkdir"])
 PROCESSES = frozenset(["ps", "pgrep", "pkill", "kill", "killall", "top", "htop", "pidof", "jobs", "wait"])
 PYTHONS = frozenset(["python", "python3", "python3.9", "python3.12", "pip", "pip3", "uv"])
 FILTERS = frozenset(["head", "tail", "grep"])
@@ -671,13 +773,7 @@ def file_reason(prog: str, args: list[str], piped: bool, repo: str | None, serve
     return None
 
 
-# key={...,...}: a JSON object of two keys or more, which Claude Code's own Bash check refused in
-# "dontAsk" mode however it was quoted, with no reason the implementer could act on (2026-10-11,
-# T207). Claude Code now runs in bypassPermissions; the words form stays the one the rules teach.
-OBJECT_WORD = re.compile(r"^[a-z_][a-z0-9_.]*=\{.*,.*\}$", re.DOTALL)
-
-
-def command_reason(cmd: ShellCommand, repo: str | None, server: str) -> str | None:
+def command_reason(cmd: ShellCommand, repo: str | None, server: str, task: str | None = None) -> str | None:
     """Why one simple command is refused, in one line saying what to send instead; or None."""
     w = cmd.words
     first = w[0] if w else ""
@@ -701,27 +797,15 @@ def command_reason(cmd: ShellCommand, repo: str | None, server: str) -> str | No
             rest.pop(0)
         bare = ShellCommand(rest, piped=cmd.piped, wild=cmd.wild[len(w) - len(rest):],
                             shapes=cmd.shapes[len(w) - len(rest):])
-        return command_reason(bare, repo, server) or DENY.env
+        return command_reason(bare, repo, server, task) or DENY.env
     if cmd.piped:
         if first not in FILTERS:
             return DENY.pipe
         return glob_reason(cmd, repo, server) or file_reason(first, w[1:], True, repo, server)
     if first == "vfg":
-        if any(OBJECT_WORD.match(x) for x in w[2:]):
-            return DENY.json_object
-        if w[1:3] == ["script", "run"]:
-            return DENY.script_run
-        if not allowed_form(w):
-            return DENY.vfg(w)
-        if w[1:3] == ["action", "run"] and not task_given(w):
-            return DENY.action_task
-        if w[1:3] == ["action", "run"] and waits_for_trigger(w, repo, server):
-            return DENY.waits_for_trigger
-        if w[1:3] == ["script", "logs"] and "--follow" in w:
-            return DENY.follow
-        if w[1:3] == ["script", "new"] and "--library" in w:
-            return DENY.library_flag
-        return None
+        if w[1:2] == ["engine"]:
+            return engine_reason(w[2:], task)
+        return None if allowed_form(w) else DENY.vfg(w)
     if first == "echo":
         return DENY.wild if wild else None
     if first == "sleep":
@@ -735,8 +819,6 @@ def command_reason(cmd: ShellCommand, repo: str | None, server: str) -> str | No
         return glob_reason(cmd, repo, server) or file_reason(first, w[1:], False, repo, server)
     if first == "cd":
         return DENY.cd
-    if first == "mkdir":
-        return DENY.mkdir(server)
     if first in READERS:
         return DENY.read
     if first in FINDERS:
@@ -748,66 +830,18 @@ def command_reason(cmd: ShellCommand, repo: str | None, server: str) -> str | No
     return DENY.shape
 
 
-# What a script waits on when a player must do something before it acts: the kit's click, hold,
-# charge and crouch watchers and their stats, the sneak and projectile_lands presets (copied in as
-# functions), and a launch pad's pad_block. Hot fireball (from boom_bow) and High Step (from
-# launch_pad) were bound this way on six5, and a cast never fired them.
-_WAITS = re.compile(r"\bitems\.(clicks|holds|charged|sneaking)\s*\(|\bitems\.(CLICK|SNEAK)\b|^def (sneak|projectile_lands)\(|"
-                    r"\bv\[\s*[\"']pad_block[\"']\s*\]", re.M)
-_ACTION_FIELD = re.compile(r"^\s*(script|runs)\s*=\s*[\"']([a-z_]+)[\"']", re.M)
-
-
-def _action_fields(repo: str, server: str, name: str, depth: int = 0) -> dict:
-    """An action's script and runs, from its file (this server's made one, else the library's),
-    following one base class it imports from the library."""
-    for path in (os.path.join(repo, "made", server, "actions", name + ".py"), os.path.join(repo, "actions", name + ".py")):
-        try:
-            with open(path, encoding="utf-8") as f:
-                text = f.read()
-        except OSError:
-            continue
-        found = dict((k, v) for k, v in _ACTION_FIELD.findall(text))
-        base = re.search(r"^from actions\.([a-z_]+) import", text, re.M)
-        if base and depth < 2 and ("script" not in found or "runs" not in found):
-            found = {**_action_fields(repo, server, base.group(1), depth + 1), **found}
-        return found
-    return {}
-
-
-def waits_for_trigger(words: list[str], repo: str | None, server: str) -> bool:
-    """Does `vfg action run incantation_create ... action=<name>` bind a made action whose script runs
-    until stopped and waits for a crouch, a click or a pad? A cast starts its copy, which would wait
-    and never act. Only this server's made scripts are read; anything not found is let through."""
-    if repo is None:
-        return False
-    action, _ = run_words(words[3:])
-    if action != "incantation_create":
-        return False
-    bound = next((x.split("=", 1)[1] for x in words[3:] if x.startswith("action=")), "")
-    if not MADE_NAME.fullmatch(bound or ""):
-        return False
-    fields = _action_fields(repo, server, bound)
-    if fields.get("runs") != "until_stopped":
-        return False
-    try:
-        with open(os.path.join(repo, "made", server, "scripts", fields.get("script") or bound, "main.py"),
-                  encoding="utf-8") as f:
-            return _WAITS.search(f.read()) is not None
-    except OSError:
-        return False
-
-
-def check_bash(command: str, repo: str | None = None, server: str = "main") -> str | None:
+def check_bash(command: str, repo: str | None = None, server: str = "main", task: str | None = None) -> str | None:
     """Why an implementer's Bash command is refused, or None to let the rules decide. Claude Code's
     own refusal of a disallowed command reads as if Bash itself were off, and a small model stops
-    trying; each of these says what to send instead. vfg's own commands run, joined with && or ;,
-    with 2>&1 or >/dev/null, piped into head, tail or grep; so do echo, sleep, py_compile, and ls,
-    cat, sed -n 'A,Bp', grep, head and tail on files in scripts/, actions/ and made/<server>/ of the
-    repository (`repo`; None: on none). No ~name or brace outside quotes, which bash would expand past
-    the check of the literal path; a glob in a read is expanded here as bash would, every match checked."""
+    trying; each of these says what to send instead. vfg's own commands run in the forms the
+    contract gives (`task`: the name a binding's --by must be), joined with && or ;, with 2>&1 or
+    >/dev/null, piped into head, tail or grep; so do echo, sleep, py_compile, and ls, cat, sed -n
+    'A,Bp', grep, head and tail on files in engine/ and made/<server>/ of the repository (`repo`;
+    None: on none). No ~name or brace outside quotes, which bash would expand past the check of the
+    literal path; a glob in a read is expanded here as bash would, every match checked."""
     cmds = split_shell(command)
     # Server commands that are the owner's, however they are dressed up, and the server-wide settings:
-    # in a vfg cmd, and in the commands an action run or an edit gives.
+    # in a vfg cmd, and in the commands a scenario's or a mark's args give.
     for cmd in cmds:
         w = list(cmd.words)
         while w and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", w[0]):
@@ -827,7 +861,7 @@ def check_bash(command: str, repo: str | None = None, server: str = "main") -> s
             if word:
                 return DENY.server_wide(word)
     for cmd in cmds:
-        reason = command_reason(cmd, repo, server)
+        reason = command_reason(cmd, repo, server, task)
         if reason:
             return reason
     return None
@@ -843,9 +877,9 @@ def decide(call: dict, g: GuardContext) -> str | None:
         if inp.get("run_in_background") is True:
             return DENY.background
         command = inp.get("command")
-        return check_bash("" if command is None else str(command), g.repo, g.server)
+        return check_bash("" if command is None else str(command), g.repo, g.server, g.task)
 
-    # Glob, Grep and Read stay in scripts/, actions/ and made/<server>/; a search names its folder.
+    # Glob, Grep and Read stay in engine/ and made/<server>/; a search names its folder.
     if name in ("Glob", "Grep"):
         path = str(inp.get("path") or "")
         pattern = str(inp.get("pattern") or "") if name == "Glob" else ""
@@ -855,123 +889,55 @@ def decide(call: dict, g: GuardContext) -> str | None:
     if name == "Read" and inp.get("file_path") and not readable(g.repo, g.server, str(inp["file_path"])):
         return DENY.read_scope(g.server)
 
-    # An implementer writes in this server's folder and nowhere else: never in the library.
+    # An implementer writes its classes and their tests, and nothing else: never in the engine.
     if name in ("Write", "Edit") and inp.get("file_path"):
         path = str(inp["file_path"])
-        if within(os.path.join(g.repo, "made", g.server), path, g.repo):
+        if made_file(g.repo, g.server, path):
             return None
-        if within(os.path.join(g.repo, "scripts"), path, g.repo):
-            return DENY.library(g.server)
-        if within(os.path.join(g.repo, "actions"), path, g.repo):
-            return DENY.library_actions(g.server)
+        if any(within(os.path.join(g.repo, "made", g.server, kind), path, g.repo) for kind in ("content", "tests")):
+            return DENY.content_name(g.server)
         return DENY.made_only(g.server)
     return None
 
 
-# ------------------------------------------------------------------ a script a running copy uses
-
-# `vfg state --json` gets this long when the guard asks what runs and running.json cannot be read;
-# its answer is kept this long, so a run of Edits asks once.
-STATE_TIMEOUT_S = 5.0
-STATE_CACHE_S = 3.0
-
-
-def running_copies(home: str | None, run: VfgRunner) -> Callable[[], Awaitable[list[dict] | None]]:
-    """GuardContext.running for the runner: the copies in `home`/running.json, which vfg writes
-    through on every run, edit and stop; else those `vfg state --json` lists; None when neither
-    can tell (the guard then lets the edit through)."""
-    kept: dict[str, Any] = {"at": 0.0, "instances": None}
-
-    async def running() -> list[dict] | None:
-        copies = actions.read_running(home) if home else None
-        if copies is not None:
-            return [{**c, "instance": name, "copy": name} for name, c in copies.items()]
-        if kept["instances"] is not None and time.monotonic() - kept["at"] < STATE_CACHE_S:
-            return kept["instances"]
-        state, failed = await server_state(STATE_TIMEOUT_S, run)
-        if state is None:
-            log("guard", "what runs is unknown, the edit goes through: %s" % failed)
-            return None
-        kept["instances"] = [i for i in state.get("instances") or [] if isinstance(i, dict)]
-        kept["at"] = time.monotonic()
-        return kept["instances"]
-
-    return running
-
-
-def made_script(path: str, g: GuardContext) -> str | None:
-    """The <name> when `path` is a .py file in made/<server>/scripts/<name>/, else None."""
-    root = realish(os.path.join(g.repo, "made", g.server, "scripts"))
-    real = realish(os.path.abspath(os.path.join(g.repo, _expand_home(path))))
-    if not real.startswith(root + "/") or not real.endswith(".py"):
-        return None
-    parts = real[len(root) + 1:].split("/")
-    return parts[0] if len(parts) >= 2 else None
-
-
-def new_script_name(words: list[str]) -> str | None:
-    """The script `vfg script new <name>` or `vfg script save <copy> <name>` makes, or None."""
-    if words[:3] not in (["vfg", "script", "new"], ["vfg", "script", "save"]):
-        return None
-    args, positional = words[3:], []
-    i = 0
-    while i < len(args):
-        if args[i] in ("--from", "--preset", "--kind"):
-            i += 2
-            continue
-        if not args[i].startswith("--"):
-            positional.append(args[i])
-        i += 1
-    want = 0 if words[2] == "new" else 1
-    return positional[want] if len(positional) > want else None
-
-
 # ------------------------------------------------------------------ what a task made
 
-# A name vfg script new, vfg script save and vfg preset save take; and a copy's name, as= (vfg's own
-# rules: a command with another name is refused there, and is not recorded here).
-MADE_NAME = re.compile(r"[a-z][a-z0-9_]{0,47}", re.ASCII)
-COPY_NAME = re.compile(r"[a-z0-9][a-z0-9_]{0,47}", re.ASCII)
+def phrase_of(text: str) -> str:
+    """A phrase as the engine keeps it (engine/vfg_engine/incantations.py, normalize): lowercase,
+    accents and apostrophes dropped, every other mark (hyphens and underscores too) a space,
+    whitespace collapsed."""
+    s = unicodedata.normalize("NFKD", str(text or "")).lower()
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = re.sub(r"['‘’]", "", s)
+    return " ".join(re.sub(r"[\W_]+", " ", s).split())
 
 
-def run_words(args: list[str]) -> tuple[str | None, str | None]:
-    """(the action, the as=<copy>) of `vfg action run`'s words after `run`, in any order, as vfg
-    reads them: the action is the first word that is no flag, no flag's value and no key=value."""
-    if args[:1] == ["--"]:
-        args = args[1:]
-    action = copy = None
-    i = 0
-    while i < len(args):
-        a = args[i]
-        if a in ("--task", "--for"):
-            i += 2
-            continue
-        if a.startswith("as="):
-            copy = a[len("as="):]
-        elif action is None and "=" not in a and not a.startswith("-"):
-            action = a
-        i += 1
-    return action, copy
+def binding_id(player: str, phrase: str) -> str | None:
+    """The engine's id of a player's binding, `steve.fire_ball` (CONTRACT2, "A task's made"); None
+    for a phrase with no word in it."""
+    p = phrase_of(phrase)
+    return "%s.%s" % (str(player).lower(), p.replace(" ", "_")) if p else None
+
+
+def grant_key(player: Any, ability: Any) -> str:
+    """`steve:fireball`: one grant, as a record and the engine's instances are matched (a player's
+    name in any case is one player)."""
+    return "%s:%s" % (str(player).lower(), ability)
 
 
 def made_by(words: list[str]) -> list[tuple[str, str]]:
-    """What one command makes, as (kind, name): `vfg script new <name>` a script and its action,
-    `vfg script save <copy> <name>` an action, `vfg preset save <script> <function> <name>` a preset,
-    and `vfg action run <action> … as=<copy>` a copy, unless the action is edit or stop, which
-    change a copy and start none."""
-    if words[:1] != ["vfg"]:
+    """What one command makes, as (kind, name): `vfg engine bind <player> <phrase> ...` a binding,
+    by the engine's id, and `vfg engine grant <player> <ability>` a grant, `<player>:<ability>`."""
+    if words[:2] != ["vfg", "engine"]:
         return []
-    if words[1:3] in (["script", "new"], ["script", "save"]):
-        name = new_script_name(words)
-        if not name or not MADE_NAME.fullmatch(name):
-            return []
-        return [("scripts", name), ("actions", name)] if words[2] == "new" else [("actions", name)]
-    if words[1:3] == ["preset", "save"]:
-        return [("presets", words[5])] if len(words) == 6 and MADE_NAME.fullmatch(words[5]) else []
-    if words[1:3] == ["action", "run"]:
-        action, copy = run_words(words[3:])
-        if action and action not in ("edit", "stop") and copy and COPY_NAME.fullmatch(copy):
-            return [("copies", copy)]
+    call = engine_call(words[2:])
+    if call is None or not PLAYER_NAME.fullmatch(call.words[0] if call.words else ""):
+        return []
+    if call.op == "bind":
+        bid = binding_id(call.words[0], call.words[1])
+        return [("bindings", bid)] if bid else []
+    if call.op == "grant":
+        return [("grants", "%s:%s" % (call.words[0], call.words[1]))]
     return []
 
 
@@ -982,88 +948,55 @@ def record(g: GuardContext, kind: str, name: str) -> None:
         names.append(name)
 
 
-def taken_here(g: GuardContext, kind: str, name: str) -> bool:
-    """Is `name` already a script folder, an action or a preset in made/<server>/? vfg script new,
-    vfg script save and vfg preset save refuse a name that is, and make nothing."""
-    base = os.path.join(g.repo, "made", g.server)
-    path = {"scripts": os.path.join(base, "scripts", name), "actions": os.path.join(base, "actions", name + ".py"),
-            "presets": os.path.join(base, "presets", name + ".py")}.get(kind)
-    return path is not None and os.path.lexists(path)
-
-
 def note_made(call: dict, g: GuardContext) -> None:
     """After an implementer's Bash call is let through: what each of its commands makes, in order
-    (made_by), is recorded, unless a name it would make is already in made/<server>/, which vfg
-    refuses (so another task's script is never reported as this one's); and a script its vfg script
-    new or vfg script save is about to make in made/<server>/scripts/ (with its action) is its own to
-    change."""
+    (made_by), is recorded. Whether it landed is made_now's to tell."""
     command = str((call.get("tool_input") or {}).get("command") or "")
     for cmd in split_shell(command):
-        name = new_script_name(cmd.words)
-        if name and not os.path.exists(os.path.join(g.repo, "made", g.server, "scripts", name)):
-            g.own.add(name)
-        made = made_by(cmd.words)
-        if any(taken_here(g, kind, n) for kind, n in made):
-            continue
-        for kind, n in made:
+        for kind, n in made_by(cmd.words):
             record(g, kind, n)
 
 
 def note_written(call: dict, g: GuardContext) -> None:
-    """After an implementer's Write is let through: a new made/<server>/actions/<name>.py (a variant)
-    or made/<server>/presets/<name>.py is recorded as made. A Write over a file that is there, or
-    an Edit, makes nothing new."""
+    """After an implementer's Write or Edit is let through: a class's file, made/<server>/content/
+    <id>.py, is recorded as the task's (made or changed by it). A test is not: it goes with its
+    class."""
     path = str((call.get("tool_input") or {}).get("file_path") or "")
-    if not path:
-        return
-    real = realish(os.path.abspath(os.path.join(g.repo, _expand_home(path))))
-    stem, ext = os.path.splitext(os.path.basename(real))
-    if ext != ".py" or not MADE_NAME.fullmatch(stem) or os.path.exists(real):
-        return
-    for kind in ("actions", "presets"):
-        if os.path.dirname(real) == realish(os.path.join(g.repo, "made", g.server, kind)):
-            record(g, kind, stem)
+    found = made_file(g.repo, g.server, path) if path else None
+    if found and found[0] == "content":
+        record(g, "content", found[1])
 
 
-def made_now(g: GuardContext) -> dict[str, list[str]]:
-    """What the task made, as on_report gives it: the record checked against the disk, a copy with
-    every kind. A script is kept when its main.py is there, an action or a preset when its file is;
-    a copy as it was named, since what ran cannot be told from here."""
-    base = os.path.join(g.repo, "made", g.server)
-    there = {"scripts": lambda n: os.path.join(base, "scripts", n, "main.py"),
-             "actions": lambda n: os.path.join(base, "actions", n + ".py"),
-             "presets": lambda n: os.path.join(base, "presets", n + ".py")}
-    out = {}
-    for kind in MADE_KINDS:
-        names = list(g.made.get(kind) or [])
-        out[kind] = names if kind == "copies" else [n for n in names if os.path.isfile(there[kind](n))]
-    return out
+# How long made_now waits for each of the engine's reads.
+ENGINE_READ_S = 10.0
 
 
-async def check_running(call: dict, g: GuardContext) -> str | None:
-    """Why an implementer may not change this script: it is in made/<server>/scripts/, it is not its
-    own (it did not make it, and it is not named as its task), and a copy another task or the brain
-    started runs it. New code is a new script with its own name."""
-    if g.running is None or call.get("tool_name") not in ("Write", "Edit"):
-        return None
-    name = made_script(str((call.get("tool_input") or {}).get("file_path") or ""), g)
-    if name is None or name in g.own:
-        return None
-    if not os.path.exists(os.path.join(g.repo, "made", g.server, "scripts", name)):
-        g.own.add(name)  # a script being made: nothing runs it
-        return None
-    try:
-        instances = await g.running()
-    except Exception as e:
-        log("guard", "what runs is unknown, the edit goes through: %s" % e)
-        return None
-    if instances is None:
-        return None
-    others = [i for i in instances if i.get("script") == name and (g.task is None or i.get("task") != g.task)]
-    if others:
-        return DENY.running(name, others[0], g.server)
-    g.own.add(name)
-    return None
+async def made_now(g: GuardContext, vfg: VfgRunner | None = None) -> dict[str, list[str]]:
+    """What the task made, as on_report gives it: the record checked against what is there now, a
+    copy with every kind. A class is kept when its file is in made/<server>/content/; a binding when
+    the engine lists it (`vfg engine incantations --json`), a grant when the engine runs it (`vfg
+    engine instances --kind ability --json`): one read each, only for a kind the record has. With no
+    vfg, or an engine that cannot be read (logged), the bindings and grants are as recorded."""
+    content = [n for n in g.made.get("content") or []
+               if os.path.isfile(os.path.join(g.repo, "made", g.server, "content", n + ".py"))]
+    bindings, grants = list(g.made.get("bindings") or []), list(g.made.get("grants") or [])
+    if vfg is not None and bindings:
+        data, failed = await engine_read(vfg, "incantations", timeout=ENGINE_READ_S)
+        if data is None:
+            log("guard", "%s: the engine's bindings could not be read, so its bindings are as recorded: %s"
+                % (g.task or "-", failed))
+        else:
+            there = {e.get("id") for e in data.get("incantations") or [] if isinstance(e, dict)}
+            bindings = [b for b in bindings if b in there]
+    if vfg is not None and grants:
+        data, failed = await engine_read(vfg, "instances", "--kind", "ability", timeout=ENGINE_READ_S)
+        if data is None:
+            log("guard", "%s: the engine's grants could not be read, so its grants are as recorded: %s"
+                % (g.task or "-", failed))
+        else:
+            there = {grant_key(i.get("user"), i.get("id")) for i in data.get("instances") or [] if isinstance(i, dict)}
+            grants = [x for x in grants if grant_key(*x.split(":", 1)) in there]
+    return {"content": content, "bindings": bindings, "grants": grants}
 
 
 # vfg test runs a run may make: the first, and a rerun after each of the three fixes the rules allow.
@@ -1098,25 +1031,18 @@ def code_print(data: bytes, path: str) -> bytes:
 
 
 def test_print(name: str, g: GuardContext) -> str:
-    """What a test of `name` covers, as it is now: its test file (the task's, or a library script's),
-    the script and the action of that name, and every script, action and preset the task made, each
-    Python file by its code alone (code_print)."""
+    """What a test of `name` covers, as it is now: its test file, the class of that name, and every
+    class the task made, each by its code alone (code_print)."""
     made = os.path.join(g.repo, "made", g.server)
-    paths = [os.path.join(made, "tests", name + ".py"), os.path.join(g.repo, "scripts", name, "test.py"),
-             os.path.join(made, "scripts", name), os.path.join(made, "actions", name + ".py")]
-    for kind in ("scripts", "actions", "presets"):
-        for n in g.made.get(kind) or []:
-            paths.append(os.path.join(made, kind, n) if kind == "scripts" else os.path.join(made, kind, n + ".py"))
+    paths = [os.path.join(made, "tests", name + ".py"), os.path.join(made, "content", name + ".py")]
+    paths += [os.path.join(made, "content", n + ".py") for n in g.made.get("content") or []]
     h = hashlib.sha256()
-    for p in sorted(set(paths)):
-        files = [p] if not os.path.isdir(p) else sorted(
-            os.path.join(d, f) for d, _, fs in os.walk(p) if "__pycache__" not in d for f in fs)
-        for f in files:
-            try:
-                with open(f, "rb") as fh:
-                    h.update(f.encode() + b"\0" + hashlib.sha256(code_print(fh.read(), f)).digest())
-            except OSError:
-                h.update(f.encode() + b"\0-")
+    for f in sorted(set(paths)):
+        try:
+            with open(f, "rb") as fh:
+                h.update(f.encode() + b"\0" + hashlib.sha256(code_print(fh.read(), f)).digest())
+        except OSError:
+            h.update(f.encode() + b"\0-")
     return h.hexdigest()
 
 
@@ -1178,8 +1104,8 @@ def test_reason(call: dict, g: GuardContext) -> str | None:
 async def gate(call: dict, g: GuardContext) -> str | None:
     """The guard, for every adapter, before a tool runs: a reason to refuse the call, or None. A call
     let through is first given to the run's snapshot (what it is about to change, kept), then what
-    it makes is recorded (note_made for a Bash call, note_written for a Write)."""
-    reason = decide(call, g) or await check_running(call, g) or test_reason(call, g) or probe_reason(call, g)
+    it makes is recorded (note_made for a Bash call, note_written for a Write or an Edit)."""
+    reason = decide(call, g) or test_reason(call, g) or probe_reason(call, g)
     if reason:
         return reason
     if g.snapshot is not None:
@@ -1190,7 +1116,7 @@ async def gate(call: dict, g: GuardContext) -> str | None:
                                                                       type(e).__name__, e))
     if call.get("tool_name") == "Bash":
         note_made(call, g)
-    elif call.get("tool_name") == "Write":
+    elif call.get("tool_name") in ("Write", "Edit"):
         note_written(call, g)
     return None
 

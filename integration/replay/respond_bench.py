@@ -71,12 +71,12 @@ import httpx  # noqa: E402
 import vfg_llm  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
-from brain import actions, config, running  # noqa: E402
+from brain import actions, config  # noqa: E402
 from brain.__main__ import asker  # noqa: E402
 from brain.context import LIVE, Context, Row  # noqa: E402
 from brain.respond import Respond, promises  # noqa: E402
 from brain.tasks import Tasks  # noqa: E402
-from brain.world import Seen  # noqa: E402
+from brain.world import Seen, running_lines  # noqa: E402
 from trees_questions import route_d  # noqa: E402
 
 INPUTS = HERE / "whole_asks_2026-10-08.jsonl"
@@ -155,8 +155,9 @@ def first_field(texts: list[str]) -> str:
 
 # Each line: what it tests (`point`), what Respond should do (`want`), its speaker and words, the
 # conversation before it (who, the line's class or the AI row's kind, text, an AI row's task; nine
-# seconds apart), and the world it was said in: the time and weather, a running copy, an effect, an
-# open task. The owner is Sam.
+# seconds apart), and the world it was said in: the time and weather, what the game engine runs
+# (`instances`, as `vfg engine overview` gives them), an effect, an open task (its name, player and
+# description). An AI action row is the loop's record of what its engine actions did. The owner is Sam.
 INVENTED_OWNER = "Sam"
 INVENTED_AT = "2026-10-11T18:00:00.000Z"
 PLAYERS = {"Sam": "112 70 -35", "Riley": "98 64 -12", "Jordan": "140 31 -60"}
@@ -170,7 +171,7 @@ INVENTED = [
     {"id": "i02", "point": "future rule", "want": "answer", "who": "Sam",
      "text": "don't make any more weapons for Jordan today, he's had enough",
      "before": [("Jordan", "action_oriented", "AI give me another railgun"),
-                ("AI", "action", "railgun: give Jordan a railgun — ok: given to Jordan", "T3"),
+                ("AI", "action", "engine_give: the railgun to Jordan — done"),
                 ("AI", "say", "railgun number three, Jordan"),
                 ("Sam", "conversational", "bro you have like nine guns")]},
     {"id": "i03", "point": "future rule", "want": "answer", "who": "Jordan",
@@ -186,7 +187,8 @@ INVENTED = [
     {"id": "i05", "point": "future rule", "want": "answer", "who": "Jordan",
      "text": "next time I ask for a sword make it netherite, diamond is boring",
      "before": [("Jordan", "action_oriented", "can I have a sword"),
-                ("AI", "action", "command: give Jordan a diamond sword — ok: Gave 1 [Diamond Sword] to Jordan", "T2"),
+                ("AI", "action", "engine_start command: give Jordan a diamond sword — done: Gave 1 [Diamond Sword] "
+                                 "to Jordan"),
                 ("AI", "say", "diamond sword, all yours")]},
     # A question it can answer from what it knows: answer.
     {"id": "i06", "point": "knowledge", "want": "answer", "who": "Jordan",
@@ -204,7 +206,7 @@ INVENTED = [
     # Plain banter: answer.
     {"id": "i09", "point": "banter", "want": "answer", "who": "Jordan",
      "text": "AI you're honestly the best teammate on this server",
-     "before": [("AI", "action", "summon_around: 20 zombies round each player — ok: summoned 60", "T5"),
+     "before": [("AI", "action", "engine_start horde: 20 zombies round each player — done: summoned 60"),
                 ("Jordan", "conversational", "that horde was insane"),
                 ("Riley", "conversational", "I died twice")]},
     {"id": "i10", "point": "banter", "want": "answer", "who": "Riley",
@@ -228,27 +230,27 @@ INVENTED = [
     {"id": "i14", "point": "change", "want": "up", "who": "Riley",
      "text": "the ice thing is wrecking my farm, all my crops are ice now",
      "before": [("Riley", "action_oriented", "AI turn everything I walk on into ice"),
-                ("AI", "action", "ice_walk: ice under Riley as she walks — ok: running as ice_walk_1", "T4"),
+                ("AI", "action", "engine_grant: ice_walk to Riley, ice under her as she walks — done"),
                 ("AI", "say", "frozen feet, Riley")],
-     "running": {"ice_walk_1": {"action": "ice_walk", "values": {"player": "Riley"}, "task": "T4"}}},
+     "instances": [{"instance": "ability:ice_walk#4", "kind": "ability", "id": "ice_walk", "user": "Riley"}]},
     {"id": "i15", "point": "change", "want": "up", "who": "Riley",
      "text": "this speed is way too much, I keep running off cliffs",
      "before": [("Riley", "action_oriented", "give me speed five forever"),
-                ("AI", "action", "keep_effects: speed V on Riley until stopped — ok: running as keep_effects_1",
-                 "T6"),
+                ("AI", "action", "engine_apply: keep_effects on Riley, speed V until cleared — done"),
                 ("AI", "say", "speed five, go go go")],
-     "running": {"keep_effects_1": {"action": "keep_effects", "values": {"player": "Riley"}, "task": "T6"}},
+     "instances": [{"instance": "mark:keep_effects#6", "kind": "mark", "id": "keep_effects", "user": "Riley"}],
      "effects": {"Riley": "speed V ∞"}},
     {"id": "i16", "point": "change", "want": "up", "who": "Sam",
      "text": "oh and for the castle, put a moat around it",
      "before": [("Sam", "action_oriented", "AI build me a big stone castle at my base"),
-                ("AI", "task", "T7: build a big stone castle at Sam's base, for Sam", "T7"),
-                ("AI", "say", "on it, castle coming up at your base")],
-     "tasks": [("T7", "Sam", "build a big stone castle at Sam's base, for Sam")]},
+                ("AI", "task", "new: build a big stone castle at Sam's base, for Sam", "castle_sam"),
+                ("AI", "say", "on it, castle coming up at your base", "castle_sam")],
+     "tasks": [("castle_sam", "Sam", "A big stone castle at Sam's base")]},
     {"id": "i17", "point": "change", "want": "up", "who": "Jordan",
      "text": "the iron golem you gave me … he keeps wandering off, make him stay with me",
      "before": [("Jordan", "action_oriented", "can I have an iron golem bodyguard"),
-                ("AI", "action", "command: summon an iron golem by Jordan — ok: Summoned new Iron Golem", "T8"),
+                ("AI", "action", "engine_start command: summon an iron golem by Jordan — done: Summoned new Iron "
+                                 "Golem"),
                 ("AI", "say", "your bodyguard has arrived")]},
     # A rule the game itself would have to enforce: hand up.
     {"id": "i18", "point": "game rule", "want": "up", "who": "Sam",
@@ -279,6 +281,13 @@ class Item:
     blocks: list
 
 
+def invented_tasks(it: dict, base: str) -> Tasks:
+    """The invented line's tasks, as the brain's tasks table holds them: open, made just before it."""
+    return Tasks(rows=[{"name": name, "description": description, "player": player, "status": "open",
+                        "created_at": at_plus(base, 9), "updated_at": at_plus(base, 9)}
+                       for name, player, description in it.get("tasks", [])])
+
+
 def invented_items(respond: Respond, catalog, limit: int = 0):
     for k, it in enumerate(INVENTED[:limit or None]):
         base = at_plus(INVENTED_AT, 300 * k)   # each line its own few minutes
@@ -297,12 +306,8 @@ def invented_items(respond: Respond, catalog, limit: int = 0):
                             for p, pos in PLAYERS.items())
         seen = Seen(players=f"PLAYERS ONLINE:\n{players}",
                     clock=it.get("clock", "TIME: day (6000, day 2). WEATHER: clear."),
-                    running=running.block(it.get("running", {}), catalog), places="", incantations="INCANTATIONS: none")
-        tasks = Tasks(Path("/nonexistent/tasks.json"))
-        for tid, player, brief in it.get("tasks", []):
-            tasks.tasks[tid] = {"id": tid, "at": at_plus(base, 9), "player": player, "line": "", "task": brief,
-                                "status": "open"}
-        tail = respond.tail(row, seen, tasks.show(list(tasks.tasks)), [])
+                    running=running_lines(it.get("instances", [])), places="", incantations="INCANTATIONS: none")
+        tail = respond.tail(row, seen, invented_tasks(it, base).show(), [])
         fixed = {"id": it["id"], "set": "invented", "point": it["point"], "want": it["want"], "who": it["who"],
                  "text": it["text"], "context_rows": len(ctx.rows)}
         yield Item(fixed, tail, ctx.cached(respond.opening(), respond.checkpoint))
@@ -372,7 +377,7 @@ async def run(args) -> None:
     prompt, fields = VERSIONS[args.version]
     output = response(fields, args.version in REQUIRED)
     cfg = config.load()
-    catalog = actions.load(cfg.repo, cfg.server)
+    catalog = actions.load(cfg.repo)
     ask = asker(cfg.respond_model, cfg.respond_reasoning, args.timeout, cfg.respond_providers)
     out = Path(args.out) / args.version / args.set
     out.mkdir(parents=True, exist_ok=True)
@@ -486,16 +491,12 @@ def open_tasks(args) -> dict[str, str]:
     """OPEN TASKS as each input's call showed it: the playtest's at the input's moment, the invented set's own."""
     out = {}
     for k, it in enumerate(INVENTED):   # as invented_items shows them, in Tasks.show()'s own lines
-        shown = Tasks(Path("/nonexistent/tasks.json"))
-        for tid, player, brief in it.get("tasks", []):
-            shown.tasks[tid] = {"id": tid, "at": at_plus(INVENTED_AT, 300 * k + 9), "player": player, "line": "",
-                                "task": brief, "status": "open"}
-        out[it["id"]] = shown.show(list(shown.tasks))
+        out[it["id"]] = invented_tasks(it, at_plus(INVENTED_AT, 300 * k)).show()
     pt = Playtest(Path(args.db))
     inputs = read_rows(Path(args.inputs))
     d2 = d2_outcomes(Path(args.d2))
     want = {i["id"] for i in inputs if d2.get(i["id"], {}).get("out") == "respond"}
-    respond = Respond(actions.load(config.load().repo, config.SERVER), None)
+    respond = Respond(actions.load(config.load().repo), None)
     for item in playtest_items(pt, inputs, d2, respond, want):
         out[item.row["id"]] = "OPEN TASKS:" + item.tail.split("\nOPEN TASKS:")[1].split("\n\nNEW SINCE")[0]
     return out

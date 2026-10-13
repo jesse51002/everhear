@@ -1,16 +1,16 @@
-from typing import ClassVar
-
-from actions._types import Action, Field
+from actions._types import Action, ClassId, Instance
 
 
 class EngineStop(Action):
-    """Stop a scenario the engine is running, by its name, or one run of it by its instance under ENGINE: everything it spawned goes."""
+    """Stop a scenario the engine is running: every run of it by its name, or one run by its instance under RUNNING NOW. Everything it spawned goes.
 
-    engine: ClassVar[str] = "stop"   # the engine's control op its values go to: no script
-    runs = "once"
+    An ability is taken away with engine_revoke, a mark with engine_clear.
+    """
+
+    engine = "stop"
     takes = ["scenario", "instance"]
 
-    scenario: str = Field("", pattern=r"^(|[a-z][a-z0-9_]{0,63})$")
+    scenario: ClassId = ""
     """the scenario, by its name under ENGINE, such as horde: every run of it stops; empty when instance names one"""
-    instance: str = Field("", pattern=r"^(|[A-Za-z0-9_.:@#-]{1,96})$")
-    """one running instance of it, as ENGINE names it; empty to stop every run of the scenario"""
+    instance: Instance = ""
+    """one run of it, as RUNNING NOW names it (scenario:horde#3); empty to stop every run of the scenario"""

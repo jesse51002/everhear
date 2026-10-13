@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from harness import ISO_RE, BoxCase, iso  # noqa: E402
 
 RETIRED = "T%d" % 7   # a task as it was named before named tasks: refused now
-EMPTY = {"scripts": [], "actions": [], "presets": [], "copies": []}
+EMPTY = {"content": [], "bindings": [], "grants": []}
 VARIABLES = [{"name": "cooldown", "type": "number", "default": 5, "ge": 0, "le": 60, "choices": None,
               "live": True, "fixed": False, "description": "seconds between shots"}]
 
@@ -51,17 +51,18 @@ class TestSet(TaskCase):
         self.assertEqual((args["op"], args["library_action"]), ("set", False))
         self.assertEqual(args["task"]["created_at"], "2026-10-11T18:22:33.120Z")   # normalised on the PC
         self.assertEqual(self.row(), dict(galick(), created_at="2026-10-11T18:22:33.120Z"))
-        self.assertEqual(self.raw("made"), '{"scripts":[],"actions":[],"presets":[],"copies":[]}')
+        self.assertEqual(self.raw("made"), '{"content":[],"bindings":[],"grants":[]}')
         # An update writes the keys given and keeps the rest; name and created_at never change.
         r = self.set({"name": "galick_gun_styrk", "description": "A Galick Gun that pierces blocks",
-                      "made": {"scripts": ["galick_gun_styrk"], "actions": ["galick_gun_styrk"], "presets": [],
-                               "copies": ["galick_gun_styrk"]}, "variables": VARIABLES, "session": "a-session",
+                      "made": {"content": ["galick_gun_styrk"], "bindings": ["styrkaeopteryx.galick"],
+                               "grants": ["Styrkaeopteryx:galick_gun_styrk"]}, "variables": VARIABLES,
+                      "session": "a-session",
                       "created_at": "2030-01-01T00:00:00Z", "updated_at": "2026-10-11T18:23:40.002Z"})
         self.assertEqual((r.returncode, r.stdout), (0, "updated galick_gun_styrk\n"), r.stderr)
         self.assertEqual(len(self.box.calls), 2)
         got = self.row()
-        self.assertEqual((got["description"], got["session"], got["variables"], got["made"]["copies"]),
-                         ("A Galick Gun that pierces blocks", "a-session", VARIABLES, ["galick_gun_styrk"]))
+        self.assertEqual((got["description"], got["session"], got["variables"], got["made"]["grants"]),
+                         ("A Galick Gun that pierces blocks", "a-session", VARIABLES, ["Styrkaeopteryx:galick_gun_styrk"]))
         self.assertEqual((got["created_at"], got["updated_at"]), ("2026-10-11T18:22:33.120Z", "2026-10-11T18:23:40.002Z"))
         self.assertEqual((got["brief"], got["line"], got["player"], got["status"]),
                          (galick()["brief"], "make me a galick gun", "Styrkaeopteryx", "open"))
@@ -111,15 +112,17 @@ class TestSet(TaskCase):
         self.set({"name": "castle_steve", "description": "A castle", "status": "failed"})
         self.assertRegex(self.row("castle_steve")["closed_at"], ISO_RE)      # a new row given closed
 
-    def test_a_library_actions_name_is_refused_for_a_new_task_only(self):
-        self.box.write("actions/railgun.py", "# the library's railgun\n")
+    def test_a_library_class_or_an_actions_name_is_refused_for_a_new_task_only(self):
+        self.box.write("engine/library/railgun.py", "# the library's railgun\n")
         r = self.set({"name": "railgun", "description": "Steve's railgun"})
-        self.assertOneLine(r, 1, "^vfg: railgun is a library action's name$")
+        self.assertOneLine(r, 1, "^vfg: railgun is a library class's or an action's name$")
         self.assertTrue(self.box.programs()[-1]["library_action"])
+        self.box.write("actions/engine_grant.py", "# an action\n")
+        self.assertOneLine(self.set({"name": "engine_grant", "description": "x"}), 1, "an action's name$")
         self.assertEqual(self.box.tasks(), [])
-        self.box.add_task("railgun", "a row from before the action came")
+        self.box.add_task("railgun", "a row from before the class came")
         self.assertEqual(self.set({"name": "railgun", "description": "changed"}).stdout, "updated railgun\n")
-        self.box.write("made/main/actions/frost_bow_alex.py", "# a made action: not the library's\n")
+        self.box.write("made/main/content/frost_bow_alex.py", "# a made class: the task's own\n")
         self.assertEqual(self.set({"name": "frost_bow_alex", "description": "a bow"}).stdout, "added frost_bow_alex\n")
 
     def test_bad_input_exits_2_before_any_ssh_call(self):
@@ -130,8 +133,8 @@ class TestSet(TaskCase):
                  (dict(galick(), colour="red"), "colour is not a task's key"), ({"description": "x"}, "its name"),
                  (galick(status="running"), "status is open, done, failed"), (galick(description=""), "description"),
                  (galick(description=None), "description"), (galick(player="not a name"), "player"),
-                 (galick(line=7), "line is a text"), (galick(made={"scripts": "x"}), "made is null"),
-                 (galick(made={"things": []}), "made is null"), (galick(made=[]), "made is null"),
+                 (galick(line=7), "line is a text"), (galick(made={"content": "x"}), "made is null"),
+                 (galick(made={"scripts": []}), "made is null"), (galick(made=[]), "made is null"),
                  (galick(variables={"cooldown": 5}), "variables"), (galick(variables=[1]), "variables"),
                  (galick(updated_at="yesterday"), "updated_at: bad time"), (galick(closed_at=5), "closed_at is a time"),
                  ("not json", "one JSON object"), ("[1, 2]", "one JSON object, not list"), ("", "one JSON object")]
@@ -152,7 +155,7 @@ class TestList(TaskCase):
     def setUp(self):
         TaskCase.setUp(self)
         self.box.add_task("ice_trail_steve", "An ice trail behind Steve\nfor a minute", player="Steve", minutes_ago=8,
-                          made={"scripts": ["ice_trail_steve"], "actions": [], "presets": [], "copies": []},
+                          made={"content": ["ice_trail_steve"], "bindings": [], "grants": []},
                           variables=VARIABLES)
         self.box.add_task("castle_alex", "A castle at spawn, 40 by 40", status="done", player="Alex", minutes_ago=6,
                           result="castle_alex done: built")
@@ -180,7 +183,7 @@ class TestList(TaskCase):
         self.assertEqual(list(rows[0]), ["name", "description", "player", "status", "line", "brief", "made", "variables",
                                          "session", "result", "created_at", "updated_at", "closed_at"])
         self.assertEqual(rows, self.box.tasks())
-        self.assertEqual((rows[0]["made"]["scripts"], rows[0]["variables"]), (["ice_trail_steve"], VARIABLES))
+        self.assertEqual((rows[0]["made"]["content"], rows[0]["variables"]), (["ice_trail_steve"], VARIABLES))
         self.assertEqual((rows[1]["made"], rows[1]["result"]), (None, "castle_alex done: built"))
         con = __import__("sqlite3").connect(self.box.db)
         con.execute("UPDATE tasks SET made = 'not json', variables = '[1,' WHERE name = 'long_one'")

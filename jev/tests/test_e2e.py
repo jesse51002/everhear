@@ -139,8 +139,9 @@ class TestTheCastCheck(WithJev):
         self.addCleanup(bridge.shutdown)
         store = os.path.join(self.dir, "incantations.json")
         with open(store, "w") as f:
-            json.dump({"version": 1, "incantations": [{"player": "Steve", "phrase": "hot fireball",
-                                                       "aliases": [], "action": "hot_fireball"}]}, f)
+            json.dump({"version": 1, "incantations": [{"id": "steve.hot_fireball", "player": "Steve",
+                                                       "phrase": "hot fireball", "aliases": [],
+                                                       "ability": "hot_fireball", "cooldown_s": 3}]}, f)
         env_file = os.path.join(self.dir, "vfg.env")
         with open(env_file, "w") as f:
             f.write("VFG_CLIENT_TOKEN=bridge-token-not-a-secret\n")
@@ -150,7 +151,7 @@ class TestTheCastCheck(WithJev):
         env.update(NO_PROXY)
         env.update({"VFG_DB": db, "VFG_LIB": FAKE_LIB, "FAKE_FEED_LOG": feed, "VFG_JEV_URL": self.server.url,
                     "VFG_LOOKOUT": os.path.join(self.dir, "lookout.md"), "VFG_MENU": os.path.join(self.dir, "menu.md"),
-                    "VFG_ENV_FILE": env_file, "TYPESAFE_API_KEY": KEY, "VFG_INCANTATIONS": store,
+                    "VFG_ENV_FILE": env_file, "TYPESAFE_API_KEY": KEY, "VFG_ENGINE_EXPORT": store,
                     "VFG_BRIDGE_PORT": str(bridge.server_address[1])})
         now = time.time()
         cast = lines.add(now, "Steve", "voice", "Hot fire ball.", peak=-8.0)
@@ -226,9 +227,9 @@ class TestByHand(WithJev):
     def test_cast_prints_the_answer_and_writes_nothing(self):
         store = os.path.join(self.dir, "incantations.json")
         with open(store, "w") as f:
-            json.dump({"version": 1, "incantations": [{"player": "@a", "phrase": "ice beam", "aliases": [],
-                                                       "action": "ice_beam_cast"}]}, f)
-        cfg = Config(jev_url=self.server.url, menu=os.path.join(self.dir, "menu.md"), incantations=store)
+            json.dump({"version": 1, "incantations": [{"player": "Steve", "phrase": "ice beam", "aliases": [],
+                                                       "ability": "ice_beam"}]}, f)
+        cfg = Config(jev_url=self.server.url, menu=os.path.join(self.dir, "menu.md"), engine_export=store)
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             self.assertEqual(cast_once(cfg, KEY, "Ice beam!", "Steve"), 0)

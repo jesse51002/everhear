@@ -1,39 +1,30 @@
-"""Casts: an incantation's ability or action started the moment its phrase is heard.
+"""Casts: an incantation's ability started in the game engine the moment its phrase is heard.
 
-A cast comes from the mod's keyword spotter (POST /v1/casts, layer ``spotter``), from
-Layer 2, the phoneme match on a voice line as it arrives (layer ``transcript``), or from the
-Jev filter, which judged a stored voice line a cast before routing it (POST /v1/jev/casts,
-layer ``jev``).  All go through one lock, so each cast's checks see every cast before it:
+Every incantation is the engine's (the game engine spec, "Incantations"): a phrase bound, per
+player, to an ability (or a scenario with its args), read from the engine's export (engine.py). A
+cast comes from the mod's keyword spotter (POST /v1/casts, layer ``spotter``), from Layer 2, the
+phoneme match on a voice line as it arrives (layer ``transcript``), or from the Jev filter, which
+judged a stored voice line a cast before routing it (POST /v1/jev/casts, layer ``jev``). Each cast's
+checks and record go through one lock, so each sees every cast before it:
 
-1. a repeated client_cast_id answers what the first did;
+1. a repeated client_cast_id answers what the first did (once the first has its answer);
 2. a cast of an incantation whose window overlaps an earlier cast of it by that player that
-   fired, or one the spotter made whatever became of it, is ``duplicate``: that utterance was
-   decided, whichever layer came first. A transcript cast that did not fire decides nothing
-   past its line: its window is the whole line's, and would swallow the next words;
-3. the incantation's own ``cooldown_s`` since it last fired for that player, then
-   VFG_CAST_GAP_S since any of the player's casts fired, are ``cooldown``;
-4. otherwise its copy is started (instances.Box.start, with the kit's incantations.cast_meta of
-   the entry, with no round trip to the PC), and the cast is ``fired``, or ``failed`` when the copy could not start;
-   ``stale`` when the bridge itself has held it VFG_CAST_WAIT_S since its request came
-   (on this lock, or on instances' copies.lock), so it never fires seconds late.
+   fired (or is still being asked about, ``pending``), or one the spotter made whatever became of
+   it, is ``duplicate``: that utterance was decided, whichever layer came first. A transcript cast
+   that did not fire decides nothing past its line: its window is the whole line's, and would
+   swallow the next words;
+3. ``stale`` when the bridge itself has held it VFG_CAST_WAIT_S since its request came, so it never
+   fires seconds late;
+4. otherwise its row is stored ``pending``, the lock is let go, and the engine is asked (``cast``
+   on its control socket, waited for at most VFG_ENGINE_CAST_WAIT_S and never past VFG_CAST_WAIT_S,
+   which the engine is told, so it drops a cast it has not begun by then); the row then takes the
+   status the mod knows (``engine_status``). No cast waits on another's engine round trip.
 
-The game engine's bindings come first (the game engine spec, "Incantations"): the incantations bound
-to its abilities, per player, read from its export (engine.py). A phrase the engine binds for the
-player hides an entry of today's store with the same phrase, in every path: the spotter's casts,
-Layer 2, the Jev filter's casts, the drop rule and the list. Such a cast is sent to the engine as
-``cast`` and waits for its answer at most VFG_ENGINE_CAST_WAIT_S; it skips step 3, since cooldowns
-are the ability's own, in the engine, and keeps steps 1, 2 and 4's ``stale``. That wait is outside
-the lock, so no cast waits on another's engine round trip: under the lock the cast is checked and
-its row stored as ``pending``, which the duplicate check counts as deciding its utterance and a
-repeated client_cast_id waits on (``_settled``); then the engine is asked, and the row takes the
-status the mod knows. A ``pending`` row lives only that long; one a stopped bridge left is made
-``failed`` on the next start (``DB.fail_pending``). Its record's
-``incantation_id`` is ``engine:<the binding's id>`` and its ``action`` the ability, with no copy.
-The engine's answer becomes one the mod already knows (``engine_status``). Today's store keeps
-working as before for action bindings, ``@a`` ones included, until the actions move onto the engine.
+Cooldowns are the ability's own, in the engine. A ``pending`` row lives only while the engine is
+asked; one a stopped bridge left is made ``failed`` on the next start (``DB.fail_pending``).
 
 The cast's row is stored before the answer; its events row and GAME line after it.
-Windows are on the mod's audio clock, cooldowns on the bridge's.
+Windows are on the mod's audio clock, the stale check on the bridge's monotonic one.
 
 The drop rule then decides a voice line: one that overlaps a cast of that player's and
 has at most one word besides the phrase is stored with ``dropped = 'cast'``, and Jev
@@ -43,19 +34,15 @@ judged it yet.  A line the Jev filter casts is dropped too, whatever became of i
 
 import collections
 import datetime as _dt
-import hashlib
-import json
 import logging
-import os
 import threading
 import time
 
 from . import engine as enginemod
-from . import timeutil, ulid
+from . import sounds, timeutil, ulid
 
 log = logging.getLogger("vfg_bridge")
 
-DEFAULT_COOLDOWN_S = 3.0
 # Layer 2 casts only from a line of at most this many words (normalised, fillers counted):
 # VFG_INCANT_LAYER2_MAX_WORDS, 0 for any length. A cast is said on its own, and a longer line
 # is talk. On 2026-10-12, with each player given that night's six incantations, the stored
@@ -63,8 +50,8 @@ DEFAULT_COOLDOWN_S = 3.0
 # on 397; at 6 words, 7 and 31. On the two sessions with casts, 10-11's false casts went from 28
 # to 2 and that night's from 3 to 1, every cast found as before (78% and 94% of them, stored).
 LAYER2_MAX_WORDS = 6
-# How far back a player's casts are read: past the longest cooldown (600 s), a player's
-# clock up to 10 minutes behind (the clock guard's limit) and a long line's window.
+# How far back a player's casts are read: a player's clock up to 10 minutes behind (the clock
+# guard's limit) and a long line's window.
 LOOKBACK = _dt.timedelta(minutes=30)
 ERROR_MAX = 300
 # When /v1/lines received each line, kept in memory for a Jev cast's age (the bridge stores no
@@ -73,21 +60,17 @@ RECEIVED_KEEP = _dt.timedelta(minutes=30)
 RECEIVED_MAX = 20000
 # A Jev cast whose phrase was said this long before its line ended is stale: a long line comes when
 # the whole utterance ends, so a phrase at its start would fire seconds late. Where the phrase is,
-# the kit's phoneme match finds, as loose as this; its time is placed by word between at and ended_at.
+# the phoneme match (sounds.py) finds, as loose as this; its time is placed by word between at and ended_at.
 PHRASE_LEAD_S = 3.0
 PHRASE_ALLOWANCE = 0.4   # finds "variable" for fire ball (0.32), not noise (0.43+)
-# An engine cast's record is under this before the binding's id, so it never meets a store entry's
-# id in the duplicate check or the cooldowns.
+# A cast's record is under this before the binding's id (engine:steve.fire_ball), as since the casts
+# of the old store, whose rows the history keeps, had their own ids.
 ENGINE_KEY = "engine:"
 # An engine cast's row while the engine is asked, outside the lock; never an answer.
 PENDING = "pending"
 # How long a repeated client_cast_id waits for its first request's engine answer, past that
 # answer's own longest wait (the engine's, and the client's margin on it).
 SETTLE_MARGIN_S = 1.0
-
-
-class Unavailable(Exception):
-    """The kit or the store cannot be used: casts and the list answer 503."""
 
 
 def _one_line(exc):
@@ -128,8 +111,6 @@ def engine_status(reply, player="the player", ability="that ability"):
 def answer(cast):
     """The 202 body for a stored cast."""
     doc = {"id": cast["id"], "status": cast["status"]}
-    if cast.get("copy"):
-        doc["copy"] = cast["copy"]
     if cast.get("error"):
         doc["error"] = cast["error"]
     return doc
@@ -150,95 +131,57 @@ NOTHING = LineCasts()
 
 
 class Casts:
-    LIST_POLL_S = 0.2         # how often a held list request looks at the store file
+    LIST_POLL_S = 0.2         # how often a held list request looks at the export
     LIST_WAIT_DEFAULT = 25.0
     LIST_WAIT_MAX = 30.0
 
-    def __init__(self, db, kit, feed, store_path, base, mc="/opt/mc", owner="", poll=0.5,
-                 gap_s=1.0, slack_s=0.3, allowance=0.25, layer2=True, wait_s=1.5, clock=None,
+    def __init__(self, db, feed, engine, slack_s=0.3, allowance=0.25, layer2=True, wait_s=1.5, clock=None,
                  monotonic=None, logger=None, jev_max_age_s=2.0, layer2_max_words=LAYER2_MAX_WORDS,
-                 engine=None, engine_wait_s=1.0):
+                 engine_wait_s=1.0):
         self.db = db
-        self.kit = kit
         self.feed = feed
-        self.store_path = store_path
-        self.base = base
-        self.mc = mc
-        self.owner = owner
-        self.poll = poll
-        self.gap_s = gap_s
+        self.engine = engine          # engine.Engine: its export, and its socket for a cast
         self.slack_s = slack_s
         self.allowance = allowance
         self.layer2 = layer2
         self.layer2_max_words = layer2_max_words
         self.wait_s = wait_s
         self.jev_max_age_s = jev_max_age_s
-        self.engine = engine          # engine.Engine, or None: today's store alone
         self.engine_wait_s = engine_wait_s
         self.clock = clock or timeutil.utcnow
         self.monotonic = monotonic or time.monotonic  # the request's arrival is on this clock
         self.log = logger or log
         self.lock = threading.Lock()  # every cast's checks and record, the spotter's and Layer 2's
-        self._asking = {}             # an engine cast's id -> an Event set once its row is final
-        self._read = (None, None)     # the store's file key, and its parse
+        self._asking = {}             # a cast's id -> an Event set once its row is final
         self._received = collections.OrderedDict()  # client_line_id -> self.monotonic when it came
         self._received_lock = threading.Lock()
 
     @classmethod
-    def from_config(cls, cfg, db, kit, feed, clock=None):
-        return cls(db, kit, feed, cfg.incantations, cfg.base, cfg.mc, cfg.owner, cfg.live_poll_s,
-                   cfg.cast_gap_s, cfg.cast_slack_s, cfg.incant_allowance, cfg.incant_layer2,
-                   cfg.cast_wait_s, clock, jev_max_age_s=cfg.jev_cast_max_age_s,
-                   layer2_max_words=cfg.incant_layer2_max_words,
-                   engine=enginemod.Engine(cfg.engine_socket, cfg.engine_export),
+    def from_config(cls, cfg, db, feed, clock=None):
+        return cls(db, feed, enginemod.Engine(cfg.engine_socket, cfg.engine_export), cfg.cast_slack_s,
+                   cfg.incant_allowance, cfg.incant_layer2, cfg.cast_wait_s, clock,
+                   jev_max_age_s=cfg.jev_cast_max_age_s, layer2_max_words=cfg.incant_layer2_max_words,
                    engine_wait_s=cfg.engine_cast_wait_s)
 
-    # -- the kit and the store -----------------------------------------------------
-
-    def _modules(self):
-        mods = self.kit.modules()
-        if mods is None:
-            raise Unavailable("incantations are not on this box: %s" % (
-                getattr(self.kit, "why", None) or "the kit in %s has no incantations module" % self.kit.path))
-        return mods
-
-    def _store(self, inc):
-        """The store, parsed again only when its file changes (writes replace it whole)."""
-        store = inc.Store(self.store_path)
-        key = self._file_key()
-        seen, doc = self._read
-        if key is None or key != seen:
-            doc = store.read()
-            self._read = (key, doc)
-        store.read = lambda: doc  # for_player and lookup read it through read()
-        return store
-
-    def _entries(self, inc, player, store=None):
-        """Every incantation that applies to ``player``: the engine's bindings for them first, then
-        the store's (their own, then @a) whose phrase the engine does not bind for them."""
-        store = self._store(inc) if store is None else store
-        own = self.engine.for_player(player) if self.engine is not None else []
-        if not own:
-            return store.for_player(player)
-        bound = set(inc.normalize(e["phrase"]) for e in own)
-        return own + [e for e in store.for_player(player) if inc.normalize(e.get("phrase")) not in bound]
+    def _entries(self, player):
+        """The player's incantations: the engine's bindings for them (case-insensitive)."""
+        return self.engine.for_player(player)
 
     @staticmethod
-    def _lookup(inc, entries, heard):
-        """The first of ``entries`` whose phrase or an alias, normalised, is ``heard``, or None
-        (the store's lookup, over the merged list)."""
-        h = inc.normalize(heard)
+    def _lookup(entries, heard):
+        """The first of ``entries`` whose phrase or an alias, normalised, is ``heard``, or None."""
+        h = sounds.normalize(heard)
         if not h:
             return None
         for e in entries:
-            if h in inc.targets(e):
+            if h in sounds.targets(e):
                 return e
         return None
 
     @staticmethod
     def _key(entry):
         """What a cast of ``entry`` is recorded under, as ``incantation_id``."""
-        return ENGINE_KEY + entry["id"] if entry.get("engine") else entry.get("id")
+        return ENGINE_KEY + entry["id"]
 
     # -- POST /v1/casts ------------------------------------------------------------
 
@@ -246,24 +189,22 @@ class Casts:
         """A spotter's cast: (HTTP status, body, what to do once answered, or None).
         ``arrived``: when its request came, on ``self.monotonic``."""
         arrived = self.monotonic() if arrived is None else arrived
-        inc, ins = self._modules()
         with self.lock:
             first = self.db.cast_by_client_id(client_cast_id)
             if first is None:
-                entry = self._lookup(inc, self._entries(inc, player), phrase)
+                entry = self._lookup(self._entries(player), phrase)
                 if entry is None:
                     return 404, {"error": "%s has no incantation %r" % (player, phrase)}, None
-                cast = self._try((inc, ins), entry, player, heard, "spotter", started, ended, client_cast_id,
-                                 arrived)
+                cast = self._try(entry, player, heard, "spotter", started, ended, client_cast_id, arrived)
         if first is not None:
             first = self._settled(first)
             if first["status"] == PENDING:
                 return 503, {"error": "cast %s is still waiting on the game engine" % first["id"]}, None
             return 202, answer(first), None
         self._ask(cast, entry, player)
-        return 202, answer(cast), lambda: self._after(inc, cast, entry)
+        return 202, answer(cast), lambda: self._after(cast, entry)
 
-    def _after(self, inc, cast, entry):
+    def _after(self, cast, entry):
         """Once a spotter's cast is answered: announce it, and drop a line of that utterance
         the line endpoint stored before the cast came, which Jev has not judged yet."""
         self.announce(cast)
@@ -273,23 +214,20 @@ class Casts:
             for line_id, text in self.db.unjudged_lines(
                     cast["player_name"], timeutil.format_time(started - pad),
                     timeutil.format_time(ended + pad), timeutil.format_time(started - LOOKBACK)):
-                if inc.drop(text, entry) and self.db.drop_line(line_id, cast["id"]):
+                if sounds.drop(text, entry) and self.db.drop_line(line_id, cast["id"]):
                     break
         except Exception:
             self.log.exception("could not drop the line of cast %s", cast["id"])
 
-    def _try(self, mods, entry, player, heard, layer, started, ended, client_cast_id, arrived,
-             line_id=None, late=None):
-        """Check, start and store one cast; call under the lock. Answers the stored row. ``mods``:
-        the kit's (incantations, instances). ``late``: why it is too late to fire (a Jev cast's
-        line too old), so it is ``stale``. An engine binding's cast is sent to the engine."""
-        inc, ins = mods
+    def _try(self, entry, player, heard, layer, started, ended, client_cast_id, arrived, line_id=None, late=None):
+        """Check and store one cast; call under the lock. Answers its row: ``pending`` when it may
+        go (the caller then asks the engine, outside the lock, with _ask), else ``duplicate`` or
+        ``stale``. ``late``: why it is too late to fire (a Jev cast's line too old)."""
         now = self.clock()
         cast = {"id": ulid.new(), "at": timeutil.format_time(now),
                 "started_at": timeutil.format_time(started), "ended_at": timeutil.format_time(ended),
                 "player_name": player, "phrase": entry["phrase"], "heard": heard, "layer": layer,
-                "incantation_id": self._key(entry),
-                "action": entry.get("ability") if entry.get("engine") else entry.get("action"),
+                "incantation_id": self._key(entry), "action": entry.get("ability") or entry.get("scenario"),
                 "client_cast_id": client_cast_id, "line_id": line_id}
         status, why = self._check(entry, player, started, ended, now)
         left = self.wait_s - (self.monotonic() - arrived)
@@ -297,21 +235,8 @@ class Casts:
             status, why = "stale", "held %.1f s before it could start" % (self.wait_s - left)
         if status is None and late:
             status, why = "stale", late
-        if status is None and entry.get("engine"):
-            # Reserved: the engine is asked outside the lock (_ask), and the row then takes its status.
+        if status is None:  # reserved: the engine is asked outside the lock (_ask)
             status, cast["arrived"] = PENDING, arrived
-        elif status is None:
-            try:
-                box = ins.Box(self.base, self.mc, owner=self.owner, poll=self.poll)
-                copy, _, proc = box.start(inc.cast_meta(entry, player), wait=left)
-            except ins.Busy as exc:  # copies.lock held past the wait: too late to fire
-                status, why = "stale", _one_line(exc)
-            except Exception as exc:  # NotDeployed, CopyError, OSError: the cast failed
-                status, why = "failed", _one_line(exc)
-            else:
-                status, cast["copy"] = "fired", copy
-                threading.Thread(target=self._reap, args=(box, copy, proc),
-                                 name="reap-" + copy, daemon=True).start()
         cast["status"], cast["error"] = status, why
         self.db.insert_cast(cast)
         if status == PENDING:  # stored: a repeat of its client_cast_id now waits on this
@@ -350,9 +275,9 @@ class Casts:
         return self.db.cast_by_client_id(cast["client_cast_id"]) or cast
 
     def _engine_cast(self, entry, player, cast_id, left):
-        """(status, why, the engine's own status) of an engine binding's cast, sent to the engine
-        and waited for at most VFG_ENGINE_CAST_WAIT_S, and never past the bridge's own wait. With
-        the engine down or late it ``failed``, in words, and is announced so."""
+        """(status, why, the engine's own status) of a cast, sent to the engine and waited for at
+        most VFG_ENGINE_CAST_WAIT_S, and never past the bridge's own wait. With the engine down or
+        late it ``failed``, in words, and is announced so."""
         phrase = entry["phrase"]
         wait = max(0.05, min(self.engine_wait_s, left))
         try:
@@ -369,7 +294,7 @@ class Casts:
             return "failed", "the game engine did not answer the cast within %.1f s" % wait, None
         if reply.get("reason") == "stopping":
             return "failed", "the game engine is stopping, so %r was not cast" % phrase, None
-        status, why = engine_status(reply, player, entry.get("ability"))
+        status, why = engine_status(reply, player, entry.get("ability") or entry.get("scenario"))
         return status, why, reply.get("status") if reply.get("ok") else None
 
     def _near(self, player, started, ended, now):
@@ -381,56 +306,23 @@ class Casts:
                                          timeutil.format_time(min(started, now) - LOOKBACK))
 
     def _check(self, entry, player, started, ended, now):
-        """(None, None) when the cast may fire, else (``duplicate`` or ``cooldown``, why). An
-        engine binding's cast is checked only for a duplicate: its cooldown is the ability's, in
-        the engine. The store's cooldowns and gap count only the store's casts."""
+        """(None, None) when the cast may go, else (``duplicate``, why): a cast of the same
+        incantation in this window that fired or is being asked about, or any the spotter made.
+        Nothing else: its cooldown is the ability's, in the engine."""
         key = self._key(entry)
         for c in self._near(player, started, ended, now):
             if c["incantation_id"] == key and (c["status"] in ("fired", PENDING) or c["layer"] == "spotter"):
                 return "duplicate", "it was cast in this window already (%s, %s)" % (
                     c["id"], c["status"])
-        if entry.get("engine"):
-            return None, None
-        last = dict((k, at) for k, at in self.db.last_fired(
-            player, timeutil.format_time(min(started, now) - LOOKBACK)).items()
-            if not str(k or "").startswith(ENGINE_KEY))
-        cooldown = entry.get("cooldown_s")
-        cooldown = DEFAULT_COOLDOWN_S if cooldown is None else float(cooldown)
-        if entry.get("id") in last:
-            left = cooldown - _seconds(now - timeutil.parse_time(last[entry.get("id")]))
-            if left > 0:
-                return "cooldown", "%.1f s left of its %g s cooldown" % (left, cooldown)
-        if last:
-            left = self.gap_s - _seconds(now - timeutil.parse_time(max(last.values())))
-            if left > 0:
-                return "cooldown", "%.1f s left of the %g s between a player's casts" % (
-                    left, self.gap_s)
         return None, None
-
-    def _reap(self, box, copy, proc):
-        """Wait for a cast's copy, so it never stays a zombie; then its pid file goes, if still its."""
-        code = proc.wait()
-        path = box.path(copy, ".pid")
-        try:
-            with box.lock():  # the lock a copy's name is picked under
-                with open(path) as f:
-                    held = int(f.read().strip())
-                if held == proc.pid:
-                    os.remove(path)
-        except (OSError, ValueError):
-            pass
-        if code:
-            self.log.info("cast copy %s ended with code %d", copy, code)
 
     def announce(self, cast):
         """A fired or failed cast's events row and GAME cast line, whatever watch.json says."""
         player, phrase = cast["player_name"], cast["phrase"]
-        if cast["status"] == "fired" and str(cast.get("incantation_id") or "").startswith(ENGINE_KEY):
+        if cast["status"] == "fired":
             text = '%s cast "%s": %s, %s in the engine' % (
                 player, phrase, cast["action"],
                 "charging" if cast.get("engine_status") == "charging" else "fired")
-        elif cast["status"] == "fired":
-            text = '%s cast "%s": %s, running as %s' % (player, phrase, cast["action"], cast["copy"])
         elif cast["status"] == "failed":
             text = '%s cast "%s": failed — %s' % (player, phrase, cast["error"])
         else:
@@ -455,19 +347,15 @@ class Casts:
         whatever happens after."""
         arrived = self.monotonic() if arrived is None else arrived
         made = [] if made is None else made
-        mods = self.kit.modules()
-        if mods is None:
-            return NOTHING
-        inc, ins = mods
-        entries = self._entries(inc, player)
+        entries = self._entries(player)
         if entries:
             self.received(client_line_id, arrived)  # before it is stored: a Jev cast's age
         if not entries or self.db.line_id(client_line_id) is not None:
             return NOTHING
-        words = inc.words(text)
+        words = sounds.words(text)
         if self.layer2 and (not self.layer2_max_words or len(words) <= self.layer2_max_words):
             taken = []  # the word spans cast already: one cast for the same words
-            for m in inc.match_line(text, self._one_per_phrase(inc, entries), self.allowance):
+            for m in sounds.match_line(text, self._one_per_phrase(entries), self.allowance):
                 if any(m.start < end and start < m.end for start, end in taken):
                     continue
                 taken.append((m.start, m.end))
@@ -476,8 +364,7 @@ class Casts:
                 with self.lock:
                     if self.db.cast_by_client_id(key) is not None:
                         continue
-                    cast = self._try((inc, ins), m.entry, player, heard, "transcript", started, ended,
-                                     key, arrived)
+                    cast = self._try(m.entry, player, heard, "transcript", started, ended, key, arrived)
                 made.append(cast)  # stored: announced whatever happens next, as it stands then
                 self._ask(cast, m.entry, player)
         with self.lock:  # a spotter's cast being started right now is stored first
@@ -488,7 +375,7 @@ class Casts:
         by_id = {self._key(e): e for e in entries}
         for c in near:
             entry = by_id.get(c["incantation_id"]) or {"phrase": c["phrase"], "aliases": []}
-            if inc.drop(text, entry):
+            if sounds.drop(text, entry):
                 return LineCasts("cast", c["id"], [c["id"] for c in near], made)
         kept = [c for c in near if c["status"] == "fired"]
         return LineCasts(None, kept[0]["id"] if kept else None, [c["id"] for c in near], made)
@@ -519,7 +406,6 @@ class Casts:
         more than PHRASE_LEAD_S before its line ended (``_said_early``), as at the start of a long
         line, which comes only when the whole utterance ends."""
         arrived = self.monotonic() if arrived is None else arrived
-        inc, ins = self._modules()
         key = "jev:%s" % line_id
         new = False
         with self.lock:
@@ -535,14 +421,14 @@ class Casts:
                 if line["jev_class"] is not None and not keep:  # a kept line's cast may come after its routing
                     return 409, {"error": "Jev judged line %s already" % line_id, "line": "judged"}, None
                 player = line["player_name"]
-                entry = self._lookup(inc, self._entries(inc, player), phrase)
+                entry = self._lookup(self._entries(player), phrase)
                 if entry is None:
                     return 404, {"error": "%s has no incantation %r" % (player, phrase)}, None
                 started = timeutil.parse_time(line["at"])
                 ended = timeutil.parse_time(line["ended_at"] or line["at"])
-                heard = " ".join(inc.words(line["text"]))[:200] or None
-                late = self._too_old(line) or self._said_early(inc, entry, line["text"], started, ended)
-                cast = self._try((inc, ins), entry, player, heard, "jev", started, ended, key, arrived,
+                heard = " ".join(sounds.words(line["text"]))[:200] or None
+                late = self._too_old(line) or self._said_early(entry, line["text"], started, ended)
+                cast = self._try(entry, player, heard, "jev", started, ended, key, arrived,
                                  line_id=line_id, late=late)
                 new = True
         if new:
@@ -565,18 +451,18 @@ class Casts:
         return 202, doc, (lambda: self.announce(cast)) if new else None
 
     @staticmethod
-    def _said_early(inc, entry, text, started, ended):
+    def _said_early(entry, text, started, ended):
         """Why a Jev cast is too late because its phrase was said early in its line, or None: the
-        last place the kit's phoneme match (any length, PHRASE_ALLOWANCE) finds the phrase or an
+        last place the phoneme match (sounds.py; any length, PHRASE_ALLOWANCE) finds the phrase or an
         alias, its last word's time estimated by word between the line's start and end, more than
         PHRASE_LEAD_S before the end. None when the phrase is not found: then it is allowed."""
-        words = inc.words(text)
+        words = sounds.words(text)
         span = (ended - started).total_seconds()
         if not words or span <= PHRASE_LEAD_S:
             return None
         last, offset = None, 0
         while offset < len(words):
-            found = inc.match_line(" ".join(words[offset:]), [entry], PHRASE_ALLOWANCE)
+            found = sounds.match_line(" ".join(words[offset:]), [entry], PHRASE_ALLOWANCE)
             if not found:
                 break
             last = offset + found[0].end
@@ -617,11 +503,11 @@ class Casts:
         return None
 
     @staticmethod
-    def _one_per_phrase(inc, entries):
-        """The entries, one per normalised phrase: the player's own before an @a one."""
+    def _one_per_phrase(entries):
+        """The entries, one per normalised phrase, the first kept."""
         out, seen = [], set()
         for e in entries:
-            phrase = inc.normalize(e.get("phrase"))
+            phrase = sounds.normalize(e.get("phrase"))
             if phrase not in seen:
                 seen.add(phrase)
                 out.append(e)
@@ -629,67 +515,38 @@ class Casts:
 
     # -- GET /v1/incantations ------------------------------------------------------
 
-    def _file_key(self):
-        try:
-            st = os.stat(self.store_path)
-        except OSError:
-            return None
-        return st.st_ino, st.st_size, st.st_mtime_ns
-
-    def _keys(self):
-        """Both stores' file keys: the list changes only when one of them does."""
-        return self._file_key(), self.engine.file_key() if self.engine is not None else None
-
     def listing(self, player, after=None, wait=None):
         """(200, the player's list) at once, or when ``after`` is the version, once it changes;
-        (304, None) when it has not changed in ``wait`` s. The long poll wakes on a change to
-        either store."""
-        inc, _ = self._modules()
+        (304, None) when it has not changed in ``wait`` s. The version is the export's: a missing
+        or unreadable export is version 0, with none."""
         wait = self.LIST_WAIT_DEFAULT if wait is None else min(wait, self.LIST_WAIT_MAX)
         deadline = time.monotonic() + wait
-        keys = self._keys()
-        doc = self._list(inc, player)
+        key = self.engine.file_key()
+        doc = self._list(player)
         while after is not None and doc["version"] == after:
-            while self._keys() == keys:
+            while self.engine.file_key() == key:
                 left = deadline - time.monotonic()
                 if left <= 0:
                     return 304, None
                 time.sleep(min(self.LIST_POLL_S, left))
-            keys = self._keys()
-            doc = self._list(inc, player)
+            key = self.engine.file_key()
+            doc = self._list(player)
         return 200, doc
 
-    def _list(self, inc, player):
-        """The player's list: the engine's bindings, then the store's own and @a entries whose
-        phrase the engine does not bind for them, one per phrase. Its version is the store's when
-        the engine has no bindings (a missing or unreadable store is version 0, with none); with
-        some, a number made from both stores' versions and the list (``mixed_version``)."""
-        store = self._store(inc)
-        version = store.read()["version"]
-        out = []
-        for e in self._one_per_phrase(inc, self._entries(inc, player, store)):
-            cooldown = e.get("cooldown_s")
-            if cooldown is None:  # the engine's always say; the store's default is the bridge's
-                cooldown = 0.0 if e.get("engine") else DEFAULT_COOLDOWN_S
-            out.append({"phrase": e["phrase"], "aliases": self.spotted(inc, e), "cooldown_s": cooldown})
-        bound = self.engine.bindings() if self.engine is not None else enginemod.EMPTY
-        if bound["version"] or bound["incantations"]:
-            version = mixed_version(version, bound["version"], out)
+    def _list(self, player):
+        """The player's list: the engine's bindings for them, one per phrase, each with the aliases
+        the spotter listens for and its ability's cooldown_s (0 while it is not loaded)."""
+        version = self.engine.bindings()["version"]
+        out = [{"phrase": e["phrase"], "aliases": self.spotted(e), "cooldown_s": e.get("cooldown_s") or 0.0}
+               for e in self._one_per_phrase(self._entries(player))]
         return {"version": version, "player": player, "incantations": out}
 
     @staticmethod
-    def spotted(inc, entry):
+    def spotted(entry):
         """The aliases the mod's keyword spotter listens for: the entry's aliases less its
         ``everyday_aliases``, everyday talk in their own right ("ice cream" for "ice beam"), which
         would cast on ordinary conversation; Layer 2 and the Jev cast check still use them. An
         entry without the field has none (Contracts §10)."""
-        everyday = set(inc.normalize(a) for a in entry.get("everyday_aliases") or ())
-        return [a for a in entry.get("aliases") or () if inc.normalize(a) not in everyday]
+        everyday = set(sounds.normalize(a) for a in entry.get("everyday_aliases") or ())
+        return [a for a in entry.get("aliases") or () if sounds.normalize(a) not in everyday]
 
-
-def mixed_version(store_version, engine_version, listed):
-    """The list's version once the engine has bindings: the first 48 bits of a sha256 of both
-    stores' versions and the player's list, so it changes whenever either store does, stays the same
-    across a bridge restart, and fits the mod's ``after`` (15 digits at most)."""
-    text = json.dumps([store_version, engine_version, listed], sort_keys=True, separators=(",", ":"))
-    return int(hashlib.sha256(text.encode("utf-8")).hexdigest()[:12], 16)

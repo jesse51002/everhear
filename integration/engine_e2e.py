@@ -11,7 +11,7 @@ Real:  a realmc server (`up NAME --fresh`) with Carpet's Steve and Alex, and its
        datapack copied into the world and loaded). The engine runs as the vfg-engine unit runs it,
        `<vfg>/engine/.venv/bin/python -m vfg_engine` in <vfg>/engine, with the stand-in's paths.
        The bridge runs as vfg-bridge does (`python -m vfg_bridge` on the box's Python, against the
-       stand-in's vfg.db, the kit `vfg script deploy --kit` put there and the engine's export).
+       stand-in's vfg.db and the engine's export and socket).
 Driven: `vfg engine …` and `vfg action run engine_*` through realmc's vfg (VFG_SERVER=NAME), whose
        content deploy sends made/NAME/content/ (written fresh each run: the four examples and the
        test classes below) to <vfg>/made/NAME/content/, the engine's VFG_ENGINE_CONTENT; the
@@ -133,7 +133,8 @@ class E2eRoar(Ability):
         x, y, z = ctx.user.pos
         self.particle("minecraft:smoke", (x, y + 2, z), count=3)
 ''',
-    "e2e_brute.py": '''"""E2E Brute, a test's actor (integration/engine_e2e.py): a husk, 30 health, 1.25 the size."""
+    "e2e_brute.py": '''"""E2E Brute, a test's actor (integration/engine_e2e.py): a husk, 30 health, 1.25 the size, and
+no attack damage, so the test's players outlive it however slow the server is."""
 
 from vfg_engine import Actor, ActorConfig
 
@@ -144,30 +145,34 @@ class E2eBrute(Actor):
         entity_type = "minecraft:husk"
         health = 30
         size = 1.25
-        damage = 3
+        damage = 0
         name = "E2E Brute"
 ''',
-    "e2e_horde.py": '''"""E2E Horde, a test's scenario (integration/engine_e2e.py): at args["at"] it spawns an E2E
-Brute, grants it E2E Roar, and spawns a plain husk beside it. Everything it spawns is its own,
+    "e2e_horde.py": '''"""E2E Horde, a test's scenario (integration/engine_e2e.py): at args.at it spawns an E2E
+Brute, grants it E2E Roar, and spawns a plain pig beside it. Everything it spawns is its own,
 so stopping it leaves nothing."""
 
-from vfg_engine import Scenario, ScenarioConfig, State, UNTIL_STOPPED
+from vfg_engine import Args, Field, Place, Scenario, ScenarioConfig, State, UNTIL_STOPPED
 
 
 class E2eHorde(Scenario):
     class Config(ScenarioConfig):
-        summary = "One brute with a roar and one husk (a test's)."
+        summary = "One brute with a roar and one pig (a test's)."
         duration_s = UNTIL_STOPPED
+
+    class Args(Args):
+        at: Place = Field("8 85 8", description="where the brute stands: a saved place, x y z, or a player")
 
     class State(State):
         brute: str = ""
-        husk: str = ""
+        pig: str = ""
 
     def start(self, ctx):
-        x, y, z = self.args.get("at") or (8, 85, 8)
+        x, y, z = self.args.at.pos
         self.state.brute = self.spawn("e2e_brute", at=(x, y, z))
         self.grant(self.state.brute, "e2e_roar")
-        self.state.husk = self.spawn("minecraft:husk", at=(x + 2, y, z))
+        self.state.pig = self.spawn("minecraft:pig", at=(x + 2, y, z))
+        self.result("a brute and a pig at %g %g %g" % (x, y, z), brute=self.state.brute)   # it runs on
 ''',
     "e2e_blast.py": '''"""E2E Blast, a test's triggered ability (integration/engine_e2e.py): an explosion round its
 caster that spares the caster (self_damage off) and hits everyone else in its radius once."""
@@ -191,10 +196,10 @@ class E2eBlast(Ability):
         self.explode(at=ctx.user.pos, radius=self.config.radius, damage=self.config.blast)
         self.end()
 ''',
-    "e2e_rule.py": '''"""E2E Rule, a test's scenario (integration/engine_e2e.py): holds the gamerule args["rule"] at
-args["value"], priority args["priority"], while it runs."""
+    "e2e_rule.py": '''"""E2E Rule, a test's scenario (integration/engine_e2e.py): holds the gamerule args.rule at
+args.value, priority args.priority, while it runs."""
 
-from vfg_engine import Scenario, ScenarioConfig, UNTIL_STOPPED
+from vfg_engine import Args, Field, Scenario, ScenarioConfig, UNTIL_STOPPED
 
 
 class E2eRule(Scenario):
@@ -202,8 +207,14 @@ class E2eRule(Scenario):
         summary = "Holds a gamerule while it runs (a test's)."
         duration_s = UNTIL_STOPPED
 
+    class Args(Args):
+        rule: str = Field("mob_griefing", description="the gamerule, by its 26.3 name")
+        value: bool = Field(True, description="what it is held at")
+        priority: int = Field(0, ge=0, le=100, description="higher wins; on a tie the newer")
+
     def start(self, ctx):
-        self.hold(self.args.get("rule", "mob_griefing"), self.args["value"], int(self.args.get("priority", 0)))
+        self.hold(self.args.rule, self.args.value, self.args.priority)
+        self.result("holding %s at %s" % (self.args.rule, self.args.value))   # it runs on
 ''',
 }
 CLASSES = sorted(["fire_staff", "fireball", "giant", "shrunk"] + [n[:-3] for n in CONTENT])
@@ -328,9 +339,7 @@ class Bridge:
             "VFG_WATCH": os.path.join(srv.vfg, "watch.json"), "VFG_STATE": os.path.join(srv.vfg, "state"),
             "VFG_CONSOLE_LOG": os.path.join(srv.mc, "console.log"),
             "VFG_BRIDGE_BIND": "127.0.0.1", "VFG_BRIDGE_PORT": str(self.port), "VFG_CLIENT_TOKEN": self.token,
-            "VFG_KIT": os.path.join(srv.vfg, "scripts", "_lib"),
-            "VFG_INCANTATIONS": os.path.join(srv.vfg, "incantations.json"),
-            "VFG_BASE": srv.vfg, "VFG_MC": srv.mc,
+            "VFG_BASE": srv.vfg,
             "VFG_ENGINE_SOCKET": engine.sock, "VFG_ENGINE_EXPORT": engine.env["VFG_ENGINE_EXPORT"],
             "PYTHONPATH": os.path.join(REPO, "bridge") + os.pathsep + os.path.join(srv.vfg, "lib"),
         })
@@ -539,7 +548,7 @@ def step1_status_and_reload(vfg, engine):
 
 def step2_items(vfg, engine, w, p, spots):
     print("== 2. items: the Fire Staff")
-    steve, alex, target = spots["steve"], spots["alex"], spots["target"]
+    steve, target = spots["steve"], spots["target"]
     code, out, err = vfg("engine", "give", "Steve", "fire_staff", "--base", "stick")
     check("a give on the wrong base is refused", code == 1 and "carrot_on_a_stick" in err, err[:200])
     check("  and Steve has no staff", w.holds("Steve") == 0, "")
@@ -851,11 +860,11 @@ def step7_scenario(vfg, engine, w, spots):
     x, y, z = spots["horde"]
     near = "@e[x=%g,y=%g,z=%g,distance=..8,type=!minecraft:player]" % (x, y, z)
     tagged0, near0 = w.count("@e[tag=everhear]"), w.count(near)
-    code, doc, err = vfg.json("engine", "start", "e2e_horde", "at=[%g,%g,%g]" % (x, y, z))
+    code, doc, err = vfg.json("engine", "start", "e2e_horde", "at=%g %g %g" % (x, y, z))
     iid = doc.get("instance")
     check("vfg engine start e2e_horde", code == 0 and iid, str(doc))
     got, secs = wait_for(lambda: w.count("@e[tag=everhear]") == tagged0 + 2, 3)
-    check("  two entities in the world: the brute and a husk", got, "everhear-tagged %d (was %d)"
+    check("  two entities in the world: the brute and a pig", got, "everhear-tagged %d (was %d)"
           % (w.count("@e[tag=everhear]"), tagged0))
     rows = instances(vfg)
     brute = [r for r in rows if r.get("id") == "e2e_brute"]
@@ -1127,8 +1136,6 @@ def main(argv=None):
         stray_engine(sock, engine.dir)
         secs = engine.start()
         ok("the engine runs as vfg-engine does", "socket answered in %.2f s; %s -> %s" % (secs, link[-40:], sock))
-        code, out, err = vfg("script", "deploy", "--kit")
-        check("vfg script deploy --kit (the bridge's casts need it)", code == 0, out + err)
         br = Bridge(srv, engine, os.path.join(srv.dir, "bridge.log"))
         ok("the bridge", br.url)
         status(engine, "fresh server, nobody on")

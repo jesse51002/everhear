@@ -1,12 +1,10 @@
 """Every implementer test runs with HOME a temp dir, no VFG_* setting and no provider's key from
-outside, and the log quiet: none can reach ~/.vfg, ~/.claude, the real vfg or a provider. Each
-test's actions catalogs are dropped after it. It leans on nothing in tests/conftest.py, which is
-the brain's."""
+outside, and the log quiet: none can reach ~/.vfg, ~/.claude, the real vfg or a provider. It leans
+on nothing in tests/conftest.py, which is the brain's."""
 import os
 
 import pytest
 
-from brain.implementers import actions
 from brain.implementers.config import set_quiet
 
 set_quiet(True)
@@ -18,5 +16,3 @@ def _isolated(tmp_path, monkeypatch):
     for key in list(os.environ):
         if key.startswith("VFG_") or key in ("DEEPSEEK_API_KEY", "OPEN_ROUTER_API"):
             monkeypatch.delenv(key)
-    yield
-    actions.forget()

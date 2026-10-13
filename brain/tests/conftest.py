@@ -1,13 +1,12 @@
 """Fakes for every brain test: no model, no network, no real vfg, no subprocess, no sleeping,
 no real ~/.vfg.
 
-- catalog(): the core actions and railgun, from a small copy of the repo's actions/ beside a
-  stub of each script, loaded once; made() writes a server's own action into a catalog of its own;
-  engine_catalog(): the same with the game engine's menu actions (actions/engine_*.py), as this
-  server's own.
+- catalog(): the brain's menu, the game engine's ops (actions/engine_*.py), from a copy of the
+  repo's actions/, loaded once.
 - FakeAsk stands in for structured(): canned answers per output class ("Step", "Response"), one
   for every call or a list taken in order, each validated against the class as structured() does.
-- FakeVfg stands in for the vfg runner: it records every argv and answers by prefix.
+- FakeVfg stands in for the vfg runner: it records every argv and answers by prefix; `vfg engine
+  overview` with OVERVIEW (a few classes, no instances, the place home) unless a test says otherwise.
 - FakeImplementers records what is started and followed up, by the task's name.
 - Tick is the loop's clock, moved by hand.
 - Contexts are built by hand: rows(...) from feed lines; steps by step(), act(), hand_off() and
@@ -18,11 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import itertools
 import json
 import shutil
 import tempfile
-import textwrap
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -41,61 +38,38 @@ from brain.tasks import Tasks
 from brain.vfg import Later, VfgResult
 from brain.world import World
 
-CORE = ("command", "teleport", "summon_around", "save_place", "stop", "edit", "railgun")
 NOW = datetime(2026, 10, 10, 18, 30, 0, tzinfo=UTC)
 
 
 def _repo_copy() -> Path:
+    """The repo's actions/ (the engine's ops) beside the real _types.py, and an empty
+    engine/library/ and made/main/content/, whose files are the names a new task may not take."""
     root = Path(tempfile.mkdtemp(prefix="vfg-brain-repo-"))
     atexit.register(shutil.rmtree, root, True)
     (root / "actions").mkdir()
     (root / "actions" / "__init__.py").write_text("")
     (root / "actions" / "_types.py").symlink_to(REPO / "actions" / "_types.py")
-    for name in CORE:
-        shutil.copy(REPO / "actions" / f"{name}.py", root / "actions")
-        (root / "scripts" / name).mkdir(parents=True)
-        (root / "scripts" / name / "main.py").write_text('"""a stub"""\n')
-    (root / "scripts" / "_presets").symlink_to(REPO / "scripts" / "_presets")
+    for path in sorted((REPO / "actions").glob("engine_*.py")):
+        shutil.copy(path, root / "actions")
+    (root / "engine" / "library").mkdir(parents=True)
+    (root / "made" / "main" / "content").mkdir(parents=True)
     return root
 
 
 REPO_COPY = _repo_copy()
-_engine_shared = None
-_servers = itertools.count(1)
 _shared = None
 
 
 def catalog():
-    """The core actions and railgun, loaded once for the session (the brain never changes them)."""
+    """The engine's ops, the brain's whole menu, loaded once for the session (the brain never
+    changes them)."""
     global _shared
     if _shared is None:
-        _shared = actions.load(REPO_COPY, None)
+        _shared = actions.load(REPO_COPY)
     return _shared
 
 
-def engine_catalog():
-    """The core actions and the engine's menu actions, loaded once: this server's own actions, in
-    the same repo copy as catalog()'s (one actions/_types.py for both), made/engine/actions/."""
-    global _engine_shared
-    if _engine_shared is None:
-        folder = REPO_COPY / "made" / "engine" / "actions"
-        folder.mkdir(parents=True)
-        for path in sorted((REPO / "actions").glob("engine_*.py")):
-            shutil.copy(path, folder)
-        _engine_shared = actions.load(REPO_COPY, "engine")
-    return _engine_shared
-
-
-def made(name: str, source: str):
-    """A catalog of its own, with made/<server>/actions/<name>.py beside the library."""
-    server = "test%d" % next(_servers)
-    path = REPO_COPY / "made" / server / "actions" / f"{name}.py"
-    path.parent.mkdir(parents=True)
-    path.write_text(textwrap.dedent(source).lstrip("\n"))
-    script = REPO_COPY / "made" / server / "scripts" / name / "main.py"
-    script.parent.mkdir(parents=True)
-    script.write_text('"""a stub"""\n')
-    return actions.load(REPO_COPY, server)
+engine_catalog = catalog
 
 
 @pytest.fixture(autouse=True)
@@ -161,7 +135,13 @@ def act(to: str, instruction: str, action: dict | None = None) -> dict:
 
 
 def cmd(*commands: str) -> dict:
-    return {"commands": list(commands)}
+    """engine_start's values for the library's command scenario (TODO(library): its args' names)."""
+    return {"scenario": "command", "args.commands": list(commands)}
+
+
+def start(scenario: str, **args: Any) -> dict:
+    """engine_start's values: the scenario, and each of its args as `args.<name>`."""
+    return {"scenario": scenario, **{f"args.{k}": v for k, v in args.items()}}
 
 
 FIREBALL = {"words": "“Can you make an incantation? That fires a fireball whenever I say Hot fireball”",
@@ -183,10 +163,9 @@ def follow_up(task: str, brief: str = "", description: str = "", cancel: bool = 
 
 # ------------------------------------------------------------------ vfg
 
-def ran(ok: bool, summary: str, *, copy: str = "", running: bool = False, **facts) -> VfgResult:
+def ran(ok: bool, summary: str, *, action: str = "", running: bool = False, **facts) -> VfgResult:
     """vfg action run's one JSON line."""
-    line = {"ok": ok, "copy": copy, "action": copy, "running": running, "summary": summary, "facts": facts,
-            "notes": []}
+    line = {"ok": ok, "action": action, "running": running, "summary": summary, "facts": facts, "notes": []}
     return VfgResult(0 if ok else 1, json.dumps(line) + "\n", "")
 
 
@@ -200,9 +179,39 @@ STATE = {"online": [{"name": "Steve", "pos": [10, 64, -20], "dimension": "overwo
          "time": {"daytime": 6000, "day": 3, "phase": "day"}, "weather": "clear", "instances": [], "rcon": None}
 
 
+def klass(id_: str, kind: str, summary: str, args: list[dict] | None = None) -> dict:
+    """One class as the engine's classes op gives it."""
+    return {"id": id_, "kind": kind, "summary": summary, "file": f"engine/library/{id_}.py", "args": args or []}
+
+
+def arg(name: str, type_: str, default: Any = None, description: str = "", **bounds: Any) -> dict:
+    return {"name": name, "type": type_, "default": default, "bounds": bounds, "description": description}
+
+
+CLASSES = [
+    klass("command", "scenario", "Runs Minecraft commands, at once.",
+          [arg("commands", "list[Command]", [], "the commands, each one line")]),
+    klass("teleport", "scenario", "Takes players to a place.",
+          [arg("players", "Players", "@a", "who goes"), arg("at", "Place", None, "where to")]),
+    klass("horde", "scenario", "A horde of mobs round each player until it is stopped.",
+          [arg("count", "int", 10, "how many", ge=1, le=100)]),
+    klass("fireball", "ability", "Burns for burn_s seconds, then explodes in a radius."),
+    klass("fire_staff", "item", "A staff that shoots fire where you look."),
+    klass("giant", "mark", "Twice as big for a while.", [arg("factor", "float", 2.0, "how much bigger", ge=1, le=16)]),
+]
+OVERVIEW = {"ok": True, "classes": CLASSES, "instances": [],
+            "places": [{"name": "home", "dim": "minecraft:overworld", "pos": [1, 64, 2], "by": "home_steve"}],
+            "incantations": []}
+
+
+def overview(**parts: Any) -> VfgResult:
+    """`vfg engine overview --json`: OVERVIEW with `parts` in place of its own."""
+    return VfgResult(0, json.dumps({**OVERVIEW, **parts}), "")
+
+
 class FakeVfg:
     """Records every argv; answers by the longest matching prefix, else a default: `action run`
-    ok, `state` STATE, `place list` none, anything else exit 0 and nothing."""
+    ok, `state` STATE, `engine overview` OVERVIEW, anything else exit 0 and nothing."""
 
     def __init__(self):
         self.calls: list[list[str]] = []
@@ -226,11 +235,11 @@ class FakeVfg:
                     return await answer(argv)
                 return answer
         if argv[0] == "action":
-            return ran(True, "done", copy=argv[2])
+            return ran(True, "done", action=argv[2])
         if argv[0] == "state":
             return VfgResult(0, json.dumps(STATE), "")
-        if argv[:2] == ["place", "list"]:
-            return VfgResult(0, "home 1 64 2 overworld (home_steve)\n", "")
+        if argv[:2] == ["engine", "overview"]:
+            return overview()
         return VfgResult(0, "", "")
 
     def of(self, *prefix: str) -> list[list[str]]:
@@ -310,7 +319,7 @@ class Kit:
         self.ctx = ctx or Context()
         self.tasks = Tasks(send=self.send, clock=Clock())
         self.later = Later(self.vfg)
-        self.world = World(self.vfg, tmp / "running.json", self.cat)
+        self.world = World(self.vfg)
         self.call = Call(self.cat, self.ask, owner="KrownJM")
         self.respond = Respond(self.cat, self.ask, owner="KrownJM")
         self.acts = Acts(vfg=self.vfg, later=self.later, catalog=self.cat, tasks=self.tasks, implementers=self.impl,
@@ -329,8 +338,9 @@ class Kit:
         rows = [json.loads(a[2]) for a in self.vfg.of("task", "set")]
         return [r for r in rows if not name or r["name"] == name]
 
-    def running(self, copies: dict[str, dict]) -> None:
-        (self.world.running_file).write_text(json.dumps({"fetched_at": 0, "copies": copies}))
+    def running(self, *instances: dict) -> None:
+        """The engine runs these instances (as its instances op gives them) from now on."""
+        self.vfg.on("engine", "overview", answer=overview(instances=list(instances)))
 
     async def settle(self) -> None:
         """Every event and every write nobody waits for, done."""

@@ -1,6 +1,5 @@
 # engine.py: the box's side of vfg engine (the game engine spec). Appended after common.py and ARGS:
-#   {"vfg": "/opt/vfg", "op": "ask", "requests": [{"op": "status", "args": {}}, ...], "timeout": 10,
-#    "store": false}
+#   {"vfg": "/opt/vfg", "op": "ask", "requests": [{"op": "status", "args": {}}, ...], "timeout": 10}
 #   {"vfg": "/opt/vfg", "op": "deploy", "server": "main", "tar": "<base64 tar.gz of content/>",
 #    "reload": null | ["fireball.py", ...] | "all", "timeout": 60}
 # It speaks the engine's control socket, <vfg>/engine/engine.sock (engine/vfg_engine/server.py has
@@ -10,16 +9,18 @@
 # "timeout" seconds, which the engine is told, and MARGIN_S more, so its own "did not answer in
 # time" is the one that comes back; the first one that gets no answer stops the rest.
 #
+#   {"vfg": "/opt/vfg", "mc": "/opt/mc", "op": "test", "server": "main", "name": "fire_staff_steve",
+#    "tests": "<tar of tests/>", "content": "<tar of content/>" | null, "bindings": [...], "timeout": 60,
+#    "boot": 60, "tail": 15, "live": {"vfg", "mc"}?}   on the TEST server: livetest (run_test)
 # A deploy is the made content of one server, made/<server>/content/ on the PC, into
-# <vfg>/made/<server>/content/ here: unpacked beside it, then swapped in under run/deploy.lock, as a
-# script's folder is (scripts.py), and left as it is when every file is the same. Then, with
+# <vfg>/made/<server>/content/ here: unpacked beside it, then swapped in under run/deploy.lock, and
+# left as it is when every file is the same. Then, with
 # "reload", the engine reloads those files there ("all": every content dir, the op with no paths).
 #
 # It always prints ONE JSON object and exits 0, so vfg reads what got where:
-#   {"replies": [reply, ...], "down": "<why>"?, "timeout": "<why>"?, "store": {...}?, "deployed": {...}?}
+#   {"replies": [reply, ...], "down": "<why>"?, "timeout": "<why>"?, "deployed": {...}?}
 # "down": the engine is not running (no socket, or it refused the connection); "timeout": it took
-# the request and did not answer in time (it may still act on it); "store", with "store": true, the
-# action incantations' store, <vfg>/incantations.json, as it lies; "deployed": {"folder", "files",
+# the request and did not answer in time (it may still act on it); "deployed": {"folder", "files",
 # "changed", "removed", "swapped"}. A deploy that cannot be made is exit 1, with why.
 import base64
 import io
@@ -115,21 +116,6 @@ def ask_all(requests, timeout, out):
         replies.append(reply)
 
 
-def action_store():
-    """The action incantations' store, <vfg>/incantations.json, as it lies (a tmp file and a rename
-    every write); {"version": 0, "incantations": []} when there is none."""
-    try:
-        with open(os.path.join(BASE, "incantations.json"), encoding="utf-8") as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        return {"version": 0, "incantations": []}
-    except (OSError, ValueError) as e:
-        return {"version": 0, "incantations": [], "error": "the incantation store cannot be read: %s" % e}
-    if not isinstance(data, dict) or not isinstance(data.get("incantations"), list):
-        return {"version": 0, "incantations": [], "error": "the incantation store is not {version, incantations}"}
-    return data
-
-
 # ------------------------------------------------------------------ the content deploy
 
 def on_disk(folder):
@@ -147,7 +133,7 @@ def on_disk(folder):
 
 
 class Locked(object):
-    """run/deploy.lock, the one every deploy here takes (scripts.py's too)."""
+    """run/deploy.lock, the one every deploy here takes."""
 
     def __init__(self, path):
         self.path = path
@@ -165,13 +151,15 @@ class Locked(object):
         os.close(self.fd)
 
 
-def deploy(server, b64):
-    """made/<server>/content/ from the tar: unpacked into .incoming-<pid>/ beside it, then swapped in
-    whole under run/deploy.lock, unless every file is the same already."""
+def deploy(server, b64, folder="content"):
+    """made/<server>/<folder>/ (content, or tests) from the tar: unpacked into .incoming-<pid>/
+    beside it, then swapped in whole under run/deploy.lock, unless every file is the same already."""
     if not SERVER_RE.match(server or ""):
         die(1, "deploy refused: %r is not a server's name" % server)
+    if folder not in ("content", "tests"):
+        die(1, "deploy refused: %r is not content or tests" % folder)
     root = os.path.join(BASE, "made", server)
-    dest = os.path.join(root, "content")
+    dest = os.path.join(root, folder)
     try:
         tf = tarfile.open(fileobj=io.BytesIO(base64.b64decode(b64)), mode="r:gz")
         members = tf.getmembers()
@@ -180,7 +168,7 @@ def deploy(server, b64):
     files = {}
     for m in members:
         parts = m.name.split("/")
-        if m.name.startswith("/") or ".." in parts or "" in parts[:-1] or parts[0] != "content":
+        if m.name.startswith("/") or ".." in parts or "" in parts[:-1] or parts[0] != folder:
             die(1, "deploy refused: unsafe path %r" % m.name)
         if not (m.isfile() or m.isdir()):
             die(1, "deploy refused: %r is not a plain file or folder" % m.name)
@@ -195,7 +183,7 @@ def deploy(server, b64):
         if swapped:
             incoming = os.path.join(root, ".incoming-%d" % os.getpid())
             shutil.rmtree(incoming, ignore_errors=True)
-            new = os.path.join(incoming, "content")
+            new = os.path.join(incoming, folder)
             os.makedirs(new)
             try:
                 for rel, (exe, data) in sorted(files.items()):
@@ -204,23 +192,100 @@ def deploy(server, b64):
                     with open(path, "wb") as f:
                         f.write(data)
                     os.chmod(path, 0o755 if exe else 0o644)
-                old = os.path.join(root, ".old-content-%d" % os.getpid())
+                old = os.path.join(root, ".old-%s-%d" % (folder, os.getpid()))
                 if os.path.lexists(dest):
                     os.rename(dest, old)
                 os.rename(new, dest)
                 shutil.rmtree(old, ignore_errors=True)
             finally:
                 shutil.rmtree(incoming, ignore_errors=True)
-    return {"folder": "made/%s/content" % server, "files": len(files), "changed": changed, "removed": removed,
+    return {"folder": "made/%s/%s" % (server, folder), "files": len(files), "changed": changed, "removed": removed,
             "swapped": swapped}
+
+
+# ------------------------------------------------------------------ a test, on the test server
+
+TEST_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+def tail(path, n):
+    """The last n lines of a file, or []."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return [l.rstrip("\n") for l in f.readlines()[-n:]] if n > 0 else []
+    except OSError:
+        return []
+
+
+def run_test():
+    """vfg test: made/<server>/content/ and tests/ deployed here, then livetest run against this
+    server (engine/vfg_engine/livetest.py: one engine started for the test, then stopped; its state
+    in <vfg>/state/engine), with the library and this server's content, and the task's bindings
+    bound first. Its report, its exit code and, after a failure, the last lines of its engine's log."""
+    import subprocess
+    server, name = ARGS.get("server") or "", ARGS.get("name") or ""
+    if not TEST_NAME_RE.match(name):
+        die(2, "%r is not a test's name" % name)
+    live = ARGS.get("live") or {}
+    if live:
+        # the live server under another path: the same folder once links are followed, or the same
+        # RCON port (as remote/test.py checks it)
+        pairs = (("vfg folder", BASE, live.get("vfg")), ("Minecraft folder", ARGS["mc"], live.get("mc")))
+        same = [what for what, here, there in pairs if there and os.path.realpath(here) == os.path.realpath(there)]
+        if not same and live.get("mc"):
+            try:
+                port = read_props(os.path.join(ARGS["mc"], "server.properties")).get("rcon.port")
+                if port and port == read_props(os.path.join(live["mc"], "server.properties")).get("rcon.port"):
+                    same = ["RCON port %s" % port]
+            except OSError:
+                pass
+        if same:
+            die(3, "this test server is the live one (the same %s): a test never runs there" % same[0])
+    deployed = {"tests": deploy(server, ARGS.get("tests") or "", "tests")}
+    if ARGS.get("content"):
+        deployed["content"] = deploy(server, ARGS["content"], "content")
+    # The engine's package, its venv and its library: the test server's own when it has them, else
+    # the live server's on the same host (the box's /opt/vfg/engine), run here on the test server.
+    homes = [os.path.join(BASE, "engine")] + ([os.path.join(live["vfg"], "engine")] if live.get("vfg") else [])
+    engine = next((h for h in homes if os.access(os.path.join(h, ".venv", "bin", "python"), os.X_OK)), None)
+    if engine is None:
+        die(3, "no engine to test with (%s): provision it with the engine"
+            % ", ".join(os.path.join(h, ".venv", "bin", "python") for h in homes))
+    python = os.path.join(engine, ".venv", "bin", "python")
+    state = os.path.join(BASE, "state", "engine")
+    os.makedirs(state, exist_ok=True)
+    cmd = [python, "-m", "vfg_engine.livetest", "--properties", os.path.join(ARGS["mc"], "server.properties"),
+           "--state-dir", state, "--content", os.path.join(engine, "library"),
+           "--content", os.path.join(BASE, "made", server, "content"),
+           "--test", os.path.join(BASE, "made", server, "tests", name + ".py"),
+           "--boot", str(float(ARGS.get("boot") or 60)), "--timeout", str(float(ARGS.get("timeout") or 60))]
+    if ARGS.get("bindings"):
+        path = os.path.join(state, "bindings.%d.json" % os.getpid())
+        atomic_write(path, json.dumps(ARGS["bindings"], ensure_ascii=False), 0o600)
+        cmd += ["--bindings", path]
+    env = dict(os.environ, PYTHONPATH=engine, PYTHONUNBUFFERED="1")
+    limit = float(ARGS.get("timeout") or 60) + float(ARGS.get("boot") or 60) + 30
+    try:
+        p = subprocess.run(cmd, cwd=engine, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=limit)
+        code, o, e = p.returncode, p.stdout, p.stderr
+    except subprocess.TimeoutExpired as x:
+        code, o, e = 5, x.stdout or b"", (x.stderr or b"") + b"\nlivetest did not end within its limit"
+    finally:
+        if ARGS.get("bindings"):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+    return {"deployed": deployed, "test": {
+        "code": code, "out": o.decode("utf-8", "replace"), "err": e.decode("utf-8", "replace")[-4000:],
+        "log": tail(os.path.join(state, "engine.log"), int(ARGS.get("tail") or 0)) if code != 0 else []}}
 
 
 def main():
     timeout = float(ARGS.get("timeout") or 10)
     out = {"replies": []}
     if ARGS.get("op") == "ask":
-        if ARGS.get("store"):
-            out["store"] = action_store()
         ask_all(ARGS.get("requests") or [], timeout, out)
     elif ARGS.get("op") == "deploy":
         server = ARGS.get("server") or ""
@@ -236,6 +301,8 @@ def main():
                     die(1, "reload refused: %r is not a file in made/%s/content" % (p, server))
             paths = [os.path.join(dest, *str(p).split("/")) for p in wanted]
             ask_all([{"op": "reload", "args": {"paths": paths}}], timeout, out)
+    elif ARGS.get("op") == "test":
+        out.update(run_test())
     else:
         die(2, "unknown op %r" % ARGS.get("op"))
     print(json.dumps(out, ensure_ascii=False))

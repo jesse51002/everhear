@@ -14,9 +14,13 @@ from importlib import import_module
 
 # name -> the module that defines it
 _WHERE = {
-    # the five kinds content writes, and the engine's own Player
+    # the five kinds content writes
     "Item": "content", "Ability": "content", "Mark": "content", "Actor": "content",
-    "Scenario": "content", "State": "content", "Player": "beings",
+    "Scenario": "content", "State": "content",
+    # a Scenario's or a Mark's Args, their types, and reading a Players arg (DESIGN2 §1)
+    "Args": "args", "Spot": "args", "Player": "args", "Players": "args", "Place": "args",
+    "EntityType": "args", "BlockId": "args", "BlockMix": "args", "ItemId": "args",
+    "ReplaceRules": "args", "Command": "args", "Seconds": "args", "players": "args",
     # their config bases, pydantic's Field for bounds, and the until-stopped duration
     "ItemConfig": "config", "AbilityConfig": "config", "MarkConfig": "config",
     "ActorConfig": "config", "ScenarioConfig": "config", "Field": "config",
@@ -26,6 +30,7 @@ _WHERE = {
     "Death": "events", "Respawn": "events", "Milk": "events", "Join": "events",
     "Leave": "events", "Held": "events", "Unheld": "events", "Sneak": "events",
     "Unsneak": "events", "Enter": "events", "Exit": "events", "Gone": "events", "Cast": "events",
+    "Land": "events", "Mine": "events",
 }
 
 __all__ = sorted(_WHERE)

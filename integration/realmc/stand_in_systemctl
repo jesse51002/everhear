@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""systemctl on realmc's stand-in box: <NAME>/box/bin/systemctl links here, first on the box's PATH
+(bin/ssh). The box has four units; `vfg up` asks after all of them.
+
+  minecraft                     the fake units' file, which realmc keeps true (toolkit/tests/bin/systemctl,
+                                to which every other unit and verb goes as well)
+  vfg-engine                    active only while <vfg>/engine/engine.sock answers `status`
+  vfg-bridge, vfg-jev           active only while a bridge (python -m vfg_bridge) or a Jev filter
+                                (jev_filter.py) runs against this stand-in's <vfg>/vfg.db
+
+The stand-in starts none of the three: a `start` or `restart` of one fails, saying how to run it,
+and says so in its journal (which `vfg up` shows), so `vfg up` reports what really runs. Python 3.9
+(the box's own python3), standard library only."""
+import json
+import os
+import socket
+import sys
+
+VFG_UNITS = ("vfg-engine", "vfg-bridge", "vfg-jev")
+HOW = {
+    "vfg-engine": "run the engine against this server (engine/README.md, \"On a realmc server\"; "
+                  "integration/engine_e2e.py --keep does it)",
+    "vfg-bridge": "run python -m vfg_bridge with VFG_DB=<vfg>/vfg.db (integration/engine_e2e.py shows how)",
+    "vfg-jev": "run jev/jev_filter.py with VFG_DB=<vfg>/vfg.db (integration/jev_live.py shows how)",
+}
+SOCKET_MAX = 107
+
+
+def units_dir():
+    return os.environ.get("FAKE_UNITS") or ""
+
+
+def stand_in():
+    """The stand-in's folder: FAKE_UNITS is <NAME>/box/units."""
+    return os.path.dirname(os.path.dirname(os.path.abspath(units_dir())))
+
+
+def engine_answers(vfg):
+    path = os.path.realpath(os.path.join(vfg, "engine", "engine.sock"))
+    if not os.path.exists(path):
+        return False
+    here = os.getcwd()
+    try:
+        target = path
+        if len(os.fsencode(path)) > SOCKET_MAX:   # too long for an address: reach it through its folder
+            os.chdir(os.path.dirname(path))
+            target = os.path.basename(path)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(3)
+            s.connect(target)
+            s.sendall(b'{"op": "status", "timeout_s": 2}\n')
+            data = b""
+            while not data.endswith(b"\n"):
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+        return bool(json.loads(data.decode("utf-8") or "{}").get("ok"))
+    except (OSError, ValueError):
+        return False
+    finally:
+        os.chdir(here)
+
+
+def runs_against(vfg, marks):
+    """A process of this user's whose command line has one of `marks` and whose VFG_DB is this
+    stand-in's vfg.db."""
+    db = os.path.realpath(os.path.join(vfg, "vfg.db"))
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit() or int(pid) == os.getpid():
+            continue
+        try:
+            with open("/proc/%s/cmdline" % pid, "rb") as f:
+                cmd = f.read().split(b"\0")
+            if not any(m in part for part in cmd for m in marks):
+                continue
+            with open("/proc/%s/environ" % pid, "rb") as f:
+                env = f.read().split(b"\0")
+        except OSError:
+            continue
+        for item in env:
+            if item.startswith(b"VFG_DB=") and os.path.realpath(os.fsdecode(item[7:])) == db:
+                return True
+    return False
+
+
+def state(unit):
+    vfg = os.path.join(stand_in(), "vfg")
+    if unit == "vfg-engine":
+        return "active" if engine_answers(vfg) else "inactive"
+    marks = (b"vfg_bridge",) if unit == "vfg-bridge" else (b"jev_filter.py",)
+    return "active" if runs_against(vfg, marks) else "inactive"
+
+
+def toolkit_fake(argv):
+    """The next systemctl on PATH (toolkit/tests/bin/systemctl), for minecraft and any other unit."""
+    me = os.path.realpath(__file__)
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        cand = os.path.join(d, "systemctl")
+        if os.access(cand, os.X_OK) and os.path.realpath(cand) != me:
+            os.execv(cand, [cand] + argv)
+    sys.exit("systemctl: no fake systemctl after the stand-in's on PATH")
+
+
+def main(argv):
+    verb = argv[0] if argv else ""
+    unit = (argv[-1] if argv else "").replace(".service", "")
+    if unit not in VFG_UNITS:
+        toolkit_fake(argv)
+    if verb == "is-active":
+        s = state(unit)
+        print(s)
+        return 0 if s == "active" else 3
+    if verb == "show":
+        print("loaded")
+        return 0
+    if verb in ("start", "restart"):
+        if state(unit) == "active":
+            return 0
+        why = "realmc's stand-in starts no %s: %s" % (unit, HOW[unit])
+        try:
+            with open(os.path.join(units_dir(), unit + ".journal"), "a", encoding="utf-8") as f:
+                f.write(why + "\n")
+        except OSError:
+            pass
+        sys.stderr.write("Failed to start %s.service: %s\n" % (unit, why))
+        return 1
+    if verb == "stop":
+        sys.stderr.write("realmc's stand-in stops no %s: stop the process itself\n" % unit)
+        return 1
+    sys.stderr.write("stand-in systemctl: unsupported for %s: %s\n" % (unit, " ".join(argv)))
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

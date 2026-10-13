@@ -13,6 +13,13 @@
    A cast already running is not restarted: it goes on under the new numbers.
 
 A full reload (no paths) also unloads classes whose files are gone, ending their instances.
+
+**A server's version shadows the library's.** The content folders are ordered (VFG_ENGINE_CONTENT:
+the library first, then made/<server>/content): a class in a later folder with the id of one in
+an earlier folder replaces it, logged ("made/main/content/fireball.py shadows the library's
+fireball"), and its live instances switch as on any swap. The same id twice in one folder is
+refused. When the shadowing file goes (a full reload), the library's version runs again; a
+reload of a shadowed file alone changes nothing, and its reply says why (`notes`).
 A restart restores the saved records the same way (`attach`); a record whose class did not load
 is kept aside (an orphan) and comes back when its class loads.
 """
@@ -25,6 +32,7 @@ import sys
 
 from . import abilities
 from .actors import body_of
+from .marks import UUID_RE, mob_body
 from .content import ticks_every
 from .loader import content_files, load_file
 from .records import Record, _dump
@@ -41,43 +49,52 @@ def reload(rt, paths=None) -> dict:
             if not os.path.isdir(folder):
                 log.warning("content folder %s does not exist; nothing is loaded from it", folder)
     files = content_files(rt.settings.content) if full else [os.path.abspath(p) for p in paths]
-    loaded, errors, stopped = [], [], []
-    switched = 0
-    claimed: dict[str, str] = {}
+    errors, touched, notes = [], [], []
     for path in files:
         res = load_file(path, rt.guard, rt.now)
         errors.extend(res.errors)
         if res.module is None:
             continue
         defined = {e.get("id") for e in res.errors if e.get("id")}
+        rank = folder_rank(rt, path)
         keep = []
         for info in res.classes:
-            holder = _file_of(rt, info.id)
-            if (holder and holder != path) or claimed.get(info.id, path) != path:
+            others = {p: c for p, c in rt.candidates.get(info.id, {}).items() if p != path}
+            twin = next((p for p in others if folder_rank(rt, p) == rank), None)
+            if twin is not None:
                 errors.append({"file": path, "class": info.name, "id": info.id, "check": "base",
-                               "error": "the id %r is already taken by %s" % (info.id, holder or claimed[info.id])})
+                               "error": "the id %r is already taken by %s, in the same folder" % (info.id, twin)})
                 continue
-            old = rt.classes.get(info.id)
-            if old is not None and old.kind != info.kind:
+            other_kind = next((c for c in others.values() if c.kind != info.kind), None)
+            if other_kind is not None:
                 errors.append({"file": path, "class": info.name, "id": info.id, "check": "base",
-                               "error": "%r is a %s; a %s cannot take its id" % (info.id, old.kind, info.kind)})
+                               "error": "%r is %s in %s; %s cannot take its id"
+                                        % (info.id, _a(other_kind.kind), other_kind.file, _a(info.kind))})
                 continue
-            claimed[info.id] = path
             keep.append(info)
-        for info in keep:
-            n, st = swap(rt, info)
-            switched += n
-            stopped.extend(st)
-            loaded.append(info.id)
         before = rt.files.get(path, set())
+        for info in keep:
+            rt.candidates.setdefault(info.id, {})[path] = info
         for cid in before - {i.id for i in keep} - defined:
-            stopped.extend(unload(rt, cid, "its class is no longer in %s" % os.path.basename(path)))
+            rt.candidates.get(cid, {}).pop(path, None)          # no longer in this file
         rt.files[path] = {i.id for i in keep} | (before & defined)
         rt.modules.add(res.module)
+        touched.extend(cid for cid in [i.id for i in keep] + sorted(before) if cid not in touched)
     if full:
         for path in [p for p in rt.files if p not in files]:
             for cid in rt.files.pop(path):
-                stopped.extend(unload(rt, cid, "its file %s is gone" % os.path.basename(path)))
+                rt.candidates.get(cid, {}).pop(path, None)       # its file is gone
+                if cid not in touched:
+                    touched.append(cid)
+    loaded, switched, stopped = [], 0, []
+    for cid in touched:
+        n, st, outcome = settle(rt, cid)
+        switched += n
+        stopped.extend(st)
+        if outcome == "loaded":
+            loaded.append(cid)
+        elif outcome:
+            notes.append(outcome)
     forget_modules(rt)
     rt.export_incantations()
     for e in errors:
@@ -86,22 +103,77 @@ def reload(rt, paths=None) -> dict:
     if loaded:
         log.info("reload: %s loaded; %d instances switched, %d stopped", ", ".join(loaded), switched, len(stopped))
     return {"ok": not errors, "loaded": loaded, "errors": errors, "switched": switched, "stopped": stopped,
+            **({"notes": notes} if notes else {}),
             **({"error": "%d check%s failed" % (len(errors), "" if len(errors) == 1 else "s")} if errors else {})}
+
+
+def _a(kind: str) -> str:
+    return ("an " if kind[0] in "aeiou" else "a ") + kind
+
+
+def folder_rank(rt, path: str) -> int:
+    """Which content folder a file is in (0 the first, the library); a later one shadows an earlier."""
+    here = os.path.dirname(os.path.abspath(path))
+    for i, folder in enumerate(rt.settings.content):
+        if os.path.abspath(folder) == here:
+            return i
+    return len(rt.settings.content)
+
+
+def effective(rt, cid):
+    """The class an id runs as: its version in the latest content folder."""
+    cands = rt.candidates.get(cid) or {}
+    if not cands:
+        return None
+    return cands[max(cands, key=lambda p: folder_rank(rt, p))]
+
+
+def shadows(rt, cid, over: str | None = None) -> str | None:
+    """The file whose version of `cid` the running one (or the one in `over`) shadows: the next
+    folder down, if any."""
+    if over is None:
+        running = rt.classes.get(cid)
+        over = running.file if running is not None else None
+    lower = [p for p in (rt.candidates.get(cid) or {}) if p != over]
+    return max(lower, key=lambda p: folder_rank(rt, p)) if lower else None
+
+
+def settle(rt, cid) -> tuple[int, list[dict], str | None]:
+    """Run `cid` as its effective version: swapped in if it changed, unloaded if none is left.
+    (switched, stopped, "loaded" or a note or None)."""
+    best = effective(rt, cid)
+    running = rt.classes.get(cid)
+    if best is None:
+        if running is None:
+            return 0, [], None
+        return 0, unload(rt, cid, "its file %s is gone" % os.path.basename(running.file)), None
+    if best is running:
+        lower = [c for p, c in (rt.candidates.get(cid) or {}).items() if p != best.file]
+        fresh = [c for c in lower if c.loaded_at == rt.now]
+        if fresh:
+            note = ("%s in %s is shadowed by %s: loaded, not running" % (cid, fresh[0].file, best.file))
+            log.info(note)
+            return 0, [], note
+        return 0, [], None
+    under = shadows(rt, cid, best.file)
+    if under:
+        log.info("%s shadows %s's %s", best.file, under, cid)
+    elif running is not None and running.file != best.file:
+        log.info("%s's %s runs again: the version that shadowed it is gone", best.file, cid)
+    n, st = swap(rt, best)
+    return n, st, "loaded"
 
 
 def forget_modules(rt):
     """Take every content module no loaded class comes from any more out of sys.modules. One a
-    class still runs from (its file's newer version failed a check) stays."""
+    class still runs from (its file's newer version failed a check), or a shadowed version that may
+    run again, stays."""
     in_use = {info.module for info in rt.classes.values()}
+    in_use |= {info.module for cands in rt.candidates.values() for info in cands.values()}
     for name in list(rt.modules):
         if name not in in_use:
             sys.modules.pop(name, None)
             rt.modules.discard(name)
-
-
-def _file_of(rt, cid) -> str | None:
-    info = rt.classes.get(cid)
-    return info.file if info is not None else None
 
 
 def swap(rt, new) -> tuple[int, list[dict]]:
@@ -139,6 +211,11 @@ def rebuild(rt, rec: Record, info) -> str | None:
         words = " ".join(out.error.split()).split(" For further information")[0]
         return "its state no longer fits %s.State (%s)" % (info.name, words)
     state, runs = out.value
+    if rec.kind in ("scenario", "mark") and getattr(cls, "Args", None) is not None:
+        fits = rt.guard.call("%s.Args" % rec.iid, lambda: cls.Args.model_validate(rec.args or {}))
+        if not fits.ok:
+            words = " ".join(fits.error.split()).split(" For further information")[0]
+            return "its args no longer fit %s.Args (%s)" % (info.name, words)
     rec.state = state
     for n, s in runs.items():
         rec.runs[n].state = s
@@ -188,7 +265,7 @@ def restart(rt, rec: Record):
     rt.call(rec, "stop", "reloaded")
     if rec.iid not in rt.records:
         return
-    rt.release(rec.iid, rec.owned)
+    rt.release(rec.iid, rec.owned, stopped=True)
     rec.subs = [s for s in rec.subs if s.run is not None]
     rec.timers = [t for t in rec.timers if t.run is not None]
     rec.started = False
@@ -199,6 +276,8 @@ def restart(rt, rec: Record):
 
 def unload(rt, cid: str, reason: str) -> list[dict]:
     rt.classes.pop(cid, None)
+    if not rt.candidates.get(cid):
+        rt.candidates.pop(cid, None)
     stopped = []
     for rec in [r for r in rt.records.values() if r.cid == cid]:
         rt.end_record(rec, reason)
@@ -248,6 +327,8 @@ def _attach_one(rt, rec: Record, info) -> str | None:
     if rec.kind == "actor":
         rt.actors[rec.user] = body_of(rt, rec)
         rt.confirmed.add(rec.user)
+    if rec.kind == "mark" and rec.user and rec.user not in rt.actors and UUID_RE.match(rec.user):
+        mob_body(rt, rec.user)               # a mark on a vanilla mob: track it again
     why = rebuild(rt, rec, info)
     if why:
         rt.end_record(rec, "restart: %s" % why)

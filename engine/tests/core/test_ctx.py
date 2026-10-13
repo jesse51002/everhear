@@ -78,7 +78,7 @@ def test_a_player_listed_by_the_mirror_is_ignored(rig):
     steve = r.io.join("Steve")
     alex = r.io.join("Alex", pos=(0.0, 64.0, 2.0))
     for p in (steve, alex):
-        r.io.entities[p.uuid] = FakeEntity(p.uuid, "minecraft:player", p.dim, p.pos, 20.0, frozenset(), p.name)
+        r.io.by_uuid[p.uuid] = FakeEntity(p.uuid, "minecraft:player", p.dim, p.pos, 20.0, frozenset(), p.name)
     r.tick()
     r.op("grant", who="Steve", ability="blast")
     r.op("bind", player="Steve", phrase="blast", ability="blast")

@@ -70,8 +70,7 @@ class Config:
         "timeout": ("VFG_JEV_TIMEOUT", 3.0, float),
         "state_tokens": ("VFG_JEV_STATE_TOKENS", 8000, int),
         "history_hours": ("VFG_JEV_HISTORY_HOURS", 3.0, float),
-        "incantations": ("VFG_INCANTATIONS", "/opt/vfg/incantations.json", str),
-        "engine_export": ("VFG_ENGINE_EXPORT", "/opt/vfg/engine/incantations.json", str),   # its bindings first
+        "engine_export": ("VFG_ENGINE_EXPORT", "/opt/vfg/engine/incantations.json", str),   # the incantations
         "cast_min": ("VFG_JEV_CAST_MIN", 0.5, float),
         "cast_min_long": ("VFG_JEV_CAST_MIN_LONG", 0.7, float),   # a long line's: over 1, long lines unchecked
         "cast_sure": ("VFG_JEV_CAST_SURE", 0.7, float),   # a short cast this sure drops its line; less, kept
@@ -171,10 +170,10 @@ class Filter:
             log.info("cast check off: VFG_JEV_CAST_MIN is %g, over 1", cfg.cast_min)
         elif self.bridge is not None:
             log.info("cast check on · at %.2f or over, dropped at %.2f, a long line at %s · the bridge on "
-                     "127.0.0.1:%d · incantations %s, the engine's %s", cfg.cast_min, cfg.cast_sure,
+                     "127.0.0.1:%d · incantations %s", cfg.cast_min, cfg.cast_sure,
                      "%.2f" % cfg.cast_min_long if cfg.cast_min_long <= 1 else "none (unchecked)",
-                     cfg.bridge_port, cfg.incantations, cfg.engine_export)
-        self.incantations = casting.Incantations(cfg.incantations, cfg.engine_export)
+                     cfg.bridge_port, cfg.engine_export)
+        self.incantations = casting.Incantations(cfg.engine_export)
         self.cast_checked = {}       # line ids checked, oldest first: each line is checked once
         self.first_seen = {}         # line id -> when a cast pass first read it, on the filter's clock
         self._menu_cut = None        # the menu last said not to fit, so it is said once
@@ -279,8 +278,8 @@ class Filter:
         return None
     def _cast_check(self, row):
         """The cast check (casting.py), before the routing call: was `row` said to cast one of
-        its speaker's incantations? For a voice line from a player with one (their own or an @a
-        one), once a line, and only while it is young enough for the bridge to fire it
+        its speaker's incantations? For a voice line from a player with one (one the game engine
+        binds for them), once a line, and only while it is young enough for the bridge to fire it
         (_too_old_to_cast: no call otherwise). A cast whose option has a probability of
         VFG_JEV_CAST_MIN or over (VFG_JEV_CAST_MIN_LONG for a long line, over 6 words; over 1, no
         long line is checked) goes to the bridge's cast path. A short line (6 words or fewer)
@@ -317,7 +316,7 @@ class Filter:
         except sqlite3.Error as e:
             log.warning("cast-check %s · could not read its recent lines: %s → routing, no call", who, e)
             return False
-        asked, picked = casting.questions(row, entries, self.menu.text(), long)
+        asked, picked = casting.questions(row, entries, long)
         try:
             result = self.jev.ask(casting.state(row, recent, long), asked, required=casting.QUESTION)
         except (JevDown, JevRefused) as e:

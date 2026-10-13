@@ -1,7 +1,9 @@
 """Scenarios: world-level things with phases and a timeline (the game engine spec, "Actors,
 players and scenarios").
 
-A scenario is started by the `start` op (or by content), with args (`self.args`). Its phases are
+A scenario is started by the `start` op (or by content, `self.start_scenario`, which then owns
+it), with Args checked against its `class Args(Args)` (`self.args`). Its result
+(`self.result(summary, **facts)`) is what the `start` op answers when it waits for it. Its phases are
 its own state and its timeline is timers (`self.after(30, "phase_two")`). It hears every event,
 not only those about a user (it has none). It owns what it spawns, the marks it applies and the
 world settings it holds, so ending it (`stop`, its duration, `self.end()`) leaves nothing in the
@@ -16,16 +18,20 @@ from __future__ import annotations
 
 import math
 
+from . import args as argtypes
 from .events import make
 from .records import Record
 
 
-def start(rt, scenario: str, args=None, source=None) -> str:
+def start(rt, scenario: str, args=None, source=None, owner=None) -> str:
+    """Start a scenario with `args` checked against its Args (ValueError, in words, when they do
+    not fit); owned by `owner` (an instance) when one started it. Its instance id."""
     info = rt.classes.get(scenario)
     if info is None or info.kind != "scenario":
         raise ValueError("%r is not a loaded scenario" % scenario)
+    given = argtypes.validate(info.cls.Args, args, rt).model_dump(mode="json")
     rec = rt.add(Record(rt.new_iid("scenario", scenario), "scenario", scenario, None, rt.now,
-                        source=source, args=dict(args or {})))
+                        source=source, owner=owner, args=given))
     rt.later(lambda: rt.start(rec))
     return rec.iid
 

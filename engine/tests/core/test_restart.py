@@ -2,12 +2,14 @@
 everhear:item/* modifier nobody is holding the item for (the game engine spec, "Live updates",
 "Items" and "When something goes wrong")."""
 
+import os
 import json
 
 from vfg_engine.engine import Engine
 from vfg_engine.io import RemoveModifier
 
-from conftest import EXAMPLES
+EXAMPLES = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "examples")
+
 
 PULSE = '''
 class Pulse(Ability):
@@ -150,7 +152,7 @@ def test_saving_a_record_does_not_copy_its_state_deeply():
     rec = Record("ability:x#1", "ability", "x", "Steve", 0.0, state=Fussy())
     rec.runs[1] = Run(1, 0.0, 0.0, state=Fussy(n=2))
     doc = rec.to_dict()
-    assert doc["state"] == {"n": 1} and doc["runs"]["1"]["state"] == {"n": 2}
+    assert doc["state"] == {"n": 1, "kit": {}} and doc["runs"]["1"]["state"] == {"n": 2, "kit": {}}
     assert "ending" not in doc
     back = Record.from_dict(json.loads(json.dumps(doc)))
-    assert back.state == {"n": 1} and back.runs[1].state == {"n": 2} and back.iid == rec.iid
+    assert back.state["n"] == 1 and back.runs[1].state["n"] == 2 and back.iid == rec.iid

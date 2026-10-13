@@ -10,8 +10,12 @@ class Siege(Scenario):
         summary = "Creepers may grief."
         duration_s = UNTIL_STOPPED
 
+    class Args(Args):
+        value: bool = Field(True, description="whether mobs may grief")
+        priority: int = Field(0, ge=0, le=100, description="how strongly it holds")
+
     def start(self, ctx):
-        self.hold("mob_griefing", self.args.get("value", True), priority=self.args.get("priority", 0))
+        self.hold("mob_griefing", self.args.value, priority=self.args.priority)
 '''
 
 ARENA = '''
@@ -121,7 +125,7 @@ def test_a_scenario_owns_what_it_spawns_applies_and_holds(rig):
     r.tick()
     iid = r.op("start", scenario="arena")["instance"]
     r.tick()
-    assert len(r.io.entities) == 4 and r.io.gamerules["mob_griefing"] == "false"
+    assert len(r.io.by_uuid) == 4 and r.io.gamerules["mob_griefing"] == "false"
     (brute,) = r.records("actor", "brute")
     summon = next(op for op in r.io.ops_of(Summon) if op.uuid == brute.user)
     assert "max_health" in summon.nbt and "base:60" in summon.nbt and "Brute" in summon.nbt
@@ -137,7 +141,7 @@ def test_a_scenario_owns_what_it_spawns_applies_and_holds(rig):
     # stop: nothing is left
     r.op("stop", scenario="arena")
     r.tick()
-    assert r.io.entities == {}
+    assert r.io.by_uuid == {}
     assert not r.records("mark") and ("minecraft:scale", "everhear:mark/small") not in r.mods("Steve")
     assert r.io.gamerules["mob_griefing"] == "true"
     assert not r.records()
@@ -148,7 +152,7 @@ def test_a_scenario_ends_at_its_duration(rig):
     r.start()
     r.op("start", scenario="arena")
     r.run_for(3.5)
-    assert not r.records() and r.io.entities == {}
+    assert not r.records() and r.io.by_uuid == {}
 
 
 def test_an_actor_that_dies_is_gone_and_its_instance_ends(rig):
@@ -156,7 +160,7 @@ def test_an_actor_that_dies_is_gone_and_its_instance_ends(rig):
     r.start()
     uuid = r.op("spawn", actor="brute", at=[0, 64, 0])["uuid"]
     r.tick()
-    assert r.records("actor", "brute") and uuid in r.io.entities
+    assert r.records("actor", "brute") and uuid in r.io.by_uuid
     r.io.kill_entity(uuid)
     r.tick()
     assert not r.records("actor")
@@ -180,12 +184,12 @@ def test_an_actor_taken_as_gone_in_an_unloaded_chunk_is_swept_when_it_comes_back
     plain = r.io.add_entity(pos=(1.0, 64.0, 1.0))                  # somebody else's zombie
     uuid = r.op("spawn", actor="brute", at=[0, 64, 0])["uuid"]
     r.tick()
-    body = r.io.entities.pop(uuid)                                  # its chunk unloads
+    body = r.io.by_uuid.pop(uuid)                                  # its chunk unloads
     r.tick()
     assert not r.records("actor")                                   # taken as gone
-    r.io.entities[uuid] = body                                      # the chunk loads again
+    r.io.by_uuid[uuid] = body                                      # the chunk loads again
     r.run_for(1.5)
-    assert uuid not in r.io.entities and plain in r.io.entities
+    assert uuid not in r.io.by_uuid and plain in r.io.by_uuid
     assert [op.uuid for op in r.io.ops_of(Remove)] == [uuid]
     assert any("nothing owns" in m for m in r.lines())
 
@@ -196,4 +200,4 @@ def test_the_sweep_leaves_the_engines_own_spawns(rig):
     r.io.join("Steve")
     r.op("start", scenario="arena")
     r.run_for(3)
-    assert len(r.io.entities) == 4 and not r.io.ops_of(Remove)
+    assert len(r.io.by_uuid) == 4 and not r.io.ops_of(Remove)

@@ -10,9 +10,10 @@ rather it do both if it's not sure."
 **The cast check** (`casting.py`, 2026-10-11). Speech-to-text mishears incantations ("hot fireball"
 as "Hot variable." or "Affordable.") and cuts them into pieces ("Ice.", then "Beam"); the bridge's
 deterministic layers (the spotter, Layer 2, the drop rule) let some through, and the brain answered
-them. So every voice line the bridge kept, from a player with an incantation (their own or an `@a`
-one, in `VFG_INCANTATIONS`), gets one Jev call before its routing call, one after the other: one `choice` question, `cast`, its options one `cast_<phrase>` per incantation (the phrase,
-its aliases and what it does: a `command` one's commands, else its action's line on the menu) and
+them. So every voice line the bridge kept, from a player with an incantation (one the game engine
+binds for them), gets one Jev call before its routing call, one after the other: one `choice` question, `cast`, its options one `cast_<phrase>` per incantation (the phrase,
+its aliases and what it does: `It casts fireball`, or `It starts meteor` for one bound to a scenario,
+with the engine's summary of it when its export gives one) and
 `not_a_cast` (an option holds up to 24 aliases and the whole of what it does: past 1,000
 characters the last aliases go, never the description). The state is the fixed rules (a cast is the phrase, a mishearing, a piece or it said
 twice; talk about an incantation, a request or a reply is not), invented examples of both, and
@@ -23,8 +24,8 @@ A cast whose option Jev gave a probability of `VFG_JEV_CAST_MIN` (0.5) or more g
 bridge's cast path. The threshold is on the chosen option's probability (the answer's
 `probabilities`), not on its `confidence`, which runs lower ("Call fireball.": 0.63 and 0.45); an
 answer with no probability for its option is not a cast. The path is
-`POST http://127.0.0.1:$VFG_BRIDGE_PORT/v1/jev/casts` with `VFG_CLIENT_TOKEN`: the same checks as
-every cast (the 1 s gap, the incantation's cooldown, the duplicate window, a `casts` row, layer
+`POST http://127.0.0.1:$VFG_BRIDGE_PORT/v1/jev/casts` with `VFG_CLIENT_TOKEN`: the same path as
+every cast (the duplicate window, the game engine, which keeps the cooldown, a `casts` row, layer
 `jev`), plus an age: a line the bridge received more than `VFG_JEV_CAST_MAX_AGE_S` (2 s, the
 bridge's setting) before is cast `stale`, never fired. A short line (6 words or fewer) whose cast
 is sure, `VFG_JEV_CAST_SURE` (0.7) or over, the bridge drops whatever came of the cast, fired,
@@ -69,16 +70,13 @@ delay and a player's clock a few seconds off; a clock further behind than that l
 check, and the lines go to routing as before). The journal says
 `cast-check <id> Steve · too old to cast (2.5 s since it was read here) → routing, no call`.
 
-A player's incantations are what the bridge offers them: **the game engine's bindings first**, from
-its export (`VFG_ENGINE_EXPORT`, `/opt/vfg/engine/incantations.json`; each casts an ability, and its
-option says so, `It casts the ability fireball.`), then the store's, their own and then the `@a`
-ones, one per phrase; an engine binding hides the store's entry with the same normalised phrase,
-theirs or `@a`. A cast of either goes to the same `POST /v1/jev/casts`, which casts an engine
-binding through the engine. Both files are read by a copy of the kit's reading
-(`scripts/_lib/incantations.py`) and of the bridge's (`vfg_bridge/engine.py`'s export entries,
-`Casts._entries`), not the kit or the bridge itself: the kit reaches the box with `vfg action run`,
-and this folder is deployed alone. `tests/test_kit_pin.py` holds the copy to the kit's answers and,
-with the engine's export beside the store, to the bridge's own code. `VFG_JEV_CAST_MIN` over 1 turns the
+A player's incantations are what the bridge offers them: **the game engine's bindings** for them,
+from its export (`VFG_ENGINE_EXPORT`, `/opt/vfg/engine/incantations.json`), one per phrase (the
+game engine spec, *Incantations*: every incantation is the engine's, per player, bound to an
+ability or a scenario). A cast goes to `POST /v1/jev/casts`, which casts it in the engine. The export
+is read by a copy of the bridge's reading (`vfg_bridge/engine.py`'s export entries, `vfg_bridge/
+sounds.py`'s `normalize`, `Casts._one_per_phrase`), not the bridge itself: this folder is deployed
+alone. `tests/test_bridge_pin.py` holds the copy to the bridge's own code. `VFG_JEV_CAST_MIN` over 1 turns the
 check off, and so does a missing `VFG_CLIENT_TOKEN` (said once, at the start).
 
 **One call a line, two questions** (D2, chosen on 2026-10-11): what should happen with the line —
@@ -155,8 +153,8 @@ and the probe that finds Jev back one with `ref` `probe`.
 
 On the box it is the systemd unit `vfg-jev`: `/opt/vfg/python/bin/python3 -u /opt/vfg/jev/jev_filter.py`.
 To judge one text and write nothing: `python3 jev_filter.py --judge "<text>"`, which prints the class
-with both answers, with `--raw` to see Jev's answer as sent. The cast check alone, on the store and
-menu as they are, with no RECENT: `python3 jev_filter.py --cast "<text>" --player Steve`; it writes
+with both answers, with `--raw` to see Jev's answer as sent. The cast check alone, on the engine's
+export as it is, with no RECENT: `python3 jev_filter.py --cast "<text>" --player Steve`; it writes
 nothing and casts nothing.
 
 Deploy from the repo's root on the owner's PC: `jev/deploy.sh`. It streams this folder (without
@@ -194,8 +192,7 @@ From the environment (systemd reads `/opt/vfg/.env`):
 | `VFG_JEV_CAST_MIN_LONG` | `0.7`: a long line's (over 6 words); over 1, no long line is checked |
 | `VFG_JEV_CAST_SURE` | `0.7`: a short cast this sure drops its line; under it, cast and routed too; over 1, no line dropped |
 | `VFG_JEV_CAST_MAX_AGE_S` | `2.0`, the bridge's: no cast check call for a line older (above) |
-| `VFG_INCANTATIONS`, `VFG_BRIDGE_PORT` | `/opt/vfg/incantations.json`, `8787`: the store, and the bridge on 127.0.0.1 |
-| `VFG_ENGINE_EXPORT` | `/opt/vfg/engine/incantations.json`: the game engine's bindings, offered first (the bridge's setting too) |
+| `VFG_ENGINE_EXPORT`, `VFG_BRIDGE_PORT` | `/opt/vfg/engine/incantations.json`, `8787`: the game engine's incantations (the bridge's setting too), and the bridge on 127.0.0.1 |
 | `VFG_CLIENT_TOKEN` | the bridge's, from the environment or else `VFG_ENV_FILE`; never logged; none, no cast check |
 
 `deploy.sh` reads `VFG_SSH_HOST`, `VFG_SSH_USER` (default `ec2-user`) and `VFG_SSH_KEY` from

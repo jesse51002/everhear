@@ -3,7 +3,8 @@
 `self.listen(Hit, "on_hit")` names one of these classes (or its kind, "hit"). Each event is about
 one being, `ev.who`: a player's name, or an actor's uuid. Where an event comes from:
 
-- the datapack, as numbered RawEvents (vfg_engine.mc): use, hit, hurt, kill, death, respawn, milk;
+- the datapack, as numbered RawEvents (vfg_engine.mc): use, hit, hurt, kill, death, respawn, milk,
+  and (part 2) land and mine;
 - the engine, worked out from snapshots: join, leave, held, unheld, sneak, unsneak, enter, exit, gone;
 - the event bus: cast (an incantation heard, an item's or an actor's cast, the `cast` op).
 
@@ -49,6 +50,7 @@ class Hit(Event):
     target: str = ""
     target_type: str = ""
     item: str | None = None                    # the EverHear item in the main hand, if any
+    ranged: bool = False                       # an arrow or trident's hit, not a melee one
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,8 @@ class Kill(Event):
 @dataclass(frozen=True)
 class Death(Event):
     kind: ClassVar[str] = "death"
+    pos: tuple | None = None                   # where they died
+    dim: str | None = None
 
 
 @dataclass(frozen=True)
@@ -141,6 +145,31 @@ class Gone(Event):
 
 
 @dataclass(frozen=True)
+class Land(Event):
+    """`who`'s arrow or trident landed in a block or hit something. Heard by the thrower's
+    instances, the item it came from included, even after that item was let go."""
+    kind: ClassVar[str] = "land"
+    item: str | None = None                    # the EverHear id of the bow or trident it came from
+    projectile: str = ""                       # the projectile's uuid
+    projectile_type: str = ""                  # "minecraft:arrow", "minecraft:trident"
+    pos: tuple | None = None                   # where it landed or hit
+    dim: str | None = None
+    hit: str = "block"                         # "block" (it stuck) or "entity" (it hit something)
+    block: str | None = None                   # the block it stuck in, when known
+    target: str | None = None                  # what it hit: a uuid or a player's name; None for a block
+    target_type: str | None = None
+
+
+@dataclass(frozen=True)
+class Mine(Event):
+    """`who` broke a block of a kind the datapack watches."""
+    kind: ClassVar[str] = "mine"
+    block: str = ""
+    pos: tuple | None = None
+    count: int = 1                             # blocks of that kind broken since the last tick
+
+
+@dataclass(frozen=True)
 class Cast(Event):
     """An ability cast by `who`; what `on_cast(ctx, ev)` is given."""
     kind: ClassVar[str] = "cast"
@@ -148,11 +177,12 @@ class Cast(Event):
     phrase: str | None = None                  # the incantation heard, when it came from one
     cast_id: str | None = None
     by: str = "op"                             # "incantation" | "content" | "op"
+    progress: float = 1.0                      # in on_charge: how far the charge is, 0 to 1
 
 
 KINDS: dict[str, type[Event]] = {
     cls.kind: cls for cls in (Use, Hit, Hurt, Kill, Death, Respawn, Milk, Join, Leave, Held,
-                              Unheld, Sneak, Unsneak, Enter, Exit, Gone, Cast)}
+                              Unheld, Sneak, Unsneak, Enter, Exit, Gone, Land, Mine, Cast)}
 
 
 def kind_of(event) -> str:
@@ -181,6 +211,8 @@ def make(kind: str, who: str | None, data: Mapping[str, Any] | None = None, *, n
             own[f.name] = known[f.name]
         elif f.name in data:
             own[f.name] = data[f.name]
+        if f.name == "pos" and isinstance(own.get("pos"), list):
+            own["pos"] = tuple(own["pos"])
     return cls(who=who, data=data, n=n, game_tick=game_tick, **own)
 
 

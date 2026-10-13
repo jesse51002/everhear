@@ -38,14 +38,14 @@ from pathlib import Path
 import httpx
 import vfg_llm
 
-from . import actions, config, running
+from . import actions, config
 from .act import Acts
 from .call import Call
 from .config import Config, log
 from .context import Context, parse
 from .loop import Brain, jev_menu
 from .respond import Respond
-from .tasks import Tasks
+from .tasks import Tasks, no_made
 from .vfg import Later, follow, why
 from .vfg import vfg as run_vfg
 from .world import World
@@ -60,7 +60,6 @@ IMPLEMENTERS_GRACE_S = 2.0
 DRAIN_S = 1.5        # for the rows still being written and the usage sent, at the very end
 TASKS_DRAIN_S = 5.0  # for the tasks' writes still going out, before that
 RETIRED = "tasks.json"  # the brain's tasks before named tasks, in brain_dir: set aside at a start
-MADE_KINDS = ("scripts", "actions", "presets", "copies")
 
 
 class _LogLines(logging.Handler):
@@ -82,8 +81,7 @@ class NoImplementers:
         self.on_report, self.why = on_report, why
 
     async def start(self, name: str, brief: str) -> None:
-        await self.on_report(name, "failed", f"Failed: no implementers here ({self.why}).", "",
-                             {k: [] for k in MADE_KINDS})
+        await self.on_report(name, "failed", f"Failed: no implementers here ({self.why}).", "", no_made())
 
     async def follow_up(self, name: str, text: str, session: str | None = None, brief: str = "") -> None:
         await self.start(name, text)
@@ -212,12 +210,11 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
     for args in (("watchers", "set", WATCHERS), ("lookout", "set", LOOKOUT.read_text(encoding="utf-8").strip())):
         later(*args)
 
-    catalog = actions.load(cfg.repo, cfg.server) if catalog is None else catalog
+    catalog = actions.load(cfg.repo) if catalog is None else catalog
     later("jev", "menu", "set", jev_menu(catalog))
     later("usage", "flush")  # the usage rows queued while the brain was down
     hidden = actions.hidden_commands()
-    copies = running.Refresher(vfg, cfg.running_ttl_s)
-    world = World(vfg, cfg.running_file, catalog, refresher=copies)
+    world = World(vfg)
     call = Call(catalog, ask or asker(cfg.model, cfg.reasoning, cfg.timeout_s, cfg.providers), owner=cfg.owner,
                 hidden=hidden, checkpoint=cfg.checkpoint)
     respond = Respond(catalog, respond_ask or asker(cfg.respond_model, cfg.respond_reasoning, cfg.respond_timeout_s,
@@ -261,7 +258,6 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
     if refs is LOAD:
         background.append(asyncio.create_task(
             keep_loading_refs(cfg, vfg, http, brain, REFS_RETRY_S), name="refs"))
-    copies.start()
     greeting = await vfg("say", GREETING, timeout=30)
     if greeting.code != 0 and "nobody" not in (greeting.stderr + greeting.stdout).lower():
         log("start", f"the greeting failed: {(greeting.stderr or greeting.stdout).strip()[-200:]}")
@@ -277,7 +273,6 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
         t.cancel()
     await asyncio.gather(*background, return_exceptions=True)
     await brain.stop(cfg.stop_grace_s, IMPLEMENTERS_GRACE_S)
-    await copies.stop()
     await world.close()
     await tasks.drain(TASKS_DRAIN_S)
     later("usage", "flush")  # the rows of the calls the stop cut short; any not sent go with the next start's

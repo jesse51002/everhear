@@ -6,7 +6,7 @@ The rows (Contracts §7, and the brain plan's AI type):
     LINE#812 18:22:31 Steve voice action_oriented 0.93 -8dB | build me a castle
     GAME#814 18:22:40 death Steve | Steve was slain by Zombie
     SYS#816 18:25:00 | jev unavailable — passing every line as context
-    AI#817 18:25:02 action - | command: give Steve diamond_pickaxe — ok: Gave 1 [Diamond Pickaxe] to Steve
+    AI#817 18:25:02 action - | gave Steve a diamond pickaxe with the command scenario
     AI#818 18:25:04 task galick_gun_styrk | new: A Galick Gun for Styrkaeopteryx: …
 
 A line of a type it does not know (an old ORCH line) is kept as its plain text.

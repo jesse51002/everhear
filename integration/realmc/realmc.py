@@ -56,6 +56,7 @@ import zipfile
 from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.realpath(__file__))
+STAND_IN_SYSTEMCTL = os.path.join(HERE, "stand_in_systemctl")
 REPO = os.path.dirname(os.path.dirname(HERE))
 REAL_HOME = pwd.getpwuid(os.getuid()).pw_dir  # never $HOME: under vfg it is the stand-in's
 ROOT = os.path.realpath(os.path.expanduser(os.environ.get("REALMC_ROOT") or os.path.join(HERE, ".server")))
@@ -711,6 +712,11 @@ class Server(object):
             path = os.path.join(self.box, "bin", name)
             if os.path.realpath(path) != os.path.realpath(host):
                 link(host, path)
+        # The box's systemctl: minecraft from the fake units' file realmc keeps true, and the three vfg
+        # units (vfg-engine, vfg-bridge, vfg-jev) as what really runs against this stand-in.
+        path = os.path.join(self.box, "bin", "systemctl")
+        if os.path.realpath(path) != os.path.realpath(STAND_IN_SYSTEMCTL):
+            link(STAND_IN_SYSTEMCTL, path)
         # The box's Python at the box's path: <vfg>/python/bin/python3, as python.sh lays it out.
         py = find_box_python()
         os.makedirs(os.path.join(self.vfg, "python", "bin"), exist_ok=True)
@@ -1180,6 +1186,8 @@ def cmd_env(a):
     print("export VFG_HOME=%s" % q(srv.vhome))
     print("export VFG_MC_PROPERTIES=%s" % q(srv.props))
     print("export VFG_PROTECTED=%s" % q(os.path.join(srv.vfg, "protected.json")))
+    # vfg made save|restore archives into the stand-in, never the PC's own made archive
+    print("export VFG_MADE_ARCHIVE=%s" % q(os.path.join(srv.dir, "made-archive")))
     print("export PATH=%s:\"$PATH\"" % q(os.path.join(HERE, "bin")))
     return 0
 
