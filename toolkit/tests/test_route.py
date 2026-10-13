@@ -1000,6 +1000,38 @@ class TestCallRows(BoxCase):
         self.assertEqual(self.box.query("SELECT component, cost_usd FROM usage ORDER BY id"),
                          [("planner", 0.0031), ("alias", 0.00005)])
 
+    def before_the_router(self):
+        """usage as a box has it before its bridge is redeployed with the router: no 'router' in its CHECK."""
+        con = __import__("sqlite3").connect(self.box.db)
+        sql = con.execute("SELECT sql FROM sqlite_master WHERE name = 'usage'").fetchone()[0]
+        self.assertIn(",'router'", sql)
+        con.execute("DROP TABLE usage")
+        con.execute(sql.replace(",'router'", ""))
+        con.commit()
+        con.close()
+
+    def test_a_row_the_box_refuses_is_skipped_named_and_dropped_and_the_rest_are_stored(self):
+        self.before_the_router()
+        self.columns("cache_read_tokens", "cache_write_tokens", "ok", "error", "ms")
+        llm = self.llm()
+        with self.box.environ():
+            for component, ref in (("respond", "#58"), ("router", "#58"), ("brain", "#58 s1"), ("router", "#60")):
+                llm.record(llm.usage_row(component, ref, "deepseek/deepseek-v4.1-flash", 0.0005, 800, 27000, 26000,
+                                         60, error=None))
+        r = self.vfg("usage", "flush")
+        self.assertEqual((r.returncode, r.stdout), (0, ""))   # the last row, the call's own, was refused
+        self.assertEqual(r.stderr, "vfg: 2 usage row(s) of component router refused by the box's usage table, not "
+                                   "stored — redeploy vfg-bridge, whose migration allows it\n")
+        self.assertEqual(self.box.query("SELECT component, ref FROM usage ORDER BY id"),
+                         [("respond", "#58"), ("brain", "#58 s1")])
+        self.assertFalse(os.path.exists(os.path.join(self.box.vhome, "usage.pending.jsonl")))  # never requeued
+        r = self.vfg("usage", "add", "--component", "jev", "--model", "jev-latest", "--in", "1", "--out", "0")
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "3\n", ""))  # the queue no longer blocks
+        r = self.vfg("usage", "add", "--component", "router", "--model", "m", "--in", "1", "--out", "0")
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+        self.assertIn("1 usage row(s) of component router refused", r.stderr)
+        self.assertEqual(self.box.query("SELECT COUNT(*) FROM usage"), [(3,)])
+
     def test_vfg_usage_queue_is_the_queue_both_sides_use_and_a_cost_may_be_unknown(self):
         """A replay's rows queue in its own folder: `vfg usage flush` sends them only with the same
         VFG_USAGE_QUEUE, and never from $VFG_HOME. A call cut off with an attempt in flight has no

@@ -49,9 +49,10 @@ TYPES = ["LINE", "GAME", "AI", "SYS"]
 AI_KINDS = ["say", "action", "task", "result", "note"]
 CLASSES = ["to_ai", "context", "not_relevant", "unjudged"]  # Jev's classes (Contracts §5), or none yet
 # lib/py/vfg_llm.py's Component, and the usage table's CHECK (bridge/vfg_bridge/db.py): brain,
-# respond, planner and orchestrator are the brain's, alias the incantation alias call's;
+# respond, router, planner and orchestrator are the brain's, alias the incantation alias call's;
 # conversation stays valid for the rows that have it.
-COMPONENTS = ["jev", "brain", "respond", "implementer", "planner", "alias", "conversation", "orchestrator"]
+COMPONENTS = ["jev", "brain", "respond", "router", "implementer", "planner", "alias", "conversation",
+              "orchestrator"]
 PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,16}\Z")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 # A task's name (Prototype_Named_Tasks): the brain's tasks table's key, and the --task, --by and AI
@@ -804,7 +805,10 @@ def send_usage(cfg, a, rows):
     """The queue, usage.pending.jsonl (structured()'s own rows among them, VFG_USAGE_QUEUE's
     folder: Pending), then `rows`, to the box in one SSH call; queued again when they do not get
     there. Nothing queued and no row: nothing sent, exit 0. A row's cost_usd may be null: a call
-    cut off with an attempt in flight, whose cost nobody told."""
+    cut off with an attempt in flight, whose cost nobody told. A row the box's table refuses (a
+    component its bridge does not know yet) is skipped there and named on stderr, the rest
+    stored, exit 0: it is dropped from the queue with that warning, never requeued, since it
+    would block every row behind it."""
     cfg.ensure_home()
     pending = Pending(cfg.home)
     rows = pending.claim() + rows

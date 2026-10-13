@@ -1,6 +1,7 @@
 """Running a step: actions together or in turn with no task, each copy named for its player, a
 refused command's error and reference as its result, the tools that refuse with no model, the read
-tool, and the ending's pieces: a task opened with its brief, a follow-up, the cancel words."""
+tool, an ended step shown as what it sent, and the ending's pieces: a task opened with its brief, a
+follow-up, the cancel words."""
 
 import asyncio
 import json
@@ -174,6 +175,22 @@ async def test_read_items_gives_a_players_items_by_slot_from_a_state_fetched_for
                                                      ("refused", "Bob is not online")]
     assert len(k.vfg.of("state")) == 3 and got.landed  # a state of its own for each read; a refused read ends nothing
     assert "YOU ENDED IT next: these results are what it was for; nothing was sent." in got.show()
+
+
+async def test_an_ended_step_a_later_step_follows_shows_what_it_sent(kit):
+    """A line added to the loop while its ending went out: the next step reads what the players got."""
+    k = kit()
+    got = await run(k, step(act("command", "give Steve bread", cmd("give Steve bread")), reply="bread's yours",
+                            record="gave Steve bread"))
+    shown = got.show(sent=True)
+    assert shown.startswith("THE LOOP SO FAR (") and "  LANDED: done\n" in shown and "NOT SENT" not in shown
+    assert shown.endswith("ENDED reply AND SENT: reply “bread's yours”, record “gave Steve bread”.\n\n")
+    got.said = "sorry, I couldn't start “a hook” — say it again?"  # code's line went out in place of the step's
+    assert "SENT: reply “sorry, I couldn't start “a hook” — say it again?”" in got.show(sent=True)
+    handed = await run(k, step(end="handoff", hand_offs=(hand_off(),)))
+    assert handed.show(sent=True).endswith("- ran nothing\nENDED handoff AND SENT: hand off hot_fireball_krown.\n\n")
+    quiet = await run(k, step(act("command", "make it day", cmd("time set day")), end="silent"))
+    assert quiet.show(sent=True).endswith("ENDED silent AND SENT: nothing in chat.\n\n")
 
 
 # ------------------------------------------------------------------ the ending's pieces

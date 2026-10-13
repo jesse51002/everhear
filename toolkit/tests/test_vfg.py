@@ -499,10 +499,10 @@ class TestUsage(BoxCase):
         self.assertEqual(rows[0][2:], ("brain", "openai/gpt-6.1-sol", 10, 5, 0.0012, "#812"))
         self.assertRegex(rows[0][1], ISO_RE)
         self.assertGreaterEqual(rows[0][1], before[:19])
-        for c in ("respond", "jev", "implementer", "planner", "alias", "conversation", "orchestrator"):
+        for c in ("respond", "router", "jev", "implementer", "planner", "alias", "conversation", "orchestrator"):
             self.assertOk(self.vfg("usage", "add", "--component", c, "--model", "m", "--in", "1", "--out", "0"))
-        self.assertEqual([r[2] for r in self.usage()], ["brain", "respond", "jev", "implementer", "planner", "alias",
-                                                       "conversation", "orchestrator"])
+        self.assertEqual([r[2] for r in self.usage()], ["brain", "respond", "router", "jev", "implementer", "planner",
+                                                       "alias", "conversation", "orchestrator"])
         self.assertIsNone(self.usage()[1][6])
 
     def test_queued_when_down_then_inserted_first(self):

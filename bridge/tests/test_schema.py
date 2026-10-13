@@ -23,14 +23,17 @@ CREATE TABLE events (id TEXT PRIMARY KEY, at TEXT NOT NULL, kind TEXT NOT NULL,
 CREATE INDEX events_at ON events(at);
 CREATE TABLE feed (seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, line TEXT NOT NULL);  -- line: the whole line, exactly as in feed.log
 CREATE TABLE usage (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,
-  component TEXT NOT NULL CHECK (component IN ('jev','conversation','orchestrator','implementer','brain','respond','planner','alias')),
+  component TEXT NOT NULL CHECK (component IN ('jev','conversation','orchestrator','implementer','brain','respond','planner','alias','router')),
   model TEXT, input_tokens INTEGER, output_tokens INTEGER, cost_usd REAL, ref TEXT);
 """
 
 # The same tables as a box made them before the brain: Jev's three classes, four components.
 OLD_DDL = (CONTRACT_DDL
            .replace("'to_ai','context','not_relevant'", "'direct_ask','context','not_useful'")
-           .replace(",'brain','respond','planner','alias'", ""))
+           .replace(",'brain','respond','planner','alias','router'", ""))
+
+# The same tables as a box made them before the router (Prototype_Conversation_And_Router): eight components.
+BEFORE_ROUTER_DDL = CONTRACT_DDL.replace(",'router'", "")
 
 # lines as a box made it from the Jev routing (2026-10-11) until Addressing_The_AI: Jev's four
 # classes, two of them for the AI.
@@ -240,7 +243,8 @@ class TestSchema(Box):
                           "cache_read_tokens", "cache_write_tokens", "ok", "error", "ms", "largest_tokens"])
         conn = sqlite3.connect(self.db_path, isolation_level=None)
         self.addCleanup(conn.close)
-        for component, ok, error in (("planner", 0, "no answer from m within 20 s"), ("alias", 1, None)):
+        for component, ok, error in (("planner", 0, "no answer from m within 20 s"), ("alias", 1, None),
+                                     ("router", 1, None)):
             conn.execute("INSERT INTO usage (at, component, model, cost_usd, ref, ok, error, ms)"
                          " VALUES (?, ?, 'm', 0.001, 'r', ?, ?, 840)", (AT, component, ok, error))
         with self.assertRaises(sqlite3.IntegrityError):
@@ -249,7 +253,33 @@ class TestSchema(Box):
                                     " ORDER BY id"),
                          [(4, "brain", 0.0123, 9000, None, None, None),
                           (5, "planner", 0.001, None, 0, "no answer from m within 20 s", 840),
-                          (6, "alias", 0.001, None, 1, None, 840)])
+                          (6, "alias", 0.001, None, 1, None, 840),
+                          (7, "router", 0.001, None, 1, None, 840)])
+
+    def test_usage_from_before_the_router_is_rebuilt_once_to_take_its_rows_and_keeps_every_row(self):
+        conn = sqlite3.connect(self.db_path, isolation_level=None)
+        conn.executescript(BEFORE_ROUTER_DDL)
+        for column, kind in (("ok", "INTEGER"), ("error", "TEXT"), ("ms", "INTEGER")):
+            conn.execute("ALTER TABLE usage ADD COLUMN %s %s" % (column, kind))
+        conn.execute("INSERT INTO usage (id, at, component, model, cost_usd, ref, ok, ms)"
+                     " VALUES (12, ?, 'respond', 'deepseek/deepseek-v4.1-flash', 0.0003, '#58', 1, 680)", (AT,))
+        with self.assertRaises(sqlite3.IntegrityError):  # the CHECK as the box has it today
+            conn.execute("INSERT INTO usage (at, component) VALUES (?, 'router')", (AT,))
+        conn.close()
+
+        database = self.make_db()
+        for table, column, values, renamed in db.CHECKS:  # a second start changes nothing more
+            self.assertFalse(db.rebuild_check(database.conn, table, column, values, renamed))
+        self.assertIn("'alias','router')", self.query("SELECT sql FROM sqlite_master WHERE name = 'usage'")[0][0])
+        conn = sqlite3.connect(self.db_path, isolation_level=None)
+        self.addCleanup(conn.close)
+        cur = conn.execute("INSERT INTO usage (at, component, model, cost_usd, ref, ok, ms)"
+                           " VALUES (?, 'router', 'deepseek/deepseek-v4.1-flash', 0.0004, '#58', 1, 910)", (AT,))
+        self.assertEqual(cur.lastrowid, 13)              # after the old table's last id, not reused
+        with self.assertRaises(sqlite3.IntegrityError):
+            conn.execute("INSERT INTO usage (at, component) VALUES (?, 'routers')", (AT,))
+        self.assertEqual(self.query("SELECT id, component, ref, ok, ms FROM usage ORDER BY id"),
+                         [(12, "respond", "#58", 1, 680), (13, "router", "#58", 1, 910)])
 
     def test_a_fresh_history_is_never_rebuilt(self):
         database = self.make_db()

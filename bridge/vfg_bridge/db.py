@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, at TEXT NOT NULL, kind T
 CREATE INDEX IF NOT EXISTS events_at ON events(at);
 CREATE TABLE IF NOT EXISTS feed (seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, line TEXT NOT NULL);  -- line: the whole line, exactly as in feed.log
 CREATE TABLE IF NOT EXISTS usage (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,
-  component TEXT NOT NULL CHECK (component IN ('jev','conversation','orchestrator','implementer','brain','respond','planner','alias')),
+  component TEXT NOT NULL CHECK (component IN ('jev','conversation','orchestrator','implementer','brain','respond','planner','alias','router')),
   model TEXT, input_tokens INTEGER, output_tokens INTEGER, cost_usd REAL, ref TEXT);
 """
 
@@ -75,7 +75,7 @@ CHECKS = [
      {"direct_ask": "to_ai", "action_oriented": "to_ai", "conversational": "to_ai",
       "not_useful": "not_relevant"}),
     ("usage", "component", ("jev", "conversation", "orchestrator", "implementer", "brain", "respond",
-                            "planner", "alias"),
+                            "planner", "alias", "router"),
      {}),
 ]
 

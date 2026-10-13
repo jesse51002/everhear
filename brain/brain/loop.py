@@ -1,11 +1,11 @@
-"""The brain's loop: every row of the feed into the shared context, every live line through its
-player's turn, and every event an agentic loop of steps (Prototype_Brain_Loop).
+"""The brain's loop: every row of the feed into the shared context, every line to the AI through its
+player's turn to the conversation agent and the router, and the work they place: brain loops that
+run side by side, and implementers (Prototype_Brain_Loop, then Prototype_Conversation_And_Router).
 
 A row from `vfg watch` goes into the context; then, by what it is:
-- a LINE Jev classed action_oriented: the brain's loop (below), in its player's turn;
-- a LINE classed conversational: a Respond call (respond.py), in its player's turn, which replies,
-  or hands the line up to the brain, whose loop then runs in the same turn, with what Respond read;
-- a LINE classed context: kept, and marked processed at once (`vfg context mark`, nobody
+- a LINE said to the AI (Jev's live classes, context.LIVE): the front turn (below), in its
+  player's turn. Jev's class no longer picks the agent: every line to the AI takes the same path;
+- a LINE Jev kept as context: kept, and marked processed at once (`vfg context mark`, nobody
   waiting); no model is shown it (context.py);
 - anything else (game events, system notices, the brain's own AI rows): context only, for the
   next call to read.
@@ -15,54 +15,76 @@ LINE that arrives on the watch is live whatever its HH:MM:SS: a box clock a minu
 would otherwise make every line history. When the feed restarts (vfg watch says so, or gives a seq
 at or below the one it follows from), the context is read again and followed from its new start.
 
-One turn per player (turns.py): a player's lines run one at a time, whichever agent takes them,
-while different players' turns run at once. At most VFG_TURN_WAITING lines wait; one more is
-dropped, marked processed and never answered, and that player alone is told which lines still wait
-(`vfg say --to`). An implementer's report waits for its task's player's turn too, at the front of
-their queue. A turn ends when its run ends, and its run ends only once the AI rows it wrote (the
-reply, the record, the task rows) came back on the watch, at most VFG_TURN_SETTLE_S, so the next
-loop reads what this one did. A stop drops what waits.
+The front turn, one per player at a time (turns.py; at most VFG_TURN_WAITING lines wait, one more
+is turned away with a private message naming them): what no call has read yet is taken (`vfg
+context mark`, nobody waiting), the actions reloaded, the world glanced at; then two quick calls.
+The conversation agent (respond.py) answers at once: a reply, silence, or a reply and a hand-off;
+it fails into a hand-off. A hand-off goes to the router (router.py), which picks who does the work,
+and code places it: a new brain loop; a loop already on that thing (loops.py: one thinking reads
+the line before its next step, an ended one is taken up again); a new implementer, started on the
+router's brief; an implementer already on it, followed up (a message, its session resumed, or a
+cancel); or nowhere, with a line of the router's own. The router failing starts a new loop. While
+the router does not reason, the agent's line to a hand-off is held until the router has answered,
+so the player gets one line per ask: the agent's when the work was placed, the router's in its
+place when it went nowhere. A router that reasons holds nothing: the agent's line goes out at once
+and the router's own after it. The turn ends once the line is placed, then waits, at most
+VFG_TURN_SETTLE_S, for the AI rows it wrote to come back on the watch, so the player's next line is
+routed knowing where this one went. It never waits for the work.
 
-A loop, per event: what no call has read yet is taken (`vfg context mark`, nobody waiting), the
-actions reloaded, the world read once; then steps (call.py, act.py) until one ends it. A step that
-lands and ends with a reply, silence or a hand-off is the last: code opens the hand-offs' tasks and
-the follow-ups', says the reply, writes the loop's ONE record (`AI action -` for a line; for a
-report, its `AI result` row and the task closed, or kept open while a follow-up runs), then starts
-the implementers, and the turn ends with them started. A step that does not land, or ends `next`,
-sends its results back: the next step's prompt holds every earlier step and what it came to. At
-most VFG_LOOP_STEPS steps and VFG_LOOP_SECONDS: the step that starts at either limit is the last,
-and must end with a reply or a hand-off. A step whose call fails ends the loop: the player gets
-the error line, and code writes the record of what earlier steps did. Every step's usage row is
-structured()'s, `#<seq> s<n>` (a report's: `<task> s<n>`); after each the brain logs what it spent
-and sends the queue (`vfg usage flush`), nobody waiting, never two at once; and a log line closes
-each loop: its steps, its cost, its cache rate, the time to its reply and how it ended.
+Brain loops hold no turn: each is an asyncio task of its own, so they run side by side, a player's
+too. A loop reads the world and TASKS once at its start; then steps (call.py, act.py) until one
+ends it. A step that lands and ends with a reply, silence or a hand-off is the last: code opens
+the hand-offs' tasks and the follow-ups', says the reply, writes the loop's ONE record (`AI action
+-`), then starts the implementers. A step that does not land, or ends `next`, sends its results
+back: the next step's prompt holds every earlier step and what it came to. A line the router adds
+to a loop while it runs is read before its next step, with the rows the loop has not read; when the
+step that ran meanwhile was its ending, the loop takes one more step for the line, the ended step
+shown as SENT. Then the loop ends and is saved, its prompt kept: a line added within
+VFG_LOOP_TAKE_UP_S of its creation takes it up again, from where it stopped, read from the cache.
+A loop's budget is VFG_LOOP_STEPS for its first line and as many more for each line added, never
+past VFG_LOOP_CAP; the step at the limit is the last and must end with a reply or a hand-off, and a
+loop that reaches the cap is deleted. There is no time limit: the steps and the step timeout bound
+a loop. A step whose call fails ends the run: the player gets the error line, and code writes the
+record of what earlier steps did. Every step's usage row is structured()'s, `#<seq> s<n>` (a
+report's loop: `<task> s<n>`); after each the brain logs what it spent and sends the queue (`vfg
+usage flush`), nobody waiting, never two at once; and a log line closes each run of a loop: its
+steps, its cost, its cache rate, the time to its reply, how it ended, its id, lines and state.
+
+An implementer's report never queues: it goes to the conversation agent at once, beside whatever
+the player's turn is doing. The task first takes what the implementer made, its DESCRIPTION line
+and its action's variables; the agent tells the player, writes the record and the status (the task
+closed, or kept open while a follow-up runs or a hand-off is on its way) and hands what is left, if
+anything, to the router: back to an implementer, to a loop that does it with actions, or nowhere.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import functools
 import time
 import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from vfg_actions import menu_line
 from vfg_llm import LlmError
 
 from . import actions
-from .act import LANDED, WROTE, Acts, StepRun, record_of, short, spent
+from .act import LANDED, LOOP_SO_FAR, WROTE, Acts, StepRun, record_of, short, spent
 from .actions import variables_of
-from .call import NEXT, Call, Event, StepBase, describe, step_type
+from .call import NEXT, Call, Event, FollowUp, StepBase, added, describe, step_type
 from .config import log
 from .context import LIVE, Context, Row, parse
-from .respond import Respond, promises
+from .loops import CAP, DELETED, ENDED, GRANT, TAKE_UP_S, Loop, Loops
+from .respond import ReportEvent, Respond, promises
+from .router import Router, RouterEvent
+from .running import full as running_in_full
 from .tasks import Tasks, board
 from .turns import Turns, turned_away_line
 from .vfg import Later
-from .world import World
+from .world import Seen, World
 
 HISTORY_S = 120  # a line older than this when it arrives is history
 MARK_CHUNK = 500  # seqs in one `vfg context mark`
@@ -70,26 +92,37 @@ ERRORED_MAX = 180  # the error line's reason, in characters
 LANDED_MAX = 90   # what landed, in an error line
 LINE_MAX = 200    # a chat line written here
 MISMATCH = "failed to match"  # in structured()'s LlmError for an answer that failed its checks twice
-STEPS, SECONDS = 10, 120.0  # a loop's limits (VFG_LOOP_STEPS, VFG_LOOP_SECONDS)
 WAITING, SETTLE_S = 3, 3.0  # lines that wait for a turn, and a turn's wait for its rows (VFG_TURN_*)
 TOLD = "the player was told"  # a note on an exception already said in chat, so it is never said twice
+# Where the router sends the work (router.Route.to).
+NEW_LOOP, LOOP, NEW_IMPLEMENTER, IMPLEMENTER, NOWHERE = "new_loop", "loop", "new_implementer", "implementer", "nowhere"
 
 
 def errored(who: str, e: Exception, landed: list[str] = ()) -> str:
     """The chat line for a loop that failed for good: what its earlier steps did land (`landed`,
     their instructions), then that it errored out, and why, short. An answer that failed its
     checks twice says so plainly, never the check's words, which are for the model (the log keeps
-    them); a timeout or a box out of reach keeps its short reason. One chat line, LINE_MAX at most."""
+    them); a timeout or a box out of reach keeps its short reason. One chat line, LINE_MAX at most,
+    led by the player's name when there is one (a report's task may have none)."""
+    to = f"{who}: " if who else ""
     done = short("; ".join(landed), LANDED_MAX) if landed else ""
     if MISMATCH in str(e):
         if done:
-            return short(f"{who}: done: {done} — then I got tangled up on the rest, say it again?", LINE_MAX)
-        return f"{who}: sorry, I got tangled up on that one — say it again?"
+            return short(f"{to}done: {done} — then I got tangled up on the rest, say it again?", LINE_MAX)
+        return f"{to}sorry, I got tangled up on that one — say it again?"
     lines = [x.strip() for x in str(e).splitlines() if x.strip()] or ["no reason given"]
     why = lines[-1]
     if not done:
-        return f"{who}: that errored out — {short(why, ERRORED_MAX)}"
-    return short(f"{who}: done: {done} — then that errored out: {why}", LINE_MAX)
+        return f"{to}that errored out — {short(why, ERRORED_MAX)}"
+    return short(f"{to}done: {done} — then that errored out: {why}", LINE_MAX)
+
+
+def failed_step(n: int, why: Exception, said: str) -> str:
+    """A step whose call failed for good, as THE LOOP SO FAR shows it to a step after it (a line
+    was added to the loop meanwhile): it ran nothing, and the player got the error line."""
+    reason = ([x.strip() for x in str(why).splitlines() if x.strip()] or ["no reason given"])[-1]
+    return (f"{LOOP_SO_FAR if n == 1 else ''}STEP {n}:\n- your answer to it failed ({short(reason, ERRORED_MAX)}), so "
+            f"nothing of it ran\nSENT INSTEAD: “{said}”\n\n")
 
 
 WATCH_AGAIN_S = 2.0  # after `vfg watch` exits, or the feed restarted, before it is followed again
@@ -105,47 +138,19 @@ def iso(t: datetime) -> str:
     return t.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-@dataclass
-class Loop:
-    """One event's loop as it runs: its steps, what they spent, and how it ended."""
-    event: Event
-    player: str                     # whose items the tail shows and whose copies the actions are
-    line: str                       # the words that started it: a new task's `line`
-    started: float                  # the brain's clock at its start
-    runs: list[StepRun] = field(default_factory=list)
-    calls: int = 0
-    cost: float = 0.0
-    cost_known: bool = True
-    prompt_tokens: int = 0
-    cached_tokens: int = 0
-    replied: float | None = None    # seconds from its start to the reply said
-    recorded: bool = False          # its record is written: a line's `AI action` row, a report's `AI result`
-    how: str = "broke"              # how it ended: reply, silent, handoff, failed, cut off, or broke
-
-    def spend(self, got) -> None:
-        """A step's call, answered (an Answer) or failed (an LlmError)."""
-        self.calls += 1
-        self.cost += got.cost
-        self.cost_known = self.cost_known and getattr(got, "cost_known", True)
-        self.prompt_tokens += got.prompt_tokens
-        self.cached_tokens += got.cached_tokens
-
-    def landed(self) -> list[str]:
-        """The instructions of every action of the loop that landed, in order."""
-        return [r.instruction for run in self.runs for r in run.actions if r.state == LANDED]
-
-
 class Brain:
-    def __init__(self, *, ctx: Context, call: Call, respond: Respond, acts: Acts, world: World, tasks: Tasks,
-                 implementers, later: Later, catalog, refs=None,
+    def __init__(self, *, ctx: Context, call: Call, respond: Respond, router: Router, acts: Acts, world: World,
+                 tasks: Tasks, implementers, later: Later, catalog, refs=None,
                  now: Callable[[], datetime] = utc_now, clock: Callable[[], float] = time.monotonic,
                  menu: Callable[[str], object] | None = None, start: int = 0,
                  load: Callable[[], Awaitable[tuple[Context, int, list[dict]]]] | None = None,
-                 steps: int = STEPS, seconds: float = SECONDS, waiting: int = WAITING, settle_s: float = SETTLE_S):
+                 steps: int = GRANT, cap: int = CAP, take_up_s: float = TAKE_UP_S, hold: bool = True,
+                 waiting: int = WAITING, settle_s: float = SETTLE_S):
         self.ctx = ctx
         self.start = start            # the feed's highest seq when the context was read: what is new is past it
         self.call = call
-        self.respond = respond
+        self.respond = respond        # the conversation agent
+        self.router = router
         self.acts = acts
         self.world = world
         self.tasks = tasks
@@ -154,15 +159,16 @@ class Brain:
         self.catalog = catalog
         self.refs = refs              # the command references, once loaded (None until then)
         self.now = now
-        self.clock = clock            # a loop's seconds, against its limit
+        self.clock = clock            # a loop's seconds, and its take-up window
         self.menu = menu              # sets Jev's menu again when the actions change
         self.load = load              # reads the context again, (ctx, start, task rows), after the feed restarted
-        self.steps, self.seconds = steps, seconds
+        self.hold = hold              # the agent's line to a hand-off waits for the router (Config.hold)
         self.settle_s = settle_s
+        self.loops = Loops(steps, cap, take_up_s, clock=clock, now=now)
         self.turns = Turns(waiting_max=waiting, spawn=self.spawn, turned_away=self.turned_away)
         self.inflight: set[asyncio.Task] = set()
         self.waiting: dict[int, Row] = {}  # the lines waiting for their player's turn, by seq
-        self.queued: set[str] = set()      # the runs that waited for a turn, by their log label
+        self.queued: set[str] = set()      # the turns that waited, by their log label
         self.stopping = False
         self.restarted = False        # the watch said the feed restarted, or gave a seq it had passed
         self.catching_up = False      # after a reconnect: the backlog is judged by its age
@@ -170,8 +176,8 @@ class Brain:
     # ------------------------------------------------------------- rows in
 
     def spawn(self, coro, name: str, who: str = "") -> asyncio.Task:
-        """An event as its own task, kept until it ends; what it raises is logged, never lost, and
-        told in chat to `who`, the player whose line it was."""
+        """A turn, a loop or a report as its own task, kept until it ends; what it raises is
+        logged, never lost, and told in chat to `who`, the player it is for."""
         async def guarded() -> None:
             try:
                 await coro
@@ -216,6 +222,8 @@ class Brain:
         return self.route(row)
 
     def route(self, row: Row) -> str | None:
+        """A line to the AI, whatever Jev's live class: its player's front turn, now or when the
+        lines before it have had theirs."""
         if self.stopping or row.type != "LINE" or row.cls not in LIVE or row.processed:
             return None
         old = row.at < iso(self.now() - timedelta(seconds=HISTORY_S))
@@ -225,11 +233,9 @@ class Brain:
             self.mark(row)
             log("line", f"#{row.seq} {row.who} from {row.hms} is history, not acted on: {row.text[:120]!r}")
             return None
-        acting = row.cls == "action_oriented"
-        name = f"{'line' if acting else 'respond'} #{row.seq}"
         label = f"#{row.seq} {row.who}"
         got = self.turns.line(row.who, row.text, functools.partial(
-            self.turn, self.line if acting else self.conversational, row, label=label, queued=self.clock()), name)
+            self.turn, self.front, row, label=label, queued=self.clock()), f"front #{row.seq}")
         if got == "turned away":
             self.mark(row)
             log("turn", f"#{row.seq} {row.who} turned away, {len(self.turns.waiting(row.who))} waiting: "
@@ -286,9 +292,9 @@ class Brain:
         self.later.flush_usage()
 
     def reload(self) -> list[str]:
-        """Before each loop: every action file that changed is loaded again, so an action an
-        implementer saved a moment ago is on the menu, and Jev's menu with it, and every task whose
-        action changed has its variables read again. The names that changed."""
+        """Before each front turn and report: every action file that changed is loaded again, so
+        an action an implementer saved a moment ago is on the menu, and Jev's menu with it, and
+        every task whose action changed has its variables read again. The names that changed."""
         try:
             changed = actions.refresh(self.catalog)
         except Exception as e:  # noqa: BLE001 — the actions as they were are still good
@@ -319,15 +325,39 @@ class Brain:
         except Exception as e:  # noqa: BLE001 — the variables as they were are still good
             log("tasks", f"{name}: reading {action}'s variables failed ({type(e).__name__}: {e})")
 
+    def board(self, seen: Seen) -> str:
+        """TASKS in full (tasks.board): the brain's and the router's."""
+        return board(self.tasks.all(), seen.copies, self.implementers.running(),
+                     today=self.now().astimezone(UTC).strftime("%Y-%m-%d"))
+
+    def in_full(self, seen: Seen) -> Seen:
+        """A glance with RUNNING NOW in full, every value of every copy, for the router: "make it
+        bigger" may be one value of a running copy, a brain's edit rather than an implementer's
+        build. No I/O: the copies are the glance's."""
+        return dataclasses.replace(seen, running=running_in_full(seen.copies, self.catalog))
+
+    def busy(self) -> set[str]:
+        """The players with work under way: a loop thinking, or an implementer running on one of
+        their tasks. The conversation agent's "coming up" is a status for them, not a promise."""
+        players = {str((self.tasks.get(n) or {}).get("player") or "") for n in self.implementers.running()}
+        return (self.loops.busy() | players) - {""}
+
+    def under_way(self, player: str) -> bool:
+        """Whether the player has work under way: a loop thinking, an implementer running, or a
+        task of theirs open. The agent's "still on it" is then a status, and the router may send a
+        line that only presses for it nowhere behind that line."""
+        return player in self.busy() or any(t.get("player") == player and t.get("status") == "open"
+                                            for t in self.tasks.all())
+
     # ------------------------------------------------------------- a turn
 
     async def turn(self, run: Callable[..., Awaitable[None]], *args, label: str = "",
                    queued: float | None = None) -> None:
-        """One turn's run: `run(*args, started=…)`, the brain's clock as the turn began, which the
-        loop's limits and its time to the reply count from; then the wait for the AI rows it wrote
-        to come back on the watch, at most settle_s, so the player's next turn reads what this one
-        did. The wait is skipped when the run raised or was cancelled. A run that waited for its
-        turn logs how long (`turn #36 Steve waited 4.2 s for their turn`), from `queued`."""
+        """One turn's run, `run(*args)` (the front turn); then the wait for the AI rows it wrote to
+        come back on the watch, at most settle_s, so the player's
+        next turn reads what this one did. The wait is skipped when the run raised or was
+        cancelled. A run that waited for its turn logs how long (`turn #36 Steve waited 4.2 s for
+        their turn`), from `queued`."""
         started = self.clock()
         if label in self.queued:
             self.queued.discard(label)
@@ -335,7 +365,7 @@ class Brain:
         wrote: list[asyncio.Future] = []
         token = WROTE.set(wrote)
         try:
-            await run(*args, started=started)
+            await run(*args)
         except BaseException:
             self.acts.echoes.forget(wrote)
             raise
@@ -355,162 +385,265 @@ class Brain:
         finally:
             self.acts.echoes.forget(wrote)
 
-    # ------------------------------------------------------------- events
+    # ------------------------------------------------------------- the front turn
 
-    async def line(self, row: Row, new: list[Row] | None = None, handed_up: str = "",
-                   started: float | None = None) -> None:
-        """An action_oriented line, or one Respond handed up with what it read: the brain's loop,
-        its clock from `started` (the turn's start; else now). The line itself is never among its
-        NEW, though it may already be marked read: it waited for its turn while an earlier loop
-        read it."""
+    async def front(self, row: Row) -> None:
+        """A line to the AI, in its player's turn: the conversation agent answers at once, and a
+        hand-off goes to the router, whose choice code places (place()); the module's docstring
+        says the rest. The line itself is never among the NEW rows either call reads, though it
+        may already be marked read: it waited for its turn while an earlier call read it."""
         self.waiting.pop(row.seq, None)
-        started = self.clock() if started is None else started
-        if new is None:
-            new = self.take()
-        self.reload()
-        seen = await self.world.seen(items=[row.who], full=True)
-        event = Event("LINE", row, handed_up=handed_up)
-        await self.run_loop(event, seen, [r for r in new if r.seq != row.seq], player=row.who, line=row.text,
-                            started=started)
-
-    async def conversational(self, row: Row, started: float | None = None) -> None:
-        """A conversational line: Respond replies, or hands it up to the brain, whose loop runs in
-        this same turn, its clock from the turn's start. The actions are reloaded first, so a
-        changed action file refreshes its tasks' variables at any call."""
-        self.waiting.pop(row.seq, None)
-        started = self.clock() if started is None else started
-        new = self.take()
+        new = [r for r in self.take() if r.seq != row.seq]
         self.reload()
         seen = await self.world.glance()
+        running = self.implementers.running()
+        reply, hand, reason = "", True, ""
         try:
-            answer = await self.respond.answer(row, self.ctx, seen, self.tasks.show(self.implementers.running()),
-                                               [r for r in new if r.seq != row.seq])
-        except LlmError as e:
-            log("respond", f"#{row.seq} FAILED ({spent(e)}; {e}): handed up")
+            answer = await self.respond.answer(row, self.ctx, seen, self.tasks.show(running),
+                                               self.loops.show(brief=True), new, busy=self.busy())
+        except LlmError as e:  # unsure, failing: the router places it all the same, and the work answers
+            log("respond", f"#{row.seq} FAILED ({spent(e)}; {e}): handed off")
             self.flush()
-            return await self.line(row, new, handed_up="Respond could not answer", started=started)
-        self.usage("respond", answer, f"#{row.seq}")
-        said = answer.value
-        if said.hand_up:
-            log("respond", f"#{row.seq} handed up: {said.reason}")
-            return await self.line(row, new, handed_up=said.reason or "it may ask for something", started=started)
-        log("respond", f"#{row.seq} {row.who}: {row.text[:80]!r} -> {said.reply!r} ({said.reason})")
-        if said.reply.strip():
-            await self.acts.say(said.reply)
-
-    async def report(self, name: str, status: str, text: str, description: str = "", made: dict | None = None,
-                     following: bool = False, started: float | None = None) -> None:
-        """An implementer ended: its task takes what it made, its DESCRIPTION line (when it gave
-        one; else the description it had stays) and the variables of its action; then a loop reads
-        the report whole, writes the player's line and the record, and may act on it, reading what
-        no call has read yet, as every loop does. When a follow-up to the task already runs
-        (`following`), the task stays open with the result so far, and the loop is told, so its
-        reply never says it is all done. The task never stays open for an error: the player then
-        hears a line written here. Its loop's clock is from `started`, the turn's start (else now)."""
-        started = self.clock() if started is None else started
-        self.keep_session(name)
-        self.tasks.merge_made(name, made)
-        if description.strip():
-            self.tasks.describe(name, description)
-        loop: Loop | None = None
-        closed = False  # the task closed here, on an error
-
-        def recorded() -> bool:
-            return closed or (loop is not None and loop.recorded)
-
+            agent = f"failed {e.ms} ms"
+        else:
+            self.usage("respond", answer, f"#{row.seq}")
+            said = answer.value
+            reply, hand, reason = said.reply.strip(), said.hand_off, said.reason
+            agent = f"{'handoff' if hand else 'reply' if reply else 'silent'} {answer.ms} ms"
+            log("respond", f"#{row.seq} {row.who}: {row.text[:80]!r} -> {reply!r}"
+                           f"{', handed off' if hand else ''} ({reason})")
+        if not hand:
+            if reply:
+                await self.acts.say(reply)
+            log("front", f"#{row.seq} {row.who}: agent {agent}; said {'agent' if reply else 'nothing'}")
+            return
+        said_lines = []
+        if reply and not self.hold:  # the router thinks: nothing is held, and the agent's line goes out now
+            await self.acts.say(reply)
+            said_lines.append("agent")
+        route, offered = None, [x.id for x in self.loops.offered()]
         try:
-            self.reload()
-            self.refresh_variables(name)
-            task = self.tasks.get(name) or {"name": name, "player": None, "line": "", "brief": "", "description": ""}
-            player = task.get("player") or ""
-            new = self.take()
-            seen = await self.world.seen(items=[player] if player else False, full=True)
-            event = Event("REPORT", task=task, status=status, report=text, following=following)
-            loop = Loop(event, player, task.get("line") or "", started)
-            await self.run_loop(event, seen, new, player=player, line=loop.line, loop=loop)
-        except Exception:  # raised on, for the event's own log; the task never stays open for it
-            if not recorded():
-                kept = self.result(name, status, self.written(name, status, loop), following)
-                closed = True
-                await self.acts.say(self.line_for(name, status, kept), name)
+            got = await self.router.route(RouterEvent("LINE", row, said=reply, reason=reason), self.ctx,
+                                          self.in_full(seen), self.board(seen), self.loops.show(brief=False),
+                                          loops=offered, tasks=self.tasks.names(), refs=self.refs,
+                                          busy=self.under_way(row.who))
+        except LlmError as e:  # the line still needs doing: a loop of its own
+            log("router", f"#{row.seq} FAILED ({spent(e)}; {e}): a new loop")
+            self.flush()
+            router = f"FAILED {e.ms} ms, so"
+        else:
+            self.usage("router", got, f"#{row.seq}")
+            route = got.value
+            router = f"{got.ms} ms:"
+        to, where, instead = await self.place(row, route, said=reply, new=new)
+        if route is not None and route.to != to:  # placed elsewhere than the router said: both in the log line
+            router += f" {route.to} {route.target() or '-'}, so"
+        task = where.split(", ")[0] if to in (NEW_IMPLEMENTER, IMPLEMENTER) else ""  # the line's row names one
+        own = route.reply.strip() if route is not None and to == NOWHERE else ""
+        if instead:          # a task that would not open: never promised
+            line, which = instead, "code"
+        elif self.hold:      # one line per ask: the router's in its place when the work went nowhere
+            line, which = (own, "router") if own else (reply, "agent")
+        else:                # the agent's went out already; the router's own after it
+            line, which = own, "router"
+        if line:
+            await self.acts.say(line, task)
+            said_lines.append(which)
+        log("front", f"#{row.seq} {row.who}: agent {agent}; router {router} {to} {where or '-'}; "
+                     f"said {', '.join(said_lines) or 'nothing'}")
+
+    async def place(self, row: Row, route, *, said: str, new: list[Row]) -> tuple[str, str, str]:
+        """The router's choice carried out, in code, no model: (where the work went, its loop's id
+        or its task's name, every task's for a line that followed several up, joined by ", ", and a
+        line code wrote in place of the agent's when a task would not open). A loop that can no
+        longer take a line, or follow-ups whose tasks are all gone, become a new loop, logged; so
+        does no choice at all (the router failed). A follow-up whose task is gone beside one that
+        is not is dropped, logged: the others carry the line."""
+        to = route.to if route is not None else NEW_LOOP
+        reason = route.reason.strip() if route is not None else ""
+        if to == LOOP:
+            loop = self.loops.get(route.loop)
+            got = self.loops.add(loop, row, said=said, reason=reason) if loop is not None else "gone"
+            if got != "gone":
+                log("router", f"#{row.seq} -> {loop.id}, {got}: {reason}")
+                if got == "taken up":
+                    self.spawn(self.resume(loop), f"loop {loop.id}", loop.player)
+                return LOOP, loop.id, ""
+            log("router", f"#{row.seq} -> {route.loop}: it can no longer take a line, so a new loop ({reason})")
+            to, reason = NEW_LOOP, ""
+        if to == NEW_IMPLEMENTER:
+            h = route.hand_offs[0]
+            opened = self.acts.open_task(h, player=row.who, line=row.text)
+            if opened is None:  # never promised: a line written here says so in place of the agent's
+                words = h.words.strip().strip("“”\"'") or h.name
+                log("task", f"#{row.seq} the router's hand-off {h.name} did not open")
+                return NEW_IMPLEMENTER, "", f"sorry, I couldn't start “{short(words, 60)}” — say it again?"
+            log("router", f"#{row.seq} -> a new implementer on {opened}: {reason}")
+            try:
+                await self.acts.start(opened, h.brief(), row.who)
+            except asyncio.CancelledError:  # the brain stopped before its implementer had it
+                self.acts.fail(opened, f"{opened} failed: cut off, the brain stopped before its implementer started")
+                raise
+            return NEW_IMPLEMENTER, opened, ""
+        if to == IMPLEMENTER:  # one follow-up a task: a line about two tasks' things follows each up
+            followed = []
+            for f in route.follow_ups:
+                name = f.task.strip()
+                text = self.acts.reopen_task(f)
+                if text is None:
+                    log("router", f"#{row.seq} -> {name}: no such task now, its follow-up dropped")
+                    continue
+                log("router", f"#{row.seq} -> {name}'s implementer, {'a cancel' if f.cancel else 'a follow-up'}: "
+                              f"{reason}")
+                try:
+                    await self.acts.send(name, text)
+                except asyncio.CancelledError:
+                    self.acts.fail(name, f"{name} failed: cut off, the brain stopped before its implementer got the "
+                                         "follow-up")
+                    raise
+                followed.append(name)
+            if followed:
+                return IMPLEMENTER, ", ".join(followed), ""
+            log("router", f"#{row.seq} -> {', '.join(f.task.strip() for f in route.follow_ups)}: no such task now, "
+                          f"so a new loop ({reason})")
+            to, reason = NEW_LOOP, ""
+        if to == NOWHERE:
+            log("router", f"#{row.seq} -> nowhere: {reason}")
+            return NOWHERE, "", ""
+        loop = self.loops.new(Event("LINE", row, said=said, reason=reason), row.who, row.text)
+        log("router", f"#{row.seq} -> a new loop {loop.id}" + (f": {reason}" if reason else ""))
+        self.spawn(self.run_new(loop, new), f"loop {loop.id}", row.who)
+        return NEW_LOOP, loop.id, ""
+
+    # ------------------------------------------------------------- a loop
+
+    async def run_new(self, loop: Loop, new: list[Row]) -> None:
+        """A new loop, a task of its own that holds no turn (WROTE unset: nobody waits for its rows
+        to come back): the world read once, its prompt, then its steps. `new` is what the front
+        turn read as NEW, the line itself left out."""
+        WROTE.set(None)
+        try:
+            loop.seen = await self.world.seen(items=[loop.player] if loop.player else False, full=True)
+            loop.prompt = self.call.prompt(loop.event, self.ctx, loop.seen, self.board(loop.seen), new, self.refs)
+            loop.seen_seq = self.ctx.last_seq
+        except BaseException:  # the error is said by the spawn's guard; the loop can take no line
+            self.drop(loop)
             raise
-        finally:
-            if not recorded():  # cancelled: the brain stopped while it ran
-                self.result(name, status, self.written(name, status), following)
+        await self.run_loop(loop)
 
-    # ------------------------------------------------------------- the loop
+    async def resume(self, loop: Loop) -> None:
+        """An ended loop taken up again by a line the router added: steps from where it stopped,
+        on its prompt as it was (read from the cache), the line before the first of them."""
+        WROTE.set(None)
+        loop.begin(self.clock())
+        await self.run_loop(loop)
 
-    async def run_loop(self, event: Event, seen, new: list[Row], *, player: str, line: str,
-                       loop: Loop | None = None, started: float | None = None) -> Loop:
-        """Steps until one ends the loop, at most `steps` of them and `seconds` from `started` (the
-        turn's start; else now); see the module's docstring. The world (`seen`), TASKS and the
-        conversation are the prompt's as they are now, for every step. When something raises that
-        nobody expected, a line's loop still leaves the record of what its steps did, then raises
-        on (a report's: report() closes its task with it)."""
-        loop = loop or Loop(event, player, line, self.clock() if started is None else started)
-        report = event.kind == "REPORT"
-        tasks = board(self.tasks.all(), seen.copies, self.implementers.running(),
-                      today=self.now().astimezone(UTC).strftime("%Y-%m-%d"))
-        prompt = self.call.prompt(event, self.ctx, seen, tasks, new, self.refs)
-        ref = event.ref()
+    def drop(self, loop: Loop) -> None:
+        """A loop that broke or was cut off: deleted, and the lines it never read logged."""
+        for a in loop.pending:
+            log("loop", f"{loop.id} never read #{a.row.seq} {a.row.who}: {a.row.text[:120]!r}")
+        loop.pending.clear()
+        self.loops.drop(loop)
+
+    def read_added(self, loop: Loop) -> str:
+        """The lines added since the loop's last step, as one block, with the rows it has not read
+        yet; they are read now. Nothing is marked processed for it: the front turn did."""
+        lines, loop.pending = loop.pending, []
+        held = {a.row.seq for a in lines}
+        since = [r for r in self.ctx.rows if r.seq > loop.seen_seq and r.seq not in held]
+        loop.seen_seq = max(loop.seen_seq, self.ctx.last_seq)
+        return added(lines, since)
+
+    async def run_loop(self, loop: Loop) -> None:
+        """Steps until one ends the loop, at most `loop.limit` of them, a limit each line added
+        raises up to the cap; see the module's docstring. The world (`loop.seen`), TASKS and the
+        conversation are the prompt's as they were at the loop's start, for every step; what
+        changed comes in the results and with an added line. When something raises that nobody
+        expected, the loop still leaves the record of what its steps did, is deleted, and raises on."""
+        event, prompt, ref = loop.event, loop.prompt, loop.event.ref()
         # a reply that promises with nothing started is refused, but for a status: of the speaker's open task, or
         # of the follow-up a report's loop is told already runs
         promise = None if event.following else functools.partial(
-            promises, tasks=self.tasks.show(self.implementers.running()), who=player, offers=False)
+            promises, tasks=self.tasks.show(self.implementers.running()), who=loop.player, offers=False)
         try:
-            n = 0
             while True:
-                n += 1
-                used = self.clock() - loop.started
-                last = n >= self.steps or used >= self.seconds
-                output = step_type(self.catalog, last=last, report=report, tasks=self.tasks.names(),
-                                   promise=promise)
-                trailer = self.call.trailer(n, self.steps, used, self.seconds, last)
+                if loop.pending:
+                    prompt.steps.append(self.read_added(loop))
+                loop.steps += 1
+                n = loop.steps
+                last = n >= loop.limit
+                # with nothing of the loop landed yet, a step that runs nothing may not end silent or claim it done;
+                # a report's loop has its implementer's work to speak of
+                output = step_type(self.catalog, last=last, tasks=self.tasks.names(), promise=promise,
+                                   landed=loop.did or event.kind == "REPORT")
+                trailer = self.call.trailer(n, loop.limit, last)
                 try:
                     answer = await self.call.step(prompt, trailer, output, f"{ref} s{n}")
                 except LlmError as e:
                     loop.spend(e)
                     log("brain", f"{ref} s{n} FAILED ({spent(e)}): {e}")
                     self.flush()
-                    await self.failed(loop, e)
-                    return loop
+                    said = await self.failed(loop, e)
+                    prompt.steps.append(failed_step(n, e, said))
+                    if self.loops.settle(loop):
+                        self.went_on(loop)
+                        continue
+                    return
                 loop.spend(answer)
                 self.flush()
                 step = answer.value
-                run = await self.acts.run(step, n=n, player=player, seen=seen, refs=self.refs, ref=f"{ref} s{n}")
+                run = await self.acts.run(step, n=n, player=loop.player, seen=loop.seen, refs=self.refs,
+                                          ref=f"{ref} s{n}")
                 loop.runs.append(run)
+                loop.did = loop.did or any(r.state == LANDED for r in run.actions)
                 log("brain", f"{ref} s{n} {spent(answer)} | {describe(step)} -> {run.summary()}")
                 if run.landed and step.end != NEXT:
-                    await self.end(loop, step)
-                    return loop
+                    await self.end(loop, step, run)
+                    prompt.steps.append(run.show(sent=True))  # what went out, for a step after it
+                    if self.loops.settle(loop):  # a line came in while it ran: one more step reads it
+                        self.went_on(loop)
+                        continue
+                    return
                 if last:  # the last step's ending did not land: nothing comes after it
-                    await self.failed(loop, None)
-                    return loop
+                    said = await self.failed(loop, None)
+                    prompt.steps.append(run.show().rstrip("\n") + f"\nSENT INSTEAD: “{said}”\n\n")
+                    if self.loops.settle(loop):
+                        self.went_on(loop)
+                        continue
+                    return
                 prompt.steps.append(run.show())
         except asyncio.CancelledError:
             loop.how = "cut off"
+            self.drop(loop)
             raise
         except Exception as e:
-            if event.kind == "LINE":
-                if loop.replied is None:  # the error line, after what landed, as failed() says it: once
-                    with contextlib.suppress(Exception):
-                        await self.acts.say(errored(event.row.who, e, loop.landed()))
-                e.add_note(TOLD)          # said here, or the reply went out already: the guard says nothing
-                if not loop.recorded and (done := record_of(loop.runs)):
-                    self.acts.post("action", "", done)
-                    loop.recorded = True
+            if loop.replied is None:  # the error line, after what landed, as failed() says it: once
+                with contextlib.suppress(Exception):
+                    await self.acts.say(errored(loop.player, e, loop.landed()))
+            e.add_note(TOLD)          # said here, or the reply went out already: the guard says nothing
+            if not loop.recorded and (done := record_of(loop.runs)):
+                self.acts.post("action", "", done)
+                loop.recorded = True
+            self.drop(loop)
             raise
         finally:
             self.log_loop(loop)
 
-    async def end(self, loop: Loop, step: StepBase) -> None:
-        """The loop's ending, once its last step landed: each hand-off's task opened and each
-        follow-up's opened again, with their `AI task` rows; the reply (a report's: written here
-        when the step gave none); the record; then each implementer started and each follow-up
-        sent, the turn waiting for none of them to finish. A task cut off before its implementer
-        had it (the brain stopped) fails by name."""
-        event, report = loop.event, loop.event.kind == "REPORT"
-        name = str((event.task or {}).get("name") or "") if report else ""
+    @staticmethod
+    def went_on(loop: Loop) -> None:
+        """A loop that goes on past an ending (or its error line), for a line added while it ran:
+        what its steps ran is in the record that went out, so a later error line or record never
+        claims it again; the steps after it start their own."""
+        loop.runs, loop.recorded = [], False
+
+    async def end(self, loop: Loop, step: StepBase, run: StepRun) -> None:
+        """A run's ending, once its last step landed: each hand-off's task opened and each
+        follow-up's opened again, with their `AI task` rows; the reply; the record; then each
+        implementer started and each follow-up sent, the loop waiting for none of them to finish.
+        A REPORT loop never closes its task: the conversation agent wrote its result. A task cut
+        off before its implementer had it (the brain stopped) fails by name."""
+        event = loop.event
+        reported = str((event.task or {}).get("name") or "") if event.kind == "REPORT" else ""
         starts: list[tuple[str, str]] = []
         sends: list[tuple[str, str]] = []
         unopened: list[str] = []  # the player's words of each hand-off whose task would not open
@@ -529,7 +662,7 @@ class Brain:
                     sends.append((f.task.strip(), text))
                     cut[f.task.strip()] = (f"{f.task.strip()} failed: cut off, the brain stopped before its "
                                            "implementer got the follow-up")
-            task = name or (starts[0][0] if starts else sends[0][0] if sends else "")
+            task = reported or (starts[0][0] if starts else sends[0][0] if sends else "")
             record = step.record.strip() or record_of(loop.runs)
             reply = step.reply.strip()
             if unopened:  # the reply promises what never started: a line written here says so instead
@@ -539,21 +672,17 @@ class Brain:
                                                                else "but " if done else "sorry, ")
                 reply = short(f"{head}I couldn't start {said} — say it again?", LINE_MAX)
                 record = short(f"{record + '; ' if record else ''}could not start {said}", 400)
+                run.said = reply
                 log("task", f"{event.ref()} {len(unopened)} hand-off(s) did not open: said {reply!r} instead of "
                             f"{step.reply.strip()!r}")
-            if report:
-                final = step.status or event.status
-                following = event.following or name in {n for n, _ in sends}
-                record = record or self.written(name, final)
-                kept = self.result(name, final, record, following)
-                loop.recorded = True
-                reply = reply or self.line_for(name, final, kept)
             if reply:
                 await self.acts.say(reply, task)
                 loop.replied = self.clock() - loop.started
-            if not report and record:
+                loop.last_reply = reply
+            if record:
                 self.acts.post("action", "", record)
                 loop.recorded = True
+                loop.record = record
             await asyncio.sleep(0)  # the rows' writes go out first; nothing waits for them
             for opened, brief in starts:
                 await self.acts.start(opened, brief, loop.player)
@@ -566,36 +695,36 @@ class Brain:
             for left, why in cut.items():
                 self.acts.fail(left, why)
 
-    async def failed(self, loop: Loop, e: Exception | None) -> None:
-        """A loop with no ending: its step's call failed for good (`e`), or its last step's ending
-        did not land. A line's player hears the error line, and the record of what its steps did
-        goes in; a report's task is closed on the implementer's status with a record written here,
-        and its player hears a line written here."""
+    async def failed(self, loop: Loop, e: Exception | None) -> str:
+        """A run with no ending: its step's call failed for good (`e`), or its last step's ending
+        did not land. Its player hears the error line, after what landed, and the record of what
+        its steps did goes in. The line said."""
         loop.how = "failed"
-        event = loop.event
         why = e if e is not None else Exception("it reached its limit with nothing it could end on")
-        if event.kind == "LINE":
-            await self.acts.say(errored(event.row.who, why, loop.landed()))
-            loop.replied = self.clock() - loop.started
-            if done := record_of(loop.runs):
-                self.acts.post("action", "", done)
-                loop.recorded = True
-            return
-        name = str((event.task or {}).get("name") or "")
-        kept = self.result(name, event.status, self.written(name, event.status, loop), event.following)
-        loop.recorded = True
-        await self.acts.say(self.line_for(name, event.status, kept), name)
+        said = errored(loop.player, why, loop.landed())
+        reported = str((loop.event.task or {}).get("name") or "") if loop.event.kind == "REPORT" else ""
+        await self.acts.say(said, reported)
         loop.replied = self.clock() - loop.started
+        loop.last_reply = said
+        if done := record_of(loop.runs):
+            self.acts.post("action", "", done)
+            loop.recorded = True
+            loop.record = done
+        return said
 
     def log_loop(self, loop: Loop) -> None:
-        """The loop's line: its steps, what it cost, how much of it the cache read, the time to its
-        reply and how it ended."""
+        """A run's line: its steps, what it cost, how much of it the cache read, the time to its
+        reply and how it ended; then the loop's id, its state after it (saved or deleted) and the
+        lines it holds."""
         rate = f"{loop.cached_tokens / loop.prompt_tokens:.0%}" if loop.prompt_tokens else "no"
         reply = f"reply at {loop.replied:.1f} s" if loop.replied is not None else "no reply"
         who = loop.player or "nobody"
+        state = {ENDED: "saved", DELETED: "deleted"}.get(loop.state, loop.state)
+        lines = ", ".join(f"#{r.seq}" for r in loop.lines) or "none"
         log("loop", f"{loop.event.ref()} {who}: {loop.calls} step(s), ${loop.cost:.6f}"
                     f"{'' if loop.cost_known else '+'}, {rate} cached, {reply}, "
-                    f"{self.clock() - loop.started:.1f} s, ended {loop.how}")
+                    f"{self.clock() - loop.started:.1f} s, ended {loop.how}; {loop.id} {state}, "
+                    f"{loop.steps} of {loop.limit} steps, lines {lines}")
 
     # ------------------------------------------------------------- reports
 
@@ -607,12 +736,12 @@ class Brain:
 
     def result(self, name: str, status: str, record: str, following: bool) -> bool:
         """A report's record, an `AI result` row: the task closed with it, or kept open with it as
-        the result so far while a follow-up to it runs (one sent while the loop ran included).
-        True when kept open."""
+        the result so far while a follow-up to it runs (or a hand-off of what is left is on its
+        way). True when kept open."""
         kept = following or name in self.implementers.running()
         if kept:
             self.tasks.note(name, record)
-            log("task", f"{name} stays open: a follow-up to it runs")
+            log("task", f"{name} stays open: a follow-up to it runs, or what is left is handed off")
         else:
             self.tasks.close(name, status, record)
         self.acts.post("result", name, record)
@@ -621,29 +750,133 @@ class Brain:
     async def on_report(self, name: str, status: str, text: str, description: str = "",
                         made: dict | None = None) -> None:
         """What the implementers call when one ends (their `on_report`), with its report, its
-        DESCRIPTION line taken off it, and what it made: a loop of its own in the task's player's
-        turn, at the front of their queue, and the implementer waits for none of it. A task whose
-        implementers still name it as running has a follow-up queued or started behind this run.
-        While the brain stops, or when the stop drops the report before it ran, the task closes on
+        DESCRIPTION line taken off it, and what it made: the conversation agent reads it at once,
+        a task of its own beside whatever the player's turn is doing; it never queues, and the
+        implementer waits for none of it. A task whose implementers still name it as running has
+        a follow-up queued or started behind this run. While the brain stops, the task closes on
         the implementer's status, in code."""
         following = name in self.implementers.running()
-        closing = functools.partial(self.closed_in_code, name, status, text, description, made, following)
         if self.stopping:
-            return closing()
-        player = str((self.tasks.get(name) or {}).get("player") or "")
-        label = f"report {name}"
-        got = self.turns.report(player, functools.partial(self.turn, self.report, name, status, text, description,
-                                                          made, following, label=label, queued=self.clock()),
-                                label, dropped=closing)
-        if got == "closed":
-            closing()
-        elif got == "first in line":
-            self.queued.add(label)
-            log("turn", f"report {name} waits for {player or 'its lane'}'s turn, first in line")
+            return self.closed_in_code(name, status, text, description, made, following)
+        self.spawn(self.report_front(name, status, text, description, made, following), f"report {name}")
+        return None
+
+    async def report_front(self, name: str, status: str, text: str, description: str = "",
+                           made: dict | None = None, following: bool = False) -> None:
+        """An implementer ended: its task takes what it made, its DESCRIPTION line (when it gave
+        one; else the description it had stays) and the variables of its action; then the
+        conversation agent reads the report whole, reading what no call has read yet, and writes
+        the player's line, the record and the status. The task is closed with them, or kept open
+        while a follow-up to it runs (`following`) or the agent hands off what is left, which the
+        router then places (report_route()). The task never stays open for an error: the agent
+        failing, or anything nobody expected, closes it in code with a line written here. Its rows
+        are nobody's turn's (WROTE unset)."""
+        WROTE.set(None)
+        self.keep_session(name)
+        self.tasks.merge_made(name, made)
+        if description.strip():
+            self.tasks.describe(name, description)
+        recorded = False
+        try:
+            self.reload()
+            self.refresh_variables(name)
+            task = self.tasks.get(name) or {"name": name, "player": None, "line": "", "brief": "", "description": ""}
+            new = self.take()
+            seen = await self.world.glance()
+            running = self.implementers.running()
+            try:
+                event = ReportEvent(task=task, status=status, report=text, following=following)
+                answer = await self.respond.report(event, self.ctx, seen, self.tasks.show(running),
+                                                   self.loops.show(brief=True), new)
+            except LlmError as e:
+                log("respond", f"{name} FAILED ({spent(e)}; {e}): the task closed in code")
+                self.flush()
+                kept = self.result(name, status, self.written(name, status), following)
+                recorded = True
+                await self.acts.say(self.line_for(name, status, kept), name)
+                return
+            self.usage("respond", answer, name)
+            got = answer.value
+            keep = following or got.hand_off or name in running
+            reply = got.reply.strip() or self.line_for(name, got.status, keep)
+            await self.acts.say(reply, name)
+            record = got.record.strip() or self.written(name, got.status)
+            self.result(name, got.status, record, following or got.hand_off)
+            recorded = True
+            log("respond", f"{name} {got.status}: {reply!r}; "
+                           f"{'left: ' + short(got.left, 200) if got.hand_off else 'nothing left'} ({got.reason})")
+            if got.hand_off:
+                await self.report_route(task, got, reply, record, text, following, seen)
+        except Exception:  # raised on, for the event's own log; the task never stays open for it
+            if not recorded:
+                kept = self.result(name, status, self.written(name, status), following)
+                recorded = True
+                await self.acts.say(self.line_for(name, status, kept), name)
+            raise
+        finally:
+            if not recorded:  # cancelled: the brain stopped while it ran
+                self.result(name, status, self.written(name, status), following)
+
+    async def report_route(self, task: dict, got, said: str, record: str, report: str, following: bool,
+                           seen: Seen) -> None:
+        """What a report left, placed by the router: usually the task's implementer again, a
+        follow-up whose brief names the done-when items left; a new loop when an action does the
+        rest now; a new implementer; or nowhere, with the router's own line. No loop is offered:
+        a report's work never joins a loop. The router failing sends what is left (`left`) to the
+        task's implementer. Unless that task is followed up here (or a follow-up of it already
+        runs), it is closed on the agent's status with its record once the work is placed: a
+        loop's or an implementer's work on what is left has records of its own."""
+        name = str(task.get("name") or "")
+        player = str(task.get("player") or "")
+        route = None
+        try:
+            routed = await self.router.route(RouterEvent("REPORT", task=task, said=said, status=got.status,
+                                                         report=report, left=got.left),
+                                             self.ctx, self.in_full(seen), self.board(seen),
+                                             self.loops.show(brief=False), loops=[], tasks=self.tasks.names(),
+                                             refs=self.refs)
+        except LlmError as e:
+            log("router", f"{name} FAILED ({spent(e)}; {e}): a follow-up to {name} with what is left")
+            self.flush()
+        else:
+            self.usage("router", routed, name)
+            route = routed.value
+        followed = ""
+        try:
+            if route is None or route.to == IMPLEMENTER:
+                f = route.follow_ups[0] if route is not None else FollowUp(task=name, brief=got.left or got.reason)
+                text = self.acts.reopen_task(f)
+                if text is None:
+                    log("router", f"{name}: the follow-up's task {f.task.strip()} is gone: nothing more is done")
+                    return
+                followed = f.task.strip()
+                log("router", f"{name} -> {followed}'s implementer: {route.reason if route is not None else 'left'}")
+                await self.acts.send(followed, text)
+            elif route.to == NEW_IMPLEMENTER:
+                h = route.hand_offs[0]
+                opened = self.acts.open_task(h, player=player, line=str(task.get("line") or ""))
+                if opened is None:
+                    log("task", f"{name}: the router's hand-off {h.name} of what was left did not open")
+                    return
+                log("router", f"{name} -> a new implementer on {opened}: {route.reason}")
+                await self.acts.start(opened, h.brief(), player)
+            elif route.to == NEW_LOOP:
+                loop = self.loops.new(Event("REPORT", said=said, reason=route.reason, task=task, status=got.status,
+                                            report=report, left=got.left, following=following),
+                                      player, str(task.get("line") or ""))
+                log("router", f"{name} -> a new loop {loop.id}: {route.reason}")
+                self.spawn(self.run_new(loop, []), f"loop {loop.id}", player)
+            else:
+                log("router", f"{name} -> {route.to}: {route.reason}")
+                if route.reply.strip():
+                    await self.acts.say(route.reply.strip(), name)
+        finally:
+            if followed != name and not following and name not in self.implementers.running():
+                self.tasks.close(name, got.status, record)
 
     def closed_in_code(self, name: str, status: str, text: str, description: str, made: dict | None,
                        following: bool) -> None:
-        """A report no loop reads (the brain stops): its task takes what the implementer made and
+        """A report no model reads (the brain stops): its task takes what the implementer made and
         closes on its status, with a record written in code and no model call."""
         log("task", f"{name} reported {status} while the brain stops: {short(text, 200)}")
         self.keep_session(name)
@@ -652,16 +885,14 @@ class Brain:
             self.tasks.describe(name, description)
         self.result(name, status, self.written(name, status), following)
 
-    def written(self, name: str, status: str, loop: Loop | None = None) -> str:
+    def written(self, name: str, status: str) -> str:
         """A task's record written in code, never the implementer's words: `<name> done: <what it
-        is>`, its description (a brief is in parts under headings now, and long); then what the
-        report's loop ran, when it ran something before it ended without its own record."""
+        is>`, its description (a brief is in parts under headings now, and long)."""
         what = short((self.tasks.get(name) or {}).get("description") or "", 120)
-        done = record_of(loop.runs) if loop is not None else ""
-        return short(f"{name} {status}" + (f": {what}" if what else "") + (f"; then {done}" if done else ""), 400)
+        return short(f"{name} {status}" + (f": {what}" if what else ""), 400)
 
     def line_for(self, name: str, status: str, following: bool = False) -> str:
-        """A report's chat line written in code, when the loop gave none: the player's own words,
+        """A report's chat line written in code, when the agent gave none: the player's own words,
         never the brief nor the description, which players are not shown."""
         t = self.tasks.get(name) or {}
         what = short(t.get("line") or "", 80) or "that one"
@@ -713,27 +944,37 @@ class Brain:
                      f"({len(history)} history marked read)")
 
     async def stop(self, grace_s: float, implementers_grace_s: float = 2.0) -> None:
-        """Read nothing new and drop what waits for a turn (a report dropped closes its task in
-        code); let the loops in flight finish for up to `grace_s` (a report that comes in meanwhile
+        """Read nothing new, drop what waits for a turn and forget the saved loops; let the turns,
+        loops and reports in flight finish for up to `grace_s` (a report that comes in meanwhile
         closes its task in code, on_report()); stop the implementers and fail their tasks as
         stopped."""
         self.stopping = True
-        dropped = self.turns.close()  # first: a run that ends in the grace starts nothing after it
+        dropped = self.turns.close()  # first: a turn that ends in the grace starts nothing after it
         if dropped:
-            log("stop", f"dropped {dropped} line(s) and report(s) waiting for a turn")
+            log("stop", f"dropped {dropped} line(s) waiting for a turn")
         for row in self.waiting.values():  # one rule: a line dropped here is read, never answered, after a restart too
             if not row.processed:
                 self.mark(row)
             log("stop", f"#{row.seq} {row.who} dropped at the stop, marked read: {row.text[:120]!r}")
         self.waiting.clear()
+        forgot = self.loops.close()   # no line is added from now on; a loop in flight is deleted as it ends
+        if forgot:
+            log("stop", f"forgot {forgot} saved loop(s)")
         self.acts.echoes.release()  # the watch is done: no turn waits for its rows to come back
-        pending = list(self.inflight)
-        if pending:
-            log("stop", f"waiting up to {grace_s:g} s for {len(pending)} call(s) in flight")
-            _, left = await asyncio.wait(pending, timeout=grace_s)
-            for t in left:
-                t.cancel()
-            await asyncio.gather(*left, return_exceptions=True)
+        if self.inflight:
+            log("stop", f"waiting up to {grace_s:g} s for {len(self.inflight)} call(s) in flight")
+            # A front turn finishing in the grace may still start a loop: what is spawned meanwhile is waited for
+            # too, within the same grace, and cut off with the rest at its end.
+            end = asyncio.get_running_loop().time() + grace_s
+            while self.inflight:
+                wait = end - asyncio.get_running_loop().time()
+                if wait <= 0:
+                    left = list(self.inflight)
+                    for t in left:
+                        t.cancel()
+                    await asyncio.gather(*left, return_exceptions=True)
+                    break
+                await asyncio.wait(list(self.inflight), timeout=wait)
         try:
             stopped = await self.implementers.close(implementers_grace_s)
         except Exception as e:  # noqa: BLE001 — the stop goes on; the next start fails what stayed open

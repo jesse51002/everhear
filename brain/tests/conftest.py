@@ -3,13 +3,16 @@ no real ~/.vfg.
 
 - catalog(): the core actions and railgun, from a small copy of the repo's actions/ beside a
   stub of each script, loaded once; made() writes a server's own action into a catalog of its own.
-- FakeAsk stands in for structured(): canned answers per output class ("Step", "Response"), one
-  for every call or a list taken in order, each validated against the class as structured() does.
+- FakeAsk stands in for structured(): canned answers per output class ("Step", the brain's;
+  "Response" and "ReportAnswer", the conversation agent's; "Route", the router's), one for every
+  call or a list taken in order, each validated against the class as structured() does, so a real
+  Respond and a real Router run on it.
 - FakeVfg stands in for the vfg runner: it records every argv and answers by prefix.
 - FakeImplementers records what is started and followed up, by the task's name.
 - Tick is the loop's clock, moved by hand.
-- Contexts are built by hand: rows(...) from feed lines; steps by step(), act(), hand_off() and
-  follow_up().
+- Contexts are built by hand: rows(...) from feed lines, line() for a line to the AI (its class
+  from context.LIVE, the one place it is named); steps by step(), act(), hand_off() and
+  follow_up(); the agent's answers by answer() and report_answer(), the router's by route().
 """
 
 from __future__ import annotations
@@ -32,15 +35,17 @@ from brain import actions
 from brain.act import Acts
 from brain.call import Call
 from brain.config import REPO
-from brain.context import Context, parse
+from brain.context import LIVE, Context, parse
 from brain.loop import Brain
 from brain.respond import Respond
+from brain.router import Router
 from brain.tasks import Tasks
 from brain.vfg import Later, VfgResult
 from brain.world import World
 
 CORE = ("command", "teleport", "summon_around", "save_place", "stop", "edit", "railgun")
 NOW = datetime(2026, 10, 10, 18, 30, 0, tzinfo=UTC)
+TO_AI = LIVE[0]  # a line said to the AI, as Jev classes it: every live class takes the same path
 
 
 def _repo_copy() -> Path:
@@ -102,6 +107,12 @@ def rows(*lines: str, processed: bool = False) -> Context:
     return ctx
 
 
+def line(seq: int, who: str = "Steve", text: str = "give me a diamond pickaxe", cls: str = TO_AI,
+         hms: str = "18:29:58") -> str:
+    """A feed line said to the AI (Jev's class `cls`, one of context.LIVE)."""
+    return f"LINE#{seq} {hms} {who} voice {cls} 0.9 - | {text}"
+
+
 # ------------------------------------------------------------------ the model
 
 class FakeAsk:
@@ -131,17 +142,36 @@ class FakeAsk:
         return [c for c in self.calls if c["output"] == name]
 
 
-def step(*actions: dict, end: str = "reply", reply: str = "", record: str = "", status: str = "",
-         order: str = "together", read: tuple[str, ...] = (), hand_offs: tuple[dict, ...] = (),
-         follow_ups: tuple[dict, ...] = ()) -> dict:
+def step(*actions: dict, end: str = "reply", reply: str = "", record: str = "", order: str = "together",
+         read: tuple[str, ...] = (), hand_offs: tuple[dict, ...] = (), follow_ups: tuple[dict, ...] = ()) -> dict:
     """One step as the model writes it."""
     return {"order": order, "actions": list(actions), "read_items": list(read), "hand_offs": list(hand_offs),
-            "follow_ups": list(follow_ups), "end": end, "reply": reply, "record": record, "status": status}
+            "follow_ups": list(follow_ups), "end": end, "reply": reply, "record": record}
 
 
-def act(to: str, instruction: str, action: dict | None = None) -> dict:
+def answer(reply: str = "", hand_off: bool = True, reason: str = "it asks for something") -> dict:
+    """The conversation agent's answer to a line: a reply, a hand-off (with its acknowledgement, or
+    none), or silence."""
+    return {"reason": reason, "hand_off": hand_off, "reply": reply}
+
+
+def report_answer(reply: str = "", status: str = "done", record: str = "", hand_off: bool = False, left: str = "",
+                  reason: str = "what the report says") -> dict:
+    """The conversation agent's answer to a report."""
+    return {"reason": reason, "hand_off": hand_off, "left": left, "status": status, "reply": reply, "record": record}
+
+
+def route(to: str = "new_loop", *, loop: str = "", hand_offs: tuple[dict, ...] = (),
+          follow_ups: tuple[dict, ...] = (), reply: str = "", reason: str = "what it is about") -> dict:
+    """The router's answer: who does the work."""
+    return {"reason": reason, "to": to, "loop": loop, "hand_offs": list(hand_offs), "follow_ups": list(follow_ups),
+            "reply": reply}
+
+
+def act(to: str, instruction: str, fields: dict | None = None) -> dict:
     """One action as the model writes it: its values as key and value pairs."""
-    return {"to": to, "instruction": instruction, "action": [{"key": k, "value": v} for k, v in (action or {}).items()]}
+    return {"to": to, "instruction": instruction,
+            "fields": [{"key": k, "value": v} for k, v in (fields or {}).items()]}
 
 
 def cmd(*commands: str) -> dict:
@@ -281,17 +311,18 @@ class FakeRefs:
 
 # ------------------------------------------------------------------ a brain, by hand
 
-# Respond's answer when a test gives none: it hands the line up, so the brain's loop runs it
-# (Prototype_Addressing_The_AI: every line to the AI goes to Respond first).
-HAND_UP = {"reason": "asks for something in the game", "hand_up": True, "reply": ""}
-
 class Kit:
-    """A Brain wired to fakes, its parts at hand. A turn does not wait for its rows to come back
-    (settle_s 0) unless a test sets the brain's settle_s."""
+    """A Brain wired to fakes, its parts at hand: the conversation agent, the router and the brain's
+    steps all answered by one FakeAsk. A turn does not wait for its rows to come back (settle_s 0)
+    unless a test sets the brain's settle_s. The router holds the agent's line (`hold`) unless a
+    test says it reasons."""
 
-    def __init__(self, tmp: Path, ctx: Context | None = None, *, cat=None, **answers: Any):
+    def __init__(self, tmp: Path, ctx: Context | None = None, *, cat=None, hold: bool = True, **answers: Any):
+        # Unless a test says otherwise, the agent hands every line off saying nothing, and the router starts a
+        # new loop for it: a line comes to the brain's loop as it always did, and the loop's reply is the only one.
+        answers.setdefault("Response", answer())
+        answers.setdefault("Route", route())
         self.vfg = FakeVfg()
-        answers.setdefault("Response", HAND_UP)  # every line to the AI goes to Respond first
         self.ask = FakeAsk(**answers)
         self.impl = FakeImplementers()
         self.tick = Tick()
@@ -302,11 +333,13 @@ class Kit:
         self.world = World(self.vfg, tmp / "running.json", self.cat)
         self.call = Call(self.cat, self.ask, owner="KrownJM")
         self.respond = Respond(self.cat, self.ask, owner="KrownJM")
+        self.router = Router(self.cat, self.ask, owner="KrownJM")
         self.acts = Acts(vfg=self.vfg, later=self.later, catalog=self.cat, tasks=self.tasks, implementers=self.impl,
                          world=self.world, repo=REPO_COPY, server="main")
-        self.brain = Brain(ctx=self.ctx, call=self.call, respond=self.respond, acts=self.acts, world=self.world,
-                           tasks=self.tasks, implementers=self.impl, later=self.later, catalog=self.cat,
-                           refs=FakeRefs(), now=lambda: NOW, clock=self.tick, settle_s=0)
+        self.brain = Brain(ctx=self.ctx, call=self.call, respond=self.respond, router=self.router, acts=self.acts,
+                           world=self.world, tasks=self.tasks, implementers=self.impl, later=self.later,
+                           catalog=self.cat, refs=FakeRefs(), now=lambda: NOW, clock=self.tick, hold=hold,
+                           settle_s=0)
 
     async def send(self, row: dict) -> bool:
         """`vfg task set`, as __main__ sends it."""

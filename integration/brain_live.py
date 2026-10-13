@@ -1,58 +1,74 @@
 #!/usr/bin/env python3
-"""The brain's loop live, on a real 26.3 server on this PC: Prototype_Brain_Loop's "Live, on
-realmc" list, with the earlier specs' checks that still hold.
+"""The brain live, on a real 26.3 server on this PC: Prototype_Conversation_And_Router's "Live, on
+realmc" list, with the checks of Prototype_Brain_Loop's that still mean something.
 
-    REALMC_ROOT=… python3 integration/brain_live.py [--name live] [--keep-up] [--no-implementer]
-                                                     [--only refused,read,…]
+    REALMC_ROOT=… python3 integration/brain_live.py [--name live] [--keep-up] [--only refused,read,…]
 
 Real:  a Minecraft 26.3 server with Carpet's fake players Steve and Alex (integration/realmc,
        its world fresh from the template, its test server beside it as the box's: `up NAME
-       --test-server`, where the implementers' `vfg test` plays), the brain (`vfg brain start` through realmc's bin/vfg,
-       which keeps this HOME so the implementers' Claude CLI finds its login), its model calls,
-       the loop's steps on Gemini 3.8 Flash and Respond's on DeepSeek V4 Flash, through OpenRouter
-       (OPEN_ROUTER_API: from the environment, else the first .env above this repo, or its
+       --test-server`, where the implementers' `vfg test` plays), the brain (`vfg brain start`
+       through realmc's bin/vfg, which keeps this HOME), its model calls through OpenRouter on the brain's defaults (the
+       conversation agent and the router on DeepSeek V4.1 Flash with no reasoning, the steps at low;
+       OPEN_ROUTER_API: from the environment, else the first .env above this repo, or its
        Internal/.env, that holds it; given to the brain's process only, never printed or
-       written), the implementers on the Claude subscription (Haiku 5.5), vfg, the actions and
-       the scripts, the stand-in box's feed writer and vfg.db, with its tasks table.
-Stand-ins: SSH (realmc's bin/ssh), and Jev: each player's line is put into the feed as a LINE
-       row through the stand-in's vfg_feed, as Jev puts a line said to the AI there (class
-       to_ai), several in one write when a check needs them to arrive together. Every line goes
-       to Respond first, which answers talk and hands an ask up to the brain's loop
-       (Prototype_Addressing_The_AI).
+       written), vfg, the actions and the scripts, the stand-in box's feed writer and vfg.db,
+       with its tasks table, and the implementers' real runner, relay and Claude Code CLI.
+Stand-ins: SSH (realmc's bin/ssh); Jev: each player's line is put into the feed as a LINE row
+       through the stand-in's vfg_feed, as Jev puts a line said to the AI there (class to_ai),
+       several in one write when a check needs them to arrive together; the implementers' MODEL (integration/stand_in_model.py, on
+       127.0.0.1, the brain told so with VFG_IMPL_PROVIDER=deepseek, DEEPSEEK_API_KEY=stand-in and
+       VFG_IMPL_BASE_URL): it records what each implementer is sent and answers with a report after
+       the delay a check sets, building nothing and costing nothing; and a slow provider, on cue
+       (integration/shims/slow_step, on the brain's PYTHONPATH with VFG_TEST_SLOW): it holds a
+       chosen step, or a conversation agent's call, back for so many seconds before it goes out,
+       inside the call's own timeout, where a check needs a loop still thinking, a step past 45 s
+       or a player's turn busy.
 
 It starts from a clean slate: the stand-in's vfg.db (its -wal and -shm with it) and feed.log are
 set aside in a timestamped folder beside them, never deleted, and made again by
 `vfg_bridge --init-db`; what made/<name>/ held is saved with `vfg made save`, then moved into
 made/.replaced/, so the server's tasks and what they made start from none.
 
-Three brains, one after another, on the one server and feed:
-1. On the defaults: a one-step ask whose actions all land; a step with actions together, and one
-   in turn; a refused command the next step fixes (asks whose first command 26.3 may refuse, in
-   turn, until one is: /enchant over Fire Aspect's maximum on the axe Steve holds, the scale
-   attribute by its old name, a sword's enchantments in the component's old form); another
-   player's items read with the tool; item asks by slot; the brain's own copy started, edited
-   and stopped; Steve's second line waiting for his loop while Alex's runs at once; Steve's three
-   lines waiting and a fourth turned away by a private message naming them; a line of talk
-   Respond answers alone; one hand-off on the real implementer, its brief in parts in the tasks table,
-   its report starting a new loop, then a follow-up and a stop by the task's name.
-2. VFG_LOOP_STEPS=2 and VFG_IMPLEMENTER_MINUTES=1: a loop that reaches its step limit and ends
-   with a reply or a hand-off; and a report going ahead of Steve's waiting lines: a hand-off
-   whose implementer reports within the 1-minute limit, while Steve's lines, fed from 15 s after
-   it started, keep his turn busy with lines waiting.
-3. VFG_LOOP_SECONDS=2 and VFG_IMPLEMENTER_MINUTES=1: a loop that reaches its time limit and ends
-   with a reply or a hand-off.
-The limits are lowered so a real ask reaches them in a step or two: a loop's 10 steps and 2
-minutes are the same code with other numbers.
+What it checks. Every line to the AI takes its player's turn for two quick calls: the conversation
+agent answers (brain.log's `respond #<seq>` line), and a hand-off goes to the router, which places
+the work (`router #<seq> -> …`); the turn's `front #<seq>` line says both and the lines said. A
+brain loop runs behind the turn (`loop <ref> …: …; L3 saved, 1 of 10 steps, lines #5`). Three brains,
+one after another, on the one server and feed:
+1. On the defaults (the router without reasoning: the hold). Kept from Prototype_Brain_Loop, each
+   now through the front turn: a one-step ask whose actions all land (the agent's held
+   acknowledgement, then the loop's reply and its one record); actions together and in turn; a
+   refused command the next step fixes; another player's items read; item asks by slot; the brain's
+   own copy started, edited and stopped; three of Steve's lines waiting for his turn and a fourth
+   turned away by a private message naming them; a line the agent answers itself. New:
+   - Steve's second line waits only for his first line's front turn, not its loop: his two loops
+     run side by side, and Alex's line is answered beside them;
+   - a step held past 45 s (a slow stand-in: 65 s at low, 47 s with no reasoning) lands inside its
+     timeout (120 s at low, the default; 60 s with none), and while
+     that loop thinks, Steve's "is it done yet?" is answered at once, from what is running;
+   - the router adds a line to a thinking loop (its step held), which reads it in an extra step,
+     and a line to the same loop once it has ended, inside its 2 minutes: taken up again, its next
+     step read from the cache; after the 2 minutes, a line on that thing starts a new loop;
+   - the router starts an implementer with its brief (the stand-in records it), follows it up while
+     it runs, and answers the same ask said again with a line of its own in place of the agent's
+     (nowhere, one line); the implementer's report reaches the conversation agent while Steve's
+     turn is busy (his agent's call held), and is told at once;
+   - one line per ask, all through this brain: a hand-off placed somewhere says the agent's line,
+     held until the router answered; one placed nowhere says the router's in its place.
+2. VFG_ROUTER_REASONING=low: nothing is held: the agent's line goes out before the router answers,
+   and the router's own after it.
+3. VFG_LOOP_STEPS=1, VFG_LOOP_CAP=2: a line's loop gets one step and each line added one more, never
+   past two: the line added to an ended loop takes it to the cap, its last step replies or hands off
+   and it is deleted; the next line on that thing starts a new loop.
 
-Every ask is checked in the world over RCON, in the feed's AI rows, in vfg.db's tasks and usage
-tables, and in brain.log (each step's line, each loop's line, the turns'). Prints PASS/FAIL per
-check, then each ask's time from line to reply with its loop's steps, cost and cache rate, the
-implementer tasks' times, every call's cost from the `usage` rows and the cache rate of the steps
-after a loop's first. The brain and Respond come to about $0.2; the implementers use the Claude
-subscription. The server is left down unless --keep-up. Never `down --all`, `--purge-key`,
+At the end: every line read, no task open, a clean stop, no traceback or error in brain.log, the key
+in no file, every step a usage row `<ref> s<n>` and a line of brain.log, every front turn's calls
+`#<seq>` rows of respond and router, no report waiting for a turn, and the cost under $1. It prints
+each line's front turn and its work, with the time to the reply, every call's cost and the cache
+rate of the steps after a loop's first. `--only` runs the checks it names (the brain each needs is
+started for it). The server is left down unless --keep-up. Never `down --all`, `--purge-key`,
 `--regen`, `key` or `carpet`: other builders' servers share REALMC_ROOT, and its env file holds a
 real TypeSafe key, which nothing here reads or prints. Give a build's run a server of its own
-(`--name live`): the clean slate sets aside whatever the server held before.
+(`--name cr-live`): the clean slate sets aside whatever the server held before.
 """
 import argparse
 import datetime as dt
@@ -73,17 +89,43 @@ sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 REALMC = os.path.join(HERE, "realmc")
+SHIM = os.path.join(HERE, "shims", "slow_step")
 KEY = "OPEN_ROUTER_API"
-BUDGET = 1.00      # dollars of OpenRouter the brain and Respond may spend in a run
-TASK_S = 1260      # an implementer task's time limit (VFG_IMPLEMENTER_MINUTES, 20 min), its report
-                   # included
-MODELS = ("brain", "respond")   # the usage components on OpenRouter
+BUDGET = 1.00      # dollars of OpenRouter the brain's three agents may spend in a run
+MODELS = ("brain", "respond", "router")   # the usage components on OpenRouter
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")   # a task's name
 HOME = (12, 12)    # where the saved place `home` is, on the arena (x, z)
+TAKE_UP_S = 120    # VFG_LOOP_TAKE_UP_S's default: an ended loop takes a line this long after its creation
 # A hand-off's brief, as code renders it from its parts (brain/call.py HandOff.brief).
 BRIEF_HEADS = ("THE PLAYER'S WORDS", "THE WHOLE PICTURE", "WHAT THE PLAYER TAKES FOR GRANTED",
                "HOW IT IS CAST, AND FOR WHOM", "DONE WHEN")
 CHAT = ("haha this is fun", "you're the best AI ever", "lol Alex just fell in the lava again")
+# A line that claims the thing is done: "is it done yet?" must never be answered so while its loop thinks;
+# a line that hedges ("not done yet", "still on it", "almost ready") claims nothing.
+DONE = re.compile(r"\b(all set|done|here you go|there you go|ready|you've got|you now have|enjoy)\b", re.I)
+HEDGE = re.compile(r"\b(not|yet|still|almost|nearly|soon|working|coming|being|on it|hang tight|moment|sec)\b|n't\b",
+                   re.I)
+
+
+def claims_done(text):
+    return bool(DONE.search(text or "")) and not HEDGE.search(text or "")
+
+# The slow stand-in's rules for the default brain (integration/shims/slow_step): the loop that the
+# "is it done yet?" line finds thinking, held past 45 s; the loop whose step is in flight when a line
+# is added to it; Steve's first loop, still thinking when his second line's loop starts; and Steve's
+# agent's call while an implementer's report comes in.
+SLOW = {"defaults": "sixteen golden carrots|1|{hold};stack of oak logs|1|15;give me 16 bread|1|12;"
+                    "joke about creepers|0|17|Response"}
+
+
+def slow_hold(run):
+    """How long the carrots' step is held: past 45 s, and past 60 s when the step's timeout is 120 s
+    (low, the default), so the check shows which timeout applies; inside it either way."""
+    return 65 if run.step_timeout >= 120 else 47
+CARROTS, OAK, BREAD, JOKE = "give me sixteen golden carrots", "give me a stack of oak logs", "give me 16 bread", \
+    "tell me a joke about creepers"
+BOOMERANG = ("make me a boomerang axe: when I throw my axe it flies ten blocks out, hits whatever is there, and comes "
+             "back to my hand")
 
 
 def load_e2e():
@@ -94,10 +136,18 @@ def load_e2e():
     return e2e
 
 
+def load_stand_in():
+    spec = importlib.util.spec_from_file_location("stand_in_model", os.path.join(HERE, "stand_in_model.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
 E2E = load_e2e()
 LOG_CALL, LOG_LOOP, LOG_STEP, ANY = E2E.LOG_CALL, E2E.LOG_LOOP, E2E.LOG_STEP, E2E.ANY
-# A step or Respond call that failed for good, with what it spent: its usage row is written all the same (ok 0).
-LOG_FAILED = re.compile(r"^(\S+) (brain|respond) (#\d+|[a-z][a-z0-9_]{1,55})(?: s(\d+))? FAILED \((\d+) ms \$([\d.]+)")
+# A step or a call that failed for good, with what it spent: its usage row is written all the same (ok 0).
+LOG_FAILED = re.compile(r"^(\S+) (brain|respond|router) (#\d+|[a-z][a-z0-9_]{1,55})(?: s(\d+))? FAILED "
+                        r"\((\d+) ms \$([\d.]+)")
 # One action a step ran: `action #5 s1 #2 command ok: …`.
 LOG_ACTION = re.compile(r"^(\S+) action (#\d+|[a-z][a-z0-9_]{1,55}) s(\d+) #(\d+) (\w+) (\w+): (.*)$")
 
@@ -177,7 +227,7 @@ class Live:
         name (its implementers make things in made/<name>/), and no other VFG_ setting."""
         r = subprocess.run([os.path.join(REALMC, "env"), self.name], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            universal_newlines=True, check=True)
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("VFG_", KEY))}
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("VFG_", KEY, "DEEPSEEK_"))}
         for line in r.stdout.splitlines():
             m = re.match(r"^export (\w+)=(.*)$", line)
             if not m:
@@ -218,7 +268,7 @@ class Live:
         return None
 
     def start(self, extra=None):
-        """`vfg brain start`, the key and `extra` settings (VFG_LOOP_STEPS, …) in its environment only."""
+        """`vfg brain start`, the key and `extra` settings in its environment only."""
         r = self.vfg("brain", "start", with_key=True, timeout=60, extra=extra)
         self.started = True
         return r
@@ -304,15 +354,6 @@ class Live:
         except (OSError, ValueError):
             return None
 
-    def copy_pid(self, copy):
-        """A running copy's pid, from its pid file in the stand-in's run/ (vfg script list leaves
-        the pid out); None when there is none."""
-        try:
-            with open(os.path.join(self.dir, "vfg", "run", copy + ".pid"), encoding="utf-8") as f:
-                return int(f.read().strip())
-        except (OSError, ValueError):
-            return None
-
     # -- the feed and the database
     def sql(self, query, params=()):
         con = sqlite3.connect("file:%s?mode=ro" % self.db, uri=True, timeout=10)
@@ -365,16 +406,6 @@ class Live:
         m = re.search(r"Found (\d+) matching item", self.cmd("clear %s minecraft:%s 0" % (who, item)))
         return int(m.group(1)) if m else 0
 
-    def count_blocks(self, block, centre, r=7):
-        x0, y0, z0 = (int(c // 1) for c in centre)
-        n = 0
-        for x in range(x0 - r, x0 + r + 1):
-            for z in range(z0 - r, z0 + r + 1):
-                for y in range(y0 - 1, y0 + 3):
-                    if self.cmd("execute if block %d %d %d minecraft:%s" % (x, y, z, block)).startswith("Test passed"):
-                        n += 1
-        return n
-
     def day_ticks(self):
         m = re.search(r"is at (\d+) tick", self.cmd("time query day"))
         return int(m.group(1)) if m else None
@@ -390,13 +421,15 @@ class Live:
 # ======================================================================= the run
 
 class Run:
-    def __init__(self, live, rep):
+    def __init__(self, live, rep, model=None):
         self.live, self.rep = live, rep
+        self.model = model  # the implementers' stand-in model
         self.asks = []
-        self.tasks = []    # the implementer tasks' timings
         self.names = []    # the tasks the run opened, by name
         self.claimed = set()   # the seqs of the AI say rows a line's reply took
         self.phase = "defaults"
+        self.reasoning = ""    # --brain-reasoning: VFG_BRAIN_REASONING for every brain ("" its default, low)
+        self.step_timeout = 120  # a brain step's timeout, as config.py derives it: 120 s thinking, 60 s off
 
     # -- lines and replies
     def batch(self, *said):
@@ -412,24 +445,30 @@ class Run:
         return out
 
     def ask(self, who, text, cls="to_ai", timeout=60):
-        """One line into the feed; waits for its turn to end and its reply."""
+        """One line into the feed; waits for its reply (its work's, else its front turn's)."""
         a, = self.batch((who, cls, text))
         self.await_reply(a, timeout)
         return a
 
+    def log(self):
+        return self.live.log_since(self.live.mark)
+
     def await_reply(self, a, timeout=60):
-        """The ask's reply: the AI say row after its line with the words its turn logged (its loop's,
-        or Respond's), so turns at once are told apart; `AI say <name>` when it opened or followed up
-        a task (the name kept as the ask's task), else `AI say -`. None when the turn ended saying
-        nothing (a["silent"]) or did not end in time."""
+        """The ask's reply: the AI say row after its line with the words brain.log gives it (the
+        reply of the loop that took it, else the front turn's own line; E2E.logged_reply), so turns
+        at once are told apart; `AI say <name>` when it names a task (kept as the ask's task), else
+        `AI say -`. None when nothing was said (a["silent"]) or nothing came in time."""
         live, ref = self.live, "#%d" % a["seq"]
 
         def got():
-            want = E2E.logged_reply(live.log_since(live.mark), ref)
+            log = self.log()
+            want = E2E.logged_reply(log, ref)
             if want == "":
                 return "silent"
+            ack = E2E.acked(log, ref)   # the front turn's own line, never a loop's reply
             for r in live.ai(a["seq"]) if want is not None else ():
-                if r["seq"] not in self.claimed and (want is ANY or E2E.same_words(r["text"], want)):
+                if r["seq"] not in self.claimed and (E2E.same_words(r["text"], want) if want is not ANY
+                                                     else not (ack and E2E.same_words(r["text"], ack))):
                     return r
             return None
         r = wait_for(got, timeout)
@@ -447,77 +486,138 @@ class Run:
                                                a["reply_at"] - a["at"]))
         return r
 
-    # -- what brain.log says of a turn
+    def await_front(self, a, timeout=40):
+        """The line's front turn, once logged (E2E.front_of): {agent, to, where, said, reply, …}."""
+        return wait_for(lambda: E2E.front_of(self.log(), "#%d" % a["seq"]), timeout) or None
+
+    def front(self, a):
+        return E2E.front_of(self.log(), "#%d" % a["seq"])
+
+    def work(self, a, timeout=0):
+        """The run of the loop that took the line (E2E.work_of): {ref, loop, steps, ended, state,
+        used, limit, lines, …}; None when no loop took it or its run has not ended."""
+        def find():
+            return E2E.work_of(self.log(), "#%d" % a["seq"])
+        return wait_for(find, timeout) if timeout else find()
+
+    def ack_lines(self, a):
+        """The chat lines the line's front turn said (0 or 1 under the hold)."""
+        return len((self.front(a) or {}).get("said") or [])
+
+    def front_said_rows(self, a):
+        """The AI say row the front turn said first: the agent's, by its logged words; else the
+        router's or code's own, the line's reply when no loop took it, or the first after the line."""
+        f = self.front(a) or {}
+        if not f.get("said"):
+            return []
+        rows = self.live.ai(a["seq"])
+        if "agent" in f["said"] and f.get("reply"):
+            # The front line is logged as soon as its say returns: of the rows with the agent's words (another
+            # line's "On it!" may have the same), the last said by then is this turn's.
+            c = self.call_span("#%d" % a["seq"], "respond")
+            same = [r for r in rows if E2E.same_words(r["text"], f["reply"]) and parse_iso(r["at"]) <= f["at"] + 0.3
+                    and (c is None or parse_iso(r["at"]) >= c[1] - 0.05)]
+            return same[-1:]
+        if f.get("to") not in ("new_loop", "loop") and a.get("reply_seq"):
+            return [r for r in rows if r["seq"] == a["reply_seq"]]
+        return rows[:1]
+
+    # -- what brain.log says
     def lines_of(self, ref):
-        """brain.log's lines for `ref` this run: its steps, actions, loop, Respond's and the turn's."""
-        pat = re.compile(r"^\S+ (brain|loop|action|respond|turn|exec) (report )?%s[ :]" % re.escape(ref))
-        return [x for x in self.live.log_since(self.live.mark).splitlines() if pat.match(x)]
+        """brain.log's lines for `ref` this run: its steps, actions, loop, calls and turn."""
+        pat = re.compile(r"^\S+ (brain|loop|action|respond|router|front|turn|exec|task) (report )?%s[ :,]"
+                         % re.escape(ref))
+        return [x for x in self.log().splitlines() if pat.match(x)]
 
     def evidence(self, ref, n=2500):
         return short(" ¶ ".join(self.lines_of(ref)), n)
 
-    def steps(self, ref):
-        """The steps of `ref`'s loop: [{n, at (logged), start (its call began), ms, cost, did, came}]."""
+    def evidence_of(self, a, n=2500):
+        """The line's front turn's lines, and its work's (the loop's ref, when another line's loop took it)."""
+        refs = ["#%d" % a["seq"]]
+        w = self.work(a)
+        if w and w["ref"] not in refs:
+            refs.append(w["ref"])
+        return short(" ¶ ".join(x for r in refs for x in self.lines_of(r)), n)
+
+    def steps(self, ref, after=None, until=None):
+        """The steps of the loop whose ref is `ref` (its first line's #seq, or a report's task),
+        logged after `after` and up to `until`: [{n, at, start, ms, cost, did, came, failed}]; a step
+        whose call failed for good is one too (`did` "FAILED", `failed` True)."""
         out = []
-        for line in self.live.log_since(self.live.mark).splitlines():
-            m = LOG_STEP.match(line)
-            if m and m.group(2) == ref:
-                at, ms = parse_iso(m.group(1)), int(m.group(4))
-                out.append({"n": int(m.group(3)), "at": at, "start": at - ms / 1000.0, "ms": ms,
-                            "cost": float(m.group(5)), "did": m.group(6), "came": m.group(7)})
+        for line in self.log().splitlines():
+            m, failed = LOG_STEP.match(line), False
+            if not m:
+                m, failed = LOG_FAILED.match(line), True
+                if not m or m.group(2) != "brain":
+                    continue
+            if m.group(3 if failed else 2) != ref:
+                continue
+            at = parse_iso(m.group(1))
+            ms = int(m.group(5 if failed else 4))
+            if (after is not None and at < after) or (until is not None and at > until + 0.001):
+                continue
+            out.append({"n": int(m.group(4 if failed else 3)), "at": at, "start": at - ms / 1000.0, "ms": ms,
+                        "cost": float(m.group(6 if failed else 5)), "did": "FAILED" if failed else m.group(6),
+                        "came": "" if failed else m.group(7), "failed": failed})
         return out
 
-    def actions_of(self, ref):
-        """The actions `ref`'s steps ran: [{step, i, name, kind, said, at}]."""
+    def actions_of(self, ref, after=None, until=None):
+        """The actions the steps of `ref` ran: [{step, i, name, kind, said, at}]."""
         out = []
-        for line in self.live.log_since(self.live.mark).splitlines():
+        for line in self.log().splitlines():
             m = LOG_ACTION.match(line)
             if m and m.group(2) == ref:
-                out.append({"at": parse_iso(m.group(1)), "step": int(m.group(3)), "i": int(m.group(4)),
+                at = parse_iso(m.group(1))
+                if (after is not None and at < after) or (until is not None and at > until + 0.001):
+                    continue
+                out.append({"at": at, "step": int(m.group(3)), "i": int(m.group(4)),
                             "name": m.group(5), "kind": m.group(6), "said": m.group(7)})
         return out
 
-    def loop(self, ref, timeout=0):
-        """`ref`'s loop line: {at, who, steps, cost, cached, reply_s, s, ended}; None when there is none."""
-        def find():
-            for line in self.live.log_since(self.live.mark).splitlines():
-                m = LOG_LOOP.match(line)
-                if m and m.group(2) == ref:
-                    return {"at": parse_iso(m.group(1)), "who": m.group(3), "steps": int(m.group(4)),
-                            "cost": float(m.group(5)), "cached": m.group(6),
-                            "reply_s": float(m.group(7)) if m.group(7) else None, "s": float(m.group(8)),
-                            "ended": m.group(9)}
-            return None
-        return wait_for(find, timeout) if timeout else find()
+    def work_steps(self, a):
+        """The steps the line's work took: its loop's, from its front turn to the run's end."""
+        w, f = self.work(a), self.front(a)
+        return self.steps(w["ref"], after=f["at"] - 0.001, until=w["at"]) if w and f else []
+
+    def work_actions(self, a):
+        w, f = self.work(a), self.front(a)
+        return self.actions_of(w["ref"], after=f["at"] - 0.001, until=w["at"]) if w and f else []
 
     def turn_log(self, pattern):
         """The time of the first `turn` line matching `pattern` this run, or None."""
-        for line in self.live.log_since(self.live.mark).splitlines():
+        for line in self.log().splitlines():
             if re.match(r"^\S+ turn " + pattern, line):
                 return parse_iso(line.split(" ", 1)[0])
         return None
 
     def calls(self, ref):
-        """The model calls for `ref` in this run's brain.log, Respond's and each step's (`brain s2`):
-        [(area, ms, cost, ended at)]. brain.log outlives a run, and the next run's line refs (#2,
-        #5, …) are the same."""
+        """The model calls for `ref` this run, the agent's and the router's (`#seq`) and each step's
+        (`brain s2`): [(area, ms, cost, ended at)]. brain.log outlives a run, and the next run's
+        refs (#2, #5, …) are the same."""
         out = []
-        for line in self.live.log_since(self.live.mark).splitlines():
+        for line in self.log().splitlines():
             m = LOG_CALL.match(line)
             if m and m.group(3) == ref:
                 area = m.group(2) + (" s%s" % m.group(4) if m.group(4) else "")
                 out.append((area, int(m.group(5)), float(m.group(6)), parse_iso(m.group(1))))
         return out
 
+    def call_span(self, ref, area):
+        """(start, end) of `ref`'s first call of `area` (respond, router, "brain s1"), or None."""
+        for got, ms, _, end in self.calls(ref):
+            if got == area:
+                return end - ms / 1000.0, end
+        return None
+
     def records(self, a, timeout=5):
-        """The ask's loop's AI action rows (its one record): (fields, text). A record is posted after
-        the step that ended the loop, nobody waiting, so a row from before that step's line is an
-        earlier loop's; and one with the words the step logged as its record, when it wrote one.
-        Waited for up to `timeout`."""
-        steps = self.steps("#%d" % a["seq"])
+        """The AI action rows of the line's loop run (its one record): (fields, text). A record is
+        posted after the step that ended the run, nobody waiting, so a row from before that step's
+        line is an earlier run's; and one with the words the step logged as its record."""
+        steps = self.work_steps(a)
         if not steps:
             return []
-        logged = re.search(r" \|\| record: (.*?)(?: \|\| status: .*)?$", steps[-1]["did"])
+        logged = re.search(r" \|\| record: (.*?)$", steps[-1]["did"])
 
         def rows():
             return [(r["fields"], r["text"]) for r in self.live.ai(a["seq"], ("action",))
@@ -526,25 +626,26 @@ class Run:
         return wait_for(rows, timeout) or []
 
     def table(self):
-        print("\nLATENCY AND COST: a line fed -> its reply said (the feed rows' times); its loop from brain.log")
-        print("  %-5s %-6s %-15s %-9s %7s  %-34s %s" % ("line", "who", "class", "phase", "reply", "loop", "calls"))
+        print("\nLATENCY AND COST: a line fed -> its reply said (the feed rows' times); its front turn and work "
+              "from brain.log")
+        print("  %-5s %-6s %-9s %7s  %-40s %-40s %s" % ("line", "who", "phase", "reply", "front: agent; router",
+                                                       "work", "calls"))
         for a in self.asks:
             took = "%.1f s" % (a["reply_at"] - a["at"]) if a.get("reply_at") else ("silent" if a.get("silent") else "-")
-            lp = self.loop("#%d" % a["seq"])
-            loop = ("%d step(s) $%.4f %s cached, %s" % (lp["steps"], lp["cost"], lp["cached"], lp["ended"])
-                    if lp else "-")
+            f = self.front(a)
+            front = ("%s %d ms; %s%s; said %s" % (f["agent"], f["agent_ms"], f["to"] or "-",
+                                                  " " + f["where"] if f["where"] and f["where"] != "-" else "",
+                                                  ", ".join(f["said"]) or "nothing") if f else "-")
+            w = self.work(a)
+            work = ("%s %d step(s) $%.4f %s, %s, %s %d/%d" % (w["loop"], w["steps"], w["cost"], w["cached"], w["ended"],
+                                                              w["state"], w["used"], w["limit"]) if w else "-")
             calls = ", ".join("%s %d ms $%.4f" % (area, ms, cost) for area, ms, cost, _ in self.calls("#%d" % a["seq"]))
-            print("  #%-4d %-6s %-15s %-9s %7s  %-34s %s" % (a["seq"], a["who"], a["cls"], a.get("phase", ""), took,
-                                                           loop, calls or "-"))
+            print("  #%-4d %-6s %-9s %7s  %-40s %-40s %s" % (a["seq"], a["who"], a.get("phase", ""), took,
+                                                            short(front, 40), short(work, 40), calls or "-"))
             print("        %s  ->  %s" % (short(a["text"], 64), short(a.get("reply") or "(no reply)", 90)))
         for name in self.names:
-            lp = self.loop(name)
             calls = ", ".join("%s %d ms $%.4f" % (area, ms, cost) for area, ms, cost, _ in self.calls(name))
-            print("  %s's report loop: %s; %s" % (name, "%d step(s) $%.4f, ended %s" % (lp["steps"], lp["cost"],
-                                                                                       lp["ended"]) if lp else "-",
-                                                calls or "-"))
-        for t in self.tasks:
-            print("  %s" % t)
+            print("  %s's reports: %s" % (name, calls or "-"))
 
 
 def overlap(a, b):
@@ -552,42 +653,57 @@ def overlap(a, b):
     return min(a[1], b[1]) - max(a[0], b[0])
 
 
-def turn_end(run, ref):
-    """When `ref`'s turn ended its model work: its loop's line, else its last call's end; None."""
-    lp = run.loop(ref)
-    if lp:
-        return lp["at"]
-    calls = run.calls(ref)
-    return max(c[3] for c in calls) if calls else None
-
-
-def first_call(run, ref):
-    """When `ref`'s turn first called a model (Respond's or its loop's first step): (start, end), or None."""
-    calls = run.calls(ref)
-    if not calls:
-        return None
-    _, ms, _, end = min(calls, key=lambda c: c[3] - c[1] / 1000.0)
-    return end - ms / 1000.0, end
+def front_span(run, a):
+    """(start, end) of the line's front turn: its agent's call's start to its front line."""
+    f, c = run.front(a), run.call_span("#%d" % a["seq"], "respond")
+    return (c[0], f["at"]) if f and c else None
 
 
 # ======================================================================= the brains
 
-def start_brain(run, rep, extra=None, label="defaults"):
-    """`vfg brain start` with `extra` settings, waited for until it follows the feed and greets."""
+BRAINS = {
+    "defaults": {},
+    "low": {"VFG_ROUTER_REASONING": "low"},
+    "budget": {"VFG_LOOP_STEPS": "1", "VFG_LOOP_CAP": "2"},
+}
+
+
+def brain_env(run, label):
+    """The settings a brain starts with: its own (BRAINS), the brain's reasoning when --brain-reasoning
+    says one, the implementers' stand-in model, and the slow stand-in's rules (SLOW), the shim on its
+    PYTHONPATH."""
+    extra = dict(BRAINS[label])
+    if run.reasoning:
+        extra["VFG_BRAIN_REASONING"] = run.reasoning
+    if run.model is not None:
+        extra.update(VFG_IMPL_PROVIDER="deepseek", DEEPSEEK_API_KEY="stand-in", VFG_IMPL_BASE_URL=run.model.url)
+    if SLOW.get(label):
+        extra["VFG_TEST_SLOW"] = SLOW[label].replace("{hold}", str(slow_hold(run)))
+        extra["PYTHONPATH"] = SHIM + (os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else "")
+    return extra
+
+
+def start_brain(run, rep, label="defaults"):
+    """`vfg brain start` with the brain's settings, waited for until it follows the feed and greets;
+    its start line says the settings it took."""
     live = run.live
     run.phase = label
+    extra = brain_env(run, label)
     mark = len(live.log())
     seq = live.last_seq()
     r = live.start(extra)
     up = wait_for(lambda: re.search(r"^\S+ start pid \d+;(.*)$", live.log_since(mark), re.M), 180)
-    want = {"VFG_LOOP_STEPS": "%s steps", "VFG_LOOP_SECONDS": "%s s a loop"}
-    said = [w % (extra or {})[k] for k, w in want.items() if k in (extra or {})]
-    rep.check(r.returncode == 0 and up and all(s in up.group(1) for s in said),
-              "vfg brain start: the brain is up on realmc %s (%s)" % (live.name, ", ".join(
-                  "%s=%s" % kv for kv in (extra or {}).items()) or "the defaults"),
+    want = {"defaults": ["router deepseek/deepseek-v4.1-flash off 30 s, the hold on",
+                         "brain deepseek/deepseek-v4.1-flash %s %d s a step, 10 steps a line up to 20, "
+                         "taken up within 120 s" % (run.reasoning or "low", run.step_timeout)],
+            "low": ["router deepseek/deepseek-v4.1-flash low 60 s, no hold"],
+            "budget": ["1 steps a line up to 2"]}[label]
+    rep.check(r.returncode == 0 and up and all(w in up.group(1) for w in want),
+              "vfg brain start: the brain is up on realmc %s, %s: %s" % (
+                  live.name, ", ".join("%s=%s" % kv for kv in BRAINS[label].items()) or "the defaults", "; ".join(want)),
               "%s %s; log %s" % (r.stdout, r.stderr, short(live.log_since(mark)[-1500:])))
     if up:
-        rep.note(short(up.group(1), 260))
+        rep.note(short(up.group(1), 400))
     refs = wait_for(lambda: re.search(r"^\S+ refs server 26\.3: (\d+) commands", live.log_since(mark), re.M), 200)
     rep.check(refs, "the command references for 26.3 are loaded (%s commands)" % (refs.group(1) if refs else "?"))
     greet = wait_for(lambda: [r for r in live.ai(seq) if r["text"].startswith("AI is on")], 30)
@@ -595,12 +711,13 @@ def start_brain(run, rep, extra=None, label="defaults"):
     return bool(up)
 
 
-def restart(run, rep, extra, label):
-    rep.head("a new brain: %s" % ", ".join("%s=%s" % kv for kv in extra.items()))
+def restart(run, rep, label):
+    rep.head("a new brain: %s" % (", ".join("%s=%s" % kv for kv in BRAINS[label].items()) or "the defaults"))
     r = run.live.stop()
     rep.check(r is not None and r.returncode == 0, "vfg brain stop: the last brain stopped",
               "%s %s" % (r and r.stdout, r and r.stderr))
-    return start_brain(run, rep, extra, label)
+    time.sleep(1)
+    return start_brain(run, rep, label)
 
 
 def setup(run):
@@ -608,6 +725,9 @@ def setup(run):
     rep.head("setup: Steve and Alex on a fresh world, their items, the place home, the brain started")
     p = live.p
     arena = p.arena()
+    # No hostile mobs: a night a check sets (2b) once let zombies kill both fake players, and a dead fake player
+    # leaves the server, so every line after it found nobody online.
+    live.cmd("difficulty peaceful")
     p.spawn("Steve")
     p.spawn("Alex", at=(arena["x"] + 4.5, arena["y"], arena["z"] + 0.5))
     for who in ("Steve", "Alex"):
@@ -638,22 +758,48 @@ def setup(run):
     return start_brain(run, rep)
 
 
+def held_ack(run, a):
+    """The agent's acknowledgement to a hand-off the router placed somewhere, under the hold: one
+    front line, the agent's, said after the router answered. (ok, detail)."""
+    f = run.front(a) or {}
+    rows = run.front_said_rows(a)
+    rc = run.call_span("#%d" % a["seq"], "router")
+    if f.get("to") in (None, "nowhere"):
+        return False, "not a hand-off placed somewhere: %r" % f
+    if not f.get("said"):
+        return True, "the agent wrote no acknowledgement: nothing said by the front turn"
+    held = rows and rc and parse_iso(rows[0]["at"]) >= rc[1] - 0.3
+    return (f["said"] == ["agent"] and held,
+            "said %s; its row %s; the router answered at %s" % (
+                f.get("said"), rows and rows[0]["at"],
+                rc and dt.datetime.fromtimestamp(rc[1], dt.timezone.utc).strftime("%H:%M:%S.%f")[:-3]))
+
+
 # ------------------------------------------------------------- 1. on the defaults
 
 def one_step(run):
     rep, live = run.rep, run.live
-    rep.head("1. A one-step ask whose actions all land: the reply goes out with no second call")
+    rep.head("1. A one-step ask: the agent hands it off, the router starts a loop, its actions land, the reply goes "
+             "out after the agent's held line")
     before = live.count_items("Steve", "cooked_beef")
     a = run.ask("Steve", "give me 64 steak")
     ref = "#%d" % a["seq"]
     got = live.count_items("Steve", "cooked_beef") - before
-    rep.check(got == 64, "in the world: Steve has 64 more steak (%d)" % got, run.evidence(ref))
-    lp = run.loop(ref, 10)
-    rep.check(lp and lp["steps"] == 1 and lp["ended"] == "reply" and a["reply"],
-              "one step, ended reply: %r" % a["reply"], run.evidence(ref))
+    rep.check(got == 64, "in the world: Steve has 64 more steak (%d)" % got, run.evidence_of(a))
+    f = run.front(a) or {}
+    rep.check(f.get("agent") == "handoff" and f.get("to") == "new_loop",
+              "its front turn: the agent handed it off (%r), the router started a new loop %s"
+              % (f.get("reply"), f.get("where")), run.evidence(ref))
+    ok, why = held_ack(run, a)
+    rep.check(ok, "one line from the front turn, the agent's, held until the router answered: %s" % why, why)
+    w = run.work(a, 10)
+    rep.check(w and w["steps"] == 1 and w["ended"] == "reply" and a["reply"] and w["state"] == "saved",
+              "its loop: one step, ended reply, saved (%s, %s of %s steps): %r" % (
+                  w and w["loop"], w and w["used"], w and w["limit"], a["reply"]), run.evidence_of(a))
     time.sleep(2)
     said = live.ai(a["seq"])
-    rep.check(len(said) == 1 and said[0]["fields"] == "say -", "one chat line, with no task (AI say -)",
+    rep.check(len(said) == 1 + run.ack_lines(a) and all(r["fields"] == "say -" for r in said),
+              "its chat lines, each AI say -: the front turn's %d and the loop's reply" % run.ack_lines(a),
               "%r" % [(r["fields"], r["text"]) for r in said])
     recs = run.records(a)
     rep.check(len(recs) == 1 and recs[0][0] == "action -", "the loop's one record, AI action -: %r"
@@ -667,28 +813,26 @@ def one_step(run):
 
 
 def together(run):
-    """Two parts no one action does both of (command packs several gives into one action): the
-    command action's give, and summon_around's twenty chickens."""
+    """Two parts no one action does both of: the command action's give, and summon_around's chickens."""
     rep, live = run.rep, run.live
     rep.head("2a. A step with actions together")
     live.cmd("kill @e[type=minecraft:chicken]")
     before = live.count_items("Steve", "cobblestone")
     a = run.ask("Steve", "give me 64 cobblestone and summon twenty chickens around me")
-    ref = "#%d" % a["seq"]
     got = live.count_items("Steve", "cobblestone") - before
     m = re.search(r"Killed (\d+)", live.cmd("kill @e[type=minecraft:chicken]"))
     chickens = int(m.group(1)) if m else 0
     rep.check(got == 64 and chickens >= 20, "in the world: 64 cobblestone to Steve and %d chickens round him (now "
-              "killed again)" % chickens, run.evidence(ref))
-    steps, acts = run.steps(ref), run.actions_of(ref)
-    s1 = [x for x in acts if x["step"] == 1]
+              "killed again)" % chickens, run.evidence_of(a))
+    steps, acts = run.work_steps(a), run.work_actions(a)
+    s1 = [x for x in acts if steps and x["step"] == steps[0]["n"]]
     rep.check(steps and steps[0]["did"].startswith("together: ") and len(s1) >= 2
               and all(x["kind"] == "ok" for x in s1),
-              "step 1 ran %d actions together, every one landed: %s" % (
-                  len(s1), ", ".join("#%d %s %s" % (x["i"], x["name"], x["kind"]) for x in s1)), run.evidence(ref))
-    lp = run.loop(ref, 10)
-    rep.check(lp and lp["steps"] == 1 and lp["ended"] in ("reply", "silent"),
-              "one step, ended %s: %r" % (lp and lp["ended"], a["reply"]), run.evidence(ref))
+              "its first step ran %d actions together, every one landed: %s" % (
+                  len(s1), ", ".join("#%d %s %s" % (x["i"], x["name"], x["kind"]) for x in s1)), run.evidence_of(a))
+    w = run.work(a, 10)
+    rep.check(w and w["steps"] == 1 and w["ended"] in ("reply", "silent"),
+              "one step, ended %s: %r" % (w and w["ended"], a["reply"]), run.evidence_of(a))
 
 
 def in_turn(run):
@@ -699,30 +843,28 @@ def in_turn(run):
     live.cmd("time set midnight")
     rep.note("Steve at the arena's far corner, the time midnight (day at %s ticks)" % live.day_ticks())
     a = run.ask("Steve", "take me home, then make it day")
-    ref = "#%d" % a["seq"]
-    lp = run.loop(ref, 20)
-    steps, acts = run.steps(ref), run.actions_of(ref)
-    s1 = sorted((x for x in acts if x["step"] == 1), key=lambda x: x["i"])
+    w = run.work(a, 20)
+    steps, acts = run.work_steps(a), run.work_actions(a)
+    s1 = sorted((x for x in acts if steps and x["step"] == steps[0]["n"]), key=lambda x: x["i"])
     rep.check(steps and steps[0]["did"].startswith("in_turn: ") and len(s1) == 2
               and [x["name"] for x in s1] == ["teleport", "command"] and all(x["kind"] == "ok" for x in s1)
               and s1[0]["at"] <= s1[1]["at"],
-              "step 1 ran teleport, then command, in turn, both landed: %s" % ", ".join(
-                  "#%d %s %s" % (x["i"], x["name"], x["kind"]) for x in s1), run.evidence(ref))
+              "its first step ran teleport, then command, in turn, both landed: %s" % ", ".join(
+                  "#%d %s %s" % (x["i"], x["name"], x["kind"]) for x in s1), run.evidence_of(a))
     pos = p.pos("Steve") or (999, 0, 999)
     far = ((pos[0] - HOME[0]) ** 2 + (pos[2] - HOME[1]) ** 2) ** 0.5
     day = live.day_ticks()
     rep.check(far <= 12 and day is not None and day < 12000,
-              "in the world: Steve %.0f blocks from home, the day at %s ticks" % (far, day), run.evidence(ref))
-    rep.check(lp and lp["steps"] == 1 and lp["ended"] in ("reply", "silent"),
-              "one step, ended %s%s" % (lp and lp["ended"], ": %r" % a["reply"] if a["reply"] else ""),
-              run.evidence(ref))
+              "in the world: Steve %.0f blocks from home, the day at %s ticks" % (far, day), run.evidence_of(a))
+    rep.check(w and w["steps"] == 1 and w["ended"] in ("reply", "silent"),
+              "one step, ended %s%s" % (w and w["ended"], ": %r" % a["reply"] if a["reply"] else ""),
+              run.evidence_of(a))
     live.cmd("time set noon")
     p.tp("Steve", arena["x"] + 0.5, arena["y"], arena["z"] + 0.5)
 
 
 # Asks whose first command 26.3 may refuse, each with its check in the world: /enchant over
-# Fire Aspect's maximum (the spec's example; the prompt warns of it, so the brain may go straight to
-# an item modifier); the `generic.` attribute names 26.3 dropped (`minecraft:scale`); and the
+# Fire Aspect's maximum; the `generic.` attribute names 26.3 dropped (`minecraft:scale`); and the
 # enchantments component's older `{levels:{…}}` form, which 26.3 refuses as malformed.
 REFUSABLE = (
     ("use /enchant to put fire aspect 5 on the axe I'm holding",
@@ -740,46 +882,47 @@ def refused(run):
     command is refused; that loop is the check."""
     rep, live = run.rep, run.live
     rep.head("3. A refused command the next step fixes")
+    no, acts, w, a, text, done = [], [], None, None, "", False
     for text, landed in REFUSABLE:
         a = run.ask("Steve", text, timeout=90)
-        ref = "#%d" % a["seq"]
-        lp = run.loop(ref, 20)
-        acts = run.actions_of(ref)
+        w = run.work(a, 20)
+        acts = run.work_actions(a)
         no = [x for x in acts if x["kind"] == "refused"]
+        done = bool(landed(live))   # before the scale is reset below
         if no:
             break
         rep.note("nothing refused: %d step(s), %s; in the world %s" % (
-            lp["steps"] if lp else 0, ", ".join("%s (%s)" % (x["name"], short(x["said"], 70)) for x in acts)
-            or "no action", "as asked" if landed(live) else "NOT as asked"))
+            w["steps"] if w else 0, ", ".join("%s (%s)" % (x["name"], short(x["said"], 70)) for x in acts)
+            or "no action", "as asked" if done else "NOT as asked"))
     live.cmd("attribute Steve minecraft:scale base reset")
-    rep.check(no and no[0]["step"] == 1, "%r: step 1's command was refused by Minecraft: %s"
-              % (text, no and short(no[0]["said"], 160)), run.evidence(ref))
-    if not no:
+    if not no:   # the brain wrote each command right the first time: the path cannot be made to run
+        rep.note("NOT EXERCISED: none of the %d asks had a command refused, so no later step had one to fix"
+                 % len(REFUSABLE))
         return
+    first = run.work_steps(a)[:1]
+    rep.check(first and no[0]["step"] == first[0]["n"], "%r: its first step's command was refused by "
+              "Minecraft: %s" % (text, short(no[0]["said"], 160)), run.evidence_of(a))
     fixed = [x for x in acts if x["step"] > no[0]["step"] and x["kind"] == "ok"]
-    rep.check(lp and lp["steps"] >= 2 and fixed and lp["ended"] == "reply" and landed(live),
+    rep.check(w and w["steps"] >= 2 and fixed and w["ended"] == "reply" and done,
               "a later step fixed it, and it is so in the world: %s; %d step(s), ended %s: %r" % (
-                  fixed and short(fixed[0]["said"], 120), lp and lp["steps"], lp and lp["ended"], a["reply"]),
-              run.evidence(ref))
+                  fixed and short(fixed[0]["said"], 120), w and w["steps"], w and w["ended"], a["reply"]),
+              run.evidence_of(a))
     recs = run.records(a)
     rep.check(len(recs) == 1, "the loop's one record: %r" % (recs and recs[0][1]), "%r" % recs)
-    rep.note("its steps: %s" % " | ".join("s%d %s -> %s" % (x["n"], short(x["did"], 160), short(x["came"], 60))
-                                          for x in run.steps(ref)))
 
 
 def read_items(run):
     rep = run.rep
     rep.head("4. Another player's items, read with the tool")
     a = run.ask("Steve", "what is Alex holding right now?")
-    ref = "#%d" % a["seq"]
-    lp = run.loop(ref, 10)
-    steps = run.steps(ref)
+    w = run.work(a, 10)
+    steps = run.work_steps(a)
     read = [s for s in steps if re.search(r"(^| \| )read Alex\b", s["did"])]
     rep.check(read and "Alex" in read[0]["came"] and "refused" not in read[0]["came"],
               "step %s read Alex's items: %s" % (read and read[0]["n"], read and short(read[0]["came"], 100)),
-              run.evidence(ref))
-    rep.check(lp and lp["steps"] >= 2 and a["reply"] and re.search(r"trident", a["reply"], re.I),
-              "the next step's reply names his trident: %r" % a["reply"], run.evidence(ref))
+              run.evidence_of(a))
+    rep.check(w and w["steps"] >= 2 and a["reply"] and re.search(r"trident", a["reply"], re.I),
+              "the next step's reply names his trident: %r" % a["reply"], run.evidence_of(a))
 
 
 def item_asks(run):
@@ -789,100 +932,117 @@ def item_asks(run):
     worn, carried = live.data("Steve", "equipment.feet") or "", live.data("Steve", "Inventory[{Slot:14b}]") or ""
     rep.check('"minecraft:depth_strider": 3' in worn and "enchantments" not in carried,
               "Depth Strider III on the diamond boots he wears; the iron boots he carries untouched",
-              "worn %s; carried %s; %s" % (worn, carried, run.evidence("#%d" % a["seq"])))
-    rep.check(a["reply"], "one reply: %r" % a["reply"])
+              "worn %s; carried %s; %s" % (worn, carried, run.evidence_of(a)))
+    rep.check(a["reply"], "a reply: %r" % a["reply"])
     a = run.ask("Steve", "put protection four on my helmet")
-    ref = "#%d" % a["seq"]
-    acts = run.actions_of(ref)
+    acts = run.work_actions(a)
     rep.check(live.data("Steve", "equipment.head") is None and not [x for x in acts if x["kind"] == "ok"],
               "no helmet: nothing changed (%s)" % (", ".join("%s %s" % (x["name"], x["kind"]) for x in acts)
-                                                  or "no action run"), run.evidence(ref))
+                                                  or "no action run"), run.evidence_of(a))
     rep.check(a["reply"] and re.search(r"helmet|head", a["reply"], re.I), "the reply says so: %r" % a["reply"])
 
 
 def own_copy(run):
     rep, live = run.rep, run.live
-    rep.head("6. The brain's own copy of keep_effects: started, edited and stopped by the loop's tools")
+    rep.head("6. The brain's own copy of keep_effects: started, edited and stopped by a loop's tools")
     name = "keep_effects_steve"
     a = run.ask("Steve", "keep speed two on me the whole time, even after I die, until I say stop")
     copies = {k: v for k, v in live.copies().items() if v.get("action") == "keep_effects"}
     lvl = live.effect_level("Steve", "speed")
     rep.check(list(copies) == [name] and not copies[name].get("task") and lvl == 1,
               "the start gives the copy %s, with no task, and Steve has Speed II" % name,
-              "copies %r; speed amplifier %r; %s" % (copies, lvl, run.evidence("#%d" % a["seq"])))
+              "copies %r; speed amplifier %r; %s" % (copies, lvl, run.evidence_of(a)))
     b = run.ask("Steve", "make it speed 5")
-    ref = "#%d" % b["seq"]
+    f = run.front(b) or {}
+    rep.note("the router put it: %s %s" % (f.get("to"), f.get("where")))
     lvl = wait_for(lambda: live.effect_level("Steve", "speed") == 4, 10) and 4 or live.effect_level("Steve", "speed")
-    edits = [x for x in run.actions_of(ref) if x["name"] == "edit"]
+    edits = [x for x in run.work_actions(b) if x["name"] == "edit"]
     rep.check(lvl == 4 and edits and edits[0]["kind"] == "ok" and name in live.copies(),
               "the edit action landed: Speed V, %s still running" % name,
-              "speed amplifier %r; %s" % (lvl, run.evidence(ref)))
-    rep.check(len(run.records(b)) == 1 and not live.ai(b["seq"], ("note",)),
-              "one record for it (%r), no AI note row" % (run.records(b) and run.records(b)[0][1]),
-              "%r %r" % (run.records(b), live.ai(b["seq"], ("note",))))
+              "speed amplifier %r; %s" % (lvl, run.evidence_of(b)))
+    recs = run.records(b)
+    rep.check(len(recs) == 1 and not live.ai(b["seq"], ("note",)),
+              "one record for it (%r), no AI note row" % (recs and recs[0][1]),
+              "%r %r" % (recs, live.ai(b["seq"], ("note",))))
     c = run.ask("Steve", "stop my effects")
-    ref = "#%d" % c["seq"]
     gone = wait_for(lambda: name not in live.copies(), 10)
-    stops = [x for x in run.actions_of(ref) if x["name"] == "stop"]
+    stops = [x for x in run.work_actions(c) if x["name"] == "stop"]
     rep.check(gone and stops and stops[0]["kind"] == "ok", "the stop action landed: %s is gone" % name,
-              "copies %r; %s" % (live.copies(), run.evidence(ref)))
-    rep.note("Steve's speed after the stop: %r" % live.effect_level("Steve", "speed"))
+              "copies %r; %s" % (live.copies(), run.evidence_of(c)))
 
 
-def two_players(run):
+def side_by_side(run):
+    """Steve's first loop is held 12 s (the slow stand-in) so it is still thinking when his second
+    line's loop starts; Alex's line comes in the same write."""
     rep, live = run.rep, run.live
-    rep.head("7. Steve's second line waits for his loop, while Alex's runs at once")
-    bread, pick, shield = (live.count_items("Steve", "bread"), live.count_items("Steve", "iron_pickaxe"),
-                           live.count_items("Alex", "shield"))
-    s1, s2, x = run.batch(("Steve", "to_ai", "give me 16 bread"),
-                          ("Steve", "to_ai", "and an iron pickaxe"),
+    rep.head("7. Steve's second line waits only for his first line's front turn: his two loops run side by side, "
+             "and Alex's line is answered beside them")
+    time.sleep(4)  # Steve's last turn waits up to VFG_TURN_SETTLE_S for its rows to come back: his lane is free
+    bread, shield = live.count_items("Steve", "bread"), live.count_items("Alex", "shield")
+    live.cmd("kill @e[type=minecraft:chicken]")
+    s1, s2, x = run.batch(("Steve", "to_ai", BREAD),
+                          ("Steve", "to_ai", "summon three chickens next to me"),
                           ("Alex", "to_ai", "can I get a shield"))
-    for a in (s1, x, s2):
+    for a in (s1, s2, x):
         run.await_reply(a, 90)
-    r1, r2, rx = ("#%d" % a["seq"] for a in (s1, s2, x))
-    rep.check(live.count_items("Steve", "bread") - bread == 16 and live.count_items("Steve", "iron_pickaxe") - pick >= 1
+    m = re.search(r"Killed (\d+)", live.cmd("kill @e[type=minecraft:chicken]"))
+    chickens = int(m.group(1)) if m else 0
+    rep.check(live.count_items("Steve", "bread") - bread == 16 and chickens >= 3
               and live.count_items("Alex", "shield") - shield >= 1,
-              "in the world: 16 bread and an iron pickaxe to Steve, a shield to Alex",
-              " ¶ ".join(run.evidence(r) for r in (r1, r2, rx)))
+              "in the world: 16 bread to Steve, %d chickens by him (killed again), a shield to Alex" % chickens,
+              " ¶ ".join(run.evidence_of(a) for a in (s1, s2, x)))
+    r2 = "#%d" % s2["seq"]
     waited = run.turn_log(r"%s Steve waits for their turn" % re.escape(r2))
-    rep.check(waited, "brain.log: %s Steve waits for their turn" % r2, run.evidence(r2))
-    l1, c2, c1, cx = run.loop(r1), first_call(run, r2), first_call(run, r1), first_call(run, rx)
-    rep.check(l1 and c2 and c2[0] >= l1["at"] - 0.2,
-              "Steve's second loop began %.1f s after his first ended" % ((c2[0] - l1["at"]) if l1 and c2 else -1),
-              "%s ¶ %s" % (run.evidence(r1), run.evidence(r2)))
-    rep.check(c1 and cx and overlap(c1, cx) > 0,
-              "Alex's turn ran beside Steve's first: their first model calls overlapped %.1f s"
-              % (overlap(c1, cx) if c1 and cx else -1), "%s ¶ %s" % (run.evidence(r1), run.evidence(rx)))
+    f1, f2 = run.front(s1) or {}, run.front(s2) or {}
+    w1, w2 = run.work(s1), run.work(s2)
+    c2 = run.call_span(r2, "respond")
+    rep.check(waited and f1 and c2 and w1 and c2[0] >= f1["at"] - 0.3 and c2[0] < w1["at"],
+              "brain.log: %s Steve waits for their turn; his second line's agent began %.1f s after his first line's "
+              "front turn ended, %.1f s before its loop ended" % (
+                  r2, (c2[0] - f1["at"]) if c2 and f1 else -1, (w1["at"] - c2[0]) if c2 and w1 else -1),
+              "%s ¶ %s" % (run.evidence_of(s1), run.evidence_of(s2)))
+    st1 = run.work_steps(s1)
+    st2 = run.work_steps(s2)
+    span1 = (st1[0]["start"], st1[-1]["at"]) if st1 else None
+    span2 = (st2[0]["start"], st2[-1]["at"]) if st2 else None
+    rep.check(f1.get("to") == "new_loop" and f2.get("to") == "new_loop" and w1 and w2 and w1["loop"] != w2["loop"]
+              and span1 and span2 and overlap(span1, span2) > 0,
+              "two loops of Steve's side by side (%s and %s): their steps overlapped %.1f s"
+              % (w1 and w1["loop"], w2 and w2["loop"], overlap(span1, span2) if span1 and span2 else -1),
+              "%s ¶ %s" % (run.evidence_of(s1), run.evidence_of(s2)))
+    cx = run.call_span("#%d" % x["seq"], "respond")
+    rep.check(cx and w1 and cx[0] < w1["at"],
+              "Alex's line was answered beside them: its agent's call began %.1f s before Steve's first loop ended"
+              % ((w1["at"] - cx[0]) if cx and w1 else -1), run.evidence_of(x))
 
 
 def waiting(run):
     rep, live = run.rep, run.live
-    rep.head("8. Three of Steve's lines wait, and a fourth is turned away by a private message naming them")
-    time.sleep(4)  # Steve's last turn waits up to VFG_TURN_SETTLE_S for its rows to come back: his lane is free
+    rep.head("8. Three of Steve's lines wait for his turn, and a fourth is turned away by a private message naming them")
+    time.sleep(4)
     first, *chat, fourth = run.batch(("Steve", "to_ai", "give me a stack of torches"),
                                      *(("Steve", "to_ai", t) for t in CHAT),
                                      ("Steve", "to_ai", "ok and one more thing"))
     gone = "#%d" % fourth["seq"]
     away = wait_for(lambda: run.turn_log(r"%s Steve turned away, 3 waiting" % re.escape(gone)), 30)
-    rep.check(away, "brain.log: %s Steve turned away, 3 waiting" % gone, short(live.log_since(live.mark)[-2000:]))
-    want = "(to Steve) Still on: %s." % ", ".join("“%s”" % t for t in CHAT)
+    rep.check(away, "brain.log: %s Steve turned away, 3 waiting" % gone, short(run.log()[-2000:]))
     private = wait_for(lambda: [r for r in live.ai(first["seq"]) if r["text"].startswith("(to Steve) Still on:")], 30)
     rep.check(private and private[0]["fields"] == "say -" and all(t in private[0]["text"] for t in CHAT)
               and "can't take any more" in private[0]["text"] and fourth["text"] not in private[0]["text"],
               "the private message to Steve alone, naming the three waiting lines: %r"
-              % (private and private[0]["text"]), "%r; wanted %r…" % (private, want))
+              % (private and private[0]["text"]), "%r" % private)
     if private:
         run.claimed.add(private[0]["seq"])
     for a in [first] + chat:
         run.await_reply(a, 90)
     time.sleep(3)
-    refs = ["#%d" % a["seq"] for a in [first] + chat]
-    spans = [first_call(run, r) for r in refs]
-    ends = [turn_end(run, r) for r in refs]
-    ordered = all(spans) and all(ends) and all(spans[i + 1][0] >= ends[i] - 0.2 for i in range(len(spans) - 1))
-    rep.check(ordered, "the three waiting lines took Steve's turn one after another, after his first: %s"
-              % ", ".join("%s at +%.1f s" % (r, s[0] - first["at"]) for r, s in zip(refs, spans) if s),
-              " ¶ ".join(run.evidence(r) for r in refs))
+    spans = [front_span(run, a) for a in [first] + chat]
+    ordered = all(spans) and all(spans[i + 1][0] >= spans[i][1] - 0.2 for i in range(len(spans) - 1))
+    rep.check(ordered, "the three waiting lines took Steve's turn one after another, after his first: %s" % ", ".join(
+        "#%d at +%.1f s" % (a["seq"], s[0] - first["at"]) for a, s in zip([first] + chat, spans) if s),
+        " ¶ ".join(run.evidence_of(a) for a in [first] + chat))
+    longest = max((s[1] - s[0] for s in spans if s), default=None)
+    rep.note("a front turn here took at most %s" % ("%.1f s" % longest if longest is not None else "?"))
     row = [r for r in live.rows(fourth["seq"] - 1, "LINE") if r["seq"] == fourth["seq"]]
     use = live.sql("SELECT ref FROM usage WHERE ref = ? OR ref LIKE ?", (gone, gone + " s%"))
     rep.check(row and row[0]["processed_at"] and not use
@@ -893,7 +1053,7 @@ def waiting(run):
 
 def talk(run):
     rep, live = run.rep, run.live
-    rep.head("9. Talk said to the AI: Respond alone")
+    rep.head("9. A line the agent answers itself, with a reply or silence: no router, no loop")
     a = run.ask("Alex", "haha thanks AI, you're a legend", timeout=30)
 
     def use():  # the usage row goes out beside the reply, nobody waiting: it may come a moment after
@@ -901,241 +1061,289 @@ def talk(run):
                                                        ("#%d" % a["seq"], "#%d s%%" % a["seq"])))
     wait_for(use, 15)
     time.sleep(2)
-    got = use()
-    rep.check(a["reply"] and got == ["respond"], "Respond replied, and no step of the brain: %r" % a["reply"],
-              "%r" % got)
+    got, f = use(), run.front(a) or {}
+    rep.check(got == ["respond"] and (f.get("agent") == "reply" and f.get("said") == ["agent"] and a["reply"]
+                                      or f.get("agent") == "silent" and not f.get("said") and a.get("silent")),
+              "the agent answered it itself (%s%s), and nothing else was called" % (
+                  f.get("agent"), ": %r" % a["reply"] if a["reply"] else ", saying nothing"), "%r; %r" % (got, f))
+
+
+def slow_step(run):
+    """A step held past 45 s by the slow stand-in (slow_hold): it lands inside its timeout. While it thinks,
+    Steve asks whether it is done: the agent answers at once, from WORK UNDER WAY."""
+    rep, live = run.rep, run.live
+    rep.head("10. A step past 45 s lands inside its timeout; meanwhile \"is it done yet?\" is answered at once, "
+             "from what is running")
+    time.sleep(4)
+    before = live.count_items("Steve", "golden_carrot")
+    a, = run.batch(("Steve", "to_ai", CARROTS))
+    hold = slow_hold(run)
+    held = wait_for(lambda: re.search(r"^(\S+) test slow call: held Step \"sixteen golden carrots\" s1 %d s$" % hold,
+                                      run.log(), re.M), 40)
+    rep.check(held, "the slow stand-in holds its loop's first step %d s" % hold, short(run.log()[-1500:]))
+    time.sleep(5)
+    b = run.ask("Steve", "is it done yet?", timeout=40)
+    fb, wa = run.front(b) or {}, run.work(a)
+    rep.check(b.get("reply") and wa is None and fb.get("to") in (None, "nowhere") and not claims_done(b["reply"]),
+              "answered at once (%.1f s) while the loop thinks, with no new work and never as done: %r (agent %s%s)"
+              % ((b["reply_at"] - b["at"]) if b.get("reply_at") else -1, b.get("reply"), fb.get("agent"),
+                 ", router " + fb["to"] if fb.get("to") else ""), "%r; %s" % (fb, run.evidence_of(b)))
+    run.await_reply(a, run.step_timeout + 30)
+    w = run.work(a, 10)
+    st = run.work_steps(a)
+    ms = st[0]["ms"] if st else 0
+    got = live.count_items("Steve", "golden_carrot") - before
+    timed_out = re.search(r"^\S+ brain #%d s1 FAILED \([^)]*\): no answer from .* within" % a["seq"], run.log(), re.M)
+    past = 60 if hold > 60 else 45   # the old timeout, and the no-reasoning one, it outlasted
+    rep.check(st and past * 1000 < ms < run.step_timeout * 1000 and not timed_out,
+              "its first step's call took %.1f s, past %d s, and came back inside its %d s timeout, not cut at %d s"
+              % (ms / 1000.0, past, run.step_timeout, past), run.evidence_of(a))
+    rep.check(st and not st[0].get("failed") and w and w["ended"] == "reply" and got == 16,
+              "and its answer landed: %d golden carrots, ended %s" % (got, w and w["ended"]), run.evidence_of(a))
+
+
+def added_lines(run):
+    """A line added to a thinking loop (its step held 15 s), read in an extra step; one added to the
+    same loop once it ended, inside its 2 minutes: taken up, from the cache; and a line on that
+    thing after the 2 minutes: a new loop."""
+    rep, live = run.rep, run.live
+    rep.head("11. The router adds a line to a thinking loop (an extra step) and to an ended one inside its 2 minutes "
+             "(taken up, from the cache); after them, a new loop")
+    time.sleep(4)
+    counts = {k: live.count_items("Steve", k) for k in ("oak_log", "birch_log", "spruce_log")}
+    a, = run.batch(("Steve", "to_ai", OAK))
+    fa = run.await_front(a)
+    if not rep.check(fa and fa.get("to") == "new_loop", "its front turn started a loop: %s" % (fa and fa.get("where")),
+                     run.evidence_of(a)):
+        return
+    loop = fa["where"]
+    time.sleep(2)   # its step is held 15 s: the loop is thinking
+    b = run.ask("Steve", "actually make that birch logs instead", timeout=90)
+    fb = run.front(b) or {}
+    w = run.work(a, 60)
+    sa = run.work_steps(a)
+    after_b = [s for s in sa if s["start"] >= (fb.get("at") or 1e12) - 0.5]
+    rep.check(fb.get("to") == "loop" and fb.get("where") == loop and w and w["loop"] == loop
+              and "#%d" % b["seq"] in w["lines"] and len(sa) >= 2 and after_b and w["limit"] == 20,
+              "the router added #%d to %s while it thought; the loop took %d step(s), %d after the line came, read in "
+              "an extra step; its limit now %s (10 + 10), lines %s" % (
+                  b["seq"], loop, len(sa), len(after_b), w and w["limit"], w and ", ".join(w["lines"])),
+              "%r; %s" % (fb, run.evidence_of(a)))
+    rep.note("its steps: %s" % " | ".join("s%d %s" % (s["n"], short(s["did"], 120)) for s in sa))
+    got = {k: live.count_items("Steve", k) - v for k, v in counts.items()}
+    rep.note("in the world: %s" % ", ".join("%+d %s" % (n, k) for k, n in got.items()))
+    rep.check(got["birch_log"] >= 64, "in the world: Steve has the birch logs (%+d)" % got["birch_log"],
+              run.evidence_of(a))
+    # The loop has ended and is saved: a line inside its 2 minutes takes it up again.
+    created = fa["at"]   # the loop was made as its front turn placed the line, a moment before this line
+    c = run.ask("Steve", "actually make those spruce logs instead", timeout=90)
+    fc = run.front(c) or {}
+    wc = run.work(c, 30)
+    runs = E2E.loop_runs(run.log(), loop=loop)
+    first_after = [s for s in run.steps(runs[-1]["ref"], after=fc.get("at", 1e12)) if runs] if runs else []
+    use = live.sql("SELECT ref, input_tokens, cache_read_tokens FROM usage WHERE ref = ?",
+                   ("%s s%d" % (runs[-1]["ref"], first_after[0]["n"]),)) if first_after else []
+    share = (use[0]["cache_read_tokens"] or 0) / use[0]["input_tokens"] if use and use[0]["input_tokens"] else 0
+    rep.check(fc.get("to") == "loop" and fc.get("where") == loop and wc and wc["loop"] == loop and len(runs) >= 2
+              and first_after and share >= 0.8,
+              "the router added #%d to %s, ended %.0f s after its start: taken up again, its step s%s read %.0f%% of "
+              "its prompt from the cache" % (c["seq"], loop, fc.get("at", 0) - created,
+                                             first_after and first_after[0]["n"], 100 * share),
+              "%r; runs %r; %s" % (fc, runs, run.evidence_of(c)))
+    rep.check(live.count_items("Steve", "spruce_log") - counts["spruce_log"] >= 1,
+              "in the world: Steve has spruce logs", run.evidence_of(c))
+    # After its 2 minutes from its start, the loop is gone: a line on that thing starts a new loop.
+    left = created + TAKE_UP_S + 5 - time.time()
+    if left > 0:
+        rep.note("waiting %.0f s for %s's 2 minutes to pass" % (left, loop))
+        time.sleep(left)
+    d = run.ask("Steve", "one more stack of oak logs please", timeout=90)
+    fd = run.front(d) or {}
+    rep.check(fd.get("to") == "new_loop" and fd.get("where") not in (None, loop),
+              "past its 2 minutes, %s is gone: the router started a new loop for #%d (%s)"
+              % (loop, d["seq"], fd.get("where")), "%r; %s" % (fd, run.evidence_of(d)))
 
 
 def implementer(run):
+    """The router starts an implementer (the stand-in model: its first answer after 32 s, then 3 s),
+    follows it up while it runs, and answers the same ask said again with its own line; the
+    report reaches the conversation agent while Steve's agent's call is held (his turn busy)."""
     rep, live = run.rep, run.live
-    rep.head("10. A hand-off and its brief; the report starting a new loop; a follow-up and a stop by its name")
-    centre = live.p.pos("Steve")
-    rep.note("Steve stands at %s" % " ".join("%.1f" % c for c in centre))
+    rep.head("12. The router starts an implementer with its brief and follows it up; the same ask again gets the "
+             "router's line alone; the report reaches the conversation agent while Steve's turn is busy")
+    if run.model is None:
+        rep.check(False, "the stand-in model runs")
+        return
     mark = len(live.log())
-    a = run.ask("Steve", "put a ring of eight torches on the ground around me, three blocks out", timeout=120)
-    ref = "#%d" % a["seq"]
-    # The AI task row and the reply are both written with nobody waiting: either may land first.
-    opened = wait_for(lambda: [r for r in live.ai(a["seq"], ("task",)) if r["text"].startswith("new: ")], 15) or []
-    tid = opened[0]["fields"].split()[1] if opened else None
-    library = tid and os.path.exists(os.path.join(REPO, "actions", tid + ".py"))
-    lp = run.loop(ref, 15)
-    rep.check(tid and NAME_RE.match(tid) and not library and len(opened) == 1 and lp and lp["ended"] == "handoff",
-              "the loop ended in a hand-off: the task %s, its AI task row %r"
-              % (tid, opened and short(opened[0]["text"], 120)),
-              run.evidence(ref))
+    time.sleep(4)
+    a = run.ask("Steve", BOOMERANG, timeout=120)
+    f = run.front(a) or {}
+    tid = f.get("where") if f.get("to") == "new_implementer" else None
+    rep.check(tid and NAME_RE.match(tid) and not os.path.exists(os.path.join(REPO, "actions", tid + ".py")),
+              "the router started a new implementer: the task %s (the agent said %r)" % (tid, f.get("reply")),
+              "%r; %s" % (f, run.evidence_of(a)))
     if not tid:
         return
     run.names.append(tid)
-    rep.check(a["silent"] or a.get("reply_fields") == "say %s" % tid,
-              "its line went out under its name (AI say %s): %r" % (tid, a["reply"]), "%r" % a.get("reply_fields"))
+    ok, why = held_ack(run, a)
+    rep.check(ok, "one line from the front turn, the agent's, held until the router answered: %s" % why, why)
+    opened = wait_for(lambda: [r for r in live.ai(a["seq"], ("task",), tid) if r["text"].startswith("new: ")], 15) or []
     row = live.task_row(tid) or {}
     brief = row.get("brief") or ""
     heads = [h for h in BRIEF_HEADS if h + "\n" in brief]
     done_when = brief.split("DONE WHEN\n", 1)[1].splitlines() if "DONE WHEN\n" in brief else []
-    rep.check(len(heads) == len(BRIEF_HEADS) and done_when and all(x.startswith("- ") for x in done_when)
+    rep.check(opened and len(heads) == len(BRIEF_HEADS) and done_when and all(x.startswith("- ") for x in done_when)
               and row.get("player") == "Steve" and row.get("description"),
-              "its brief in vfg.db holds every part under its heading, and %d done-when items" % len(done_when),
-              "%r" % row)
-    rep.note("the brief: %s" % short(brief.replace("\n", " / "), 700))
-    started = wait_for(lambda: re.search(r"^(\S+) task %s started for Steve" % tid, live.log_since(mark), re.M), 30)
-    rep.check(started and lp and lp["at"] - parse_iso(started.group(1)) < 3,
-              "the turn ended as the implementer started (%.1f s after)" % (
-                  lp["at"] - parse_iso(started.group(1)) if started and lp else -1), run.evidence(ref))
-    # While it works, a context line: marked read as it comes, and no model is shown it.
-    live.lines(("Alex", "context", "lol Steve keeps walking into the lava over there"))
-    t0 = opened[0]["at"]
-    res = wait_for(lambda: live.ai(a["seq"], ("result",), tid), TASK_S, 1.0)
-    rep.check(res, "%s's implementer reported, and the brain recorded it" % tid, short(live.log_since(mark)[-2000:]))
-    if not res:
+              "its AI task row and its brief in vfg.db: every part under its heading, %d done-when items"
+              % len(done_when), "%r; %r" % (opened, row))
+    rep.note("the brief: %s" % short(brief.replace("\n", " / "), 600))
+    sent = wait_for(lambda: run.model.requests(tid), 60)
+    t1 = sent[0]["at"] if sent else None
+    rep.check(sent and "YOUR TASK: %s" % tid in sent[0]["text"] and "DONE WHEN" in sent[0]["text"],
+              "the implementer started: its model (the stand-in) got the brief under YOUR TASK: %s" % tid,
+              "%r" % [(r["task"], short(r["text"], 200)) for r in run.model.requests()])
+    if not t1:
         return
-    time.sleep(3)
-    said = [r for r in live.ai(a["seq"], ("say",), tid) if r["seq"] > a.get("reply_seq", 0)]
-    results = live.ai(a["seq"], ("result",), tid)
-    rl = run.loop(tid, 10)
-    rep.check(rl and rl["ended"] in ("reply", "handoff", "silent") and run.calls(tid),
-              "the report started a new loop: %s" % ("%d step(s), $%.4f, ended %s" % (rl["steps"], rl["cost"],
-                                                                                     rl["ended"]) if rl else "none"),
-              run.evidence(tid))
-    rep.check(len(said) == 1 and len(results) == 1 and results[0]["text"].startswith(tid),
-              "the report became one chat line (%r) and one AI result row (%r)"
-              % (said and said[0]["text"], results[0]["text"]), "%r %r" % (said, results))
-    report = re.search(r"^\S+ implementer %s (done|failed): (.*)$" % tid, live.log_since(mark), re.M)
-    tm = re.search(r"^\S+ implementer %s (?:ended|error) \((\w+), (\d+) turns, (\d+) s\)" % tid,
-                   live.log_since(mark), re.M)
-    run.tasks.append("%s: brief to report %.0f s (the implementer's own %s s, %s turns, %s); %s" % (
-        tid, parse_iso(results[0]["at"]) - parse_iso(t0), tm and tm.group(3), tm and tm.group(2),
-        tm and tm.group(1), report and report.group(1)))
-    rep.note("in the world: %d torches on the ground round Steve (the implementer's work, not counted)"
-             % live.count_blocks("torch", centre))
-    rep.note("its report, as the implementer wrote it: %s" % short(report.group(2) if report else "?", 240))
-    nothing_from_it(run, a["seq"], tid, report.group(2) if report else "", mark)
-    row = live.task_row(tid) or {}
-    made = {k: v for k, v in (row.get("made") or {}).items() if v}
-    rep.check(row.get("player") == "Steve" and row.get("status") in ("done", "failed") and row.get("session"),
-              "its row in vfg.db: for Steve, %s, with its implementer's session; made %s"
-              % (row.get("status"), made or "nothing"), "%r" % row)
-    if row.get("status") != "done":
-        return
-
-    # The follow-up, by its name, which no value covers: the follow-up tool, to the same task's
-    # implementer, which resumes its session.
-    b = run.ask("Steve", "make those soul torches, and keep the ring round me as I walk until I say stop", timeout=120)
-    ref = "#%d" % b["seq"]
-    fu = wait_for(lambda: [r for r in live.ai(b["seq"], ("task",), tid) if r["text"].startswith("follow-up: ")],
-                  15) or []
-    other = [r for r in live.ai(b["seq"], ("task",)) if r["fields"] != "task %s" % tid]
-    steps = run.steps(ref)
-    rep.check(fu and not other and any("follow up %s" % tid in s["did"] for s in steps),
-              "the loop followed %s up: an AI task %s row, %r" % (tid, tid, fu and short(fu[0]["text"], 120)),
-              "%r; %s" % ([r["line"] for r in other], run.evidence(ref)))
-    resumed = wait_for(lambda: re.search(r"^\S+ implementer %s resumed ([^\s:]+)" % tid, live.log_since(mark),
-                                         re.M), 30)
-    rep.check(resumed, "the implementer resumed %s's session (%s; its row's %s)"
-              % (tid, resumed and resumed.group(1), row.get("session")))
-    t1 = fu[0]["at"] if fu else None
-    res2 = wait_for(lambda: len(live.ai(b["seq"], ("result",), tid)) >= 1
-                    and (live.task_row(tid) or {}).get("status") != "open", TASK_S, 1.0)
-    rep.check(res2, "the follow-up reported, and a new loop recorded it", short(live.log_since(mark)[-2000:]))
-    if res2:
-        time.sleep(3)
-        results = live.ai(b["seq"], ("result",), tid)
-        reports = re.findall(r"^\S+ implementer %s (done|failed): (.*)$" % tid, live.log_since(mark), re.M)
-        tms = re.findall(r"^\S+ implementer %s (?:ended|error) \((\w+), (\d+) turns, (\d+) s\)" % tid,
-                         live.log_since(mark), re.M)
-        if t1 and results:
-            run.tasks.append("%s follow-up: brief to report %.0f s (the implementer's own %s s, %s turns, %s); %s" % (
-                tid, parse_iso(results[0]["at"]) - parse_iso(t1), tms[-1][2] if len(tms) > 1 else None,
-                tms[-1][1] if len(tms) > 1 else None, tms[-1][0] if len(tms) > 1 else None,
-                reports[-1][0] if reports else "?"))
-        rep.note("in the world: %d soul torches round Steve (the implementer's work, not counted)"
-                 % live.count_blocks("soul_torch", live.p.pos("Steve") or centre))
-        nothing_from_it(run, b["seq"], tid, reports[-1][1] if reports else "", mark)
-    copy = live.copies().get(tid)
-    if not copy:
-        rep.note("%s runs no copy after its follow-up: the stop by its name is left out" % tid)
-        return
-    pid = live.copy_pid(tid)
-    environ = b""
-    try:
-        with open("/proc/%d/environ" % (pid or 0), "rb") as f:
-            environ = f.read()
-    except OSError:
-        pass
-    rep.check(("VFG_TASK=%s" % tid).encode() in environ.split(b"\0"),
-              "vfg script list --fresh shows %s running (pid %s), with VFG_TASK=%s" % (tid, pid, tid),
-              "copy %r; environ has VFG_TASK: %r" % (copy, [e for e in environ.split(b"\0")
-                                                         if e.startswith(b"VFG_TASK=")]))
-    # A stop by its name: the stop action on the copy; the task stays done.
-    c = run.ask("Steve", "ok stop the torch ring")
-    ref = "#%d" % c["seq"]
-    gone = wait_for(lambda: tid not in live.copies(), 10)
-    stops = [x for x in run.actions_of(ref) if x["name"] == "stop" and x["kind"] == "ok"]
-    row = live.task_row(tid) or {}
-    rep.check(gone and stops and row.get("status") == "done",
-              "a stop by name: the stop action landed, %s is gone, and its row is still done" % tid,
-              "copies %r; status %r; %s" % (live.copies(), row.get("status"), run.evidence(ref)))
-
-
-def nothing_from_it(run, after, tid, report, mark):
-    """Nothing the implementer wrote is in the context: no row holds its report or its words."""
-    rep, live = run.rep, run.live
-    said = [m.group(1) for m in re.finditer(r"^\S+ implementer %s says: (.*)$" % tid, live.log_since(mark), re.M)]
-    words = [w for w in [report] + said if len(w) >= 40]
-    rows = live.rows(after)
-    hits = [(r["seq"], r["line"][:120]) for r in rows for w in words if w[:60] in r["line"]]
-    kinds = sorted({r["type"] + (" " + r["fields"].split()[0] if r["type"] == "AI" else "") for r in rows})
-    rep.check(words and not hits, "none of the implementer's %d messages and report is in the feed; its rows since "
-              "the line: %s" % (len(words), ", ".join(kinds)), "%r" % hits)
-
-
-# ------------------------------------------------------------- 2. and 3. the limits, the report first
-
-def at_limit(run, which):
-    """A loop that reaches its limit (`which`: steps or seconds): an ask that reads first, then
-    would act, whose second step is its last, so it runs nothing and ends with a reply or a hand-off."""
-    rep, live = run.rep, run.live
-    a = run.ask("Steve", "give me the same item Alex is holding, exactly the same", timeout=120)
-    ref = "#%d" % a["seq"]
-    lp = run.loop(ref, 20)
-    steps, acts = run.steps(ref), run.actions_of(ref)
-    last = steps[-1] if steps else None
-    limit = (lp and lp["steps"] == 2) if which == "steps" else (lp and lp["steps"] < 10 and lp["s"] > 2)
-    rep.check(limit and last and not re.match(r"^(together: |in_turn: |read )", last["did"])
-              and not [x for x in acts if x["step"] == last["n"]] and lp["ended"] in ("reply", "handoff"),
-              "the loop reached its %s limit: %d step(s) in %.1f s, its last ran nothing, ended %s: %r" % (
-                  which, lp["steps"] if lp else 0, lp["s"] if lp else 0, lp and lp["ended"], a["reply"]),
-              run.evidence(ref))
-    rep.note("its steps: %s" % " | ".join("s%d %s" % (s["n"], short(s["did"], 120)) for s in steps))
-    if lp and lp["ended"] == "handoff":
-        names = [r["fields"].split()[1] for r in live.ai(a["seq"], ("task",))]
-        rep.note("it handed off %s: waiting for the report (1 minute at most)" % ", ".join(names))
-        wait_for(lambda: all(live.ai(a["seq"], ("result",), n) for n in names), 120, 1.0)
-
-
-def step_limit(run):
-    run.rep.head("11. A loop that reaches its step limit (VFG_LOOP_STEPS=2) and replies or hands off")
-    at_limit(run, "steps")
-
-
-def time_limit(run):
-    run.rep.head("13. A loop that reaches its time limit (VFG_LOOP_SECONDS=2) and replies or hands off")
-    at_limit(run, "seconds")
-
-
-FILLERS = ("give me an apple", "and a cooked chicken", "and a loaf of bread", "and a carrot", "and a baked potato",
-           "and a pumpkin pie", "and a cookie", "and a melon slice")   # Steve's lines that keep his turn busy
-
-
-def report_first(run):
-    """A hand-off whose implementer has a minute at most (VFG_IMPLEMENTER_MINUTES=1); 15 s after it
-    starts, Steve's lines begin to keep his turn busy, two waiting at all times (a read-then-act
-    ask, then small gives), until the report comes: it goes ahead of the lines still waiting."""
-    rep, live = run.rep, run.live
-    rep.head("12. A report goes ahead of Steve's waiting lines (VFG_IMPLEMENTER_MINUTES=1: a report within 60 s)")
-    mark = len(live.log())
-    a = run.ask("Steve", "make me a staff that shoots three homing fireballs that split into smaller ones when "
-                         "they hit", timeout=120)
-    opened = wait_for(lambda: [r for r in live.ai(a["seq"], ("task",)) if r["text"].startswith("new: ")], 15) or []
-    tid = opened[0]["fields"].split()[1] if opened else None
-    rep.check(tid, "the loop handed it off: %s" % tid, run.evidence("#%d" % a["seq"]))
-    if not tid:
-        return
-    run.names.append(tid)
-    started = wait_for(lambda: re.search(r"^(\S+) implementer %s started:" % tid, live.log_since(mark), re.M), 60)
-    if not rep.check(started, "%s's implementer started" % tid, short(live.log_since(mark)[-1500:])):
-        return
-    at = parse_iso(started.group(1))
-
-    def reported():
-        return live.ai(a["seq"], ("result",), tid)
-    wait_for(lambda: time.time() >= at + 15 or reported(), 30, 0.5)
-    if reported():
-        rep.check(False, "the report came after Steve's lines were fed", "%s reported within 15 s: nothing was "
-                  "waiting" % tid)
-        return
-    lines = run.batch(("Steve", "to_ai", "give me the same item Alex is holding, exactly the same"),
-                      *(("Steve", "to_ai", t) for t in FILLERS[:2]))
-    more = list(FILLERS[2:])
-    while not reported() and time.time() < at + 80:
-        if more and sum(not run.calls("#%d" % x["seq"]) for x in lines) <= 2:   # one running, at most one waiting
-            lines += run.batch(("Steve", "to_ai", more.pop(0)))
-        time.sleep(0.5)
-    res = wait_for(reported, 30, 0.5)
-    for x in lines:
-        run.await_reply(x, 120)
+    # A follow-up while it runs: the router sends it to the same task's implementer.
+    b = run.ask("Steve", "and make the boomerang axe set mobs on fire when it hits them", timeout=60)
+    fb = run.front(b) or {}
+    fu = wait_for(lambda: [r for r in live.ai(b["seq"], ("task",), tid) if r["text"].startswith("follow-up: ")], 10)
+    # The same ask again while it is built: nowhere, one line: the router's in place of the agent's when it wrote
+    # one, else the agent's held one (router.md: it leaves its reply empty when the agent's covers it).
+    c = run.ask("Steve", "hey can you make me that boomerang axe", timeout=40)
+    fc = run.front(c) or {}
     time.sleep(2)
-    queued = run.turn_log(r"report %s waits for Steve's turn, first in line" % re.escape(tid))
-    rl, rc = run.loop(tid), first_call(run, tid)
-    behind = [x for x in lines if (first_call(run, "#%d" % x["seq"]) or (0, 0))[0] > (queued or 1e12)]
-    rep.check(res and queued and rc and behind
-              and all(first_call(run, "#%d" % x["seq"])[0] >= rc[0] for x in behind),
-              "brain.log: report %s waits for Steve's turn, first in line, %.0f s after its implementer started; its "
-              "loop ran before %s, which had waited since before it" % (
-                  tid, (queued or at) - at, ", ".join("#%d" % x["seq"] for x in behind) or "no line"),
-              "%s ¶ %s" % (run.evidence(tid), " ¶ ".join(run.evidence("#%d" % x["seq"]) for x in lines)))
-    rep.check(rl and res, "the report's loop: %s; its AI result row %r" % (
-        "%d step(s), ended %s" % (rl["steps"], rl["ended"]) if rl else "none", res and short(res[0]["text"], 120)),
-        run.evidence(tid))
+    said_c = [r for r in live.ai(c["seq"]) if parse_iso(r["at"]) <= (c.get("reply_at") or 0) + 1.0]
+    rep.check(fc.get("to") == "nowhere" and fc.get("said") in (["router"], ["agent"]) and c.get("reply")
+              and len(said_c) == 1,
+              "the same ask again while it is built: the router sent it nowhere, one line went out, %s: %r (the "
+              "agent's was %r)" % ("the router's in place of the agent's" if fc.get("said") == ["router"]
+                                   else "the agent's held one, the router writing none", c.get("reply"),
+                                   fc.get("reply")), "%r; %s" % (fc, run.evidence_of(c)))
+    # Steve's turn, busy when the report comes (about 36 s into the run): his agent's call held 17 s (under
+    # its 20 s timeout) from about 26 s in.
+    wait_for(lambda: time.time() >= t1 + 25, 45, 0.5)
+    d, = run.batch(("Steve", "to_ai", JOKE))
+    reached = wait_for(lambda: [r for r in run.model.requests(tid) if re.search(r"fire", r["text"], re.I)
+                                and r["at"] > t1], 60)
+    rep.check(fb.get("to") == "implementer" and fb.get("where") == tid and fu and reached,
+              "the router followed %s up (%s), its AI task follow-up row, and the follow-up reached its implementer "
+              "(its model's request %s)" % (tid, fb.get("to"), reached and reached[0]["n"]),
+              "%r; %s" % (fb, run.evidence_of(b)))
+    res = wait_for(lambda: live.ai(a["seq"], ("result",), tid), 120, 0.5)
+    run.await_reply(d, 60)
+    report = re.search(r"^(\S+) respond %s (\d+) ms " % re.escape(tid), live.log_since(mark), re.M)
+    rend = parse_iso(report.group(1)) if report else None
+    told = [r for r in live.ai(a["seq"], ("say",), tid) if rend and parse_iso(r["at"]) >= rend - 0.1]
+    fd, cd = run.front(d), run.call_span("#%d" % d["seq"], "respond")
+    span = (cd[0], fd["at"]) if cd and fd else None
+    rstart = rend - int(report.group(2)) / 1000.0 if report else None
+    rep.check(res and report and span and span[0] <= rstart and rend <= span[1]
+              and told and parse_iso(told[0]["at"]) <= span[1]
+              and not re.search(r"^\S+ turn report ", run.log(), re.M),
+              "the report reached the conversation agent while Steve's turn was busy (his agent's call held): its call "
+              "%.1f-%.1f s into the %.1f s turn, its line %r said before the turn ended" % (
+                  (rstart - span[0]) if span and rstart else -1, (rend - span[0]) if span and rend else -1,
+                  (span[1] - span[0]) if span else -1, told and told[0]["text"]),
+              "result %r; report %r; turn %r; told %r; %s" % (res, report and report.group(0), span, told,
+                                                               run.evidence(tid)))
+    row = live.task_row(tid) or {}
+    rep.check(row.get("status") in ("done", "failed") and res and res[0]["text"].startswith(tid),
+              "its record (%r) and its row: %s" % (res and short(res[0]["text"], 120), row.get("status")), "%r" % row)
+
+
+def one_line_per_ask(run):
+    """Under the hold, all through the default brain: every hand-off placed somewhere said at most
+    the agent's line, after the router answered; every one placed nowhere at most one line."""
+    rep = run.rep
+    rep.head("13. One line per ask while the router does not reason, all through the default brain")
+    placed = [a for a in run.asks if a.get("phase") == "defaults" and (run.front(a) or {}).get("to")
+              not in (None, "nowhere")]
+    nowhere = [a for a in run.asks if a.get("phase") == "defaults" and (run.front(a) or {}).get("to") == "nowhere"]
+    bad = []
+    for a in placed:
+        ok, why = held_ack(run, a)
+        if not ok:
+            bad.append("#%d %s" % (a["seq"], why))
+    rep.check(placed and not bad, "%d hand-offs placed somewhere: each said the agent's line or none, held until the "
+              "router answered (%d said one)" % (len(placed), sum(1 for a in placed if run.ack_lines(a))),
+              "; ".join(bad))
+    many = [a for a in nowhere if len((run.front(a) or {}).get("said") or []) > 1]
+    rep.check(not many, "%d placed nowhere: each said one line at most (%s)" % (
+        len(nowhere), ", ".join("#%d %s" % (a["seq"], "+".join((run.front(a) or {}).get("said") or ["nothing"]))
+                                for a in nowhere) or "none"), "%r" % [a["seq"] for a in many])
+
+
+# ------------------------------------------------------------- 2. the router at low: no hold
+
+def no_hold(run):
+    """The router at low: a new thing (the router's to start an implementer for), then the same ask
+    again while it is built (nowhere, with the router's own line): the agent's line goes out before
+    the router answers, every time, and the router's own after it."""
+    rep = run.rep
+    rep.head("14. The router at low reasoning: nothing held, the agent's line out at once, the router's own after it")
+    time.sleep(4)
+    a = run.ask("Steve", "make me a frost bow: its arrows freeze any mob they hit solid for five seconds", timeout=90)
+    time.sleep(3)
+    b = run.ask("Steve", "hey can you make me that frost bow", timeout=90)
+    time.sleep(2)
+    c = run.ask("Steve", "hurry up with my frost bow!", timeout=90)
+    early, both = [], []
+    for x in (a, b, c):
+        f = run.front(x) or {}
+        rows = run.front_said_rows(x)
+        rc = run.call_span("#%d" % x["seq"], "router")
+        if f.get("agent") != "handoff":
+            rep.note("#%d: the agent answered it itself (%r): nothing for the router" % (x["seq"], f.get("reply")))
+            continue
+        first = rows and rc and parse_iso(rows[0]["at"]) < rc[1]
+        if "agent" in f.get("said", []):
+            early.append(x)
+        if f.get("said") == ["agent", "router"]:
+            both.append(x)
+        rep.check(rc and ("agent" not in f.get("said", []) or first)
+                  and f.get("said", []) in ([], ["agent"], ["router"], ["agent", "router"]),
+                  "#%d: the router took %.1f s and placed it %s %s; said %s%s" % (
+                      x["seq"], (rc[1] - rc[0]) if rc else -1, f.get("to"), f.get("where") or "",
+                      " then ".join(f.get("said") or ["nothing"]),
+                      ", the agent's line %.1f s before the router answered" % (rc[1] - parse_iso(rows[0]["at"]))
+                      if "agent" in f.get("said", []) and rows and rc else ""), "%r; %s" % (f, run.evidence_of(x)))
+    rep.check(early, "the agent's line went out at once, before the router answered: %s"
+              % (", ".join("#%d" % x["seq"] for x in early) or "no hand-off had one"))
+    if both:   # only when the router writes a line of its own: it leaves none when the agent's covers it
+        rep.check(True, "both lines for one ask, the agent's then the router's own: %s"
+                  % ", ".join("#%d" % x["seq"] for x in both))
+    else:
+        rep.note("not seen: the router wrote no line of its own for these (%s)" % "; ".join(
+            "#%d %s, said %s" % (x["seq"], (run.front(x) or {}).get("to"),
+                                 "+".join((run.front(x) or {}).get("said") or ["nothing"])) for x in (a, b, c)))
+
+
+# ------------------------------------------------------------- 3. the budget: VFG_LOOP_STEPS=1, VFG_LOOP_CAP=2
+
+def budget(run):
+    rep = run.rep
+    rep.head("15. One step a line, never past two (VFG_LOOP_STEPS=1, VFG_LOOP_CAP=2): a line added takes the loop to "
+             "its cap, its last step replies or hands off, it is deleted, and the next line starts a new loop")
+    a = run.ask("Steve", "give me a diamond", timeout=90)
+    fa, wa = run.front(a) or {}, run.work(a, 20)
+    rep.check(fa.get("to") == "new_loop" and wa and wa["used"] == 1 and wa["limit"] == 1 and wa["state"] == "saved",
+              "its loop %s: 1 of 1 steps (its first is its last), ended %s, saved" % (
+                  fa.get("where"), wa and wa["ended"]), "%r; %s" % (wa, run.evidence_of(a)))
+    b = run.ask("Steve", "actually make that two diamonds", timeout=90)
+    fb, wb = run.front(b) or {}, run.work(b, 20)
+    rep.check(fb.get("to") == "loop" and fb.get("where") == fa.get("where") and wb and wb["used"] == 2
+              and wb["limit"] == 2 and wb["state"] == "deleted",
+              "the router added #%d to %s: one more step, 2 of 2, the cap, and the loop deleted (%s)" % (
+                  b["seq"], fa.get("where"), wb and wb["state"]), "%r; %r; %s" % (fb, wb, run.evidence_of(b)))
+    rep.check(wb and wb["ended"] in ("reply", "handoff"),
+              "its last step, at the cap, replied or handed off: ended %s%s" % (
+                  wb and wb["ended"], ": %r" % b.get("reply") if b.get("reply") else ""), run.evidence_of(b))
+    c = run.ask("Steve", "make it three diamonds", timeout=90)
+    fc = run.front(c) or {}
+    rep.check(fc.get("to") == "new_loop" and fc.get("where") not in (None, fa.get("where")),
+              "%s is deleted: the next line on that thing started a new loop (%s)" % (fa.get("where"), fc.get("where")),
+              "%r; %s" % (fc, run.evidence_of(c)))
 
 
 # ======================================================================= the end
@@ -1145,17 +1353,17 @@ def end(run):
     rep.head("the end")
     unread = [r for r in live.rows(run.start_seq) if r["type"] == "LINE" and not r["processed_at"]]
     rep.check(not unread, "every line of the run was read and marked processed", "%r" % unread)
-    # Before the stop, which fails whatever is still open; a task the last brain handed off has 1 minute.
     open_ = wait_for(lambda: not live.sql("SELECT name FROM tasks WHERE status = 'open'"), 90, 1.0)
     rep.check(open_, "no task open in vfg.db (%d in its tasks table)" % len(live.sql("SELECT name FROM tasks")),
               "%r" % live.sql("SELECT name, status FROM tasks WHERE status = 'open'"))
     r = live.stop()
-    log = live.log_since(live.mark)
+    log = run.log()
     rep.check(r is not None and r.returncode == 0 and re.search(r"^\S+ stop stopped$", log, re.M),
               "vfg brain stop: the brain stopped cleanly", "%s %s" % (r and r.stdout, r and r.stderr))
     rep.check("Traceback" not in log and not re.search(r"^\S+ error ", log, re.M), "no traceback or error in brain.log",
               short(log[max(0, log.find("Traceback")):][:1500]) + " ¶ " + " ¶ ".join(
                   x for x in log.splitlines() if re.match(r"^\S+ error ", x))[:1500])
+    rep.check(not re.search(r"^\S+ turn report ", log, re.M), "no report waited for a turn: reports never queue")
     leaks = []
     for d in (os.path.join(live.dir, "vfg"), os.path.join(live.dir, "home"), os.path.join(REPO, "made", live.name)):
         for root, _, files in os.walk(d):
@@ -1170,7 +1378,7 @@ def end(run):
     use = [u for u in live.sql("SELECT * FROM usage ORDER BY id") if parse_iso(u["at"]) > run.started]
     model = [u for u in use if u["component"] in MODELS]
     cost = sum(u["cost_usd"] or 0 for u in model)
-    rep.check(cost < BUDGET, "the brain and Respond cost $%.4f of OpenRouter, under $%.2f" % (cost, BUDGET))
+    rep.check(cost < BUDGET, "the brain's agents cost $%.4f of OpenRouter, under $%.2f" % (cost, BUDGET))
     steps = [m for m in (LOG_CALL.match(x) or LOG_FAILED.match(x) for x in log.splitlines())
              if m and m.group(2) == "brain"]
     brain = [u for u in model if u["component"] == "brain"]
@@ -1178,13 +1386,17 @@ def end(run):
                                                           for u in brain),
               "every step, answered or failed, is a usage row `<ref> s<n>` (%d) and a line of brain.log (%d)"
               % (len(brain), len(steps)), "%r" % sorted({u["ref"] for u in brain}))
+    fronts = [u for u in model if u["component"] in ("respond", "router")]
+    rep.check(fronts and all(re.match(r"^(#\d+|[a-z][a-z0-9_]*)$", u["ref"] or "") for u in fronts),
+              "every agent's and router's call is a usage row of its line (`#<seq>`) or its report's task (%d)"
+              % len(fronts), "%r" % sorted({(u["component"], u["ref"]) for u in fronts}))
     old = [u for u in use if u["component"] in ("orchestrator", "planner")]
     rep.check(not old, "no orchestrator or planner call", "%r" % old)
     run.table()
     print("\nCOST, from the usage rows (%.0f min of play)" % ((time.time() - run.started) / 60.0))
     for u in use:
-        print("  %-12s %-20s %-26s in %6d (%3.0f%% cached) out %5d  $%.5f" % (
-            u["component"], (u["ref"] or "")[:20], (u["model"] or "")[:26], u["input_tokens"] or 0,
+        print("  %-12s %-20s %-30s in %6d (%3.0f%% cached) out %5d  $%.5f" % (
+            u["component"], (u["ref"] or "")[:20], (u["model"] or "")[:30], u["input_tokens"] or 0,
             100.0 * (u["cache_read_tokens"] or 0) / u["input_tokens"] if u["input_tokens"] else 0,
             u["output_tokens"] or 0, u["cost_usd"] or 0))
     impl = sum(u["cost_usd"] or 0 for u in use if u["component"] == "implementer")
@@ -1193,50 +1405,52 @@ def end(run):
         if not us:
             return
         c = sorted(u["cost_usd"] or 0 for u in us)
-        print("  %s: %d calls, $%.4f, median $%.4f a call, %.0f%% of the prompt cached" % (
+        ms = sorted(u["ms"] or 0 for u in us if u.get("ms"))
+        print("  %s: %d calls, $%.4f, median $%.4f a call, %.0f%% of the prompt cached%s" % (
             name, len(us), sum(c), c[len(c) // 2],
-            100.0 * sum(u["cache_read_tokens"] or 0 for u in us) / max(1, sum(u["input_tokens"] or 0 for u in us))))
+            100.0 * sum(u["cache_read_tokens"] or 0 for u in us) / max(1, sum(u["input_tokens"] or 0 for u in us)),
+            ", median %d ms" % ms[len(ms) // 2] if ms else ""))
     line("the brain's steps", brain)
     line("  first steps", [u for u in brain if u["ref"].endswith(" s1")])
     line("  steps after a loop's first", [u for u in brain if not u["ref"].endswith(" s1")])
-    line("respond", [u for u in model if u["component"] == "respond"])
-    loops = [m for m in map(LOG_LOOP.match, log.splitlines()) if m]
+    line("the conversation agent", [u for u in model if u["component"] == "respond"])
+    line("the router", [u for u in model if u["component"] == "router"])
+    loops = E2E.loop_runs(log)
     if loops:
-        n = [int(m.group(4)) for m in loops]
-        print("  loops: %d, %d of one step, %d of two or more; ended %s" % (
+        n = [x["steps"] for x in loops]
+        print("  loop runs: %d, %d of one step, %d of two or more; ended %s" % (
             len(n), sum(x == 1 for x in n), sum(x > 1 for x in n),
-            ", ".join("%s %d" % (e, sum(m.group(9) == e for m in loops)) for e in sorted({m.group(9) for m in loops}))))
+            ", ".join("%s %d" % (e, sum(x["ended"] == e for x in loops)) for e in sorted({x["ended"] for x in loops}))))
     prompt = sum(u["input_tokens"] or 0 for u in model)
     cached = sum(u["cache_read_tokens"] or 0 for u in model)
-    print("  brain and Respond: $%.4f, %.0f%% of %d prompt tokens read from the cache; implementers $%.4f (the "
-          "subscription's)" % (cost, 100.0 * cached / prompt if prompt else 0, prompt, impl))
+    print("  the three agents: $%.4f, %.0f%% of %d prompt tokens read from the cache; implementers $%.4f (the "
+          "stand-in's)" % (cost, 100.0 * cached / prompt if prompt else 0, prompt, impl))
 
 
 STEPS = {   # the checks, in the order they run, each with the brain it needs
     "one_step": (one_step, "defaults"), "together": (together, "defaults"), "in_turn": (in_turn, "defaults"),
     "refused": (refused, "defaults"), "read": (read_items, "defaults"), "items": (item_asks, "defaults"),
-    "own_copy": (own_copy, "defaults"), "two_players": (two_players, "defaults"), "waiting": (waiting, "defaults"),
-    "talk": (talk, "defaults"), "implementer": (implementer, "defaults"),
-    "step_limit": (step_limit, "steps"), "report_first": (report_first, "steps"),
-    "time_limit": (time_limit, "seconds"),
+    "own_copy": (own_copy, "defaults"), "side_by_side": (side_by_side, "defaults"),
+    "waiting": (waiting, "defaults"), "talk": (talk, "defaults"), "slow_step": (slow_step, "defaults"),
+    "added_lines": (added_lines, "defaults"), "implementer": (implementer, "defaults"),
+    "one_line": (one_line_per_ask, "defaults"),
+    "no_hold": (no_hold, "low"),
+    "budget": (budget, "budget"),
 }
-BRAINS = {"steps": {"VFG_LOOP_STEPS": "2", "VFG_IMPLEMENTER_MINUTES": "1"},
-          "seconds": {"VFG_LOOP_SECONDS": "2", "VFG_IMPLEMENTER_MINUTES": "1"}}
-IMPLEMENTER = ("implementer", "report_first")
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--name", default="live", help="the realmc server (default live)")
     ap.add_argument("--keep-up", action="store_true", help="leave the server running at the end")
-    ap.add_argument("--no-implementer", action="store_true",
-                    help="leave out the checks that start an implementer: no Claude subscription used")
     ap.add_argument("--only", default="", help="these checks only, comma-separated: " + ", ".join(STEPS))
+    ap.add_argument("--brain-reasoning", default="", help="VFG_BRAIN_REASONING for every brain (default: its own, "
+                                                          "low, 120 s a step); off makes a step's timeout 60 s")
     args = ap.parse_args()
     only = [x.strip() for x in args.only.split(",") if x.strip()]
     if set(only) - set(STEPS):
         ap.error("no such check: %s" % ", ".join(sorted(set(only) - set(STEPS))))
-    chosen = [s for s in STEPS if (not only or s in only) and not (args.no_implementer and s in IMPLEMENTER)]
+    chosen = [s for s in STEPS if not only or s in only]
     key, where = find_key()
     if not key:
         print("no %s in the environment or in a .env above %s" % (KEY, REPO), file=sys.stderr)
@@ -1252,12 +1466,19 @@ def main():
         print("realmc up %s failed" % args.name, file=sys.stderr)
         return 1
     rep = Report()
-    live = None
+    live = model = None
     try:
         live = Live(args.name, key)
+        # Every implementer's first answer after 32 s, the rest after 3: a run stays live long enough for a
+        # follow-up and the same ask again to come in, and its report lands while a held turn is busy.
+        model = load_stand_in().StandIn(record=os.path.join(live.dir, "stand-in-model.jsonl"),
+                                        delay=[32, 3]).start()
+        print("the implementers' stand-in model on %s" % model.url, flush=True)
         if live.clean_slate(rep):     # else nothing runs on what an earlier run left
             live.start_seq = live.last_seq()
-            run = Run(live, rep)
+            run = Run(live, rep, model)
+            run.reasoning = args.brain_reasoning.strip()
+            run.step_timeout = 60 if run.reasoning == "off" else 120
             run.start_seq = live.start_seq
             run.started = time.time()
             if setup(run):
@@ -1266,8 +1487,14 @@ def main():
                     step, needs = STEPS[name]
                     if needs != brain:
                         brain = needs
-                        if not restart(run, rep, BRAINS[needs], needs):
+                        if not restart(run, rep, needs):
                             break
+                    gone = [who for who in ("Steve", "Alex") if who not in live.p.online()]
+                    if gone:   # a fake player that died left the server: back, as he was set up
+                        rep.check(False, "%s still online before %s" % (" and ".join(gone), name),
+                                  "they left the server; spawned again")
+                        for who in gone:
+                            live.p.spawn(who)
                     try:
                         step(run)
                     except Exception:
@@ -1279,6 +1506,8 @@ def main():
                 live.stop()
             except Exception:
                 pass
+        if model is not None:
+            model.stop()
         if not args.keep_up:
             d = subprocess.run([os.path.join(REALMC, "down"), args.name], stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, universal_newlines=True)

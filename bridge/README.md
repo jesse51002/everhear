@@ -20,10 +20,10 @@ the name a task's (`galick_gun_styrk`, `[a-z][a-z0-9_]{1,31}`). Older `T<n>` row
 §4's DDL (`db.COLUMNS`), and `lines` and `usage` rebuilt once, in one transaction, when their CHECK
 lists are older (`db.CHECKS`: Jev's three classes `to_ai`, `context` and `not_relevant`, the two
 classes for the AI before them, `action_oriented` and `conversational`, and the older `direct_ask`
-all becoming `to_ai`, and `not_useful` becoming `not_relevant`; the brain's `brain`, `respond` and
-`planner` usage, and the incantation alias call's `alias`). `usage`'s added columns are the cache
-counts and a model call's `ok`, `error` and `ms`, which `structured()` records for every call.
-Every other column on those tables is kept. The feed's rows are never rewritten: a `LINE` row fed
+all becoming `to_ai`, and `not_useful` becoming `not_relevant`; the brain's `brain`, `respond`,
+`router` and `planner` usage, and the incantation alias call's `alias`). `usage`'s added columns
+are the cache counts and a model call's `ok`, `error` and `ms`, which `structured()` records for
+every call. Every other column on those tables is kept. The feed's rows are never rewritten: a `LINE` row fed
 before keeps its old class, which its readers take as `to_ai`. The bridge and `jev/` are deployed
 together, since an older Jev's verdicts fail the new CHECK and a newer Jev's `to_ai` an older
 bridge's: when Jev is on the box, `deploy.sh` stops it before the schema and deploys `jev/` from

@@ -1372,8 +1372,8 @@ def path7(box, rep, ctx):
 
 
 def path6(box, rep, ctx):
-    rep.path("6", "usage rows: one per Jev call for component jev; the brain's steps, Respond's and an "
-                  "implementer's; an older brain's orchestrator and planner rows")
+    rep.path("6", "usage rows: one per Jev call for component jev; the brain's steps, the conversation agent's, "
+                  "the router's and an implementer's; an older brain's orchestrator and planner rows")
     judged = box.sql("SELECT id, text, jev_confidence FROM lines WHERE source != 'ai' AND jev_class IS NOT NULL")
     bad = []
     for r in judged:
@@ -1395,9 +1395,10 @@ def path6(box, rep, ctx):
     stray = box.sql("SELECT u.ref FROM usage u JOIN lines l ON l.id = u.ref WHERE l.source = 'ai'")
     rep.check(not stray, "no usage row points at an ai line")
     # Rows as `vfg usage add` takes them: brain/implementers/usage.py's usage_args() and the like. The brain's
-    # and Respond's own rows are structured()'s (below): a step of the brain's loop is `#<seq> s<n>` for a
-    # line, `<task> s<n>` for a report; Respond's is its line's `#<seq>`. A box that ran an older brain also
-    # holds `orchestrator` rows (and `planner` ones), which the table and vfg still take.
+    # own rows are structured()'s (below): a step of a brain loop is `#<seq> s<n>` for a line, `<task> s<n>` for
+    # what a report left; the conversation agent's (`respond`) and the router's are the line's `#<seq>`, or a
+    # report's task. A box that ran an older brain also holds `orchestrator` rows (and `planner` ones), which the
+    # table and vfg still take.
     rows = [
         (["--component", "brain", "--model", "google/gemini-3.8-flash", "--in", "31512", "--out", "210", "--cost",
           "0.003834", "--cache-read", "29216", "--ref", "#812 s1"],
@@ -1411,6 +1412,9 @@ def path6(box, rep, ctx):
         (["--component", "respond", "--model", "~deepseek/deepseek-v4-flash-latest", "--in", "7100", "--out", "30",
           "--cost", "0.000410", "--cache-read", "6900", "--ref", "#813"],
          ("respond", "~deepseek/deepseek-v4-flash-latest", 7100, 30, 0.00041, 6900, None, "#813")),
+        (["--component", "router", "--model", "deepseek/deepseek-v4.1-flash", "--in", "30500", "--out", "60",
+          "--cost", "0.000420", "--cache-read", "29800", "--ref", "#814"],
+         ("router", "deepseek/deepseek-v4.1-flash", 30500, 60, 0.00042, 29800, None, "#814")),
         (["--component", "orchestrator", "--model", "google/gemini-3.8-flash", "--in", "3120", "--out", "96",
           "--cost", "0.000690", "--cache-read", "2880", "--ref", "#790"],
          ("orchestrator", "google/gemini-3.8-flash", 3120, 96, 0.00069, 2880, None, "#790")),
@@ -1437,6 +1441,7 @@ def path6(box, rep, ctx):
                    20012),
                   ("brain", "google/gemini-3.8-flash", 34100, 60, 0.0031, "galick_gun_styrk s1", 0,
                    "google/gemini-3.8-flash twice failed to match Step: - end: end reply needs the reply", 3100),
+                  ("router", "deepseek/deepseek-v4.1-flash", 30100, 55, 0.0004, "#817", 1, None, 1300),
                   ("planner", "~deepseek/deepseek-v4-flash-latest", 2400, 60, 0.00062, "castle_steve #2", 1, None,
                    1800),
                   ("alias", "~deepseek/deepseek-v4-flash-latest", 300, 20, 0.00005, "fire ball", 1, None, 840))]
@@ -1444,7 +1449,7 @@ def path6(box, rep, ctx):
         f.write("".join(json.dumps(q) + "\n" for q in queued))
     r = box.vfg("usage", "flush")
     got = box.sql("SELECT component, cost_usd, ref, ok, error, ms FROM usage WHERE ref IN ('#816 s1', "
-                  "'#816 s2', 'galick_gun_styrk s1', 'castle_steve #2', 'fire ball') ORDER BY id")
+                  "'#816 s2', 'galick_gun_styrk s1', '#817', 'castle_steve #2', 'fire ball') ORDER BY id")
     rep.check(r.returncode == 0 and [tuple(g.values()) for g in got] == [
         (q["component"], q["cost_usd"], q["ref"], q["ok"], q["error"], q["ms"]) for q in queued],
         "vfg usage flush sends structured()'s queued rows, a failed call's with its cost (NULL when not known), ok, "

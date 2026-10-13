@@ -39,7 +39,7 @@ About a minute. The box's side (bridge, Jev filter, the toolkit's remote program
 | 3 | `vfg say` writes an `ai` line Jev never judges and an `AI say` feed row in the same call, `AI say castle_steve` for `--task castle_steve`; Jev's next state holds the AI's lines, the brain's `action` (a loop's one record), `task` and `result` rows, a task's named in front of its text, and not an older brain's notes, the lookout and `menu.md` |
 | 4 | `vfg history` by date, source, player, each of the three classes (the old names refused), events and feed |
 | 5 | `vfg feed post AI` for each kind, its field a task's name or `-`, each row written processed; `GAME` of any kind, `SYS`; `ORCH`, a task number and bad `AI` fields refused; `vfg context`, `--json` (the rows, then `{tasks}`, then `{last_seq}`) and `vfg context mark` on the rows the brain reads |
-| 6 | `usage` rows: one per Jev call; `vfg usage add` writes them, cached tokens included: a step of the brain's loop (`#seq s1`, `#seq s2`, a report's `<task> s1`), Respond's (`#seq`), an implementer's (its task's name), and an older brain's `orchestrator` row, which the table still takes; `structured()`'s queued rows (the brain's steps, an older brain's `planner` row, an alias call's), a failed step's among them (its cost NULL when an attempt was cut off in flight), sent by `vfg usage flush` with `ok`, `error` and `ms` |
+| 6 | `usage` rows: one per Jev call; `vfg usage add` writes them, cached tokens included: a step of a brain loop (`#seq s1`, `#seq s2`, a report's `<task> s1`), the conversation agent's (`#seq`, component `respond`), the router's (`#seq`, component `router`), an implementer's (its task's name), and an older brain's `orchestrator` row, which the table still takes; `structured()`'s queued rows (the brain's steps, a router's, an older brain's `planner` row, an alias call's), a failed step's among them (its cost NULL when an attempt was cut off in flight), sent by `vfg usage flush` with `ok`, `error` and `ms` |
 | 7 | killing and restarting Jev, the brain's watch (`--after` its last seq) and the bridge loses and repeats nothing, and keeps the processed marks; an ask killed while its group waits for the feed is fed once, alone, and one killed after its group's feed write is not fed again |
 | 8 | the client mod's real `BridgeClient` and `LinePayload` against the real bridge |
 | 9 | a real group (§5): Steve's earlier line goes with his ask as one `LINE`, under the ask's fields and time, and Alex's line said between them is never asked about; every line the real feed writer produced, the group included, read by the brain's `context.parse`, and `vfg context --json` built into the brain's `Context` |
@@ -188,97 +188,147 @@ python3 integration/brain_e2e.py [--keep]
 The real brain, started by `vfg brain start`, against a stand-in box on this PC: the fake SSH,
 the real feed writer and `vfg.db`, and a fake 26.3 world (`scripts/_test/fake_places_world.py`
 with players' items by slot) on the box's RCON port. Its model calls are real, through
-OpenRouter, the loop's steps on Gemini 3.8 Flash and Respond's on DeepSeek V4 Flash:
-`OPEN_ROUTER_API` from the environment, else from the first `.env` above this repo, or its
-`Internal/.env`, that holds it; given to the brain's process only, never printed or written.
-Each player's line goes into the feed as a `LINE` row through the box's `vfg_feed`, as Jev would
-put a line said to the AI there (`to_ai`), and goes to Respond first (Prototype_Addressing_The_AI).
-It checks an action ask Respond hands up and the brain's loop does in the world in one step, its
-loop ended with its reply (`AI say -`) and one record (`AI action -`), no task, the brain's own
-copy `command_steve`; an item ask on the right slot, handed up the same way; talk answered by
-Respond, with no step of the brain; a casual ask handed up and acted on by a loop that replies or
-ends silent (the night says it); two players' lines in the same second both answered, their loops at once, each
-reply told apart by the words its loop logged, each player's copy named for them; the rows a
+OpenRouter, on the brain's defaults: the conversation agent, the router and the loops' steps on
+DeepSeek V4.1 Flash, the first two with no reasoning and the steps at low (`brain/brain/config.py`):
+`OPEN_ROUTER_API` from the
+environment, else from the first `.env` above this repo, or its `Internal/.env`, that holds it;
+given to the brain's process only, never printed or written. Each player's line goes into the feed
+as a `LINE` row through the box's `vfg_feed`, as Jev would put a line said to the AI there
+(`to_ai`, Prototype_Addressing_The_AI), and takes its player's turn for two calls
+(Prototype_Conversation_And_Router): the conversation agent answers, and a hand-off goes to the
+router, which places the work, here a new loop each time. It checks an action
+ask handed off by the agent, a new loop started by the router (brain.log's `front #seq` line),
+done in the world in one step, the loop's reply (`AI say -`) after the agent's held
+acknowledgement when it wrote one, one record (`AI action -`), no task, the brain's own copy
+`command_steve`; an item ask on the right slot; a line the agent answers itself, with no router
+and no loop; a casual ask handed off and acted on by a loop that replies or ends silent; two players' lines in the same second both answered, their loops at once; the rows a
 call read marked processed; a context line marked read at once with no call, and a game event
-read by the next call; and `vfg brain stop`, with no row in `vfg.db`'s tasks table: nothing was
-handed off. Then each line's time to its reply with its loop's steps, cost, cache rate and
-ending (brain.log's `loop` line), and what the run cost. About a minute and twelve model calls,
-about $0.035: each step about $0.005-0.008, its 30K-token prompt 95% read from the cache, and each
-Respond call about $0.0006. On 2026-10-12, two runs: 39 of 39 checks passed each time, every loop
-one step, replies 6.3-13.9 s after the line (the step's call 4.9-11.0 s). On 2026-10-13, with every
-line to the AI going to Respond first: 41 of 41, each ask handed up by Respond in 0.96-1.25 s and
-then one step, replies 8.3-13.3 s after the line, talk answered by Respond in 1.5-2.0 s. Not part
-of any test suite.
+read by the next call; and `vfg brain stop`, with no row in `vfg.db`'s tasks table: nothing went
+to an implementer. Then each line's time to its reply with its front turn and its loop's steps,
+cost, cache rate and ending (brain.log's `front` and `loop` lines), and what the run cost. About
+a minute and twenty model calls. Not part of any test suite. Its log grammar (`front_of`,
+`loop_runs`, `work_of`, `logged_reply`) is what `brain_live.py` and `jev_live.py` read brain.log
+with.
+
+On 2026-10-13, on this spec's build: 36 of 41 and 39 of 41 checks, $0.017–0.022 a run; replies 4.3–6.1 s
+after the line, the agent's call 0.4–0.8 s, the router's 0.55–0.95 s, a step 0.75–1.2 s. What
+failed was the brain's step (refused twice by its checks, once; an item modifier on the boots carried
+rather than worn, once) and, once, the conversation agent leaving Alex's ask said in the same second
+as Steve's unanswered and undone. On 2026-10-12, before this spec (the loop's steps on Gemini, Respond
+in front of conversational lines only), two runs: 39 of 39 checks passed each time. On
+2026-10-13, with every line to the AI going to Respond first (Prototype_Addressing_The_AI, before
+this spec): 41 of 41, each ask handed up by Respond in 0.96-1.25 s and then one step, replies
+8.3-13.3 s after the line, talk answered by Respond in 1.5-2.0 s.
+
+## The router replay
+
+```sh
+brain/.venv/bin/python integration/router_replay.py --unpack          # the data, into ~/.vfg/router-replay
+brain/.venv/bin/python integration/router_replay.py --dry             # no model: the plumbing and the scorer
+brain/.venv/bin/python integration/router_replay.py [--reasoning low] # both sets, real calls, about $0.2
+python3 integration/replay/router/score.py OUT [OUT …]                # OUT/report.md
+```
+
+Prototype_Conversation_And_Router's first test: the real router (`brain/brain/router.py`, its
+prompt, the library's actions and the command references) on the 2026-10-08 playtest's follow-ups
+and new things (rebuilt: taskcall.py's inputs are gone) and on the 64 lines Jev sent to the AI on
+the night of 2026-10-12/13, with WORK UNDER WAY from `brain/brain/loops.py` fed by the replay's own
+choices. Model calls only, one at a time; their usage rows queue in the run's folder. The data and
+the runs stay out of the repo (`--data`, `$VFG_ROUTER_REPLAY_DATA`); how each set is built and
+scored is in the two scripts' docstrings, and the measured runs in
+[`replay/router/report.md`](replay/router/report.md). Not part of any test suite.
 
 ## The brain live, on realmc
 
 ```sh
-REALMC_ROOT=… python3 integration/brain_live.py [--name live] [--keep-up] [--no-implementer] [--only refused,read,…]
+REALMC_ROOT=… python3 integration/brain_live.py [--name cr-live] [--keep-up] [--only refused,read,…]
 ```
 
-Prototype_Brain_Loop's "Live, on realmc" list, on a real 26.3 server (realmc, its world fresh
-from the template, with Carpet's fake players Steve and Alex, and its test server beside it as the
-box's, `up --fresh --test-server`, where the implementers' `vfg test` plays; a task is waited for
-21 minutes, its 20 and its report), every ask checked in the world over
-RCON, in the feed's `AI` rows, in `vfg.db`'s tasks and usage tables and in `brain.log` (each step's
-line, each loop's line, the turns'). It starts from a clean slate: the stand-in's `vfg.db` (with
-its `-wal` and `-shm`) and `feed.log` set aside in `vfg/set-aside-<time>/`, never deleted, and made
-again by `vfg_bridge --init-db`; `made/<name>/` saved with `vfg made save`, then moved into
-`made/.replaced/`. Steve holds a diamond axe, carries an iron sword and iron boots and wears
-diamond boots; Alex holds a trident; the place `home` is saved on the arena. Three brains run one
-after another on the one feed:
+Prototype_Conversation_And_Router's "Live, on realmc" list, with Prototype_Brain_Loop's checks
+that still mean something, on a real 26.3 server (realmc, its world fresh from the template, with
+Carpet's fake players Steve and Alex, and its test server beside it as the box's, `up --fresh
+--test-server`, where the implementers' `vfg test` plays), every ask checked in the world over RCON, in the feed's `AI`
+rows, in `vfg.db`'s tasks and usage tables and in `brain.log`: each line's `respond`, `router` and
+`front` lines (the conversation agent's answer, where the router put the work, the lines said),
+each step's line and each loop run's (`loop #5 Steve: …, ended reply; L1 saved, 1 of 10 steps, lines
+#5`). It starts from a clean slate: the stand-in's `vfg.db` (with its `-wal` and `-shm`) and
+`feed.log` set aside in `vfg/set-aside-<time>/`, never deleted, and made again by `vfg_bridge
+--init-db`; `made/<name>/` saved with `vfg made save`, then moved into `made/.replaced/`. Steve holds
+a diamond axe, carries an iron sword and iron boots and wears diamond boots; Alex holds a trident;
+the place `home` is saved on the arena.
 
-1. **The defaults.** A one-step ask whose actions all land (its reply, one `AI action -` record,
-   no task, the copy `command_steve`); a step with two actions together (64 cobblestone and
-   twenty chickens: a `command` and a `summon_around`) and a step with two in turn (home, then
-   day); a refused command the next step fixes (asks whose first command 26.3 may refuse, in
-   turn, until one is: `/enchant` over Fire Aspect's maximum, the scale attribute by its old
-   name, a sword's enchantments in the component's old `{levels:…}` form), checked in the world;
-   Alex's items read with the tool, the next step's reply naming his trident; item asks by slot
-   (boots worn and boots carried; a helmet he does not have); the brain's own copy
-   `keep_effects_steve` started, edited (the `edit` action, Speed V) and stopped (the `stop`
-   action); Steve's second line waiting for his loop (`turn #… Steve waits for their turn`)
-   while Alex's runs beside it; three of Steve's lines waiting and a fourth turned away, never
-   answered, by a private message naming the three (`AI say - | (to Steve) Still on: …`), the
-   three taking his turn one after another; talk Respond answers alone (every line goes to
-   Respond first, which hands an ask up to the loop); and one hand-off
-   on the implementers' default, DeepSeek V4.1 Flash through OpenRouter (`docs/CONTRACTS.md` §10;
-   the 2026-10-12 run below was on Haiku 5.5, the subscription): its task's name, its `AI task` row, its brief in
-   `vfg.db` under its five headings with its done-when items, the turn ended as the implementer
-   started, its report starting a new loop (one chat line, one `AI result` row, nothing the
-   implementer wrote in the feed), what it made; then a follow-up by its name that resumes the
-   session, and a stop of its copy by its name, the task still `done`.
-2. **`VFG_LOOP_STEPS=2`, `VFG_IMPLEMENTER_MINUTES=1`.** A loop that reaches its step limit (read
-   Alex's items, then a last step that may run nothing) and ends with a reply or a hand-off; and
-   a report going ahead of Steve's waiting lines: a hand-off whose implementer reports within the
-   1-minute limit, Steve's lines fed from 15 s after it started to keep his turn busy with lines
-   waiting until the report comes, and the report's loop run before the lines still waiting when
-   it came (`turn report … waits for Steve's turn, first in line`).
-3. **`VFG_LOOP_SECONDS=2`, `VFG_IMPLEMENTER_MINUTES=1`.** A loop that reaches its time limit the
-   same way.
+Two stand-ins, so the checks that need timing get it on cue and spend nothing:
+- **the implementers' model**, [`stand_in_model.py`](stand_in_model.py): an Anthropic Messages API
+  on 127.0.0.1 that the real runner, relay and Claude Code CLI talk to (`VFG_IMPL_PROVIDER=deepseek`,
+  `DEEPSEEK_API_KEY=stand-in`, `VFG_IMPL_BASE_URL`, in the brain's environment only). It records
+  every request (`<server>/stand-in-model.jsonl`) and answers with a `Done:` report, an
+  implementer's first answer after 32 s and every later one after 3 s: it builds nothing;
+- **a slow provider**, [`shims/slow_step/`](shims/slow_step/sitecustomize.py), on the brain's
+  `PYTHONPATH` with `VFG_TEST_SLOW`: it holds a chosen brain step (or a conversation agent's call)
+  back for so many seconds before vfg_llm sends it, inside the call's own timeout, and logs `test
+  slow call: held …`. It does nothing without `VFG_TEST_SLOW`.
 
-The limits are lowered so a real ask reaches them in a step or two; 10 steps and 2 minutes are
-the same code with other numbers. At the end: every line read, no task open, a clean stop, no
-traceback or error in `brain.log`, the key in no file, every step a usage row `<ref> s<n>` and a
-line of `brain.log`, no orchestrator or planner call, and the cost under $1. It prints each line's
-time to its reply with its loop's steps, cost, cache rate and ending, the implementer tasks'
-times, every call's cost, the cache rate of the steps after a loop's first, and how many loops
-took one step and how many more. `--no-implementer` leaves out the two checks that start an
-implementer; `--only` runs the checks it names (the brain each needs is started for it). It
+Three brains run one after another on the one feed:
+
+1. **The defaults** (the router with no reasoning: the agent's line to a hand-off held for it).
+   Through the front turn now, each: a one-step ask whose actions all land (the agent's held line,
+   the loop's reply, one `AI action -` record, no task, the copy `command_steve`); actions together
+   (64 cobblestone and twenty chickens) and in turn (home, then day); a refused command the next
+   step fixes; Alex's items read with the tool; item asks by slot; the brain's own copy
+   `keep_effects_steve` started, edited and stopped; three of Steve's lines waiting for his turn
+   and a fourth turned away by a private message naming them; a line the agent answers itself, no
+   router, no loop. New: Steve's second line waiting only for his first line's front turn, his two
+   loops side by side (the first's step held 12 s) and Alex's line answered beside them; a step
+   held 65 s (47 s with `--brain-reasoning off`) landing inside its timeout, 120 s at low, while
+   Steve's "is it done yet?" is answered at once,
+   never as done; a line the router adds to a thinking loop (its step held 15 s), read in an extra
+   step (the loop's limit 20), a line added to it once ended, inside its 2 minutes, taken up with
+   its step read from the cache, and after the 2 minutes a line on that thing starting a new loop;
+   the router starting an implementer (the boomerang axe) with its brief in `vfg.db` under its five
+   headings, following it up while it runs (the follow-up in its model's next request), and
+   sending the same ask again nowhere with its own line in place of the agent's; the report
+   reaching the conversation agent and told while Steve's turn is busy (his agent's call held 17 s,
+   under its 20 s timeout, across the report); and, over every line of this brain, one line per ask from the front turn.
+2. **`VFG_ROUTER_REASONING=low`**: nothing held: a new thing (a frost bow) and the same ask again,
+   the agent's line out before the router answers, and the router's own after it.
+3. **`VFG_LOOP_STEPS=1`, `VFG_LOOP_CAP=2`**: a line's loop gets one step (its first is its last),
+   the line added to it once ended one more, at the cap: its last step replies or hands off and it
+   is deleted, and the next line on that thing starts a new loop. 10 and 20 are the same code with
+   other numbers.
+
+At the end: every line read, no task open, a clean stop, no traceback or error in `brain.log`, no
+report waiting for a turn, the key in no file, every step a usage row `<ref> s<n>` and a line of
+`brain.log`, every agent's and router's call a row `#<seq>` (or a report's task), no orchestrator
+or planner call, and the cost under $1. It prints each line's front turn (the agent's ending and
+ms, where the router put it, the lines said), its work (the loop, its steps, cost, cache rate,
+ending, state and budget), its time to the reply, every call's cost, and the medians of each
+agent's calls. `--only` runs the checks it names (the brain each needs is started for it). It
 copies a complete `refs/26.3/` from another server's stand-in when one has it, and leaves the
 server down unless `--keep-up`. See [realmc/README.md](realmc/README.md) for the server and its
 owner's rules.
 
-On 2026-10-12 a full run passed 77 of 77 checks in about 8 minutes, and the report check, run on its
-own again with the busy turn above, 23 of 23. Of 29 loops, 24 took one step and 5 two (Alex's
-items read, then the reply; a refused command fixed; the two limits); 25 ended with a reply, 1
-silent, 3 in a hand-off. A one-step ask's reply came 6.0-8.9 s after its line, a two-step one's
-10.3-21.9 s, a hand-off's line 6.8-10.7 s; a step cost a median $0.0056, its 32-35K-token prompt
-95% read from the cache, the steps after a loop's first too. The brain and Respond came to $0.21,
-the implementers (the torch ring, its follow-up, and a staff the minute stopped) $0.35 of the
-subscription. The brain went straight to an item modifier for `/enchant` over the maximum and
-wrote the scale attribute by its new name; the sword's enchantments in the old `{levels:…}` form
-were refused, and the next step gave the sword with the component's 26.3 form.
+On 2026-10-13, after the code review's last fixes (the brain at low by default, 120 s a step, the
+Step's values slot `fields`; brain.md 2538001ce692, respond.md f3034d3e74ab, router.md 7c327c4770d4;
+realmc cr-live), a full run passed **89 of 89** checks in about 15 minutes, for $0.082 of OpenRouter:
+22 hand-offs placed, each agent's line said after the router answered; the held step's call 66.6 s,
+past 60 s, inside 120 s, with "is it done yet?" answered at once meanwhile; a line added to a
+thinking loop read in an extra step, one added once it ended taken up from the cache, one after its
+2 minutes a new loop; the boomerang axe started with its brief, followed up, the same ask again sent
+nowhere with one line, its report told 9.9–10.7 s into Steve's held 18.1 s turn; at low, the agent's
+line out before the router answered and, once, the router's own after it; and the budget's cap. The
+agent's call took a median 561 ms, the router's 733 ms, a step 1.5 s; 91% of 2.0M prompt tokens came
+from the cache.
+
+The run before those fixes passed 74 of 88: the router sent "give me 64 steak" nowhere with no line
+of its own, so the agent's held "On it, chef!" went out and nothing was done, and three steps keyed a
+value with the action's own name and were refused twice.
+
+Before the fix round, five runs on the same build: the last passed 83 of 86 ($0.077), the others
+74–80 of 84–87, every failure the brain's model, not the plumbing: steps refused twice by their
+checks, a plain give handed to an implementer, a silent ending after a refused command.
+
+Before this spec, on 2026-10-12, a full run passed 77 of 77 checks in about 8 minutes (the loop's
+steps on Gemini 3.8 Flash low, Respond in front of conversational lines only).
 
 ## Jev's gather call live, on realmc
 
@@ -297,13 +347,13 @@ there"; a broken pickaxe and "can you give me a new one"; an ocean monument and 
 to breathe down there". Per scenario it checks the feed has one `LINE` for the ask, under the
 ask's fields and time, its text both pieces in order; the gather call never asked about the other
 player's line, and no group holds it; the brain's turn is for that line (its usage rows,
-Respond's `#seq` and its loop's steps' `#seq s<n>`; `brain.log`'s Respond line with the group's
-words and its `loop` line for the asker; the task it opened, whose line is the group), and none is
-for the first piece alone; and, a bonus not counted, what the brain did is in the world (night vision or torches, a
+the conversation agent's and the router's `#seq` and its loop's steps' `#seq s<n>`; `brain.log`'s
+agent line with the group's words and its `loop` line for the asker; the task it opened, whose
+line is the group), and none is for the first piece alone; and, a bonus not counted, what the brain did is in the world (night vision or torches, a
 diamond pickaxe, water breathing). Jev is not deterministic: it prints every line's verdict with
 D2's two answers, each gather answer with its confidence, the time from the end of the ask to
 Jev's verdict, to the feed and to the brain's reply, the gather call's ms and each model call's
-(Respond's, each step's), and the money. A scenario whose first piece Jev sent to the AI on its own, or whose ask it did
+(the agent's, the router's, each step's), and the money. A scenario whose first piece Jev sent to the AI on its own, or whose ask it did
 not send, is Jev's routing, not the gather's: it is reported and skipped. The run fails on any
 failed check, or when every scenario was skipped. Each run starts a new transcript, as a new box:
 the last run's `vfg.db`, feed, lookout, menu and logs move to `vfg/runs/<time>/`. `--no-brain` checks Jev alone (the groups on
@@ -320,6 +370,12 @@ for the pickaxe, and every no 1.00. On 2026-10-12, with the brain's loop: 16 of 
 three bonus passed, each ask one step ended with a reply 10.3–10.9 s after the end of the ask (its
 step 5.2–6.8 s), $0.002 of TypeSafe and $0.017 of OpenRouter; the gather's yes was 0.90 for the
 cave, 0.96 for the pickaxe and 0.72 for the monument.
+
+On 2026-10-13, on Prototype_Conversation_And_Router's build (every line through the conversation
+agent and the router, the loop's steps on DeepSeek V4.1 Flash): 16 of 16 checks, the three scenarios
+checked, the gather's yes 0.88, 0.96 and 0.80; the brain's reply 4.8–5.6 s after the end of the ask
+(the agent 0.67–0.96 s, the router 0.60–0.91 s); the world bonus 1 of 3, the other two loops' steps
+refused twice by their checks ("tangled up"); $0.002 of TypeSafe and $0.004 of OpenRouter.
 
 ## Contracts
 

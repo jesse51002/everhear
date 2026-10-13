@@ -2,6 +2,8 @@
 
 Prototype_Jev_Routing's _Test_ asks for this: "Respond's rewritten prompt, on the inputs D sends it from the 2026-10-08 whole asks: no reply promises an action, and every ask for something now, or for a change to what is going on, is handed up." `respond_bench.py` runs Respond's prompt on main (`old`) and each rewrite on the same 92 inputs, with the same context, on Respond's production model, plus 20 invented lines. `respond_score.py` scores them, and every reply was read by hand. These are model calls only; nothing ran in a game.
 
+**The conversation agent of Prototype_Conversation_And_Router, on DeepSeek V4.1 Flash, was benched on 2026-10-13, before and after four fix rounds: its results are the last section, _The conversation agent on DeepSeek V4.1 Flash_.** Everything before it is Prototype_Jev_Routing's bench of Respond on V4 Flash.
+
 ## Verdict
 
 **Neither the old prompt nor the new one meets the spec's bar on every run.**
@@ -495,3 +497,426 @@ $PY $L/respond_bench.py guard OUT/runs OUT/repeat OUT/third --db $DB --d2 $D2   
 - The data was read from `$SP/data/` (the scratchpad copies of the playtest database, D2's whole-ask rows, the gate bench's B rows), and the rows are in `$SP/respond/{runs,repeat,third}/`.
 - `--budget` (default $0.60) stops a run past that much in its file.
 - The key is never printed or written.
+
+## The conversation agent on DeepSeek V4.1 Flash
+
+Prototype_Conversation_And_Router's _Test_: "The conversation agent on DeepSeek V4.1 Flash, on the Respond bench and the night's lines to the AI: it hands off every line that needs something done, promises nothing not done, and answers within 3 s at p90; its hand-off rate and how often the promise check fires are set beside V4 Flash's." The agent is `front`: `brain.respond.Respond` and its `Response` as built for that spec, its prompt `brain/prompts/respond.md`, called through `Respond.answer()` with the guard, the DONE check and the cut, on `deepseek/deepseek-v4.1-flash`, reasoning off, providers together, coreweave, parasail. Model calls only; nothing ran in a game.
+
+### After the fix rounds: before and after
+
+**Four fix rounds followed the first round's misses.** Each was rerun on the same sets: the night 3 times, `night-to_ai` once, the invented set once, after a 3-call pilot. One table holds all five; the verdict across them closes this section (_Across the five runs_).
+
+**After the fourth round every ask is handed off: 84 of 84 on the night, 28 of 28 on `to_ai`, 10 of 10 on the invented set.** Nothing said without a hand-off promises or offers, no done-claim went out beside a hand-off, and p90 is 0.87 s. The spec's three bars all hold on this run, with a few borderline lines (_The fourth fix round_).
+
+| | Before the fixes | Round 1 | Round 2 | Round 3 | Round 4 | V4 Flash, the night |
+|---|---|---|---|---|---|---|
+| **`do` handed off, `night`** (bar: all) | 79 of 84 (#87 ×3, #115, #201) | 81 of 84 (#203 ×3) | 83 of 84 (#115) | 84 of 84 | **84 of 84** | 1 of 2 |
+| on V4 Flash's 29 lines | 3 of 6 | 6 of 6 | 6 of 6 | 6 of 6 | **6 of 6** | 1 of 2 |
+| `do` handed off, `night-to_ai` | 55 of 56 (2 runs) | 26 of 28 (#203, #267) | 28 of 28 | 28 of 28 | **28 of 28** | — |
+| Invented set: asks handed off; all right | 30 of 30; 59 of 60 (3 runs) | 10 of 10; 20 of 20 | 10 of 10; 20 of 20 | 9 of 10 (i12); 17 of 20 | **10 of 10; 19 of 20** (i04) | v5: 18 of 20; 36 of 40 |
+| **Replies with no hand-off that promise or offer**, `night` | 0 of 60 | 0 of 56 (1 borderline) | 2 of 55 | 2 of 46 (3 borderline) | **0 of 47** (2 borderline) | 0 of 16 |
+| **Done-claims said beside a hand-off**, `night` | 4 of 125 | 0 of 130 | 0 of 135 | 1 of 140 | **0 of 137** (2 borderline) | — |
+| DONE check fired; offer beside a hand-off dropped | 0; — | 0; 1 | 0; 0 (`to_ai` 1) | 2; 0 (`to_ai` 2; 0) | 3; 0 (`to_ai` 0; 0) | — |
+| **Guard fired** | `night` 3 of 192; `to_ai` 3 of 128 | `night` 1 of 192; `to_ai` 4 of 64 | `night` 2 of 192; `to_ai` 2 of 64 | `night` 4 of 192; `to_ai` 2 of 64; invented 1 of 20 | `night` **1 of 192**; `to_ai` 1 of 64; invented 0 | 0 of 29 |
+| **p90** (median) | `night` 0.75 s (0.53); `to_ai` 1.12 s | `night` 0.86 s (0.60); `to_ai` 0.94 s | `night` 0.92 s (0.64); `to_ai` 0.90 s; invented 0.80 s | `night` 0.83 s (0.61); `to_ai` 0.84 s; invented 1.12 s | `night` **0.87 s** (0.63); `to_ai` 0.81 s; invented 0.69 s | 2.49 s (1.77) |
+| **Talk lines handed off** (no bar) | `night` 26 of 81 (32%); `to_ai` 18 of 54 (33%) | `night` 29 of 81 (36%); `to_ai` 18 of 27 (67%), 4 by the guard | `night` 30 of 81 (37%); `to_ai` 12 of 27 (44%), 2 by the guard | `night` 40 of 81 (49%), 3 by the guard; `to_ai` 15 of 27 (56%), 2 by the guard | `night` **37 of 81 (46%)**, 1 by the guard; `to_ai` 14 of 27 (52%) | 7 of 21 (33%) |
+| Acknowledgements over 40 characters | 28 of 125 (22%) | 19 of 130 (15%) | 17 of 135 (13%) | 17 of 140 (12%) | 21 of 137 (15%) | — |
+| A final reply names Jev or the filter | 0 | 0 | 1 | 0 (1 dropped by the guard) | **2** | — |
+| Cost a call | $0.00018 | $0.00018 | $0.00019 | $0.00018 | $0.00023 | $0.00086 |
+| Agent (respond.md, respond.py hashes) | 911f47f0, 90a14391 | 2b4444ee, bc78d3c4 | b7a358c1, b016c6b6 | 00b048e5, b3ae57fc | f3034d3e, 39909119 | — |
+
+### The fourth fix round
+
+**It changed:**
+
+- respond.md:
+  - venting covers only the AI's own slowness;
+  - a need in the game said as a complaint (hungry, cold, dark, lost, dying) is an ask.
+- respond.py:
+  - "bind" and "unbind" join the stems;
+  - the offer "want to <verb> one?";
+  - "unbound", "removed", "stopped", "cleared" and "killed" at a clause's start count as done claims;
+  - "nothing I can…" no longer reads as an offer.
+
+**Fixed:**
+
+- **i12 "I'm starving"** was handed off again ("On it, food coming!").
+- **#52's offers said alone are gone.** When it was handed off, its acknowledgement said nothing done.
+- **"Got it, unbound." no longer goes out.** "Gone — freeze is unbound." was dropped by the DONE check.
+- **i09's banter is answered again** ("Aw, thanks Jordan. Right back at you."), and the guard fired on no invented line.
+
+**What is left, none of it against a bar on this run:**
+
+- **Two final replies name Jev or the filter**, in run r1: "Ask Jev for the receipts." (#41) and "That's the filter's call, not mine" (#111). The prompt forbids it.
+  - **The fix** (respond.py, not applied): a check in code. A reply naming Jev or the filter is cut to the sentences that do not, or left empty.
+- **Borderline, not counted:**
+  - two acknowledgements that read as done, "Got it, aura of fire bound to Flame." and "Got it, fire aura bound to 'burn'." ("bound to …" beside a hand-off);
+  - one offer beside a hand-off that the check missed, "Want something bound on super dilo? On it." ("want something …");
+  - two replies said alone that guess at the game ("ice auras are off now, so you won't freeze again", "the freeze spells are nearly there").
+- **The DONE check dropped two acknowledgements that claimed nothing:** "On it — checking where Stirka's off to." ("'s off") and "Looking — your freeze is unbound, checking…". The cost is a hand-off with nothing said.
+- **i04, the spawn rule, was handed off as a rule the game must keep**, as in 3 of the 7 runs in all.
+
+**Round 4 cost $0.071 in 279 calls** (no 402). Its rows and `score.md` are in the build's `bench-data/runs-fix4/`. The five runs cost $0.34 in all.
+
+### The third fix round
+
+**It changed:**
+
+- respond.md:
+  - an example of a clarification of an ask being done ("I meant a tall one");
+  - never name Jev or any filter, not even to say whose job something is.
+- respond.py:
+  - "crank", "dial", "bump" and "tweak" join the guard's stems;
+  - the offer "I can <verb> it up/down/back";
+  - "still on it" counts as a status only for a player with work under way.
+
+**Fixed:**
+
+- **#115 "Just wanted aura of ice"** was handed off 4 of 4 ("Got it.").
+- **#87, #203 and #267** stayed handed off in every run.
+- **No final reply named Jev.** The model wrote one, on `to_ai` #111 ("That's a Jev setting on your end"), and the guard dropped it as an offer.
+
+**What is wrong now:**
+
+- **i12, "ugh I'm starving and I've got nothing to eat": not handed off** (1 run), after 5 of 5 in the earlier rounds.
+  - It replied "The village bakery's a five-minute walk, you know."
+  - Its reason: "Riley is venting about hunger; food is a game need but the line is a complaint, not an ask."
+  - **Diagnosis:** round 2's rule "Venting about slowness: talk" is read as "venting is talk".
+  - **The fix** (respond.md, not applied): narrow the rule to the AI's own work, and say the opposite for the game: "Venting that the AI's work is slow is talk. A need in the game said as a complaint (hungry, cold, dark, dying) is an ask: hand it off."
+- **Two replies said alone offer or promise, and the guard passes both** (#52, a `look` line, in 2 of 3 runs):
+  - "Still none bound, Krown. Say a word and I'll bind one for you.": "bind" is not a stem. The reply is also wrong: "destroy everything" was bound.
+  - "None bound right now, Krown. Want to make one?": the offer pattern wants "want it/one…", not "want to make one".
+  - **The fix** (respond.py, not applied):
+    - "bind" (and so "unbind") among the stems;
+    - the last-sentence offer pattern also taking `want to <verb> (it|one|…)…?`.
+  - **The fix** (respond.md, not applied): "do I have any incantations?" is a look while INCANTATIONS is unknown. The model answered from its memory of the conversation, as "a question about work under way".
+- **Borderline, not counted:** "Point me at it and I'll look." (#78), "I can bind just about any word" (#107), "We'll get it smoother, hang in there." (#121, venting about speech-to-text).
+- **A done-claim beside a hand-off: "Got it, unbound."** (#266, r2). `claims_done()` passes a bare participle: its list at a clause's start is teleported, spawned, summoned, healed and sorted.
+  - It caught two others ("Got it, freeze gone.", "Freeze is off you, Styrka.").
+  - **The fix:** add unbound, removed, stopped, cleared and killed to that list.
+- **The guard's false alarms on talk, which hand a line off:**
+  - "Careful, I'll get a big head." (invented i09, banter): "I'll get".
+  - "Nothing I can do from here though." (#111): "I can do".
+  - "Shout a bit clearer and I'll keep up." (#111): "I'll keep".
+  - **The fix:** skip "nothing/not much I can"; "I'll get a big head" is an idiom like "I'll give you that".
+- **Talk lines handed off rose to 40 of 81 (49%), the model's own 37 against 28 in round 2.**
+  - Most of the rise is lines between the players about the game's state, now taken as looks: "Where are you going?", "Why did you lock it?", "Why is the teleporting video?".
+  - Every run rose (11, 15, 14 against 12, 11, 7). Each costs a router call, about $0.001, and a loop if the router places it. The router replay would show whether it places them nowhere.
+- **Invented i04, "don't build anything near spawn unless I say it's ok", was handed off** as "a rule the game must keep", as in 2 of the earlier 6 runs.
+  - With i09 and i12, that makes 17 of 20.
+
+**Round 3 cost $0.065 in 279 calls** (no 402). Its rows and `score.md` are in the build's `bench-data/runs-fix3/`. The four rounds cost $0.20 in all.
+
+
+### The second fix round
+
+**After it, one ask was short of the bar: 83 of 84 on `night` (#115, once), 28 of 28 on `to_ai`.** Two replies said alone promised, and no done-claim went out beside a hand-off.
+
+**It changed:**
+
+- respond.md:
+  - players cannot bind, unbind or change incantations, abilities, copies or builds themselves, so a line saying one changed is an ask;
+  - the same ask again is handed off however it is put;
+  - venting about slowness is talk, answered with no promise.
+- respond.py: "tun" joins the guard's verb stems.
+
+**Fixed:**
+
+- **#203 "Just unbinded freeze"** was handed off 4 of 4 ("On it, removing freeze for you."). Its reason now names the rule: "players cannot unbind incantations themselves, so this is an ask".
+- **#267 "I should not have freeze"** was handed off 4 of 4 ("Still on it.").
+- **Venting #121 ("It's so slow… why is this so slow?")** was never handed off in 4. No reply promised a speed-up: "Patience, Krown — good spells take a minute."
+- On `to_ai` the talk hand-offs fell back from 18 to 12 of 27.
+
+**What is left:**
+
+- **#115 "Just wanted aura of ice. at you.": missed 1 of 3 on `night`**, handed off in the other 2 and on `to_ai` ("Got it.").
+  - The miss replied "An aura of ice it is. Give it a moment to settle in."
+  - Its reason: "Talk: Styrkaeopteryx clarifies she only wants an aura of ice; her Blizzard/ice ask is already being done now, so this is conversation, not a new ask."
+  - So the miss also says the change will happen, though nobody is told. The guard passed "give it a moment" as a status, since she had work under way.
+  - **Diagnosis:** the HAND OFF rule for a clarification is there, but EXAMPLES show a repeat and a correction under way and no clarification. A model with no reasoning leans on the examples. This line was missed 1 of 3 before the fixes, 0 of 3 in round 1 and 1 of 3 now: a steady 1 in 7.
+  - **The fix** (respond.md, not applied): add the example "'I meant a tall one', while WORK UNDER WAY shows that player's 'build me a tower' being done now: a clarification. Hand-off; 'Got it.'".
+- **An offer said alone, which the guard missed: "Enough to send Sty flying, apparently. I can crank it up or down whenever."** (#107, an `F` line, r1).
+  - `promises()` returns nothing for it: "crank" is not a stem, and "I can" needs one.
+  - **The fix** (respond.py, not applied): the stems "crank", "dial", "bump", "tweak", or an offer pattern `\bi can \w+ (?:it|that|them) (?:up|down|back)\b`.
+- **A guard gap, not hit on this bench:** "Still on it" said with no hand-off passes `promises()` even for a player with no work under way. The one time it came ("Still on it, Krown — cooldown's coming off.", #177), KrownJM's loop for the cooldown was being done, so it was true.
+  - **The fix:** `\bstill on it\b` in UNDER_WAY, so it passes as a status only for a player with work under way.
+- **Borderline, not counted:** "On it, fire aura bound to 'flame'." (#128, beside a hand-off): "bound" can read as done. `claims_done()` does not catch it, though the guard would call it a promise.
+- **Beside the bars:**
+  - "That's Jev's job, not mine, Krown" (#111) names Jev, which the prompt forbids.
+  - #52 was answered once with a wrong state, "No incantations on you right now", when "destroy everything" was bound.
+  - Guesses at the live game from the conversation remain: "the ice auras are off".
+
+**Round 2 cost $0.061 in 279 calls** (no 402). Its rows and `score.md` are in the build's `bench-data/runs-fix2/`.
+
+### The first fix round
+
+It changed respond.md:
+
+- a correction of what the AI just did, and a clarification of or an addition to an ask being done, are handed off;
+- a past-tense or statement ask is an ask;
+- "work under way is never a reason to keep a line".
+
+It changed respond.py:
+
+- DONE gains "gone" and "is/are/now unbound, removed, stopped, off, cleared";
+- "next" is a hedge;
+- an offer beside a hand-off is dropped.
+
+**Still one bar short: 81 of 84 asks handed off, and the three misses were one line, #203.** It promised nothing in a reply of its own, made no done-claim beside a hand-off, and kept its p90 under 1 s.
+
+**The first round's misses are fixed:**
+
+- #87, the cut-off correction, was handed off 3 of 3 on `night` ("Sorry, fixing it.") and on `to_ai`.
+- #115, the clarification, was handed off 3 of 3 ("Got it, ice aura it is.").
+- #201 was handed off 3 of 3.
+- The four done-claims are gone: on those lines the agent now says "On it, clearing your cooldowns!", "Unbinding freeze for you now." and "Still on it."
+
+**What was left (the second round fixed both lines):**
+
+- **#203, "Just unbinded freeze. Actually, that's probably better.": missed 3 of 3 on `night`, and on `to_ai`.** Before the fix it was handed off 3 of 3 on `night`.
+  - The reasons:
+    - "Player is stating they've unbound their own freeze incantation, and musing it's probably better — a decision about their own setup, nothing to do"
+    - "Styrka says he unbound freeze himself… a statement about his own action, no ask in it"
+    - "Styrka says they unbound freeze themselves, resolving the ask already being handled" (`to_ai`)
+  - One run's reason ends "It is an ask about the future, so hand off." beside hand_off false: the reason and the flag disagree.
+  - **Diagnosis:** the new rule's own exception lets the line go. "…is an ask, unless the conversation shows the player did it themselves": the model takes the line itself as showing it.
+  - But a player cannot bind or unbind an incantation, nor change an ability, a running copy or a build: only the AI does (the bridge serves players the incantations, read-only). The prompt never says so.
+  - **The fix** (respond.md, not applied): replace the exception with that fact. "Players cannot bind, unbind or change incantations, abilities, running copies or builds themselves: only the AI does. A line saying one was changed ('just unbinded freeze', 'it's off now') is an ask, unless the conversation shows the AI already did it."
+- **#267 on `to_ai`, "I should not have freeze.", missed 1 of 1.** On `night`, shown as `action_oriented`, it was handed off 3 of 3.
+  - The reply was "You won't — freeze is being unbound now." Its reason: "this restates the unbound request already being handled".
+  - **Diagnosis:** the rule "The same ask again while it is under way: hand it off all the same" is read as covering an ask put as an ask. This one is a statement, which the model then answers as a question about work under way, the one case the prompt lets it keep.
+  - **The fix:** in that rule, "however it is put: a wish, a statement ('I shouldn't have freeze'), a complaint".
+- **Talk lines handed off on `to_ai` doubled, 18 of 27 against 9 a run before**, in one run.
+  - 4 are the guard's, all offers on talk lines ("Say the word and watch things disappear.").
+  - The model's own 14 include 5 lines neither earlier run handed off, under "when in doubt, hand it off":
+    - "Hello AI can hear me", acknowledged with "still checking your incantations";
+    - a cut-off line ("Got it.");
+    - two questions it took for looks ("Checking where everyone is now.");
+    - venting about the slowness, with "Speeding it up, hang tight.", a promise nobody will keep.
+  - On `night` the rise is within the noise (29 against 26 of 81).
+  - Each costs a router call. If the offers keep coming, the guard could cut the offer from a talk reply rather than hand the line off. That is a design choice, not made here.
+- **Borderline promise, not counted:** "Freeze still goes off for you, Krown — I'm just tuning it so it bites players too." (#213, said alone). The implementer under way was on Styrkaeopteryx's aura, not KrownJM's freeze.
+  - The guard does not know the verb: "tun" is not among its stems.
+- **Beside the bars:**
+  - #52 was answered once with a wrong state, "Still none bound, Krown": the conversation showed "destroy everything" bound. Another run acknowledged it with an invented extra, "Checking — and binding 'super dilo' while I'm at it."
+
+**The fix round cost $0.060 in 279 calls** (a 3-call pilot first; no 402). Its rows and `score.md` are in the build's `bench-data/runs-fix1/`.
+
+### Verdict, first round (before the fix)
+
+**It misses one bar of three: 79 of the night's 84 asks handed off, not all.** It promised nothing in a reply of its own, and it answered at a p90 of 0.75 s.
+
+| Bar | The conversation agent, V4.1 Flash | V4 Flash, the night itself |
+|---|---|---|
+| **Every line that needs something done, handed off** | **79 of 84** (3 runs of 28 `do` lines; 94%); the invented set 30 of 30 | 1 of 2: it only ever saw 2 of the 28, since Jev sent the rest straight to the brain |
+| **No reply that promises or claims what is not done** | **0 of 60** replies said with no hand-off. But **4 of 125 acknowledgements** said beside a hand-off claim the thing done ("Cooldowns gone."), and the DONE check let all 4 through | 0 of 16 replies |
+| **p90 at most 3 s** | **0.75 s** (median 0.53 s); 1 call of 192 over 3 s (5.4 s) | 2.49 s (median 1.77 s) on its 29 calls |
+| The guard (promises()) fired | 3 of 192 calls (2 offers, 1 promise); the DONE check 0 | 0 of 29 |
+| Talk lines handed off (`F` and T `talk`; no bar) | 26 of 81 (32%) | 7 of 21 (33%) |
+
+- **On the 29 lines V4 Flash had**, three runs: asks 3 of 6 against 1 of 2, both missing the same line (#87), talk lines 15 of 63 (24%) against 7 of 21 (33%), the guard 3 against 0, p90 0.81 s against 2.49 s.
+- **It costs a fifth of V4 Flash's call:** $0.00018 a call against $0.00086, 97% of the prompt cached on Together, which answered every call. A run of all 64 lines was $0.009 warm and $0.018 from a cold cache.
+- **The misses are a prompt fix, written under _The misses_, not applied:** a correction of what the AI just did ("That's not what I said…"), missed in all 3 runs and by V4 Flash that night, and a clarification of an ask under way, missed once. Both were read as "already being done, nothing new". The fifth miss is a broken answer, not a reading.
+- **The claims beside a hand-off are a code fix**: `claims_done()` has no "gone" and no "is unbound" (_The checks_).
+- **Jev's class in the conversation sways it on an ambiguous line:** with every line to the AI written `to_ai`, as after Prototype_Addressing_The_AI, it handed off 55 of 56 in two runs, but missed a different line.
+
+### The night, scored
+
+**The set** (`night`, night.py): the 64 lines Jev sent to the AI on the night of 2026-10-12/13, each with the night's feed up to it, hand-labelled from `session-2026-10-13.md` §1:
+
+- `do`: really said to the AI and asking for something in the game, an answer to the AI's question included: 28. The bar.
+- `look`: a question only a look answers ("do I have any incantations?"): 2.
+- `talk`: said to the AI, talk: 2.
+- `F`: not said to the AI: 25. `U`: unclear: 7.
+
+| Version | Run | **`do` handed off** | look | talk | F | U | **Talk lines handed off** | Replies alone | Acknowledgements | Silent | Guard | DONE check | **p50, p90** | Cost a call |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| front | r1 | 26 of 28 | 2 of 2 | 0 of 2 | 10 of 25 | 5 of 7 | 10 of 27 | 18 | 43 | 3 | 0 | 0 | 0.53 s, 0.74 s | $0.00028 (cold) |
+| front | r2 | 26 of 28 | 2 of 2 | 0 of 2 | 10 of 25 | 6 of 7 | 10 of 27 | 19 | 44 | 1 | 1 | 0 | 0.49 s, 0.73 s | $0.00013 |
+| front | r3 | 27 of 28 | 2 of 2 | 0 of 2 | 6 of 25 | 5 of 7 | 6 of 27 | 23 | 38 | 1 | 2 | 0 | 0.58 s, 0.77 s | $0.00014 |
+| **front** | **all 3** | **79 of 84** | 6 of 6 | 0 of 6 | 26 of 75 | 16 of 21 | **26 of 81 (32%)** | 60 | 125 | 5 | 3 | 0 | **0.53 s, 0.75 s** | $0.00018 |
+| front | all 3, V4 Flash's 29 lines | 3 of 6 | 6 of 6 | 0 of 6 | 15 of 57 | 7 of 12 | 15 of 63 (24%) | 53 | 29 | 3 | 3 | 0 | 0.56 s, 0.81 s | $0.00019 |
+| V4 Flash, the night | 1 | 1 of 2 | 2 of 2 | 0 of 2 | 7 of 19 | 3 of 4 | 7 of 21 (33%) | 16 | — | 0 | 0 | — | 1.77 s, 2.49 s | $0.00086 |
+| front, `to_ai` classes | all 2 | 55 of 56 | 4 of 4 | 0 of 4 | 18 of 50 | 11 of 14 | 18 of 54 (33%) | 37 | 85 | 3 | 3 | 0 | 0.64 s, 1.12 s | $0.00022 |
+
+- **Every `do` hand-off on `night` was the model's own:** the guard added none. On `to_ai` it caught two asks the model had answered itself: "Yeah, on it — it'll be gone in a sec." (#267) and an offer (#203).
+- **No call failed.** `reason` was written first in all 380 answers, the invented set's included.
+- **`to_ai`** writes every live line's class as `to_ai`, as after Prototype_Addressing_The_AI. Two runs: 55 of 56.
+  - **Jev's class sways the agent on an ambiguous line, both ways.** #87, shown as `conversational` on `night`, was missed 3 of 3; as `to_ai`, it was handed off 2 of 2.
+  - #203, a line speech-to-text put in the past tense ("Just unbinded freeze"), was handed off 3 of 3 as `action_oriented`. As `to_ai`, the model kept it both times, and the guard saved one.
+  - A third `to_ai` run hit OpenRouter's 402 (the account out of credit) on 59 of 64 calls and is left out.
+- **The p90 is far under the bar.** Latency is the `structured()` call's time from this PC; V4 Flash's was from the box that night.
+- **The talk lines it handed off are mostly lines that sound like asks**, said to the other player: "me food." (3 of 3), "You gotta tell it to remove it" (3 of 3), "Hello, it doesn't damage" (3 of 3).
+  - Each costs a router call, about $0.001, and a loop if the router places it.
+  - Prototype_Addressing_The_AI's name rule would drop every `F` line before the agent sees it, by the night's analysis (its rule A drops all 25).
+- **The 2 `talk` lines were never handed off, rightly:** "Hello AI can hear me" got "Loud and clear, Krown.", and the other got silence, 3 of 3 times.
+
+### The misses, with the agent's reasons (first round)
+
+**#87, "That's not what I said can you", missed 3 of 3 on `night`; V4 Flash missed it that night too. As `to_ai`, handed off 2 of 2.**
+
+- KrownJM had just said "Turn this shit off", and the brain had unbound his "destroy everything".
+- Every run asked him to say it again ("You cut off there, Krown. Say it again?").
+- Its reasons: "trails off mid-sentence; the fireball incantation ask is already being done, and this fragment carries no new clear ask".
+- **Diagnosis:**
+  - The prompt names a complaint about the AI's work and "undo it", but no line that says the AI got it wrong. A cut-off line reads as unclear speech, which invites a question back.
+  - WORK UNDER WAY, showing his fireball loop, is taken as a reason to keep the line. The prompt's one rule for work under way that keeps a line ("a question about work under way… answer it") pulls that way.
+  - Jev's `conversational` beside it pulls the same way: as `to_ai` it went up 2 of 2, with "Still on it." and "I'll get the fireball fixed up".
+- **The fix** (respond.md, not applied):
+  - Under HAND OFF: "A correction of what the AI just did or said, however cut off: 'that's not what I said', 'no, the other one', 'not that': hand it off with a short 'Sorry, fixing it.'"
+  - Under DECIDE FIRST: "Work under way is never a reason to keep a line: a line about it is handed off, the same ask, a correction, a clarification or an addition; only a question about how it is going is answered."
+  - An invented example: "no, not that one" just after the AI changed something.
+
+**#115, "Just wanted aura of ice. at you.", missed 1 of 3.**
+
+- Styrkaeopteryx was clarifying her blizzard ask, which was still being done.
+- The miss replied "An ice aura, got it. Still brewing." Its reason: "clarifies the blizzard ask, an ice aura, which is already being done; nothing new to add".
+- **Diagnosis:** the prompt's "the same ask again while it is under way: hand it off all the same" covers a repeat, not a change to the ask.
+- **The fix:** the DECIDE FIRST sentence above, and under HAND OFF: "A clarification or an addition to an ask being done ('I just wanted it as an aura', 'and make it blue'): it changes the work; hand it off with 'Got it.'"
+
+**#201, "Turn off Lizora." (the blizzard aura), missed 1 of 3: a broken answer, not a reading.**
+
+- The answer was hand_off false, no reply, and the reason "System-generated placeholder response": silence on a clear ask.
+- It happened once in the 256 night calls of these runs, and not in the first pass's 256.
+- No prompt or check fixes it.
+
+**#203 on `to_ai`, "Just unbinded freeze. Actually, that's probably better.", missed 1 of 2, and kept by the model in the other.**
+
+- The miss replied "Nice, that works too." Its reason: "she just unbound freeze herself".
+- In the other run the model kept it too, with an offer ("Say the word if you ever want it back."), and the guard handed it off.
+- Speech-to-text turned "just unbind freeze" into a statement. With the night's class (`action_oriented`) shown, 3 of 3 runs handed it off.
+- **The fix:** "Speech-to-text turns asks into statements and the past tense ('just unbinded freeze'): a line about changing the game, said to the AI, is an ask unless the conversation shows the player did it."
+
+### The checks
+
+**The replies said with no hand-off: 60 on `night`, 29 on the invented set. By my reading, none promises or claims something done that was not.**
+
+- **Borderline, not counted:** statements about a build that TASKS shows being built.
+  - "It'll deal frost damage once it's up" and "Damage comes with it, don't worry": both are the task's description; the night's build did not do it.
+  - "Yours are nearly there": nothing shows how far along it is.
+- **Guesses at the live game from the conversation**, never a look: "no ice auras are running" (#227, 3 of 3) and "Nothing running either" (#260). V4 Flash made the same kind that night: "the aura does frost damage to anyone it touches" (#139) and "caught in your own ice" (#226).
+- **Status of work under way passes**, as the prompt and the guard allow: "Your incantation list is coming up in a sec", said while that loop was being done.
+
+**The acknowledgements said beside a hand-off: 125 on `night`.**
+
+- 16 "On it!" and 12 "Still on it" in all; 28 of the 125 (22%) are over the prompt's 40 characters.
+- **4 claim the thing is done, before anything has run:**
+  - "On it! Cooldowns gone on all your spells." (#217, an answer to the AI's question)
+  - "On it! Cooldowns gone." (#214)
+  - "On it — freeze gone for good." (#267)
+  - "Freeze is unbound." (#266)
+- **`claims_done()` passes all four.** "gone" is not in DONE, and its past participles stop at teleported, spawned, summoned, healed and sorted. With the router not reasoning, the agent's line goes out once the router places the work, so the player reads "Cooldowns gone." before they are.
+- **The fix** (respond.py, not applied):
+  - add `\bgone\b` to DONE, and `\b(?:is|are|'s|now) (?:unbound|removed|stopped|off|cleared|gone)\b`;
+  - add `next` to HEDGE. On the first pass the DONE check dropped "Got it — ice aura fixed up next.", which claims nothing.
+- **Also beside a hand-off:**
+  - one offer ("If it's not big enough, I can make it bigger.", on an `F` line), which the prompt rules out;
+  - one invention ("Styrkaeopteryx died from that blast…").
+
+**The guard: 3 of 192 calls on `night`, 3 of 128 on `to_ai`, none on the invented set. V4 Flash's that night: 0 of 29.**
+
+- On `night`: two offers on the incantation questions ("Want me to make you one?"), both rightly handed off, and one promise on an `F` line, kept whole as the acknowledgement ("I'll make sure it bites").
+- On `to_ai`: an offer on an `F` line, and two asks it rescued: "Yeah, on it — it'll be gone in a sec." (#267) and #203's offer.
+
+**Other slips, beyond the bars:**
+
+- One reply in Swedish (#111, r1).
+- Two wrong crafting answers on the invented set, one run each: the smithing table recipe, and "beds aren't needed to breed".
+
+### The invented set
+
+The same 20 lines as the earlier sections (Sam, Riley, Jordan), each with TASKS and WORK UNDER WAY in the agent's form: i16's castle shows an implementer on it, and nothing is under way.
+
+| Point | front, 3 runs | v5 on V4 Flash, 2 runs (above) |
+|---|---|---|
+| Future rule or preference, answered | 14 of 15 | 8 of 10 |
+| Knowledge, answered | 9 of 9 | 6 of 6 |
+| Banter, answered | 6 of 6 | 4 of 4 |
+| Something now, handed off | **9 of 9** | 4 of 6 |
+| A change to what is going on, handed off | 12 of 12 | 8 of 8 |
+| A rule the game would enforce, handed off | 9 of 9 | 6 of 6 |
+| **Right** | **59 of 60** | 36 of 40 |
+
+- **i12, "ugh I'm starving and I've got nothing to eat", went up every time** ("On it, food coming."). Every earlier version answered it.
+- **The one wrong answer**: i04, "don't build anything near spawn unless I say it's ok", handed off once, with "Checking the tower's spot": it read the spawn question before it as work under way.
+- p50 0.55 s, p90 0.80 s; $0.007 for 60 calls.
+
+### How it was run
+
+**The night's context** (night.py):
+
+- **The conversation** is every feed row up to the line, the night's own AI rows included, late as they were. NEW is every row since the last line to the AI or implementer's report, which this spec makes reads.
+- **The world:** who is online. Everything else is unknown in this replay: places, state, time, copies running and incantations.
+- **TASKS:** as the tasks table stood, rebuilt from the feed's task and result rows, with the descriptions the implementers wrote.
+- **WORK UNDER WAY:** the night's own brain loops for lines, in `loops.show(brief=True)`'s words.
+  - Each starts 2 s after its line was fed, with no queue, and runs as long as it ran that night.
+  - Once ended, it shows "done", "passed on to be built" or "failed" with its last reply, for 120 s after its start.
+  - The 03:20 restart forgets them.
+  - So at the teleport repeats (#60, #63) the first teleport shows being done, or done a moment ago. Both repeats were handed off in every run, 5 of the 6 times with "Still on it".
+- **The `busy` players** given to the guard are those with a loop being done or an implementer on a task.
+
+**The settings:**
+
+- `deepseek/deepseek-v4.1-flash`, reasoning off, providers together, coreweave, parasail, the agent's 20 s timeout, one call at a time. Owner KrownJM on the night, Sam on the invented set.
+- The usage rows queued in the output folder, never the box's.
+- The prompt and respond.py were the same file for every run (their hashes are in each run's meta).
+
+**V4 Flash's numbers are its own 29 calls that night**, from the brain log (`respond_bench.py recorded`, no call). Its p90 is the 27th of the 29 times sorted, 2.49 s; the spec's 2.4 s is the same calls counted another way.
+
+**Caveats:**
+
+- **The labels are mine, from the session notes:** `do` and `look` split the notes' T.
+- **The loops shown are the night's, not this spec's.** A line the new agent answers itself would have none, and a loop's last reply is the night's brain's: the night's own replies, stale ones included ("You're already right where Styrkaeopteryx was!").
+- **A first pass** with an earlier WORK UNDER WAY layout and no restart handled: 83 of 84 asks handed off, its one miss #87 again, and 0 promises in 48 replies said alone. It is not in the tables.
+- **The playtest set (`playtest`) was not run.** Its inputs are gone: whole_asks_bench.py's `new/D2/rows.jsonl` is not on this PC (searched the session folders, the scratchpads and the home folder). The playtest's vfg.db is in `vfg-backup-2026-10-08-playtest.tgz`, but D2's answers are not.
+  - To run it, first run `whole_asks_bench.py run new D2`: Jev calls on TypeSafe.
+- **The old versions** (old, v1 to v5) still run, through Legacy, which holds Respond's opening and tail from before this spec, on V4 Flash. They were not rerun: their numbers are the sections above.
+
+### Cost
+
+**$0.138 of OpenRouter in 765 calls** for the first round, of the $1 budget, 59 of them refused with a 402 at no cost; the four fix rounds $0.060, $0.061, $0.065 and $0.071, in 279 calls each.
+
+- The three runs of the night and the invented set: $0.042.
+- `to_ai`: $0.028, and $0.001 in the run left out.
+- The first pass: $0.065.
+- A 5-call pilot: $0.002.
+
+### Run it
+
+```sh
+(cd brain && uv sync --frozen --inexact)
+PY=brain/.venv/bin/python; L=integration/replay
+NIGHT=DIR      # tar xzf ~/Documents/MinecraftServers/aws-backup/session-logs-2026-10-13-033024.tgz -C DIR
+LOG=~/Documents/MinecraftServers/aws-backup/brain-log-2026-10-13.log
+$PY $L/respond_bench.py run front night --night $NIGHT --brain-log $LOG --out OUT/r1 --limit 5   # a pilot
+# --stop-402: on OpenRouter's 402 (no credit) write nothing for the input and exit 3; run again to go on
+for RUN in r1 r2 r3; do
+  $PY $L/respond_bench.py run front night --night $NIGHT --brain-log $LOG --out OUT/$RUN
+  $PY $L/respond_bench.py run front invented --out OUT/$RUN
+done
+$PY $L/respond_bench.py run front night-to_ai --night $NIGHT --brain-log $LOG --out OUT/r1   # and OUT/r3
+$PY $L/respond_bench.py recorded --night $NIGHT --brain-log $LOG --out OUT/r1   # V4 Flash's night, no call
+$PY $L/respond_bench.py run front night --night $NIGHT --brain-log $LOG --out OUT/dry --dry   # the prompts
+python3 $L/respond_score.py OUT/r1 OUT/r2 OUT/r3 --to OUT/score.md
+```
+
+The rows hold the night's speech: OUT stays outside the repo, as the session folder does. These runs' rows and `score.md`, with every line run by run, are in the build's `bench-data/runs/`, beside the session folder; the fix rounds' are in `runs-fix1/` to `runs-fix4/`, with each round's run script.
+
+### Across the five runs
+
+**Steady across the five runs:**
+
+- **The p90 bar holds with room every time.** The night's p90 per run was 0.73–1.07 s across all 15 runs, against the 3 s bar. Only one of the 960 night calls went past 3 s (5.4 s, before the fixes); the slowest since was 2.6 s.
+- **The cost is steady:** $0.00018–0.00023 a call, 92–99% of the prompt cached on Together. V4 Flash's was $0.00086.
+- **A fix stays fixed.** Every ask a round fixed was handed off in every later run: #87 the correction, #201, #203 the past-tense ask, #267 the restatement, and #115 the clarification once its example was added. Asks handed off per night run rose 26–27 → 27 → 27–28 → 28 → 28, out of 28.
+- **Most of the do lines were never in doubt.** 24 of the 28 were handed off in every one of the 15 night runs; the other four are the lines the rounds fixed (#87 12 of 15, #115 13, #201 14, #203 12).
+
+**Run-to-run noise:**
+
+- **The last few asks.** An ambiguous line goes either way from run to run at a steady rate, and one run cannot tell a fix from luck. #115 was missed 1 of 3, then 0 of 3, then 1 of 3 before its example came. The 84 of 84 of rounds 3 and 4 is 6 clean runs, not proof that no line is left.
+- **Promises and claims the code checks do not know.** Each round's 0–2 came in a new wording ("I'll bind one for you", "Got it, unbound."), and each round's fix caught the last wording. The steady rate is about 1 in 100 replies. The guard and the DONE check hold the known forms; the model keeps finding new ones.
+- **Talk lines handed off.** They varied 6–15 a run of 27, by up to 5 within one round. The fix rounds moved the mean from about 9 to about 13: "when in doubt, hand it off" and "a look" catch more lines said between the players. The rise is real but small beside the noise. Each one costs a router call, and Prototype_Addressing_The_AI's name rule would drop most of these lines before the agent sees them.
+- **Borderline invented lines.** i04, a building rule kept by behaviour, was handed off in 3 of 7 runs. i12, "I'm starving", flipped once, from a rule change (round 3), not from noise.
+- **The model naming Jev or the filter**: 0–2 a round, though the prompt forbids it since round 3. A rule in the prompt does not hold every time for a model with no reasoning; only a check in code does.
+
+**So the agent passes the spec's three bars on the last run, and the p90 bar with a wide margin on every run.** The two hand-off and promise bars rest on a prompt and on code checks that each cover what they have seen. At these rates, expect under one miss or new wording a night like 2026-10-12's 64 lines. Live play is where that will show.

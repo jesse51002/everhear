@@ -1,6 +1,7 @@
 """The step: its checks, which send a wrong answer back to the model once, the schema that never
-changes, the brief rendered from its parts, what stays in the cached opening, and what each event
-puts in the prompt's tail."""
+changes and holds no status, the brief rendered from its parts, what stays in the cached opening,
+what each event puts in the prompt's tail (the conversation agent's line among it), a line added
+to a loop as its own block, and the step line with the loop's limit and no time."""
 
 import functools
 import json
@@ -8,14 +9,14 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from brain.call import ActBase, Call, Event, HandOff, Prompt, step_type
+from brain.call import PROMPT, ActBase, Added, Call, Event, HandOff, Prompt, added, step_type
 from brain.context import parse
 from brain.respond import promises
 from brain.world import Seen
 
-from conftest import NOW, FakeRefs, act, catalog, cmd, follow_up, hand_off, made, rows, step
+from conftest import NOW, FakeRefs, act, catalog, cmd, follow_up, hand_off, line, made, rows, step
 
-LINE = "LINE#40 18:29:58 Steve voice to_ai 0.93 -8dB | give me a diamond pickaxe"
+LINE = line(40)
 
 
 def check(answer: dict, **moment):
@@ -38,8 +39,6 @@ def test_good_steps_pass():
     edit = check(step(act("edit", "no cooldown on Alex's railgun", {"copy": "railgun_alex", "values.cooldown": 0}),
                       reply="no more cooldown"))
     assert edit.actions[0].values() == {"copy": "railgun_alex", "values": {"cooldown": 0}}
-    assert check(step(record="castle_steve done: castle up", status="done", reply="castle's up"),
-                 report=True).status == "done"
     # the last step: an ending with no action and no read; a follow-up of a task there is
     assert check(step(reply="couldn't do the rest, sorry"), last=True).end == "reply"
     assert check(step(end="handoff", follow_ups=(follow_up("castle_steve", "a moat", "A castle with a moat."),)),
@@ -55,17 +54,17 @@ WRONG = [
     (step(act("command", "nothing", cmd("give Steve bread")), reply="ok"), {}, "does nothing"),
     (step(act("teleport", "teleport Steve to his current position", {"player": "Steve", "to": "spawn_point"}),
           reply="ok"), {}, "moves nobody"),
-    (step({"to": "command", "instruction": "give Steve bread", "action": [
+    (step({"to": "command", "instruction": "give Steve bread", "fields": [
         {"key": "commands", "value": ["give Steve bread"]}, {"key": "commands", "value": ["x"]}]}, reply="ok"), {},
      "sets a field twice"),
     (step(act("railgun", "a railgun for Steve", {"player": "Steve", "range": "far"}), reply="ok"), {}, "range=far"),
     (step(end="next"), {}, "end next runs or reads something"),
-    (step(end="next", status="done", reply="there"), {"report": True}, "end next runs or reads something"),
+    (step(end="next", reply="there"), {}, "end next runs or reads something"),
     (step(BREAD), {}, "end reply needs the reply"),
-    (step(end="reply", status="done"), {"report": True}, "end reply needs the reply"),  # the pilot's answer
+    (step(end="reply"), {}, "end reply needs the reply"),                # the pilot's answer, its status gone
     (step(end="handoff", reply="on it"), {}, "end handoff needs a hand-off or a follow-up"),
-    (step(end="handoff", reply="On it, making the explosion bigger too.", status="done"), {},
-     "end handoff needs a hand-off or a follow-up"),                       # the pilot's #97, its status dropped
+    (step(end="handoff", reply="On it, making the explosion bigger too."), {},
+     "end handoff needs a hand-off or a follow-up"),                       # the pilot's #97
     (step(BREAD, end="next", hand_offs=(hand_off(),)), {}, "hand_offs and follow_ups end the loop"),
     (step(end="handoff", hand_offs=(hand_off("Hot Fireball"),)), {}, "lowercase letters"),
     (step(end="handoff", hand_offs=(hand_off("cast"),)), {}, "the bridge's task"),
@@ -78,9 +77,7 @@ WRONG = [
     (step(end="handoff", follow_ups=(follow_up("a_b", description="A bigger thing."),)), {}, "has no brief"),
     (step(end="handoff", follow_ups=(follow_up(" ", cancel=True),)), {}, "names no task"),
     (step(reply="x" * 301), {}, "301 characters"),
-    (step(BREAD, reply="ok"), {"last": True}, "this is the last step: run no action"),
     (step(end="next", read=("Alex",)), {"last": True}, "this is the last step"),
-    (step(reply="here", read=("Alex",)), {"last": True}, "this is the last step"),
     (step(BREAD, end="silent"), {"last": True}, "this is the last step"),
     (step(end="handoff", follow_ups=(follow_up("castle_bob", "a moat", "A castle."),)),
      {"last": True, "tasks": {"castle_steve"}}, "'castle_bob' is not under TASKS"),
@@ -94,11 +91,10 @@ def test_each_rule_sends_a_wrong_step_back_with_why(answer, moment, says):
 
 
 def test_what_would_do_nothing_is_dropped_and_logged_never_sent_back(capsys):
-    bread = check(step(BREAD, end="next", reply="there", record="gave bread", status="done"), report=True)
-    assert (bread.end, bread.reply, bread.record, bread.status) == ("next", "", "", "")
-    assert "end next: dropped, it would do nothing: status 'done'; reply 'there'; record 'gave bread'" in \
-        capsys.readouterr().out
-    assert check(step(reply="ok", status="done")).status == ""          # a status outside a report's loop
+    bread = check(step(BREAD, end="next", reply="there", record="gave bread"))
+    assert (bread.end, bread.reply, bread.record) == ("next", "", "")
+    assert "end next: dropped, it would do nothing: reply 'there'; record 'gave bread'" in capsys.readouterr().out
+    assert not hasattr(check({**step(reply="ok"), "status": "done"}), "status")  # a status from an old habit: ignored
     silent = check(step(BREAD, end="silent", reply="there", record="gave bread"))
     assert (silent.reply, silent.record) == ("", "gave bread")
     read = check(step(reply="here", read=("Alex",)))                     # a read comes back only to a next step
@@ -110,7 +106,6 @@ def test_what_would_do_nothing_is_dropped_and_logged_never_sent_back(capsys):
     # a follow-up with no new description keeps the one it had (act.py): no need to send it back
     assert check(step(end="handoff", follow_ups=(follow_up("a_b", brief="bigger"),))).follow_ups[0].brief == "bigger"
     assert "end handoff: dropped, it would do nothing: end reply (it hands off: end handoff)" in capsys.readouterr().out
-    assert check(step(reply="ok", status="done"), report=True).status == "done"  # a report's: kept
 
 
 PROMISE = functools.partial(promises, offers=False)
@@ -156,7 +151,7 @@ def test_the_schema_is_the_same_for_every_catalog_and_every_moment():
 
             player: Players = "@a"
             """who leaves the trail"""
-    '''), last=True, report=True, tasks={"castle_steve"})
+    '''), last=True, tasks={"castle_steve"})
     assert one.__name__ == two.__name__ == "Step"
     assert one.model_json_schema() == two.model_json_schema()
     schema = one.model_json_schema()
@@ -165,9 +160,9 @@ def test_the_schema_is_the_same_for_every_catalog_and_every_moment():
     assert {d.get("title") for d in objects} == {"Step", "Act", "Value", "HandOff", "FollowUp"}
     for d in objects:
         assert d["required"] == list(d["properties"]), d["title"]
-    assert schema["properties"]["status"]["default"] == ""   # defaults kept, for a model that writes them
+    assert schema["properties"]["reply"]["default"] == ""    # defaults kept, for a model that writes them
     assert list(schema["properties"]) == ["order", "actions", "read_items", "hand_offs", "follow_ups", "end",
-                                          "reply", "record", "status"]
+                                          "reply", "record"]  # no status: the conversation agent writes a report's
     assert list(schema["$defs"]["HandOff"]["properties"]) == ["name", "description", "words", "picture", "assumed",
                                                               "cast", "done_when"]
 
@@ -281,8 +276,8 @@ def test_each_event_puts_its_own_tail_after_the_conversation():
     call = Call(catalog(), None, owner="KrownJM")
     new = ctx.take_unprocessed()
     seen = Seen(players="PLAYERS ONLINE:\n- Steve at 1 2 3 in overworld: Steve carries and wears nothing")
-    line = Event("LINE", parse(LINE, now=NOW), handed_up="it asks for an item")
-    p = call.prompt(line, ctx, seen, "TASKS: none yet", new[:2], FakeRefs())
+    said = Event("LINE", parse(LINE, now=NOW), said="On it!", reason="a pickaxe: an action does it")
+    p = call.prompt(said, ctx, seen, "TASKS: none yet", new[:2], FakeRefs())
     assert p.head[0][1] and "THE CONVERSATION SO FAR" in p.head[0][0]
     assert p.head[1] == ("18:29:50 game, death: Alex tried to swim in lava\n"
                          "18:29:58 Steve (to_ai): give me a diamond pickaxe\n", False)
@@ -292,22 +287,44 @@ def test_each_event_puts_its_own_tail_after_the_conversation():
     assert "NEW SINCE THE LAST READ (rows no call had read; they end the conversation above):\n" \
            "18:29:50 game, death: Alex tried to swim in lava\n\n" in tail  # the game event; never the context line
     assert tail.endswith("LINE #40, 18:29:58: Steve said: give me a diamond pickaxe\n"
-                         "(Respond, the cheap mode, handed this line up to you: it asks for an item)\n")
+                         "(the conversation agent already answered the player: “On it!”; your reply follows it — "
+                         "never repeat it)\n(the router: a pickaxe: an action does it)\n")
+    silent = Event("LINE", parse(LINE, now=NOW)).show()      # it said nothing; the router failed: no reason
+    assert silent.endswith("give me a diamond pickaxe\n(the conversation agent said nothing)")
     assert "lava pool" not in tail + "".join(text for text, _ in p.cached())
 
     task = {"name": "ice_trail_steve", "player": "Steve", "line": "make me an ice trail",
             "brief": "THE PLAYER'S WORDS\nmake me an ice trail", "description": "An ice trail that follows Steve."}
-    report = Event("REPORT", task=task, status="done", report="Done: the ice trail is on.")
+    report = Event("REPORT", task=task, status="failed", report="Failed: the trail melts at once.",
+                   said="The trail melts too fast, fixing that next.", left="the ice stays 5 s",
+                   reason="an edit of its copy does it")
     tail = call.tail(report, seen, "TASKS (…)", new[1:2])
-    assert tail.endswith("THE EVENT:\nREPORT: the implementer of ice_trail_steve ended, done.\n"
+    assert tail.endswith("THE EVENT:\nREPORT: the implementer of ice_trail_steve ended, failed, and left something "
+                         "for you.\nThe conversation agent already told Steve “The trail melts too fast, fixing that "
+                         "next.”, and wrote the task's result: never close the task or write its result again.\n"
                          "ice_trail_steve was for Steve, who said: make me an ice trail\n"
                          "WHAT IT IS: An ice trail that follows Steve.\n"
                          "ITS LATEST BRIEF:\nTHE PLAYER'S WORDS\nmake me an ice trail\n"
-                         "ITS REPORT:\nDone: the ice trail is on.\n")
-    following = Event("REPORT", task=task, status="done", report="Done.", following=True).show()
-    assert following.endswith("\nA FOLLOW-UP to ice_trail_steve is already under way, so the task stays open: say "
-                              "how this run went, never that it is all done.")
-    assert (line.ref(), report.ref()) == ("#40", "ice_trail_steve")
+                         "ITS REPORT:\nFailed: the trail melts at once.\n"
+                         "WHAT IS LEFT: the ice stays 5 s\n(the router: an edit of its copy does it)\n")
+    following = Event("REPORT", task=task, status="done", report="Done.", left="x", following=True).show()
+    assert ("\nA FOLLOW-UP to ice_trail_steve is already under way, so the task stays open: never say it is all "
+            "done.") in following
+    assert (said.ref(), report.ref()) == ("#40", "ice_trail_steve")
+
+
+def test_a_line_added_to_a_loop_is_one_block_with_the_rows_the_loop_has_not_read():
+    ctx = rows(line(58, "KrownJM", "can you teleport me to Stirka"), "AI#59 18:29:58 say - | On it!",
+               line(60, "KrownJM", "teleport me to Stirkosaurus", hms="18:30:08"),
+               "GAME#61 18:30:09 death Alex | Alex fell", line(62, "KrownJM", "now please", hms="18:30:10"))
+    by = {r.seq: r for r in ctx.rows}
+    block = added([Added(by[60], "Still on it.", "the same ask as L3"), Added(by[62])], [by[61]])
+    assert block == ("LINE ADDED TO THIS LOOP: LINE #60, 18:30:08: KrownJM said: teleport me to Stirkosaurus\n"
+                     "(the conversation agent answered: “Still on it.”)\n(the router: the same ask as L3)\n"
+                     "LINE ADDED TO THIS LOOP: LINE #62, 18:30:10: KrownJM said: now please\n"
+                     "(the conversation agent said nothing)\n"
+                     "ROWS SINCE THIS LOOP LAST READ:\n18:30:09 game, death: Alex fell\n\n")
+    assert added([Added(by[60])], []).endswith("ROWS SINCE THIS LOOP LAST READ:\nnothing\n\n")
 
 
 def test_a_steps_prompt_marks_its_last_block_and_keeps_every_earlier_one_as_it_was():
@@ -318,11 +335,128 @@ def test_a_steps_prompt_marks_its_last_block_and_keeps_every_earlier_one_as_it_w
                           ("STEP 1", False), ("STEP 2", True)]
 
 
-def test_the_trailer_says_the_step_the_time_and_on_the_last_step_why():
-    assert Call.trailer(2, 10, 14.4, 120, False) == "\nSTEP 2 of at most 10; 14 s of 120 used.\n"
-    assert "THIS IS THE LAST STEP (this is step 10): run no action" in Call.trailer(10, 10, 30, 120, True)
-    assert "THIS IS THE LAST STEP (120 s have gone)" in Call.trailer(4, 10, 121, 120, True)
+def test_the_trailer_says_the_step_and_the_loops_limit_now_and_on_the_last_step_why():
+    assert Call.trailer(2, 10, False) == "\nSTEP 2 of at most 10.\n"
+    assert Call.trailer(12, 20, False) == "\nSTEP 12 of at most 20.\n"   # a line added: 10 more
+    assert "THIS IS THE LAST STEP (this is step 10): run no action" in Call.trailer(10, 10, True)
+    assert " s of " not in Call.trailer(9, 10, False) + Call.trailer(10, 10, True)  # no time limit any more
     # the last step's reply is in the player's terms: never the steps, the time or the limits it hit (live #72, #78)
-    notice = Call.trailer(10, 10, 30, 120, True).split("THIS IS THE LAST STEP", 1)[1]
+    notice = Call.trailer(10, 10, True).split("THIS IS THE LAST STEP", 1)[1]
     assert "in the player's terms" in notice and "never mentions steps, time, limits or how you work" in notice
     assert "why" not in notice.split(":", 1)[1]
+
+
+def test_the_last_step_drops_what_it_would_run_or_read_and_keeps_its_ending(capsys):
+    s = check(step(BREAD, act("castle_maker", "a castle", {"at": "home"}), reply="you got 9 bread", read=("Alex",)),
+              last=True)                                  # even an action not on the menu: dropped, never sent back
+    assert (s.actions, s.read_items, s.end, s.reply) == ([], [], "reply", "you got 9 bread")
+    assert "end reply: dropped, it would do nothing: command (give Steve bread); castle_maker (a castle); read_items " \
+           "Alex (the last step runs and reads nothing)" in capsys.readouterr().out
+    s = check(step(BREAD, end="next", reply="you got 9 bread", record="gave Steve bread"), last=True)
+    assert (s.actions, s.end, s.reply, s.record) == ([], "reply", "you got 9 bread", "gave Steve bread")  # next: reply
+    with pytest.raises(ValidationError, match="this is the last step: end reply or handoff"):
+        check(step(BREAD, end="next"), last=True)          # no reply to end on: sent back
+    handed = check(step(BREAD, end="handoff", hand_offs=(hand_off(),)), last=True)
+    assert (handed.actions, handed.end) == ([], "handoff")
+
+
+def test_with_nothing_landed_a_step_that_runs_nothing_may_not_claim_it_done_or_end_silent():
+    with pytest.raises(ValidationError, match="nothing ran: the reply says it is done"):
+        check(step(reply="Hot Fireball's away, enjoy! Done."), landed=False)
+    with pytest.raises(ValidationError, match="nothing ran: silent leaves the player with nothing"):
+        check(step(end="silent"), landed=False)
+    assert check(step(reply="Done, the pickaxe is yours."), landed=True).end == "reply"  # an earlier step landed it
+    assert check(step(end="silent"), landed=True).end == "silent"
+    assert check(step(BREAD, reply="Done, bread's yours."), landed=False).end == "reply"  # it runs something
+    assert check(step(BREAD, end="silent"), landed=False).end == "silent"
+    assert check(step(reply="I couldn't find your helmet, sorry."), landed=False).end == "reply"  # says what happened
+
+
+@pytest.mark.parametrize("to, says", [
+    ("together", "together is an order: it goes in `order`"),
+    ("next", "next is an ending: it goes in `end`"),
+    ("follow_up", "follow_up is a field of the step, not an action"),
+    ("hand_offs", "hand_offs is a field of the step, not an action"),
+    ("action", "action is a field of the step, not an action"),
+    ("commands", "commands is a field of command: name the action in `to`, and the field as a `key`"),
+    ("KrownJM", "KrownJM looks like a player: players go in the action's values, as `player`"),
+])
+def test_a_to_that_is_not_an_action_is_sent_back_naming_the_likely_fix(to, says):
+    with pytest.raises(ValidationError, match="is not on the menu: `to` is the name of one action on the menu") as e:
+        check(step(act(to, "give Steve bread", cmd("give Steve bread")), reply="there"))
+    assert says in str(e.value)
+
+
+def test_the_schema_says_what_goes_in_to_and_in_a_values_key():
+    defs = step_type(catalog()).model_json_schema()["$defs"]
+    to, key = defs["Act"]["properties"]["to"]["description"], defs["Value"]["properties"]["key"]["description"]
+    assert "never a player, a field, an ending or an order" in to and "`command`" in to
+    assert "never the action's own name: `commands` for command" in key
+
+
+def test_the_brains_rules_take_the_loops_limits_from_the_settings():
+    opening = Call(catalog(), None, owner="KrownJM").opening(None)
+    assert "A loop has 10 steps for its first line and 10 more for each line added to it, never past 20:" in opening
+    opening = Call(catalog(), None, owner="KrownJM", grant=4, cap=8).opening(None)
+    assert "A loop has 4 steps for its first line and 4 more for each line added to it, never past 8:" in opening
+    assert "{grant}" not in opening and "{cap}" not in opening
+
+
+def test_a_value_under_the_actions_own_name_is_read_as_the_field_it_plainly_means(capsys):
+    s = check(step(act("command", "give Steve 64 steak", {"command": ["give Steve minecraft:cooked_beef 64"]}),
+                   reply="steak's yours"))
+    assert s.actions[0].values() == {"commands": ["give Steve minecraft:cooked_beef 64"]}  # command -> commands
+    assert "the command action's value under its own name read as 'commands'" in capsys.readouterr().out
+    cat = made("bind_spell", SPELL)                       # the one field that holds an object, for an object
+    s = step_type(cat).model_validate_json(json.dumps(step(act("bind_spell", "KrownJM's spell breaks blocks", {
+        "player": "KrownJM", "phrase": "hot fireball", "bind_spell": "{\"explosion_breaks\": true}"}), reply="done")))
+    assert s.actions[0].values(cat.get("bind_spell"))["values"] == {"explosion_breaks": True}
+    # never a guess beyond those: a field of no such name, a text for the object field, or the field given already
+    for wrong in (act("railgun", "a railgun for Alex", {"railgun": "Alex"}),
+                  act("command", "give Steve bread", {"command": ["give Steve bread"], "commands": ["give Steve x"]})):
+        with pytest.raises(ValidationError, match="has no value (railgun|command)"):
+            check(step(wrong, reply="there"))
+    with pytest.raises(ValidationError, match="has no value bind_spell"):
+        step_type(cat).model_validate_json(json.dumps(step(act("bind_spell", "x", {"bind_spell": "fire"}),
+                                                           reply="done")))
+
+
+@pytest.mark.parametrize("reply, kept", [
+    ("Say Ice beam and a frost beam freezes whatever it touches.", False),   # the low replay's #422
+    ("Hold right-click and it charges a beam.", False),
+    ("There you go, your hook's ready.", False),                            # claims it done
+    ("On it, a hook coming up.", True),
+    ("Once it's built, right-click and it pulls you.", True),               # waits for it
+    ("", True),
+])
+def test_a_hand_offs_reply_that_says_the_thing_works_now_is_dropped_never_sent_back(reply, kept, capsys):
+    s = check(step(end="handoff", reply=reply, hand_offs=(hand_off(),)))
+    assert (s.end, s.reply) == ("handoff", reply if kept else "")
+    assert ("a hand-off: nothing of it is built yet" in capsys.readouterr().out) is (not kept)
+    ran = check(step(BREAD, end="handoff", reply="There you go: bread now, the hook's coming.", hand_offs=(hand_off(),)))
+    assert ran.reply == "There you go: bread now, the hook's coming."    # an action ran: its "there you go" is true
+
+
+def test_an_actions_values_are_its_fields_and_an_echo_of_its_name_there_is_dropped(capsys):
+    """The low loop replay's rejected answers: the action's name echoed into the values slot, which was
+    named `action` and read as "which action"."""
+    act_schema = step_type(catalog()).model_json_schema()["$defs"]["Act"]
+    assert list(act_schema["properties"]) == ["to", "instruction", "fields"]
+    assert act_schema["properties"]["fields"]["description"] == ("every field the action sets, one key and value "
+                                                                 "each, as the action's FIELDS name them")
+    assert "Write each action in full in `fields`" in PROMPT.read_text()
+    beside = {"to": "command", "instruction": "give KrownJM a netherite pickaxe", "fields": [
+        {"key": "command", "value": "command"}, {"key": "commands", "value": ["give KrownJM netherite_pickaxe"]}]}
+    s = check(step(beside, reply="pickaxe's yours"))                  # #512: the echo dropped, the real field runs
+    assert s.actions[0].values() == {"commands": ["give KrownJM netherite_pickaxe"]}
+    assert "the command action's echo of its own name dropped from its fields" in capsys.readouterr().out
+    alone = {"to": "command", "instruction": "give KrownJM a stack of 64 dirt",
+             "fields": [{"key": "command", "value": "command"}]}
+    with pytest.raises(ValidationError, match="sets no field: `fields` holds each field it sets"):
+        check(step(alone, reply="dirt's yours"))                      # #213: nothing else written: sent back
+    cat = made("bind_spell", SPELL)
+    for wrong in ({"key": "bind_spell", "value": "player"},           # #71: a field's name, not an echo
+                  {"key": "bind_spell", "value": "player: KrownJM, phrase: ice beam"}):  # #443: text pairs
+        with pytest.raises(ValidationError, match="has no value bind_spell"):
+            step_type(cat).model_validate_json(json.dumps(step(
+                {"to": "bind_spell", "instruction": "KrownJM's ice beam wider", "fields": [wrong]}, reply="done")))

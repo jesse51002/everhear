@@ -1,8 +1,8 @@
 """One turn per player: a player's lines one at a time and in the order they came, players side
-by side, the line past three waiting turned away with a private message naming them, a report at
-the front of the queue, a turn given on whatever ends its run, a stop dropping what waits, and
-the message's words cut short. Each run waits for a future the test resolves; nothing sleeps but
-a yield."""
+by side, the line past three waiting turned away with a private message naming them, no report
+in any queue, a turn given on whatever ends its run, a stop dropping what waits, and the
+message's words cut short. Each run waits for a future the test resolves; nothing sleeps but a
+yield."""
 
 import asyncio
 import re
@@ -71,9 +71,6 @@ class Kit:
     def line(self, player: str, words: str) -> str:
         return self.turns.line(player, words, self.run(words), words)
 
-    def report(self, player: str, name: str, dropped=None) -> str:
-        return self.turns.report(player, self.run(name), name, dropped=dropped)
-
     def started(self) -> list[str]:
         return [s.removeprefix("start ") for s in self.seen if s.startswith("start ")]
 
@@ -124,19 +121,21 @@ async def test_one_players_lines_take_turns_in_the_order_they_came(kit):
     assert k.spawned[0] == (CASTLE, "Alex")       # a line's run is spawned for its player: an error is told
 
 
-async def test_two_players_run_at_once_and_a_task_with_no_player_has_a_lane_of_its_own(kit):
+async def test_two_players_run_at_once_and_a_turn_ending_moves_nobody_elses(kit):
     k = kit()
     assert k.line("Alex", "a meteor staff") == "started"
     assert k.line("Steve", "make it day") == "started"
-    assert k.report("", "castle_report") == "started"  # nobody's turn to wait for
     assert k.line("Alex", "and a shield") == "waiting"
     await ticks()
-    assert k.running() == ["a meteor staff", "castle_report", "make it day"]
-    assert k.report("", "moat_report") == "first in line"  # one at a time in its lane all the same
+    assert k.running() == ["a meteor staff", "make it day"]
     await k.end("make it day")  # Steve's turn ending moves nobody else's
-    assert k.running() == ["a meteor staff", "castle_report"] and k.turns.waiting("Alex") == ["and a shield"]
-    await k.end("castle_report")
-    assert k.running() == ["a meteor staff", "moat_report"]
+    assert k.running() == ["a meteor staff"] and k.turns.waiting("Alex") == ["and a shield"]
+    assert ("make it day", "Steve") in k.spawned  # every run is a line's, spawned for its player
+
+
+def test_reports_never_queue():
+    """An implementer's report goes to the conversation agent at once (loop.py): the turns hold lines alone."""
+    assert not hasattr(Turns, "report")
 
 
 async def test_the_line_past_three_waiting_is_turned_away_and_its_player_alone_told_which_wait(kit):
@@ -158,21 +157,6 @@ async def test_the_line_past_three_waiting_is_turned_away_and_its_player_alone_t
     assert [k.line("Alex", w) for w in (CASTLE, *SPEC)] == ["started", "waiting", "turned away", "turned away"]
     await ticks()
     assert k.told == [("Alex", ["a meteor staff"])] * 2
-
-
-async def test_a_report_goes_ahead_of_the_waiting_lines_and_reports_keep_their_order(kit):
-    k = kit()
-    for w in (CASTLE, *SPEC):
-        k.line("Alex", w)
-    assert k.report("Alex", "castle_report") == "first in line"
-    assert k.report("Alex", "staff_report") == "first in line"  # behind the first report, ahead of the lines
-    assert k.line("Alex", "and a horse") == "turned away"       # reports take no line's place
-    assert k.turns.waiting("Alex") == SPEC                      # nor are they lines
-    for name in (CASTLE, "castle_report", "staff_report", *SPEC):
-        await k.end(name)
-    assert k.started() == [CASTLE, "castle_report", "staff_report", *SPEC]
-    assert ("castle_report", "") in k.spawned  # a report's run tells its player itself, as today
-    assert k.report("Steve", "rain_report") == "started"  # a free turn: at once
 
 
 async def test_a_run_that_raises_or_is_cancelled_still_gives_the_turn_on(kit):
@@ -221,13 +205,12 @@ async def test_close_drops_what_waits_and_starts_nothing_after(kit):
     k = kit()
     for w in (CASTLE, "and a moat", "and a bridge"):
         k.line("Alex", w)
-    k.report("Alex", "castle_report")
     k.line("Steve", "make it day")
     k.line("Steve", "and rain")
     await ticks()
-    assert k.turns.close() == 4  # the reports among them
+    assert k.turns.close() == 3
     assert k.turns.waiting("Alex") == [] and k.turns.busy("Alex")  # a run going goes on: the stop's to end
-    assert k.line("Alex", "and a bow") == "closed" and k.report("Alex", "bow_report") == "closed"
+    assert k.line("Alex", "and a bow") == "closed"
     for w in ("one", "two", "three", "four"):
         assert k.line("Steve", w) == "closed"  # nobody turned away either
     await k.end(CASTLE)
@@ -236,36 +219,6 @@ async def test_close_drops_what_waits_and_starts_nothing_after(kit):
     assert k.made == [CASTLE, "make it day"]  # what was dropped was never made: nothing left unawaited
     assert k.running() == [] and k.told == [] and k.turns.lanes == {}
     assert not k.turns.busy("Alex") and not k.turns.busy("Steve")
-
-
-async def test_a_report_dropped_at_the_stop_before_it_ran_is_told_so_and_a_raise_there_stops_nothing(kit, capsys):
-    k = kit()
-    gone: list[str] = []
-
-    def dropped(name):
-        def told():
-            gone.append(name)
-            if name == "moat_report":
-                raise RuntimeError("the tasks table is locked")
-        return told
-
-    k.line("Alex", CASTLE)
-    k.line("Alex", "and a moat")
-    assert k.report("Alex", "castle_report", dropped("castle_report")) == "first in line"
-    assert k.report("Alex", "moat_report", dropped("moat_report")) == "first in line"
-    assert k.report("Alex", "wall_report") == "first in line"                     # no `dropped`: nothing to call
-    assert k.report("Steve", "rain_report", dropped("rain_report")) == "started"  # it runs: never dropped
-    assert k.report("Steve", "snow_report", dropped("snow_report")) == "first in line"
-    await ticks()
-    await k.end("rain_report")  # snow_report takes Steve's turn: it ran, so it is not dropped
-    assert gone == []           # nothing is called before the stop
-    assert k.turns.close() == 4  # Alex's three reports and the line
-    assert gone == ["castle_report", "moat_report"]  # in the order they waited; moat's raise stopped nothing
-    out = capsys.readouterr().out
-    assert "error moat_report dropped at the stop: RuntimeError: the tasks table is locked" in out
-    assert k.report("Alex", "bow_report", dropped("bow_report")) == "closed" and gone == ["castle_report",
-                                                                                         "moat_report"]
-    assert k.made == [CASTLE, "rain_report", "snow_report"]
 
 
 def test_the_turned_away_message_cuts_each_line_short_and_stays_one_line_under_200():

@@ -16,10 +16,10 @@ Posted as the mod posts them: each line said (POST /v1/lines), a second or two a
 Each scenario is an ask said in two pieces, with the other player saying something between them
 that is about the same thing on purpose. Per scenario: the feed has ONE LINE for the ask, its
 text the first piece … the ask; the other player's line is never asked about and in no group;
-the brain's turn is for that line (its usage rows, Respond's `#seq` and its loop's steps'
-`#seq s<n>`; brain.log's Respond line with the line's words and the loop's line for the asker;
-the task it opened), not for the first piece; and, a bonus, what the brain did is in the world
-(over RCON). Jev is not deterministic: every line's verdict is printed, and a scenario whose first
+the brain's turn is for that line (its usage rows: the conversation agent's and the router's
+`#seq` and its loop's steps' `#seq s<n>`; brain.log's line of the agent with the line's words and
+its loop's line for the asker; the task it opened), not for the first piece; and, a bonus, what
+the brain did is in the world (over RCON). Jev is not deterministic: every line's verdict is printed, and a scenario whose first
 piece Jev sent to the AI on its own, or whose ask it did not, is reported as Jev's routing, not
 the gather's, and skipped.
 
@@ -90,10 +90,11 @@ RULE_CASES = [
 
 JUDGE = re.compile(r"^judge (\S+) \S+ \S+ (\S+) (\S+) · (.*) · (\d+)ms")
 GATHER = re.compile(r"^gather (\S+) \S+ · (\d+) asked, (\d+) yes: (.*) · no: (.*) · (\d+)ms (\S+)tok")
-# What brain.log says of a line's turn: Respond's answer, with the line's words (`respond #5 Steve: '…' -> …`),
-# and the loop's last line (`loop #5 Steve: 1 step(s), …, ended reply`); a step's line holds no words of the line.
+# What brain.log says of a line's turn: the conversation agent's answer, with the line's words (`respond #5 Steve:
+# '…' -> …`), and its loop's line (`loop #5 Steve: 1 step(s), …, ended reply; L1 saved, 1 of 10 steps, lines #5`);
+# a step's line holds no words of the line.
 SAID = re.compile(r"^\S+ respond #(\d+) (\S+): (.*?) -> ")
-LOOP = re.compile(r"^\S+ loop #(\d+) (\S+): \d+ step\(s\), .*, ended (\S+)$")
+LOOP = re.compile(r"^\S+ loop #(\d+) (\S+): \d+ step\(s\), .*, ended (cut off|\w+); L\d+ ")
 
 
 def iso(t):
@@ -219,7 +220,7 @@ def scenario(run, name, asker, other, said, world):
         return
     run.replies.await_reply(a, 90)
 
-    def calls(seq):  # a line's model calls: Respond's (`#seq`) and its loop's steps (`#seq s<n>`)
+    def calls(seq):  # a line's model calls: the agent's and the router's (`#seq`), its loop's steps (`#seq s<n>`)
         return live.sql("SELECT component, ref FROM usage WHERE ref = ? OR ref LIKE ? ORDER BY id",
                         ("#%d" % seq, "#%d s%%" % seq))
     use = wait_for(lambda: calls(a["seq"]), 15) or []
@@ -300,7 +301,7 @@ def report(run):
     use = [u for u in live.sql("SELECT * FROM usage ORDER BY id") if parse_iso(u["at"]) >= run.started]
     jev = [u for u in use if u["component"] == "jev"]
     gathers = [u for u in jev if (u["ref"] or "").startswith("gather:")]
-    models = [u for u in use if u["component"] in ("brain", "respond")]
+    models = [u for u in use if u["component"] in ("brain", "respond", "router")]
     cost = lambda us: sum(u["cost_usd"] or 0 for u in us)  # noqa: E731
     calls = ", ".join("%s %s $%.4f" % (u["component"], u["ref"], u["cost_usd"] or 0) for u in models)
     print("\nMONEY, from the usage rows: TypeSafe $%.4f (%d routing calls, %d gather calls); OpenRouter $%.4f (%s)"

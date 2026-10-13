@@ -3,7 +3,12 @@
 #    "output_tokens", "cost_usd", "ref", "cache_read_tokens", "cache_write_tokens",
 #    "ok", "error", "ms", "largest_tokens"}, ...]}
 # Inserts every row in one transaction (rows queued on the PC come first) and
-# prints the id of the last one, the row this call was made for. ok, error and ms
+# prints the id of the last one, the row this call was made for (nothing when that row
+# was refused). Each row goes in on its own: one the table refuses (its CHECK, such as
+# a component the box's bridge does not know yet, 'router' before the bridge is
+# redeployed) is skipped, counted and named on stderr, and the rest are stored, exit 0;
+# a row that would be refused again is never worth keeping the queue for, so the PC
+# drops it with the warning rather than requeue every row forever. ok, error and ms
 # are a structured() call's (lib/py/vfg_llm.py); a row from `vfg usage add` has
 # none of them. largest_tokens is an implementer run's largest request
 # (`vfg usage add --largest`). The added columns are the bridge's to add (it
@@ -24,22 +29,33 @@ def main():
     con = sqlite3.connect(db_uri(db, "rw"), uri=True, timeout=10)
     last = None
     dropped = dict((what, 0) for what, _, _ in ADDED)
+    refused = {}  # component: rows the table refused
     try:
         have = {row[1] for row in con.execute("PRAGMA table_info(usage)")}
         columns = list(BASE) + [c for _, cols, _ in ADDED for c in cols if c in have]
         sql = "INSERT INTO usage (%s) VALUES (%s)" % (", ".join(columns), ", ".join("?" * len(columns)))
         with con:
             for r in ARGS["rows"]:
+                last = None
+                try:  # a refused INSERT undoes itself alone: the transaction and the rows before it stay
+                    cur = con.execute(sql, [r.get(c) for c in columns])
+                except sqlite3.IntegrityError:
+                    name = str(r.get("component"))
+                    refused[name] = refused.get(name, 0) + 1
+                    continue
                 for what, cols, _ in ADDED:
                     if any(r.get(c) is not None for c in cols if c not in have):
                         dropped[what] += 1
-                cur = con.execute(sql, [r.get(c) for c in columns])
                 last = cur.lastrowid
     except sqlite3.Error as e:
         die(1, "usage not stored: %s" % e)
     finally:
         con.close()
-    print(last)
+    if last is not None:
+        print(last)
+    for name in sorted(refused):
+        warn("%d usage row(s) of component %s refused by the box's usage table, not stored "
+             "— redeploy vfg-bridge, whose migration allows it" % (refused[name], name))
     for what, _, missing in ADDED:
         if dropped[what]:
             warn("%s of %d row(s) not stored: usage has no %s yet "

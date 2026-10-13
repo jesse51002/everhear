@@ -66,30 +66,41 @@ VFG_PLACES_TTL_S=
 # it, and the implementers on openrouter. OPEN_ROUTER_API in the environment wins over the file.
 # Default: ~/.vfg/openrouter.key
 VFG_OPENROUTER_KEY=
-# The OpenRouter model of every step of the brain's loop (a loop per event: a line Respond hands
-# up, since every line to the AI goes to Respond first, or an implementer's report), and its
-# reasoning effort.
-# Defaults: google/gemini-3.8-flash, low
+# The OpenRouter model of every step of the brain's loops, and its reasoning effort: off, or an
+# effort (low). Defaults: deepseek/deepseek-v4.1-flash, low
 VFG_BRAIN_MODEL=
 VFG_BRAIN_REASONING=
-# OpenRouter providers to try first for the brain's steps, comma-separated; none lets
-# OpenRouter choose. Default: none
+# OpenRouter providers to try first for the brain's steps, in that order, fallbacks allowed, so a
+# loop's steps keep one host's cache; none lets OpenRouter choose.
+# Default: together,coreweave,parasail
 VFG_BRAIN_PROVIDERS=
-# Seconds one step's call may take, its resend and retries included. Default: 45
+# Seconds one step's call may take, its resend and retries included.
+# Default: 120, or 60 with VFG_BRAIN_REASONING off
 VFG_BRAIN_TIMEOUT_S=
-# A loop's limits: its steps, and the seconds from when the player's turn began; the step that
-# starts at either is the last, and ends with a reply or a hand-off. Defaults: 10, 120
+# A loop's budget: its steps for its first line, and as many more for each line added; never
+# past the cap, where its last step replies or hands off and it is deleted; and the seconds from
+# its creation in which a line added takes an ended loop up again (0: never). Defaults: 10, 20, 120
 VFG_LOOP_STEPS=
-VFG_LOOP_SECONDS=
-# Respond, the brain's cheap mode, which takes every line said to the AI first and answers it or hands it up.
-# DeepSeek V4 Flash with reasoning off: at low it thinks ~900 tokens, about 7.7 s a call.
-VFG_RESPOND_MODEL=~deepseek/deepseek-v4-flash-latest
-VFG_RESPOND_REASONING=off
-# OpenRouter providers to try first, fastest first; none lets OpenRouter choose.
-VFG_RESPOND_PROVIDERS=parasail,wafer,phala,together,venice
-# Seconds one Respond call may take, its retries included, before the line goes up to the
-# brain. Default: 20
+VFG_LOOP_CAP=
+VFG_LOOP_TAKE_UP_S=
+# The conversation agent, which answers every line to the AI at once and hands off a line that
+# needs something done: its model, reasoning and providers, tried first in that order.
+# Defaults: deepseek/deepseek-v4.1-flash, off, together,coreweave,parasail
+VFG_RESPOND_MODEL=
+VFG_RESPOND_REASONING=
+VFG_RESPOND_PROVIDERS=
+# Seconds one conversation agent call may take, its retries included, before the line is
+# handed off with no reply. Default: 20
 VFG_RESPOND_TIMEOUT_S=
+# The router, which picks who does the work a hand-off asks for. While its reasoning is off, the
+# conversation agent's line to a hand-off is held until the router has answered: one line per ask.
+# Defaults: deepseek/deepseek-v4.1-flash, off, together,coreweave,parasail
+VFG_ROUTER_MODEL=
+VFG_ROUTER_REASONING=
+VFG_ROUTER_PROVIDERS=
+# Seconds one router call may take, its retries included, before the line goes to a new loop.
+# Default: 30, or 60 with VFG_ROUTER_REASONING not off
+VFG_ROUTER_TIMEOUT_S=
 # One turn per player: the lines that may wait for it (one more is turned away, told so
 # privately), and the seconds a turn waits for the rows it wrote to come back before the
 # next starts (0: no wait). Defaults: 3, 3
@@ -98,7 +109,7 @@ VFG_TURN_SETTLE_S=
 # Hours of the feed the brain reads as its context; vfg context's default. Default: 6
 VFG_BRAIN_HISTORY_HOURS=6
 # Every how many minute-blocks of the conversation a call marks for the prompt cache
-# (a brain step: at most two marks; Respond: three). Default: 5
+# (a brain step and the router: at most two marks; the conversation agent: three). Default: 5
 VFG_BRAIN_CHECKPOINT=
 # The brain's folder: brain.log, brain.pid, lock and the command references. The tasks are
 # in the box's vfg.db, written only by the brain.

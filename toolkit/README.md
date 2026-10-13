@@ -77,7 +77,7 @@ vfg place save castle --player Steve --by castle_steve   # the save_place action
 vfg place save home --at -368 70 912           # --dim the_nether or the_end; overworld by default
 vfg place list                                 # castle 197 68 251 overworld (castle_steve), one per line, or none; --json, --fresh
 vfg place forget castle                        # forgot castle; exit 1 if there was none
-vfg usage add --component brain --model google/gemini-3.8-flash --in 9000 --out 120 --cost 0.0016 --ref '#812 s1'
+vfg usage add --component brain --model deepseek/deepseek-v4.1-flash --in 9000 --out 120 --cost 0.0028 --ref '#812 s1'
 vfg usage add --component implementer --model haiku --in 900 --out 120 --cache-read 15000 --cache-write 2000
 vfg usage add --component implementer --model deepseek-flash --in 4000 --out 900 --cache-read 310000 --largest 104322
 vfg usage flush                                # the queued rows, every structured() call's among them; none, nothing sent
@@ -370,13 +370,15 @@ here (`run_incantation`):
   until it has, the row goes in without them and one line on stderr says so. **`--largest N`**
   is a run's largest request in tokens (an implementer's), in the column `largest_tokens`, the
   same way.
-- **`vfg usage flush`** sends `usage.pending.jsonl` and writes no row of its own. Every
-  `structured()` call (`lib/py/vfg_llm.py`) appends its row there under `usage.pending.lock`, in
-  the format `vfg usage add` queues its own, plus `ok`, `error` and `ms`, the bridge's added
-  columns (a box without them gets the rest, and one line on stderr says so); `cost_usd` is null
-  for a call cut off with an attempt in flight. The brain runs it after its calls, never two at
-  once, and vfg after an incantation's alias call (component `alias`, the phrase its ref), each
-  in its own session, nobody waiting.
+- **`vfg usage flush`** sends `usage.pending.jsonl` and writes no row of its own. Each row goes in
+  on its own: one the box's `usage` table refuses (a component its CHECK does not know yet, such as
+  `router` before the bridge is deployed again) is skipped, counted by component on stderr and not
+  kept, and the rest are stored. Every `structured()` call (`lib/py/vfg_llm.py`) appends its row
+  there under `usage.pending.lock`, in the format `vfg usage add` queues its own, plus `ok`,
+  `error` and `ms`, the bridge's added columns (a box without them gets the rest, and one line on
+  stderr says so); `cost_usd` is null for a call cut off with an attempt in flight. The brain runs
+  it after its calls, never two at once, and vfg after an incantation's alias call (component
+  `alias`, the phrase its ref), each in its own session, nobody waiting.
 - **The queue's folder** is `VFG_USAGE_QUEUE` from the environment, else `$VFG_HOME`; `vfg usage`
   and `structured()` read it alike. The replays (`integration/replay/`) point it at their own
   output, so their rows never reach the box unless sent on purpose: `VFG_USAGE_QUEUE=OUT vfg usage
