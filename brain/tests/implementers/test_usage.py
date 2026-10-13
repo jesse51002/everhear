@@ -15,10 +15,33 @@ def test_a_run_sums_its_requests_each_priced_at_its_own_size_and_time():
     assert a == (80000 * 0.30 + 500 * 1.20) / 1e6
     assert b == (1000 * 0.15 + 80000 * 0.003 + 300 * 0.60) / 1e6  # off-peak: half
     assert u.rows() == [{"component": "implementer", "model": "deepseek-flash", "ref": "castle_steve", "in": 161000,
-                         "out": 800, "cacheRead": 80000, "cacheWrite": 0, "cost": a + b, "list_cost": a + b,
-                         "priced_by": "our table", "largest": 81000}]
+                         "out": 800, "reasoning": 0, "cacheRead": 80000, "cacheWrite": 0, "cost": a + b,
+                         "list_cost": a + b, "priced_by": "our table", "largest": 81000, "broken": 0}]
     # a run that made no request writes no row
     assert RunUsage("castle_steve").rows() == []
+
+
+def test_reasoning_is_part_of_the_output_priced_once_and_summed_apart():
+    u = RunUsage("blizzard_styrka")
+    thought = request(1000, 0, 0, 900)
+    thought.reasoning = 850  # of the 900 output tokens
+    assert u.add(thought) == cost(request(1000, 0, 0, 900)) == (1000 * 0.30 + 900 * 1.20) / 1e6
+    u.add(request(1000, 0, 0, 100))
+    [row] = u.rows()
+    assert (row["out"], row["reasoning"]) == (1000, 850)
+    assert "--out" in usage_args(row) and "reasoning" not in " ".join(usage_args(row))  # vfg usage add has no column
+
+
+def test_a_broken_request_is_counted_and_said_and_without_a_bill_the_table_prices_the_run():
+    u = RunUsage("blizzard_styrka")
+    whole = request(1000, 0, 0, 100)
+    whole.billed = 0.0002
+    broken = request(500, 0, 0, 0)
+    broken.broken = True  # what was read before the break: no bill
+    u.add(whole)
+    u.add(broken)
+    [row] = u.rows()
+    assert (row["broken"], row["in"], row["priced_by"]) == (1, 1500, "our table")
 
 
 def test_haiku_is_priced_by_each_requests_own_size():

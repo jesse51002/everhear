@@ -77,12 +77,20 @@ class TestCase(unittest.TestCase):
         cls.password = secrets.token_hex(8)
         cls.fake = FakeRcon(cls.password, responder=lambda c: cls.world.respond(c)).start()
         cls.saved = mc._settings
+        # under VFG_TEST=1 the kit talks only to a test server: its folder has the marker
+        cls.marker = os.path.join(os.path.dirname(os.path.abspath(mc.PROPERTIES)), mc.TEST_MARKER)
+        cls.made_marker = not os.path.exists(cls.marker)
+        if cls.made_marker:
+            with open(cls.marker, "w") as f:
+                f.write("{}")
 
     @classmethod
     def tearDownClass(cls):
         mc._drop()
         mc._settings = cls.saved
         cls.fake.stop()
+        if cls.made_marker:
+            os.remove(cls.marker)
 
     def setUp(self):
         type(self).world = CarpetWorld()
@@ -165,6 +173,58 @@ class TestStage(TestCase):
         cube = t.blocks("stone", 0, 0, 20, size=3)
         self.assertEqual(tuple(cube), (2999, 296, 2979, 3001, 298, 2981))
         self.assertEqual(tuple(t.region(0, 0, 13, size=15)), (2993, 296, 2980, 3007, 310, 2994))
+
+
+class TestOnlyTheTestServer(TestCase):
+    """Under vfg test (VFG_TEST=1) the kit reaches the test server and nothing else: not a server
+    whose folder lacks the marker, and never the live box's /opt/vfg or /opt/mc by default."""
+
+    def test_a_server_without_the_marker_is_sent_nothing(self):
+        live = os.path.join(TMP, "live-mc")
+        os.makedirs(live, exist_ok=True)
+        with mock.patch.object(mc, "PROPERTIES", os.path.join(live, "server.properties")), \
+                mock.patch.object(mc, "_test_checked", []):
+            with self.assertRaises(mc.NotTestServer) as e:
+                mc.rcon("say hello")
+            self.assertIn("%s is not the test server (it has no .vfg-test-server)" % live, str(e.exception))
+            with mock.patch.dict(os.environ, {"VFG_TEST": ""}):
+                self.assertTrue(mc.rcon("list").startswith("There are"))   # outside a test: as ever
+        self.assertNotIn("say hello", self.world.commands)
+        with mock.patch.object(mc, "_PROPERTIES_SET", False), mock.patch.object(mc, "_test_checked", []):
+            with self.assertRaises(mc.NotTestServer) as e:
+                mc.rcon("list")
+            self.assertIn("VFG_MC_PROPERTIES is not set under vfg test", str(e.exception))
+
+    def test_a_switch_to_another_server_is_checked_again_not_cached(self):
+        # the test server passes and its folder is remembered; a script that then points PROPERTIES
+        # at a server without the marker is caught, not waved through on the first pass
+        self.assertTrue(mc.rcon("list").startswith("There are"))   # the test server (its folder has the marker)
+        live = os.path.join(TMP, "live-switch-mc")
+        os.makedirs(live, exist_ok=True)
+        with open(os.path.join(live, "server.properties"), "w") as f:
+            f.write("enable-rcon=true\nrcon.port=1\nrcon.password=x\n")
+        with mock.patch.object(mc, "PROPERTIES", os.path.join(live, "server.properties")):
+            with self.assertRaises(mc.NotTestServer) as e:
+                mc.rcon("say on the live server")
+            self.assertIn("%s is not the test server" % live, str(e.exception))
+        self.assertNotIn("say on the live server", self.world.commands)
+        self.assertTrue(mc.rcon("list").startswith("There are"))   # the test server again: still fine
+
+    def test_no_path_falls_back_to_the_live_servers(self):
+        import incantations
+        import instances
+        for name in ("VFG_RUN_DIR", "VFG_INCANTATIONS"):
+            os.environ.pop(name, None)
+        with self.assertRaises(mc.NotTestServer):
+            mc.run_dir()
+        with self.assertRaises(incantations.StoreError):
+            incantations.store_path()
+        with mock.patch.dict(os.environ, {"VFG_MC_PROPERTIES": ""}), self.assertRaises(instances.CopyError):
+            instances.here()
+        with mock.patch.dict(os.environ, {"VFG_TEST": ""}):
+            self.assertEqual((mc.run_dir(), incantations.store_path()),
+                             ("/opt/vfg/run", "/opt/vfg/incantations.json"))
+            self.assertEqual(mc.path_setting("VFG_PROTECTED", "/opt/vfg/protected.json"), "/opt/vfg/protected.json")
 
 
 class TestWhere(TestCase):

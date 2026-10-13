@@ -160,10 +160,13 @@ What each part takes in and puts out is in [docs/CONTRACTS.md](docs/CONTRACTS.md
 ## Requirements
 
 - An AWS account, and the AWS CLI v2 logged in to it.
-- Claude Code, logged in with a Claude subscription, for the implementers, and
-  [uv](https://docs.astral.sh/uv/) for the brain's Python. Implementers never run on an API key.
+- [uv](https://docs.astral.sh/uv/) for the brain's Python. It brings the Claude Agent SDK, with
+  the Claude Code CLI the implementers run in by default (`VFG_IMPL_HARNESS=opencode` needs
+  OpenCode 1.x installed). Implementers run DeepSeek V4.1 Flash on the OpenRouter key below, or
+  on DeepSeek's own API with `DEEPSEEK_API_KEY`; Haiku 5.5 on a Claude subscription is a
+  setting, untested.
 - A TypeSafe API key, for Jev.
-- An [OpenRouter](https://openrouter.ai) API key, for the brain and Respond.
+- An [OpenRouter](https://openrouter.ai) API key, for the brain, Respond and the implementers.
 - Minecraft Java 26.3 with Fabric, for every player (the installer sets Fabric up).
 - bash, ssh, rsync and curl on the owner's PC; `uv` runs everything there on Python 3.12, as on the box.
 - JDK 25 to build the mod (Gradle downloads one if there is none).
@@ -190,10 +193,12 @@ chmod 600 ~/.ssh/everhear.pem       # and set VFG_SSH_KEY=~/.ssh/everhear.pem
 # 2. Launch the box. It prints its IP: put it in ~/.vfg/config as VFG_SSH_HOST.
 bridge/deploy/ec2.sh launch
 
-# 3. Provision Java and Minecraft. --restore brings back the world ec2.sh retire saved.
+# 3. Provision Java and Minecraft, and the test server beside it, where implementers test what
+#    they build (deploy.sh testserver makes it again). --restore brings back the world ec2.sh
+#    retire saved.
 bridge/deploy/deploy.sh provision          # or: bridge/deploy/deploy.sh provision --restore
 
-# 4. Deploy the bridge, then the Jev filter.
+# 4. Deploy the bridge (and keep the test server current), then the Jev filter.
 bridge/deploy/deploy.sh
 jev/deploy.sh
 
@@ -234,7 +239,7 @@ Rough guidance from list prices; check the current ones for your region and plan
 | EC2 | `m7i.xlarge` on demand, about $0.20 an hour while running, plus a 30 GB gp3 disk until the box is retired. `ec2.sh stop` stops the hourly charge; `retire` ends both |
 | Jev (TypeSafe) | per call: one per line players say or type, and one more for a line to the AI when its speaker has earlier lines to gather; see TypeSafe's pricing |
 | OpenRouter | the brain and Respond: a fraction of a cent a call with the conversation cached, each step of the brain's loop a call (a median $0.0056 live on realmc). The 2026-10-11 session, 80 minutes of one player, came to $0.89 replayed through the loop as of its first fix round, against $1.18 on the brain before it ([the replay](integration/replay/loop/report.md)) |
-| Claude | implementers run on a Claude subscription and count against its usage limits; at API prices they would be the largest cost by far. `vfg usage add` records each part's tokens and their API-price cost in the `usage` table |
+| Implementers | DeepSeek V4.1 Flash on OpenRouter (or DeepSeek's own API) by the token, its thinking billed as output: the runner records each run's tokens and cost in the `usage` table (`vfg usage add`), as billed when OpenRouter says |
 | S3 | the installer bucket holds a few MB, deleted after 8 days |
 
 ## Safety
@@ -262,6 +267,11 @@ Rough guidance from list prices; check the current ones for your region and plan
     never changes during play; and editing a made script a copy started by another task is running.
 - **The box:** RCON answers on loopback only, SSH only from the owner's IP; the game (25565) and the
   bridge (8787) are open. The client token in the installer only lets someone post speech lines.
+- **Implementers test on the test server, never on the players:** a second Minecraft server on the
+  box (`/opt/mc-test`, its game and RCON ports on loopback only, a fresh world for every test).
+  `vfg test` runs nothing on a server without the test server's marker, or one that is the live
+  server under another path or port, and runs each test in a systemd sandbox that cannot read the
+  live server's files, where the box has one.
 
 ## Status
 

@@ -45,7 +45,7 @@ def test_the_registry_makes_opencode(cfg):
     assert isinstance(make(cfg), oc.OpenCode) and make(cfg).name == "opencode"
 
 
-def test_the_config_has_one_model_our_prompt_thinking_off_every_tool_allowed_and_no_key(cfg):
+def test_the_config_has_one_model_our_prompt_the_effort_every_tool_allowed_and_no_key(cfg):
     c = oc.server_config(cfg, "/b/implementer-system-abc.md")
     assert (c["model"], c["small_model"], c["default_agent"], c["enabled_providers"]) == (
         "openrouter/deepseek/deepseek-v4.1-flash", "openrouter/deepseek/deepseek-v4.1-flash", "vfg", ["openrouter"])
@@ -55,8 +55,8 @@ def test_the_config_has_one_model_our_prompt_thinking_off_every_tool_allowed_and
     assert p["models"]["deepseek/deepseek-v4.1-flash"]["limit"] == {"context": 1_000_000, "output": 32_000}
     a = c["agent"]["vfg"]
     assert a["prompt"] == "{file:/b/implementer-system-abc.md}" and a["mode"] == "primary"
-    assert a["options"] == {"reasoning": {"enabled": False}, "provider": {
-        "allow_fallbacks": True, "order": ["digitalocean", "ionstream", "together"], "ignore": ["venice", "morph", "relace"]}}
+    assert a["options"] == {"reasoning": {"effort": "high"}, "provider": {
+        "allow_fallbacks": True, "order": ["together", "digitalocean", "ionstream"], "ignore": ["venice", "morph", "relace"]}}
     allow = {"*": "allow", "question": "deny", "plan_enter": "deny", "plan_exit": "deny"}
     assert a["permission"] == c["permission"] == allow
     assert (c["snapshot"], c["autoupdate"], c["share"], c["lsp"], c["formatter"], c["mcp"], c["instructions"]) == (
@@ -66,13 +66,29 @@ def test_the_config_has_one_model_our_prompt_thinking_off_every_tool_allowed_and
     assert "sk-or-secret" not in json.dumps(c)
 
 
-def test_on_deepseeks_own_api_thinking_is_off_by_its_own_field(tmp_path):
+def test_on_deepseeks_own_api_the_effort_is_its_own_fields(tmp_path):
     c = ImplementerConfig.load({"VFG_REPO": str(tmp_path), "VFG_HOME": str(tmp_path / "h"), "DEEPSEEK_API_KEY": "sk-ds"})
     conf = oc.server_config(c, "/s.md")
     assert conf["model"] == "deepseek/deepseek-flash"
     assert conf["provider"]["deepseek"]["npm"] == "@ai-sdk/openai-compatible"
     assert conf["provider"]["deepseek"]["options"]["baseURL"] == "https://api.deepseek.com"
-    assert conf["agent"]["vfg"]["options"] == {"thinking": {"type": "disabled"}}
+    # the AI SDK's openai-compatible package sends reasoningEffort as reasoning_effort (and drops reasoning_effort)
+    assert conf["agent"]["vfg"]["options"] == {"thinking": {"type": "enabled"}, "reasoningEffort": "high"}
+    c.effort = "off"
+    assert oc.server_config(c, "/s.md")["agent"]["vfg"]["options"] == {"thinking": {"type": "disabled"}}
+
+
+def test_each_effort_as_the_provider_takes_it(tmp_path):
+    def options(provider_env, effort):
+        c = ImplementerConfig.load({"VFG_REPO": str(tmp_path), "VFG_HOME": str(tmp_path / "h"), "VFG_IMPL_EFFORT": effort,
+                                    "VFG_IMPL_OR_ORDER": "none", "VFG_IMPL_OR_IGNORE": "none", **provider_env})
+        return oc.agent_options(c)
+    on_or, on_ds = {"OPEN_ROUTER_API": "k"}, {"DEEPSEEK_API_KEY": "k"}
+    assert options(on_or, "off") == {"reasoning": {"enabled": False}, "provider": {"allow_fallbacks": True}}
+    for effort in ("low", "high", "max"):
+        assert options(on_or, effort) == {"reasoning": {"effort": effort}, "provider": {"allow_fallbacks": True}}
+        assert options(on_ds, effort) == {"thinking": {"type": "enabled"}, "reasoningEffort": effort}
+    assert options(on_or, "medium") == {"reasoning": {"effort": "high"}, "provider": {"allow_fallbacks": True}}
 
 
 def test_the_address_is_the_providers_openai_style_one(tmp_path):
@@ -103,6 +119,7 @@ def test_the_servers_environment_is_its_own_and_a_tools_shell_gets_the_owners_ba
     assert env["OPENCODE_TEST_HOME"] == dirs.root
     assert "OPENCODE" not in env and "OPENCODE_CONFIG_DIR" not in env
     assert all(env[k] == "1" for k in oc.FLAGS)
+    assert env["OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"] == "600000"  # a vfg test is not cut short at 2 minutes
     assert (env["VFG_OPENCODE_KEY"], env["VFG_GUARD_URL"], env["VFG_GUARD_SECRET"], env["OPENCODE_SERVER_PASSWORD"]) == (
         "sk-or-secret", "http://127.0.0.1:5/guard", "guard-secret", "pw")
     assert env["PATH"] == "/bin" and env["HOME"] == "/home/jm"
@@ -464,8 +481,8 @@ async def test_a_run_gives_its_session_tool_calls_requests_text_and_done_and_the
     assert results[calls[2].id] == ToolResult(calls[2].id, True, DENY.read_scope(cfg.server))
     reqs = [e for e in evs if isinstance(e, Request)]
     assert len(reqs) == 4  # each step once, though OpenCode said one twice
-    assert (reqs[-1].model, reqs[-1].input, reqs[-1].cache_read, reqs[-1].cache_write, reqs[-1].output) == (
-        "deepseek/deepseek-v4.1-flash", 50, 1000, 3, 25)
+    assert (reqs[-1].model, reqs[-1].input, reqs[-1].cache_read, reqs[-1].cache_write, reqs[-1].output,
+            reqs[-1].reasoning, reqs[-1].reasoning_estimated) == ("deepseek/deepseek-v4.1-flash", 50, 1000, 3, 25, 5, False)
     assert [e.text for e in evs if isinstance(e, Text)] == ["Done: it casts.\nDESCRIPTION: a fireball"]
     done = evs[-1]
     assert isinstance(done, Done) and (done.ended, done.text, done.turns, done.refused) == (
@@ -473,6 +490,28 @@ async def test_a_run_gives_its_session_tool_calls_requests_text_and_done_and_the
     prompt = next(b for m, p, b in fake.requests if p.endswith("/prompt_async"))
     assert prompt == {"agent": "vfg", "model": {"providerID": "openrouter", "modelID": "deepseek/deepseek-v4.1-flash"},
                       "parts": [{"type": "text", "text": "Build a fireball"}]}
+
+
+async def test_a_request_that_thought_is_warned_of_only_when_thinking_should_be_off(cfg, system, capsys):
+    from brain.implementers.config import set_quiet
+    thought = {"input": 50, "output": 20, "reasoning": 400, "cache": {"read": 0, "write": 0}}
+    said = {}
+    for effort in ("high", "off"):
+        cfg.effort = effort
+        fake = FakeOpenCode([{"text": "Done: a.", "tokens": thought}])
+        h = harness(cfg, fake)
+        set_quiet(False)
+        try:
+            run = await h.start("hot_fireball", system, "Build a fireball", guard(cfg))
+            [req] = [e for e in await collect(run) if isinstance(e, Request)]
+            await run.close()
+            await h.close()
+        finally:
+            set_quiet(True)
+        said[effort] = capsys.readouterr().out
+        assert (req.output, req.reasoning) == (420, 400)  # thinking is output, counted once
+    assert "thinking is not off" not in said["high"]
+    assert "hot_fireball: a request thought (400 reasoning tokens): thinking is not off" in said["off"]
 
 
 async def test_the_server_is_started_once_isolated_with_its_config_written_and_stopped_at_close(cfg, system):

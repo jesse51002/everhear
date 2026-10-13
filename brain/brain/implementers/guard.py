@@ -155,7 +155,8 @@ class DENY:
     follow = "vfg script logs --follow never ends: use vfg script logs <copy> -n 40, and sleep between looks."
     background = "Run commands in the foreground: scripts already run detached on the server (vfg action run)."
     test_again = ("Refused: nothing changed since the last test run: read the log lines its FAIL printed (add -n 60 to "
-                  "your next vfg test for more), then change the ability or the test.")
+                  "your next vfg test for more), then change the ability or the test. If it exited 3, 4 or 5 instead, "
+                  "it could not run: never test on the live server; report its items not tested, and why.")
     test_cap = "Refused: that is a fifth test run in this run, and the rules allow four: report what still fails."
     tests_spent = "Refused: your test runs are spent: report what still fails, item by item."
     waits_for_trigger = ("Refused: an incantation fires its action once at the cast: make the script act as it starts, "
@@ -226,7 +227,9 @@ class GuardContext:
     # new_run() clears both as each run starts.
     tests_run: int = 0
     tested: dict = field(default_factory=dict)
-    # Is there a test server (VFG_TEST_BOX)? With one, a run's looks at the live world are counted.
+    # Is there a test server (VFG_TEST_BOX: the box's own unless it is none)? With one, a run's looks
+    # at the live world are counted; whether vfg test then reaches it (exit 3: none set up; 4 or 5: out
+    # of reach, down or busy) is the prompt's to handle, never a reason to test on the live players.
     test_server: bool = False
     probes_run: int = 0
 

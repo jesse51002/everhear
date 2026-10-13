@@ -48,6 +48,7 @@ import json
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -545,12 +546,19 @@ class Box(object):
 
 
 class _Flock(object):
+    """A lock file in run/, held with flock. Opened read-only, never through a link, and only when it
+    is a plain file: on the test server run/ is the test user's to write too (vfg test), and vfg's
+    deploy opens its lock there as the box's own user."""
+
     def __init__(self, path, wait=None):
         self.path = path
         self.wait = wait
 
     def __enter__(self):
-        self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
+        self.fd = os.open(self.path, os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o664)
+        if not stat.S_ISREG(os.fstat(self.fd).st_mode):
+            os.close(self.fd)
+            raise CopyError("%s is not a plain file: not used as a lock" % self.path)
         if self.wait is None:
             fcntl.flock(self.fd, fcntl.LOCK_EX)
             return self
@@ -586,9 +594,15 @@ def edit(copy, values, changed, live_only):
 
 
 def here(rcon=None):
-    """The box a script runs on, from the environment its copy was started with."""
-    run = os.environ.get("VFG_RUN_DIR") or "/opt/vfg/run"
-    props = os.environ.get("VFG_MC_PROPERTIES") or "/opt/mc/server.properties"
+    """The box a script runs on, from the environment its copy was started with; under vfg test
+    (VFG_TEST=1) never the live server's /opt/vfg or /opt/mc by default: CopyError."""
+    run = os.environ.get("VFG_RUN_DIR")
+    props = os.environ.get("VFG_MC_PROPERTIES")
+    if os.environ.get("VFG_TEST") == "1" and not (run and props):
+        raise CopyError("VFG_RUN_DIR and VFG_MC_PROPERTIES must be set under vfg test: a test never falls back "
+                        "to the live server's /opt/vfg or /opt/mc")
+    run = run or "/opt/vfg/run"
+    props = props or "/opt/mc/server.properties"
     try:
         poll = float(os.environ.get("VFG_LIVE_POLL_S") or 0.5)
     except ValueError:

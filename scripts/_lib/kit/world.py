@@ -58,7 +58,8 @@ GAMERULES = {
     "mobExplosionDropDecay": "mob_explosion_drop_decay",
 }
 
-PROTECTED_FILE = os.environ.get("VFG_PROTECTED", "/opt/vfg/protected.json")
+# Under vfg test, VFG_PROTECTED or nothing: never the live server's file (mc.path_setting).
+PROTECTED_FILE = mc.path_setting("VFG_PROTECTED", "/opt/vfg/protected.json")
 
 _lock = threading.Lock()
 

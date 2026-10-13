@@ -63,7 +63,7 @@ def beam_clash(shooter, ray, v):
 def _beam_clash_db(fn):
     """fn(beams) while holding the lock on the file every beam script on the box shares,
     which is written back after it; returns what fn returns. Beams a minute old are dropped."""
-    path = os.path.join(os.environ.get("VFG_RUN_DIR", "/opt/vfg/run"), "beam_clash.json")
+    path = os.path.join(mc.run_dir(), "beam_clash.json")
     with open(path + ".lock", "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)              # let go when the file closes
         try:

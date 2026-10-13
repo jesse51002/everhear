@@ -28,7 +28,8 @@ after the run ended works against it. A run near its turn cap or its time limit 
 and reports what it tried; one that still reaches the limit is stopped, put back by code, and
 reported from what the guard saw. Each run writes its usage with `vfg usage add`, its ref the task's
 name, off the critical path, after its report has gone: one row, the sum of its requests, each
-priced at its own size and time (config.PRICES), and each request's size logged as it happens."""
+priced at its own size and time (config.PRICES), and each request's size and reasoning logged as it
+happens."""
 import asyncio
 import hashlib
 import os
@@ -77,6 +78,12 @@ CANCELLED_STATUS = "done"
 WARN_TURNS = 5
 WARN_S = 60.0
 LAST_COMMANDS = 5
+
+
+def warn_after(limit_s: float) -> float:
+    """How long into a run of `limit_s` seconds it is warned: WARN_S before its end, or at three
+    quarters of a limit under 4 minutes (19 minutes into the default 20)."""
+    return max(limit_s - WARN_S, limit_s * 0.75)
 
 
 def is_cancel(text: str) -> bool:
@@ -618,7 +625,7 @@ class Implementers:
             t.run = t.state = None
             t.starting = False
             if run is not None:
-                await self._close_run(t, run, stop=forced is not None and done is None)
+                await self._close_run(t, run, stop=forced is not None and done is None, spent=spent, st=st)
             if forced:
                 log("implementer", "%s stopped at its limit: %s" % (
                     t.name, "%d turns" % st.turns if forced == "turns" else "%s s" % js_num(self.cfg.time_limit_s)))
@@ -639,7 +646,7 @@ class Implementers:
         loop = asyncio.get_running_loop()
         limit = self.cfg.time_limit_s
         end_at = began + limit
-        warn_at = began + max(limit - WARN_S, limit * 0.75)
+        warn_at = began + warn_after(limit)
         events = run.events().__aiter__()
         nxt = None
         try:
@@ -671,12 +678,23 @@ class Implementers:
             if nxt is not None and not nxt.done():
                 nxt.cancel()
 
-    async def _close_run(self, t: _Task, run: Run, stop: bool) -> None:
+    async def _close_run(self, t: _Task, run: Run, stop: bool, spent: usage.RunUsage | None = None,
+                         st: _RunState | None = None) -> None:
+        """Stops the run when asked, and closes it. A run stopped at its limit is no longer read, so
+        the requests it gives after (in flight at the stop, or broken off by it) are counted from its
+        late_requests(), when the harness has it (Claude Code's)."""
         if stop:
             try:
                 await run.stop()
             except Exception as e:
                 log("implementer", "%s: stop: %s" % (t.name, e))
+            late = getattr(run, "late_requests", None)
+            if late is not None and spent is not None:
+                try:
+                    for r in await late():
+                        self._seen(t, r, spent, st)
+                except Exception as e:
+                    log("implementer", "%s: its last requests: %s" % (t.name, e))
         try:
             await run.close()
         except Exception as e:
@@ -732,10 +750,14 @@ class Implementers:
             cost = spent.add(ev)
             if st is not None:
                 st.turns += 1
-            log("request", "%s %s in=%s cached=%s written=%s out=%s size=%s cost=%.5f%s%s" % (
+            # reasoning= is the part of out= that was thinking, after cost= so the fields before it
+            # read as they always did; ~ marks an estimate from the thinking's text; broken, an answer
+            # that broke off mid-stream (the harness sent the request again)
+            log("request", "%s %s in=%s cached=%s written=%s out=%s size=%s cost=%.5f reasoning=%s%s%s%s%s" % (
                 t.name, ev.model, js_num(ev.input), js_num(ev.cache_read), js_num(ev.cache_write), js_num(ev.output),
-                js_num(ev.size), cost, " provider=%s" % ev.provider if ev.provider else "",
-                " billed=%.5f" % ev.billed if ev.billed is not None else ""))
+                js_num(ev.size), cost, "~" if ev.reasoning_estimated else "", js_num(ev.reasoning),
+                " provider=%s" % ev.provider if ev.provider else "",
+                " billed=%.5f" % ev.billed if ev.billed is not None else "", " broken" if ev.broken else ""))
         elif isinstance(ev, Compacted):
             log("implementer", "%s: its session was compacted (%s%s)" % (
                 t.name, ev.trigger or "no trigger given",
@@ -784,10 +806,11 @@ class Implementers:
             log("usage", "vfg usage add failed (%s): %s in=%s out=%s" % (why(r), row["ref"], js_num(row["in"]),
                                                                        js_num(row["out"])))
             return
-        log("usage", "implementer %s in=%s out=%s cache_read=%s cache_write=%s largest=%s cost=%.4f (priced by %s; "
-            "list %.4f) ref=%s" % (
-                row["model"], js_num(row["in"]), js_num(row["out"]), js_num(row["cacheRead"]), js_num(row["cacheWrite"]),
-                js_num(row["largest"]), row["cost"], row["priced_by"], row["list_cost"], row["ref"]))
+        log("usage", "implementer %s in=%s out=%s reasoning=%s cache_read=%s cache_write=%s largest=%s cost=%.4f "
+            "(priced by %s; list %.4f) ref=%s%s" % (
+                row["model"], js_num(row["in"]), js_num(row["out"]), js_num(row["reasoning"]), js_num(row["cacheRead"]),
+                js_num(row["cacheWrite"]), js_num(row["largest"]), row["cost"], row["priced_by"], row["list_cost"],
+                row["ref"], " broken=%d" % row["broken"] if row["broken"] else ""))
 
     def _spawn(self, coro) -> None:
         task = asyncio.get_running_loop().create_task(coro)

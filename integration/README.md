@@ -91,9 +91,13 @@ Prototype_Implementer_Harness's tests, each script's docstring saying how to run
   warned at its limit.
 - `impl_replay.py`, Test 2: tasks replayed as they happened, each follow-up at its recorded moment,
   each task on a fresh server (`up --fresh`, what the last one made set aside), on either adapter
-  (`--harness opencode`). Each server is paired with a test server, `<name>-test` (`--test`), a
-  realmc server of its own made fresh with it, where the implementers' `vfg test` runs
-  (`VFG_TEST_BOX` its config), checked first with one library test (`--preflight railgun`); `--judge` scores each task with `impl_judge.py`, which casts its action twice,
+  (`--harness opencode`). Each server has its test server beside it, laid out as the box's
+  (`realmc/up <name> --test-server`: `<name>/mc-test` and `<name>/vfg-test`, the live folders +
+  "-test", the unit `minecraft-test`, a fresh world at every start, each test in its sandbox) and
+  made fresh with it, where the implementers' `vfg test` runs with `VFG_TEST_BOX` unset, exactly
+  the box's path (`--test none`: none, `VFG_TEST_BOX=none`), checked first with one library test
+  (`--preflight railgun`); at the end, also on a failure or Ctrl-C, both are stopped unless `--keep-up`;
+  `--judge` scores each task with `impl_judge.py`, which casts its action twice,
   each from fresh state on a stage of the test templates' geometry, and has a judge model mark its
   DONE WHEN items: done only when both casts show it (flaky when one does), the judge's own probes
   winning over the implementer's words; a research task, or a scenario not buildable, is scored
@@ -102,15 +106,71 @@ Prototype_Implementer_Harness's tests, each script's docstring saying how to run
   `$VFG_IMPL_REPLAY/scenarios.json` for a person to review: the player, his opening line, his goal,
   his hidden wants in order, the setup, the DONE WHEN list and how he tries it.
 - `impl_game.py`, the game eval: each scenario played from nothing on a fresh live server and its
-  test server: each turn the stand-in brain writes the brief, the real runner builds it, the player
+  test server beside it (`up <name> --fresh --test-server`, `VFG_TEST_BOX` unset, as on the box),
+  on the runner's own settings (`VFG_IMPL_EFFORT`, high by default; 20 minutes a run): each turn
+  the stand-in brain writes the brief, the real runner builds it, the player
   tries it on the live server and a simulated player says his next line (a complaint, his next
-  want, or done); then `impl_judge.py` marks the whole checklist. `--dry` spends nothing.
+  want, or done); then `impl_judge.py` marks the whole checklist. `--dry` spends nothing. At the end,
+  also on a failure or Ctrl-C, the server and its test server (2-3 GB each) are stopped unless
+  `--keep-up`.
 - `impl_game_tests.py` reads a game eval's runs of `vfg test` against the judge: what each fix
   changed (the test, the script, both), false passes, and lowered bars.
 - `impl_cache.py`, Test 6: the cache hit rate over each task's session, read from a replay's
   `request` lines.
 - `impl_wild.py`, Test 5: the ten wild asks, none refused by the model or the harness, and the
   guard still refusing `op`.
+
+With `VFG_TEST_BOX` unset, its default, an implementer's `vfg test` plays on the test server
+beside the live one, as on the box. `impl_game.py`, `impl_replay.py` and `brain_live.py` lay it out
+(`realmc/up NAME --test-server`); the others (`impl_check*.py`, `impl_messages*.py`,
+`impl_wild.py`) do not, so their implementers' `vfg test` exits 3 (no test server) and they check
+with one action run, unless `integration/realmc/up NAME --test-server` ran first. Their waits for
+a report follow the runner's limit (`VFG_IMPLEMENTER_MINUTES`, 20) and 2 minutes more.
+
+## The test server, end to end on realmc
+
+```sh
+REALMC_ROOT=… python3 integration/testserver_e2e.py [--name iq-d1] [--only night,runaway,fresh,parallel,heal,refuse,guard]
+python3 integration/testserver_e2e.py --box [--server main]     # on the real box: box-safe, strict
+```
+
+Prototype_Implementer_Quality's test server proven on this PC, with the real `vfg test` run as an
+implementer runs it (realmc's `vfg`, `VFG_TEST_BOX` unset) against a realmc server with its test
+server laid out beside it as the box's (`up NAME --test-server`). Each check prints PASS, FAIL
+or INFO with its numbers, and a table at the end; the script's docstring says what each does.
+
+- **night**, the night of 2026-10-12 replayed safely: the live server holds Carpet's fake KrownJM
+  and Styrkaeopteryx 3 blocks apart, and gold blocks on the arena and where the sky stage is. A
+  made ice aura (10 s of freeze damage and slowness round the caster, sparing her, then it ends),
+  bound to her "freeze" on the live server, and its test from the kit's helpers (cast as her on
+  the test server, KrownJM beside her hurt and slowed, she not, the storm ending), run 3 times.
+  The live players, world, files and console are compared before and after.
+- **runaway**: an aura that never ends, ignores SIGTERM and starts a detached copy of itself, and
+  a test that waits for its end: stopped at `--timeout 20`, nothing of it left (`/proc`, its
+  sandbox unit), and the next test on a fresh world; then the same without the sandbox (INFO).
+- **fresh**: a baseline test records the fresh world (24 probes: objectives, bossbars, teams,
+  border, forceloads, gamerules, time, weather, difficulty, players, entities, a block outside the
+  stage and one under it, a fake player's saved effects, items and xp, which Carpet reloads in a
+  kept world); then 20 tests in a row, each checking every probe against it and then leaving junk
+  in all of them.
+- **parallel**: 3 streams of 5 such tests at once, as parallel implementers; their windows on the
+  server never overlap.
+- **heal**: the test server's java SIGKILLed, its unit stopped, and its java SIGSTOPped (the RCON
+  port still takes connections): exit 5 in bounded time with a short boot budget, recovery after,
+  and with the defaults the restart clears it.
+- **refuse**: `VFG_TEST_BOX` naming the live folders, half of them, a folder without the marker, a
+  link to the live folder: exit 3. A test reaching for the live server (its `server.properties`,
+  folder, `.env`, a write, mc and a child given its properties, mc switched by hand after its
+  check): refused in the sandbox; the kit's `NotTestServer` again without one. The escapes round
+  the sandbox are `testserver_escape/`'s test: INFO in the PC's user sandbox (the same uid as the
+  live server), every one refused on the box (`--box`).
+- **guard**: the implementers' guard at unit level: 4 tests a run, unchanged reruns refused, live
+  probes capped, and the prompt's exit-4/5 rule.
+
+`--box` runs only the reach and escape tests, on the real box's test server, through this
+checkout's `vfg` and `~/.vfg/config`: nothing goes to the live server but `vfg test`'s read of its
+incantations. Outputs in `$VFG_IMPL_REPLAY/testserver-e2e-NAME/` (`e2e.log`, every `vfg test`
+whole; `summary.json`, `summary.md`). No model is called. Server names start with `iq-d`.
 
 ## Settings
 
@@ -153,7 +213,9 @@ REALMC_ROOT=… python3 integration/brain_live.py [--name live] [--keep-up] [--n
 ```
 
 Prototype_Brain_Loop's "Live, on realmc" list, on a real 26.3 server (realmc, its world fresh
-from the template, with Carpet's fake players Steve and Alex), every ask checked in the world over
+from the template, with Carpet's fake players Steve and Alex, and its test server beside it as the
+box's, `up --fresh --test-server`, where the implementers' `vfg test` plays; a task is waited for
+21 minutes, its 20 and its report), every ask checked in the world over
 RCON, in the feed's `AI` rows, in `vfg.db`'s tasks and usage tables and in `brain.log` (each step's
 line, each loop's line, the turns'). It starts from a clean slate: the stand-in's `vfg.db` (with
 its `-wal` and `-shm`) and `feed.log` set aside in `vfg/set-aside-<time>/`, never deleted, and made
