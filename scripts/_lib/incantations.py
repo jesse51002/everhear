@@ -33,8 +33,22 @@ word boundaries ignored, so "come a hammer ha" lines up with "kamehameha". The c
 and the distance is the cost over the target's phoneme count: 0 is exact, 0.25 the default
 allowance (one consonant wrong in "fire ball", or four vowels in "kamehameha").
 
+A one-word phrase (one_word) is held tighter, everywhere a target is found: its phrase's and
+aliases' runs start only where a word of the line starts, so "dash" is in "dashboard" but not
+in "haberdashery", and a target of fewer than SHORT_PHONES phonemes is found only as it is
+said, within SHORT_COST in all (an HH put in or left out), its mishearings left to its
+aliases. At 0.25 alone, "heal" matched 500 of the 2026-10-08 playtest's 843 lines ("build",
+"all", "really"); held so, none.
+
 The store, /opt/vfg/incantations.json (store_path), is written whole: a temp file then
 os.replace, under the flock incantations.lock beside it, every write bumping `version`.
+
+An entry's `everyday_aliases` are those of its `aliases` that are everyday talk in their own
+right, a phrase people say for other reasons ("ice cream" and "i scream" for "ice beam"), as
+vfg's alias call marks them: the bridge's GET /v1/incantations leaves them out, so the mod's
+keyword spotter never listens for them, and Layer 2 and the Jev cast check use them as any other
+alias. Always a subset of the aliases (put and updated keep it one, through everyday()); an
+entry without the field has none.
 """
 import fcntl
 import gzip
@@ -58,13 +72,25 @@ DROP_SPAN_WORDS = 1       # ... and at most the target's words + 1, unless withi
 # A line with one of these left beside the phrase is never dropped: it asks something of the spell.
 KEEP_WORDS = frozenset("stop remove cancel delete unbind dont not no never undo end".split())
 SOUNDS_LIKE = 0.34        # bind_warnings: a phrase or alias this close to another's
-SHORT_PHONES = 6          # bind_warnings: a phrase with fewer is short
+SHORT_PHONES = 6          # bind_warnings: a phrase with fewer is short; a one-word phrase's
+SHORT_COST = 0.25         # ... target with fewer is found only within this, in all (_found)
 MIN_ALIAS_PHONES = 4      # merge_aliases drops a shorter alias
-ALIAS_CAP = 12
+ALIAS_CAP = 24            # the alias call's 20, beside the code's joined and split forms
+# checked_variants: the alias call's variants that are kept sound like the phrase, within this
+# sound_distance of it, and are less than this much longer, their speech sounds weighed as
+# sound_distance weighs one put in (_indel_cost: an HH 0.25, an AH 0.5, any other 1), so a
+# made-up word's respellings keep their H and "uh" sounds ("come a hammer ha" for kamehameha,
+# which CMUdict says in 8 sounds with no H). A backstop: on the
+# 2026-10-12 bench of the alias prompts (1,775 variants), they dropped 4 of the 59 from the old
+# prompt ("destroy everything right", "galactic gun"), 5 of 200 from Gemini 3.8 Flash's exactly
+# 20 at light thinking ("nice dean", "call me hammer ha"), and none from Sonnet, Haiku or Sol.
+ALIAS_MAX_DISTANCE = 0.35
+ALIAS_MAX_LONGER = 3
 MAX_PHRASE = 80           # characters, normalised
 MAX_LINE_WORDS = 200      # match_line reads the first 200 words of a line (about 1000 characters)
 SPAN_PHONES, SPAN_SLACK = 3, 0.1   # _best_end: a match's end may move this far for this much more
 EPS = 1e-9                # sums of 0.3s are not exact: a distance on the allowance is within it
+_INF = float("inf")
 DEFAULT_COOLDOWN_S = 3.0
 PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
 EVERYONE = "@a"
@@ -86,10 +112,10 @@ def words(text):
 
 
 def check_phrase(phrase):
-    """The phrase normalised; ValueError unless it is two words at least."""
+    """The phrase normalised; ValueError unless it is a word at least."""
     p = normalize(phrase)
-    if len(p.split()) < 2:
-        raise ValueError("%r is not an incantation: a phrase is two words at least" % (phrase,))
+    if not p:
+        raise ValueError("%r is not an incantation: a phrase is a word at least" % (phrase,))
     if len(p) > MAX_PHRASE:
         raise ValueError("%r is too long for an incantation: %d characters at most" % (phrase, MAX_PHRASE))
     return p
@@ -158,6 +184,12 @@ def cast_meta(entry, player):
     return meta
 
 
+def one_word(entry):
+    """Whether the entry's phrase is one word ("fireball"): Layer 2 and the drop rule hold its
+    targets tighter (_found)."""
+    return len(normalize(entry.get("phrase")).split()) == 1
+
+
 def targets(entry):
     """The entry's phrase and aliases, normalised, each once."""
     out = []
@@ -188,7 +220,8 @@ def updated(entry, changes, merge=False, drop_asked=()):
     """`entry` with `changes` over it, as Store.update writes it: each change replaces its field
     whole, except that with `merge` a values or asked change is merged over the entry's own, so
     only the keys given change; `drop_asked`, keys taken out of asked (a field that became the
-    caster's). vfg makes its cache's copy of an edited entry with it too, so the two agree."""
+    caster's). The everyday aliases left are those still among the aliases (everyday). vfg makes
+    its cache's copy of an edited entry with it too, so the two agree."""
     new = dict(entry)
     new.update(changes)
     if merge:
@@ -197,6 +230,8 @@ def updated(entry, changes, merge=False, drop_asked=()):
                 new[k] = dict(entry.get(k) or {}, **changes[k])
     if drop_asked and isinstance(new.get("asked"), dict):
         new["asked"] = dict((k, x) for k, x in new["asked"].items() if k not in drop_asked)
+    if "everyday_aliases" in new and ("aliases" in changes or "everyday_aliases" in changes):
+        new["everyday_aliases"] = everyday(new.get("aliases"), new["everyday_aliases"])
     return new
 
 
@@ -272,6 +307,8 @@ class Store(object):
         e["phrase"] = check_phrase(e.get("phrase"))
         e["id"] = entry_id(player, e["phrase"])
         e.setdefault("aliases", [])
+        if "everyday_aliases" in e:
+            e["everyday_aliases"] = everyday(e["aliases"], e["everyday_aliases"])
         e.setdefault("cooldown_s", DEFAULT_COOLDOWN_S)
         e.setdefault("created", now_iso())
         with _Change(self) as ch:
@@ -502,6 +539,16 @@ def phones(text):
     return [PHONES[i] for w in words(text) for i in _word_ids(w)]
 
 
+def pronunciation(phrase):
+    """How each word of the phrase is said, for the alias call's prompt: [(word, its phonemes as
+    "AY S", whether CMUdict has it)], a word it lacks given by the letter-to-sound rules."""
+    out = []
+    for w in words(phrase):
+        found = _cmu(w)
+        out.append((w, found if found is not None else " ".join(phonemes(w)), found is not None))
+    return out
+
+
 @lru_cache(maxsize=4096)
 def _target_ids(text):
     """A normalised target's phone ids, as a tuple."""
@@ -612,6 +659,19 @@ def _line(text):
     return ids, word_of
 
 
+def _starts(word_of):
+    """For each place in a run of phone ids (0 to its length), whether a word starts there:
+    where a one-word phrase's run may start (_best_end)."""
+    return [j == 0 or word_of[j] != word_of[j - 1] for j in range(len(word_of))] + [True]
+
+
+@lru_cache(maxsize=4096)
+def _target_starts(text):
+    """_starts for a normalised target's phone ids, by its words."""
+    word_of = [k for k, w in enumerate(text.split()) for _ in _word_ids(w)]
+    return tuple(_starts(word_of))
+
+
 @lru_cache(maxsize=1024)
 def _tables(t):
     """A target's costs, by phone id: (each of its phones left out, [each phone of the line
@@ -619,12 +679,13 @@ def _tables(t):
     return [_INDEL[a] for a in t], [[_SUB[a][b] for a in t] for b in range(len(PHONES))]
 
 
-def _best_end(t, line):
+def _best_end(t, line, starts=None):
     """The cheapest cost of the target `t` (phone ids) aligned whole against any run of `line`,
     and the index just past that run: (cost, end). Semi-global edit distance: the line is free
     before and after the run. One column of costs at a time, no traceback. An end up to
     SPAN_PHONES further on that costs at most SPAN_SLACK more is taken instead, so a last
-    phoneme is matched loosely rather than left out ("ha" in "come a hammer ha")."""
+    phoneme is matched loosely rather than left out ("ha" in "come a hammer ha"). `starts`
+    (_starts): a run starts only where it is true; anywhere without it."""
     m = len(t)
     dels, cols = _tables(t)
     prev = [0.0] * (m + 1)
@@ -633,11 +694,14 @@ def _best_end(t, line):
     ends = [prev[m]]
     cur = [0.0] * (m + 1)
     rng = range(m)
-    for b in line:
+    for j, b in enumerate(line):
         sub = cols[b]
         ins = _INDEL[b]
-        up = 0.0
-        diag = 0.0
+        if starts is None:
+            up = diag = 0.0
+        else:     # a run starting here (diag), or just after this phoneme (up)
+            diag = 0.0 if starts[j] else _INF
+            up = 0.0 if starts[j + 1] else _INF
         for i in rng:
             left = prev[i + 1]
             v = diag + sub[i]
@@ -660,9 +724,9 @@ def _best_end(t, line):
     return ends[end], end
 
 
-def _span(t, line, end):
+def _span(t, line, end, starts=None):
     """Where the cheapest run of `t` ending at `end` starts: the same alignment again over
-    line[:end], keeping each cell's start."""
+    line[:end], keeping each cell's start; with `starts`, as _best_end has it."""
     m = len(t)
     prev = [0.0] * (m + 1)
     pstart = [0] * (m + 1)
@@ -670,7 +734,7 @@ def _span(t, line, end):
         prev[i + 1] = prev[i] + _INDEL[t[i]]
     for j in range(1, end + 1):
         b = line[j - 1]
-        cur = [0.0] * (m + 1)
+        cur = [0.0 if starts is None or starts[j] else _INF] + [0.0] * m
         cstart = [j] * (m + 1)
         for i in range(1, m + 1):
             a = t[i - 1]
@@ -684,44 +748,61 @@ def _span(t, line, end):
     return pstart[m]
 
 
-def _distance(a, b):
-    """How unlike two normalised targets sound, 0 to 1: the closer of a found in b and b in a."""
+def _inside(a, b, one):
+    """How unlike the target `a` sounds to its best run in the target `b`, 0 to 1; with `one`
+    (a is a one-word phrase's), held as _found holds it: from a word of b, and a short one
+    within SHORT_COST or not at all."""
     ta, tb = _target_ids(a), _target_ids(b)
-    if not ta or not tb:
+    cost = _best_end(ta, tb, _target_starts(b) if one else None)[0]
+    if one and len(ta) < SHORT_PHONES and cost > SHORT_COST + EPS:
         return 1.0
-    return min(_best_end(ta, tb)[0] / len(ta), _best_end(tb, ta)[0] / len(tb))
+    return cost / len(ta)
 
 
-def _found(ids, entry, allowance):
+def _distance(a, b, a_one=False, b_one=False):
+    """How unlike two normalised targets sound, 0 to 1: the closer of a found in b and b in a,
+    each held as a one-word phrase's when it is one's (`a_one`, `b_one`)."""
+    if not _target_ids(a) or not _target_ids(b):
+        return 1.0
+    return min(_inside(a, b, a_one), _inside(b, a, b_one))
+
+
+def _found(ids, word_of, entry, allowance):
     """Each of the entry's targets (once per sound) whose best run in the line's phone ids is
-    within `allowance`: [(distance, target, its ids, end)], best first."""
+    within `allowance`: [(distance, target, its ids, end, starts)], best first, `starts` what
+    _span takes for where its run starts. A one-word phrase's targets (one_word) run only from
+    where a word of the line starts, and one of fewer than SHORT_PHONES phonemes is found only
+    within SHORT_COST, in all."""
+    starts = _starts(word_of) if one_word(entry) else None
     out, seen = [], set()
     for target in targets(entry):
         t = _target_ids(target)
         if not t or t in seen:
             continue
         seen.add(t)
-        cost, end = _best_end(t, ids)
+        cost, end = _best_end(t, ids, starts)
         d = cost / len(t)
+        if starts is not None and len(t) < SHORT_PHONES and cost > SHORT_COST + EPS:
+            continue
         if d <= allowance + EPS and end > 0:
-            out.append((d, target, t, end))
+            out.append((d, target, t, end, starts))
     out.sort(key=lambda f: f[0])
     return out
 
 
 def match_line(text, entries, allowance=ALLOWANCE):
     """Layer 2: each entry whose phrase or an alias sounds like a run of the line, within
-    `allowance`, across word boundaries; its best match only, best first. Fillers are skipped,
-    and only the first MAX_LINE_WORDS words read."""
+    `allowance`, across word boundaries (a one-word phrase's held tighter: _found); its best
+    match only, best first. Fillers are skipped, and only the first MAX_LINE_WORDS words read."""
     ids, word_of = _line(text)
     if not ids:
         return []
     out = []
     for e in entries:
-        found = _found(ids, e, allowance)
+        found = _found(ids, word_of, e, allowance)
         if found:
-            d, target, t, end = found[0]
-            start = _span(t, ids, end)
+            d, target, t, end, starts = found[0]
+            start = _span(t, ids, end, starts)
             out.append(Match(e, target, word_of[min(start, end - 1)], word_of[end - 1] + 1, round(d, 3)))
     out.sort(key=lambda mt: (mt.distance, mt.start))
     return out
@@ -761,8 +842,8 @@ def _left(text, entry):
     if found:
         return len(left), left
     ids, word_of = _line(" ".join(ws))
-    for d, target, t, end in _found(ids, entry, DROP_ALLOWANCE):
-        start = min(_span(t, ids, end), end - 1)
+    for d, target, t, end, starts in _found(ids, word_of, entry, DROP_ALLOWANCE):
+        start = min(_span(t, ids, end, starts), end - 1)
         first, last = word_of[start], word_of[end - 1] + 1
         if _plausible(d, target, t, end - start, last - first):
             return len(ws) - (last - first), ws[:first] + ws[last:]
@@ -809,7 +890,8 @@ def _split(word):
 def code_aliases(phrase):
     """The phrase joined ("fire ball" -> "fireball"; for three words or more, also any two
     neighbours that join into a dictionary word), and the split forms of its compound words
-    ("fireball blast" -> "fire ball blast", each word alone and then all of them)."""
+    ("fireball blast" -> "fire ball blast", each word alone and then all of them; "fireball"
+    -> "fire ball")."""
     ws = words(phrase)
     out = []
     if len(ws) > 1:
@@ -826,6 +908,60 @@ def code_aliases(phrase):
         out.append(" ".join(s or w for s, w in zip(splits, ws)))
     p = " ".join(ws)
     return [a for k, a in enumerate(out) if a != p and a not in out[:k]]
+
+
+def sound_distance(phrase, alias):
+    """How unlike `alias` sounds to `phrase`, whole against whole: the weighted edit distance
+    between their phonemes (Layer 2's costs, _sub_cost and _indel_cost, word boundaries
+    ignored) over the phrase's phoneme count. 0 is the same sounds; "ice been" is 0.18 from "ice
+    beam" (IH for IY and N for M, 0.9 over 5), "ice beam now" 0.4 (N AW put in)."""
+    a, b = _target_ids(normalize(phrase)), _target_ids(normalize(alias))
+    prev = [0.0]
+    for q in b:
+        prev.append(prev[-1] + _INDEL[q])
+    for p in a:
+        cur = [prev[0] + _INDEL[p]]
+        sub, dp = _SUB[p], _INDEL[p]
+        for j, q in enumerate(b):
+            cur.append(min(prev[j + 1] + dp, cur[j] + _INDEL[q], prev[j] + sub[q]))
+        prev = cur
+    return prev[-1] / max(1, len(a))
+
+
+def _weight(text):
+    """A normalised text's speech sounds, each weighed as _indel_cost puts it in: an HH 0.25, an
+    AH 0.5, any other 1."""
+    return sum(_INDEL[i] for i in _target_ids(text))
+
+
+def checked_variants(phrase, variants):
+    """The alias call's variants as the code keeps them, before merge_aliases: (kept, normalised,
+    in order; dropped, [(variant, why)]). Dropped: the phrase itself, a repeat, one
+    ALIAS_MAX_LONGER speech sounds longer than the phrase or more, each weighed as _indel_cost
+    weighs it (an HH 0.25, an AH 0.5), and one more than ALIAS_MAX_DISTANCE from it
+    (sound_distance)."""
+    p = normalize(phrase)
+    n = _weight(p)
+    kept, dropped, seen = [], [], set()
+    for v in variants or ():
+        a = normalize(v)
+        if not a:
+            continue
+        if a == p:
+            why = "the phrase itself"
+        elif a in seen:
+            why = "a repeat"
+        elif _weight(a) - n >= ALIAS_MAX_LONGER - EPS:
+            why = "%g speech sounds longer" % (_weight(a) - n)
+        else:
+            d = sound_distance(p, a)
+            why = "sounds unlike it (%.2f)" % d if d > ALIAS_MAX_DISTANCE + EPS else None
+        seen.add(a)
+        if why:
+            dropped.append((a, why))
+        else:
+            kept.append(a)
+    return kept, dropped
 
 
 def merge_aliases(phrase, *lists, cap=ALIAS_CAP):
@@ -845,17 +981,32 @@ def merge_aliases(phrase, *lists, cap=ALIAS_CAP):
     return out
 
 
+def everyday(aliases, marks):
+    """Of `marks`, those among `aliases`, normalised, in the aliases' order, each once: an
+    entry's everyday_aliases as the store keeps them, a subset of its aliases."""
+    marked = set(normalize(m) for m in marks or ())
+    out = []
+    for a in aliases or ():
+        n = normalize(a)
+        if n in marked and n not in out:
+            out.append(n)
+    return out
+
+
 def bind_warnings(phrase, aliases, others):
     """Why a phrase may misfire, one plain sentence each: it is short (fewer than SHORT_PHONES
     phonemes); it, or an alias, sounds like another entry's phrase or alias (distance at most
-    SOUNDS_LIKE, either inside the other); or it, or an alias, starts with another entry's
-    first word. `others`: the player's other entries (the phrase's own entry is skipped)."""
+    SOUNDS_LIKE, either inside the other, a one-word phrase's held as Layer 2 holds it); or it,
+    or an alias, starts with another entry's first word. `others`: the player's other entries
+    (the phrase's own entry is skipped)."""
     p = normalize(phrase)
     out = []
     n = len(_target_ids(p))
     if n < SHORT_PHONES:
-        out.append('"%s" is short (%d speech sounds), so it may fire by accident: a third word helps.' % (p, n))
+        more = {1: "a second word", 2: "a third word"}.get(len(p.split()), "another word")
+        out.append('"%s" is short (%d speech sounds), so it may fire by accident: %s helps.' % (p, n, more))
     mine = [p] + [a for a in (normalize(x) for x in aliases or []) if a and a != p]
+    one = len(p.split()) == 1
     for o in others or []:
         op = normalize(o.get("phrase"))
         if not op or op == p:
@@ -864,7 +1015,7 @@ def bind_warnings(phrase, aliases, others):
         hit = None
         for a in mine:
             for b in theirs:
-                d = _distance(a, b)
+                d = _distance(a, b, one, one_word(o))
                 if d <= SOUNDS_LIKE + EPS and (hit is None or d < hit[0]):
                     hit = (d, a, b)
         if hit is not None:

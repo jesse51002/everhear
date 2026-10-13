@@ -72,19 +72,21 @@ def install(repo):
                     ignore=shutil.ignore_patterns("__pycache__"))
 
 
-def fake_llm(variants=None, fail=None, after=None):
-    """A stand-in for lib/py/vfg_llm: structured() answers `variants`, or raises `fail`, once
-    `after` (an Event) is set, if given; the calls it had in .calls."""
+def fake_llm(variants=None, fail=None, after=None, everyday=False, everyday_variants=()):
+    """A stand-in for lib/py/vfg_llm: structured() answers `variants`, those in
+    `everyday_variants` marked common_phrase, and `everyday`, or raises `fail`, once `after` (an
+    Event) is set, if given; the calls it had in .calls."""
     mod = types.ModuleType("vfg_llm")
     mod.calls = []
 
     async def structured(prompt, output, **kw):
-        mod.calls.append(dict(kw, prompt=prompt))
+        mod.calls.append(dict(kw, prompt=prompt, output=output))
         if after is not None and not after.wait(5):
             raise RuntimeError("answered only after the store was read")
         if fail:
             raise fail
-        return types.SimpleNamespace(value=output(variants=variants), cost=0.00012, ms=840)
+        said = [{"text": v, "sounds": "", "common_phrase": v in everyday_variants} for v in variants or []]
+        return types.SimpleNamespace(value=output(variants=said, everyday=everyday), cost=0.00012, ms=840)
     mod.structured = structured
     return mod
 
@@ -173,10 +175,12 @@ class TestCreate(Case):
         self.assertEqual([e["id"] for e in got], ["steve.fire_ball", "alex.fire_ball"])
         e = got[0]
         self.assertEqual({k: e[k] for k in ("player", "phrase", "action", "script", "source", "server", "values",
-                                            "live", "runs", "caster_fields", "cooldown_s", "aliases")},
+                                            "live", "runs", "caster_fields", "cooldown_s", "aliases",
+                                            "everyday_aliases")},
                          {"player": "Steve", "phrase": "fire ball", "action": "command", "script": "command",
                           "source": "library", "server": "", "values": {"commands": FIRE}, "live": [],
-                          "runs": "once", "caster_fields": [], "cooldown_s": 3.0, "aliases": ["fireball"]})
+                          "runs": "once", "caster_fields": [], "cooldown_s": 3.0, "aliases": ["fireball"],
+                          "everyday_aliases": []})
         self.assertEqual(line["facts"]["ids"], ["steve.fire_ball", "alex.fire_ball"])
         self.assertNotIn("alias_call", line["facts"])
         self.create(player="@a")
@@ -184,8 +188,8 @@ class TestCreate(Case):
 
     def test_refusals_before_anything_runs(self):
         before = self.calls()
-        self.assertIn("two words at least", self.refused("incantation_create", player="Steve", phrase="fireball",
-                                                         action="command", values='{"commands": ["say hi"]}'))
+        self.assertIn("a word at least", self.refused("incantation_create", player="Steve", phrase=" ! ",
+                                                      action="command", values='{"commands": ["say hi"]}'))
         self.assertIn("whose incantation", self.refused("incantation_create", player=" ", phrase="fire ball",
                                                         action="command"))
         self.assertIn("whose incantation", self.refused("incantation_create", phrase="fire ball", action="command"))
@@ -220,9 +224,12 @@ class TestCreate(Case):
         def fetch_and_say(cfg, a, stamps=None):
             reading.set()
             return fetch(cfg, a, stamps)
-        # It answers only once the store is being read: the two at once.
-        llm = fake_llm(["fire bowl", "Fire-Ball", "fireball"] + ["variant number %s" % w for w in
-                                                                  "one two three four five six seven eight nine ten eleven".split()],
+        # It answers only once the store is being read: the two at once. Thirty that sound like it
+        # (fyre bawl, fier boll ...), among them the phrase itself, a repeat, one far longer and one
+        # that sounds unlike it.
+        alike = [a + " " + b for a in ("fyre", "fier", "fire") for b in ("bawl", "bal", "boll", "bol", "pall",
+                                                                          "paul", "bull", "bell", "baul", "balle")]
+        llm = fake_llm(["fire bowl", "Fire-Ball", "fireball", "fire bowl", "fire ball now please", "ice cream"] + alike,
                        after=reading)
         self.model("test/m")
         with mock.patch.dict(sys.modules, {"vfg_llm": llm}), mock.patch.object(self.vfg, "fetch_incantations", fetch_and_say), \
@@ -230,14 +237,35 @@ class TestCreate(Case):
             line = self.create()
         flush.assert_called_once_with(self.cfg)  # the call's own usage row, sent nobody waiting
         aliases = self.entry("steve.fire_ball")["aliases"]
-        self.assertEqual(aliases[:3], ["fireball", "fire bowl", "variant number one"])
-        self.assertEqual(len(aliases), 12)
-        self.assertEqual(line["facts"]["alias_call"], {"model": "test/m", "cost": 0.00012, "ms": 840})
-        self.assertFalse(any("alias call" in n for n in line["notes"]), line["notes"])
+        self.assertEqual(aliases[:3], ["fireball", "fire bowl", "fyre bawl"])     # the code's first
+        self.assertEqual(len(aliases), 24)
+        # What the code's checks dropped is in the facts, never a note.
+        self.assertEqual(line["facts"]["alias_call"], {
+            "model": "test/m", "cost": 0.00012, "ms": 840,
+            "dropped": ["fire ball: the phrase itself", "fire bowl: a repeat",
+                        "fire ball now please: 6 speech sounds longer", "ice cream: sounds unlike it (0.82)"]
+            + ["%s: past the 24" % x for x in alike[22:]]})
+        self.assertEqual([n for n in line["notes"] if "alias" in n or "dropped" in n], [])
         call = llm.calls[0]
-        self.assertEqual((call["model"], call["reasoning"], call["timeout"]), ("test/m", False, 8.0))
+        self.assertEqual((call["model"], call["reasoning"], call["timeout"], call.get("providers")),
+                         ("test/m", "low", 20.0, None))
         self.assertEqual((call["component"], call["call_id"]), ("alias", "fire ball"))
-        self.assertIn('The phrase: "fire ball"', call["prompt"])
+        prompt = call["prompt"]
+        self.assertIn('The incantation: "fire ball"\nHow it sounds (the CMU pronouncing dictionary, ARPAbet, stress '
+                      'left out):\n  fire = F AY ER\n  ball = B AO L\n', prompt)
+        self.assertIn("Always exactly 20, the likeliest first.", prompt)
+        schema = call["output"].model_json_schema()
+        self.assertEqual(schema["$defs"]["Variant"]["required"], ["text", "sounds", "common_phrase"])
+        self.assertIn("exactly 20", schema["properties"]["variants"]["description"])
+
+    def test_a_made_up_word_is_said_from_its_letters_in_the_prompt(self):
+        self.model("test/m")
+        llm = fake_llm(["garlic gun", "galic gun"])
+        with mock.patch.dict(sys.modules, {"vfg_llm": llm}), mock.patch.object(self.vfg, "flush_usage_later"):
+            self.create(phrase="galick gun")
+        self.assertIn('  galick = not in the dictionary (a made-up word); a guess from its letters: G AE L IH K. '
+                      'Think how a player would say it.\n  gun = G AH N\n', llm.calls[0]["prompt"])
+        self.assertEqual(self.entry("steve.galick_gun")["aliases"], ["galickgun", "garlic gun", "galic gun"])
 
     def test_a_failed_alias_call_is_a_note(self):
         llm = fake_llm(fail=RuntimeError("no answer from test/m within 8 s"))
@@ -248,6 +276,56 @@ class TestCreate(Case):
         self.assertTrue(line["ok"], line)
         self.assertIn("aliases from code only: the alias call failed (no answer from test/m within 8 s)", line["notes"])
         self.assertEqual(self.entry("steve.fire_ball")["aliases"], ["fireball"])
+
+    def test_a_one_word_phrase_is_created_with_its_split_form_and_a_short_one_with_a_note(self):
+        line = self.create(phrase="Fireball!")
+        self.assertTrue(line["ok"], line)
+        self.assertEqual(line["notes"], [])     # 6 speech sounds, as "fire ball"
+        e = self.entry("steve.fireball")
+        self.assertEqual((e["phrase"], e["aliases"]), ("fireball", ["fire ball"]))
+        line = self.create(phrase="heal")
+        self.assertTrue(line["ok"], line)
+        self.assertEqual(line["notes"],
+                         ['"heal" is short (3 speech sounds), so it may fire by accident: a second word helps.'])
+        self.assertEqual(self.entry("steve.heal")["aliases"], [])
+        self.assertEqual(self.listed(player="Steve", as_json=True)[1]["phrase"], "heal")
+
+    def test_everyday_talk_is_a_note_when_the_alias_call_says_so(self):
+        self.model("test/m")
+        for everyday in (True, False):
+            llm = fake_llm(["heel", "heals"], everyday=everyday)
+            with mock.patch.dict(sys.modules, {"vfg_llm": llm}), mock.patch.object(self.vfg, "flush_usage_later"):
+                line = self.create(phrase="heal")
+            self.assertTrue(line["ok"], line)
+            note = '"heal" is everyday talk, so it will fire whenever it is said in conversation.'
+            self.assertEqual(note in line["notes"], everyday, line["notes"])
+            self.assertEqual(self.entry("steve.heal")["aliases"], ["heals"])   # heel: 3 speech sounds
+            self.assertIn("everyday talk", llm.calls[0]["prompt"])
+
+    def test_the_variants_marked_everyday_talk_are_kept_as_everyday_aliases(self):
+        self.model("test/m")
+        llm = fake_llm(["ice been", "Ice cream", "I Scream!", "nice beam", "eyes beam", "icebeam"],
+                       everyday_variants=["Ice cream", "I Scream!", "nice beam", "eyes beam", "icebeam"])
+        with mock.patch.dict(sys.modules, {"vfg_llm": llm}), mock.patch.object(self.vfg, "flush_usage_later"):
+            line = self.create(phrase="ice beam")
+        self.assertTrue(line["ok"], line)
+        e = self.entry("steve.ice_beam")
+        self.assertEqual(e["aliases"], ["icebeam", "ice been", "ice cream", "i scream", "nice beam", "eyes beam"])
+        # Among the aliases only, and never the phrase's own words run together (the code's).
+        self.assertEqual(e["everyday_aliases"], ["ice cream", "i scream", "nice beam", "eyes beam"])
+        self.assertIn("(everyday talk, not spotted: ice cream, i scream, nice beam, eyes beam)", line["summary"])
+        self.assertEqual(self.cache()["incantations"], [e])
+        self.assertTrue(self.listed().rstrip().endswith(
+            "; everyday, not spotted: ice cream, i scream, nice beam, eyes beam"), self.listed())
+        self.assertEqual(self.listed(as_json=True)[0]["everyday_aliases"], e["everyday_aliases"])
+        prompt = llm.calls[0]["prompt"]
+        for words in ('"ice cream", "i scream", "nice beam" and "eyes beam" are', '("ice been", "juicy stake"',
+                      '"destroyed everything"'):
+            self.assertIn(words, prompt)
+        # The model off: none.
+        self.model("off")
+        self.create(phrase="ice beam")
+        self.assertEqual(self.entry("steve.ice_beam")["everyday_aliases"], [])
 
     def test_bind_warnings_are_notes(self):
         self.create()
@@ -290,6 +368,11 @@ class TestEdit(Case):
         self.assertTrue(line["ok"], line)
         self.assertIn("cooldown_s=700 is over its max, clamped to 600", line["notes"])
         self.assertIn('changed "beam me" for Steve: cooldown 600 s', line["summary"])
+        self.assertIn("cooldown 600 s", line["facts"]["changed"])     # what it changed, as edit's facts say it
+        line = self.run_("incantation_edit", player="steve", phrase="Beam me", cooldown_s="600")
+        self.assertTrue(line["ok"], line)                              # the same again: it ran, and changed nothing
+        self.assertEqual((line["facts"]["changed"], line["summary"].split(";")[0]),
+                         ([], 'changed "beam me" for Steve: nothing new'))
         e = self.entry("steve.beam_me")
         self.assertEqual((e["values"]["player"], e["caster_fields"], e["cooldown_s"]), ("Alex", [], 600.0))
 
@@ -308,12 +391,84 @@ class TestEdit(Case):
         self.create()
         line = self.run_("incantation_edit", player="Steve", phrase="fire ball", aliases="Fire-Bowl,fire ball,ice walls")
         self.assertEqual(self.entry("steve.fire_ball")["aliases"], ["fire bowl", "ice walls"])
-        self.assertIn("left out of the aliases (the phrase itself, too short to tell apart, or past 12): fire ball",
+        self.assertIn("left out of the aliases (the phrase itself, too short to tell apart, or past 24): fire ball",
                       line["notes"])
         self.assertIn('Its alias "ice walls" sounds like "ice wall", so one may fire for the other.', line["notes"])
 
 
+    def test_new_aliases_keep_the_everyday_marks_still_among_them(self):
+        self.model("test/m")
+        llm = fake_llm(["ice been", "ice cream", "i scream"], everyday_variants=["ice cream", "i scream"])
+        with mock.patch.dict(sys.modules, {"vfg_llm": llm}), mock.patch.object(self.vfg, "flush_usage_later"):
+            self.create(phrase="ice beam")
+        self.assertEqual(self.entry("steve.ice_beam")["everyday_aliases"], ["ice cream", "i scream"])
+        line = self.run_("incantation_edit", player="Steve", phrase="ice beam", aliases="ice been,i scream,ice queen")
+        self.assertTrue(line["ok"], line)
+        e = self.entry("steve.ice_beam")
+        self.assertEqual((e["aliases"], e["everyday_aliases"]), (["ice been", "i scream", "ice queen"], ["i scream"]))
+        self.assertIn("everyday aliases i scream", line["facts"]["changed"])
+        self.assertEqual(self.cache()["incantations"], [e])
+        line = self.run_("incantation_edit", player="Steve", phrase="ice beam", cooldown_s="4")
+        self.assertEqual((line["facts"]["changed"], self.entry("steve.ice_beam")["everyday_aliases"]),
+                         (["cooldown 4 s"], ["i scream"]))
+
+    def test_everyday_aliases_set_and_cleared_by_hand(self):
+        self.create(phrase="ice beam")
+        self.run_("incantation_edit", player="Steve", phrase="ice beam", aliases="ice been,ice cream,i scream")
+        self.assertNotIn("everyday_aliases", self.run_("incantation_edit", player="Steve", phrase="ice beam",
+                                                       cooldown_s="4")["facts"]["changed"])
+        line = self.run_("incantation_edit", player="Steve", phrase="ice beam",
+                         everyday_aliases="Ice-Cream,i scream,eyes beam")
+        self.assertTrue(line["ok"], line)
+        self.assertEqual(self.entry("steve.ice_beam")["everyday_aliases"], ["ice cream", "i scream"])
+        self.assertIn("left out of the everyday aliases (not among its aliases): eyes beam", line["notes"])
+        self.assertIn('changed "ice beam" for Steve: everyday aliases ice cream, i scream', line["summary"])
+        # The aliases and the marks at once: the marks among the new aliases.
+        line = self.run_("incantation_edit", player="Steve", phrase="ice beam", aliases="ice been,eyes beam",
+                         everyday_aliases="eyes beam")
+        e = self.entry("steve.ice_beam")
+        self.assertEqual((e["aliases"], e["everyday_aliases"]), (["ice been", "eyes beam"], ["eyes beam"]))
+        line = self.run_("incantation_edit", player="Steve", phrase="ice beam", everyday_aliases="")
+        self.assertTrue(line["ok"], line)
+        self.assertEqual(self.entry("steve.ice_beam")["everyday_aliases"], [])
+        self.assertEqual(line["facts"]["changed"], ["everyday aliases none"])
+        self.assertIn("everyday_aliases=", self.refused("incantation_edit", player="Steve", phrase="ice beam"))
+
+    def test_an_entry_from_before_the_marks_gets_none_from_new_aliases(self):
+        self.create(phrase="ice beam")
+        for path in (self.store_path(), os.path.join(self.box.vhome, "incantations.json")):
+            with open(path) as f:
+                data = json.load(f)
+            data["incantations"][0].pop("everyday_aliases")
+            with open(path, "w") as f:
+                json.dump(data, f)
+        line = self.run_("incantation_edit", player="Steve", phrase="ice beam", aliases="ice been,ice cream")
+        self.assertTrue(line["ok"], line)
+        self.assertNotIn("everyday_aliases", self.entry("steve.ice_beam"))
+        self.assertNotIn("everyday", self.listed())
+        self.assertEqual(self.listed(as_json=True)[0]["everyday_aliases"], [])
+
+    def test_a_one_word_phrase(self):
+        self.create(phrase="dash")
+        self.create(phrase="speed dash")
+        line = self.run_("incantation_edit", player="Steve", phrase="Dash!", cooldown_s="1", aliases="dashes,dosh")
+        self.assertTrue(line["ok"], line)
+        e = self.entry("steve.dash")
+        self.assertEqual((e["cooldown_s"], e["aliases"]), (1.0, ["dashes"]))
+        self.assertEqual(line["notes"], [
+            "left out of the aliases (the phrase itself, too short to tell apart, or past 24): dosh",
+            '"dash" is short (3 speech sounds), so it may fire by accident: a second word helps.',
+            '"dash" sounds like "speed dash", so one may fire for the other.'])
+
+
 class TestRemove(Case):
+    def test_remove_a_one_word_phrase(self):
+        self.create(phrase="shield")
+        line = self.run_("incantation_remove", player="Steve", phrase="Shield")
+        self.assertTrue(line["ok"], line)
+        self.assertEqual(line["summary"], 'removed "shield" for Steve; version 2')
+        self.assertEqual(self.store()["incantations"], [])
+
     def test_remove(self):
         self.create(player="Steve,Alex")
         self.listed()  # the cache
@@ -339,9 +494,10 @@ class TestList(Case):
                           '@a: "fire ball" → command {"commands":["say fire"]} cooldown 3s; aliases fireball'])
         got = self.listed(player="steve", as_json=True)
         self.assertEqual(got, [{"player": "Steve", "phrase": "beam me", "action": "beam", "values": {"length": 50},
-                                "cooldown_s": 2.5, "aliases": []},
+                                "cooldown_s": 2.5, "aliases": [], "everyday_aliases": []},
                                {"player": "@a", "phrase": "fire ball", "action": "command",
-                                "values": {"commands": FIRE}, "cooldown_s": 3.0, "aliases": ["fireball"]}])
+                                "values": {"commands": FIRE}, "cooldown_s": 3.0, "aliases": ["fireball"],
+                                "everyday_aliases": []}])
 
     def test_runs_write_the_cache_through(self):
         self.create()
@@ -479,7 +635,7 @@ class TestCli(BoxCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout), [{"player": "Steve", "phrase": "fire ball", "action": "command",
                                                  "values": {"commands": FIRE}, "cooldown_s": 3.0,
-                                                 "aliases": ["fireball"]}])
+                                                 "aliases": ["fireball"], "everyday_aliases": []}])
 
 if __name__ == "__main__":
     unittest.main()

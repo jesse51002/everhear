@@ -78,6 +78,26 @@ def fetchSherpaOnnx = tasks.register('fetchSherpaOnnx', FetchPinnedFile) {
 
 def sherpaJar = files(sherpaJarFile) { builtBy fetchSherpaOnnx }
 
+// ---------------------------------------------------------------------------
+// Vosk's Java API (Apache-2.0): fetched once from Maven Central into libs/, checked
+// against a pinned SHA-256, and its classes unzipped into the mod jar like sherpa-onnx's.
+// Its natives, also in that jar, are left out: the mod downloads this PC's on first run.
+// It runs on JNA, which Minecraft itself ships (5.17.0, on every platform), so JNA is
+// not bundled: a second copy would load its own native dispatch library.
+// ---------------------------------------------------------------------------
+
+def voskJarFile = file("libs/vosk-${project.vosk_version}.jar")
+
+def fetchVosk = tasks.register('fetchVosk', FetchPinnedFile) {
+	group = 'build setup'
+	description = 'Fetches the pinned Vosk Java API jar, natives included, into libs/.'
+	url = "https://repo1.maven.org/maven2/com/alphacephei/vosk/${project.vosk_version}/vosk-${project.vosk_version}.jar"
+	sha256 = project.vosk_sha256
+	destination = voskJarFile
+}
+
+def voskJar = files(voskJarFile) { builtBy fetchVosk }
+
 dependencies {
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"
 	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
@@ -88,6 +108,11 @@ dependencies {
 	testImplementation sherpaJar
 	// So `./gradlew runClient` finds the classes the shipped jar carries inside it.
 	runtimeOnly sherpaJar
+
+	// The same for Vosk; JNA comes with Minecraft, and with it onto the test classpath.
+	compileOnly voskJar
+	testImplementation voskJar
+	runtimeOnly voskJar
 
 	testImplementation platform("org.junit:junit-bom:${project.junit_version}")
 	testImplementation 'org.junit.jupiter:junit-jupiter'
@@ -103,12 +128,17 @@ processResources {
 }
 
 jar {
-	dependsOn fetchSherpaOnnx
+	dependsOn fetchSherpaOnnx, fetchVosk
 	inputs.file(sherpaJarFile)
+	inputs.file(voskJarFile)
 	from({ zipTree(sherpaJarFile) }) {
 		exclude 'META-INF/**'
 	}
-	from('LICENSE-sherpa-onnx.txt')
+	// org/vosk/*.class only: the natives are downloaded, this PC's alone
+	from({ zipTree(voskJarFile) }) {
+		include 'org/vosk/**'
+	}
+	from('LICENSE-sherpa-onnx.txt', 'LICENSE-vosk.txt')
 	from('LICENSE-smart-turn.txt', 'LICENSE-turn-1-mini.txt', 'NOTICE-turn-1-mini.txt')
 }
 
@@ -157,7 +187,7 @@ tasks.register('engineTest', Test) {
 
 tasks.register('kwsTest', Test) {
 	group = 'verification'
-	description = 'The keyword spotter on Kokoro speech: hits, false casts, the after-a-pause case, latency, CPU (-Pkws-sweep: tuning).'
+	description = 'The keyword spotter on Kokoro speech, re-checks and the stream: hits, false casts, latency, CPU (-Pkws-sweep, -Pkws-lead: tuning).'
 	testClassesDirs = sourceSets.test.output.classesDirs
 	classpath = sourceSets.test.runtimeClasspath
 	useJUnitPlatform {
@@ -168,6 +198,7 @@ tasks.register('kwsTest', Test) {
 	systemProperty 'vfg.testAssets', layout.buildDirectory.dir('vfg-test-assets').get().asFile.absolutePath
 	systemProperty 'vfg.kwsOut', layout.buildDirectory.dir('kws-test').get().asFile.absolutePath
 	systemProperty 'vfg.kwsSweep', project.hasProperty('kws-sweep') ? 'true' : 'false'
+	systemProperty 'vfg.kwsLead', project.hasProperty('kws-lead') ? 'true' : 'false'
 	jvmArgs '--enable-native-access=ALL-UNNAMED'
 	outputs.upToDateWhen { false }
 	testLogging {

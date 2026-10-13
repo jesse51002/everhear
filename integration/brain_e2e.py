@@ -3,12 +3,13 @@
 
     python3 integration/brain_e2e.py [--keep]
 
-Real:  the brain (`vfg brain start` runs brain/run), its model calls through OpenRouter
-       (OPEN_ROUTER_API: from the environment, else the first .env above this repo, or its
-       Internal/.env, that holds it; passed to the brain's process only, never printed or
-       written), the vfg toolkit (toolkit/vfg, under uv; its remote programs run through the
-       fake ssh on the box's Python 3.12), actions/ and the scripts they run, the bridge's feed
-       writer (bridge/vfg_feed.py, the box's lib/vfg_feed.py) and vfg.db, made by the bridge.
+Real:  the brain (`vfg brain start` runs brain/run): its loop's steps on Gemini 3.8 Flash and
+       Respond on DeepSeek V4 Flash, through OpenRouter (OPEN_ROUTER_API: from the environment,
+       else the first .env above this repo, or its Internal/.env, that holds it; passed to the
+       brain's process only, never printed or written), the vfg toolkit (toolkit/vfg, under uv;
+       its remote programs run through the fake ssh on the box's Python 3.12), actions/ and the
+       scripts they run, the bridge's feed writer (bridge/vfg_feed.py, the box's
+       lib/vfg_feed.py) and vfg.db, made by the bridge.
 Stand-ins: SSH (toolkit/tests/fake_ssh, which runs the remote command here), Minecraft
        (scripts/_test/fake_places_world.py over scripts/_test/fake_rcon.py, in this process: 26.3's
        recorded replies, a world that keeps its players, effects and places, and here each
@@ -19,11 +20,13 @@ Stand-ins: SSH (toolkit/tests/fake_ssh, which runs the remote command here), Min
 
 Nothing touches ~/.vfg, ~/.ssh or any remote host but OpenRouter: HOME, VFG_HOME and VFG_REPO
 point into a temp folder. The table at the end times each line from the moment it was fed to
-the moment its reply was said. Prints PASS/FAIL per check; exits non-zero when anything failed.
-A full run makes nine model calls, about $0.09 (the first, uncached, about $0.06 of it). Not
-part of any test suite.
+the moment its reply was said, with its loop's steps and cost from brain.log's `loop` line. Prints
+PASS/FAIL per check; exits non-zero when anything failed. A full run makes about nine model calls
+(a step each for most lines), a few cents; the first step, its opening not cached yet, is most of
+it. Not part of any test suite.
 """
 import argparse
+import ast
 import datetime as dt
 import gzip
 import importlib.util
@@ -55,9 +58,20 @@ BUDGET = 0.10        # dollars of OpenRouter a full run may spend
 WIKI = "https://minecraft.wiki/w/"
 
 FEED_RE = re.compile(r"^([A-Z]+)#(\d+) (\d\d:\d\d:\d\d) (?:([^|]*?) )?\| (.*)$")
-# A model call in brain.log that answered: the brain's, Respond's or the orchestrator's, for a line
-# (#seq) or a report (the task's name); its cost ends in + when an attempt cut off in flight is not in it.
-LOG_CALL = re.compile(r"^(\S+) (brain|respond|orchestrator) (#\d+|[a-z][a-z0-9_]{1,31}) (\d+) ms \$([\d.]+)\+?, (\d+) in")
+# A model call in brain.log that answered: a step of the brain's loop (`brain #5 s1 …`) or Respond's
+# (`respond #5 …`), for a line (#seq) or a report (the task's name); its cost ends in + when an
+# attempt cut off in flight is not in it.
+LOG_CALL = re.compile(r"^(\S+) (brain|respond) (#\d+|[a-z][a-z0-9_]{1,55})(?: s(\d+))? (\d+) ms \$([\d.]+)\+?, "
+                      r"(\d+) in")
+# A loop's last line: `loop #5 Steve: 1 step(s), $0.004120, 91% cached, reply at 3.4 s, 3.6 s, ended reply`.
+LOG_LOOP = re.compile(r"^(\S+) loop (#\d+|[a-z][a-z0-9_]{1,55}) (\S+): (\d+) step\(s\), \$([\d.]+)\+?, (\d+%|no) cached, "
+                      r"(?:reply at ([\d.]+) s|no reply), ([\d.]+) s, ended (.+)$")
+# A step's line: `brain #5 s1 <spent> | <what it ran> || end reply || reply: … || record: … -> <what came of it>`.
+LOG_STEP = re.compile(r"^(\S+) brain (#\d+|[a-z][a-z0-9_]{1,55}) s(\d+) (\d+) ms \$([\d.]+)\+?, .*? \| (.*) -> (.*)$")
+STEP_REPLY = re.compile(r" \|\| reply: (.*?)(?: \|\| record: .*| \|\| status: .*)?$")
+# Respond's answer: `respond #5 Alex: 'the line' -> 'its reply' (why)`.
+LOG_RESPOND = re.compile(r"^\S+ respond (#\d+) \S+: .* -> ('(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\") \(")
+ANY = object()  # logged_reply(): the turn said a line its log does not hold (an error line, a report's line in code)
 
 # Each player's items as 26.3 prints them (`data get entity <p> Inventory`, equipment,
 # SelectedItemSlot): Steve holds a diamond sword in hotbar.4, carries an iron sword and diamond
@@ -412,9 +426,11 @@ class Box:
         return rows[0]["s"] or 0
 
     def usage(self, ref=None):
+        """The model calls' usage rows: all of them, or those of one line (`#seq`: Respond's ref, and its
+        loop's steps' `#seq s<n>`)."""
         if ref is None:
-            return self.sql("SELECT * FROM usage WHERE component IN ('brain', 'respond', 'orchestrator') ORDER BY id")
-        return self.sql("SELECT * FROM usage WHERE ref = ? ORDER BY id", (ref,))
+            return self.sql("SELECT * FROM usage WHERE component IN ('brain', 'respond') ORDER BY id")
+        return self.sql("SELECT * FROM usage WHERE ref = ? OR ref LIKE ? ORDER BY id", (ref, ref + " s%"))
 
     def copies_since(self, at):
         """The copies started since `at` (a time.time()), from their meta files in the box's run/,
@@ -479,6 +495,7 @@ class Run:
     def __init__(self, box, rep):
         self.box, self.rep = box, rep
         self.asks = []  # {"seq", "at", "who", "text", "reply_at", "reply"}
+        self.claimed = set()  # the seqs of the AI say rows a line's reply took
 
     def line(self, who, cls, text):
         mark = len(self.box.world.sent)
@@ -492,43 +509,94 @@ class Run:
         """The commands the fake world got since the line was fed."""
         return self.box.world.sent[ask["mark"]:]
 
-    def reply(self, ask, timeout=40, skip=()):
-        """The first chat line after the line, but those in `skip` (seqs another line's reply
-        took); its time is kept for the table."""
+    def reply(self, ask, timeout=40):
+        """The line's chat line: the AI say row after it with the words its turn logged (its loop's,
+        or Respond's), so two turns at once are told apart; its time is kept for the table. None
+        when the turn said nothing (ask["silent"] is then True) or nothing came in time."""
+        ref = "#%d" % ask["seq"]
+
         def got():
-            for r in self.box.said(ask["seq"]):
-                if r["seq"] not in skip:
+            want = logged_reply(self.box.log(), ref)
+            if want == "":
+                return "silent"
+            for r in self.box.said(ask["seq"]) if want is not None else ():
+                if r["seq"] not in self.claimed and (want is ANY or same_words(r["text"], want)):
                     return r
             return None
         r = wait_for(got, timeout, 0.05)
-        if r:
-            ask["reply"] = r["text"]
-            ask["reply_at"] = parse_iso(r["at"]).timestamp()
+        ask["silent"] = r == "silent"
+        if not r or r == "silent":
+            return None
+        self.claimed.add(r["seq"])
+        ask["reply"] = r["text"]
+        ask["reply_at"] = parse_iso(r["at"]).timestamp()
         return r
 
     def tasked(self, ask):
-        """The AI task rows since the line: an orchestrator's new task or follow-up, which an
-        action ask never makes."""
+        """The AI task rows since the line: a hand-off's new task or a follow-up, which an action
+        ask never makes."""
         return [x for x in self.box.rows(ask["seq"], "AI") if x["fields"].startswith("task ")]
 
     def call_ms(self, ref):
-        """The brain's, Respond's and the orchestrator's calls for `ref` in the log: [(area, ms, cost,
-        ended at)]."""
+        """Respond's call and the brain's steps for `ref` in the log, in order: [(area, ms, cost, ended
+        at)], a step's area `brain s<n>`."""
         out = []
         for line in self.box.log().splitlines():
             m = LOG_CALL.match(line)
             if m and m.group(3) == ref:
-                out.append((m.group(2), int(m.group(4)), float(m.group(5)), parse_iso(m.group(1)).timestamp()))
+                area = m.group(2) + (" s%s" % m.group(4) if m.group(4) else "")
+                out.append((area, int(m.group(5)), float(m.group(6)), parse_iso(m.group(1)).timestamp()))
         return out
 
+    def loop(self, ref):
+        """The loop line of `ref` in the log: {steps, cost, cached, reply_s, s, ended}, or None."""
+        for line in self.box.log().splitlines():
+            m = LOG_LOOP.match(line)
+            if m and m.group(2) == ref:
+                return {"steps": int(m.group(4)), "cost": float(m.group(5)), "cached": m.group(6),
+                        "reply_s": float(m.group(7)) if m.group(7) else None, "s": float(m.group(8)),
+                        "ended": m.group(9)}
+        return None
+
     def table(self):
-        print("\nTIMING: a line fed -> its reply said (the feed rows' times)")
-        print("  %-5s %-6s %-16s %8s  %s" % ("line", "who", "class", "reply", "calls (model ms, $)"))
+        print("\nTIMING: a line fed -> its reply said (the feed rows' times); its loop from brain.log")
+        print("  %-5s %-6s %-16s %8s  %-28s %s" % ("line", "who", "class", "reply", "loop", "calls (model ms, $)"))
         for a in self.asks:
             took = "%.1f s" % (a["reply_at"] - a["at"]) if a.get("reply_at") else "-"
             calls = ", ".join("%s %d ms $%.4f" % (area, ms, cost) for area, ms, cost, _ in self.call_ms("#%d" % a["seq"]))
-            print("  #%-4d %-6s %-16s %8s  %s" % (a["seq"], a["who"], a["cls"], took, calls or "-"))
+            lp = self.loop("#%d" % a["seq"])
+            loop = "%d step(s) $%.4f %s, %s" % (lp["steps"], lp["cost"], lp["cached"], lp["ended"]) if lp else "-"
+            print("  #%-4d %-6s %-16s %8s  %-28s %s" % (a["seq"], a["who"], a["cls"], took, loop, calls or "-"))
             print("        %s  ->  %s" % (short(a["text"], 60), short(a.get("reply") or "(no reply)", 80)))
+
+
+def logged_reply(log, ref):
+    """What the turn of `ref` (`#seq`, or a report's task name) said, from brain.log: its loop's reply,
+    as the step that ended it wrote it, or Respond's; "" when it said nothing (silent, or Respond
+    said nothing); ANY when it said a line the log does not hold; None while it has not ended."""
+    step = None
+    for line in log.splitlines():
+        m = LOG_STEP.match(line)
+        if m and m.group(2) == ref:
+            step = m
+            continue
+        m = LOG_LOOP.match(line)
+        if m and m.group(2) == ref:
+            if m.group(7) is None:
+                return ""
+            said = STEP_REPLY.search(step.group(6)) if step and m.group(9) != "failed" else None
+            return said.group(1) if said else ANY
+        m = LOG_RESPOND.match(line)
+        if m and m.group(1) == ref:
+            return ast.literal_eval(m.group(2)).strip()
+    return None
+
+
+def same_words(a, b, n=40):
+    """Two chat lines are the same: their first `n` letters and digits (vfg say cleans what it stores)."""
+    def key(t):
+        return re.sub(r"[^a-z0-9]", "", str(t).lower())[:n]
+    return key(a) == key(b)
 
 
 def one_reply(run, ask, settle=3.0):
@@ -589,11 +657,15 @@ def ask_action(run):
               "%r; %s" % (r, short(box.log()[-1200:])))
     replies = one_reply(run, a)
     rep.check(len(replies) == 1, "exactly one chat line for the line", "%r" % replies)
-    ai = box.rows(a["seq"], "AI")
-    actions = [x for x in ai if x["fields"].startswith("action ")]
-    rep.check(actions and all(x["fields"] == "action -" and " — ok: " in x["text"] for x in actions),
-              "each action it ran is an AI action - row, ok: an action never carries a task",
-              "%r" % [(x["fields"], x["text"]) for x in actions])
+    lp = run.loop("#%d" % a["seq"])
+    rep.check(lp and lp["steps"] == 1 and lp["ended"] == "reply",
+              "one step: its actions landed and the loop ended with its reply (%s)"
+              % ("%d step(s), $%.4f, ended %s" % (lp["steps"], lp["cost"], lp["ended"]) if lp else "no loop line"),
+              short(box.log()[-1500:]))
+    records = [x for x in box.rows(a["seq"], "AI") if x["fields"].startswith("action ")]
+    rep.check(len(records) == 1 and records[0]["fields"] == "action -" and records[0]["text"].strip(),
+              "the loop's one record, an AI action - row with no task: %r" % (records and records[0]["text"]),
+              "%r" % [(x["fields"], x["text"]) for x in records])
     rep.check(not run.tasked(a), "no task for it: no AI task row", "%r" % [x["line"] for x in run.tasked(a)])
     copies = box.copies_since(at)
     named = all(re.match(r"^%s_steve(_\d+)?$" % re.escape(m.get("action") or "?"), c) and m.get("task") is None
@@ -623,6 +695,12 @@ def ask_item(run):
     replies = one_reply(run, a)
     rep.check(len(replies) == 1 and not run.tasked(a), "exactly one chat line for the line, and no AI task row",
               "%r %r" % (replies, run.tasked(a)))
+    lp = run.loop("#%d" % a["seq"])
+    records = [x for x in box.rows(a["seq"], "AI") if x["fields"].startswith("action ")]
+    rep.check(lp and lp["ended"] == "reply" and len(records) == 1,
+              "its loop ended with the reply, one record: %s; %r"
+              % ("%d step(s)" % lp["steps"] if lp else "no loop line", records and records[0]["text"]),
+              "%r %r" % (lp, [(x["fields"], x["text"]) for x in records]))
 
 
 def ask_talk(run):
@@ -642,19 +720,28 @@ def ask_talk(run):
 
 def ask_handed_up(run):
     rep, box = run.rep, run.box
-    rep.head("4. A conversational ask: Respond hands it up and says nothing; the brain acts and replies")
+    rep.head("4. A conversational ask: Respond hands it up and says nothing; the brain's loop acts, and replies or "
+             "ends silent")
     a = run.line("Alex", "conversational", "lol can you make it night already")
     r = run.reply(a)
     handed = re.search(r"^\S+ respond #%d handed up" % a["seq"], box.log(), re.M)
     rep.check(handed, "Respond handed it up (brain.log)", short(box.log()[-1500:]))
-    use = sorted(u["component"] for u in box.usage("#%d" % a["seq"]))
-    rep.check(use == ["brain", "respond"], "a Respond call, then a brain call, for the one line", "%r" % use)
+    time.sleep(1)  # the step's usage row goes out beside the reply, nobody waiting
+    use = [(u["component"], u["ref"]) for u in box.usage("#%d" % a["seq"])]
+    rep.check([c for c, _ in use][:1] == ["respond"] and sum(c == "respond" for c, _ in use) == 1
+              and any(c == "brain" and r == "#%d s1" % a["seq"] for c, r in use),
+              "a Respond call, then the brain's loop, for the one line: %s" % ", ".join("%s %s" % x for x in use),
+              "%r" % use)
     night = [x for x in run.sent(a) if re.match(r"^(execute .* run )?time set (night|midnight|1[3-8]\d{3})$", x)]
     rep.check(night, "the time set to night in the world", "sent %r" % run.sent(a))
     replies = one_reply(run, a)
-    rep.check(r and len(replies) == 1 and r["fields"] == "say -" and not run.tasked(a),
-              "one chat line, the brain's, with no task (AI say -): %r" % (r and r["text"]),
-              "%r %r" % (replies, run.tasked(a)))
+    lp = run.loop("#%d" % a["seq"])
+    ended = lp["ended"] if lp else "?"
+    rep.check(not run.tasked(a) and (ended == "silent" and not replies
+                                     or ended == "reply" and r and len(replies) == 1 and r["fields"] == "say -"),
+              "its loop ended %s: %s, with no task" % (ended, "one chat line, AI say - %r" % r["text"] if r
+                                                       else "no chat line, the night says it"),
+              "%r %r %r" % (lp, replies, run.tasked(a)))
 
 
 def ask_two_at_once(run):
@@ -669,10 +756,9 @@ def ask_two_at_once(run):
           "mark": mark, "reply": None}
     run.asks += [a1, a2]
     rep.note("#%d and #%d fed in one write" % (s1, s2))
-    # Neither carries a task, so the two replies are told apart only by their order: the first
-    # said is put to the first line, for the table.
-    r1 = run.reply(a1)
-    run.reply(a2, skip={r1["seq"]} if r1 else ())
+    # Neither carries a task: each reply is told apart by the words its loop logged.
+    run.reply(a1)
+    run.reply(a2)
     time.sleep(3)
     sent = box.world.sent[mark:]
     rep.check(any(re.match(r"^(execute .* run )?give Steve (minecraft:)?golden_apple( 1)?$", x) for x in sent)
@@ -738,8 +824,8 @@ def end(run):
               "vfg brain stop: the brain stopped cleanly",
               "%s %s; log tail %s" % (r and r.stdout, r and r.stderr, short(log[-800:])))
     rep.check(not os.path.exists(os.path.join(box.brain, "brain.pid")), "brain.pid is gone")
-    rep.check(tasks == [], "no task in vfg.db's tasks table opened by the run: no line of it went to the "
-              "orchestrator", "no tasks table" if tasks is None else "%r" % tasks)
+    rep.check(tasks == [], "no task in vfg.db's tasks table opened by the run: no line of it was handed off",
+              "no tasks table" if tasks is None else "%r" % tasks)
     rep.check("Traceback" not in log and not re.search(r"^\S+ error ", log, re.M), "no traceback or error in brain.log",
               short(log[max(0, log.find("Traceback")):][:1500]))
     leaks = []
@@ -759,9 +845,14 @@ def end(run):
     rep.check(cost < BUDGET, "the run cost $%.4f of OpenRouter, under $%.2f" % (cost, BUDGET))
     print("\nCOST: %d calls, $%.4f; %d prompt tokens, %.0f%% read from the cache" % (
         len(use), cost, prompt, 100.0 * cached / prompt if prompt else 0))
+    later = [u for u in use if u["component"] == "brain" and not (u["ref"] or "").endswith(" s1")]
+    if later:
+        print("  steps after a loop's first: %d, %.0f%% of their prompt read from the cache" % (
+            len(later), 100.0 * sum(u["cache_read_tokens"] or 0 for u in later)
+            / max(1, sum(u["input_tokens"] or 0 for u in later))))
     for u in use:
         print("  %-12s %-10s %-24s in %6d (%3.0f%% cached) out %4d  $%.5f" % (
-            u["component"], u["ref"], u["model"], u["input_tokens"],
+            u["component"], u["ref"], u["model"][:24], u["input_tokens"],
             100.0 * (u["cache_read_tokens"] or 0) / u["input_tokens"] if u["input_tokens"] else 0,
             u["output_tokens"], u["cost_usd"] or 0))
 

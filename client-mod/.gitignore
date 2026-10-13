@@ -4,7 +4,7 @@ build/
 out/
 classes/
 
-# the fetched sherpa-onnx jar
+# the fetched sherpa-onnx and vosk jars
 libs/
 
 # fabric dev runs, and logs from a run in the wrong folder

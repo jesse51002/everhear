@@ -25,7 +25,8 @@ The conversation goes to a model as minute-blocks: a block is a run of consecuti
 a minute, and once the next minute's row arrives it never changes. Every `checkpoint`-th closed
 block is marked for the prompt cache, the last three of them with the opening as the fourth
 mark, so each call's prompt matches the last call's up to its last mark (Prototype_Brain:
-98% of a call's prompt cached, at $0.0047).
+98% of a call's prompt cached, at $0.0047). A step of the brain's loop takes the last two, and
+marks the end of its own prompt with the fourth (call.py).
 """
 
 from __future__ import annotations
@@ -182,15 +183,15 @@ class Context:
                 out.append([r])
         return out
 
-    def cached(self, opening: str, checkpoint: int) -> list[tuple[str, bool]]:
+    def cached(self, opening: str, checkpoint: int, marks: int = MARKS) -> list[tuple[str, bool]]:
         """What structured() caches: the opening (marked), then the conversation a minute-block at
-        a time, every `checkpoint`-th closed block marked, the last MARKS of them. The last block
+        a time, every `checkpoint`-th closed block marked, the last `marks` of them. The last block
         may still grow, so it is never marked."""
         blocks = self.blocks()
         closed = len(blocks) - 1
-        marks = [i for i in range(1, closed + 1) if i % checkpoint == 0][-MARKS:]
+        marked = [i for i in range(1, closed + 1) if i % checkpoint == 0][-marks:] if marks > 0 else []
         out = [(opening, True)]
-        out += [("".join(r.show() + "\n" for r in b), i in marks) for i, b in enumerate(blocks, 1)]
+        out += [("".join(r.show() + "\n" for r in b), i in marked) for i, b in enumerate(blocks, 1)]
         return out
 
 

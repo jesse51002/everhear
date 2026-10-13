@@ -3,8 +3,8 @@
 
 An action is one pydantic class in actions/<name>.py, or in made/<server>/actions/<name>.py
 for one this server's implementers made; actions/_types.py has the base classes and the value
-types, actions/README.md how to write one. vfg, the dispatcher, the orchestrator's brief hook
-and Jev's router all go through here:
+types, actions/README.md how to write one. vfg, the brain, the implementers' examples and Jev's
+router all go through here:
 
     cat = Catalog(repo, server="main")        every action; cat.refresh() reloads what changed
     cat.names(), cat.get(name), cat.source(name), cat.file(name), cat.errors()
@@ -12,7 +12,7 @@ and Jev's router all go through here:
     check_values(cls, {"cooldown": "0"}, places=...)  -> Checked(values, notes, live)
     check_edit(cls, current, {"cooldown": "0"})       -> Edit(values, changed, live_only, notes)
     menu_line(name, cls), describe(name, cls, current=None)
-    planner_model(cls), edit_model(cls)       the models structured() answers in
+    planner_model(cls), edit_model(cls)       models of the values an action takes, and of an edit
     variables(cls)                            its fields as a task's `variables`: [{name, type, ...}]
     cache(repo, server, home)                 home/actions.json, built again when it is stale
 
@@ -371,8 +371,7 @@ class Edit:
 
 def check_values(cls, given: dict, *, places: dict | None = None, allow_fixed: bool = False) -> Checked:
     """The values a run of action `cls` gets: every field, its default as the action sets it
-    (defaults, fixed), then `given` (words from the command line, or what the planner
-    filled). A number out of range is clamped and a note says so. A saved place is checked
+    (defaults, fixed), then `given` (words from the command line, or what a model wrote). A number out of range is clamped and a note says so. A saved place is checked
     against `places` (the places cache: {name: ...}) when it is given. Raises ValueError,
     saying what is wrong, for an unknown key, a fixed one (unless allow_fixed), or a value
     its field refuses."""
@@ -489,8 +488,9 @@ def menu_line(name: str, cls) -> str:
 
 
 def describe(name: str, cls, current: dict | None = None) -> str:
-    """The whole action, for a brief and for the edit planner: its line, its script and how
-    it runs, then a line per field, those the planner fills first, marked *: its type, limits,
+    """The whole action, for an implementer's examples: its line, its script and how it runs,
+    then a line per field, those it takes first, marked * (its values line still says "the
+    planner fills it", the words the implementers' block keeps): its type, limits,
     live or not, its default (fixed; or its value now, when `current` is given) and its
     description."""
     T = _types(cls)
@@ -561,7 +561,7 @@ def _base(cls):
 
 def planner_model(cls) -> type[BaseModel]:
     """A model of only the fields `cls` takes, with their types, defaults, limits, patterns and
-    descriptions, all in its JSON schema: what the planner answers in. A number out of range
+    descriptions, all in its JSON schema: the values a model fills for it. A number out of range
     in its answer is clamped. Its model_dump(exclude_unset=True) goes to check_values."""
     hit = _planners.get(cls)
     if hit is None:
@@ -576,7 +576,7 @@ def planner_model(cls) -> type[BaseModel]:
 
 def edit_model(cls) -> type[BaseModel]:
     """A model of every field of `cls`, each optional (null: not changed), with its type,
-    limits, patterns and description: what the edit planner answers in."""
+    limits, patterns and description: the values an edit may change."""
     hit = _editors.get(cls)
     if hit is None:
         spec = {key: (Optional[_annotated(f)], Field(None, description=f.description))

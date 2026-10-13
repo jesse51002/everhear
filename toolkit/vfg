@@ -2778,7 +2778,7 @@ def cmd_place(cfg, a):
 
 # ----------------------------------------------------------- incantations
 
-# A player's incantations: phrases of two words or more, each bound to an action and its values,
+# A player's incantations: words or phrases, each bound to an action and its values,
 # which fire the moment that player says one, with no model on the path (the spec
 # Specs/2026-10-10-Prototype_Voice_Triggers). They live in the box's store, the kit's
 # incantations.Store (<vfg>/incantations.json), which the bridge reads as players cast. The
@@ -2792,28 +2792,71 @@ def cmd_place(cfg, a):
 INCANT_ACTIONS = ("incantation_create", "incantation_edit", "incantation_remove")
 INCANT_TTL_S = 30.0
 INCANT_STANDIN = "Caster"  # what a caster field holds while its values are checked: any valid name
-# The alias call: one structured() call as an incantation is made, on the model the dispatcher's
-# planner uses, through its providers, fastest first (dispatcher/dispatcher/config.py, DEFAULT_MODEL
-# and DEFAULT_PROVIDERS), unless VFG_INCANT_ALIAS_MODEL names another (off: no call). Reasoning
-# off: on 2026-10-10 "low" took 18 s and $0.0019 for "fire ball", off about 1 s and $0.00005. Its
-# prompt is this one.
-INCANT_ALIAS_MODEL = "~deepseek/deepseek-v4-flash-latest"
-INCANT_ALIAS_PROVIDERS = ["parasail", "wafer", "phala", "together", "venice"]
-INCANT_ALIAS_TIMEOUT_S = 8.0
+# The alias call: one structured() call as an incantation is made, on Gemini 3.8 Flash at light
+# thinking, OpenRouter picking the host, unless VFG_INCANT_ALIAS_MODEL names another (off: no
+# call). Its prompt is this one, filled with the phrase, each word's pronunciation (CMUdict's, or
+# the kit's letter-to-sound guess for a made-up word: incantations.pronunciation) and the count:
+# exactly INCANT_ALIAS_COUNT variants, each with its sounds, the likeliest first. On the
+# 2026-10-12 bench of alias prompts and models (seven phrases from the play sessions), Gemini at
+# light thinking made 20 every time, at a median 6.0 s and at most 9.7 s, $0.0036 a create, where
+# DeepSeek V4 Flash with no thinking made at most six, some of them other words; 20 kept Layer
+# 2's recall on both sessions (79% and 96%, with lines of at most 6 words) for 31 false casts on
+# the 843 lines of 10-08's talk, against 7 with the six stored. The code then checks each
+# variant (incantations.checked_variants: the phrase itself, repeats, one 3 speech sounds longer
+# or more, an H weighed 0.25 and an "uh" 0.5, one more than 0.35 from it in sound), and what it
+# drops goes in the line's facts.alias_call.dropped, never in a note.
+# It also says whether the phrase is everyday talk, which casts whenever it is said in
+# conversation (a note), as a word list cannot without flagging made-up words: CMUdict holds
+# kamehameha, nova and umbra. And it marks each variant that is a common phrase of its own
+# (common_phrase), the entry's everyday_aliases, which the keyword spotter leaves out (scripts/
+# _lib/incantations.py): on 2026-10-12 "ice cream", "i scream", "nice beam" and "eyes beam" for
+# ice beam fired the widened spotter on ordinary talk ("i scream" alone 17 times an hour; the
+# four took false casts from 47 to 18 an hour), while speech to text wrote "Ice cream." for "ice
+# beam" 10 times in one session, which Layer 2 caught through the alias. A flag on each variant,
+# not a list of them after: as a list DeepSeek marked "juicy stake" and "destroyed everything"
+# too, carrying the phrase's own everyday talk over. Word frequencies cannot tell them apart: in
+# Google Books (2010-2019) "destroyed everything", which the spotter needs, is 23 times as common
+# as "eyes beam" and 460 times "nice beam", and "ice been" 8 times "nice beam".
+INCANT_ALIAS_MODEL = "google/gemini-3.8-flash"
+INCANT_ALIAS_REASONING = "low"
+INCANT_ALIAS_TIMEOUT_S = 20.0
+INCANT_ALIAS_COUNT = 20
 INCANT_ALIAS_PROMPT = """\
-In a voice-controlled game a player casts a spell by saying a phrase. A keyword spotter listens \
-for it in their microphone, and speech to text writes down what they say. List the other ways \
-the phrase is likely to be heard or written down:
-- an ordinary English word: what speech to text may write in its place, real words that sound \
-alike ("ice glass" or "nice blast" for ice blast), and the words run together or split apart;
-- a made-up or foreign word, such as a spell's or an anime attack's name: respellings of how it \
-is said, in plain English syllables, as "kah meh hah meh hah" for kamehameha, and the English \
-words speech to text may split it into, as "come a hammer ha".
+A player in a voice-controlled Minecraft game casts a spell by saying its incantation. Two programs \
+listen and both mishear: a keyword spotter, which hears sounds and writes the words those sounds most \
+often are, and speech to text, which writes down whole lines. List how the incantation is likely to be \
+WRITTEN when the player says it, so the spell still fires.
 
-A few variants, the likeliest first, at most six: lowercase words and spaces, no punctuation; \
-never the phrase itself, never a phrase that means the same but sounds different.
+The incantation: "%(phrase)s"
+How it sounds (the CMU pronouncing dictionary, ARPAbet, stress left out):
+%(sounds)s
 
-The phrase: "%s"
+Rules for every variant:
+1. Said aloud it sounds almost the same as the incantation: the same sounds in the same order, with at \
+most one or two changed: a vowel for a near vowel (IY/IH, EY/EH, AA/AO, AH/UH), a consonant for a near \
+one (B/P, D/T, G/K, M/N, S/Z, F/V, TH/F), or a weak sound dropped or added at the end of a word (S, Z, \
+D, T, H).
+2. The same length: never a word added before or after it ("... now", "... out", "the ..."), never a \
+word dropped, never extra syllables ("steakhouse").
+3. Written the way a recognizer writes: real English words that make those sounds ("ice been", "juicy \
+stake"), the words run together or split ("icebeam", "fire ball"), or for a made-up word, plain \
+English syllables or words for how it is said ("come a hammer ha" for kamehameha).
+4. Never the incantation itself, never one that means the same but sounds different ("destroy all"), \
+no repeats.
+5. The likeliest first: what a recognizer most often writes for these sounds. Always exactly %(count)d, \
+the likeliest first.
+For each variant give its sounds in ARPAbet too.
+
+Mark each variant common_phrase when its words, as written, are a common phrase of their own that \
+people say in conversation meaning something else, so a player would say it while not casting the \
+spell. For ice beam, "ice cream", "i scream", "nice beam" and "eyes beam" are. Not a common phrase: a \
+mishearing people do not say ("ice been", "juicy stake", "hot fire bowl", "speed ash", "fire bal"), \
+even when the spell's own phrase is common, and the spell's own words in another form, run together, \
+split, plural or in another tense ("fireball", "fire balls", "destroyed everything").
+
+Then say whether the incantation itself is everyday talk: a word or words people often say in \
+ordinary conversation, as "heal", "shield" or "come here". A made-up word, as kamehameha, or a \
+spell's name, as "fire ball", is not.
 """
 _INCANT = []
 
@@ -2930,14 +2973,24 @@ def incant_warnings(inc, phrase, aliases, players, rows, skip=None):
     return list(dict.fromkeys(out_))
 
 
+def incant_sounds(inc, phrase):
+    """The prompt's pronunciation lines, one a word: `  beam = B IY M`, or for a word CMUdict
+    lacks, `  galick = not in the dictionary (a made-up word); a guess from its letters: …`."""
+    return "\n".join("  %s = %s" % (w, ph) if known else
+                     "  %s = not in the dictionary (a made-up word); a guess from its letters: %s. "
+                     "Think how a player would say it." % (w, ph) for w, ph, known in inc.pronunciation(phrase))
+
+
 def incant_alias_call(cfg, phrase):
-    """How `phrase` is likely said or misheard, from one structured() call: (variants, a note
-    when the call failed, {"model", "cost", "ms"} when it answered). A failure is a note, never
-    a refusal: the code's aliases stand. The call queues its own usage row, component alias and
-    the phrase its ref, and `vfg usage flush` sends it, nobody waiting."""
+    """How `phrase` is likely said or misheard, from one structured() call: (variants, those of
+    them that are everyday talk, whether the phrase is everyday talk, a note when the call failed,
+    {"model", "cost", "ms"} when it answered). The variants are the model's as it wrote them, the
+    code's checks still to come (incantations.checked_variants). A failure is a note, never a
+    refusal: the code's aliases stand. The call queues its own usage row, component alias and the
+    phrase its ref, and `vfg usage flush` sends it, nobody waiting."""
     model = (cfg.get("VFG_INCANT_ALIAS_MODEL") or INCANT_ALIAS_MODEL).strip()
     if model.lower() == "off":
-        return [], None, None
+        return [], [], False, None, None
     asked = False
     try:
         actions_lib()  # lib/py on sys.path
@@ -2948,21 +3001,47 @@ def incant_alias_call(cfg, phrase):
         logging.getLogger("vfg_llm").addHandler(logging.NullHandler())
         logging.getLogger("vfg_llm").propagate = False
 
-        class Variants(BaseModel):
-            variants: list[str] = Field(description="how the phrase is likely said or misheard, the likeliest "
-                                                    "first, at most six")
+        class Variant(BaseModel):
+            text: str = Field(description="lowercase words and spaces, as a recognizer writes it")
+            sounds: str = Field(description="its ARPAbet sounds")
+            common_phrase: bool = Field(description="whether these words are a common phrase people say meaning "
+                                                    "something else")
 
+        class Variants(BaseModel):
+            variants: list[Variant] = Field(description="exactly %d, the likeliest first, each sounding almost the "
+                                                        "same as the incantation and the same length"
+                                                        % INCANT_ALIAS_COUNT)
+            everyday: bool
+
+        prompt = INCANT_ALIAS_PROMPT % {"phrase": phrase, "sounds": incant_sounds(incantations_module(), phrase),
+                                        "count": INCANT_ALIAS_COUNT}
         asked = True
-        got = asyncio.run(vfg_llm.structured(INCANT_ALIAS_PROMPT % phrase, Variants, component="alias",
-                                             call_id=phrase[:64], model=model, reasoning=False,
-                                             providers=INCANT_ALIAS_PROVIDERS, timeout=INCANT_ALIAS_TIMEOUT_S))
+        got = asyncio.run(vfg_llm.structured(prompt, Variants, component="alias", call_id=phrase[:64], model=model,
+                                             reasoning=INCANT_ALIAS_REASONING, timeout=INCANT_ALIAS_TIMEOUT_S))
     except Exception as e:  # noqa: BLE001 — an LlmError, no key, no httpx: the code's aliases stand
         if asked:
             flush_usage_later(cfg)
-        return [], "aliases from code only: the alias call failed (%s)" % (str(e) or type(e).__name__), None
+        return [], [], False, "aliases from code only: the alias call failed (%s)" % (str(e) or type(e).__name__), None
     flush_usage_later(cfg)
-    return [x for x in got.value.variants if isinstance(x, str)], None, \
-        {"model": model, "cost": round(got.cost, 6), "ms": got.ms}
+    variants = got.value.variants
+    return [x.text for x in variants], [x.text for x in variants if x.common_phrase is True], \
+        got.value.everyday is True, None, {"model": model, "cost": round(got.cost, 6), "ms": got.ms}
+
+
+def incant_aliases(inc, phrase, variants, marked):
+    """A new incantation's aliases from the alias call's variants and the code's: (aliases, its
+    everyday_aliases, what was dropped, ["fire ball now: 6 speech sounds longer"]). The variants
+    go through the code's checks (incantations.checked_variants), then merge_aliases after the
+    code's own, the phrase joined and split. The everyday ones are those the call marked among
+    the aliases kept, never the code's: the spotter leaves them out."""
+    code = inc.code_aliases(phrase)
+    kept, dropped = inc.checked_variants(phrase, variants)
+    aliases = inc.merge_aliases(phrase, code, kept)
+    dropped += [(x, "fewer than %d speech sounds" % inc.MIN_ALIAS_PHONES
+                 if len(inc.phones(x)) < inc.MIN_ALIAS_PHONES else "past the %d" % inc.ALIAS_CAP)
+                for x in kept if x not in aliases and x not in code]
+    marks = inc.everyday(aliases, [m for m in marked if inc.normalize(m) not in code])
+    return aliases, marks, ["%s: %s" % d for d in dropped]
 
 
 def incant_player_fields(va, cls):
@@ -3101,20 +3180,26 @@ def run_incantation(cfg, a, name, given, as_=None, task=None):
     # The bound script with the kit; a library one with this action's own script too, so a box
     # that needs them all gets them in one deploy.
     folders = [bcls.script] + (["incantations"] if home == "library" else [])
-    # The alias call (about 1 s) runs in a thread while the store and the stamps are read, so
-    # neither waits for the other; a daemon, so a failed read is not held up by it.
+    # The alias call (about 6 s, at most INCANT_ALIAS_TIMEOUT_S) runs in a thread while the store
+    # and the stamps are read, so neither waits for the other; a daemon, so a failed read is not
+    # held up by it.
     import threading
     answer = []
     caller = threading.Thread(target=lambda: answer.append(incant_alias_call(cfg, phrase)), daemon=True)
     caller.start()
     store, stale = fetch_incantations(cfg, a, stamps_for(cfg, home, folders))
     caller.join()
-    variants, why, call = answer[0] if answer else ([], "aliases from code only: the alias call failed", None)
+    variants, marked, everyday, why, call = answer[0] if answer else (
+        [], [], False, "aliases from code only: the alias call failed", None)
     if why:
         notes.append(why)
-    aliases = inc.merge_aliases(phrase, inc.code_aliases(phrase), variants)
+    aliases, marked, dropped = incant_aliases(inc, phrase, variants, marked)
+    if call is not None:
+        call["dropped"] = dropped   # what the code left out of the model's, for whoever looks
     rows = store["incantations"]
     notes += incant_warnings(inc, phrase, aliases, players, rows)
+    if everyday:
+        notes.append('"%s" is everyday talk, so it will fire whenever it is said in conversation.' % phrase)
     for p in players:
         old = incant_find(inc, rows, p, phrase)
         if old:
@@ -3126,7 +3211,8 @@ def run_incantation(cfg, a, name, given, as_=None, task=None):
     # they change (refresh_incantations).
     asked = dict((k, checked.values[k]) for k in v["values"] if k not in caster and k in checked.values)
     made = now_iso()
-    entries = [{"player": p, "phrase": phrase, "aliases": aliases, "action": v["action"], "script": bcls.script,
+    entries = [{"player": p, "phrase": phrase, "aliases": aliases, "everyday_aliases": marked,
+                "action": v["action"], "script": bcls.script,
                 "source": home, "server": server_name(cfg) if home == "made" else "", "values": stored, "asked": asked,
                 "live": list(checked.live), "runs": bcls.runs, "caster_fields": caster,
                 "cooldown_s": float(v["cooldown_s"]), "created": made, "by": task or ""} for p in players]
@@ -3214,6 +3300,21 @@ def refresh_incantations(cfg, a, name):
     return notes
 
 
+def incant_marks(inc, aliases, e, v, change, notes):
+    """An edited entry's everyday aliases, among `aliases`, its aliases after the edit: those
+    everyday_aliases= gives, a note for any that is not one of them, else the entry's own still
+    among them."""
+    if "everyday_aliases" not in change:
+        return inc.everyday(aliases, e.get("everyday_aliases"))
+    asked = [x for x in dict.fromkeys(inc.normalize(x) for x in v["everyday_aliases"]) if x]
+    marks = inc.everyday(aliases, asked)
+    left = [x for x in asked if x not in marks]
+    note = "left out of the everyday aliases (not among its aliases): " + ", ".join(left)
+    if left and note not in notes:
+        notes.append(note)
+    return marks
+
+
 def edit_incantation(cfg, a, inc, va, given, words, v, players, phrase, mine, notes, as_, task):
     """incantation_edit: each player's entry read from the box (never the cache: two edits close
     together must both see what the other did), its values (values.<name>= words read for its
@@ -3222,10 +3323,12 @@ def edit_incantation(cfg, a, inc, va, given, words, v, players, phrase, mine, no
     was asked go as only the keys given, with the keys that became the caster's to drop from
     asked, and the caster fields only when they change, all merged over what the store holds as
     it writes, so two edits of different values both land; the cache gets each entry as the box
-    makes it (incantations.updated)."""
-    change = [k for k in ("cooldown_s", "aliases") if k in given] + (["values"] if given.get("values") else [])
+    makes it (incantations.updated). New aliases keep the everyday marks still among them;
+    everyday_aliases= replaces the marks whole (empty: none), each one of its aliases."""
+    change = [k for k in ("cooldown_s", "aliases", "everyday_aliases") if k in given] + \
+        (["values"] if given.get("values") else [])
     if not change:
-        raise Fail(2, "nothing to change: give values=, cooldown_s= or aliases=")
+        raise Fail(2, "nothing to change: give values=, cooldown_s=, aliases= or everyday_aliases=")
     rows = fetch_incantations(cfg, a)[0]["incantations"]
     found = [incant_find(inc, rows, p, phrase) for p in players]
     missing = [p for p, e in zip(players, found) if e is None]
@@ -3261,10 +3364,12 @@ def edit_incantation(cfg, a, inc, va, given, words, v, players, phrase, mine, no
             sets["aliases"] = inc.merge_aliases(phrase, v["aliases"])
             left = [x for x in dict.fromkeys(inc.normalize(x) for x in v["aliases"]) if x and x not in sets["aliases"]]
             if left and not [n for n in notes if n.startswith("left out of the aliases")]:
-                notes.append("left out of the aliases (the phrase itself, too short to tell apart, or past 12): "
-                             + ", ".join(left))
+                notes.append("left out of the aliases (the phrase itself, too short to tell apart, or past %d): %s"
+                             % (inc.ALIAS_CAP, ", ".join(left)))
             notes += [w for w in incant_warnings(inc, phrase, sets["aliases"], [e["player"]], rows, skip=e)
                       if w not in notes]
+        if "everyday_aliases" in change or ("aliases" in change and e.get("everyday_aliases")):
+            sets["everyday_aliases"] = incant_marks(inc, sets.get("aliases", e.get("aliases")), e, v, change, notes)
         entries.append(dict({"player": e["player"], "phrase": e["phrase"], "set": sets},
                             **({"drop_asked": drop} if drop else {})))
         after.append(inc.updated(e, sets, merge=True, drop_asked=drop))
@@ -3292,13 +3397,17 @@ def incant_shown(e, acts):
 
 def incant_line(e, acts):
     """`Steve: "fire ball" → command {"commands":[...]} cooldown 3s; aliases fireball, fire bowl`,
-    a caster field as player=<caster>."""
+    a caster field as player=<caster>, and its everyday aliases when it has any (`; everyday,
+    not spotted: ice cream`)."""
     text = '%s: "%s" → %s %s' % (e.get("player"), e.get("phrase"), e.get("action"),
                                  json.dumps(incant_shown(e, acts), ensure_ascii=False, separators=(",", ":")))
     for k in e.get("caster_fields") or []:
         text += " %s=<caster>" % k
     text += " cooldown %ss" % fmt_s(float(e.get("cooldown_s") or 0))
-    return text + "; " + ("aliases " + ", ".join(e["aliases"]) if e.get("aliases") else "no aliases")
+    text += "; " + ("aliases " + ", ".join(e["aliases"]) if e.get("aliases") else "no aliases")
+    if e.get("everyday_aliases"):
+        text += "; everyday, not spotted: " + ", ".join(e["everyday_aliases"])
+    return text
 
 
 def cmd_incantation(cfg, a):
@@ -3326,7 +3435,8 @@ def cmd_incantation(cfg, a):
     if a.json:
         out(json.dumps([{"player": e.get("player"), "phrase": e.get("phrase"), "action": e.get("action"),
                          "values": incant_shown(e, acts), "cooldown_s": e.get("cooldown_s"),
-                         "aliases": e.get("aliases") or []} for e in rows], ensure_ascii=False))
+                         "aliases": e.get("aliases") or [], "everyday_aliases": e.get("everyday_aliases") or []}
+                        for e in rows], ensure_ascii=False))
     else:
         out("\n".join(incant_line(e, acts) for e in rows) if rows else "none")
     return 0
@@ -4585,11 +4695,11 @@ def build_parser():
     ins = s.add_subparsers(dest="op", metavar="list")
     ins.required = True
     w = ins.add_parser("list", help="one line per incantation: player, phrase, action, its values, cooldown, "
-                       "aliases; or none. From the cache in $VFG_HOME/incantations.json while it is younger "
-                       "than VFG_INCANT_TTL_S")
+                       "aliases and the everyday ones the spotter skips; or none. From the cache in "
+                       "$VFG_HOME/incantations.json while it is younger than VFG_INCANT_TTL_S")
     w.add_argument("--player", metavar="P", help="only those P can cast: P's own and everyone's (@a)")
     w.add_argument("--json", action="store_true", help="a JSON list of {player, phrase, action, values, "
-                   "cooldown_s, aliases}")
+                   "cooldown_s, aliases, everyday_aliases}")
     w.add_argument("--fresh", action="store_true", help="fetch from the box, whatever the cache's age")
 
     s = sub.add_parser("usage", help="write a usage row, or send the queued ones; queued locally when EC2 is down")

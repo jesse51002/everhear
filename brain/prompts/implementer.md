@@ -50,6 +50,7 @@ COMMANDS, in your shell (join several with && or ;, each written out: no loops o
 CHECK IT WORKED: ONCE
 - vfg action run's answer is the check: ok and a summary that says it happened, report.
 - Otherwise, and for a script you made: sleep 3 && vfg script logs <copy> -n 40, plus a vfg cmd test when the world should show it (execute if entity @e[tag=vfg_<copy>]: "Test passed" or a count). No traceback and it passed: report. Else fix and check again, at most three times.
+- A brief with DONE WHEN: that list is your check. Check each item before you report, and say in your report, item by item, which landed and which did not.
 
 SAVED PLACES
 - Your brief has a line "SAVED PLACES: castle 197 68 251 overworld (castle_steve); ...": the server's named places (name, x y z, dimension, the task that saved it). When the job names a place ("the castle", "home"), give its name to the action (at=castle), or use its coordinates.

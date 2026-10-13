@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.sun.net.httpserver.HttpServer;
 import com.voiceforgaming.vfg.kws.Spotter;
+import com.voiceforgaming.vfg.kws.Vosk;
 import com.voiceforgaming.vfg.turn.TurnDetectors;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -363,6 +364,121 @@ class AssetInstallerTest {
 		}
 		assertFalse(Files.exists(folder.resolve("keywords.txt")), "only the model's files");
 		assertEquals(model.sha256(), Files.readString(folder.resolve(".ok")).trim());
+	}
+
+	/** Vosk's model zip, from alphacephei.com: its files below the top folder, into models/vosk/<zip name>. */
+	@Test
+	void voskModelIsPinnedAndUnpacksItsFilesFromAZip() throws Exception {
+		Assets.Asset pinned = Assets.vosk();
+		assertEquals(Assets.Kind.VOSK, pinned.kind());
+		assertEquals(41205931L, pinned.bytes());
+		assertEquals("30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498", pinned.sha256());
+		assertEquals("https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip", pinned.url(Assets.BASE_URL));
+		assertEquals(Path.of("r/models/vosk/vosk-model-small-en-us-0.15"), Assets.folder(Path.of("r"), pinned));
+		assertEquals(Vosk.FILES, Assets.modelFiles(pinned));
+
+		ByteArrayOutputStream b = new ByteArrayOutputStream();
+		try (ZipOutputStream zip = new ZipOutputStream(b)) {
+			String top = "vosk-model-small-en-us-0.15/";
+			for (String d : List.of("", "am/", "conf/", "graph/", "graph/phones/", "ivector/")) {
+				zip.putNextEntry(new ZipEntry(top + d));
+			}
+			List<String> names = new ArrayList<>(Vosk.FILES);
+			names.add("graph/extra.txt");
+			for (String name : names) {
+				zip.putNextEntry(new ZipEntry(top + name));
+				zip.write(("content of " + name).getBytes(StandardCharsets.UTF_8));
+			}
+			zip.putNextEntry(new ZipEntry(top + "../escape.txt"));
+			zip.write("no".getBytes(StandardCharsets.UTF_8));
+		}
+		Assets.Asset model = serve(Assets.Kind.VOSK, Assets.VOSK_SMALL_EN_US, "vosk/vosk-model-small-en-us-0.15.zip",
+			b.toByteArray());
+		Path folder = installer().install(model);
+		assertEquals(dir.resolve("vfg/models/vosk/vosk-model-small-en-us-0.15"), folder);
+		for (String f : Vosk.FILES) {
+			assertEquals("content of " + f, Files.readString(folder.resolve(f)));
+		}
+		assertFalse(Files.exists(folder.resolve("graph/extra.txt")), "only the model's files");
+		assertFalse(Files.exists(dir.resolve("vfg/models/vosk/escape.txt")));
+		assertEquals(model.sha256(), Files.readString(folder.resolve(".ok")).trim());
+		assertFalse(Files.exists(dir.resolve("vfg/downloads/vosk-model-small-en-us-0.15.zip")), "the download is deleted");
+	}
+
+	/** Vosk's library, per platform: GitHub's release zips, and for macOS the Maven jar, which holds them all. */
+	@Test
+	void voskNativesArePinnedPerPlatform() {
+		Assets.Asset win = Assets.voskNatives("win-x64");
+		assertEquals(Assets.Kind.VOSK_NATIVES, win.kind());
+		assertEquals("https://github.com/alphacep/vosk-api/releases/download/v0.3.45/vosk-win64-0.3.45.zip",
+			win.url(Assets.BASE_URL));
+		assertEquals(14882445L, win.bytes());
+		assertEquals("f1dcc9cca460630f81ea8f71794f69c80bed6556d2a4e6237b5785e1d2dff34b", win.sha256());
+		assertEquals(4, Assets.voskNativeFiles(win).size(), "libvosk.dll and the MinGW runtime");
+		Assets.Asset linux = Assets.voskNatives("linux-x64");
+		assertEquals(7185065L, linux.bytes());
+		assertEquals("bbdc8ed85c43979f6443142889770ea95cbfbc56cffb5c5dcd73afa875c5fbb2", linux.sha256());
+		assertEquals(List.of("vosk-linux-x86_64-0.3.45/libvosk.so"), Assets.voskNativeFiles(linux));
+		for (String mac : List.of("osx-x64", "osx-aarch64")) {
+			Assets.Asset a = Assets.voskNatives(mac);
+			assertEquals("https://repo1.maven.org/maven2/com/alphacephei/vosk/0.3.45/vosk-0.3.45.jar", a.url(Assets.BASE_URL));
+			assertEquals("9e38e96e4448a41d889bb254b2f8424945554945c6e77e1cd97a3d8633fac2ba", a.sha256());
+			assertEquals(List.of("darwin/libvosk.dylib"), Assets.voskNativeFiles(a), "one library for Intel and Apple silicon");
+			assertEquals(Path.of("r/natives/vosk-0.3.45-" + mac), Assets.folder(Path.of("r"), a));
+		}
+		assertEquals(Path.of("r/natives/vosk-0.3.45-win-x64"), Assets.folder(Path.of("r"), win));
+	}
+
+	@Test
+	void voskNativesUnpackOnlyThisPlatformsFilesFlat() throws Exception {
+		ByteArrayOutputStream b = new ByteArrayOutputStream();
+		try (ZipOutputStream zip = new ZipOutputStream(b)) {
+			zip.putNextEntry(new ZipEntry("vosk-win64-0.3.45/"));
+			for (String name : List.of("libvosk.dll", "libstdc++-6.dll", "libgcc_s_seh-1.dll", "libwinpthread-1.dll",
+					"libvosk.lib", "vosk_api.h")) {
+				zip.putNextEntry(new ZipEntry("vosk-win64-0.3.45/" + name));
+				zip.write(("binary of " + name).getBytes(StandardCharsets.UTF_8));
+			}
+		}
+		Assets.Asset win = serve(Assets.Kind.VOSK_NATIVES, "win-x64", "vosk-win64-0.3.45.zip", b.toByteArray());
+		Path folder = installer().install(win);
+		assertEquals(dir.resolve("vfg/natives/vosk-0.3.45-win-x64"), folder);
+		try (var files = Files.list(folder)) {
+			assertEquals(List.of(".ok", "libgcc_s_seh-1.dll", "libstdc++-6.dll", "libvosk.dll", "libwinpthread-1.dll"),
+				files.map(f -> f.getFileName().toString()).sorted().toList());
+		}
+		assertEquals("binary of libvosk.dll", Files.readString(folder.resolve("libvosk.dll")));
+
+		ByteArrayOutputStream j = new ByteArrayOutputStream();
+		try (ZipOutputStream zip = new ZipOutputStream(j)) {
+			for (String name : List.of("org/vosk/LibVosk.class", "linux-x86-64/libvosk.so", "darwin/libvosk.dylib",
+					"win32-x86-64/libvosk.dll")) {
+				zip.putNextEntry(new ZipEntry(name));
+				zip.write(("binary of " + name).getBytes(StandardCharsets.UTF_8));
+			}
+		}
+		Assets.Asset mac = serve(Assets.Kind.VOSK_NATIVES, "osx-aarch64", "vosk-0.3.45.jar", j.toByteArray());
+		Path macFolder = installer().install(mac);
+		try (var files = Files.list(macFolder)) {
+			assertEquals(List.of(".ok", "libvosk.dylib"), files.map(f -> f.getFileName().toString()).sorted().toList());
+		}
+		Assets.Asset empty = serve(Assets.Kind.VOSK_NATIVES, "linux-x64", "empty.zip", j.toByteArray());
+		AssetInstaller.SetupException e = assertThrows(AssetInstaller.SetupException.class,
+			() -> installer().install(empty));
+		assertTrue(e.getMessage().contains("vosk-linux-x86_64-0.3.45/libvosk.so"), e.getMessage());
+	}
+
+	@Test
+	void aVoskZipMissingAFileFails() throws Exception {
+		ByteArrayOutputStream b = new ByteArrayOutputStream();
+		try (ZipOutputStream zip = new ZipOutputStream(b)) {
+			zip.putNextEntry(new ZipEntry("vosk-model-small-en-us-0.15/am/final.mdl"));
+			zip.write(1);
+		}
+		Assets.Asset model = serve(Assets.Kind.VOSK, Assets.VOSK_SMALL_EN_US, "vosk.zip", b.toByteArray());
+		AssetInstaller.SetupException e = assertThrows(AssetInstaller.SetupException.class, () -> installer().install(model));
+		assertTrue(e.getMessage().contains("graph/Gr.fst"), e.getMessage());
+		assertFalse(Files.exists(dir.resolve("vfg/models/vosk/vosk/.ok")));
 	}
 
 	@Test

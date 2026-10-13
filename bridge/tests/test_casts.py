@@ -328,7 +328,7 @@ class TestRepeats(CastCase):
         self.cast(start=-2.0)  # fired: its window is -2.0 .. -1.4
         self.clock.advance(0.5)
         # its long line (-2.0 .. +1.8) holds a transcript cast that did not fire
-        self.line("fire ball and build me a wall now", start=-2.5, length=3.8)
+        self.line("fire ball and build a wall", start=-2.5, length=3.8)
         self.clock.advance(3.0)  # past the cooldown: the next words, said at +1.6 .. +2.2
         self.assertEqual(self.cast(start=-1.9)[1]["status"], "fired")
         self.assertEqual(self.rows("SELECT layer, status FROM casts ORDER BY at"),
@@ -390,6 +390,17 @@ class TestList(CastCase):
         self.assertEqual(doc["incantations"][0], {"phrase": "fire ball", "aliases": [], "cooldown_s": 3.0})
         self.assertEqual([e["phrase"] for e in self.get("player=Notch")[1]["incantations"]], ["light up"])
         self.assertEqual(self.get("player=Steve&after=0")[0], 200)  # another version: at once
+
+    def test_the_everyday_aliases_are_left_out_for_the_spotter(self):
+        ice = entry("Steve", "ice beam", aliases=["ice been", "ice cream", "i scream", "nice beam"],
+                    everyday_aliases=["ice cream", "I Scream"])
+        self.write_store(ice, entry("Steve", "fire ball", aliases=["fireball", "fire bowl"]),
+                         entry("@a", "juicy steak", aliases=["juicy stake"], everyday_aliases=[]))
+        got = dict((e["phrase"], e["aliases"]) for e in self.get("player=Steve")[1]["incantations"])
+        self.assertEqual(got, {"ice beam": ["ice been", "nice beam"], "fire ball": ["fireball", "fire bowl"],
+                               "juicy steak": ["juicy stake"]})  # one from before the marks: all of them
+        self.assertEqual(self.get("player=Steve")[1]["incantations"][0],
+                         {"phrase": "ice beam", "aliases": ["ice been", "nice beam"], "cooldown_s": 3.0})
 
     def test_304_when_nothing_changes(self):
         start = time.monotonic()
@@ -459,6 +470,53 @@ class TestLayer2(CastCase):
         self.assertEqual(self.rows("SELECT count(*) FROM casts"), [(1,)])
 
 
+class TestLayer2MaxWords(CastCase):
+    """Layer 2 only on a line of at most VFG_INCANT_LAYER2_MAX_WORDS words (6; 0 any)."""
+
+    def test_six_words_cast_and_seven_do_not(self):
+        self.line("uh fire ball on them now", start=-2.5)          # 6 words, the filler counted
+        self.line("uh fire ball on all of them", start=-12.5)      # 7
+        self.assertEqual(self.rows("SELECT heard FROM casts"), [("fire ball",)])
+        self.assertEqual(self.rows("SELECT count(*) FROM lines"), [(2,)])
+
+    def test_zero_is_any_length_and_the_setting_reaches_casts(self):
+        self.casts.layer2_max_words = 0
+        self.line("could you please cast the fire ball on all of them right now", start=-2.5)
+        self.assertEqual(self.rows("SELECT layer, heard FROM casts"), [("transcript", "fire ball")])
+        from vfg_bridge import config
+        cfg = config.load({"VFG_INCANT_LAYER2_MAX_WORDS": "9"})
+        self.assertEqual(castsmod.Casts.from_config(cfg, self.db, KIT, vfg_feed).layer2_max_words, 9)
+        self.assertEqual(castsmod.Casts.from_config(config.load({}), self.db, KIT, vfg_feed).layer2_max_words, 6)
+
+    def test_a_long_line_is_still_dropped_after_a_spotters_cast(self):
+        _, spotted = self.cast(start=-2.0, length=0.6)
+        self.line("uh um fire ball uh um uh", start=-2.2, length=1.0)   # 7 words, all fillers but the phrase
+        self.assertEqual(self.rows("SELECT dropped, cast_id FROM lines"), [("cast", spotted["id"])])
+        self.assertEqual(self.rows("SELECT layer FROM casts"), [("spotter",)])
+
+
+class TestEverydayAliases(CastCase):
+    """An everyday alias, left out of the spotter's list, still casts through Layer 2, and the
+    store's lookup still finds it."""
+
+    def setUp(self):
+        super().setUp()
+        self.write_store(entry("Steve", "ice beam", aliases=["ice been", "ice cream", "i scream"],
+                               everyday_aliases=["ice cream", "i scream"]))
+
+    def test_layer_2_casts_it(self):
+        self.line("Ice cream.")
+        self.assertEqual(self.rows("SELECT incantation_id, layer, heard, status FROM casts"),
+                         [("steve.ice_beam", "transcript", "ice cream", "fired")])
+        self.assertEqual(self.rows("SELECT dropped FROM lines"), [("cast",)])
+
+    def test_the_drop_rule_takes_it_out(self):
+        self.casts.layer2 = False
+        _, spotted = self.cast("ice beam", start=-2.0, length=0.4)
+        self.line("i scream", start=-2.2, length=1.0)
+        self.assertEqual(self.rows("SELECT dropped, cast_id FROM lines"), [("cast", spotted["id"])])
+
+
 class TestDropRule(CastCase):
     def test_the_specs_four_lines(self):
         self.casts.layer2 = False
@@ -486,6 +544,264 @@ class TestDropRule(CastCase):
         self.assertEqual(self.rows("SELECT dropped, cast_id FROM lines"), [(None, None)])
 
 
+class TestOneWord(CastCase):
+    """A one-word phrase (Specs/2026-10-11-Prototype_Fast_Casts): cast by the spotter, by Layer
+    2 in any sentence and at the start of a longer word, never in everyday talk; the drop rule."""
+
+    def setUp(self):
+        super().setUp()
+        self.write_store(entry("Steve", "shield"), entry("Steve", "heal"), entry("Steve", "dash"))
+
+    def test_the_spotters_cast_fires(self):
+        status, doc = self.cast("shield")
+        self.assertEqual((status, doc["status"]), (202, "fired"))
+        self.assertEqual(self.rows("SELECT incantation_id, layer FROM casts"), [("steve.shield", "spotter")])
+
+    def test_layer_2_casts_it_in_any_sentence_and_keeps_the_line(self):
+        self.casts.layer2_max_words = 0  # any length
+        _, doc = self.line("Craft me an iron sword and a shield for the fight.")
+        rows = self.rows("SELECT id, incantation_id, heard, status FROM casts")
+        self.assertEqual([r[1:] for r in rows], [("steve.shield", "shield", "fired")])
+        self.assertEqual(self.rows("SELECT dropped, cast_id FROM lines"), [(None, rows[0][0])])
+
+    def test_layer_2_casts_it_at_the_start_of_a_longer_word(self):
+        self.line("I need some healing potions.")
+        self.assertEqual(self.rows("SELECT incantation_id, heard FROM casts"), [("steve.heal", "healing")])
+        self.assertEqual(self.rows("SELECT dropped FROM lines"), [(None,)])
+
+    def test_a_line_of_only_the_word_is_dropped(self):
+        self.line("Shield now!")
+        self.assertEqual(self.rows("SELECT layer, status FROM casts"), [("transcript", "fired")])
+        self.assertEqual(self.rows("SELECT dropped FROM lines"), [("cast",)])
+
+    def test_not_in_everyday_talk(self):
+        for k, text in enumerate(("help me build it", "it's really all of it", "she'll do it",
+                                  "the field is big", "go up the hill and deal with it")):
+            self.line(text, start=-2.5 - 10 * k)
+        self.assertEqual(self.rows("SELECT count(*) FROM casts"), [(0,)])
+        self.assertEqual(self.rows("SELECT count(*) FROM lines WHERE dropped IS NULL"), [(5,)])
+
+    def test_the_drop_rule_after_the_spotters_cast(self):
+        self.casts.layer2 = False
+        _, spotted = self.cast("heal", start=-2.0, length=0.4)
+        ids = [self.line(text, start=-2.2, length=2.0)[1]["id"] for text in (
+            "heal", "heal now", "don't heal", "heal me and build a wall", "help me")]
+        got = dict((r[0], r[1]) for r in self.rows("SELECT id, dropped FROM lines"))
+        self.assertEqual([got[i] for i in ids], ["cast", "cast", None, None, None])
+        self.assertEqual(self.rows("SELECT line_id FROM casts"), [(ids[0],)])
+
+
+class TestJevCasts(CastCase):
+    """POST /v1/jev/casts: the Jev filter judged a stored voice line a cast, before routing it.
+    The same checks as every cast, on the line's window; the line is dropped whatever came of it."""
+
+    def setUp(self):
+        super().setUp()
+        self.casts.layer2 = False  # these lines' casts are the Jev filter's alone
+
+    def jev(self, line_id, phrase="fire ball", token="test", keep=None):
+        body = {"line_id": line_id, "phrase": phrase}
+        if keep is not None:
+            body["keep"] = keep
+        return self.request("POST", "/v1/jev/casts", body, token=token)
+
+    def lines(self):
+        return self.rows("SELECT id, dropped, cast_id FROM lines WHERE source = 'voice' ORDER BY at")
+
+    def test_a_cast_fires_with_the_lines_window_and_drops_it(self):
+        _, line = self.line("Affordable.", start=-2.5, length=1.0)
+        status, doc = self.jev(line["id"])
+        self.assertEqual(status, 202)
+        self.assertEqual((doc["status"], doc["copy"], doc["line"]), ("fired", "zap", "dropped"))
+        self.assertTrue(self.ran("zap"))
+        started, ended = self.window(-2.5, 1.0)
+        self.assertEqual(self.rows("SELECT id, layer, heard, incantation_id, started_at, ended_at, line_id,"
+                                   " client_cast_id FROM casts"),
+                         [(doc["id"], "jev", "affordable", "steve.fire_ball", started, ended, line["id"],
+                           "jev:" + line["id"])])
+        self.assertEqual(self.lines(), [(line["id"], "cast", doc["id"])])
+        self.assertTrue(self.events(1))
+        self.assertEqual(self.rows("SELECT kind, text FROM events"),
+                         [("cast", 'Steve cast "fire ball": zap, running as zap')])
+
+    def test_cooldown_still_drops_the_line(self):
+        self.assertEqual(self.cast(start=-2.0)[1]["status"], "fired")
+        self.clock.advance(1.5)  # past the gap, inside fire ball's 3 s
+        _, line = self.line("Fire.", start=-1.0, length=0.5)  # after the cast's window
+        status, doc = self.jev(line["id"])
+        self.assertEqual((status, doc["status"], doc["line"]), (202, "cooldown", "dropped"))
+        self.assertNotIn("copy", doc)
+        self.assertEqual(self.lines(), [(line["id"], "cast", doc["id"])])
+        self.assertTrue(self.events(1))
+        self.assertEqual(self.rows("SELECT count(*) FROM events"), [(1,)])  # the spotter's alone
+
+    def test_duplicate_still_drops_the_line_and_keeps_its_fired_cast(self):
+        _, spotted = self.cast(start=-2.0, length=0.6)
+        _, line = self.line("fire ball, fire bowl", start=-2.2, length=2.0)
+        self.assertEqual(self.lines(), [(line["id"], None, spotted["id"])])  # kept: two words left
+        self.clock.advance(5)  # past both cooldowns: only the window decides
+        status, doc = self.jev(line["id"])
+        self.assertEqual((status, doc["status"], doc["line"]), (202, "duplicate", "dropped"))
+        self.assertEqual(self.lines(), [(line["id"], "cast", spotted["id"])])
+        self.assertEqual(self.rows("SELECT line_id FROM casts WHERE id = ?", (doc["id"],)), [(line["id"],)])
+
+    def test_another_incantation_than_the_lines_own_cast(self):
+        self.deploy("frost")
+        self.write_store(entry("Steve", "fire ball"), entry("Steve", "ice wall", script="frost", action="frost"))
+        _, line = self.line("Ice. Wall", start=-2.5, length=1.0)
+        status, doc = self.jev(line["id"], "ice wall")
+        self.assertEqual((doc["status"], doc["copy"]), ("fired", "frost"))
+
+    def received_ago(self, line_id, seconds):
+        """Move when /v1/lines received the line `seconds` further back on the bridge's monotonic
+        clock, as if that long had passed (the cooldowns' FakeClock does not move it)."""
+        cid = self.rows("SELECT client_line_id FROM lines WHERE id = ?", (line_id,))[0][0]
+        self.casts._received[cid] -= seconds
+
+    def test_a_line_older_than_the_max_age_is_stale_and_still_dropped(self):
+        _, line = self.line("Affordable.")
+        self.received_ago(line["id"], 1.9)  # under 2 s since /v1/lines received it: in time
+        _, doc = self.jev(line["id"], "ice wall")
+        self.assertEqual(doc["status"], "fired")
+        self.clock.advance(2.0)  # the next line's window apart from that cast's
+        _, late = self.line("Hot variable.", start=-1.5, length=1.0)
+        self.clock.advance(2.5)
+        self.received_ago(late["id"], 2.5)
+        status, doc = self.jev(late["id"])
+        self.assertEqual((status, doc["status"], doc["line"]), (202, "stale", "dropped"))
+        self.assertRegex(doc["error"], r"^the line is 2\.5 s old, past the 2 s a Jev cast may be$")
+        self.assertNotIn("copy", doc)
+        self.assertEqual(self.rows("SELECT status, error, line_id FROM casts WHERE id = ?", (doc["id"],)),
+                         [("stale", doc["error"], late["id"])])
+        self.assertEqual(self.lines()[1], (late["id"], "cast", doc["id"]))
+        self.assertTrue(self.events(1))
+        self.assertEqual(self.rows("SELECT count(*) FROM events"), [(1,)])  # the stale one is not announced
+
+    def test_the_max_age_is_a_setting_and_a_line_from_before_a_restart_is_stale(self):
+        self.casts.jev_max_age_s = 10
+        _, line = self.line("Affordable.")
+        self.received_ago(line["id"], 9)
+        self.assertEqual(self.jev(line["id"])[1]["status"], "fired")
+        _, old = self.line("Hot variable.", start=-30, length=1.0)
+        self.casts._received.clear()  # the bridge restarted since it received the line
+        self.clock.advance(5)
+        _, doc = self.jev(old["id"])
+        self.assertEqual(doc["status"], "stale")
+        self.assertIn("no time it received the line", doc["error"])
+        self.assertEqual(self.lines()[0], (old["id"], "cast", doc["id"]))
+
+    def test_only_a_line_of_a_player_with_an_incantation_is_noted(self):
+        self.line("hello there", player="Notch")   # Notch has only the @a one: noted
+        self.write_store(entry("Steve", "fire ball"))
+        self.line("hello there", player="Notch")   # none now
+        self.assertEqual(len(self.casts._received), 1)
+
+    def test_keep_casts_the_same_and_keeps_the_line(self):
+        _, line = self.line("I still have the floaty effect. Can you remove it? Fire ball.")
+        status, doc = self.jev(line["id"], keep=True)
+        self.assertEqual((status, doc["status"], doc["copy"], doc["line"]), (202, "fired", "zap", "kept"))
+        self.assertEqual(self.lines(), [(line["id"], None, doc["id"])])   # kept, carrying the cast
+        self.assertEqual(self.rows("SELECT layer, line_id, client_cast_id FROM casts"),
+                         [("jev", line["id"], "jev:" + line["id"])])
+        self.assertTrue(self.events(1))
+        self.assertEqual(self.jev(line["id"], keep=True), (status, doc))   # asked again: the first
+
+    def test_keep_with_a_cast_that_does_not_fire_leaves_the_lines_cast_id(self):
+        self.assertEqual(self.cast(start=-2.0)[1]["status"], "fired")
+        self.clock.advance(1.5)
+        _, line = self.line("watch this everybody, look at me now, fire ball", start=-1.0, length=0.5)
+        status, doc = self.jev(line["id"], keep=True)
+        self.assertEqual((doc["status"], doc["line"]), ("cooldown", "kept"))
+        self.assertEqual(self.lines(), [(line["id"], None, None)])
+        self.clock.advance(2.0)   # past fire ball's 3 s cooldown
+        _, spotted = self.cast(start=-0.9, length=0.3)
+        self.assertEqual(spotted["status"], "fired")
+        self.clock.advance(5)
+        _, other = self.line("ok watch this one too everybody, fire ball", start=-6.0, length=1.0)
+        self.assertEqual(self.lines()[-1], (other["id"], None, spotted["id"]))
+        _, doc = self.jev(other["id"], keep=True)
+        self.assertEqual((doc["status"], doc["line"]), ("duplicate", "kept"))
+        self.assertEqual(self.lines()[-1], (other["id"], None, spotted["id"]))
+
+    def test_a_phrase_said_early_in_a_long_line_is_stale(self):
+        """An 8 s line: the phrase at its start was said about 6 s before it ended, too late."""
+        _, early = self.line("Fire ball. Can you also give me some food please and a sword", start=-9, length=8)
+        status, doc = self.jev(early["id"], keep=True)
+        self.assertEqual((status, doc["status"], doc["line"]), (202, "stale", "kept"))
+        self.assertRegex(doc["error"], r"^the phrase was said about 6\.\d s before its line ended, past the 3 s")
+        self.assertNotIn("copy", doc)
+        self.assertEqual(self.lines(), [(early["id"], None, None)])
+
+    def test_a_phrase_at_the_end_or_said_again_there_or_not_found_fires(self):
+        for n, text in enumerate(("Can you also give me some food please and then fire ball",
+                                  "Fire ball, I said, can you give me food please, fire ball",
+                                  "watch this everybody look at me now right now kaboom")):
+            self.clock.advance(10)   # past the cooldown and apart from the last one's window
+            _, line = self.line(text, start=-9, length=8)
+            self.assertEqual(self.jev(line["id"], keep=True)[1]["status"], "fired", text)
+
+    def test_a_kept_cast_may_come_after_jev_routed_the_line(self):
+        _, line = self.line("ok watch this everybody, look at me, fire ball")
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("UPDATE lines SET jev_class = 'action_oriented'")   # routed first, as a long line is
+        conn.commit()
+        conn.close()
+        status, doc = self.jev(line["id"], keep=True)
+        self.assertEqual((status, doc["status"], doc["line"]), (202, "fired", "kept"))
+        self.assertEqual(self.jev(line["id"])[0], 202)   # asked again: the first, whatever it asks
+
+    def test_keep_is_true_or_false(self):
+        _, line = self.line("Affordable.")
+        status, doc = self.jev(line["id"], keep="yes")
+        self.assertEqual(status, 400)
+        self.assertTrue(doc["error"].startswith("keep: "))
+        self.assertEqual(self.jev(line["id"], keep=False)[1]["line"], "dropped")
+
+    def test_asked_again_answers_the_first(self):
+        _, line = self.line("Affordable.")
+        first = self.jev(line["id"])
+        self.clock.advance(10)
+        self.assertEqual(self.jev(line["id"]), first)
+        self.assertEqual(self.rows("SELECT count(*) FROM casts"), [(1,)])
+
+    def test_a_line_dropped_meanwhile_casts_nothing(self):
+        _, spotted = self.cast(start=-2.0, length=0.6)
+        _, line = self.line("fire ball", start=-2.2, length=1.0)  # dropped by the drop rule
+        self.assertEqual(self.jev(line["id"]), (200, {"line": "dropped", "cast_id": spotted["id"]}))
+        self.assertEqual(self.rows("SELECT count(*) FROM casts"), [(1,)])
+
+    def test_a_judged_line_is_409_and_kept(self):
+        _, line = self.line("Affordable.")
+        conn = sqlite3.connect(self.db_path)  # as the Jev filter writes its verdict
+        conn.execute("UPDATE lines SET jev_class = 'not_relevant'")
+        conn.commit()
+        conn.close()
+        status, doc = self.jev(line["id"])
+        self.assertEqual((status, doc["line"]), (409, "judged"))
+        self.assertEqual(self.lines(), [(line["id"], None, None)])
+        self.assertEqual(self.rows("SELECT count(*) FROM casts"), [(0,)])
+
+    def test_404_400_and_nothing_cast(self):
+        _, line = self.line("Affordable.")
+        self.assertEqual(self.jev("01NOSUCHLINE")[0], 404)
+        status, doc = self.jev(line["id"], "water bolt")
+        self.assertEqual(status, 404)
+        self.assertIn("water bolt", doc["error"])
+        chat = self.db.insert_chat(timeutil.format_time(self.clock.now), "Steve", "fire ball")
+        self.assertEqual(self.jev(chat)[0], 400)
+        for body in ({}, {"line_id": "", "phrase": "fire ball"}, {"line_id": line["id"], "phrase": " "}):
+            self.assertEqual(self.request("POST", "/v1/jev/casts", body)[0], 400, body)
+        self.assertEqual(self.lines(), [(line["id"], None, None)])
+        self.assertEqual(self.rows("SELECT count(*) FROM casts"), [(0,)])
+
+    def test_only_from_the_box_itself_with_the_token(self):
+        _, line = self.line("Affordable.")
+        self.assertEqual(self.jev(line["id"], token="wrong"), (401, {"error": "unauthorized"}))
+        with mock.patch.object(api, "LOOPBACK", ()):
+            self.assertEqual(self.jev(line["id"]), (403, {"error": "only from the box itself"}))
+        self.assertEqual(self.rows("SELECT count(*) FROM casts"), [(0,)])
+
+
 class TestClockGuard(CastCase):
     def test_a_players_shift_is_kept_for_their_line(self):
         said = self.clock.now + _dt.timedelta(hours=1)  # Steve's clock is an hour fast
@@ -508,7 +824,14 @@ class TestConfig(unittest.TestCase):
         self.assertEqual((cfg.base, cfg.mc, cfg.kit, cfg.incantations, cfg.owner),
                          ("/opt/vfg", "/opt/mc", "/opt/vfg/scripts/_lib", "/opt/vfg/incantations.json", ""))
         self.assertEqual((cfg.live_poll_s, cfg.cast_gap_s, cfg.cast_slack_s, cfg.cast_wait_s,
-                          cfg.incant_allowance, cfg.incant_layer2), (0.5, 1.0, 0.3, 1.5, 0.25, True))
+                          cfg.incant_allowance, cfg.incant_layer2, cfg.incant_layer2_max_words),
+                         (0.5, 1.0, 0.3, 1.5, 0.25, True, 6))
+        self.assertEqual(config.load({"VFG_INCANT_LAYER2_MAX_WORDS": "0"}).incant_layer2_max_words, 0)
+        for bad in ("6.5", "-1", "six"):
+            with self.assertRaises(SystemExit):
+                config.load({"VFG_INCANT_LAYER2_MAX_WORDS": bad})
+        self.assertEqual(cfg.jev_cast_max_age_s, 2.0)
+        self.assertEqual(config.load({"VFG_JEV_CAST_MAX_AGE_S": "3.5"}).jev_cast_max_age_s, 3.5)
         cfg = config.load({"VFG_BASE": "/b", "VFG_INCANT_LAYER2": "off", "VFG_CAST_GAP_S": "2"})
         self.assertEqual((cfg.kit, cfg.incantations, cfg.incant_layer2, cfg.cast_gap_s),
                          ("/b/scripts/_lib", "/b/incantations.json", False, 2.0))

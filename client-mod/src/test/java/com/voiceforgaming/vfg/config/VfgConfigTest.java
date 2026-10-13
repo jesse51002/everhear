@@ -27,7 +27,9 @@ class VfgConfigTest {
 		JsonObject o = JsonParser.parseString(Files.readString(file)).getAsJsonObject();
 		assertEquals(List.of("server_address", "bridge_url", "client_token", "mic_device", "model", "icon_corner", "muted",
 			"turn_model", "turn_threshold", "silence_seconds", "vad_threshold", "stt_threads", "log_text", "incantations",
-			"incantation_threshold", "incantation_boost"), List.copyOf(o.keySet()));
+			"incantation_threshold", "incantation_boost", "incantation_recheck_seconds", "incantation_paths",
+			"incantation_spotter_aliases", "vosk", "vosk_confirm"),
+			List.copyOf(o.keySet()));
 		assertEquals("parakeet-110m-en", o.get("model").getAsString());
 		assertEquals("top_left", o.get("icon_corner").getAsString());
 		assertEquals(3, o.get("silence_seconds").getAsInt());
@@ -252,10 +254,30 @@ class VfgConfigTest {
 		assertTrue(c.incantations);
 		assertEquals(0.25, c.incantationThreshold);
 		assertEquals(1.5, c.incantationBoost);
+		assertEquals(3.0, c.incantationRecheckSeconds);
 		JsonObject o = JsonParser.parseString(Files.readString(file)).getAsJsonObject();
 		assertTrue(o.get("incantations").getAsBoolean());
 		assertEquals(0.25, o.get("incantation_threshold").getAsDouble());
 		assertEquals(1.5, o.get("incantation_boost").getAsDouble());
+		assertEquals("3", o.get("incantation_recheck_seconds").toString());
+	}
+
+	@Test
+	void theRecheckReachesBack1To10SecondsOr0ForNone() throws Exception {
+		Path file = dir.resolve("vfg-client.json");
+		for (double kept : new double[] {0, 1, 2.5, 3, 10}) {
+			Files.writeString(file, "{ \"turn_model\": \"off\", \"incantation_recheck_seconds\": " + kept + " }");
+			assertEquals(kept, VfgConfig.load(file).incantationRecheckSeconds);
+		}
+		for (String out : List.of("0.5", "0.99", "10.5", "-1", "\"3\"", "true")) {
+			Files.writeString(file, "{ \"turn_model\": \"off\", \"incantation_recheck_seconds\": " + out + " }");
+			assertEquals(3.0, VfgConfig.load(file).incantationRecheckSeconds, out + " falls back to the default, 3");
+		}
+		VfgConfig c = VfgConfig.load(file);
+		c.incantationRecheckSeconds = 2.5;
+		c.save(file);
+		assertEquals("2.5", JsonParser.parseString(Files.readString(file)).getAsJsonObject()
+			.get("incantation_recheck_seconds").toString());
 	}
 
 	@Test
@@ -285,12 +307,85 @@ class VfgConfigTest {
 		c.incantations = false;
 		c.incantationThreshold = 0.2;
 		c.incantationBoost = 2.0;
+		c.incantationRecheckSeconds = 0;
 		VfgConfig copy = c.copy();
 		assertFalse(copy.incantations);
 		assertEquals(0.2, copy.incantationThreshold);
 		assertEquals(2.0, copy.incantationBoost);
-		assertTrue(c.toString().contains("incantations=false, incantation_threshold=0.2, incantation_boost=2.0"),
-			c.toString());
+		assertEquals(0.0, copy.incantationRecheckSeconds);
+		assertTrue(c.toString().contains("incantations=false, incantation_threshold=0.2, incantation_boost=2.0,"
+			+ " incantation_recheck_seconds=0.0"), c.toString());
+	}
+
+	@Test
+	void theSpottersBeamIs16PathsAndVoskIsOnByDefault() throws Exception {
+		Path file = dir.resolve("vfg-client.json");
+		VfgConfig c = VfgConfig.load(file);
+		assertEquals(16, c.incantationPaths);
+		assertTrue(c.vosk);
+		JsonObject o = JsonParser.parseString(Files.readString(file)).getAsJsonObject();
+		assertEquals("16", o.get("incantation_paths").toString());
+		assertTrue(o.get("vosk").getAsBoolean());
+		assertTrue(c.toString().endsWith(", incantation_paths=16, incantation_spotter_aliases=10, vosk=true,"
+			+ " vosk_confirm=false]"), c.toString());
+		assertFalse(c.voskConfirm);
+		Files.writeString(file, "{ \"turn_model\": \"off\", \"vosk_confirm\": true }");
+		VfgConfig on = VfgConfig.load(file);
+		assertTrue(on.voskConfirm);
+		assertTrue(on.copy().voskConfirm);
+		Files.writeString(file, "{ \"turn_model\": \"off\", \"vosk_confirm\": \"yes\" }");
+		assertFalse(VfgConfig.load(file).voskConfirm);
+	}
+
+	@Test
+	void theBeamIsAWholeNumberFrom1To64AndVoskTrueOrFalse() throws Exception {
+		Path file = dir.resolve("vfg-client.json");
+		for (int kept : new int[] {1, 4, 8, 32, 64}) {
+			Files.writeString(file, "{ \"turn_model\": \"off\", \"incantation_paths\": " + kept + " }");
+			assertEquals(kept, VfgConfig.load(file).incantationPaths);
+		}
+		for (String out : List.of("0", "65", "-4", "8.5", "\"8\"", "true", "null")) {
+			Files.writeString(file, "{ \"turn_model\": \"off\", \"incantation_paths\": " + out + " }");
+			assertEquals(16, VfgConfig.load(file).incantationPaths, out + " falls back to the default, 16");
+		}
+		Files.writeString(file, "{ \"turn_model\": \"off\", \"vosk\": false }");
+		VfgConfig off = VfgConfig.load(file);
+		assertFalse(off.vosk);
+		assertTrue(off.incantations, "the spotter stays on");
+		for (String out : List.of("\"no\"", "0", "null")) {
+			Files.writeString(file, "{ \"turn_model\": \"off\", \"vosk\": " + out + " }");
+			assertTrue(VfgConfig.load(file).vosk, out + " falls back to the default, true");
+		}
+		off.incantationPaths = 8;
+		off.save(file);
+		VfgConfig again = VfgConfig.load(file);
+		assertEquals(8, again.incantationPaths);
+		assertFalse(again.vosk);
+		VfgConfig copy = again.copy();
+		assertEquals(8, copy.incantationPaths);
+		assertFalse(copy.vosk);
+		assertTrue(again.toString().contains("incantation_paths=8, incantation_spotter_aliases=10, vosk=false"),
+			again.toString());
+	}
+
+	@Test
+	void theSpotterKeepsTheFirst10AliasesByDefaultAnd0To24Otherwise() throws Exception {
+		Path file = dir.resolve("vfg-client.json");
+		VfgConfig c = VfgConfig.load(file);
+		assertEquals(10, c.incantationSpotterAliases);
+		assertEquals("10", JsonParser.parseString(Files.readString(file)).getAsJsonObject()
+			.get("incantation_spotter_aliases").toString());
+		for (int kept : new int[] {0, 6, 20, 24}) {
+			Files.writeString(file, "{ \"turn_model\": \"off\", \"incantation_spotter_aliases\": " + kept + " }");
+			assertEquals(kept, VfgConfig.load(file).incantationSpotterAliases);
+		}
+		for (String out : List.of("-1", "25", "6.5", "\"6\"", "false")) {
+			Files.writeString(file, "{ \"turn_model\": \"off\", \"incantation_spotter_aliases\": " + out + " }");
+			assertEquals(10, VfgConfig.load(file).incantationSpotterAliases, out + " falls back to the default, 10");
+		}
+		VfgConfig six = VfgConfig.load(file);
+		six.incantationSpotterAliases = 6;
+		assertEquals(6, six.copy().incantationSpotterAliases);
 	}
 
 	@Test

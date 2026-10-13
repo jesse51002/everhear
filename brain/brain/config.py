@@ -21,7 +21,7 @@ SERVER = "main"
 # The cheap model, and the providers that answer it fastest, first (the incantation alias call's).
 CHEAP = "~deepseek/deepseek-v4-flash-latest"
 FAST = ("parasail", "wafer", "phala", "together", "venice")
-ORCHESTRATOR = "google/gemini-3.8-flash"
+BRAIN = "google/gemini-3.8-flash"
 
 
 @dataclass(frozen=True)
@@ -31,32 +31,31 @@ class Config:
     repo: Path                      # VFG_REPO, default this repo
     server: str = SERVER            # VFG_SERVER: whose made/<server>/actions/ are on the menu too
     owner: str = ""                 # VFG_OWNER: the owner's Minecraft name, whose word wins
-    # The brain's one call: GPT-6.1 Sol, reasoning low (Prototype_Brain).
-    model: str = "openai/gpt-6.1-sol"          # VFG_BRAIN_MODEL
+    # The brain's loop: every step on Gemini 3.8 Flash, reasoning low (Prototype_Brain_Loop). It is the
+    # orchestrator's model of Prototype_Named_Tasks: it kept one thing to one task on the follow-up replay.
+    model: str = BRAIN                         # VFG_BRAIN_MODEL
     reasoning: str = "low"                     # VFG_BRAIN_REASONING: off, or an effort
-    providers: tuple[str, ...] = ()            # VFG_BRAIN_PROVIDERS, comma-separated, the brain's call only;
+    providers: tuple[str, ...] = ()            # VFG_BRAIN_PROVIDERS, comma-separated, the brain's steps only;
                                                # (): OpenRouter's choice
-    # Respond, the brain's cheap mode, for conversational lines, and the action planner, kept only
-    # to retry a command Minecraft refused (rare, and it has the command and Minecraft's error in
-    # hand): DeepSeek V4 Flash with reasoning off, through the providers that answer it fastest
-    # (at low reasoning it thinks ~900 tokens: 7.7 s a call). No bigger model without a reason.
+    loop_steps: int = 10                       # VFG_LOOP_STEPS: a loop's steps at most; the last ends it
+    loop_seconds: float = 120.0                # VFG_LOOP_SECONDS: a step that starts past it is the last
+    # Respond, the brain's cheap mode, for conversational lines: DeepSeek V4 Flash with reasoning off,
+    # through the providers that answer it fastest (at low reasoning it thinks ~900 tokens: 7.7 s a call).
     respond_model: str = CHEAP                      # VFG_RESPOND_MODEL
     respond_reasoning: str = "off"                  # VFG_RESPOND_REASONING
     respond_providers: tuple[str, ...] = FAST       # VFG_RESPOND_PROVIDERS
-    plan_model: str = CHEAP                         # VFG_PLAN_MODEL
-    plan_reasoning: str = "off"                     # VFG_PLAN_REASONING
-    plan_providers: tuple[str, ...] = FAST          # VFG_PLAN_PROVIDERS
-    plan_check: bool = False        # VFG_PLAN_CHECK: on checks a retried command against its references again
-    # The orchestrator: one call per orchestrator part (Prototype_Named_Tasks). Gemini 3.8 Flash at low
-    # kept one thing to one task on the follow-up replay; DeepSeek V4 Flash (deepseek/deepseek-v4-flash)
-    # is about 7x cheaper but lumps things, and wants reasoning off (at low: 7.7 s median, 26 s p90).
-    orchestrator_model: str = ORCHESTRATOR            # VFG_ORCHESTRATOR_MODEL
-    orchestrator_reasoning: str = "low"               # VFG_ORCHESTRATOR_REASONING: off, or an effort
-    orchestrator_providers: tuple[str, ...] = ()      # VFG_ORCHESTRATOR_PROVIDERS; (): OpenRouter's choice
-    orchestrator_timeout_s: float = 15.0              # VFG_ORCHESTRATOR_TIMEOUT_S, retries included
+    respond_timeout_s: float = 20.0                 # VFG_RESPOND_TIMEOUT_S: one Respond call, retries included; a
+                                                    # hung one holds the player's turn, then hands the line up
+    # One turn per player (turns.py): the lines that may wait for it, and how long a turn waits for the
+    # AI rows it wrote to come back on the watch before the next starts.
+    turn_waiting: int = 3                           # VFG_TURN_WAITING
+    turn_settle_s: float = 3.0                      # VFG_TURN_SETTLE_S; 0: no wait
     checkpoint: int = 5             # VFG_BRAIN_CHECKPOINT: a cache mark every this many minute-blocks
     history_hours: float = 6.0      # VFG_BRAIN_HISTORY_HOURS: how much of the feed the context starts with
-    timeout_s: float = 20.0         # VFG_BRAIN_TIMEOUT_S: one structured() call, its retries included
+    # VFG_BRAIN_TIMEOUT_S: one brain step's structured() call, its resend and retries included.
+    # A step on Gemini 3.8 Flash low thinks first (a median 731 tokens out on the first pilot), a median 9.7 s
+    # and a hand-off's step up to 16.5 s; at 20 s two of them timed out.
+    timeout_s: float = 45.0
     running_ttl_s: float = 30.0     # VFG_RUNNING_TTL_S: how often running.json is fetched again; 0: never
     action_timeout_s: float = 20.0  # VFG_DISPATCH_ACTION_TIMEOUT_S: a once action's, unless its class says
     stop_grace_s: float = 10.0      # how long in-flight calls and actions may finish on SIGTERM
@@ -114,23 +113,20 @@ def load(env: dict[str, str] | None = None) -> Config:
         repo=path("VFG_REPO", REPO),
         server=get("VFG_SERVER", SERVER),
         owner=get("VFG_OWNER"),
-        model=get("VFG_BRAIN_MODEL", "openai/gpt-6.1-sol"),
+        model=get("VFG_BRAIN_MODEL", BRAIN),
         reasoning=get("VFG_BRAIN_REASONING", "low"),
         providers=names("VFG_BRAIN_PROVIDERS"),
+        loop_steps=number("VFG_LOOP_STEPS", 10, int, 1),
+        loop_seconds=number("VFG_LOOP_SECONDS", 120.0, float, 1),
         respond_model=get("VFG_RESPOND_MODEL", CHEAP),
         respond_reasoning=get("VFG_RESPOND_REASONING", "off"),
         respond_providers=names("VFG_RESPOND_PROVIDERS", FAST),
-        plan_model=get("VFG_PLAN_MODEL", CHEAP),
-        plan_reasoning=get("VFG_PLAN_REASONING", "off"),
-        plan_providers=names("VFG_PLAN_PROVIDERS", FAST),
-        plan_check=get("VFG_PLAN_CHECK", "off").lower() in ("on", "1", "true", "yes"),
-        orchestrator_model=get("VFG_ORCHESTRATOR_MODEL", ORCHESTRATOR),
-        orchestrator_reasoning=get("VFG_ORCHESTRATOR_REASONING", "low"),
-        orchestrator_providers=names("VFG_ORCHESTRATOR_PROVIDERS"),
-        orchestrator_timeout_s=number("VFG_ORCHESTRATOR_TIMEOUT_S", 15.0, float, 1),
+        respond_timeout_s=number("VFG_RESPOND_TIMEOUT_S", 20.0, float, 1),
+        turn_waiting=number("VFG_TURN_WAITING", 3, int, 0),
+        turn_settle_s=number("VFG_TURN_SETTLE_S", 3.0, float, 0),
         checkpoint=number("VFG_BRAIN_CHECKPOINT", 5, int, 1),
         history_hours=number("VFG_BRAIN_HISTORY_HOURS", 6.0, float, 0),
-        timeout_s=number("VFG_BRAIN_TIMEOUT_S", 20.0, float, 1),
+        timeout_s=number("VFG_BRAIN_TIMEOUT_S", 45.0, float, 1),
         running_ttl_s=number("VFG_RUNNING_TTL_S", 30.0, float, 0),
         action_timeout_s=number("VFG_DISPATCH_ACTION_TIMEOUT_S", 20.0, float, 1),
     )

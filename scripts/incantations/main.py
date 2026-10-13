@@ -6,7 +6,8 @@ ASKS = ["make fire ball shoot a fireball", "give my fire ball a ten second coold
 # keys that change, "values" and "asked" holding only the keys that change, with "drop_asked"
 # the keys asked no longer holds, or with "replace" true each whole (vfg's refresh, which made
 # them again); remove, each {"player", "phrase"}. The store is the kit's incantations.Store,
-# which the bridge reads as players cast.
+# which the bridge reads as players cast. An update's facts say what it changed, `changed`, as
+# `edit`'s do: empty when it changed nothing (the summary says "nothing new").
 from kit import values, result
 import json
 import sys
@@ -31,19 +32,22 @@ def word(x):
 
 
 def change(old, new):
-    """What an update changed, in words: cooldown 5 s; aliases fireball, fire bowl; power=4; a
-    value a replacing update dropped, `speed gone`."""
+    """What an update changed, each in words: cooldown 5 s; aliases fireball, fire bowl; everyday
+    aliases fire bowl; power=4; a value a replacing update dropped, `speed gone`. Empty when it
+    changed nothing."""
     bits = []
     if old.get("cooldown_s") != new.get("cooldown_s"):
         bits.append("cooldown %s s" % word(new.get("cooldown_s")))
     if old.get("aliases") != new.get("aliases"):
         bits.append("aliases " + (", ".join(new.get("aliases") or []) or "none"))
+    if (old.get("everyday_aliases") or []) != (new.get("everyday_aliases") or []):
+        bits.append("everyday aliases " + (", ".join(new.get("everyday_aliases") or []) or "none"))
     was, now = old.get("values") or {}, new.get("values") or {}
     for k in sorted(now):
         if was.get(k) != now[k]:
             bits.append("%s=%s" % (k, "the caster" if k in (new.get("caster_fields") or []) else word(now[k])))
     bits += ["%s gone" % k for k in sorted(set(was) - set(now))]
-    return "; ".join(bits) or "nothing new"
+    return bits
 
 
 v = values()
@@ -53,7 +57,7 @@ if op not in ("put", "update", "remove") or not isinstance(entries, list) or not
     fail("nothing to do: incantations are made, changed and removed through vfg, which sends the entries")
 store = incantations.Store()
 phrase = entries[0]["phrase"]
-done, replaced, missing, said = [], [], [], ""
+done, replaced, missing, said, changed = [], [], [], "", []
 
 
 def update(e):
@@ -83,7 +87,9 @@ def apply(e):
             missing.append(e["player"])
             return
         done.append(got)
-        said = said or change(old, got)
+        bits = change(old, got)
+        said = said or "; ".join(bits) or "nothing new"
+        changed.extend(b for b in bits if b not in changed)
     else:
         got = store.remove(e["player"], e["phrase"])
         if got:
@@ -107,11 +113,14 @@ if op == "put":
     summary = 'stored "%s" for %s: %s' % (phrase, players, done[0]["action"])
     if done[0].get("aliases"):
         summary += ", aliases " + ", ".join(done[0]["aliases"])
+    if done[0].get("everyday_aliases"):
+        summary += " (everyday talk, not spotted: %s)" % ", ".join(done[0]["everyday_aliases"])
     if replaced:
         summary += "; it replaced the one %s had" % names(e["player"] for e in replaced)
         facts["replaced"] = [e["id"] for e in replaced]
 elif op == "update":
     summary = 'changed "%s" for %s: %s' % (phrase, players, said)
+    facts["changed"] = changed
 else:
     summary = 'removed "%s" for %s' % (phrase, players)
 if missing:

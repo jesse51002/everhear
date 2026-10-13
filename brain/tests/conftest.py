@@ -3,14 +3,13 @@ no real ~/.vfg.
 
 - catalog(): the core actions and railgun, from a small copy of the repo's actions/ beside a
   stub of each script, loaded once; made() writes a server's own action into a catalog of its own.
-- FakeAsk stands in for structured(): ONE canned answer per output class ("Decision",
-  "Response", "Planned_command"), validated against the class as structured() does.
+- FakeAsk stands in for structured(): canned answers per output class ("Step", "Response"), one
+  for every call or a list taken in order, each validated against the class as structured() does.
 - FakeVfg stands in for the vfg runner: it records every argv and answers by prefix.
-- FakeOrchestrator stands in for the orchestrator's call (brain/orchestrator.py): it records
-  each call's arguments and gives its canned answers in order, each an Answer whose value has
-  the orchestrator's fields, from a model of its own here.
 - FakeImplementers records what is started and followed up, by the task's name.
-- Contexts are built by hand: rows(...) from feed lines.
+- Tick is the loop's clock, moved by hand.
+- Contexts are built by hand: rows(...) from feed lines; steps by step(), act(), hand_off() and
+  follow_up().
 """
 
 from __future__ import annotations
@@ -27,12 +26,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import BaseModel
-from vfg_llm import Answer, LlmError
+from vfg_llm import Answer
 
 from brain import actions
 from brain.act import Acts
-from brain.action_planner import Planner
 from brain.call import Call
 from brain.config import REPO
 from brain.context import Context, parse
@@ -108,16 +105,20 @@ def rows(*lines: str, processed: bool = False) -> Context:
 # ------------------------------------------------------------------ the model
 
 class FakeAsk:
-    """structured(): `answers[output class name]` is the one answer, a dict (validated as
-    structured() validates it), an Exception (raised) or an async callable taking the prompt."""
+    """structured(): `answers[output class name]` is the answer to every call, or a list of them
+    taken in order, one a call; each a dict (validated as structured() validates it), an Exception
+    (raised) or an async callable taking the prompt."""
 
     def __init__(self, **answers: Any):
         self.answers = answers
         self.calls: list[dict[str, Any]] = []
 
     async def __call__(self, prompt: str, output: type, **kw: Any) -> Answer:
-        self.calls.append({"prompt": prompt, "output": output.__name__, **kw})
+        self.calls.append({"prompt": prompt, "output": output.__name__, "cls": output, **kw})
         got = self.answers[output.__name__]
+        if isinstance(got, list):
+            assert got, f"no canned {output.__name__} left for call {len(self.of(output.__name__))}"
+            got = got.pop(0)
         if callable(got) and not isinstance(got, dict):
             got = await got(prompt)
         if isinstance(got, Exception):
@@ -130,18 +131,38 @@ class FakeAsk:
         return [c for c in self.calls if c["output"] == name]
 
 
-def decision(*parts: dict, reply: str = "", record: str = "", status: str = "") -> dict:
-    return {"parts": list(parts), "reply": reply, "record": record, "status": status}
+def step(*actions: dict, end: str = "reply", reply: str = "", record: str = "", status: str = "",
+         order: str = "together", read: tuple[str, ...] = (), hand_offs: tuple[dict, ...] = (),
+         follow_ups: tuple[dict, ...] = ()) -> dict:
+    """One step as the model writes it."""
+    return {"order": order, "actions": list(actions), "read_items": list(read), "hand_offs": list(hand_offs),
+            "follow_ups": list(follow_ups), "end": end, "reply": reply, "record": record, "status": status}
 
 
-def part(to: str, instruction: str = "", action: dict | None = None, *, drop: str = "", said: str = "") -> dict:
-    """One part as the model writes it: the action's values as key and value pairs."""
-    pairs = None if action is None else [{"key": k, "value": v} for k, v in action.items()]
-    return {"part": said or instruction or to, "to": to, "instruction": instruction, "action": pairs, "drop": drop}
+def act(to: str, instruction: str, action: dict | None = None) -> dict:
+    """One action as the model writes it: its values as key and value pairs."""
+    return {"to": to, "instruction": instruction, "action": [{"key": k, "value": v} for k, v in (action or {}).items()]}
 
 
 def cmd(*commands: str) -> dict:
     return {"commands": list(commands)}
+
+
+FIREBALL = {"words": "“Can you make an incantation? That fires a fireball whenever I say Hot fireball”",
+            "picture": "a fireball from KrownJM's eyes, where they look, fast and straight, trailing flame",
+            "assumed": "it stops at the first mob, player or block it meets, explodes there, breaks blocks and "
+                       "sets fire",
+            "cast": "the incantation “hot fireball”, for KrownJM",
+            "done_when": ["saying it fires one", "it stops at the first mob, player or block", "it explodes there"]}
+
+
+def hand_off(name: str = "hot_fireball_krown", description: str = "Hot Fireball for KrownJM: say hot fireball.",
+             **parts: Any) -> dict:
+    return {"name": name, "description": description, **FIREBALL, **parts}
+
+
+def follow_up(task: str, brief: str = "", description: str = "", cancel: bool = False) -> dict:
+    return {"task": task, "brief": brief, "description": description, "cancel": cancel}
 
 
 # ------------------------------------------------------------------ vfg
@@ -232,62 +253,14 @@ class FakeImplementers:
         return list(self.busy)
 
 
-class TaskAnswer(BaseModel):
-    """The orchestrator's answer, with the fields of orchestrator.AnswerBase, in its order."""
-    kind: str
-    task: str = ""
-    name: str = ""
-    description: str = ""
-    brief: str = ""
-    copy: str = ""
-    values: list[dict[str, str]] = []
-    copies: list[str] = []
-    reply: str = ""
+class Tick:
+    """The loop's clock, moved by hand: `tick.t += 30`."""
 
-    def edits(self) -> dict[str, Any]:
-        """An edit's values as check_edit takes them, as the real answer's edits() gives them: a
-        JSON list, object or quoted text decoded, the rest kept as text."""
-        out: dict[str, Any] = {}
-        for v in self.values:
-            text = str(v["value"]).strip()
-            try:
-                got = json.loads(text)
-            except ValueError:
-                got = None
-            out[str(v["key"]).strip()] = got if isinstance(got, (list, dict, str)) else text
-        return out
+    def __init__(self, t: float = 1000.0):
+        self.t = t
 
-
-def answer(kind: str, **fields: Any) -> dict:
-    return {"kind": kind, **fields}
-
-
-class FakeOrchestrator:
-    """Orchestrator.answer(): each call recorded with its arguments, and answered with the next
-    canned answer (a dict of TaskAnswer's fields, an Exception, raised, or an async callable
-    taking the call's arguments). The reply is emptied when the call is not replying, as the
-    real one does."""
-
-    def __init__(self, *answers: Any):
-        self.answers = list(answers)
-        self.calls: list[dict[str, Any]] = []
-
-    async def answer(self, ctx, *, head: str, parts: list, k: int, given: list[str], others: list,
-                     replying: bool, tasks: list[dict], copies: dict[str, dict], ref: str) -> Answer:
-        call = {"ctx": ctx, "head": head, "parts": parts, "k": k, "given": list(given), "others": others,
-                "replying": replying, "tasks": tasks, "copies": copies, "ref": ref}
-        self.calls.append(call)
-        await asyncio.sleep(0)
-        got = self.answers.pop(0) if self.answers else LlmError("no canned answer")
-        if callable(got) and not isinstance(got, dict):
-            got = await got(call)
-        if isinstance(got, Exception):
-            raise got
-        value = TaskAnswer.model_validate(got)
-        if not replying and value.kind != "reply":
-            value.reply = ""
-        return Answer[TaskAnswer](value=value, cost=0.0075, ms=3000, prompt_tokens=4000, cached_tokens=3000,
-                                  completion_tokens=60)
+    def __call__(self) -> float:
+        return self.t
 
 
 class FakeRefs:
@@ -309,27 +282,26 @@ class FakeRefs:
 # ------------------------------------------------------------------ a brain, by hand
 
 class Kit:
-    """A Brain wired to fakes, its parts at hand."""
+    """A Brain wired to fakes, its parts at hand. A turn does not wait for its rows to come back
+    (settle_s 0) unless a test sets the brain's settle_s."""
 
-    def __init__(self, tmp: Path, ctx: Context | None = None, *, cat=None, orchestrator=(), **answers: Any):
+    def __init__(self, tmp: Path, ctx: Context | None = None, *, cat=None, **answers: Any):
         self.vfg = FakeVfg()
         self.ask = FakeAsk(**answers)
         self.impl = FakeImplementers()
-        self.orch = FakeOrchestrator(*orchestrator)
+        self.tick = Tick()
         self.cat = cat or catalog()
         self.ctx = ctx or Context()
         self.tasks = Tasks(send=self.send, clock=Clock())
         self.later = Later(self.vfg)
         self.world = World(self.vfg, tmp / "running.json", self.cat)
-        self.planner = Planner(self.ask, "plan-model", FakeRefs())
         self.call = Call(self.cat, self.ask, owner="KrownJM")
         self.respond = Respond(self.cat, self.ask, owner="KrownJM")
-        self.acts = Acts(vfg=self.vfg, later=self.later, catalog=self.cat, planner=self.planner, tasks=self.tasks,
-                         implementers=self.impl, world=self.world, orchestrator=self.orch, repo=REPO_COPY,
-                         server="main")
+        self.acts = Acts(vfg=self.vfg, later=self.later, catalog=self.cat, tasks=self.tasks, implementers=self.impl,
+                         world=self.world, repo=REPO_COPY, server="main")
         self.brain = Brain(ctx=self.ctx, call=self.call, respond=self.respond, acts=self.acts, world=self.world,
                            tasks=self.tasks, implementers=self.impl, later=self.later, catalog=self.cat,
-                           refs=FakeRefs(), now=lambda: NOW)
+                           refs=FakeRefs(), now=lambda: NOW, clock=self.tick, settle_s=0)
 
     async def send(self, row: dict) -> bool:
         """`vfg task set`, as __main__ sends it."""

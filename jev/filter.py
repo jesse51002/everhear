@@ -2,9 +2,11 @@
 
 Each step: judge new lines, one Jev call each (or, while failing open, pass
 them all as `context`), and for a line that goes to the AI one more, the gather
-call; then feed what is waiting. Everything that has to survive a restart is in
-the database — a verdict, `fed_at` — so the batch is read from the database
-each time rather than held here. What is held here is only what the contract
+call; then feed what is waiting. Before its routing call, a voice line from a
+player with an incantation gets the cast check (`casting.py`): a cast goes to
+the bridge's cast path and the line is never routed. Everything that has to
+survive a restart is in the database — a verdict, `fed_at` — so the batch is
+read from the database each time rather than held here. What is held here is only what the contract
 lets go on a restart: the lines gathered into an ask not yet fed, the failing
 clock, and an owed `SYS` line.
 
@@ -17,6 +19,7 @@ import os
 import re
 import sqlite3
 
+import casting
 from jev_clock import iso, parse_iso
 from jev_api import ENDPOINT, MODEL, JevDown, JevRefused
 from prompt import (GATHER_HEADING, GATHER_RULES, HISTORY_HEADING, KEPT, PART_OF_IT, RULES, Lookout, Menu,
@@ -35,6 +38,12 @@ PROBE_EVERY = 5.0          # while open
 FEED_MAX_AGE = 600.0       # a kept line older than this is never fed
 STALE_LOOKBACK = 3600.0    # how far back the feed looks for kept lines to report as too old
 JUDGE_PER_STEP = 32
+CAST_CHECKED_MAX = 4096    # line ids the cast check remembers, so a line is checked once
+# The cast check makes no call for a line already too old for the bridge to fire it: more than
+# VFG_JEV_CAST_MAX_AGE_S since the filter first saw it (the box's clock: never more than its age at
+# the bridge), or that plus this margin since it was said (the mod's clock, the clock guard's: the
+# margin takes speech-to-text's delay and a player's clock a few seconds off).
+CAST_SAID_MARGIN = 10.0
 FAILURE_PAUSE = 1.0
 NO_DB_PAUSE = 2.0
 # The cap on VFG_JEV_STATE_TOKENS: the state plus the gather call's ten questions at their largest,
@@ -61,6 +70,12 @@ class Config:
         "timeout": ("VFG_JEV_TIMEOUT", 3.0, float),
         "state_tokens": ("VFG_JEV_STATE_TOKENS", 8000, int),
         "history_hours": ("VFG_JEV_HISTORY_HOURS", 3.0, float),
+        "incantations": ("VFG_INCANTATIONS", "/opt/vfg/incantations.json", str),
+        "cast_min": ("VFG_JEV_CAST_MIN", 0.5, float),
+        "cast_min_long": ("VFG_JEV_CAST_MIN_LONG", 0.7, float),   # a long line's: over 1, long lines unchecked
+        "cast_sure": ("VFG_JEV_CAST_SURE", 0.7, float),   # a short cast this sure drops its line; less, kept
+        "cast_max_age": ("VFG_JEV_CAST_MAX_AGE_S", 2.0, float),   # the bridge's, read here to save calls
+        "bridge_port": ("VFG_BRIDGE_PORT", 8787, int),
     }
 
     def __init__(self, **values):
@@ -141,7 +156,7 @@ def said_at(row):
 
 
 class Filter:
-    def __init__(self, store, jev, feed, clock, cfg):
+    def __init__(self, store, jev, feed, clock, cfg, bridge=None):
         self.store = store
         self.jev = jev
         self.feed_writer = feed
@@ -149,6 +164,18 @@ class Filter:
         self.cfg = cfg
         self.lookout = Lookout(cfg.lookout)
         self.menu = Menu(cfg.menu)
+        # the cast check: off without the bridge's cast path, or with VFG_JEV_CAST_MIN over 1
+        self.bridge = bridge if cfg.cast_min <= 1 else None
+        if bridge is not None and self.bridge is None:
+            log.info("cast check off: VFG_JEV_CAST_MIN is %g, over 1", cfg.cast_min)
+        elif self.bridge is not None:
+            log.info("cast check on · at %.2f or over, dropped at %.2f, a long line at %s · the bridge on "
+                     "127.0.0.1:%d · incantations %s", cfg.cast_min, cfg.cast_sure,
+                     "%.2f" % cfg.cast_min_long if cfg.cast_min_long <= 1 else "none (unchecked)",
+                     cfg.bridge_port, cfg.incantations)
+        self.incantations = casting.Incantations(cfg.incantations)
+        self.cast_checked = {}       # line ids checked, oldest first: each line is checked once
+        self.first_seen = {}         # line id -> when a cast pass first read it, on the filter's clock
         self._menu_cut = None        # the menu last said not to fit, so it is said once
         self.open = False            # failing open
         self.failing_since = None    # when the first failing call after a success began
@@ -193,17 +220,135 @@ class Filter:
     # -- judging -----------------------------------------------------------------
 
     def _judge_new(self):
+        self._cast_pass()
         for row in self.store.unjudged(JUDGE_PER_STEP):
             if self.stopping:
                 break
+            if row["id"] in self.cast_checked and not self._still_there(row):
+                continue   # cast by the cast pass after this list was read
             if not row["text"].strip():
                 self.store.set_class(row["id"], "not_relevant", None, iso(self.clock.time()))
                 log.info("judge %s %s %s not_relevant - · blank, no call", row["id"], row["player_name"], row["source"])
                 continue
+            long = not casting.short_enough(row["text"])
+            if not long and self._cast_check(row):   # a sure cast: the bridge dropped the line
+                continue
             if not self._judge_one(row):
                 return FAILURE_PAUSE
             self.feed()   # so a line for the AI goes before the next call
+            self._cast_pass()   # a short cast said while that line was judged goes before the next
+            if long:
+                self._cast_check(row)   # a long line is kept whatever Jev says: routed first, then checked
         return None
+
+    def _cast_pass(self):
+        """The cast check on every short line waiting that is due one, before any line is routed:
+        a cast must reach the bridge within VFG_JEV_CAST_MAX_AGE_S of its line, so it never waits
+        behind other lines' routing and gather calls, nor behind long lines' checks. Run at the
+        start of each step and again after each routing call. A long line is kept and routed
+        whatever its check says, so it is routed first and checked after (_judge_new)."""
+        if self.bridge is None:
+            return
+        now = self.clock.time()
+        for row in self.store.unjudged(JUDGE_PER_STEP):
+            if self.stopping:
+                return
+            self.first_seen.setdefault(row["id"], now)
+            if row["text"].strip() and casting.short_enough(row["text"]):
+                self._cast_check(row)
+
+    def _still_there(self, row):
+        """Whether `row` is still unjudged and not dropped (the cast pass may have cast it since)."""
+        return any(r["id"] == row["id"] for r in self.store.unjudged(JUDGE_PER_STEP))
+
+    def _too_old_to_cast(self, row):
+        """Why a line is too old to cast, or None: more than VFG_JEV_CAST_MAX_AGE_S since a cast
+        pass first read it (the box's clock, a lower bound of its age at the bridge), or that and
+        CAST_SAID_MARGIN since it ended (the mod's clock)."""
+        now = self.clock.time()
+        waited = now - self.first_seen.get(row["id"], now)
+        if waited > self.cfg.cast_max_age:
+            return "%.1f s since it was read here" % waited
+        try:
+            ended = parse_iso(row["ended_at"] or row["at"])
+        except (TypeError, ValueError, IndexError, KeyError):
+            return None
+        if now - ended > self.cfg.cast_max_age + CAST_SAID_MARGIN:
+            return "%.1f s since it was said" % (now - ended)
+        return None
+    def _cast_check(self, row):
+        """The cast check (casting.py), before the routing call: was `row` said to cast one of
+        its speaker's incantations? For a voice line from a player with one (their own or an @a
+        one), once a line, and only while it is young enough for the bridge to fire it
+        (_too_old_to_cast: no call otherwise). A cast whose option has a probability of
+        VFG_JEV_CAST_MIN or over (VFG_JEV_CAST_MIN_LONG for a long line, over 6 words; over 1, no
+        long line is checked) goes to the bridge's cast path. A short line (6 words or fewer)
+        whose cast is sure, VFG_JEV_CAST_SURE or over, the bridge then drops whatever comes of the
+        cast: answers True, and it is never routed. A long line (the cast said inside other talk),
+        or a short one whose cast is not sure, it keeps: answers False, routed as ever ("do both
+        if it's not sure"); a long line is checked only once it was routed (_judge_new).
+        Anything else answers False and the line is routed as ever: not a cast, a probability
+        under the threshold or none at all, a call that fails or is refused (it is not Jev failing
+        to judge a line, so the failing clock is left as it is), or a bridge that gives no answer."""
+        if self.bridge is None or row["source"] != "voice" or row["id"] in self.cast_checked:
+            return False
+        long = not casting.short_enough(row["text"])
+        least = self.cfg.cast_min_long if long else self.cfg.cast_min
+        if least > 1:
+            return False
+        entries = self.incantations.for_player(row["player_name"])
+        if not entries:
+            return False
+        self.cast_checked[row["id"]] = True   # once, whatever comes of it: never in a loop
+        if len(self.cast_checked) > CAST_CHECKED_MAX:
+            for line_id in list(self.cast_checked)[:CAST_CHECKED_MAX // 2]:
+                del self.cast_checked[line_id]
+                self.first_seen.pop(line_id, None)
+        who = "%s %s%s" % (row["id"], row["player_name"], " · long" if long else "")
+        late = self._too_old_to_cast(row)
+        if late:
+            log.info("cast-check %s · too old to cast (%s) → routing, no call", who, late)
+            return False
+        said = said_at(row)
+        try:
+            recent = [] if said is None else self.store.recent(row, iso(said - casting.RECENT_SECONDS),
+                                                               casting.RECENT_MAX)
+        except sqlite3.Error as e:
+            log.warning("cast-check %s · could not read its recent lines: %s → routing, no call", who, e)
+            return False
+        asked, picked = casting.questions(row, entries, self.menu.text(), long)
+        try:
+            result = self.jev.ask(casting.state(row, recent, long), asked, required=casting.QUESTION)
+        except (JevDown, JevRefused) as e:
+            log.warning("cast-check %s · failed: %s → routing", who, e)
+            return False
+        try:
+            self.store.add_usage(at=iso(self.clock.time()), model=self.cfg.model, input_tokens=result.input_tokens,
+                                 cost_usd=result.cost_usd, ref="cast:%s" % row["id"])
+        except sqlite3.Error as e:
+            log.warning("could not write the cast check's usage row: %s", e)
+        entry, name, p = casting.answer(result, picked)
+        took = "%dms %stok" % (result.ms, "?" if result.input_tokens is None else result.input_tokens)
+        heard = "%s p %s" % (casting.short(name), "-" if p is None else "%.2f" % p)
+        if entry is None:
+            log.info("cast-check %s · %s → routing · %s", who, heard, took)
+            return False
+        if p is None:
+            log.info("cast-check %s · %s → no probability, routing · %s", who, heard, took)
+            return False
+        if p < least:
+            log.info("cast-check %s · %s → under %.2f, routing · %s", who, heard, least, took)
+            return False
+        keep = long or p < self.cfg.cast_sure   # not sure, or inside other talk: cast, and route it too
+        try:
+            got = self.bridge.cast(row["id"], entry["phrase"], keep=keep)
+        except casting.BridgeError as e:
+            log.warning("cast-check %s · %s → the bridge failed: %s, routing · %s", who, heard, e, took)
+            return False
+        why = (", the line kept (routed first)" if long
+               else ", the line kept, not sure (under %.2f), routing" % self.cfg.cast_sure if keep else ", routing")
+        log.info("cast-check %s · %s → %s%s · %s", who, heard, got.said, "" if got.dropped else why, took)
+        return got.dropped
 
     def _history(self, began, exclude):
         """The lines said and the brain's records of what it did, newest first,

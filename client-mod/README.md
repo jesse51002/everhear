@@ -4,7 +4,7 @@ A client-only Fabric mod for Minecraft Java 26.3. While you are connected to the
 server it is set up for, it turns what you say into text **on your own PC** and posts
 each line — with its time and its volume — to that server's bridge (`POST /v1/lines`,
 docs/CONTRACTS.md §2) as soon as you have finished saying it. Beside that, a keyword
-spotter listens for your incantations and posts each one the moment you say it (below). No
+spotter and Vosk listen for your incantations and post each one the moment you say it (below). No
 audio ever leaves your PC, and it never uses Minecraft's own networking, so it works on a
 vanilla server.
 
@@ -13,7 +13,8 @@ Silero VAD and NVIDIA's Parakeet TDT 110M (English, int8; CC-BY-4.0). Moonshine 
 tiny can be chosen instead. A line ends when a small turn model,
 [Smart Turn v3.2](https://huggingface.co/pipecat-ai/smart-turn-v3) (Pipecat, BSD-2-Clause),
 hears at a pause that you have finished, or after 3 s of silence (below). The jar is
-small; the engine and models (about 150 MB) download once on first start, pinned by SHA-256.
+small; the engine, the models and Vosk's library (about 200 MB) download once on first start,
+pinned by SHA-256, this PC's natives alone.
 
 ## For players: install
 
@@ -23,7 +24,7 @@ Windows, and the same elsewhere:
    (<https://fabricmc.net/use/installer/>). It adds a launcher profile.
 2. Put **Fabric API `0.162.0+26.3`** and **`vfg-client-<version>.jar`** (the server's owner
    sends it) in your `.minecraft/mods/` folder.
-3. Start that profile. The first start downloads about 150 MB in the background;
+3. Start that profile. The first start downloads about 200 MB in the background;
    Voice settings shows the progress.
 4. **Multiplayer → `Voice…`** (top right): the server address exactly as it is in your
    server list, the client token the owner gave you, your microphone. Press `Test mic`,
@@ -63,11 +64,11 @@ in `build.gradle`, through the foojay resolver in `settings.gradle`).
 
 ```sh
 cd client-mod            # from the repo's root
-./gradlew build         # build/libs/vfg-client-<version>.jar, under 1 MB; also runs the tests
+./gradlew build         # build/libs/vfg-client-<version>.jar, about 0.5 MB; also runs the tests
 ./gradlew test          # unit tests: no natives, no internet (the fake-bridge test needs python3)
 ./gradlew engineTest    # the real VAD and all three models; installs ~260 MB into build/vfg-test-assets/ once
 ./gradlew speechTest    # real speech through the mod's pipeline in real time, about 4 min (below)
-./gradlew kwsTest       # the keyword spotter on Kokoro speech: hits, false casts, latency, CPU (below)
+./gradlew kwsTest       # the keyword spotter and Vosk on Kokoro speech: hits, false casts, latency, CPU (below)
 ./gradlew micCheck      # your own mic through the mod's pipeline, no Minecraft (below)
 ./gradlew castCheck     # a WAV as if from the mic, posting casts and lines to a real bridge (below)
 ./gradlew sttCompare    # the models side by side on the same audio: errors, speed, size, memory (below)
@@ -78,7 +79,11 @@ The version is `mod_version` in `gradle.properties`. **Raise it for every build 
 out.** Updating is replacing the jar; the downloaded engine and model stay.
 
 `./gradlew build` fetches `libs/sherpa-onnx-jvm-1.13.8.jar` from the sherpa-onnx
-release once, checks its SHA-256, and copies its classes into the mod jar.
+release once, checks its SHA-256, and copies its classes into the mod jar; and the same for
+`libs/vosk-0.3.45.jar` from Maven Central (`com.alphacephei:vosk`), whose classes alone go into
+the jar: its natives are left out, and the mod downloads this PC's (Downloads, below). Vosk runs on
+JNA, which Minecraft itself ships (5.17.0, on every platform), so JNA is not bundled: a second copy
+would load a second JNA native library into the game.
 
 ### Check your mic: `./gradlew micCheck`
 
@@ -261,45 +266,243 @@ A player's incantations (docs/CONTRACTS.md: the bridge's `GET /v1/incantations` 
 `POST /v1/casts`) are heard by a keyword spotter, a pipeline of its own beside the lines: it never
 waits on a line, and a line never waits on it. It is sherpa-onnx's streaming `KeywordSpotter` over
 icefall's English GigaSpeech keyword model (a 3.3M-parameter zipformer, int8, 17.6 MB once), on
-its own thread, `vfg-kws`, one CPU thread.
+its own thread, `vfg-kws`, one CPU thread. Vosk listens beside it (next section).
 
 - **The list.** While the mod listens, it asks the bridge for the player's incantations, at once
   on joining and then by long poll (`after` the version it has, `wait=25`; `304` is no change).
-  Every phrase and every alias is a keyword; a hit on an alias casts the phrase.
+  Every phrase and alias is a keyword, the first 10 aliases of each (`incantation_spotter_aliases`;
+  the bridge lists up to 24, likeliest first); a hit on an alias casts the phrase. A phrase may be one
+  word: it then casts in any sentence it is said in, and at the start of longer words ("heal" in
+  "healing").
 - **The tokens are made here.** The box sends plain phrases; the mod splits them into the model's
   tokens with the model's own `bpe.model` (`kws/SentencePiece.java`, checked against Python's
   sentencepiece on 45 phrases by `tools/kws_bpe_fixture.py`). That file is a *unigram* model, not
   BPE, despite its name. A keyword with a token the model lacks (a digit) is left out, with a log line.
+- **A wide beam.** The decoder keeps 16 paths alive (`max_active_paths`, the config's
+  `incantation_paths`), where sherpa-onnx's default is 4: a keyword's path survives fast speech.
+  On Kokoro takes of eight phrases at 1, 1.3, 1.6 and 2 times its speed (below), 4 heard 86, 83, 65
+  and 34%, 16 heard 95, 93, 84 and 58%, at no more CPU.
 - **Only while someone speaks.** The capture thread hands every 32 ms window to `vfg-kws` by a
-  non-blocking offer (a full 2 s queue drops it). A stream opens when the VAD hears speech, fed the
-  last 0.64 s first, and closes 0.32 s after the VAD stops hearing it. Silence costs nothing, and no
-  stream sits in the 1.5 s of silence after which sherpa-onnx resets it itself and drops the start
-  of a keyword said just then (its issue #3990: 9 of 42 missed one way, none this way).
+  non-blocking offer (a full 2 s queue drops it). The spotter has a VAD of its own, a second Silero
+  on the same file and threshold, which ends speech after 0.15 s of silence where the lines' VAD waits
+  0.35 s (a median 0.22 s after a sentence's sound, against 0.41 s), for about 70 µs a window, 0.2% of
+  a core. It runs once a window on the capture thread, for the spotter and Vosk both, and each gets
+  its answer with the window (`kws/SpeechTap.java`); only while one of them listens. Nothing is
+  decoded in silence.
+- **The re-check casts a phrase as it ends.** While the player speaks, and until 0.15 s of silence
+  after, `vfg-kws` handles every window waiting and then checks the newest audio again, back to back:
+  a fresh, throwaway stream is fed the player's last 3 s (`incantation_recheck_seconds`) and then
+  0.5 s of zeros, which stand for "the player stops right now", so the model decodes the end of what
+  was said without waiting for audio not yet spoken; its first hit casts. On Jesse's laptop one takes
+  a median 12 ms on one thread, 40 ms at the 90th percentile (a whole 3 s of speech about 45 ms), so
+  one runs after nearly every 32 ms window and keeps about half a core busy while the player talks;
+  a slower PC re-checks less often rather than falling behind. It keeps at most 0.32 s of the silence before speech, and none of a silence a second long:
+  a stream resets itself after 1.5 s of blanks and drops the start of a keyword said just then
+  (sherpa-onnx issue #3990). Kept whole, the silence made casts 0.1 s later and re-checks nearly
+  twice as dear, for the same hits.
+- **The live stream stays, as a backup.** It never skips audio when the PC is too busy to re-check.
+  It opens when speech starts, fed the last 0.64 s first; when speech ends it is pushed 0.5 s of
+  zeros, so its last 320 ms chunk decodes at once, and closed. No stream sits in the 1.5 s of silence
+  of issue #3990 (9 of 42 missed one way, none this way).
+- **A phrase that starts a longer one waits for it.** A keyword whose tokens start another's ("fire"
+  beside "fire ball", or beside the alias "fireball") would end the longer one: a re-check's zeros, or
+  the gap between the words, finish it first. So the re-checks leave it out while speech goes on, and
+  one more with every keyword runs when speech ends; a hit on it from either way is held. A cast whose
+  sound starts before the held one's end drops it; if none comes within 0.5 s (Microsoft's speech
+  engine waits as long after a phrase that can start another), or speech ends first, it casts then.
+  With `incantation_recheck_seconds: 0` the live stream alone hears "fire" first, and "fire ball" is
+  lost.
+- **One saying casts once.** Neither way hears audio from before the end of the last cast: a re-check
+  never reaches back past it, and a re-check's cast closes the live stream, which reopens from after
+  it. Whichever way hears a phrase first casts it; the bridge's duplicate check stays behind both.
+  The last cast is the player's last, Vosk's too (next section).
 - **A cast** is posted on a thread of its own with a fresh `client_cast_id`, the phrase, the keyword
   heard, and when it was said on the same audio clock a line's `started_at` uses. A failure is tried
   again for at most 2 s after the hit, then dropped: a late spell is worse than none. `404` (no such
-  incantation) and `503` (no kit on the box) are final. One log line per cast, never with audio:
-  `cast "fire ball" (heard "fireball"): fired as command_2, answered 0.40 s after the phrase`.
-- **Measured** (`./gradlew kwsTest`, Kokoro TTS, 2026-10-10): "fire ball" said alone heard 10 of 11
-  voices, inside a sentence 12 of 12; "kamehameha" 0 of 11 as Kokoro reads the spelling, 4 of 11 said
-  syllable by syllable (through its alias "kami hami ha"); no false casts in 16 ordinary requests or
-  6 near misses ("Throw the ball into the fire."); heard a median 0.46 s after the end of the phrase
-  on the audio clock; about 1.6% of one core while it decodes, nothing in silence.
+  incantation) and `503` (no kit on the box) are final. One log line per cast, never with audio, with
+  which way heard it:
+  `cast "fire ball" (heard "fireball" by the re-check): fired as command_2, answered 0.30 s after the
+  phrase, 0.24 s after the hit`. "After the phrase" counts from the cast's `ended_at`, as the log did
+  before the re-check, so read the in-game bar (Prototype_Fast_Casts: a median at most 0.35 s, against
+  0.65 s on 2026-10-11) from it: it compares with the old logs, and for a re-check's cast it is an
+  overestimate, since a re-check usually hears the phrase before its last sound is over and then
+  ends it at the newest sample (a median 0.18 s early on Kokoro). "After the hit" is the trip to the
+  box and back alone.
+- **Measured** (`./gradlew kwsTest`, Kokoro TTS, 2026-10-11, with `max_active_paths` 4 and no Vosk; the
+  live stream alone in brackets): seven
+  two-word phrases ("fire ball", "ice wall", "lightning strike", "summon wolves", "rocket jump",
+  "healing light", "meteor storm") said alone and ending a sentence heard 229 of 231 (217), a median
+  0.12 s *before* the end of the phrase's sound and 0.06 s after it at the 90th percentile, compute
+  included (0.22 and 0.24 s after; 0.46 s before the stream had its push); over every take a phrase
+  ends, −0.14 and +0.05 s. "Fire ball" inside a sentence 12 of 12 (12), after a pause 42 of 42 (42),
+  after 0–12 s of nonstop talk 16 of 16 (14); "kamehameha" 0 of 11 as Kokoro reads the spelling, 9 of
+  11 said syllable by syllable, through its alias "kami hami ha" (8); no false casts in 16 ordinary
+  requests or 6 near misses ("Throw the ball into the fire."); no saying cast twice. A phrase starting
+  a longer word casts: "fire balloon", "ice walls", "fire ballad", 33 of 33 (31). One word: "fireball"
+  22 of 22 alone and ending a sentence (18), "heal" 17 (8), "shield" 21 (22); "a shield for the fight"
+  and "healing potions" cast 11 of 11. With "fire" and "fire ball" both bound, "fire ball" alone and
+  in sentences cast "fire ball" 23 of 23 and "fire" never (5 of 23, "fire" 17 times), and "Fire!"
+  cast "fire" 8 of 11, 0.23 s after it (3). About half a core while someone speaks, 51% (3%),
+  nothing in silence; a re-check takes a median 12 ms here, 37 ms at the 90th percentile. Casting
+  before the last sound is over, a cast's `ended_at` is the newest sample, a median 0.18 s before the
+  sound ends; its `started_at` is within 0.05 s.
 
-### Check the spotter: `./gradlew kwsTest`
+## Incantations: Vosk beside the spotter
 
-The keyword model installed through the mod's installer, Kokoro takes (kept with the speech
-test's), the mod's VAD and its `SpotterWorker`, fed 32 ms at a time faster than real time: the
-cases above, the after-a-pause case both ways, the latency and the CPU, in about 15 s once the takes
-are made. It checks what is certain ("fire ball" said alone is heard) and reports the rest, in
-`build/kws-test/report.txt`. `-Pkws-sweep` adds a table over thresholds, boosts and trailing blanks
-(about 3 min).
+Vosk 0.3.45 (Alpha Cephei's speech recognizer, Kaldi inside) listens for the same incantations as
+the spotter, on a thread of its own, `vfg-vosk`, over its small US English model
+(`vosk-model-small-en-us-0.15`, 41 MB once). The spotter matches sound against a few token
+sequences and loses them in fast speech; Vosk decodes words and keeps them. Whichever hears a
+saying first casts it, once. `vosk: false` turns it off.
+
+- **Its grammar** is the player's phrases, about 5,100 common English words, and `[unk]`, one JSON
+  list (`kws/VoskGrammar.java`), rebuilt with every new list. The phrases only, normalised as the
+  spotter's keywords are: the aliases are the spotter's mishearings, and Vosk hears the phrase
+  without them. The common words give ordinary speech somewhere else to go: with the phrases alone
+  Vosk heard one in nearly anything (272 false casts an hour of real speech), with 3,000 common
+  words 13.8, with 5,000 7.6 (the 2026-10-12 research). None is a word of a bound phrase. A phrase
+  with a word Vosk does not know ("galick gun", "rasengan") is left out and left to the spotter, with
+  one log line per phrase: `vosk: "galick gun" left out, as Vosk does not know galick; the keyword
+  spotter alone listens for it`. Vosk knows the 152,217 words of the model's own language model,
+  read from the head of its `graph/Gr.fst` (`kws/VoskVocabulary.java`): the same list, number for
+  number, that Vosk's `vosk_model_find_word` answers from.
+- **Its audio** is what the spotter hears while someone speaks: the capture thread offers it every
+  window too (a 2 s queue of its own), with the spotter's VAD's answer (above), so the two hear
+  speech start and end on the same window. When speech starts it is fed up to the last second it has not
+  had (it hears the first word better with more before it: at twice Kokoro's speed 79% with 1 s, 75%
+  with 0.64 s, 72% with 0.32 s); when speech ends, 0.3 s of zeros, so it decodes the last words at
+  once, and then 1 s more of the real audio: its decoder runs about half a second behind, and fast
+  speech's last word often shows only then; its own endpointing then ends the utterance at the pause.
+  Nothing more is fed in a longer silence. Audio that does not follow on (a new capture, windows
+  dropped from a full queue) resets the recognizer, which keeps its grammar and goes on counting its
+  times over every sample it was fed, as the worker does.
+- **It casts from its partial text**, read after every window: a phrase there as whole words
+  (`kws/PhraseMatcher.java`; "fire ball" is not in "fire balloon"), each saying once however the
+  text is revised, a phrase said twice ("fireball fireball") twice, and the longest phrase at the same
+  words ("hot fireball", not "fireball" in it), as soon as a partial shows it. A partial can show a
+  phrase's words together for a moment and take them back ("Throw the ball into the fire." flickered
+  "fire ball" in `kwsTest`); with `vosk_confirm` a saying casts only once it holds: when the next
+  partial that differs still shows it, when speech ends with it shown, or in the utterance's final
+  result, and one that does not hold is dropped (and is new if it shows again). It is off: on the
+  takes below it made a cast Vosk heard first a median 0.26 s later (−0.02 to +0.24 s after the
+  phrase, the 90th percentile +0.22 to +0.28 s), and lost 3 points of the phrases said at twice
+  Kokoro's speed (Vosk takes back real sayings too), to save 2 of Vosk's 4 false casts in the 39 min
+  of real speech. A saying that shows only in an utterance's final result is cast too, with its
+  words' times, unless that is more than 1 s after it ended.
+- **The window is estimated.** A partial has no times; it shows a phrase a median 0.63 s after its
+  first word starts (0.78 s at the 90th percentile) and 0.02 s after it ends. So a Vosk cast's
+  `started_at` is 0.8 s of Vosk's audio before the newest sample it had and its `ended_at` 0.15 s
+  before it: it covers the phrase nine times in ten, and ends about where it does, early more often
+  than late, as a re-check's cast does. Ending at the newest sample instead, it ran into a phrase said
+  right after, which the spotter then could not hear (below). A saying found only in a final result
+  has its words' own times.
+- **One saying, one cast** (`kws/CastGate.java`). Each engine claims a cast in a gate the two share
+  before posting it. A claim of the same incantation that overlaps by at least half the shorter
+  window one the other engine claimed (Vosk's widened by 0.3 s each side, the bridge's own slack, as
+  its times are estimates) is that saying again, and is not posted; each claim stands for one saying
+  of the other's, so "fireball fireball" said fast stays two. Another incantation over the
+  same audio is a cast of its own, as it is for the bridge ("hot fireball" by Vosk where the spotter
+  heard "fireball"), but one whose words are inside a longer phrase the other engine cast over that
+  audio is that saying again ("fireball" in the tail of Vosk's "hot fireball"). The spotter's rule holds across both: its re-checks never reach back past the
+  end of the player's last cast, Vosk's included, and a Vosk cast closes the live stream, which
+  reopens from after it; a held hit inside a longer phrase Vosk cast ("fire", "fire ball") is
+  dropped. For a Vosk cast that end is 0.3 s before its estimated one: one time in ten the estimate
+  is up to 0.27 s late, and would run into a phrase said right after ("ice beam fireball"), which the
+  spotter could then not hear; the tail of Vosk's saying it may hear again is refused as the same
+  saying. The bridge's duplicate check stays behind it all. A cast's log line says `by vosk`:
+  `cast "ice beam" (heard "ice beam" by vosk): fired as command_2, answered 0.31 s after the phrase,
+  0.24 s after the hit`. `heard` is the phrase itself.
+- **Setup.** Vosk's library for this PC and its model download and load on `vfg-kws-setup` after
+  the spotter's, into `<game folder>/vfg/natives/vosk-0.3.45-<platform>/` and
+  `<game folder>/vfg/models/vosk/`. The platform is the one the speech engine's natives are chosen
+  by (`Assets.platform`: `os.name` and `os.arch` to `win-x64`, `linux-x64`, `osx-x64` or
+  `osx-aarch64`; any other runs no voice at all). JNA (Minecraft's) is told to look in that folder
+  first, under both names Vosk's Java API asks for (`vosk`, and `libvosk` on Windows), so it loads
+  the file in place, and on Windows finds the MinGW runtime beside it; nothing is copied to the
+  temporary folder. If the library or the model will not download or load, the log says so once
+  (`vosk not installed (…)` or `vosk failed to load (…)`; incantations are heard by the keyword
+  spotter alone) and the spotter listens alone.
+- **Cost.** About 0.05 of a core while someone speaks on and on (39 min of real speech; 0.09 to 0.13
+  over short Kokoro takes, whose second of pre-roll and second of tail it decodes too), against the
+  spotter's 0.47 to 0.54 (`kwsTest`, two runs); nothing in a long silence. The model takes about 130 MB of memory and loads in
+  0.6 s; a grammar of 5,100 words builds, and its recognizer starts, in about 0.1 s.
+
+**Measured** (2026-10-12; the research's Kokoro takes: eight phrases, said alone, in sentences and
+twice, in five voices at 1, 1.3, 1.6 and 2 times Kokoro's speed, 940 takes; and 39 min of real
+people's speech, 256 clips of Pipecat's Smart Turn test set, for false casts; the mod's own
+`SpotterWorker` and `VoskWorker` played on the audio clock as `kwsTest` plays them). The aliases are
+the box's: 20 from the alias call and the code's joined and split forms, its everyday ones left out
+(about 19 a phrase), of which the spotter keeps the first 10:
+
+| | x1.0 | x1.3 | x1.6 | x2.0 | false casts an hour | after the phrase, median / 90th |
+|---|---|---|---|---|---|---|
+| the spotter, `max_active_paths` 4 (0.3.3), ~7 aliases | 86% | 83% | 65% | 34% | 15.3 | +0.05 / +0.33 s |
+| the spotter, 16, ~7 aliases | 95% | 93% | 84% | 58% | 19.9 | −0.04 / +0.25 s |
+| Vosk alone | 95% | 95% | 88% | 74% | 6.1 | +0.02 / +0.21 s |
+| **the mod: the spotter (16, 10 aliases) and Vosk** | **98%** | **97%** | **94%** | **78%** | **21.4** | **−0.05 / +0.20 s** |
+| the research's estimate | 99% | 98% | 95% | 82% | ~24 | −0.05 / +0.24 s |
+
+How many aliases the spotter keeps (`incantation_spotter_aliases`), with Vosk and alone:
+
+| first N aliases | with Vosk: x1.0 / x2.0 | false casts an hour | the spotter alone: x1.0 / x2.0 |
+|---|---|---|---|
+| 6 | 98 / 78% | 22.9 | 95 / 57% |
+| **10** | **98 / 78%** | **21.4** | **98 / 57%** |
+| 20 | 98 / 78% | 26.0 | — |
+| all (~19) | 98 / 78% | 26.0 | 98 / 59% |
+
+With Vosk the hits hardly move; past 10 the aliases add false casts ("ice been", "is beam", "bleed
+dash" on real speech: 5 in 39 min against 2). Alone, 6 cost the spotter 3 points at normal speed,
+and all of them won it 2 at twice the speed, within the noise. Two-word phrases at 2 times its speed 79%, one-word 73% (the spotter alone 58
+and 58%). The gap to the research's estimate is Vosk's: the research ran Vosk on its own 16 kHz
+timeline and added its casts to the spotter's afterwards; on the mod's audio Vosk alone hears 74% at
+2 times, against 77% there, and adding the two engines' casts afterwards on the same audio gives 98,
+98, 94 and 78%: the one-cast rules cost at most a point at run time (the "twice" takes lose most:
+Vosk's windows are estimates, so where the spotter heard one saying and Vosk the other, the gate
+sometimes takes them for one). The false casts on real speech, 14 in 39 min: the spotter's 10 ("fire"
+8 times, by the live stream) and Vosk's 4. The takes (16 kHz) are brought to 48 kHz and back through
+the mod's resampler, as `kwsTest` plays them; Vosk heard the same takes better on the research's plain
+16 kHz timeline (79% at 2 times), so a real 48 kHz mic may do better than this.
+
+### The filler words
+
+`src/main/resources/com/voiceforgaming/vfg/kws/vosk-fillers.txt` is made by `tools/vosk_fillers.py`
+(`uv run --with vosk tools/vosk_fillers.py --model <the unpacked model>`): the 5,000 commonest words
+of Mozilla Common Voice's English sentences, `sentence-collector.txt` and `wiki.en.txt` from
+github.com/common-voice/common-voice at a pinned commit, checked by SHA-256 (CC0-1.0, public domain),
+that Vosk knows, each file counting as much as the other; then 105 words of everyday speech and
+Minecraft written sentences seldom hold ("yeah", "gonna", "i'm", "creeper"), picked by hand for the
+mod. It ships under the repo's MIT license. The research's list came from wordfreq, whose data is
+CC BY-SA 4.0; this one does as well on the same measures: 4 false casts in the 39 min of real speech
+(wordfreq's 5), and the same hits on the takes.
+
+### Check the spotter and Vosk: `./gradlew kwsTest`
+
+The keyword model and Vosk's installed through the mod's installer, Kokoro takes (kept with the
+speech test's), the spotter's VAD and its `SpotterWorker`, and Vosk's `VoskWorker` with a VAD of its
+own, sharing a `CastGate`, fed 32 ms at a time faster than real time, with `vfg-kws` played on the
+same clock: a turn of it (every window waiting, then a re-check) starts when the thread is free and
+lasts as long as it took, so a window that comes during a re-check waits, and a cast counts as heard
+when its turn got that far, its compute included; `vfg-vosk` is played the same way, as a thread of
+its own. Every case runs three ways, the mod's (re-checks over 3 s, the live stream and Vosk), the
+spotter alone (`vosk: false`) and the live stream alone with its push
+(`incantation_recheck_seconds: 0`): phrases alone and ending a sentence, inside sentences, the
+after-a-pause case, ordinary sentences and near misses, phrases that start longer words ("fire
+balloon"), a spell after 0–12 s of nonstop talk, one-word phrases, the two-word phrases at 1.6 and 2
+times Kokoro's speed, Vosk's vocabulary and grammar, the spotter's VAD, latency and CPU, in about
+20 min once the takes are made. It checks what is certain on the mod's way (Prototype_Fast_Casts: a
+median at most 0.1 s and a 90th percentile at most 0.2 s after the phrase ends; "fire ball" heard as
+often as before, alone and inside sentences; no false casts in the ordinary requests, nor any by the
+spotter alone in the near misses; no saying cast twice) and reports the rest, in
+`build/kws-test/report.txt`. `-Pkws-sweep` adds a table over thresholds, boosts and trailing
+blanks on the stream alone (about 3 min); `-Pkws-lead` how much silence a re-check keeps, and 3 s
+against 1.2 s.
 
 ### End to end: `./gradlew castCheck`
 
-Plays a WAV, or Kokoro saying `--say` texts, through the mod's own pipeline and spotter as if from
-the mic, posts casts and lines to a real bridge, and prints for each when it was said (on the audio
-clock, as UTC and as seconds into the WAV), heard, posted and answered. The WAV plays through the
+Plays a WAV, or Kokoro saying `--say` texts, through the mod's own pipeline, spotter and Vosk as if
+from the mic, posts casts and lines to a real bridge, and prints for each when it was said (on the
+audio clock, as UTC and as seconds into the WAV), heard (and by which engine), posted and answered. The WAV plays through the
 speech test's stand-in sound card, which delivers samples as the wall clock runs, and the capture
 thread stamps each read as it does a mic's, so the audio clock maps to the wall clock as a mic's
 does: sample `i` is at about the moment the device opened plus `i / rate`.
@@ -311,7 +514,10 @@ VFG_CLIENT_TOKEN=test python3 tools/fake_bridge.py --port 8787 --incantation "fi
 ```
 
 It listens for the player's incantations as the bridge lists them; `--incantation "p=a,b"` adds
-some for a bridge that lists none. `--threshold` and `--boost` are the config's; `--help` lists all.
+some for a bridge that lists none. `--threshold`, `--boost`, `--recheck` (seconds, 0 for the stream
+alone) and `--paths` are the config's, and `--no-vosk` leaves the spotter alone; `--help` lists all.
+Each cast says which way heard it (`by the re-check`, `by the stream`, `by vosk`), and its answer how
+long after the phrase's end it came, as the mod's log does.
 
 ## Configuration
 
@@ -322,7 +528,9 @@ some for a bridge that lists none. `--threshold` and `--boost` are the config's;
   "model": "parakeet-110m-en", "icon_corner": "top_left", "muted": false,
   "turn_model": "smart-turn-v3.2", "turn_threshold": null, "silence_seconds": 3,
   "vad_threshold": 0.5, "stt_threads": 2, "log_text": false,
-  "incantations": true, "incantation_threshold": 0.25, "incantation_boost": 1.5 }
+  "incantations": true, "incantation_threshold": 0.25, "incantation_boost": 1.5,
+  "incantation_recheck_seconds": 3, "incantation_paths": 16, "incantation_spotter_aliases": 10,
+  "vosk": true, "vosk_confirm": false }
 ```
 
 - `client_token` is `VFG_CLIENT_TOKEN`. It lives only in this file, is shown masked, and
@@ -345,19 +553,35 @@ some for a bridge that lists none. `--threshold` and `--boost` are the config's;
   (0.05–0.95, default 0.25: the mean probability of a keyword's tokens at which it fires) and
   `incantation_boost` (0.5–5, default 1.5: the score added per token of a keyword). Lower threshold
   and higher boost hear more and cast more by mistake; on Kokoro speech 0.1 to 0.25 heard the same,
-  and a boost of 3 heard less.
+  and a boost of 3 heard less. `incantation_recheck_seconds` (1–10, or 0; default 3) is how far back
+  the re-check reaches: further costs more CPU per re-check (about 14 ms a second of audio), and 0
+  turns re-checks off, leaving the live stream with its push at the end of speech: a cast about 0.23 s
+  after the phrase instead of as it ends, at 3% of a core while someone speaks instead of about half;
+  the fallback if the re-checks cost frame rate. `incantation_paths` (1–64, a whole number, default 16)
+  is the spotter's beam, sherpa-onnx's `max_active_paths` (its own default is 4), read when the
+  keyword model loads, at start: wider hears fast speech far more often (above).
+  `incantation_spotter_aliases` (0–24, a whole number, default 10) is how many of each
+  incantation's aliases, the first, the spotter listens for: the bridge lists up to 24, likeliest
+  first, and every alias is a keyword, so more hear more mishearings and cast more by mistake
+  (below). Vosk listens for the phrases alone.
+- File only, Vosk: `vosk` (on by default, with `incantations`; off, Vosk's model and library are never
+  downloaded and the spotter listens alone) and `vosk_confirm` (off: a saying Vosk hears casts as
+  soon as a partial shows it; on, once it holds, above). All three keys are in the config line the
+  log starts with.
 - A file with no `turn_model` key was written before the turn model: when it is read, a
   `silence_seconds` of 5 becomes 3 (any other value stays) and the file is written back once.
 - A file that does not parse is renamed `vfg-client.json.bad` and the defaults are used.
 
-The engine and models live in `<game folder>/vfg/` (about 190 MB unpacked for Parakeet, Smart
-Turn and the keyword model; each other model chosen adds its own folder). The log is
+The engine and models live in `<game folder>/vfg/` (about 285 MB unpacked on Linux for Parakeet,
+Smart Turn, the keyword model and Vosk's model and library; each other model chosen adds its own
+folder). The log is
 the game's `logs/latest.log`, logger `vfg`.
 
 ## Downloads
 
 Each checked by SHA-256 as it streams. Only this PC's natives, the VAD, the chosen speech
-model, the chosen turn model and the keyword model (unless `incantations` is off) are fetched. From
+model, the chosen turn model, the keyword model (unless `incantations` is off) and Vosk's model and
+this PC's Vosk library (unless `vosk` or `incantations` is off) are fetched. From
 `https://github.com/k2-fsa/sherpa-onnx/releases/download/`:
 
 | File | Bytes | SHA-256 |
@@ -387,6 +611,26 @@ The turn models, from Hugging Face at pinned revisions, into
 | `soniqo/Smart-Turn-v3.2-ONNX/resolve/b48fdbe20772bcec1fef02f4a1a355236ef6359e/smart-turn-v3.2-int8.onnx` (default) | 11123370 | `00cd131551e8d1e9011f31345edb632a26116dd83e159782c4ddff610718ea31` |
 | `p99lab/turn-1-mini/resolve/076c86d1744a231d3a4cce31f3bbbd1211b4c281/onnx/turn-1-mini.step.int8dyn.onnx` | 7000932 | `a59a5b627190e7bf52a46dd25026ec8d4d0b01e1b0146643bb39161808c0619e` |
 
+Vosk's model, Alpha Cephei's small US English one (Apache-2.0), from its official address, into
+`<game folder>/vfg/models/vosk/vosk-model-small-en-us-0.15/` (71 MB unpacked, the zip's 14 files):
+
+| File | Bytes | SHA-256 |
+|---|---|---|
+| `https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip` | 41205931 | `30f26242c4eb449f948e42cb302dd7a686cb29a3423a8367f99ff41780942498` |
+
+Vosk's library for this PC alone, into `<game folder>/vfg/natives/vosk-0.3.45-<platform>/`: Windows
+x64 and Linux x64 from Vosk's GitHub release, keeping `libvosk.dll` and its MinGW runtime
+(`libstdc++-6.dll`, `libgcc_s_seh-1.dll`, `libwinpthread-1.dll`; 54 MB unpacked) or `libvosk.so`
+(26 MB); macOS, Intel or Apple silicon, from the Vosk jar on Maven Central, the only place 0.3.45's
+macOS library is published, keeping `darwin/libvosk.dylib` (one file for both, 12.5 MB). They are
+byte for byte the files the Maven jar carries:
+
+| Platform | File | Bytes | SHA-256 |
+|---|---|---|---|
+| `win-x64` | `https://github.com/alphacep/vosk-api/releases/download/v0.3.45/vosk-win64-0.3.45.zip` | 14882445 | `f1dcc9cca460630f81ea8f71794f69c80bed6556d2a4e6237b5785e1d2dff34b` |
+| `linux-x64` | `https://github.com/alphacep/vosk-api/releases/download/v0.3.45/vosk-linux-x86_64-0.3.45.zip` | 7185065 | `bbdc8ed85c43979f6443142889770ea95cbfbc56cffb5c5dcd73afa875c5fbb2` |
+| `osx-x64`, `osx-aarch64` | `https://repo1.maven.org/maven2/com/alphacephei/vosk/0.3.45/vosk-0.3.45.jar` | 25861916 | `9e38e96e4448a41d889bb254b2f8424945554945c6e77e1cd97a3d8633fac2ba` |
+
 ## Notes
 
 - Singleplayer and LAN worlds never listen.
@@ -398,11 +642,19 @@ The turn models, from Hugging Face at pinned revisions, into
   `~/.var/app/com.mojang.Minecraft/`, and the mic comes through its PulseAudio socket.
 - `started_at` uses the PC's clock; a clock that is far off misorders that player's lines
   on the server.
-- macOS is not tested; its natives download the same way and may simply work.
+- macOS is not tested; its natives download the same way and may simply work. Vosk's library
+  was loaded from its folder, through the built jar, on Linux only; Windows and macOS are untested.
 - The model is NVIDIA's Parakeet TDT 110M (from `nvidia/parakeet-tdt_ctc-110m`), CC-BY-4.0,
   converted by sherpa-onnx; Moonshine is MIT, Silero VAD MIT, sherpa-onnx Apache-2.0. Smart
   Turn is BSD-2-Clause (Daily) and turn-1-mini Apache-2.0 (p99lab); the jar carries their
-  `LICENSE-*.txt` and `NOTICE-turn-1-mini.txt`.
+  `LICENSE-*.txt` and `NOTICE-turn-1-mini.txt`. Vosk (`com.alphacephei:vosk` 0.3.45, its Java API
+  in the jar and its downloaded library) is Apache-2.0, `LICENSE-vosk.txt`; its Windows download
+  includes MinGW's runtime (`libstdc++-6.dll` and `libgcc_s_seh-1.dll`, GPL-3.0 with the GCC Runtime
+  Library Exception, and `libwinpthread-1.dll`, MIT-style), as Vosk ships it. Vosk's model is Apache-2.0 (Alpha Cephei).
+- Vosk's filler words, `src/main/resources/com/voiceforgaming/vfg/kws/vosk-fillers.txt`, are made
+  by `tools/vosk_fillers.py` (below) from Mozilla Common Voice's English sentence lists, which are
+  CC0-1.0, and a short list of everyday and Minecraft words written for the mod; the file ships
+  under the repo's MIT license.
 - Moonshine returns no text for a clip of about 9.3 s or more, so the VAD ends a segment
   after 7 s of unbroken speech (at the quietest point after it; segments run to about 8 s),
   and the engine decodes anything longer than 9 s in pieces. A pause shorter than the
@@ -412,10 +664,11 @@ The turn models, from Hugging Face at pinned revisions, into
 
 ```text
 build.gradle  settings.gradle  gradle.properties  gradlew  gradlew.bat  gradle/wrapper/
-libs/                               the fetched sherpa-onnx-jvm jar (gitignored)
+libs/                               the fetched sherpa-onnx-jvm and vosk jars (gitignored)
 tools/fake_bridge.py                stand-in bridge, Python 3 stdlib
 tools/turn_data.py                  turnCompare's public set, from Pipecat's test shard (run through uv)
 tools/kws_bpe_fixture.py            the keyword tokens' fixture, from Python's sentencepiece (run through uv)
+tools/vosk_fillers.py               Vosk's filler words, from Common Voice's sentences (run through uv)
 reports/turn-compare.md             turnCompare's report, as last run
 src/main/java/com/voiceforgaming/vfg/
   VfgClient.java                    entrypoint; Fabric events, keys, HUD, the Voice… button
@@ -441,9 +694,18 @@ src/main/java/com/voiceforgaming/vfg/
   net/BridgeClient.java             the sender, retries, delivery status, connection test
   net/CastPayload.java  net/CastClient.java   the incantation invoke's body, and its sender (2 s, then dropped)
   net/IncantationClient.java        the player's incantations, by long poll
-  kws/SpotterWorker.java            the vfg-kws thread: windows in, streams while speech, casts out
-  kws/Spotter.java                  sherpa-onnx's KeywordSpotter (the only sherpa-onnx code of the spotter)
+  kws/SpotterWorker.java            the vfg-kws thread: windows in, re-checks and the live stream while speech, casts out
+  kws/Spotter.java                  sherpa-onnx's KeywordSpotter and the spotter's VAD (its only sherpa-onnx code)
+  kws/SpotterVad.java               the spotter's own VAD, which ends speech after 0.15 s of silence
   kws/Keywords.java  kws/SentencePiece.java   phrases and aliases to the model's tokens and keyword string
+  kws/VoskWorker.java               the vfg-vosk thread: speech windows in, Vosk's partial text read, casts out
+  kws/Vosk.java                     Vosk's model and recognizers (its only Vosk code)
+  kws/VoskGrammar.java              the phrases, the filler words and [unk] as Vosk's grammar
+  kws/VoskVocabulary.java           the words a Vosk model knows, from its graph/Gr.fst
+  kws/PhraseMatcher.java            phrases in Vosk's words: whole words, each saying once
+  kws/CastGate.java                 one saying, one cast, across the spotter and Vosk
+  kws/SpeechTap.java                the capture thread's tap: one VAD says for both when someone speaks
+src/main/resources/com/voiceforgaming/vfg/kws/vosk-fillers.txt   Vosk's filler words
   session/ServerAddressMatch.java   normalising and comparing addresses
   session/SessionGate.java          whether to listen, and the chat notices
   session/StatusBoard.java          the one status snapshot the HUD and screen read

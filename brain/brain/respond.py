@@ -1,8 +1,8 @@
 """Respond, the brain's cheap mode: a line Jev classes conversational gets one structured() call
 on a cheap model (DeepSeek V4 Flash, reasoning off: config.py) over the same context, which keeps
 up the personality and the banter and replies. It can do one other thing: hand the line up to
-the brain, which runs the same line on GPT-6.1 Sol. It never acts on the game, so it never
-promises or offers anything there.
+the brain, whose loop runs the same line, in the same turn (Prototype_Brain_Loop). It never acts on
+the game, so it never promises or offers anything there.
 
 It answers talk, and a rule or a preference about the future only, which holds because the brain
 reads the same conversation. It hands up anything that asks for something now, a change to what
@@ -59,6 +59,9 @@ _START = r"(?:^|[.!?,;:—–]\s*|\s-\s+)"    # the start of the reply or of a c
 # What an -ing verb is done to, for it to read as the AI doing something: "spawning some cows",
 # "getting you a sword", never "doing great", "getting hungry" or "making no promises".
 _OBJECT = r"(?:you|your|it|that|them|those|one|some|a|an|the)\b"
+# A yes to the ask, then what is being done: "Got it, making sure it explodes", "Sure, adding a moat".
+_ACK = (r"(?:got it|gotcha|sure|sure thing|ok|okay|alright|all right|yep|yeah|yes|aye|you got it|no problem|"
+        r"will do|understood|roger)")
 # The AI's own talk, which it may promise (a rule for later is Respond's to acknowledge):
 # "I'll keep quiet", "I'll stop talking", "I'll turn the chatter down", "I'll change my style".
 _OWN_TALK = r"(?! (?:quiet|talking|chatting|(?:the )?chatter|my |it (?:short|brief|down|clean|quiet)))"
@@ -71,7 +74,7 @@ OFFERS = tuple(re.compile(p) for p in (
     rf"\bi can (?!get (?:why|how|what)\b){_DO}", rf"\bi could {_DO} (you|one|it|that|them|those|some|a|an|the|your)\b",
     rf"\bi (might|may|could) be able to {_DO}", rf"\bhappy to {_DO}",
     rf"\blet me (?!put it this way|get this straight|turn that around){_DO}",
-    r"\b(has|have|got) your name on it\b", r"\bwhenever you want it\b"))
+    r"\b(has|have|got) your name on it\b(?! next)", r"\bwhenever you want it\b"))  # "…on it next": a threat
 PROMISES = tuple(re.compile(p) for p in (
     rf"\b{_I_WILL} (?:(?:just|also|go|be|now|then|quickly|happily|gladly|personally|totally|definitely) )*"
     rf"(?:{_DO}|take care of|see (it|to it|that)|call out|point you|ping you|announce){_OWN_TALK}",
@@ -81,7 +84,11 @@ PROMISES = tuple(re.compile(p) for p in (
     rf"alright|right) +)(?:already |right )?on it\b",
     rf"{_START}(?:will do|consider it done|leave it to me)\b", rf"{_START}(?:all )?done(?=\s*(?:[.!,]|$))",
     r"(?<!not )\bright away\b(?!\s*\?)",
-    r"\b(i'll|i will|i've got|i got) (watch )?your back\b", r"\bgive me a (sec|second|minute|moment)\b"))
+    r"\b(i'll|i will|i've got|i got) (watch )?your back\b", r"\bgive me a (sec|second|minute|moment)\b",
+    rf"{_START}{_ACK}\W+{_ING} (?:sure\b|{_OBJECT})",
+    # work to come, promised for later: "we can look into smaller models", "I'll dig into it"
+    r"\b(?:i|we)(?:'ll| will| can| could|'re going to| are going to|'re gonna| are gonna)(?: \w+)? "
+    r"(?:look into|dig into)\b"))
 # Work under way: a status when the line's speaker has a task open, a promise when not.
 UNDER_WAY = tuple(re.compile(p) for p in (
     r"(?<!night's )(?<!day's )(?<!dawn's )(?<!morning's )(?<!sun's )\bcoming (right )?(up|at (ya|you))\b",
@@ -93,16 +100,18 @@ UNDER_WAY = tuple(re.compile(p) for p in (
 OPEN_TASK = re.compile(r"^- \S+ for (\S+), (since \d\d:\d\d:\d\d, )?(open|an implementer is on it): ", re.M)
 
 
-def promises(reply: str, tasks: str = "", who: str = "") -> str:
+def promises(reply: str, tasks: str = "", who: str = "", *, offers: bool = True) -> str:
     """"an offer" or "a promise" when the reply has one, else "". Respond cannot act on the game, so a
     reply that offers or promises something there is never said: the line goes up instead
     (Prototype_Jev_Routing, Respond's point 1). The prompt says so, and still about one reply in 20
     on 2026-10-08 did (integration/replay/respond_bench.md, "The guard"). Saying that work under way
     is coming is a status when the tasks text (`tasks`) has a task open for the line's speaker
     (`who`), and a promise when it has none for them. A rule acknowledged with an action verb
-    ("I'll turn the chatter down") is handed up too: the brain then acknowledges it, a second later."""
+    ("I'll turn the chatter down") is handed up too: the brain then acknowledges it, a second later.
+    With `offers` False, a promise alone: the brain's check of a reply that starts nothing
+    (call.step_type), for which an offer is a question it may ask."""
     text = " ".join(reply.lower().replace("\u2019", "'").split())
-    if any(p.search(text) for p in OFFERS):
+    if offers and any(p.search(text) for p in OFFERS):
         return "an offer"
     if any(p.search(text) for p in PROMISES):
         return "a promise"

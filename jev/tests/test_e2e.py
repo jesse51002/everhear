@@ -1,20 +1,25 @@
-"""`jev_filter.py` itself: once as a process, against the stand-in for Jev's API, a
-temporary database and the stand-in feed writer; and its `--judge` and key reading,
-called in-process. Every rule of the filter is in test_filter.py, on a fake clock."""
+"""`jev_filter.py` itself: as a process, against the stand-in for Jev's API, a
+temporary database and the stand-in feed writer, and once with a stand-in for the
+bridge's cast path; and its `--judge`, `--cast` and key reading, called in-process.
+Every rule of the filter is in test_filter.py and test_cast_check.py, on a fake clock."""
 import contextlib
 import io
+import json
 import os
 import signal
+import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import fake_jev
 from support import FAKE_LIB, ROOT, Lines, make_db, tempdir
 
 from filter import Config
-from jev_filter import judge_once, read_key
+from jev_filter import cast_once, judge_once, read_key
 
 KEY = "test-key-e2e-not-a-secret"
 NO_PROXY = {"no_proxy": "127.0.0.1,localhost", "NO_PROXY": "127.0.0.1,localhost"}
@@ -94,6 +99,108 @@ class TestTheProcess(WithJev):
             self.assertNotIn(KEY, f.read())
 
 
+class Bridge(BaseHTTPRequestHandler):
+    """The bridge's `POST /v1/jev/casts`, standing in: drops the line in the database, as the
+    bridge does, and answers that the cast fired."""
+
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+        self.server.got.append((self.path, self.headers.get("Authorization"), body))
+        conn = sqlite3.connect(self.server.db)
+        if body.get("keep"):   # a long line's cast: the line is kept, and carries the cast
+            conn.execute("UPDATE lines SET cast_id = 'C2' WHERE id = ?", (body["line_id"],))
+        else:
+            conn.execute("UPDATE lines SET dropped = 'cast', cast_id = 'C1' WHERE id = ?", (body["line_id"],))
+        conn.commit()
+        conn.close()
+        raw = json.dumps({"id": "C1", "status": "fired", "copy": "hot_fireball",
+                          "line": "kept" if body.get("keep") else "dropped"}).encode()
+        self.send_response(202)
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+
+class TestTheCastCheck(WithJev):
+    def test_a_cast_goes_to_the_bridge_and_is_never_fed(self):
+        db = os.path.join(self.dir, "vfg.db")
+        conn = make_db(db)
+        self.addCleanup(conn.close)
+        conn.execute("ALTER TABLE lines ADD COLUMN dropped TEXT")
+        conn.execute("ALTER TABLE lines ADD COLUMN cast_id TEXT")
+        lines = Lines(conn)
+        bridge = ThreadingHTTPServer(("127.0.0.1", 0), Bridge)
+        bridge.db, bridge.got = db, []
+        threading.Thread(target=bridge.serve_forever, args=(0.01,), daemon=True).start()
+        self.addCleanup(bridge.server_close)
+        self.addCleanup(bridge.shutdown)
+        store = os.path.join(self.dir, "incantations.json")
+        with open(store, "w") as f:
+            json.dump({"version": 1, "incantations": [{"player": "Steve", "phrase": "hot fireball",
+                                                       "aliases": [], "action": "hot_fireball"}]}, f)
+        env_file = os.path.join(self.dir, "vfg.env")
+        with open(env_file, "w") as f:
+            f.write("VFG_CLIENT_TOKEN=bridge-token-not-a-secret\n")
+        feed = os.path.join(self.dir, "feed.log")
+        journal = os.path.join(self.dir, "journal.log")
+        env = {k: v for k, v in os.environ.items() if k != "TYPESAFE_API_KEY" and not k.startswith("VFG_")}
+        env.update(NO_PROXY)
+        env.update({"VFG_DB": db, "VFG_LIB": FAKE_LIB, "FAKE_FEED_LOG": feed, "VFG_JEV_URL": self.server.url,
+                    "VFG_LOOKOUT": os.path.join(self.dir, "lookout.md"), "VFG_MENU": os.path.join(self.dir, "menu.md"),
+                    "VFG_ENV_FILE": env_file, "TYPESAFE_API_KEY": KEY, "VFG_INCANTATIONS": store,
+                    "VFG_BRIDGE_PORT": str(bridge.server_address[1])})
+        now = time.time()
+        cast = lines.add(now, "Steve", "voice", "Hot fire ball.", peak=-8.0)
+        castle = lines.add(now + 0.01, "Steve", "voice", "build me a castle", peak=-8.2)
+        inside = lines.add(now + 0.02, "Steve", "voice", "ok stand back and build me a wall, hot fireball")
+        with open(journal, "w") as out:
+            p = subprocess.Popen([sys.executable, "-u", os.path.join(ROOT, "jev_filter.py")], env=env,
+                                 stdout=out, stderr=subprocess.STDOUT, cwd=ROOT)
+        self.addCleanup(lambda: p.poll() is None and p.kill())
+        end = time.monotonic() + 5
+        def fed():
+            try:
+                with open(feed, encoding="utf-8") as f:
+                    return len(f.read().splitlines())
+            except FileNotFoundError:
+                return 0
+
+        while (len(self.server.calls) < 5 or fed() < 2) and time.monotonic() < end:   # 3 checks, 2 routing calls
+            time.sleep(0.01)
+        p.send_signal(signal.SIGTERM)
+        self.assertEqual(p.wait(timeout=5), 0)
+        self.assertEqual(bridge.got, [("/v1/jev/casts", "Bearer bridge-token-not-a-secret",
+                                       {"line_id": cast, "phrase": "hot fireball"}),
+                                      ("/v1/jev/casts", "Bearer bridge-token-not-a-secret",
+                                       {"line_id": inside, "phrase": "hot fireball", "keep": True})])
+        self.assertGreaterEqual(len(self.server.calls), 5)
+        with open(feed, encoding="utf-8") as f:
+            self.assertEqual([l.split(" | ", 1)[1] for l in f.read().splitlines()][:2],
+                             ["build me a castle", "ok stand back and build me a wall, hot fireball"])
+        self.assertEqual(conn.execute("SELECT dropped, cast_id FROM lines WHERE id = ?", (inside,)).fetchone(),
+                         (None, "C2"))
+        self.assertEqual(conn.execute("SELECT dropped, jev_class FROM lines WHERE id = ?", (cast,)).fetchone(),
+                         ("cast", None))
+        refs = [r[0] for r in conn.execute("SELECT ref FROM usage")]
+        self.assertEqual(sorted(r for r in refs if not r.startswith("gather:")),
+                         sorted(["cast:" + cast, "cast:" + castle, castle, "cast:" + inside, inside]))
+        with open(journal, encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("cast check on · at 0.50 or over, dropped at 0.70, a long line at 0.70 · the bridge on "
+                      "127.0.0.1:%d"
+                      % bridge.server_address[1], text)
+        self.assertIn("cast-check %s Steve · long · hot fireball p 0.90 → fired, the line kept (routed first) · "
+                      % inside,
+                      text)
+        self.assertIn("cast-check %s Steve · hot fireball p 0.90 → fired · " % cast, text)
+        self.assertIn("cast-check %s Steve · no p 0.90 → routing · " % castle, text)
+        self.assertNotIn("bridge-token-not-a-secret", text)
+        self.assertNotIn(KEY, text)
+
+
 class TestByHand(WithJev):
     def judge(self, text, raw=False):
         cfg = Config(jev_url=self.server.url, lookout=os.path.join(self.dir, "lookout.md"),
@@ -116,12 +223,35 @@ class TestByHand(WithJev):
         self.assertIn("500", err)
         self.assertEqual(os.listdir(self.dir), [])
 
+    def test_cast_prints_the_answer_and_writes_nothing(self):
+        store = os.path.join(self.dir, "incantations.json")
+        with open(store, "w") as f:
+            json.dump({"version": 1, "incantations": [{"player": "@a", "phrase": "ice beam", "aliases": [],
+                                                       "action": "ice_beam_cast"}]}, f)
+        cfg = Config(jev_url=self.server.url, menu=os.path.join(self.dir, "menu.md"), incantations=store)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(cast_once(cfg, KEY, "Ice beam!", "Steve"), 0)
+            self.assertEqual(cast_once(cfg, KEY, "nice one", "Steve"), 0)
+        got = out.getvalue().splitlines()
+        self.assertRegex(got[0], r"^ice beam p 0\.90 → a cast · \d+ms · \d+tok$")
+        self.assertRegex(got[1], r"^no p 0\.90 · \d+ms · \d+tok$")
+        calls = len(self.server.calls)
+        os.remove(store)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(cast_once(cfg, KEY, "Ice beam!", "Steve"), 0)
+        self.assertIn("Steve has no incantations", out.getvalue())
+        self.assertEqual(len(self.server.calls), calls)
+        self.assertEqual(os.listdir(self.dir), ["menu.md"] if os.path.exists(cfg.menu) else [])
+
     def test_the_key_from_the_environment_else_the_env_file(self):
         path = os.path.join(self.dir, "vfg.env")
         with open(path, "w") as f:
             f.write("VFG_CLIENT_TOKEN=abc\nexport TYPESAFE_API_KEY='%s'\n" % KEY)
         self.assertEqual(read_key(path, {}), (KEY, path))
         self.assertEqual(read_key(path, {"TYPESAFE_API_KEY": "other"}), ("other", "the environment"))
+        self.assertEqual(read_key(path, {}, name="VFG_CLIENT_TOKEN"), ("abc", path))
         key, where = read_key(os.path.join(self.dir, "missing.env"), {})
         self.assertEqual(key, "")
         self.assertIn("unreadable", where)

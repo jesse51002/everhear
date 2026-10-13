@@ -1,8 +1,9 @@
 """Casts: an incantation's action started on the box the moment its phrase is heard.
 
-A cast comes from the mod's keyword spotter (POST /v1/casts, layer ``spotter``) or from
-Layer 2, the phoneme match on a voice line as it arrives (layer ``transcript``).  Both go
-through one lock, so each cast's checks see every cast before it:
+A cast comes from the mod's keyword spotter (POST /v1/casts, layer ``spotter``), from
+Layer 2, the phoneme match on a voice line as it arrives (layer ``transcript``), or from the
+Jev filter, which judged a stored voice line a cast before routing it (POST /v1/jev/casts,
+layer ``jev``).  All go through one lock, so each cast's checks see every cast before it:
 
 1. a repeated client_cast_id answers what the first did;
 2. a cast of an incantation whose window overlaps an earlier cast of it by that player that
@@ -22,9 +23,10 @@ Windows are on the mod's audio clock, cooldowns on the bridge's.
 The drop rule then decides a voice line: one that overlaps a cast of that player's and
 has at most one word besides the phrase is stored with ``dropped = 'cast'``, and Jev
 never sees it.  A spotter's cast that comes after its line drops it then, if Jev has not
-judged it yet.
+judged it yet.  A line the Jev filter casts is dropped too, whatever became of its cast.
 """
 
+import collections
 import datetime as _dt
 import logging
 import os
@@ -36,10 +38,26 @@ from . import timeutil, ulid
 log = logging.getLogger("vfg_bridge")
 
 DEFAULT_COOLDOWN_S = 3.0
+# Layer 2 casts only from a line of at most this many words (normalised, fillers counted):
+# VFG_INCANT_LAYER2_MAX_WORDS, 0 for any length. A cast is said on its own, and a longer line
+# is talk. On 2026-10-12, with each player given that night's six incantations, the stored
+# aliases cast falsely on 216 of the 843 lines of 10-08's talk, and with 20 of the alias call's
+# on 397; at 6 words, 7 and 31. On the two sessions with casts, 10-11's false casts went from 28
+# to 2 and that night's from 3 to 1, every cast found as before (78% and 94% of them, stored).
+LAYER2_MAX_WORDS = 6
 # How far back a player's casts are read: past the longest cooldown (600 s), a player's
 # clock up to 10 minutes behind (the clock guard's limit) and a long line's window.
 LOOKBACK = _dt.timedelta(minutes=30)
 ERROR_MAX = 300
+# When /v1/lines received each line, kept in memory for a Jev cast's age (the bridge stores no
+# such time): this long, and at most this many lines.
+RECEIVED_KEEP = _dt.timedelta(minutes=30)
+RECEIVED_MAX = 20000
+# A Jev cast whose phrase was said this long before its line ended is stale: a long line comes when
+# the whole utterance ends, so a phrase at its start would fire seconds late. Where the phrase is,
+# the kit's phoneme match finds, as loose as this; its time is placed by word between at and ended_at.
+PHRASE_LEAD_S = 3.0
+PHRASE_ALLOWANCE = 0.4   # finds "variable" for fire ball (0.32), not noise (0.43+)
 
 
 class Unavailable(Exception):
@@ -86,7 +104,7 @@ class Casts:
 
     def __init__(self, db, kit, feed, store_path, base, mc="/opt/mc", owner="", poll=0.5,
                  gap_s=1.0, slack_s=0.3, allowance=0.25, layer2=True, wait_s=1.5, clock=None,
-                 monotonic=None, logger=None):
+                 monotonic=None, logger=None, jev_max_age_s=2.0, layer2_max_words=LAYER2_MAX_WORDS):
         self.db = db
         self.kit = kit
         self.feed = feed
@@ -99,18 +117,23 @@ class Casts:
         self.slack_s = slack_s
         self.allowance = allowance
         self.layer2 = layer2
+        self.layer2_max_words = layer2_max_words
         self.wait_s = wait_s
+        self.jev_max_age_s = jev_max_age_s
         self.clock = clock or timeutil.utcnow
         self.monotonic = monotonic or time.monotonic  # the request's arrival is on this clock
         self.log = logger or log
         self.lock = threading.Lock()  # every cast, the spotter's and Layer 2's
         self._read = (None, None)     # the store's file key, and its parse
+        self._received = collections.OrderedDict()  # client_line_id -> self.monotonic when it came
+        self._received_lock = threading.Lock()
 
     @classmethod
     def from_config(cls, cfg, db, kit, feed, clock=None):
         return cls(db, kit, feed, cfg.incantations, cfg.base, cfg.mc, cfg.owner, cfg.live_poll_s,
                    cfg.cast_gap_s, cfg.cast_slack_s, cfg.incant_allowance, cfg.incant_layer2,
-                   cfg.cast_wait_s, clock)
+                   cfg.cast_wait_s, clock, jev_max_age_s=cfg.jev_cast_max_age_s,
+                   layer2_max_words=cfg.incant_layer2_max_words)
 
     # -- the kit and the store -----------------------------------------------------
 
@@ -165,20 +188,24 @@ class Casts:
         except Exception:
             self.log.exception("could not drop the line of cast %s", cast["id"])
 
-    def _try(self, mods, entry, player, heard, layer, started, ended, client_cast_id, arrived):
+    def _try(self, mods, entry, player, heard, layer, started, ended, client_cast_id, arrived,
+             line_id=None, late=None):
         """Check, start and store one cast; call under the lock. Answers the stored row. ``mods``:
-        the kit's (incantations, instances)."""
+        the kit's (incantations, instances). ``late``: why it is too late to fire (a Jev cast's
+        line too old), so it is ``stale``."""
         inc, ins = mods
         now = self.clock()
         cast = {"id": ulid.new(), "at": timeutil.format_time(now),
                 "started_at": timeutil.format_time(started), "ended_at": timeutil.format_time(ended),
                 "player_name": player, "phrase": entry["phrase"], "heard": heard, "layer": layer,
                 "incantation_id": entry.get("id"), "action": entry.get("action"),
-                "client_cast_id": client_cast_id}
+                "client_cast_id": client_cast_id, "line_id": line_id}
         status, why = self._check(entry, player, started, ended, now)
         left = self.wait_s - (self.monotonic() - arrived)
         if status is None and left <= 0:
             status, why = "stale", "held %.1f s before it could start" % (self.wait_s - left)
+        if status is None and late:
+            status, why = "stale", late
         if status is None:
             try:
                 box = ins.Box(self.base, self.mc, owner=self.owner, poll=self.poll)
@@ -261,9 +288,10 @@ class Casts:
     def on_line(self, player, text, started, ended, client_line_id, arrived=None, made=None):
         """Layer 2 and the drop rule for a voice line, before it is stored: a LineCasts.
 
-        Nothing for a player with no incantations, or a line already stored. Each cast Layer
-        2 makes goes into ``made`` (the caller's list) as soon as it is stored, so the caller
-        announces it whatever happens after."""
+        Nothing for a player with no incantations, or a line already stored. Layer 2 only on a
+        line of at most ``layer2_max_words`` words (0: any). Each cast Layer 2 makes goes into
+        ``made`` (the caller's list) as soon as it is stored, so the caller announces it
+        whatever happens after."""
         arrived = self.monotonic() if arrived is None else arrived
         made = [] if made is None else made
         mods = self.kit.modules()
@@ -271,10 +299,12 @@ class Casts:
             return NOTHING
         inc, ins = mods
         entries = self._store(inc).for_player(player)
+        if entries:
+            self.received(client_line_id, arrived)  # before it is stored: a Jev cast's age
         if not entries or self.db.line_id(client_line_id) is not None:
             return NOTHING
-        if self.layer2:
-            words = inc.words(text)
+        words = inc.words(text)
+        if self.layer2 and (not self.layer2_max_words or len(words) <= self.layer2_max_words):
             taken = []  # the word spans cast already: one cast for the same words
             for m in inc.match_line(text, self._one_per_phrase(inc, entries), self.allowance):
                 if any(m.start < end and start < m.end for start, end in taken):
@@ -300,6 +330,121 @@ class Casts:
                 return LineCasts("cast", c["id"], [c["id"] for c in near], made)
         kept = [c for c in near if c["status"] == "fired"]
         return LineCasts(None, kept[0]["id"] if kept else None, [c["id"] for c in near], made)
+
+    # -- POST /v1/jev/casts ---------------------------------------------------------
+
+    def jev_cast(self, line_id, phrase, arrived=None, keep=False):
+        """The Jev filter's cast of a stored voice line it judged a cast of ``phrase``, before
+        routing it: (HTTP status, body, what to do once answered, or None).
+
+        With ``keep`` (a line over 6 words, the cast said inside other talk, or a short one Jev is
+        not sure of) the cast is the same but the line is kept, to be routed as ever, so the rest of
+        it reaches the AI; it takes the cast's id as its cast_id when the cast fired and it has none
+        (``"line": "kept"``). Jev may ask it after routing the line (a long line's routing never
+        waits on its cast check), so a kept cast is not refused for a line Jev judged.
+
+        The same checks as every cast, on the line's window (its ``at`` and ``ended_at``, the
+        clock guard's already), layer ``jev``, ``client_cast_id`` ``jev:<line id>``, so asking
+        again answers what the first did. Whatever becomes of the cast, the line is then dropped
+        (``dropped = 'cast'``), so Jev never routes it; its cast_id is the cast, unless that did
+        not fire and the line carries a fired one already. A line dropped already (a spotter's
+        cast that came meanwhile) answers 200 and casts nothing.
+
+        A Jev cast never fires late: one whose line /v1/lines received more than
+        VFG_JEV_CAST_MAX_AGE_S (2 s) before, on the bridge's monotonic clock (``received``), or at a time the
+        bridge no longer has (before it last started), is ``stale``, recorded and not started;
+        its line is dropped all the same (kept, with ``keep``). So is one whose phrase was said
+        more than PHRASE_LEAD_S before its line ended (``_said_early``), as at the start of a long
+        line, which comes only when the whole utterance ends."""
+        arrived = self.monotonic() if arrived is None else arrived
+        inc, ins = self._modules()
+        key = "jev:%s" % line_id
+        new = False
+        with self.lock:
+            line = self.db.line(line_id)
+            if line is None:
+                return 404, {"error": "no line %s" % line_id}, None
+            cast = self.db.cast_by_client_id(key)
+            if cast is None:
+                if line["source"] != "voice":
+                    return 400, {"error": "line %s is not a voice line" % line_id}, None
+                if line["dropped"] is not None:
+                    return 200, {"line": "dropped", "cast_id": line["cast_id"]}, None
+                if line["jev_class"] is not None and not keep:  # a kept line's cast may come after its routing
+                    return 409, {"error": "Jev judged line %s already" % line_id, "line": "judged"}, None
+                player = line["player_name"]
+                entry = self._store(inc).lookup(player, phrase)
+                if entry is None:
+                    return 404, {"error": "%s has no incantation %r" % (player, phrase)}, None
+                started = timeutil.parse_time(line["at"])
+                ended = timeutil.parse_time(line["ended_at"] or line["at"])
+                heard = " ".join(inc.words(line["text"]))[:200] or None
+                late = self._too_old(line) or self._said_early(inc, entry, line["text"], started, ended)
+                cast = self._try((inc, ins), entry, player, heard, "jev", started, ended, key, arrived,
+                                 line_id=line_id, late=late)
+                new = True
+            if keep:
+                if cast["status"] == "fired":
+                    self.db.line_cast(line_id, cast["id"])
+                kept = "dropped" if line["dropped"] is not None else "kept"
+            else:
+                dropped = line["dropped"] is not None or self.db.drop_judged_cast(
+                    line_id, cast["id"], cast["status"] == "fired")
+                kept = "dropped" if dropped else "judged"
+        doc = dict(answer(cast), line=kept)
+        return 202, doc, (lambda: self.announce(cast)) if new else None
+
+    @staticmethod
+    def _said_early(inc, entry, text, started, ended):
+        """Why a Jev cast is too late because its phrase was said early in its line, or None: the
+        last place the kit's phoneme match (any length, PHRASE_ALLOWANCE) finds the phrase or an
+        alias, its last word's time estimated by word between the line's start and end, more than
+        PHRASE_LEAD_S before the end. None when the phrase is not found: then it is allowed."""
+        words = inc.words(text)
+        span = (ended - started).total_seconds()
+        if not words or span <= PHRASE_LEAD_S:
+            return None
+        last, offset = None, 0
+        while offset < len(words):
+            found = inc.match_line(" ".join(words[offset:]), [entry], PHRASE_ALLOWANCE)
+            if not found:
+                break
+            last = offset + found[0].end
+            offset = last
+        if last is None:
+            return None
+        lead = span * (len(words) - last) / len(words)
+        if lead > PHRASE_LEAD_S:
+            return ("the phrase was said about %.1f s before its line ended, past the %g s a Jev cast"
+                    " may be" % (lead, PHRASE_LEAD_S))
+        return None
+
+    def received(self, client_line_id, arrived):
+        """Note when /v1/lines received a line of a player with an incantation (only such a line
+        can get a Jev cast), ``arrived`` on ``self.monotonic``, for a Jev cast's age; the first time
+        a client_line_id came is kept. In memory, for 30 minutes: the bridge stores no such time."""
+        keep = RECEIVED_KEEP.total_seconds()
+        with self._received_lock:
+            self._received.setdefault(client_line_id, arrived)
+            while self._received:
+                first = next(iter(self._received.values()))
+                if arrived - first <= keep and len(self._received) <= RECEIVED_MAX:
+                    break
+                self._received.popitem(last=False)
+
+    def _too_old(self, line):
+        """Why a Jev cast of ``line`` is too late to fire, or None: its age, from when
+        /v1/lines received it to now, on ``self.monotonic`` (no wall clock step can move it), over
+        VFG_JEV_CAST_MAX_AGE_S."""
+        with self._received_lock:
+            received = self._received.get(line["client_line_id"])
+        if received is None:
+            return ("the bridge has no time it received the line (it came before the bridge last"
+                    " started), so it may be past the %g s a Jev cast may be" % self.jev_max_age_s)
+        age = self.monotonic() - received
+        if age > self.jev_max_age_s:
+            return "the line is %.1f s old, past the %g s a Jev cast may be" % (age, self.jev_max_age_s)
+        return None
 
     @staticmethod
     def _one_per_phrase(inc, entries):
@@ -342,6 +487,15 @@ class Casts:
         out = []
         for e in self._one_per_phrase(inc, entries):
             cooldown = e.get("cooldown_s")
-            out.append({"phrase": e["phrase"], "aliases": list(e.get("aliases") or ()),
+            out.append({"phrase": e["phrase"], "aliases": self.spotted(inc, e),
                         "cooldown_s": DEFAULT_COOLDOWN_S if cooldown is None else cooldown})
         return 200, {"version": doc["version"], "player": player, "incantations": out}
+
+    @staticmethod
+    def spotted(inc, entry):
+        """The aliases the mod's keyword spotter listens for: the entry's aliases less its
+        ``everyday_aliases``, everyday talk in their own right ("ice cream" for "ice beam"), which
+        would cast on ordinary conversation; Layer 2 and the Jev cast check still use them. An
+        entry without the field has none (Contracts §10)."""
+        everyday = set(inc.normalize(a) for a in entry.get("everyday_aliases") or ())
+        return [a for a in entry.get("aliases") or () if inc.normalize(a) not in everyday]
