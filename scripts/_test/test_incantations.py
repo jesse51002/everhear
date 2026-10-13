@@ -61,6 +61,19 @@ class WordsTests(unittest.TestCase):
             self.assertEqual(inc.store_path(), "/opt/vfg/incantations.json")
 
 
+class CastMetaTests(unittest.TestCase):
+    def test_the_copy_a_heard_cast_starts(self):
+        e = {"action": "zap_steve", "script": "zap", "source": "made", "server": "main", "values": {"to": "@a", "n": 2},
+             "caster_fields": ["to"], "live": ["n"], "runs": "until_stopped", "phrase": "zap now"}
+        self.assertEqual(inc.cast_meta(e, "Steve"), {
+            "action": "zap_steve", "script": "zap", "source": "made", "server": "main", "values": {"to": "Steve", "n": 2},
+            "live": ["n"], "runs": "until_stopped", "task": "cast"})
+        self.assertEqual(e["values"]["to"], "@a")    # the entry itself is left as it is
+        self.assertEqual(inc.cast_meta({"action": "beam"}, "Alex"), {
+            "action": "beam", "script": "beam", "source": "library", "server": "", "values": {}, "live": [],
+            "runs": "once", "task": "cast"})
+
+
 class StoreTests(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="vfg-incantations-")

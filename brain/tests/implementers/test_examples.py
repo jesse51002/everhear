@@ -1,5 +1,6 @@
 """The EXAMPLES block (examples.py, route.py): on a small temp repo whose actions load through
-lib/py/vfg_actions.py, with the fake vfg answering vfg route and vfg state."""
+lib/py/vfg_actions.py, with the fake vfg answering vfg route and vfg state. At most 3 router
+scripts and 7 actions in full, whatever vfg route printed."""
 import json
 import os
 import shutil
@@ -153,6 +154,8 @@ FILES = {
     "made/main/actions/galick_ice.py": GALICK_ICE_ACTION,
 }
 
+FILES_MORE = dict(FILES)
+
 ROUTE = {"task": "ice_beam_steve", "scripts": [
     {"name": "ice_beam", "source": "library", "verdict": "runs_it", "p_runs_it": 0.91, "p_close": 0.05,
      "path": "scripts/ice_beam/main.py"},
@@ -160,6 +163,9 @@ ROUTE = {"task": "ice_beam_steve", "scripts": [
      "path": "scripts/galick_gun/main.py"}],
     "presets": [{"name": "crater", "source": "library", "p_use": 0.77, "path": "scripts/_presets/crater.py"},
                 {"name": "replace_blocks", "source": "library", "p_use": 0.5, "path": "scripts/_presets/replace_blocks.py"}],
+    "actions": [{"name": "ice_beam", "source": "library", "p_needed": 0.93, "path": "actions/ice_beam.py"},
+                {"name": "no_such_action", "source": "library", "p_needed": 0.8, "path": "actions/no_such_action.py"},
+                {"name": "galick_ice", "source": "made", "p_needed": 0.41, "path": "made/main/actions/galick_ice.py"}],
     "fallback": False, "ms": 312, "tokens": 11840}
 
 STATE = {"online": [{"name": "Steve", "pos": [120, 64, -40], "dimension": "overworld"},
@@ -195,16 +201,17 @@ class Repo:
     """A temp repo with a small library, its actions and a made/main/, its own VFG_HOME with
     running.json, and the fake vfg answering route and state."""
 
-    def __init__(self, tmp_path, route_json=ROUTE, state=STATE, running=RUNNING, env=None):
+    def __init__(self, tmp_path, route_json=ROUTE, state=STATE, running=RUNNING, env=None, files=None):
         self.dir = str(tmp_path / "repo")
+        files = FILES if files is None else files
         for rel in ACTIONS_BASE:
             os.makedirs(os.path.dirname(os.path.join(self.dir, rel)), exist_ok=True)
             shutil.copy(os.path.join(ROOT, rel), os.path.join(self.dir, rel))
-        for rel, text in FILES.items():
+        for rel, text in files.items():
             os.makedirs(os.path.dirname(os.path.join(self.dir, rel)), exist_ok=True)
             with open(os.path.join(self.dir, rel), "w") as f:
                 f.write(text)
-        for rel in ACTIONS_BASE + list(FILES):  # written a minute ago: a cache built now is fresh
+        for rel in ACTIONS_BASE + list(files):  # written a minute ago: a cache built now is fresh
             os.utime(os.path.join(self.dir, rel), (time.time() - 60, time.time() - 60))
         self.home = str(tmp_path / "vfg-home")
         os.makedirs(self.home)
@@ -264,13 +271,16 @@ async def test_the_block_in_the_specs_shape_with_every_file_whole_in_order(tmp_p
         "  galick_ice (script): Galick Ice: the Galick Gun, laying ice where it hits.",
         "  ice_trail (preset): Lay packed ice under a player's feet as they walk.",
     ]
-    # every action whole, the library's by name then this server's
-    assert acts.startswith("ACTIONS: every action, the library's (actions/) then this server's (made/main/actions/), "
-                           "whole, as they were when you started. Run one with vfg action run <action> key=value ... "
-                           "--task ice_beam_steve; * marks the values it takes, and any value but a fixed one can be "
-                           "given.\n")
+    # the router's actions whole, best first, those the cache has; then this server's, one menu line each
+    assert acts.startswith("ACTIONS: the library's are in your system prompt, one menu line each, and this server's "
+                           "are listed below. Here, in full, are the 2 picked for your job by Jev, best first; vfg "
+                           "action show <name> prints any other in full. Run one with vfg action run <action> "
+                           "key=value ... --task ice_beam_steve; * marks the values it takes, and any value but a "
+                           "fixed one can be given.\n")
     firsts = [line.split(" — ")[0] for line in acts.split("\n") if " — " in line]
-    assert firsts == ["frost_ray", "galick_gun", "ice_beam", "zoo", "galick_ice"]
+    assert firsts == ["ice_beam", "galick_ice", "galick_ice"]
+    assert acts.endswith("\n\nMade on this server (made/main/actions/), one menu line each:\n"
+                         "galick_ice — Give a player a Galick Ice gun: the Galick Gun, laying ice where it hits.")
     ice = acts[acts.index("ice_beam — "):].split("\n\n")[0].split("\n")
     assert ice == ["ice_beam — Give a player an ice beam: a beam from the eyes that freezes what it hits.",
                    "script ice_beam · runs until stopped",
@@ -278,7 +288,7 @@ async def test_the_block_in_the_specs_shape_with_every_file_whole_in_order(tmp_p
                    "* player (player names separated by commas, or @a, @r, @p; default \"@a\"): who gets one: a name, "
                    "several separated by commas, or @a",
                    "* freeze_seconds (a whole number 1..60; live; default 5): how long what it hits stays frozen, in seconds"]
-    assert "  freeze_seconds (a whole number 1..60; live; fixed 60): how long" in acts  # the variant's
+    assert "frost_ray" not in acts and "zoo" not in acts   # not picked: in the system prompt's menu
     # whole files, never cut: the router's scripts (runs_it first), its presets, then the named
     order = ["scripts/ice_beam/main.py", "scripts/galick_gun/main.py", "scripts/_presets/crater.py",
              "scripts/_presets/replace_blocks.py", "scripts/tnt_rain/main.py"]
@@ -316,8 +326,8 @@ async def test_what_fails_is_said_and_the_block_still_goes(tmp_path, monkeypatch
     r.vfg.on("state", answer=bad("vfg: EC2 unreachable"))
     lines = (await r.block()).split("\n")
     assert lines[:2] == ["EXAMPLES for ice_beam_steve: nothing was picked, the router failed (exit 1: vfg: not configured: "
-                         "VFG_ROUTE_LOAD must be a number). Every library script's and preset's first line is in your "
-                         "system prompt, every action is under ACTIONS, and you can read any of them.",
+                         "VFG_ROUTE_LOAD must be a number). Every library script's, preset's and action's first line is "
+                         "in your system prompt, and you can read any of them.",
                          "Named in your brief, in full below: ice_beam and tnt_rain."]
     assert lines[2:4] == ["Server state: unavailable (exit 1: vfg: EC2 unreachable).", examples.UNKNOWN]
     # hung: cut off at VFG_ROUTE_TIMEOUT_S and the step's slack
@@ -334,6 +344,81 @@ async def test_what_fails_is_said_and_the_block_still_goes(tmp_path, monkeypatch
                              "unknown.") + 1] == examples.UNKNOWN
     assert any(line.startswith("Running: galick_gun_alex (galick_gun, player=Alex, cooldown=0, galick_duel_alex)")
                for line in lines)
+
+
+def script(name: str, verdict: str = "close", p: float = 0.5, rel: str | None = None) -> dict:
+    return {"name": name, "source": "library", "verdict": verdict, "p_runs_it": p if verdict == "runs_it" else 0.1,
+            "p_close": p, "path": rel or "scripts/%s/main.py" % name}
+
+
+async def test_at_most_three_scripts_runs_it_first_and_seven_actions_whatever_vfg_route_printed(tmp_path):
+    for i in range(8):
+        FILES_MORE["actions/extra_%d.py" % i] = ZOO_ACTION.replace("class Zoo", "class Extra%d" % i).replace(
+            "Build a zoo", "Build extra pens number %d" % i)
+    picks = {**ROUTE, "presets": [], "held": [
+        {"name": "crater", "source": "library", "p_use": 0.7, "path": "scripts/_presets/crater.py", "in": "zoo"},
+        {"name": "replace_blocks", "source": "library", "p_use": 0.6, "path": "scripts/_presets/replace_blocks.py",
+         "in": "galick_gun"}],
+        "scripts": [script("zoo", p=0.9), script("galick_gun", p=0.8), script("tnt_rain", p=0.7),
+                    script("ice_beam", "runs_it", 0.6)],
+        "actions": [{"name": "extra_%d" % i, "source": "library", "p_needed": 0.9 - i / 100} for i in range(8)]}
+    r = Repo(tmp_path, route_json=picks, files=FILES_MORE)
+    head, made, acts, files = parts(await r.block("Pens for the animals."))
+    # runs_it first, then the router's order: tnt_rain cut
+    assert [f.split(" ===")[0] for f in files.split("=== ")[1:]] == [
+        "scripts/ice_beam/main.py", "scripts/zoo/main.py", "scripts/galick_gun/main.py"]
+    assert head.split("\n")[1:3] == ["ice_beam runs this job: run one of its actions, ice_beam or frost_ray, with the "
+                                     "values the job needs. zoo and galick_gun are close.",
+                                     "Presets to copy: none. Already in a loaded script: crater (in zoo) and "
+                                     "replace_blocks (in galick_gun)."]
+    assert [line.split(" — ")[0] for line in acts.split("\n") if line.startswith("extra_")] == [
+        "extra_%d" % i for i in range(7)]
+    assert "Here, in full, are the 7 picked for your job by Jev, best first" in acts
+    # a preset held by a script the cap cut is loaded itself
+    picks["scripts"] = [script("tnt_rain", p=0.95)] + picks["scripts"]
+    r.vfg.on("route", answer=ok(json.dumps(picks)))
+    head, made, acts, files = parts(await r.block("Pens for the animals."))
+    assert [f.split(" ===")[0] for f in files.split("=== ")[1:]] == [
+        "scripts/ice_beam/main.py", "scripts/tnt_rain/main.py", "scripts/zoo/main.py",
+        "scripts/_presets/replace_blocks.py"]
+    assert head.split("\n")[2] == "Presets to copy: replace_blocks. Already in a loaded script: crater (in zoo)."
+
+
+async def test_with_no_actions_from_the_router_the_jobs_words_pick_them(tmp_path):
+    # the router failed: by words (toolkit/lib/menu.py's, as vfg route's fallback), those it names first
+    r = Repo(tmp_path)
+    r.vfg.on("route", answer=bad("vfg: EC2 unreachable"))
+    acts = parts(await r.block("Give Steve a zoo, and a galick gun that freezes.", task="zoo_steve"))[2]
+    assert "Here, in full, are the 5 picked for your job by words, best first" in acts
+    assert [part.split(" — ")[0] for part in acts.split("\n\n")[1:6]] == [
+        "galick_gun", "galick_ice", "zoo", "frost_ray", "ice_beam"]
+    # an older vfg route, which picks no actions: the same
+    old = {k: v for k, v in ROUTE.items() if k != "actions"}
+    r.vfg.on("route", answer=ok(json.dumps(old)))
+    acts = parts(await r.block("A zoo for Steve.", task="zoo_steve"))[2]
+    assert "Here, in full, is the one picked for your job by words; vfg action show <name> prints any other" in acts
+    assert acts.split("\n\n")[1].startswith("zoo — Build a zoo: animals in pens at a place.")
+    # the router picked none: none in full
+    r.vfg.on("route", answer=ok(json.dumps({**ROUTE, "actions": []})))
+    acts = parts(await r.block())[2]
+    assert acts.startswith("ACTIONS: the library's are in your system prompt, one menu line each, and this server's "
+                           "are listed below. None was picked for your job; vfg action show <name> prints any other "
+                           "in full.")
+    assert acts.split("\n\n")[1].startswith("Made on this server (made/main/actions/), one menu line each:")
+
+
+async def test_each_parts_size_goes_to_sizes(tmp_path):
+    r = Repo(tmp_path)
+    sizes: dict = {}
+    block = await examples.build(r.cfg, JOB, "ice_beam_steve", r.vfg, sizes=sizes)
+    head, made, acts, files = parts(block)
+    assert sum(sizes[k] for k in examples.PARTS) == len(block)
+    assert sizes["header"] == len(head) + 2 and sizes["made"] == len(made) + 2
+    assert sizes["actions"] + sizes["made_actions"] == len(acts) + 1
+    assert (sizes["actions_n"], sizes["made_actions_n"], sizes["scripts_n"], sizes["presets_n"], sizes["named_n"],
+            sizes["running_n"]) == (2, 1, 2, 2, 1, 0)
+    assert sizes["named"] == len("\n" + whole("scripts/tnt_rain/main.py"))
+    assert (sizes["route"], sizes["state"], sizes["actions_how"]) == ("jev", "ok", "by Jev")
 
 
 def gathered(**over) -> examples.Gathered:
@@ -398,3 +483,27 @@ async def test_route_run_refuses_what_is_not_its_json():
     with pytest.raises(route.RouteFailed, match="not JSON"):
         await route.run("x", None, 1, vfg)
     assert vfg.calls == [["route", "--task", "torch_ring_steve"], ["route"]] and vfg.stdin["route"] == "x"
+
+
+async def test_a_picked_scripts_test_comes_after_it_and_the_tasks_own_test_too(tmp_path):
+    files = dict(FILES)
+    files["scripts/ice_beam/test.py"] = '"""The test of ice_beam."""\nfrom kit import test\n'
+    files["made/main/tests/ice_beam_steve.py"] = '"""The test of ice_beam_steve."""\nfrom kit import test\n'
+    files["made/main/tests/zoo_alex.py"] = '"""Another task\'s test."""\n'
+    r = Repo(tmp_path, files=files)
+    sizes: dict = {}
+    block = await examples.build(r.cfg, JOB, "ice_beam_steve", r.vfg, sizes=sizes)
+    head, made, acts, rest = parts(block)
+    assert [f.split(" ===")[0] for f in rest.split("=== ")[1:]] == [
+        "scripts/ice_beam/main.py", "scripts/ice_beam/test.py", "scripts/galick_gun/main.py",
+        "made/main/tests/ice_beam_steve.py", "scripts/_presets/crater.py", "scripts/_presets/replace_blocks.py",
+        "scripts/tnt_rain/main.py"]
+    assert ("Tests below, each after its script: scripts/ice_beam/test.py and made/main/tests/ice_beam_steve.py "
+            "(yours); vfg test <name> runs one on the test server.") in head.split("\n")
+    assert (sizes["tests_n"], sizes["scripts_n"]) == (2, 2)
+    assert sizes["tests"] == len("\n=== scripts/ice_beam/test.py ===\n" + files["scripts/ice_beam/test.py"]) + len(
+        "\n=== made/main/tests/ice_beam_steve.py ===\n" + files["made/main/tests/ice_beam_steve.py"])
+    # another task's test, or none: nothing
+    assert "zoo_alex" not in block
+    block = await examples.build(r.cfg, JOB, "zoo_alex_2", r.vfg)
+    assert "made/main/tests/" not in block

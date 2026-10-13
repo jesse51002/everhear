@@ -12,8 +12,10 @@
 #                                     VFG_BOX_ENV names (default ~/.vfg/box.env), into /opt/vfg/.env;
 #                                     a client token made on the box if there is still none; restarts
 #                                     the vfg units that are installed.
-#   deploy.sh                         the bridge: vfg_feed.py, vfg_bridge/, tests/, the two vfg units;
-#                                     applies the schema and restarts vfg-bridge (and vfg-jev if deployed).
+#   deploy.sh                         the bridge: vfg_feed.py, vfg_bridge/, tests/, the two vfg units,
+#                                     and the kit it imports (scripts/_lib, by vfg script deploy --kit,
+#                                     stamped as vfg sends it); applies the schema and restarts
+#                                     vfg-bridge (and vfg-jev if deployed).
 #
 # Only provision and env touch /opt/vfg/.env; none touches the database (beyond the schema), the
 # feed, watch.json, lookout.md, menu.md or /opt/mc (beyond what provision.sh does). The Jev filter's program has its own
@@ -179,6 +181,10 @@ cmd_deploy() {
   push --recursive --delete --exclude='__pycache__/' --exclude='*.pyc' --chmod=D755,F644 \
     "$BRIDGE/vfg_bridge" "$BRIDGE/tests" "$SSH_USER@$SSH_HOST:/opt/vfg/bridge/" \
     || die "could not send the bridge"
+  # The bridge imports incantations.py and instances.py from the deployed kit: this repo's go with
+  # it, before the restart, so a bridge never runs on a kit older than itself.
+  log "sending the kit, scripts/_lib/, to /opt/vfg/scripts/"
+  retry 3 "$BRIDGE/../toolkit/vfg" script deploy --kit || die "could not send the kit"
   remote 'rm -rf /tmp/vfg-units && mkdir -m 700 /tmp/vfg-units'
   push --chmod=F644 "$HERE/systemd/vfg-bridge.service" "$HERE/systemd/vfg-jev.service" \
     "$SSH_USER@$SSH_HOST:/tmp/vfg-units/" || die "could not send the units"

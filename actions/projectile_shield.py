@@ -1,7 +1,7 @@
 from actions._types import Action, Live, Players, preset
 
 
-class ProjectileShield(Action, preset("around"), preset("push")):
+class ProjectileShield(Action, preset("around"), preset("push"), preset("launch")):
     """Make arrows, tridents and fireballs bounce off a player: each turns round a few blocks from him and flies back; mobs still come close."""
 
     script = "projectile_shield"

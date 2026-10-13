@@ -3,9 +3,16 @@
 THE ACTIONS come from vfg's actions cache, $VFG_HOME/actions.json, through lib/py/vfg_actions.py,
 the one loader vfg and the brain use too. It is read for every brief, and built again first
 when an action file is newer than it, so an action an implementer saved a minute ago is in the
-next brief. Every action goes in whole, nothing capped: its line, its script, how it runs, and
-every value with its type, limits, default (or fixed) and description, those it takes marked *
-(the cache's `describe`); the library's by name, then this server's.
+next brief. The library's are in the implementer's system prompt, one menu line each (vfg
+prefix). The brief gives at most MOST_ACTIONS in full, best first — the router's picks, or, when
+the router gave none, the actions the job's words point to — and this server's made actions one
+menu line each; `vfg action show <name>` prints any other in full. In full is its line, its
+script, how it runs, and every value with its type, limits, default (or fixed) and description,
+those it takes marked * (the cache's `describe`).
+
+What an action says — its menu line, its long form — and the ranking by words are
+toolkit/lib/menu.py's, loaded here by path, so the brief and vfg (action show, action list,
+prefix, route) say the same.
 
 WHAT RUNS comes from $VFG_HOME/running.json, which vfg writes through on every run, edit and stop
 and the brain fetches from EC2: each copy's name, its action, the values that differ from the
@@ -23,9 +30,24 @@ from pathlib import Path
 from typing import Any
 
 from .config import ROOT
+from .route import MOST_ACTIONS
 
 # lib/py/ of the repo this brain/ is in: vfg_actions, loaded as vfg loads it.
 LIB_PY = os.path.join(ROOT, "lib", "py")
+# toolkit/lib/menu.py: an action's menu line and long form, and the ranking by words.
+MENU_PY = os.path.join(ROOT, "toolkit", "lib", "menu.py")
+_menu: Any = None
+
+
+def menu():
+    """toolkit/lib/menu.py, loaded once by path (it imports nothing of vfg's)."""
+    global _menu
+    if _menu is None:
+        spec = importlib.util.spec_from_file_location("vfg_toolkit_menu", MENU_PY)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _menu = mod
+    return _menu
 
 _loader: Any = None
 _catalogs: dict[tuple[str, str], Any] = {}
@@ -105,34 +127,60 @@ def actions_of(data: dict | None, script: str) -> list[str]:
 
 
 def describe(name: str, entry: dict) -> str:
-    """One action whole, as the cache renders it."""
-    text = entry.get("describe")
-    if isinstance(text, str) and text.strip():
-        return text.rstrip("\n")
-    return "%s — %s\nscript %s · runs %s" % (name, entry.get("line") or "(no line)", entry.get("script") or "?",
-                                            str(entry.get("runs") or "?").replace("_", " "))
+    """One action whole, as `vfg action show` prints it (menu.describe)."""
+    return menu().describe(name, entry)
 
 
-def section(data: dict | None, failed: str | None, server: str, task: str | None) -> str:
-    """The ACTIONS part of the brief: every action whole, or why there are none."""
+def menu_line(name: str, entry: dict) -> str:
+    """`nuke — Drop a nuke on ...`, as `vfg action list` prints it (menu.line)."""
+    return menu().line(name, entry)
+
+
+def by_words(data: dict | None, job: str) -> list[str]:
+    """The actions the job's words point to, best first, at most MOST_ACTIONS: what vfg route
+    falls back to when Jev cannot say (menu.actions_by_words), for a brief whose router failed."""
+    m = menu()
+    return [c["name"] for c, _n in m.actions_by_words(m.action_cards(data), job)][:MOST_ACTIONS]
+
+
+def chosen(data: dict | None, picks: dict | None, job: str) -> tuple[list[str], str]:
+    """(the actions a brief gives in full, best first, at most MOST_ACTIONS; how they were picked).
+    The router's picks that the cache has; when the router gave none to give (it failed, or this
+    vfg does not pick actions), the job's words decide."""
+    acts = (data or {}).get("actions") or {}
+    if isinstance(picks, dict) and isinstance(picks.get("actions"), list):
+        names = [a.get("name") for a in picks["actions"] if isinstance(a, dict)]
+        how = "by words" if picks.get("fallback") else "by Jev"
+        return [n for n in names if isinstance(acts.get(n), dict)][:MOST_ACTIONS], how
+    return by_words(data, job), "by words"
+
+
+def section(data: dict | None, failed: str | None, server: str, task: str | None,
+            full: list[str] | None = None, how: str = "") -> str:
+    """The ACTIONS part of the brief: the actions in `full` whole, in that order, then this server's
+    made actions one menu line each; or why there are none."""
     run = "vfg action run <action> key=value ... --task %s" % (task or "<your task>")
     if data is None:
-        return ("ACTIONS: unavailable (%s). vfg action list names every action, and vfg action list --json gives "
-                "each one's values; run one with %s.\n" % (failed or "no answer", run))
-    rows = entries(data)
-    lib = [(n, a) for n, a in rows if a.get("source") == "library"]
-    made = [(n, a) for n, a in rows if a.get("source") != "library"]
-    out = ["ACTIONS: every action, the library's (actions/) then this server's (made/%s/actions/), whole, as they "
-           "were when you started. Run one with %s; * marks the values it takes, and any value but a fixed one "
-           "can be given." % (server, run)]
-    for name, a in lib:
-        out += ["", describe(name, a)]
-    if not lib:
-        out += ["", "The library has no action."]
+        return ("ACTIONS: unavailable (%s). The library's are in your system prompt, one menu line each; vfg action "
+                "list names every action, and vfg action show <name> prints one in full. Run one with %s.\n"
+                % (failed or "no answer", run))
+    acts = data.get("actions") or {}
+    full = [n for n in full or [] if isinstance(acts.get(n), dict)][:MOST_ACTIONS]
+    made = [(n, a) for n, a in entries(data) if a.get("source") != "library"]
+    if len(full) == 1:
+        picked = "Here, in full, is the one picked for your job%s" % (" " + how if how else "")
+    elif full:
+        picked = "Here, in full, are the %d picked for your job%s, best first" % (len(full), " " + how if how else "")
+    else:
+        picked = "None was picked for your job"
+    out = ["ACTIONS: the library's are in your system prompt, one menu line each, and this server's are listed "
+           "below. %s; vfg action show <name> prints any other in full. Run one with %s; * marks the values it "
+           "takes, and any value but a fixed one can be given." % (picked, run)]
+    for name in full:
+        out += ["", describe(name, acts[name])]
     if made:
-        out += ["", "Made on this server (made/%s/actions/):" % server]
-        for name, a in made:
-            out += ["", describe(name, a)]
+        out += ["", "Made on this server (made/%s/actions/), one menu line each:" % server]
+        out += [menu_line(name, a) for name, a in made]
     else:
         out += ["", "Made on this server (made/%s/actions/): none yet." % server]
     errors = (data.get("errors") or {}) if isinstance(data.get("errors"), dict) else {}

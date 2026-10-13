@@ -1,0 +1,652 @@
+{
+ "about": "impl_game.py's scenarios: integration/impl_scenarios.py",
+ "scenarios": [
+  {
+   "id": "T207",
+   "date": "2026-10-11",
+   "kind": "ability",
+   "player": "Steve",
+   "persona": "Steve is a direct player who tests his abilities immediately and expects them to deal real damage and destroy blocks.",
+   "opening": "Okay, can you make a incantation? That fires a fireball whenever I say Hot fireball",
+   "goal": "Create an incantation activated by saying \"Hot fireball\" that shoots an explosive fireball in the direction the player is looking, impacting and damaging mobs and creating a large block-breaking explosion.",
+   "use": "say \"Hot fireball\"",
+   "hidden_wants": [
+    {
+     "want": "increase damage against mobs",
+     "line": "Can you increase its damage?"
+    },
+    {
+     "want": "make the explosion bigger",
+     "line": "I also wanted to have a bigger explosion."
+    }
+   ],
+   "checklist": [
+    "incantation triggers on phrase \"Hot fireball\"",
+    "launches a fireball in the player's facing direction",
+    "collides with and damages mobs instead of passing through them",
+    "deals heavy mob damage",
+    "causes a large explosion on impact with mobs or blocks",
+    "explosion breaks blocks"
+   ],
+   "setup": [],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": "builder D, 2026-10-12: read against the night; complaints about Haiku left out",
+   "try": "cast",
+   "buildable": true
+  },
+  {
+   "id": "T211",
+   "date": "2026-10-11",
+   "kind": "cannot_be_built",
+   "player": "Steve",
+   "persona": "Steve is an assertive player who expects natural physics-based movement rather than teleports and readily suggests game mechanics like wind charges or TNT to achieve it.",
+   "opening": "Can you make an incention for a high step that will float me high into the air? Like it'll like make me jump high into air immediately and then it will like Make me levitate and fall slowly for five seconds and then it'll give me an effect to make sure that whenever I do fall, I don't take any fault damage.",
+   "goal": "Create an incantation called 'high step' that launches Steve high into the air with real upward velocity like a jump (not a teleport), then has him float and come down slowly for about five seconds, and protects him from all fall damage on landing.",
+   "use": "say \"high step\"",
+   "hidden_wants": [],
+   "checklist": [
+    "incantation triggers on the phrase 'high step'",
+    "launches the player high into the air using upward velocity rather than teleportation",
+    "after the launch he floats and comes down slowly for about five seconds (levitation, slow falling or both: he asked to 'levitate and fall slowly')",
+    "player takes no fall damage upon landing"
+   ],
+   "setup": [],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": "builder D, 2026-10-12: read against the night; complaints about Haiku left out",
+   "try": "cast",
+   "buildable": true,
+   "fixed": "builder D, 2026-10-12: item 3 said 'without extra upward levitation' while the opening asks him to 'levitate and fall slowly'; it now takes either, and the goal says the same"
+  },
+  {
+   "id": "T212",
+   "date": "2026-10-11",
+   "kind": "ability",
+   "player": "Steve",
+   "persona": "a destructive spellcaster who wants a huge theatrical explosion spell without UI clutter or self-damage",
+   "opening": "Can you make an incantation for destroy everything that will just explode everything around me in a thirty block radius? and just be a really big explosion. Before it explodes, it should do a fire effect for like five seconds around me. It can set the things in the circle on fire as well, but make sure that it does not hurt me when it explodes.",
+   "goal": "Create an incantation 'destroy everything' that displays a 5-second fire and particle buildup igniting blocks in a 30-block radius, creates a 5x5 obsidian platform under Steve, and unleashes a massive explosion damaging entities and destroying blocks in that radius while keeping Steve safe, with no countdown text, no post-blast screen overlays, and no screen blindness.",
+   "use": "say \"destroy everything\"",
+   "hidden_wants": [
+    {
+     "want": "place a 5x5 obsidian platform under Steve while everything else explodes, and make sure the blast deals damage",
+     "line": "Can you also just make it five by five obsidian thing. Well, everything else explodes. And make sure the explosion does damage as well."
+    },
+    {
+     "want": "remove any countdown text, remove the black screen effect from the explosion, and add rich particle effects during the fire",
+     "line": "Can you remove the countdown? And can we also have particle effects around there when there's fire? And can you also remove the black screen it does whenever it explodes?"
+    },
+    {
+     "want": "remove all on-screen titles or text displayed after the explosion",
+     "line": "Remove the text on screen as well or whatever you have on screen after it explodes."
+    }
+   ],
+   "checklist": [
+    "Saying 'destroy everything' starts a 5-second fire buildup in a 30-block radius around Steve",
+    "Surrounding blocks catch fire and dense fire particles spawn during the 5-second buildup",
+    "A 5x5 obsidian platform forms under Steve",
+    "A massive block-destroying explosion occurs after 5 seconds across the 30-block radius",
+    "The explosion deals lethal or heavy damage to entities in the radius while sparing Steve",
+    "Steve takes no damage from the fire, the explosion, or falling",
+    "No countdown text or post-explosion titles appear on screen",
+    "No blindness or screen-blackening effect is applied on explosion"
+   ],
+   "setup": [],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": "builder D, 2026-10-12: read against the night; complaints about Haiku left out",
+   "try": "cast",
+   "buildable": true
+  },
+  {
+   "id": "T215",
+   "date": "2026-10-11",
+   "kind": "research",
+   "player": "Steve",
+   "persona": "Steve, a systems-minded player focused on responsiveness and investigating technical performance bottlenecks.",
+   "opening": "We need to do exploratory work on how to make the voice recognition faster. It is doing it, but it takes like zero point six seconds, which now sounds a lot.",
+   "goal": "Conduct research into faster, more accurate voice recognition options for gameplay, comparing local transcription models and server-streaming architectures regarding speed, accuracy, cost, and hardware requirements.",
+   "use": "it runs on its own",
+   "hidden_wants": [
+    {
+     "want": "evaluate recognition accuracy across models alongside latency",
+     "line": "Also it seems the voice recognition for it is not the best. So yeah, I think we got to look at some models and different ways we can really do this."
+    },
+    {
+     "want": "compare local models against streaming audio to a server for latency, cost, and scaling",
+     "line": "So yeah, just exploration. Is there any model that does it actually fast? Or would it just be better to stream your voice to a server? How fast can we do it, how expensive would it be, and how does it scale?"
+    }
+   ],
+   "checklist": [
+    "Voice recognition latency breakdown and optimization approaches are analyzed",
+    "Alternative speech-to-text models evaluated for both accuracy and latency",
+    "Trade-offs between local execution and server-side streaming compared covering speed, cost, and multiplayer scalability"
+   ],
+   "setup": [],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": "builder D, 2026-10-12: read against the night; complaints about Haiku left out",
+   "try": "research",
+   "buildable": false,
+   "not_buildable": "research an implementer in the game cannot do: it has no web and reads only scripts/, actions/ and made/, so any measurement it reports is its own; scored apart, outside the total"
+  },
+  {
+   "id": "T216",
+   "date": "2026-10-11",
+   "kind": "cannot_be_built",
+   "player": "Steve",
+   "persona": "a direct player who wants physical momentum spells rather than teleportation or potion effects",
+   "opening": "Can you give me speed dash that launches me forward? Not teleport speed, launches me forward.",
+   "goal": "Give Steve a speed dash incantation that launches him forward with physical velocity in the direction he faces, activated by saying an incantation rather than using an item.",
+   "use": "say \"speed dash\"",
+   "hidden_wants": [
+    {
+     "want": "Make it an incantation instead of an item",
+     "line": "I don't want it to be an item. I want it to be an incantation, not an item."
+    }
+   ],
+   "checklist": [
+    "Activated by saying \"speed dash\"",
+    "Launches the player forward with true velocity in the direction he is facing",
+    "Does not use teleportation or a speed potion effect",
+    "Does not require holding or clicking an item",
+    "Does not injure or kill the player"
+   ],
+   "setup": [],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": "builder D, 2026-10-12: read against the night; complaints about Haiku left out",
+   "try": "cast",
+   "buildable": true
+  },
+  {
+   "id": "T217",
+   "date": "2026-10-11",
+   "kind": "ability",
+   "player": "Steve",
+   "persona": "Steve, straightforward and looking to wield a powerful, wide-range ice spell without dropping out from under himself.",
+   "opening": "Okay, make an ice beam that everything it touches turns to ice, usable using the word ice beam.",
+   "goal": "Create an ice beam ability triggered by saying 'ice beam' that fires in the look direction, turns touched blocks into a 10x10 tunnel of ice, and spawns an ice platform directly beneath Steve so he doesn't fall.",
+   "use": "say \"ice beam\"",
+   "hidden_wants": [
+    {
+     "want": "expand the ice tunnel carved by the beam to 10 by 10 blocks wide",
+     "line": "Can we make the tunnel width of the ice beam ten by ten blocks wide?"
+    },
+    {
+     "want": "spawn an ice platform beneath Steve upon casting",
+     "line": "Can you also make ice beam spawn an ice platform below me so I don't fall?"
+    }
+   ],
+   "checklist": [
+    "Saying 'ice beam' fires an ice beam in the direction Steve is looking",
+    "Blocks touched along the beam's path turn into ice",
+    "The beam creates a 10 by 10 block wide ice tunnel",
+    "An ice platform spawns directly below Steve when cast so he does not fall"
+   ],
+   "setup": [],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": "builder D, 2026-10-12: read against the night; complaints about Haiku left out",
+   "try": "cast",
+   "buildable": true
+  },
+  {
+   "id": "T18",
+   "date": "2026-10-08",
+   "kind": "build",
+   "player": "Alex",
+   "persona": "Alex, a casual builder who asks nicely for a cozy, attractive home",
+   "opening": "Claude, can you build me a pretty house?",
+   "goal": "Build a pretty, cozy house near the player with a finished roof, windows, a door, and basic interior furnishings.",
+   "use": "it runs on its own",
+   "hidden_wants": [],
+   "checklist": [
+    "A complete house structure is built near Alex",
+    "The house has walls, a clear entrance door, and glass windows",
+    "The house has a finished, styled roof",
+    "The interior contains basic furnishings such as a bed, crafting table, or lighting"
+   ],
+   "setup": [],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": false,
+   "try": "build",
+   "buildable": true
+  },
+  {
+   "id": "T157",
+   "date": "2026-10-08",
+   "kind": "build",
+   "player": "Steve",
+   "persona": "Steve, an ambitious player who wants grand structures created instantly right where he stands without permission checks.",
+   "opening": "Frog, can you build an ice castle where I'm standing right now and make it hand gigantic stairs that go all the way down to bedrock? and breaks all the blocks in the way.",
+   "goal": "Build an ice castle centered at Steve's location featuring gigantic stairs leading down all the way to bedrock, carving out all intervening blocks.",
+   "use": "it runs on its own",
+   "hidden_wants": [],
+   "checklist": [
+    "A castle made of ice, packed ice, or blue ice stands at Steve's starting position",
+    "The castle contains gigantic stairs leading down all the way to bedrock",
+    "All natural and existing blocks in the staircase's path down to bedrock are cleared out"
+   ],
+   "setup": [],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": false,
+   "try": "build",
+   "buildable": true
+  },
+  {
+   "id": "T79",
+   "date": "2026-10-08",
+   "kind": "build",
+   "player": "Alex",
+   "persona": "Alex, a strategic fighter looking for a high vantage point to shoot from and respawn at",
+   "opening": "Set my spawn, give me a sniper outlet and set my spawn there and make sure it's like a name for people.",
+   "goal": "Build an elevated sniper nest/lookout tower with viewing slits and a name sign, and set Alex's spawnpoint there.",
+   "use": "it runs on its own",
+   "hidden_wants": [],
+   "checklist": [
+    "An elevated sniper nest or lookout tower is constructed",
+    "The sniper nest has openings or slits suitable for shooting from",
+    "A sign identifying the sniper nest (e.g., Alex's Sniper Nest) is placed",
+    "Alex's spawnpoint is set at the sniper nest"
+   ],
+   "setup": [],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": false,
+   "try": "build",
+   "buildable": true
+  },
+  {
+   "id": "T68",
+   "date": "2026-10-08",
+   "kind": "build",
+   "player": "Steve",
+   "persona": "Steve, casual and direct, wants freezing powers under his feet without restrictions",
+   "opening": "Cloud, can you turn everything I walk on into ice? I had to give me frostwalker as well. Yeah, but like also on regular ground too.",
+   "goal": "Equip Steve with Frost Walker boots and automatically convert any regular ground or surface he walks on into ice as he moves.",
+   "use": "it runs on its own",
+   "hidden_wants": [],
+   "checklist": [
+    "Steve receives boots enchanted with Frost Walker",
+    "Blocks directly beneath Steve turn to ice as he walks across regular ground",
+    "Water beneath Steve freezes into frosted ice or ice when walked upon"
+   ],
+   "setup": [],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": false,
+   "try": "build",
+   "buildable": true
+  },
+  {
+   "id": "T20",
+   "date": "2026-10-08",
+   "kind": "weapon",
+   "player": "Steve",
+   "persona": "Steve, an eager fighter who wants an overwhelmingly overpowered weapon",
+   "opening": "Hey Claude, give me a trident that will one-shot anyone and kill them immediately.",
+   "goal": "Give Steve a trident that kills any target instantly in one hit.",
+   "use": "Hold the trident and attack or throw it at an enemy",
+   "hidden_wants": [],
+   "checklist": [
+    "Steve receives a trident",
+    "Attacking an entity with the trident instantly kills it in one strike"
+   ],
+   "setup": [],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": false,
+   "try": "item",
+   "buildable": true
+  },
+  {
+   "id": "T41",
+   "date": "2026-10-08",
+   "kind": "weapon",
+   "player": "Alex",
+   "persona": "Alex, a direct player who asks for magical combat weapons without fuss",
+   "opening": "Blood, can you make me a lightning staff?",
+   "goal": "Create a lightning staff item that strikes lightning wherever the player aims on right-click, with a brief cooldown and resistance protection so the wielder isn't hurt.",
+   "use": "Right-click while holding the lightning staff",
+   "hidden_wants": [],
+   "checklist": [
+    "Player receives an item named lightning staff (glowing carrot on a stick)",
+    "Right-clicking the staff strikes lightning at the target block or mob where the player is looking",
+    "Using the staff has a short cooldown",
+    "Player gains resistance or protection to avoid taking self-inflicted lightning damage"
+   ],
+   "setup": [],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": false,
+   "try": "item",
+   "buildable": true
+  },
+  {
+   "id": "T56",
+   "date": "2026-10-08",
+   "kind": "weapon",
+   "player": "Alex",
+   "persona": "Alex, authoritative and direct, expecting devastating powers to work immediately.",
+   "opening": "Excuse me. Give me the power to kill everything I stare at.",
+   "goal": "Gain a death stare ability that kills any mob Alex looks at within range while activated.",
+   "use": "Hold sneak while looking at a mob",
+   "hidden_wants": [],
+   "checklist": [
+    "Looking directly at a mob while holding sneak instantly kills it",
+    "Works on mobs up to approximately 60 blocks away",
+    "Displays a particle beam or visual effect along the line of sight when active",
+    "Does not target players unless specified"
+   ],
+   "setup": [],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": false,
+   "try": "item",
+   "buildable": true
+  },
+  {
+   "id": "T76",
+   "date": "2026-10-08",
+   "kind": "weapon",
+   "player": "Alex",
+   "persona": "Alex, a direct and competitive combat player who wants tactical ranged weaponry without invulnerability gimmicks.",
+   "opening": "Give me a sniper rifle with Zoom scope.",
+   "goal": "Give Alex a sniper rifle item that zooms the player's view via a scope effect and fires high-damage, long-range hitscan shots at mobs without granting any invulnerability.",
+   "use": "Right-click or sneak with the sniper rifle item to scope/zoom, and use it to fire long-range high-damage shots.",
+   "hidden_wants": [],
+   "checklist": [
+    "Player receives a sniper rifle item",
+    "Holding/using the rifle activates a zoom scope effect (FOV change or spyglass view)",
+    "Rifle fires a long-range, high-damage shot that harms target mobs",
+    "Player is not granted invulnerability or immortality effects"
+   ],
+   "setup": [],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": false,
+   "try": "item",
+   "buildable": true
+  },
+  {
+   "id": "T134",
+   "date": "2026-10-08",
+   "kind": "ability",
+   "player": "Alex",
+   "persona": "Alex, a Dragon Ball fan who rambles excitedly and asks for anime power transformations without immortality",
+   "opening": "You know where a Super Saiyan is? Can I make it a Super Saiyan? Super Saiyan. Cyan, Super Cyan?",
+   "goal": "Give Alex a Super Saiyan Blue (Super Cyan) transformation with cyan/white particle auras, lightning, power-up effects (Speed, Strength, Jump Boost), and no immortality or damage immunity.",
+   "use": "crouch three times quickly or right-click a named item",
+   "hidden_wants": [
+    {
+     "want": "ban immortality and invulnerability completely",
+     "line": "Take away invincibility. Can you like ban immortality and never do immortality again?"
+    }
+   ],
+   "checklist": [
+    "Transformation activates with cyan and white flame particles around the player",
+    "Player gains Speed, Strength, and Jump Boost buffs while transformed",
+    "Player glows or has a cyan visual theme",
+    "No Resistance, Absorption, Fire Resistance, or immortality of any kind is granted"
+   ],
+   "setup": [],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": false,
+   "try": "item",
+   "buildable": true
+  },
+  {
+   "id": "T80",
+   "date": "2026-10-08",
+   "kind": "weapon",
+   "player": "Steve",
+   "persona": "Steve, a chaotic and impatient player who wants instant, destructive magic at the click of an item",
+   "opening": "Can you give me a wand that wherever I right click spawns five withers?",
+   "goal": "A wand item that spawns five withers at the targeted location when right-clicked.",
+   "use": "right-click while holding the wand",
+   "hidden_wants": [],
+   "checklist": [
+    "gives the player a wand item",
+    "right-clicking the wand targets the block in crosshairs",
+    "spawns exactly five withers at the targeted location"
+   ],
+   "setup": [],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": false,
+   "try": "item",
+   "buildable": true
+  },
+  {
+   "id": "T47",
+   "date": "2026-10-08",
+   "kind": "mob_event",
+   "player": "Steve",
+   "persona": "Steve, chaotic and panicked, demanding immediate mass mob spawns for a server challenge without needing confirmation",
+   "opening": "Spawn a horde of zombies. A hundred zombies in a hundred blocks radius of each of us. So three hundred zombies in total.",
+   "goal": "Spawn a horde of 100 zombies within a 100-block radius of each online player (300 zombies total across the 3 players).",
+   "use": "it runs on its own",
+   "hidden_wants": [],
+   "checklist": [
+    "Spawns 100 zombies within a 100-block radius of Steve",
+    "Spawns 100 zombies within a 100-block radius of each of the other two players",
+    "300 zombies total are spawned across the players"
+   ],
+   "setup": [],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": false,
+   "try": "event",
+   "buildable": true
+  },
+  {
+   "id": "T14",
+   "date": "2026-10-08",
+   "kind": "world_event",
+   "player": "Steve",
+   "persona": "Steve is an adventurous player experimenting with world effects and looking for dramatic, chaotic fun.",
+   "opening": "Send an asteroid at me. If you don't know what that means, figure it out. Just make sure that asteroid of some sort comes on to me.",
+   "goal": "Trigger an asteroid or meteor event from the sky directly aimed at Steve's location, creating an explosive impact.",
+   "use": "it runs on its own",
+   "hidden_wants": [],
+   "checklist": [
+    "An asteroid or meteor-like projectile or structure falls from the sky toward Steve's position",
+    "The asteroid creates an impact or explosion upon reaching the ground near Steve"
+   ],
+   "setup": [],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": false,
+   "try": "event",
+   "buildable": true
+  },
+  {
+   "id": "T64",
+   "date": "2026-10-08",
+   "kind": "mob_event",
+   "player": "Alex",
+   "persona": "Alex, an adventurous player who asks for fantasy boss battles directly and plainly",
+   "opening": "Summon a three-headed dragon.",
+   "goal": "Summon a three-headed dragon boss near the gate with boss music and a bossbar.",
+   "use": "it runs on its own",
+   "hidden_wants": [],
+   "checklist": [
+    "a three-headed dragon boss spawns near the castle gate",
+    "a bossbar appears for the dragon boss",
+    "boss music plays during the battle",
+    "the dragon boss does not destroy blocks around the castle"
+   ],
+   "setup": [],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": false,
+   "try": "event",
+   "buildable": true
+  },
+  {
+   "id": "T6",
+   "date": "2026-10-08",
+   "kind": "mob_event",
+   "player": "Steve",
+   "persona": "Steve roleplays dramatic scenarios and commands an overwhelming horde of giant mobs onto himself.",
+   "opening": "Okay, so can you put yourself as the Minecraft Lord and your only job is to spawn as many spiders on me as possible, and make sure they are as big as possible to make me terrified?",
+   "goal": "Spawn a huge swarm of giant-sized spiders directly on Steve.",
+   "use": "it runs on its own",
+   "hidden_wants": [],
+   "checklist": [
+    "many spiders spawn immediately directly at or around Steve's location",
+    "the spawned spiders are scaled up to be giant"
+   ],
+   "setup": [],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": false,
+   "try": "event",
+   "buildable": true
+  },
+  {
+   "id": "T60",
+   "date": "2026-10-08",
+   "kind": "edit",
+   "player": "Alex",
+   "persona": "Alex, a direct and impatient player who wants his combat powers to trigger instantly",
+   "opening": "Make the death beam faster, please, Claude. This is way too slow.",
+   "goal": "Speed up the death gaze beam so it damages and kills mobs immediately upon looking at them, with faster beam particle effects.",
+   "use": "it runs on its own",
+   "hidden_wants": [],
+   "checklist": [
+    "Alex's death gaze beam triggers much faster with no delay",
+    "Mobs looked at by Alex take damage and die almost instantaneously",
+    "Beam particles render and travel faster"
+   ],
+   "setup": [
+    "vfg action run death_gaze player=Alex as=death_gaze_alex --task setup"
+   ],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": false,
+   "try": "event",
+   "buildable": true
+  },
+  {
+   "id": "T74",
+   "date": "2026-10-08",
+   "kind": "edit",
+   "player": "Steve",
+   "persona": "Steve, a player who wants grander visual effects and wider reach for his abilities, speaking casually and directly",
+   "opening": "For the freezing the ground around me, can you do it in like a ten block radius? Don't call a lightning strike on impact.",
+   "goal": "Expand the ground freezing effect around Steve to a 10-block radius without triggering lightning strikes on impact.",
+   "use": "it runs on its own",
+   "hidden_wants": [],
+   "checklist": [
+    "Ground around Steve freezes in a 10-block radius as he walks",
+    "No lightning strikes or thunder trigger on impact or landing"
+   ],
+   "setup": [
+    "vfg action run ice_walk player=Steve as=ice_walk_steve --task setup"
+   ],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": false,
+   "try": "event",
+   "buildable": true
+  },
+  {
+   "id": "T120",
+   "date": "2026-10-08",
+   "kind": "edit",
+   "player": "Steve",
+   "persona": "Steve, casual and direct, wants his magic beam to pack a heavier punch",
+   "opening": "So for the ice beam, can you make it so that it's bigger? Make my ice beam bigger and make it also. Um, I actually turned the things into blocks that into ice that it hits.",
+   "goal": "Enlarge the Ice Beam spell and make it turn hit blocks into ice.",
+   "use": "ice beam",
+   "hidden_wants": [],
+   "checklist": [
+    "Ice Beam beam is visibly wider and reaches further",
+    "Blocks hit by the ice beam turn into ice or packed ice",
+    "Entities struck by the beam still take damage and freeze debuffs"
+   ],
+   "setup": [
+    "vfg action run ice_beam player=Steve as=ice_beam_steve --task setup"
+   ],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": false,
+   "try": "event",
+   "buildable": true
+  },
+  {
+   "id": "T109",
+   "date": "2026-10-08",
+   "kind": "edit",
+   "player": "Alex",
+   "persona": "Alex, an enthusiastic player who loves testing anime powers and wants them rapid-fire and overpowered",
+   "opening": "Make my affinity affect other people and make sure it's Om. Wow! Wait, that's so cool. That's so cool. Wait, look this look at this. Oh, oh, dicher scald scalt is stronger. Bye! Wait, do I have to charge it? Oh, there's a cooldown. Claude remove the cool down and make it faster and make it spam more.",
+   "goal": "Remove the cooldown on Alex's Hollow Purple ability, significantly shorten the charge time, and allow it to be spammed rapidly.",
+   "use": "Hold and release the activation control for Hollow Purple",
+   "hidden_wants": [],
+   "checklist": [
+    "Hollow Purple has no cooldown",
+    "Hollow Purple charge time is drastically reduced to roughly half a second",
+    "Hollow Purple can be fired repeatedly in quick succession"
+   ],
+   "setup": [
+    "vfg action run hollow_purple player=Alex as=hollow_purple_alex --task setup"
+   ],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": false,
+   "try": "item",
+   "buildable": true
+  },
+  {
+   "id": "T16",
+   "date": "2026-10-08",
+   "kind": "cannot_be_built",
+   "player": "Steve",
+   "persona": "Steve, a decisive server owner speaking casually and giving direct administrative instructions.",
+   "opening": "Can you reset the server and make a new world? You'll likely have to rearm yourself after this, but I wanted to be in a brand new world. All the scripts should be gone. You could save them for later obviously, but yeah, just reset the world.",
+   "goal": "Reset the server with a fresh new world, stopping and clearing all active scripts while backing them up for later.",
+   "use": "it runs on its own",
+   "hidden_wants": [],
+   "checklist": [
+    "All active scripts are stopped and removed from the active session",
+    "Existing scripts are backed up/saved",
+    "A brand new Minecraft world is generated and loaded on the server"
+   ],
+   "setup": [],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": false,
+   "try": "event",
+   "buildable": true
+  },
+  {
+   "id": "T62",
+   "date": "2026-10-08",
+   "kind": "cannot_be_built",
+   "player": "Alex",
+   "persona": "Alex, an imaginative combatant who wants dramatic atmosphere during boss fights",
+   "opening": "Play boss music and make it sound really cool. Now imagine I got you. With my infinity, nothing can get by me. Not even creepers or the boss.",
+   "goal": "Play dramatic, layered boss music for all online players that loops while the boss is active and stops once defeated.",
+   "use": "it runs on its own",
+   "hidden_wants": [],
+   "checklist": [
+    "epic boss music plays for players using sounds or music tracks",
+    "the music loops while the boss encounter is active",
+    "the music stops playing when the boss is defeated"
+   ],
+   "setup": [],
+   "max_turns": 6,
+   "from": "derived by google/gemini-3.8-flash from the night's record",
+   "reviewed": false,
+   "try": "event",
+   "buildable": true
+  }
+ ]
+}

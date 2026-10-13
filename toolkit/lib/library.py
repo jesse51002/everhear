@@ -38,6 +38,8 @@ a script's v[...] reads against its actions' fields, a preset's against its valu
 
 Writing: add_preset(text, preset), lift(item, function, name, fields) and action_text(...)
 build the text `vfg script new` and `vfg preset save` write; vfg does the writing.
+needed(lib, presets, held) are the presets those need besides (push calls launch(...)), so a
+script that gets push gets launch too.
 """
 import ast
 import io
@@ -663,6 +665,48 @@ def wiring_line(text):
             at -= 1
         return at
     return None
+
+
+def preset_needs(preset, names):
+    """The other presets a preset's code uses: of `names` (every preset there is), those it reads
+    and neither defines, imports, takes nor assigns itself. A preset's function is named as the
+    preset, so a call is a need: push's launch(h, v, ...) needs the launch preset."""
+    if preset.tree is None:
+        return []
+    own, used = set(), set()
+    for node in ast.walk(preset.tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            own.add(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            own.update((a.asname or a.name).split(".")[0] for a in node.names)
+        elif isinstance(node, ast.arg):
+            own.add(node.arg)
+        elif isinstance(node, ast.Name):
+            (used if isinstance(node.ctx, ast.Load) else own).add(node.id)
+    return sorted(n for n in used - own if n in names and n != preset.name)
+
+
+def needed(lib, presets, held=()):
+    """[(preset Item, the name of the preset that needs it)]: every preset that `presets` (Items)
+    and the presets a script already `held` (names) need, transitively, each once, none of them
+    given or held already: what has to be copied in besides for the script to run."""
+    names = set(it.name for it in lib.presets())
+    have = set(held) | set(p.name for p in presets)
+    todo = [p for p in presets] + [lib.preset(n) for n in held]
+    out = []
+    while todo:
+        p = todo.pop(0)
+        if p is None:
+            continue
+        for n in preset_needs(p, names):
+            if n in have:
+                continue
+            have.add(n)
+            it = lib.preset(n)
+            if it is not None:
+                out.append((it, p.name))
+                todo.append(it)
+    return out
 
 
 def marker(preset, server):

@@ -54,6 +54,7 @@ vfg action run railgun player=Alex as=frost_rail_alex --task frost_rail_alex   #
 vfg action run edit copy=railgun_2 cooldown=5  # what vfg script set runs
 vfg action list                                # every action, ours and the server's: name — its line; --json
 vfg action check tnt_crouch                    # what is wrong with it, or ok
+vfg action show nuke                           # one action in full, as a brief gives it; exit 1 with the names near it
 vfg script new galick_ice --from galick_gun --preset replace_blocks   # the script and its action, made/<VFG_SERVER>/
 vfg script check                               # everything; or: vfg script check galick_ice crater
 vfg script deploy                              # or: vfg script deploy castle
@@ -67,8 +68,9 @@ vfg made save                                  # made/<VFG_SERVER>/ into a new $
 vfg made restore 2026-10-10                    # and back: that day's latest, or one save by its full name
 vfg state                                      # who is online and where, time, weather, what runs; --json
 vfg state --json --items                       # and each player's items, health, food, armor, level, mode, effects
-vfg route --task castle_steve < brief.txt      # the examples and presets for that brief, picked by Jev; JSON
+vfg route --task castle_steve < brief.txt      # the examples, presets and actions for that brief, picked by Jev; JSON
 vfg prefix                                     # the implementer's static system prompt, the same bytes each time
+vfg test hot_fireball_steve                    # its test on the test server (VFG_TEST_BOX): a line per check; -n N, --timeout S
 vfg action refs --version                      # the server's version, from server.jar: 26.3
 vfg action refs                                # {"version", "commands"}: the data generator's command tree
 vfg place save castle --player Steve --by castle_steve   # the save_place action: saved castle at 197 68 251 in overworld
@@ -77,6 +79,7 @@ vfg place list                                 # castle 197 68 251 overworld (ca
 vfg place forget castle                        # forgot castle; exit 1 if there was none
 vfg usage add --component brain --model openai/gpt-6.1-sol --in 9000 --out 120 --cost 0.0016 --ref '#812'
 vfg usage add --component implementer --model haiku --in 900 --out 120 --cache-read 15000 --cache-write 2000
+vfg usage add --component implementer --model deepseek-flash --in 4000 --out 900 --cache-read 310000 --largest 104322
 vfg usage flush                                # the queued rows, every structured() call's among them; none, nothing sent
 ```
 
@@ -298,26 +301,39 @@ once vfg has checked everything here (`run_incantation`):
   comes out of the router's budget. A task the box does not have warns `<name> is not a task on
   the box — routing on the brief alone`, a read that fails `cannot read <name> from the box
   (<why>) — routing on the brief alone`, and both route on. It makes one
-  card per example script and preset, ours and `made/<VFG_SERVER>/`'s, and asks Jev about all
+  card per example script, preset and action, ours and `made/<VFG_SERVER>/`'s (an action's card
+  is its menu line and the names of its values, from the actions cache), and asks Jev about all
   of them in one call through `remote/jev.py` on the box: `runs_it`, `close` or `no` per
-  script, `use` or `no` per preset. It prints JSON on stdout: `{"task", "scripts":
-  [{"name", "source", "verdict", "p_runs_it", "p_close", "path"}], "presets": [{"name",
-  "source", "p_use", "path"}], "fallback", "ms", "tokens"}`, with a log line on stderr.
-- **Picks:** every script whose `runs_it` and `close` reach `VFG_ROUTE_LOAD` (0.3), those that
-  run the job first, and every preset whose `use` reaches it that no loaded script holds.
-  Past `VFG_ROUTE_TIMEOUT_S` (3), or on any error, it picks by words instead: every card
-  sharing a word with the job (`"fallback": true`). It writes one usage row, `--component
-  jev --ref <REF>` (by default the task's name), in the background.
+  script, `use` or `no` per preset, `needed` or `no` per action. It prints JSON on stdout:
+  `{"task", "scripts": [{"name", "source", "verdict", "p_runs_it", "p_close", "path"}],
+  "presets": [{"name", "source", "p_use", "path"}], "actions": [{"name", "source", "p_needed",
+  "path"}], "fallback", "ms", "tokens"}`, with `"held"` and `"cut"` when there are any, and a
+  log line on stderr.
+- **Picks:** at most 3 scripts of those whose `runs_it` and `close` reach `VFG_ROUTE_LOAD` (0.3),
+  those that run the job first, then by how sure Jev is; every preset whose `use` reaches it
+  that no loaded script holds; at most 7 actions whose `needed` reaches it, by `needed`. What
+  the caps leave out is listed under `"cut"`. Past `VFG_ROUTE_TIMEOUT_S` (3), or on any error,
+  it picks by words instead (`lib/menu.py`'s words): every script or preset sharing a word with
+  the job, and the actions sharing most, those it names first (`"fallback": true`). It writes
+  one usage row, `--component jev --ref <REF>` (by default the task's name), in the background.
 - **`vfg prefix`** prints the part of an implementer's system prompt that never changes
   between spawns, so the provider reads it from the cache: `scripts/README.md`, the kit in
   full (`_lib/mc.py`, every file in `_lib/kit/`), then every library preset and example
   script by name: a preset's first line and its values class as written, a script's first
-  line only, since the brief has every action in full. Nothing
-  from `made/`, no date, no count. `vfg route` gives a script card the fields of the actions
-  over it.
+  line only; then every library action's menu line, by name, as `vfg action list` prints it.
+  Nothing from `made/`, no date, no count. `vfg route` gives a script card the fields of the
+  actions over it.
+- **`vfg action show <name>`** prints one action in full, the text a brief gives each action it
+  holds in full (`lib/py/vfg_actions.py`'s `describe()`, kept in the actions cache and read
+  through `lib/menu.py`, which the brain loads by path too): its line, its script, how it runs,
+  and every value with its type, limits, default and description. The cache is built again
+  first when an action file is newer. A name that is not an action exits 1 with the names near
+  it; one that did not load, with why.
 - **`--cache-read N` and `--cache-write N`** on `vfg usage add` are the input tokens read from
   and written to the prompt cache, in two columns of `usage` that the bridge adds on start;
-  until it has, the row goes in without them and one line on stderr says so.
+  until it has, the row goes in without them and one line on stderr says so. **`--largest N`**
+  is a run's largest request in tokens (an implementer's), in the column `largest_tokens`, the
+  same way.
 - **`vfg usage flush`** sends `usage.pending.jsonl` and writes no row of its own. Every
   `structured()` call (`lib/py/vfg_llm.py`) appends its row there under `usage.pending.lock`, in
   the format `vfg usage add` queues its own, plus `ok`, `error` and `ms`, the bridge's added
@@ -330,10 +346,33 @@ once vfg has checked everything here (`run_incantation`):
   output, so their rows never reach the box unless sent on purpose: `VFG_USAGE_QUEUE=OUT vfg usage
   flush`.
 
+## An ability's test, on the test server
+
+- **`vfg test <name> [-n N] [--timeout S]`** runs a task's test, `made/<VFG_SERVER>/tests/<name>.py`,
+  or a library script's, `scripts/<name>/test.py`, on the **test server**: a second Minecraft
+  server with Carpet's fake players, never the live one. First it gives the test server what
+  the test needs, each folder only when its stamp there is another (`scripts.py`'s `stale`, then
+  `deploy`): the kit, the task's made script, and the scripts of the actions the test names and of
+  the task's incantations, which it copies from the live server's store (those it bound, `by`,
+  and those on its action). Then `remote/test.py` runs the test there, one at a time, with the
+  actions it names as the actions cache holds them (for `t.run`). It prints one line per check,
+  `PASS`, `FAIL` or `CAN'T TELL` with the numbers that decided it, each copy's last `-n` (15) log
+  lines when one failed, and `RESULT: …`; exit 0 when none failed, else 1 with why on stderr. Past
+  `--timeout` (`VFG_TEST_TIMEOUT_S`, 60) it is stopped, its cleanup run. A task with no test gets
+  the skeleton (exit 1), as `vfg script new` writes it. The helpers are the kit's
+  (`scripts/_lib/kit/test.py`; its docstring is the guide): a stage at y 296, 3000 blocks out,
+  cleared after.
+- **The test server is a second box**: `VFG_TEST_BOX` names a file of its settings, `KEY=value`
+  lines as `~/.vfg/config` has them, of which `VFG_SSH`, `VFG_SSH_HOST`, `VFG_SSH_USER`,
+  `VFG_SSH_KEY`, `VFG_REMOTE_VFG` and `VFG_REMOTE_MC` are read over the live box's. On realmc it
+  is the paired server's own config: `integration/realmc/up ih-b-test`, then
+  `VFG_TEST_BOX=$REALMC_ROOT/ih-b-test/home/.vfg/config`. A second instance on the EC2 box needs
+  only `VFG_REMOTE_VFG` and `VFG_REMOTE_MC`. None set, or the live box itself: exit 3.
+
 ## Tests
 
 ```sh
-python3 -m unittest discover -s toolkit/tests      # from the repo's root; about 7 s
+python3 -m unittest discover -s toolkit/tests      # from the repo's root; about 15 s
 ```
 
 No EC2 and no network, and where `python3` has no pydantic or httpx the run starts itself again
@@ -356,7 +395,9 @@ names one, with `vfg_llm` mocked, and no OpenRouter key passes in.
 - `test_copies.py`: `vfg action run` and its copies (`--for` among them), edits, stops, `running.json`, script save.
 - `test_task.py`: `vfg task set` and `list` on the box's `tasks` table, `vfg context --json`'s
   tasks, and a box without the table.
-- `test_route.py`: the router, `remote/jev.py` against `fake_jev_route.py`, `vfg prefix`.
+- `test_test.py`: `vfg test` against a second box, its skeleton, `remote/test.py`.
+- `test_route.py`: the router, `remote/jev.py` against `fake_jev_route.py`, `vfg prefix`, `vfg action show`,
+  `vfg usage add`'s added columns.
 - `test_library.py`: `vfg script new` and `check`, `vfg preset save`, five real presets in one script.
 - `test_incantations.py`: the incantation actions writing the box's store through their real
   script, the alias call, `values.<name>=` words, a binding following its action after a run,

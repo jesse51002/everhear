@@ -1,56 +1,70 @@
-"""One implementer run's usage, from its result's modelUsage, into `vfg usage add` rows.
+"""One implementer run's usage, priced by us: the harness reports each model request's tokens (a
+Request event), each is priced from the table in config.py at its own size and time, and the run
+sums them into `vfg usage add` rows, one per model, so one per run (every model Claude Code may call
+is set to the same one). When the provider says what each request was billed (OpenRouter's
+`usage.cost`, Request.billed), and every request of the run has it, the row's cost is that; else the
+table's. The table's price is kept beside it (list_cost) either way, so an eval compares at list
+price.
 
-A result's modelUsage is its session's running totals: a follow-up resumes the session, and the
-CLI restores the totals it had, so a follow-up's row is its totals less the last run's (the
-snapshot the runner keeps with the task). A total lower than the snapshot is a session that
-started again from nothing, and counts from zero."""
-from .config import js_num
+No harness's running totals are read. Claude Code's modelUsage is its session's running total, and
+a session resumed after the brain restarted logged its whole history again as one run's; a run
+here is the requests it made, and nothing else."""
+from .config import js_num, log, price_at
+from .harness.base import Request
 
-Totals = dict[str, float]
-
-
-def _n(u: dict, key: str):
-    v = u.get(key)
-    return 0 if v is None else v
-
-
-def totals_of(u: dict) -> Totals:
-    """One model's totals from the SDK's modelUsage entry (inputTokens, cacheReadInputTokens, …).
-    "in" counts every input token; cacheRead and cacheWrite are the parts of it read from and
-    written to the cache."""
-    return {
-        "in": _n(u, "inputTokens") + _n(u, "cacheReadInputTokens") + _n(u, "cacheCreationInputTokens"),
-        "out": _n(u, "outputTokens"),
-        "cost": _n(u, "costUSD"),
-        "cacheRead": _n(u, "cacheReadInputTokens"),
-        "cacheWrite": _n(u, "cacheCreationInputTokens"),
-    }
+# The models the table has no price for, each logged once.
+_unpriced: set[str] = set()
 
 
-ZERO: Totals = {"in": 0, "out": 0, "cost": 0, "cacheRead": 0, "cacheWrite": 0}
+def cost(r: Request) -> float:
+    """One request's dollars, at its size and time; 0 for a model the table does not have."""
+    p = price_at(r.model, r.size, r.at)
+    if p is None:
+        if r.model not in _unpriced:
+            _unpriced.add(r.model)
+            log("usage", "no price for %s: its requests are counted at $0" % (r.model or "an unnamed model"))
+        return 0.0
+    return (r.input * p.input + r.cache_read * p.hit + r.cache_write * p.write + r.output * p.output) / 1e6
 
 
-def rows(snapshot: dict[str, Totals], model_usage: dict[str, dict] | None,
-         ref: str) -> tuple[list[dict], dict[str, Totals]]:
-    """The rows for one result, one per model whose totals moved: its totals less the snapshot's.
-    Returns the rows and the new snapshot."""
-    nxt = dict(snapshot)
-    out = []
-    for model, u in (model_usage or {}).items():
-        if not isinstance(u, dict):
-            continue
-        now = totals_of(u)
-        prev = snapshot.get(model) or ZERO
-        fell = (any(now[k] < prev[k] for k in ("in", "out", "cacheRead", "cacheWrite"))
-                or now["cost"] < prev["cost"] - 1e-9)
-        base = ZERO if fell else prev
-        nxt[model] = now
-        row = {"component": "implementer", "model": model, "ref": ref,
-               **{k: now[k] - base[k] for k in ("in", "out", "cacheRead", "cacheWrite")},
-               "cost": max(0, now["cost"] - base["cost"])}
-        if row["in"] or row["out"]:
-            out.append(row)
-    return out, nxt
+class RunUsage:
+    """One run's requests, summed by model."""
+
+    def __init__(self, ref: str):
+        self.ref = ref
+        self._models: dict[str, dict] = {}
+
+    def add(self, r: Request) -> float:
+        """Counts one request; returns its cost."""
+        c = cost(r)
+        m = self._models.setdefault(r.model, {"in": 0, "out": 0, "cacheRead": 0, "cacheWrite": 0, "cost": 0.0,
+                                              "largest": 0, "requests": 0, "billed": 0.0, "billed_all": True})
+        m["in"] += r.size
+        m["out"] += r.output
+        m["cacheRead"] += r.cache_read
+        m["cacheWrite"] += r.cache_write
+        m["cost"] += c
+        m["largest"] = max(m["largest"], r.size)
+        m["requests"] += 1
+        if r.billed is None:
+            m["billed_all"] = False
+        else:
+            m["billed"] += r.billed
+        return c
+
+    def rows(self) -> list[dict]:
+        """The run's rows: "in" counts every input token, cacheRead and cacheWrite the parts of it read
+        from and written to the cache; largest is its largest request, in tokens."""
+        out = []
+        for model, m in self._models.items():
+            if not (m["in"] or m["out"]):
+                continue
+            billed = m["billed_all"] and m["requests"] > 0
+            out.append({"component": "implementer", "model": model, "ref": self.ref,
+                        **{k: m[k] for k in ("in", "out", "cacheRead", "cacheWrite", "largest")},
+                        "cost": m["billed"] if billed else m["cost"], "list_cost": m["cost"],
+                        "priced_by": "the provider" if billed else "our table"})
+        return out
 
 
 def usage_args(row: dict) -> list[str]:
@@ -58,4 +72,4 @@ def usage_args(row: dict) -> list[str]:
     return ["usage", "add", "--component", row["component"], "--model", row["model"],
             "--in", js_num(row["in"]), "--out", js_num(row["out"]), "--cost", "%.6f" % row["cost"],
             "--cache-read", js_num(row["cacheRead"]), "--cache-write", js_num(row["cacheWrite"]),
-            "--ref", row["ref"]]
+            "--largest", js_num(row["largest"]), "--ref", row["ref"]]

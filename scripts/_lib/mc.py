@@ -7,6 +7,7 @@ its values are in the copy's meta file, which kit.values reads). It imports the 
 (_lib/kit), and this for whatever the kit does not do:
 
     from mc import rcon, say, players, pos, spawn, on_stop, log, TAG
+    mc.cast()     True when an incantation's cast started this copy: act at once, wait for no click
 
 Python 3.9+, standard library only. Seeded from the old rcon.py and demon.py.
 
@@ -103,6 +104,13 @@ def task() -> str:
     """The task that started this copy, by its name (galick_gun_styrk), or "" when none did:
     VFG_TASK when it is a task's name and not `cast`, the bridge's for an incantation's copies."""
     return TASK if TASK_RE.match(TASK) and TASK != "cast" else ""
+
+
+def cast() -> bool:
+    """Whether a cast started this copy: an incantation heard (the bridge), or t.cast on the test
+    server. A cast's copy must act at once, as it starts: nobody presses a key or crouches after a
+    spoken word, so an ability that waits for a click or a crouch never fires on a cast."""
+    return TASK == "cast"
 
 
 def refused_word(cmd: str) -> Optional[str]:

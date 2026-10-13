@@ -183,6 +183,20 @@ class TestFire(CastCase):
         meta = self.meta(doc["copy"])
         self.assertEqual(meta["values"], {"player": "Alex", "target": "Notch", "power": 2})
 
+    def test_a_value_the_action_gained_after_the_binding_takes_its_default(self):
+        # vfg deployed zap with its action as it is now: it has gained `radius` since the binding
+        with open(os.path.join(self.base, "scripts", "zap", "action_defaults.json"), "w") as f:
+            json.dump({"zap": {"values": {"player": "@a", "target": "", "power": 1, "reach": 30, "radius": 5},
+                               "live": []}}, f)
+        self.write_store(entry("@a", "fire ball", values={"player": "", "target": "Notch", "power": 2, "reach": 20},
+                               asked={"target": "Notch", "power": 2}, caster_fields=["player"]))
+        status, doc = self.cast(player="Alex")
+        self.assertEqual(doc["status"], "fired")
+        self.assertTrue(self.ran(doc["copy"]))
+        # what it asked and the caster are the binding's; reach follows the action; radius its default
+        self.assertEqual(self.meta(doc["copy"])["values"],
+                         {"player": "Alex", "target": "Notch", "power": 2, "reach": 30, "radius": 5})
+
     def test_the_event_row(self):
         self.cast()
         self.assertTrue(self.events(1))

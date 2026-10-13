@@ -9,8 +9,12 @@ absolute path, nothing from made/ (what implementers make goes in each brief):
   2. the kit, in full: scripts/_lib/mc.py, then every file in scripts/_lib/kit/
      by name;
   3. every library preset and example script, sorted by name: a preset's first
-     line and its values class, as written; a script's first line only, since the
-     brief carries every action in full.
+     line and its values class, as written; a script's first line only (its values
+     are its action's), and whether it has a test beside it (scripts/<name>/test.py);
+  4. every library action's menu line, sorted by name (menu.line, as `vfg action list`
+     prints it), from the actions cache: the brief gives the ones picked for the job in
+     full, and `vfg action show <name>` any other. This server's made actions change
+     during play, so they are in each brief instead.
 
 `vfg prefix` prints it. An implementer gets it after its rules.
 
@@ -18,6 +22,8 @@ Python 3.9+, standard library only, like toolkit/vfg.
 """
 import os
 
+import library
+import menu
 import route
 
 HEAD_HOW = "HOW A SCRIPT AND A PRESET ARE WRITTEN"
@@ -25,9 +31,14 @@ HEAD_KIT = ("THE KIT, IN FULL — what every script and preset imports and nobod
             "it is here so you never open it")
 HEAD_LIBRARY = ("THE LIBRARY — every preset and example script, by name: its first line, and a "
                 "preset's values. A preset is scripts/_presets/<name>.py, an example script "
-                "scripts/<name>/main.py, and its values are its action's (your brief has every "
-                "action); the ones picked for your job are in your first message, in full, and any "
-                "other you can read.")
+                "scripts/<name>/main.py, and its values are its action's (vfg action show <action>); "
+                "the ones picked for your job are in your first message, in full, and any other you "
+                "can read.")
+HEAD_ACTIONS = ("THE LIBRARY'S ACTIONS, one menu line each. Your brief has the ones picked for your job "
+                "in full; for any other: vfg action show <name>.")
+# When the actions could not be read (vfg prefix says why on stderr): the same words every time.
+NO_ACTIONS = ("THE LIBRARY'S ACTIONS: not read here. vfg action list names every action, and vfg action "
+              "show <name> prints one in full.")
 
 
 def _text(path):
@@ -60,7 +71,7 @@ def class_lines(preset):
     import ast
     lines = []
     for node in preset.tree.body:
-        if not route.library._values_class(node, preset.name):
+        if not library._values_class(node, preset.name):
             continue
         body = node.body
         for i, n in enumerate(body):
@@ -75,12 +86,14 @@ def class_lines(preset):
 
 
 def library_lines(repo):
-    lib = route.library.Library(repo, "main")
-    cards = [c for c in route.load_cards(repo, None) if c["source"] == "library"]
+    lib = library.Library(repo, "main")
+    cards = [c for c in route.load_cards(repo, None) if c["source"] == "library" and c["kind"] != "action"]
     cards.sort(key=lambda c: (c["name"], c["kind"] != "script"))
     out = []
     for c in cards:
-        out.append("%s (%s)" % (c["name"], "example script" if c["kind"] == "script" else "preset"))
+        tested = c["kind"] == "script" and os.path.isfile(os.path.join(repo, os.path.dirname(c["path"]), "test.py"))
+        out.append("%s (%s)" % (c["name"], "example script, with its test.py" if tested else
+                                "example script" if c["kind"] == "script" else "preset"))
         out.append("  " + (c["first"] or "(no first line)"))
         if c["kind"] != "preset":
             continue
@@ -90,8 +103,15 @@ def library_lines(repo):
     return out
 
 
-def build(repo):
-    """The prefix, as text: the same bytes for the same library files."""
+def action_lines(actions):
+    """`nuke — Drop a nuke on ...`: every library action in the actions cache, by name."""
+    acts = (actions or {}).get("actions") or {}
+    return [menu.line(n, e) for n, e in sorted(acts.items()) if isinstance(e, dict) and e.get("source") == "library"]
+
+
+def build(repo, actions=None):
+    """The prefix, as text: the same bytes for the same library files. `actions` is the actions
+    cache (vfg_actions.cache); None when it could not be read."""
     parts = [HEAD_HOW, ""]
     readme = "scripts/README.md"
     if os.path.isfile(os.path.join(repo, readme)):
@@ -101,4 +121,9 @@ def build(repo):
         parts.append(_file(repo, rel))
     parts += [HEAD_LIBRARY, ""]
     parts += library_lines(repo)
+    if actions is None:
+        parts += ["", NO_ACTIONS]
+    else:
+        parts += ["", HEAD_ACTIONS, ""]
+        parts += action_lines(actions) or ["(none)"]
     return "\n".join(parts) + "\n"

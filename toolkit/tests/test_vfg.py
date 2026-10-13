@@ -875,6 +875,13 @@ class TestScripts(BoxCase):
         self.assertTrue(os.path.isdir(self.deployed("orphan")))                 # no twin here: left alone
         self.assertEqual([n for n in os.listdir(self.deployed()) if n.startswith(".")], [])
 
+    def test_the_kit_alone_as_the_bridges_deploy_sends_it(self):
+        r = self.vfg("script", "deploy", "--kit")
+        self.assertEqual((r.returncode, r.stdout), (0, "deployed: _lib\n"), r.stderr)
+        self.assertTrue(os.path.isfile(self.deployed("_lib", ".vfg-stamp")))   # what the bridge's loader watches
+        self.assertFalse(os.path.exists(self.deployed("hello")))
+        self.assertOneLine(self.vfg("script", "deploy", "--kit", "hello"), 2, "the kit alone")
+
     def test_what_is_not_a_script_is_skipped_or_refused(self):
         self.box.write("scripts/broken/main.py", "print(1)\n")
         r = self.vfg("script", "deploy")

@@ -2,10 +2,10 @@
 
 Built like jev/tests/fake_jev.py, but it answers the router's questions, about
 the state's job, task and context: a question about the card named "x_y" (its
-instructions quote the name) is answered with its first label (runs_it, use)
-at 0.9 when they hold "x_y" or "x y"; with close at 0.6 (a script) or use at
-0.6 (a preset) when they hold one of the name's words split at `_`; otherwise
-`no` at 0.9. Every answer carries `probabilities` for every label. `usage.input_tokens` is the request
+instructions quote the name) is answered with its first label (runs_it, use,
+needed) at 0.9 when they hold "x_y" or "x y"; with close at 0.6 (a script), use
+at 0.6 (a preset) or needed at 0.6 (an action) when they hold one of the name's
+words split at `_`; otherwise `no` at 0.9. Every answer carries `probabilities` for every label. `usage.input_tokens` is the request
 body's JSON length / 4.
 
 In process: `server = serve()`, then `server.url`, `server.calls` (each
@@ -19,7 +19,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-NAME = re.compile(r'(?:Example script|Preset) "([^"]+)"')
+NAME = re.compile(r'(?:Example script|Preset|Action) "([^"]+)"')
 
 
 def answer(question, text):

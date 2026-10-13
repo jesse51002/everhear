@@ -1,4 +1,5 @@
-"""The kit's modules: imported from VFG_KIT, again when its stamp changes; a kit without them is None."""
+"""The kit's modules: imported from VFG_KIT, again when its stamp changes; a kit without them, or one
+older than the bridge (without what it calls), is None, and says why."""
 
 import logging
 import os
@@ -26,11 +27,14 @@ class TestKit(unittest.TestCase):
                 sys.path.remove(self.path)
         self.addCleanup(restore)
 
-    def deploy(self, value, stamp):
+    def deploy(self, value, stamp, old=False):
+        """Both modules, as a kit holds them; `old`: an incantations.py from before cast_meta."""
         for name in ("instances", "incantations"):
             path = os.path.join(self.path, name + ".py")
             with open(path, "w") as f:
-                f.write("VALUE = %d\n\ndef warm():\n    pass\n" % value)
+                f.write("VALUE = %d\n\ndef warm():\n    pass\n\nclass Box:\n    pass\n" % value)
+                if name == "incantations" and not old:
+                    f.write("\ndef cast_meta(entry, player):\n    return {}\n")
             os.utime(path, (1e9 + value, 1e9 + value))  # a cached .pyc of the last one is stale
         tmp = os.path.join(self.path, ".vfg-stamp.tmp")  # replaced whole, as vfg writes it
         with open(tmp, "w") as f:
@@ -58,6 +62,20 @@ class TestKit(unittest.TestCase):
         self.assertIn("has no instances or incantations", logs.output[0])
         self.deploy(1, "c" * 64)
         self.assertEqual(kit.modules()[0].VALUE, 1)
+
+    def test_a_kit_older_than_the_bridge_is_none_until_deployed_again(self):
+        self.deploy(1, "d" * 64, old=True)
+        kit = Kit(self.path)
+        with self.assertLogs("vfg_bridge", logging.WARNING) as logs:
+            self.assertIsNone(kit.modules())
+            self.assertIsNone(kit.modules())
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("is older than this bridge (no incantations.cast_meta): deploy it again, vfg script deploy "
+                      "--kit (deploy.sh does)", logs.output[0])
+        self.assertIn("older than this bridge", kit.why)
+        self.deploy(2, "e" * 64)
+        self.assertEqual(kit.modules()[0].VALUE, 2)
+        self.assertIsNone(kit.why)
 
 
 if __name__ == "__main__":

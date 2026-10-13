@@ -1,7 +1,7 @@
 """The EXAMPLES block: what an implementer starts with for its own job, added to its brief by the
 runner (brief.compose) so it never spends a turn looking. Its static part — its rules, the kit, the
-first lines of the library's presets and scripts — is in its system prompt (prefix.py); this is
-the part that changes:
+first lines of the library's presets and scripts, the library's actions one menu line each — is in
+its system prompt (prefix.py); this is the part that changes:
 
     EXAMPLES, picked for ice_beam_steve by Jev in 0.3 s.
     ice_beam runs this job: run its action, ice_beam, with the values the job needs. galick_gun is close.
@@ -13,24 +13,30 @@ the part that changes:
     Made on this server (made/main/), by first line:
       ice_trail (preset): Lay packed ice under a player's feet as they walk.
 
-    ACTIONS: every action, the library's (actions/) then this server's (made/main/actions/), whole, ...
+    ACTIONS: the library's are in your system prompt, ... Here, in full, are the 3 picked for your job ...
+    …
+    Made on this server (made/main/actions/), one menu line each:
     …
 
     === scripts/ice_beam/main.py ===
     …
 
-The router picks scripts; the line saying which runs the job names the actions over them, from the
-actions cache. ACTIONS is every action whole, library and made, read from that cache as the
-implementer starts (actions.py), and "Running:" every copy in running.json, with the values that
-differ from its action's. Then, whole and never cut, with no limit on how many: every script the
-router loaded (those that run the job first), every preset it loaded, every script the brief
-names, and the script of every running copy the brief names, with that copy's values now.
+The router picks scripts and actions; the line saying which runs the job names the actions over
+them, from the actions cache. ACTIONS gives at most 7 actions whole, the router's picks best first
+(by the job's words when the router failed), and this server's made actions one menu line each,
+read from that cache as the implementer starts (actions.py); "Running:" is every copy in
+running.json, with the values that differ from its action's. Then, whole and never cut: at most 3
+scripts the router loaded (those that run the job first), each followed by its test when it has one
+(scripts/<name>/test.py: a worked example of a test), the task's own test when it has one
+(made/<server>/tests/<task>.py), every preset it loaded, every script the brief names, and the
+script of every running copy the brief names, with that copy's values now.
 
 `vfg route` (route.py), `vfg state --json` and the actions cache are read at once; whatever fails,
 the block says what is missing and the brief still goes, never more than VFG_ROUTE_TIMEOUT_S and a
 second after the runner asked for the router and the state, and ACTIONS_TIMEOUT_S for the actions
 (a fresh cache is one file read; a rebuild after an action file changed loads that file). The
-picks go into the brain's log, never into the task's row, which the brain alone writes."""
+picks go into the brain's log, never into the task's row, which the brain alone writes; the size
+of each part of the block goes into `sizes`, for brief.compose's one log line."""
 import asyncio
 import importlib.util
 import json
@@ -205,6 +211,9 @@ class Gathered:
     named: list = field(default_factory=list)  # Items the brief names that the router did not load
     changing: list = field(default_factory=list)  # (copy name, its entry, its script's Item or None) the brief names
     files: list[str] = field(default_factory=list)  # repo-relative, in the order they go in
+    kinds: dict = field(default_factory=dict)  # a file's part: scripts, presets, named or running
+    full: list[str] = field(default_factory=list)  # the actions given in full, best first
+    full_how: str = ""  # how they were picked: by Jev, by words
 
 
 def changing_line(g: Gathered, name: str, copy: dict, item) -> str:
@@ -230,9 +239,9 @@ def header(g: Gathered) -> list[str]:
     lines = []
     p = g.picks
     if p is None:
-        lines.append("EXAMPLES %s: nothing was picked, the router failed (%s). Every library script's and "
-                     "preset's first line is in your system prompt, every action is under ACTIONS, and you can "
-                     "read any of them." % (who, g.route_failed))
+        lines.append("EXAMPLES %s: nothing was picked, the router failed (%s). Every library script's, "
+                     "preset's and action's first line is in your system prompt, and you can read any of them."
+                     % (who, g.route_failed))
     else:
         secs = "%.1f s" % ((p.get("ms") or 0) / 1000)
         if p.get("fallback"):
@@ -262,6 +271,12 @@ def header(g: Gathered) -> list[str]:
     if g.named:
         lines.append("Named in your brief, in full below: %s." % and_list([_named({"name": i.name, "source": i.source})
                                                                           for i in g.named]))
+    tests = [rel for rel in g.files if g.kinds.get(rel) == "tests"]
+    if tests:
+        mine = "made/%s/tests/%s.py" % (g.server, g.task)
+        lines.append("Tests below%s: %s; vfg test <name> runs one on the test server." % (
+            ", each after its script" if [t for t in tests if t != mine] else "",
+            and_list(["%s (yours)" % t if t == mine else t for t in tests])))
     if g.copies is not None:
         lines.append("Running: %s." % (", ".join(actions.copy_line(n, c, g.acts) for n, c in sorted(g.copies.items()))
                                        if g.copies else "nothing"))
@@ -276,10 +291,17 @@ def header(g: Gathered) -> list[str]:
     return lines
 
 
-def compose(g: Gathered, repo: str) -> str:
-    """The block's text: the header, this server's first lines, every action, then every file whole."""
+# The parts of the block, in its order, as `sizes` names them.
+PARTS = ("header", "made", "actions", "made_actions", "scripts", "tests", "presets", "named", "running")
+
+
+def compose(g: Gathered, repo: str, sizes: dict | None = None) -> str:
+    """The block's text: the header, this server's first lines, the actions, then every file whole.
+    `sizes`, when given, gets each part's characters and how many it holds: {"header": 812,
+    "actions": 9120, "actions_n": 5, ...}."""
     lines = header(g)
-    lines.append("")
+    head = "\n".join(lines) + "\n\n"
+    lines = []
     if g.made:
         lines.append("Made on this server (made/%s/), by first line:" % g.server)
         for it in g.made:
@@ -289,21 +311,48 @@ def compose(g: Gathered, repo: str) -> str:
             lines.append("  %s (%s): %s" % (it.name, it.kind, first))
     else:
         lines.append("Made on this server (made/%s/): nothing yet." % g.server)
-    out = "\n".join(lines) + "\n\n" + actions.section(g.acts, g.acts_failed, g.server, g.task)
+    made = "\n".join(lines) + "\n\n"
+    acts = actions.section(g.acts, g.acts_failed, g.server, g.task, g.full, g.full_how)
+    out = head + made + acts
+    size = dict.fromkeys(PARTS, 0)
+    size.update(header=len(head), made=len(made))
+    mark = "\nMade on this server (made/%s/actions/)" % g.server
+    size["actions"] = acts.index(mark) + 1 if mark in acts else len(acts)
+    size["made_actions"] = len(acts) - size["actions"]
+    counts = {"actions_n": len(g.full), "made_actions_n": sum(
+        1 for a in ((g.acts or {}).get("actions") or {}).values() if isinstance(a, dict) and a.get("source") != "library")}
     for rel in g.files:
         try:
             with open(os.path.join(repo, rel), "rb") as f:
                 text = f.read().decode("utf-8", errors="replace")
         except OSError as e:
             text = "(could not be read: %s)\n" % (e.strerror or e)
-        out += "\n=== %s ===\n%s" % (rel, text if text.endswith("\n") else text + "\n")
+        part = "\n=== %s ===\n%s" % (rel, text if text.endswith("\n") else text + "\n")
+        kind = g.kinds.get(rel, "named")
+        size[kind] += len(part)
+        counts[kind + "_n"] = counts.get(kind + "_n", 0) + 1
+        out += part
+    if sizes is not None:
+        sizes.update(size)
+        sizes.update(dict(("%s_n" % k, counts.get("%s_n" % k, 0)) for k in PARTS if k not in ("header", "made")))
     return out
+
+
+def test_of(cfg: ImplementerConfig, name: str | None, source: str | None) -> str | None:
+    """A script's test, from the repo, when it has one: a library script's scripts/<name>/test.py,
+    a task's (or a made script's) made/<server>/tests/<name>.py."""
+    if not name:
+        return None
+    rel = ("made/%s/tests/%s.py" % (cfg.server, name) if source == "made" else "scripts/%s/test.py" % name)
+    return rel if os.path.isfile(os.path.join(cfg.repo, rel)) else None
 
 
 # ------------------------------------------------------------------ the block
 
-async def build(cfg: ImplementerConfig, job: str, task: str | None, run: VfgRunner) -> str:
-    """The EXAMPLES block for one implementer's job, the brain's brief; its picks go into the log."""
+async def build(cfg: ImplementerConfig, job: str, task: str | None, run: VfgRunner,
+                sizes: dict | None = None) -> str:
+    """The EXAMPLES block for one implementer's job, the brain's brief; its picks go into the log, and
+    the size of each of its parts into `sizes` (compose), with how it went."""
     t0 = time.monotonic()
     budget = cfg.route_timeout_s + routing.SLACK_S
     acts_job = asyncio.ensure_future(read_actions(cfg))
@@ -323,6 +372,8 @@ async def build(cfg: ImplementerConfig, job: str, task: str | None, run: VfgRunn
         acts_job.cancel()
         acts, acts_failed = None, "not read within %g s" % ACTIONS_TIMEOUT_S
 
+    # The caps, whatever vfg route printed: 3 scripts, 7 actions.
+    picks = routing.trim(picks)
     lib = library(cfg.repo, cfg.server)
     scripts = lib.scripts()
     # What runs: running.json, read after vfg state (which writes it through), else the state's own list.
@@ -332,22 +383,28 @@ async def build(cfg: ImplementerConfig, job: str, task: str | None, run: VfgRunn
     g = Gathered(task=task, picks=picks, route_failed=route_failed, state=state, state_failed=state_failed,
                  server=cfg.server, acts=acts, acts_failed=acts_failed, copies=copies)
     g.made = [it for it in scripts + lib.presets() if it.source == "made"]
+    if acts is not None:
+        g.full, g.full_how = actions.chosen(acts, picks, job)
     seen: set[str] = set()
 
-    def add(rel: str | None) -> bool:
+    def add(rel: str | None, kind: str) -> bool:
         if not rel or rel in seen:
             return False
         seen.add(rel)
         g.files.append(rel)
+        g.kinds[rel] = kind
         return True
 
     for s in (picks or {}).get("scripts") or []:
-        add(s.get("path"))
+        if add(s.get("path"), "scripts"):
+            add(test_of(cfg, s.get("name"), s.get("source")), "tests")   # a worked example, with its script
+    if task:
+        add(test_of(cfg, task, "made"), "tests")   # the task's own test, already written
     for p in (picks or {}).get("presets") or []:
-        add(p.get("path"))
+        add(p.get("path"), "presets")
     by_name = {it.name: it for it in scripts}
     for name in names_in(job, list(by_name)):
-        if add(by_name[name].rel):
+        if add(by_name[name].rel, "named"):
             g.named.append(by_name[name])
     for name, copy in sorted((copies or {}).items()):
         if not names_in(job, [n for n in (name, copy.get("action"), copy.get("script")) if n]):
@@ -355,15 +412,16 @@ async def build(cfg: ImplementerConfig, job: str, task: str | None, run: VfgRunn
         item = lib.script(copy.get("script") or "")
         g.changing.append((name, copy, item))
         if item is not None:
-            add(item.rel)
+            add(item.rel, "running")
 
-    block = compose(g, cfg.repo)
+    block = compose(g, cfg.repo, sizes)
     ms = int((time.monotonic() - t0) * 1000)
-    log("route", "%s picks %s, loaded %s" % (
+    log("route", "%s picks %s, loaded %s; actions in full %s: %s" % (
         task or "-", json.dumps(routing.summary(picks, route_failed), ensure_ascii=False, separators=(",", ":")),
-        ", ".join(g.files) or "nothing"))
-    log("examples", "%s: %d files (%d named, %d running), %d made, %s actions, state %s, %d characters in %d ms; %s" % (
-        task or "-", len(g.files), len(g.named), len(g.changing), len(g.made),
-        len((acts or {}).get("actions") or {}) if acts is not None else "no",
-        "ok" if state is not None else "unavailable", len(block), ms, block.split("\n", 1)[0][:200]))
+        ", ".join(g.files) or "nothing", g.full_how or "-", ", ".join(g.full) or "none"))
+    if sizes is not None:
+        sizes.update(ms=ms, actions_how=g.full_how,
+                     route="failed" if picks is None else "words" if picks.get("fallback") else "jev",
+                     state="ok" if state is not None else "unavailable",
+                     actions_read="no" if acts is None else len(acts.get("actions") or {}))
     return block

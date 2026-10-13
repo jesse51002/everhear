@@ -1,4 +1,4 @@
-"""vfg route, vfg prefix, remote/jev.py and usage's cache columns: no EC2, no network.
+"""vfg route, vfg prefix, vfg action show, remote/jev.py and usage's added columns: no EC2, no network.
 
     python3 -m unittest discover -s toolkit/tests
 
@@ -14,8 +14,10 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from harness import ISO_RE, REPO, TOOLKIT, Box, BoxCase, Result, vfg_module, wait_for, write  # noqa: E402
 import fake_jev_route  # noqa: E402
+import standins  # noqa: E402
 
 sys.path.insert(0, os.path.join(TOOLKIT, "lib"))
+import menu    # noqa: E402
 import prefix  # noqa: E402
 import route   # noqa: E402
 
@@ -268,9 +270,10 @@ class TestPicks(unittest.TestCase):
             "preset_p2": ans(use=0.29, no=0.71),
             "preset_p3": ans(use=0.95, no=0.05),
         }
-        scripts, presets, unanswered = route.picks(cards, answers, 0.3)
+        scripts, presets, actions, unanswered = route.picks(cards, answers, 0.3)
         self.assertEqual([(s["name"], s["verdict"]) for s in scripts],
                          [("c", "runs_it"), ("d", "runs_it"), ("e", "close"), ("a", "close")])
+        self.assertEqual(actions, [])
         self.assertEqual([p["name"] for p in presets], ["p3", "p1"])
         self.assertEqual(unanswered, [])
         self.assertEqual(scripts[0]["p_runs_it"], 0.8)
@@ -281,7 +284,7 @@ class TestPicks(unittest.TestCase):
         answers = {"script_a": {"choice": "no", "confidence": 0.6},    # the rest share 0.4: loaded
                    "script_b": {"choice": "maybe", "confidence": 0.9},  # not a label
                    "preset_p": {"choice": "use"}}                      # no confidence
-        scripts, presets, unanswered = route.picks(cards, answers, 0.3)
+        scripts, presets, actions, unanswered = route.picks(cards, answers, 0.3)
         self.assertEqual([s["name"] for s in scripts], ["a"])
         self.assertEqual([c["name"] for c in unanswered], ["b", "p"])
 
@@ -298,7 +301,8 @@ class TestPicks(unittest.TestCase):
         self.assertEqual(r["held"], [{"name": "crater", "source": "library", "p_use": 0.9, "path": "x/crater",
                                       "in": "galick_gun"}])
         self.assertEqual(route.log_line(dict(r, ms=5)), "route galick_gun_steve galick_gun runs_it 0.90 · freeze use "
-                                                        "0.80 · crater use 0.90 in galick_gun · 2 loaded · 5ms 9tok")
+                                                        "0.80 · crater use 0.90 in galick_gun · 2 loaded · 0 actions · "
+                                                        "5ms 9tok")
         self.assertFalse(r["fallback"])
         self.assertEqual(r["tokens"], 9)
 
@@ -329,13 +333,129 @@ class TestPicks(unittest.TestCase):
         r = {"task": "ice_beam_alex", "fallback": False, "ms": 312, "tokens": 11840,
              "scripts": [{"name": "ice_beam", "verdict": "runs_it", "p_runs_it": 0.91, "p_close": 0.05},
                          {"name": "galick_gun", "verdict": "close", "p_runs_it": 0.1, "p_close": 0.42}],
-             "presets": [{"name": "crater", "p_use": 0.77}]}
+             "presets": [{"name": "crater", "p_use": 0.77}],
+             "actions": [{"name": "ice_beam", "p_needed": 0.93}], "cut": {"scripts": ["a", "b"]}}
         self.assertEqual(route.log_line(r), "route ice_beam_alex ice_beam runs_it 0.91 · galick_gun close 0.42 · "
-                                            "crater use 0.77 · 3 loaded · 312ms 11840tok")
+                                            "crater use 0.77 · ice_beam needed 0.93 · 3 loaded, 2 more scripts cut · "
+                                            "1 action · 312ms 11840tok")
         r = {"task": None, "fallback": True, "why": "jev did not answer within 3 s", "ms": 3004,
-             "tokens": 0, "scripts": [], "presets": []}
-        self.assertEqual(route.log_line(r), "route - words (jev did not answer within 3 s): · 0 loaded · "
+             "tokens": 0, "scripts": [], "presets": [], "actions": [{"name": "nuke", "p_needed": None}] * 7,
+             "cut": {"actions": ["zoo"]}}
+        self.assertEqual(route.log_line(r), "route - words (jev did not answer within 3 s): nuke by words · "
+                                            + "nuke by words · " * 6 + "0 loaded · 7 actions, 1 more cut · "
                                             "3004ms 0tok")
+
+
+def act(name, line="", source="library", takes=(), fields=()):
+    """An action as actions.json holds it, as far as the cards read it."""
+    return {"line": line, "source": source, "file": ("actions/%s.py" if source == "library" else
+                                                    "made/main/actions/%s.py") % name,
+            "takes": list(takes), "fields": dict((f, {}) for f in list(takes) + list(fields)),
+            "describe": "%s — %s\nscript %s · runs once" % (name, line, name)}
+
+
+class TestActionCards(unittest.TestCase):
+    ACTS = {"actions": {
+        "nuke": act("nuke", "Drop a nuke on a player or a place.", takes=["player", "countdown_seconds"],
+                    fields=["crater_radius"]),
+        "incantation_create": act("incantation_create", "Bind a phrase to an action for a player: an incantation.",
+                                  takes=["player", "phrase", "action"]),
+        "hot_fireball": act("hot_fireball", "A fireball that explodes where it hits.", source="made",
+                            takes=["player"]),
+        "broken": "not an entry"}}
+
+    def test_one_card_per_action_the_librarys_first_and_its_values_what_it_takes_first(self):
+        cards = menu.action_cards(self.ACTS)
+        self.assertEqual([(c["name"], c["source"]) for c in cards],
+                         [("incantation_create", "library"), ("nuke", "library"), ("hot_fireball", "made")])
+        nuke = cards[1]
+        self.assertEqual((nuke["kind"], nuke["path"], nuke["first"], nuke["asks"], nuke["presets"]),
+                         ("action", "actions/nuke.py", "Drop a nuke on a player or a place.", [], []))
+        self.assertEqual(list(nuke["values"]), ["player", "countdown_seconds", "crater_radius"])
+        self.assertEqual(menu.action_cards(None), [])
+
+    def test_the_action_question(self):
+        qs = route.make_questions(menu.action_cards(self.ACTS))
+        q = qs["action_nuke"]
+        self.assertEqual((q["type"], list(q["criteria"])), ("choice", ["needed", "no"]))
+        for words in ('Action "nuke" (ours): Drop a nuke on a player or a place.',
+                      "Its values: countdown_seconds, crater_radius, player.",
+                      "Would it help the implementer to have this action's values in front of it for this job?"):
+            self.assertIn(words, q["instructions"])
+        self.assertIn('Action "hot_fireball" (made on this server)', qs["action_hot_fireball"]["instructions"])
+
+    def test_the_menu_line_the_long_form_and_names_near_one(self):
+        e = self.ACTS["actions"]["nuke"]
+        self.assertEqual(menu.line("nuke", e), "nuke — Drop a nuke on a player or a place.")
+        self.assertEqual(menu.describe("nuke", e), e["describe"])
+        self.assertEqual(menu.describe("x", {"line": "Do x.", "script": "x", "runs": "until_stopped"}),
+                         "x — Do x.\nscript x · runs until stopped")
+        names = ["incantation_create", "incantation_edit", "incantation_remove", "nuke", "meteor_shower"]
+        self.assertEqual(menu.near("incantation", names), ["incantation_edit", "incantation_remove",
+                                                           "incantation_create"])   # the likest first
+        self.assertEqual(menu.near("nuk", names), ["nuke"])
+        self.assertEqual(menu.near("meteor", names), ["meteor_shower"])
+        self.assertEqual(menu.near("zzz", names), [])
+
+
+def acard(name, line=""):
+    return {"name": name, "kind": "action", "source": "library", "path": "actions/%s.py" % name, "first": line,
+            "asks": [], "values": {}, "presets": []}
+
+
+class TestActionPicks(unittest.TestCase):
+    def test_actions_by_needed_above_the_floor_at_most_seven_and_scripts_at_most_three(self):
+        cards = [card("s%d" % i, presets=["p"] if i == 2 else ()) for i in range(1, 6)] + [card("p", "preset")] + \
+                [acard("a%d" % i) for i in range(1, 11)]
+        answers = {"script_s%d" % i: ans(runs_it=0.05 * i, close=0.5, no=0.5 - 0.05 * i) for i in range(1, 6)}
+        answers["script_s5"] = ans(runs_it=0.8, close=0.1, no=0.1)     # runs it: first, whatever its odds
+        answers["preset_p"] = ans(use=0.9, no=0.1)
+        for i in range(1, 11):
+            answers["action_a%d" % i] = ans(needed=0.2 + 0.07 * i, no=0.8 - 0.07 * i)   # a1 0.27: under the floor
+        answers["action_a3"] = ans(needed=0.97, no=0.03)
+        r = route.route(cards, "job", "x_steve", "", "", lambda s, q, b: {"answers": answers, "input_tokens": 3},
+                        0.3, 3)
+        self.assertEqual([(s["name"], s["verdict"]) for s in r["scripts"]],
+                         [("s5", "runs_it"), ("s4", "close"), ("s3", "close")])
+        self.assertEqual([a["name"] for a in r["actions"]], ["a3", "a10", "a9", "a8", "a7", "a6", "a5"])
+        self.assertEqual(r["actions"][0], {"name": "a3", "source": "library", "p_needed": 0.97,
+                                           "path": "actions/a3.py"})
+        self.assertEqual(r["cut"], {"scripts": ["s2", "s1"], "actions": ["a4", "a2"]})
+        # p is held by s2 alone, which the cap left out: loaded itself
+        self.assertEqual([p["name"] for p in r["presets"]], ["p"])
+        self.assertNotIn("held", r)
+        self.assertRegex(route.log_line(r), r"· 4 loaded, 2 more scripts cut · 7 actions, 2 more cut · \d+ms 3tok$")
+
+    def test_words_rank_the_actions_too_and_change_nothing_of_the_examples(self):
+        cards = [card("galick_gun"), card("ice_beam"), card("crater", "preset")]
+        cards[1]["asks"] = ["freeze ray"]
+        actions = [acard("incantation_create", "Bind a phrase to an action for a player: a spell, an incantation."),
+                   acard("incantation_edit", "Change a player's incantation: its values or its cooldown."),
+                   acard("ice_staff", "Give a player an ice staff that freezes what it hits."),
+                   acard("freeze_ray", "A ray that freezes mobs solid."),
+                   acard("zoo", "Build a zoo: animals in pens.")]
+
+        def down(s, q, b):
+            raise route.JevFailed("jev failed: 500 internal error")
+        text = "an incantation for the freeze ray, freezing what it hits"
+        r = route.route(cards + actions, text, "freeze_ray_alex", "", "", down, 0.3, 3)
+        self.assertTrue(r["fallback"])
+        # the one it names first, then by how many words each shares; none that shares none
+        self.assertEqual([a["name"] for a in r["actions"]], ["freeze_ray", "incantation_create", "incantation_edit",
+                                                             "ice_staff"])
+        self.assertEqual(r["actions"][0]["p_needed"], None)
+        alone = route.route(cards, text, "freeze_ray_alex", "", "", down, 0.3, 3)
+        self.assertEqual((r["scripts"], r["presets"]), (alone["scripts"], alone["presets"]))
+        # more than seven: the first seven
+        names = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india"]
+        r = route.route([acard(n) for n in names], " ".join(names), "freeze_ray_alex", "", "", down, 0.3, 3)
+        self.assertEqual([a["name"] for a in r["actions"]], names[:7])
+        self.assertEqual(r["cut"], {"actions": ["hotel", "india"]})
+        # an action Jev left unanswered is judged by words beside its picks
+        part = {"answers": {"action_zoo": ans(needed=0.9, no=0.1)}, "input_tokens": 5}
+        r = route.route(actions, "the freeze ray", "freeze_ray_alex", "", "", lambda s, q, b: part, 0.3, 3)
+        self.assertEqual([a["name"] for a in r["actions"]], ["zoo", "freeze_ray", "ice_staff"])   # "freezes"
+        self.assertFalse(r["fallback"])
 
 
 # ================================================================== vfg route
@@ -358,7 +478,7 @@ class TestRoute(RouteCase):
         reads = self.box.programs("list")
         self.assertEqual([(a["name"], a["open"], a["json"]) for a in reads], [("galick_gun_steve", False, True)])
         self.assertGreater(got["tokens"], 0)
-        self.assertEqual(sorted(got), ["fallback", "held", "ms", "presets", "scripts", "task", "tokens"])
+        self.assertEqual(sorted(got), ["actions", "fallback", "held", "ms", "presets", "scripts", "task", "tokens"])
         self.assertEqual(len(self.jev.calls), 1)
         body = self.jev.calls[0]["body"]
         self.assertEqual(body["model"], "jev-latest")
@@ -368,7 +488,7 @@ class TestRoute(RouteCase):
         self.assertEqual(len(body["questions"]), 9)
         self.assertEqual(self.jev.calls[0]["headers"]["Authorization"], "Bearer " + KEY)
         self.assertRegex(r.stderr, r"^route galick_gun_steve galick_gun runs_it 0\.90 · crater use 0\.90 in galick_gun · "
-                                   r"1 loaded · \d+ms \d+tok\n$")
+                                   r"1 loaded · 0 actions · \d+ms \d+tok\n$")
         self.assertNotIn(KEY, r.stdout + r.stderr)
         # The usage row, by vfg usage add in a process of its own: the route never waits for it.
         self.assertTrue(wait_for(lambda: len(self.jev_rows()) == 1, 10))
@@ -498,6 +618,37 @@ class TestRoute(RouteCase):
         self.assertEqual((scripts, presets, got["fallback"]), ([], [], False))
         self.assertEqual(len(self.jev.calls), calls)
 
+    def write_actions(self):
+        """actions.json in VFG_HOME, as vfg route reads it: the library's two actions and one made here."""
+        acts = {"built_at": time.time(), "files": [], "errors": {}, "actions": {
+            "galick_gun": act("galick_gun", "Give a player a Galick Gun: charge, then a purple beam.",
+                              takes=["player", "cooldown"], fields=["crater_radius"]),
+            "nuke": act("nuke", "Drop a nuke on a player or a place.", takes=["player"]),
+            "spirit_bomb": act("spirit_bomb", "Give a player a Spirit Bomb to charge and throw.", source="made",
+                               takes=["player"])}}
+        with open(os.path.join(self.box.vhome, "actions.json"), "w") as f:
+            json.dump(acts, f)
+
+    def test_actions_are_cards_in_the_same_call(self):
+        self.write_actions()
+        r = self.route("Give Steve the galick gun with no cooldown.", "--task", "galick_gun_steve")
+        got, scripts, presets = self.picks(r)
+        self.assertEqual(len(self.jev.calls), 1)
+        qs = self.jev.calls[0]["body"]["questions"]
+        self.assertEqual(len(qs), 12)   # the 9 examples' and the 3 actions'
+        self.assertEqual(list(qs["action_spirit_bomb"]["criteria"]), ["needed", "no"])
+        self.assertIn('Action "spirit_bomb" (made on this server)', qs["action_spirit_bomb"]["instructions"])
+        self.assertEqual(got["actions"], [{"name": "galick_gun", "source": "library", "p_needed": 0.9,
+                                           "path": "actions/galick_gun.py"}])
+        self.assertEqual(scripts, ["galick_gun"])
+        self.assertRegex(r.stderr, r" · galick_gun needed 0\.90 · 1 loaded · 1 action · \d+ms \d+tok\n$")
+        # Jev late: the actions by words too
+        self.jev.mode = "hang"
+        got, scripts, presets = self.picks(self.route("Make the galick gun bigger and nuke the base.",
+                                                      VFG_ROUTE_TIMEOUT_S="0.15"))
+        self.assertTrue(got["fallback"])
+        self.assertEqual([(a["name"], a["p_needed"]) for a in got["actions"]], [("galick_gun", None), ("nuke", None)])
+
 
 # ================================================================== jev.py
 
@@ -576,7 +727,7 @@ class TestPrefix(RouteCase):
         r1, r2 = self.vfg("prefix"), self.vfg("prefix")
         self.assertOk(r1)
         self.assertEqual(r1.stdout, r2.stdout)
-        self.assertEqual(r1.stdout, prefix.build(self.box.repo))
+        self.assertEqual(r1.stdout, prefix.build(self.box.repo, {"actions": {}}))
         text = r1.stdout
         self.box.write("made/main/scripts/brand_new/main.py", '"""Brand new: made a minute ago."""\nASKS = []\n')
         self.box.write("made/main/presets/brand_preset.py", '"""A made preset."""\n')
@@ -595,11 +746,137 @@ class TestPrefix(RouteCase):
                       "  crater_radius: Live[int] = Field(8, ge=2, le=64) — how wide the crater is, in blocks\n"
                       "  crater_leave: Live[Literal[\"air\", \"lava\", \"fire\"]] = \"air\" — what is left in it\n",
                       lib)
+        lib = lib[:lib.index(prefix.HEAD_ACTIONS)]
         names = [l.split(" (")[0] for l in lib.splitlines()[2:] if l and not l.startswith(" ")]
         self.assertEqual(names, ["crater", "freeze", "galick_gun", "hello", "ice_beam", "loop", "theme_music"])
+        self.assertTrue(text.endswith("\n" + prefix.HEAD_ACTIONS + "\n\n(none)\n"))   # this library has none
         # a library change is a new prefix
         self.box.write("scripts/_presets/crater.py", CRATER.replace("Field(8,", "Field(9,"))
         self.assertNotEqual(self.vfg("prefix").stdout, text)
+        # a script with its test beside it says so
+        self.box.write("scripts/ice_beam/test.py", '"""The test of ice_beam."""\n')
+        self.assertIn("\nice_beam (example script, with its test.py)\n", self.vfg("prefix").stdout)
+        self.assertIn("\ngalick_gun (example script)\n", self.vfg("prefix").stdout)
+
+
+class ActionsCase(RouteCase):
+    """The small library with real actions: the stand-ins' beam, ping and slow (a variant of ping),
+    and one made on this server."""
+
+    MADE = '''from actions._types import Action, Players
+
+
+class TntCrouch(Action):
+    """Drop TNT on a player when they crouch three times."""
+
+    script = "beam"
+    runs = "until_stopped"
+    takes = ["player"]
+
+    player: Players = "@a"
+    """who it watches"""
+'''
+
+    def setUp(self):
+        RouteCase.setUp(self)
+        standins.install_types(self.box.repo)
+        for name in ("beam", "ping", "slow"):
+            self.box.write("actions/%s.py" % name, standins.ACTIONS[name])
+        for name in ("beam", "ping"):
+            self.box.write("scripts/%s/main.py" % name, standins.SCRIPTS[name])
+        self.box.write("made/main/actions/tnt_crouch.py", self.MADE)
+
+    def cache(self):
+        with open(os.path.join(self.box.vhome, "actions.json"), encoding="utf-8") as f:
+            return json.load(f)
+
+
+class TestPrefixActions(ActionsCase):
+    def test_the_librarys_actions_one_menu_line_each_last_and_the_same_bytes(self):
+        r1, r2 = self.vfg("prefix"), self.vfg("prefix")
+        self.assertOk(r1)
+        self.assertEqual(r1.stderr, "")
+        self.assertEqual(r1.stdout, r2.stdout)
+        text = r1.stdout
+        menu_part = text[text.index(prefix.HEAD_ACTIONS):]
+        self.assertEqual(menu_part.splitlines(), [
+            "THE LIBRARY'S ACTIONS, one menu line each. Your brief has the ones picked for your job in full; for any "
+            "other: vfg action show <name>.", "",
+            "beam — A beam that logs its values every 0.1 s (a test's stand-in).",
+            "ping — Ask who is online, once (a test's stand-in).",
+            "slow — Ask who is online, after a nap longer than its timeout (a test's stand-in)."])
+        self.assertLess(text.index(prefix.HEAD_LIBRARY), text.index(prefix.HEAD_ACTIONS))
+        # each line is the one vfg action list prints
+        listed = self.vfg("action", "list").stdout.splitlines()
+        self.assertEqual(menu_part.splitlines()[2:], [l for l in listed if not l.endswith("(made)")])
+        # an action made on this server, now or later, changes nothing
+        self.assertNotIn("tnt_crouch", text)
+        self.box.write("made/main/actions/later.py", self.MADE.replace("TntCrouch", "Later"))
+        self.assertEqual(self.vfg("prefix").stdout, text)
+        # a library action's line is part of it
+        path = self.box.write("actions/ping.py", standins.ACTIONS["ping"].replace("Ask who is online, once",
+                                                                                 "Ask who is on, once"))
+        os.utime(path, (time.time() + 5, time.time() + 5))
+        self.assertIn("ping — Ask who is on, once (a test's stand-in).\n", self.vfg("prefix").stdout)
+
+    def test_actions_that_cannot_be_read_leave_a_line_in_their_place(self):
+        mod = vfg_module()
+        real = mod.actions_lib
+
+        def gone():
+            raise mod.Fail(3, "not configured: cannot load lib/py/vfg_actions.py (no pydantic)")
+        mod.actions_lib = gone
+        self.addCleanup(setattr, mod, "actions_lib", real)
+        r = self.vfg("prefix")
+        self.assertOk(r)
+        self.assertTrue(r.stdout.endswith("\n\n" + prefix.NO_ACTIONS + "\n"))
+        self.assertEqual(r.stderr, "vfg: the library's actions are not in the prefix: not configured: cannot load "
+                                   "lib/py/vfg_actions.py (no pydantic)\n")
+
+
+class TestActionShow(ActionsCase):
+    def test_an_action_in_full_exactly_as_the_brief_gives_it(self):
+        r = self.vfg("action", "show", "beam")
+        self.assertOk(r)
+        self.assertEqual(r.stderr, "")
+        entry = self.cache()["actions"]["beam"]
+        self.assertEqual(r.stdout, entry["describe"] + "\n")
+        self.assertEqual(r.stdout, menu.describe("beam", entry) + "\n")
+        self.assertEqual(r.stdout.splitlines(), [
+            "beam — A beam that logs its values every 0.1 s (a test's stand-in).",
+            "script beam · runs until stopped",
+            "values (* = the planner fills it):",
+            "* player (player names separated by commas, or @a, @r, @p; default \"@a\"): who has it",
+            "* cooldown (a number 0..60; live; default 10): seconds between shots",
+            "  length (a whole number 5..200; default 60): how far it reaches, in blocks",
+            "  colour (text; live; fixed \"red\"): its colour",
+            "  report (true or false; default true): whether it says it is ready"])
+        # a variant, and one made on this server
+        self.assertIn("slow — Ask who is online, after a nap", self.vfg("action", "show", "slow").stdout)
+        r = self.vfg("action", "show", "tnt_crouch")
+        self.assertOk(r)
+        self.assertTrue(r.stdout.startswith("tnt_crouch — Drop TNT on a player when they crouch three times.\n"
+                                            "script beam · runs until stopped\n"))
+
+    def test_one_saved_a_moment_ago_is_there(self):
+        self.assertOk(self.vfg("action", "show", "beam"))
+        path = self.box.write("made/main/actions/fresh_one.py", self.MADE.replace("TntCrouch", "FreshOne"))
+        os.utime(path, (time.time() + 5, time.time() + 5))
+        r = self.vfg("action", "show", "fresh_one")
+        self.assertOk(r)
+        self.assertTrue(r.stdout.startswith("fresh_one — Drop TNT"))
+
+    def test_an_unknown_name_says_the_names_near_it_and_a_broken_one_why(self):
+        self.assertOneLine(self.vfg("action", "show", "bem"), 1,
+                           r"^vfg: no action bem in actions/ or made/main/actions/; near it: beam$")
+        self.assertOneLine(self.vfg("action", "show", "tnt"), 1,
+                           r"^vfg: no action tnt in actions/ or made/main/actions/; near it: tnt_crouch$")
+        self.assertOneLine(self.vfg("action", "show", "zzzz"), 1,
+                           r"^vfg: no action zzzz in actions/ or made/main/actions/ — vfg action list names them$")
+        self.box.write("made/main/actions/broken.py", "def broken(:\n")
+        self.assertOneLine(self.vfg("action", "show", "broken"), 1,
+                           r"^vfg: action broken did not load: .*SyntaxError.* — vfg action check broken$")
+        self.assertEqual(self.vfg("action", "show").returncode, 2)
 
 
 # ================================================================== usage
@@ -631,7 +908,32 @@ class TestUsageCache(BoxCase):
         self.assertRegex(r.stderr, r"^vfg: cache counts of 1 row\(s\) not stored: usage has no cache columns yet")
         self.assertEqual(self.box.query("SELECT input_tokens FROM usage"), [(10,)])
 
+    def test_the_largest_request_is_stored(self):
+        self.cache_columns()
+        con = __import__("sqlite3").connect(self.box.db)
+        con.execute("ALTER TABLE usage ADD COLUMN largest_tokens INTEGER")
+        con.commit()
+        con.close()
+        r = self.vfg("usage", "add", "--component", "implementer", "--model", "deepseek-flash", "--in", "4000",
+                     "--out", "900", "--cache-read", "310000", "--largest", "104322", "--ref", "hot_fireball_steve")
+        self.assertOk(r)
+        self.assertEqual(r.stderr, "")
+        self.assertOk(self.vfg("usage", "add", "--component", "jev", "--model", "jev-latest", "--in", "1", "--out", "0"))
+        self.assertEqual(self.box.query("SELECT component, cache_read_tokens, largest_tokens FROM usage ORDER BY id"),
+                         [("implementer", 310000, 104322), ("jev", None, None)])
+
+    def test_before_the_bridge_adds_largest_tokens_the_row_still_lands(self):
+        self.cache_columns()
+        r = self.vfg("usage", "add", "--component", "implementer", "--model", "deepseek-flash", "--in", "10",
+                     "--out", "5", "--cache-read", "9000", "--largest", "9010")
+        self.assertOk(r)
+        self.assertEqual(r.stderr, "vfg: largest requests of 1 row(s) not stored: usage has no largest_tokens column "
+                                   "yet — restart vfg-bridge, which adds them\n")
+        self.assertEqual(self.box.query("SELECT input_tokens, cache_read_tokens FROM usage"), [(10, 9000)])
+
     def test_bad_cache_counts(self):
+        self.assertOneLine(self.vfg("usage", "add", "--component", "implementer", "--model", "m", "--in", "1",
+                                    "--out", "1", "--largest", "-1"), 2, r"--largest is a whole number, 0 or more")
         for flag in ("--cache-read", "--cache-write"):
             r = self.vfg("usage", "add", "--component", "jev", "--model", "m", "--in", "1", "--out", "1",
                              flag, "-1")

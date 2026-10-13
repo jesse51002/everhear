@@ -1,8 +1,18 @@
-"""The PreToolUse hook on every tool an implementer calls. It denies with a reason the model can act
-on, one line saying what to send instead, so the next call runs; and otherwise returns {} so the
-allow rules (permission mode "dontAsk", runner.rules) decide. What a call it lets through makes —
-a script, an action, a preset, a copy — it records (made_by), and the runner gives the brain that
-record, checked against the disk (made_now), with the report."""
+"""The guard: one check before every tool an implementer calls, whatever the harness. Every adapter
+calls gate() before a tool runs (Claude Code from its PreToolUse hook, OpenCode from its plugin's
+tool.execute.before), with the call in Claude Code's shape, {"tool_name", "tool_input"}, and the
+tool names Bash, Read, Write, Edit, Glob and Grep. gate() gives a reason to refuse it, one line
+saying what to send instead, which goes back to the model as that tool's error; or None, and the
+call runs. The adapters turn their harness's own permission checks off, so the guard is the only
+gate.
+
+What a call it lets through makes (a script, an action, a preset, a copy) it records (made_by),
+and the runner gives the brain that record, checked against the disk (made_now), with the report.
+Before such a call runs, it gives it to the run's snapshot (putback.py), which keeps what the call
+is about to change so code can put it back after a cancel or a run that reached its limit."""
+import ast
+import glob
+import hashlib
 import json
 import os
 import re
@@ -74,7 +84,8 @@ class DENY:
     expansion = "Write the server command literally inside single quotes: no $( ), backticks or variables in a vfg cmd."
     # An implementer's Bash: each says what to send instead, in one line.
     shape = ("Refused: that program does not run here. These do: vfg action|cmd|script|preset save|state|place|history ..., "
-             "python3 -m py_compile <file>, sleep N, echo, and ls, grep, head, tail on files in the repository; "
+             "python3 -m py_compile <file>, sleep N, echo, and ls, cat, sed -n 'A,Bp', grep, head, tail on files in scripts/, "
+             "actions/ and made/; "
              "join them with && or ;, and pipe vfg into head -n N, tail -n N or grep <pattern>.")
     variables = ("Refused: no $( ), backticks or variables, $? included: write every value out; each command's output "
                  "and exit status come back to you as they are.")
@@ -85,16 +96,27 @@ class DENY:
     pipe = "Refused: pipe only into head -n N, tail -n N or grep <pattern>, with no file named after them."
     env = "Refused: no NAME=value before a command: send the command alone."
     cd = "Refused: no cd: you are already in the repository; send the rest on its own."
-    read = "Refused: use the Read tool (offset and limit for a part of a file); an Edit needs it first anyway."
-    find = "Refused: use the Glob tool (a pattern like made/**/main.py), or ls <folder>."
+    read = ("Refused: read a file with cat <file>, sed -n 'A,Bp' <file>, or the Read tool (offset and limit for a part); "
+            "an Edit needs the Read tool first anyway.")
+    sed = "Refused: sed only reads here, as sed -n 'A,Bp' <file> (lines A to B); use Edit to change a file."
+    cat = "Refused: cat reads the files you name: cat <file> ..."
+
+    @staticmethod
+    def find(server: str) -> str:
+        return ("Refused: use the Glob tool with a path (path made/%s/scripts, pattern */main.py), or ls <folder>."
+                % server)
+
+    @staticmethod
+    def read_scope(server: str) -> str:
+        return ("Refused: you read and search only scripts/, actions/ and made/%s/: give a path in one of them "
+                "(made/%s/scripts/, scripts/_lib/, actions/)." % (server, server))
     ps = "Refused: vfg script list shows every running copy, and vfg script stop <copy> stops one."
-    python = ("Refused: only python3 -m py_compile <file in the repository> runs; a script runs on the server through "
-              "its action: vfg action run <action> key=value ... --task <your task>.")
-    outside_bash = "Refused: ls, grep, head, tail and py_compile read only inside the repository: give a path in it."
-    wild = ("Refused: no unquoted * ? [ ], {a,b} or ~name after ls, grep, head, tail, echo, sleep or py_compile, since "
-            "bash would expand them where the guard cannot see: put a pattern in single quotes ('def .*') and name "
-            "each file by its path in the repository.")
-    grep_file = "Refused: grep reads a file in the repository, or what a vfg command pipes into it: name one."
+    python = ("Refused: only python3 -m py_compile <file> runs; a script runs on the server through its action: "
+              "vfg action run <action> key=value ... --task <your task>.")
+    wild = ("Refused: no {a,b} or ~name in a command, and no unquoted * ? [ ] after echo or sleep, since bash would "
+            "expand them where the guard cannot see: put a pattern in single quotes ('def .*') and name each file by "
+            "its path.")
+    grep_file = "Refused: grep reads a file you name, or what a vfg command pipes into it: name one."
     pattern_file = "Refused: no pattern files: give grep its pattern on the command line, or with -e."
     json_object = ("Refused: a JSON object of two keys or more in one word is refused by the permission check, quoted or "
                    "not: give each value as a word of its own, values.<name>=<value> "
@@ -131,32 +153,45 @@ class DENY:
     action_task = ("Refused: say which task it is for, by the name YOUR TASK gives: vfg action run <action> key=value ... "
                    "--task <your task>.")
     follow = "vfg script logs --follow never ends: use vfg script logs <copy> -n 40, and sleep between looks."
-    outside = "Only the repository can be searched: give a path inside it, or none."
-    read_outside = "Only files in the repository can be read."
     background = "Run commands in the foreground: scripts already run detached on the server (vfg action run)."
+    test_again = ("Refused: nothing changed since the last test run: read the log lines its FAIL printed (add -n 60 to "
+                  "your next vfg test for more), then change the ability or the test.")
+    test_cap = "Refused: that is a fifth test run in this run, and the rules allow four: report what still fails."
+    tests_spent = "Refused: your test runs are spent: report what still fails, item by item."
+    waits_for_trigger = ("Refused: an incantation fires its action once at the cast: make the script act as it starts, "
+                         "with no crouch or click to wait for.")
+    probes_spent = ("Refused: the live world is not for testing: write the check into your test (vfg test <your task>), "
+                    "or report.")
+    web = "Implementers have no web access: work from the repository (scripts/, actions/, the kit) and vfg."
 
 
 # Every vfg command an implementer runs, and how each is sent.
 VFG_FORMS = ("vfg action run <action> key=value ... --task <your task> | vfg action list | vfg action check <name> | "
+             "vfg action show <name> | "
              "vfg cmd '<command>' | vfg script new|set|stop|logs|list|check|save|deploy ... | "
-             "vfg preset save <script> <function> <name> | vfg state | vfg place save|list ... | vfg history ...")
+             "vfg preset save <script> <function> <name> | vfg test <your task> | vfg state | vfg place save|list ... | "
+             "vfg history ...")
 VFG_USAGE = {
-    "action": "vfg action run <action> key=value ... [as=<copy>] --task <your task>, vfg action list, or "
-              "vfg action check <name>",
+    "action": "vfg action run <action> key=value ... [as=<copy>] --task <your task>, vfg action list, "
+              "vfg action check <name>, or vfg action show <name>",
     "action run": "vfg action run <action> key=value ... [as=<copy>] --task <your task>",
     "action list": "vfg action list, or vfg action list --json",
     "action check": "vfg action check <name>",
+    "action show": "vfg action show <name>",
     "cmd": "vfg cmd '<command>'",
     "state": "vfg state, or vfg state --json, with nothing after it",
     "preset": "vfg preset save <script> <function> <name>",
     "place": "vfg place save <name> --at <x> <y> <z> --by <your task>, or vfg place list",
     "script list": "vfg script list, with --json or --fresh or nothing after it",
-    "script new": "vfg script new <name> --from <script> --preset <preset> ...",
+    "script new": "vfg script new <name> --from <script> --preset <preset> ... --kind <kind>, the kind one of "
+                  "cast-projectile, cast-launch, item-use, area-blast, build, world-event",
     "script save": "vfg script save <copy> <new_name>",
     "script set": "vfg script set <copy> key=value ...",
     "script stop": "vfg script stop <copy>",
     "script logs": "vfg script logs <copy> -n 40",
     "script deploy": "vfg script deploy, or vfg script deploy <name>",
+    "test": "vfg test <name>, with -n N, --timeout S or --kind <kind> (cast-projectile, cast-launch, item-use, "
+            "area-blast, build, world-event) after it if you need them",
 }
 
 
@@ -184,6 +219,21 @@ class GuardContext:
     # commands let through, and each new action or preset it wrote. made_now checks it against the
     # disk.
     made: dict[str, list[str]] = field(default_factory=lambda: {k: [] for k in MADE_KINDS})
+    # The run's putback.Snapshot, which the runner sets as each run starts: what a call let through
+    # is about to change, noted before it runs. None: nothing is noted.
+    snapshot: Any = None
+    # This run's `vfg test` runs: how many, and by name what they covered as they ran (test_print);
+    # new_run() clears both as each run starts.
+    tests_run: int = 0
+    tested: dict = field(default_factory=dict)
+    # Is there a test server (VFG_TEST_BOX)? With one, a run's looks at the live world are counted.
+    test_server: bool = False
+    probes_run: int = 0
+
+    def new_run(self) -> None:
+        self.tests_run = 0
+        self.tested = {}
+        self.probes_run = 0
 
     def __post_init__(self):
         if self.task:
@@ -237,6 +287,8 @@ class ShellCommand:
     grouped: bool = False
     # By word: something bash expands in it that the guard does not follow (bash_expands).
     wild: list[bool] = field(default_factory=list)
+    # By word: the word with each quoted or escaped character as \0, so a glob is expanded as bash would.
+    shapes: list[str] = field(default_factory=list)
 
 
 # Redirection operators, the longest first.
@@ -279,6 +331,7 @@ def split_shell(line: str) -> list[ShellCommand]:
             else:
                 cmd.words.append(word)
                 cmd.wild.append(bash_expands(shape))
+                cmd.shapes.append(shape)
         word, shape, in_word, bare = "", "", False, True
 
     def end_cmd(piped_next: bool = False, grouped: bool = False):
@@ -374,7 +427,7 @@ def split_shell(line: str) -> list[ShellCommand]:
 
 
 def allowed_form(words: list[str]) -> bool:
-    """One of the commands the allow rules let an implementer run (runner.py `rules`)."""
+    """One of the vfg commands an implementer may run, in a form vfg takes."""
     a, b, c = (words + [None, None, None])[:3]
     if a == "sleep":
         return len(words) >= 2
@@ -386,6 +439,8 @@ def allowed_form(words: list[str]) -> bool:
         return len(words) >= 3
     if b == "history":
         return True
+    if b == "test":
+        return test_form(words[2:])
     if b == "place":
         return c == "list" or (c == "save" and len(words) >= 4)
     if b == "state":
@@ -395,7 +450,7 @@ def allowed_form(words: list[str]) -> bool:
     if b == "action":
         if c == "list":
             return words[3:] in ([], ["--json"])
-        if c == "check":
+        if c in ("check", "show"):
             return len(words) == 4
         return c == "run" and len(words) >= 4
     if b != "script":
@@ -405,12 +460,47 @@ def allowed_form(words: list[str]) -> bool:
     if c in ("deploy", "check"):
         return c == "check" or len(words) <= 4
     if c == "new":
-        return len(words) >= 4
+        return len(words) >= 4 and kind_ok(words[3:])
     if c == "save":
         return len(words) == 5
     if c == "set":
         return len(words) >= 5
     return c in ("stop", "logs") and len(words) >= 4
+
+
+# The test templates' kinds (scripts/_lib/kit/templates/), for vfg script new and vfg test --kind.
+TEST_KINDS = frozenset(["cast-projectile", "cast-launch", "item-use", "area-blast", "build", "world-event"])
+
+
+def kind_ok(args: list[str]) -> bool:
+    """Every --kind K (or --kind=K) among these words names a template's kind."""
+    for i, a in enumerate(args):
+        if a == "--kind" and (i + 1 >= len(args) or args[i + 1] not in TEST_KINDS):
+            return False
+        if a.startswith("--kind=") and a[len("--kind="):] not in TEST_KINDS:
+            return False
+    return True
+
+
+def test_form(args: list[str]) -> bool:
+    """`vfg test <name>`, then -n N, --timeout S and --kind K (or --timeout=S, --kind=K) at most once
+    each: numbers, and a template's kind."""
+    if not args or not MADE_NAME.fullmatch(args[0]):
+        return False
+    seen, i = set(), 1
+    while i < len(args):
+        flag, _, value = args[i].partition("=") if args[i].startswith(("--timeout=", "--kind=")) else (args[i], "", None)
+        if flag not in ("-n", "--timeout", "--kind") or flag in seen:
+            return False
+        if value is None:
+            if i + 1 >= len(args):
+                return False
+            value, i = args[i + 1], i + 1
+        if not (value in TEST_KINDS if flag == "--kind" else re.fullmatch(r"\d+(\.\d+)?", value)):
+            return False
+        seen.add(flag)
+        i += 1
+    return True
 
 
 # A task's name (Prototype_Named_Tasks): galick_gun_styrk.
@@ -487,6 +577,40 @@ def scan_args(args: list[str], short_arg: str = "", long_arg: tuple[str, ...] = 
     return flags, ops
 
 
+# What an implementer reads and searches: the library and this server's folder, nothing else of the
+# repository (the replays and tests there hold answers, and the code is not theirs).
+def readable(repo: str | None, server: str, p: str) -> bool:
+    """Is `p` (relative to the repository) in scripts/, actions/ or made/<server>/?"""
+    if repo is None:
+        return False
+    return any(within(os.path.join(repo, d), p, repo) for d in ("scripts", "actions", os.path.join("made", server)))
+
+
+def glob_only(shape: str) -> bool:
+    """Is a glob (* ? [) all that bash would expand in this word: no brace and no ~name?"""
+    return not bash_expands(re.sub(r"[*?\[]", "_", shape))
+
+
+def glob_reason(cmd: "ShellCommand", repo: str | None, server: str) -> str | None:
+    """A read command's globs, expanded as bash would from the repository: refused when one matches
+    a file outside the readable folders (no match: bash leaves the word, checked as it is)."""
+    for word, shape, wild in zip(cmd.words[1:], cmd.shapes[1:], cmd.wild[1:]):
+        if not wild:
+            continue
+        if not glob_only(shape) or repo is None:
+            return DENY.wild
+        pattern = "".join(glob.escape(ch) if sh == "\0" else ch for ch, sh in zip(word, shape))
+        pattern = _expand_home(pattern)
+        for match in glob.iglob(pattern if os.path.isabs(pattern) else os.path.join(repo, pattern)):
+            if not readable(repo, server, match):
+                return DENY.read_scope(server)
+    return None
+
+
+# sed's one form here: -n and a line range, A,Bp or Ap (A,$p to the end).
+SED_RANGE = re.compile(r"^\d+(,(\d+|\$))?p$")
+
+
 # grep's and head's and tail's flags that take a value; ls's.
 GREP_SHORT, GREP_LONG = "efABCmdD", ("--regexp", "--file", "--after-context", "--before-context", "--context",
                                      "--max-count", "--directories", "--devices", "--include", "--exclude",
@@ -497,7 +621,7 @@ LS_SHORT, LS_LONG = "IwT", ("--ignore", "--hide", "--width", "--tabsize", "--for
 # Programs implementers reach for, and where each points them instead.
 LOOP_WORDS = frozenset(["for", "while", "until", "do", "done", "if", "then", "elif", "else", "fi", "case", "esac",
                         "select", "function"])
-READERS = frozenset(["cat", "less", "more", "sed", "awk", "nl", "strings", "od", "xxd", "hexdump", "file", "stat"])
+READERS = frozenset(["less", "more", "awk", "nl", "strings", "od", "xxd", "hexdump", "file", "stat"])
 FINDERS = frozenset(["find", "tree", "locate", "fd", "du"])
 FILE_CHANGERS = frozenset(["rm", "rmdir", "mv", "cp", "touch", "chmod", "chown", "ln", "tee", "truncate", "dd",
                            "install", "unlink"])
@@ -506,12 +630,25 @@ PYTHONS = frozenset(["python", "python3", "python3.9", "python3.12", "pip", "pip
 FILTERS = frozenset(["head", "tail", "grep"])
 
 
-def file_reason(prog: str, args: list[str], piped: bool, repo: str | None) -> str | None:
-    """Why ls, grep, head or tail is refused: a file outside the repository, or one named where a
-    pipe feeds it, or none where nothing does; tail -f; grep's pattern files."""
+def file_reason(prog: str, args: list[str], piped: bool, repo: str | None, server: str = "main") -> str | None:
+    """Why ls, cat, sed, grep, head or tail is refused: a file outside the readable folders (the
+    repository itself included, which ls -R with no folder or grep -r with no path would read), or
+    one named where a pipe feeds it, or none where nothing does; sed in any form but -n 'A,Bp';
+    tail -f; grep's pattern files."""
     if prog == "ls":
         flags, ops = scan_args(args, LS_SHORT, LS_LONG)
         files = ops
+        recursive = any(f in ("-R", "--recursive") for f, _ in flags)
+        if not files and recursive and not piped:  # the whole repository; ls alone lists only its folders' names
+            return DENY.read_scope(server)
+    elif prog == "cat":
+        flags, files = scan_args(args)
+        if not files:
+            return DENY.cat
+    elif prog == "sed":
+        if len(args) < 3 or args[0] != "-n" or not SED_RANGE.match(args[1]) or any(a.startswith("-") for a in args[2:]):
+            return DENY.sed
+        files = args[2:]
     elif prog == "grep":
         flags, ops = scan_args(args, GREP_SHORT, GREP_LONG)
         if any(f in ("-f", "--file", "--exclude-from") for f, _ in flags):
@@ -519,8 +656,8 @@ def file_reason(prog: str, args: list[str], piped: bool, repo: str | None) -> st
         given = any(f in ("-e", "--regexp") for f, _ in flags)
         files = ops if given else ops[1:]
         recursive = any(f in ("-r", "-R", "--recursive", "--dereference-recursive") for f, _ in flags)
-        if not piped and not files and not recursive:
-            return DENY.grep_file
+        if not piped and not files:
+            return DENY.read_scope(server) if recursive else DENY.grep_file
     else:  # head, tail
         flags, ops = scan_args(args, HEAD_SHORT, HEAD_LONG)
         if prog == "tail" and any(f in ("-f", "-F", "--follow", "--retry") or f.startswith("--follow")
@@ -529,13 +666,14 @@ def file_reason(prog: str, args: list[str], piped: bool, repo: str | None) -> st
         files = ops
     if piped:
         return DENY.pipe if files else None
-    if any(repo is None or not within(repo, f) for f in files):
-        return DENY.outside_bash
+    if any(not readable(repo, server, f) for f in files):
+        return DENY.read_scope(server)
     return None
 
 
-# key={...,...}: a JSON object of two keys or more, which Claude Code's own Bash check refuses in
-# "dontAsk" mode however it is quoted, with no reason the implementer can act on.
+# key={...,...}: a JSON object of two keys or more, which Claude Code's own Bash check refused in
+# "dontAsk" mode however it was quoted, with no reason the implementer could act on (2026-10-11,
+# T207). Claude Code now runs in bypassPermissions; the words form stays the one the rules teach.
 OBJECT_WORD = re.compile(r"^[a-z_][a-z0-9_.]*=\{.*,.*\}$", re.DOTALL)
 
 
@@ -561,12 +699,13 @@ def command_reason(cmd: ShellCommand, repo: str | None, server: str) -> str | No
         rest = list(w)
         while rest and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", rest[0]):
             rest.pop(0)
-        bare = ShellCommand(rest, piped=cmd.piped, wild=cmd.wild[len(w) - len(rest):])
+        bare = ShellCommand(rest, piped=cmd.piped, wild=cmd.wild[len(w) - len(rest):],
+                            shapes=cmd.shapes[len(w) - len(rest):])
         return command_reason(bare, repo, server) or DENY.env
     if cmd.piped:
         if first not in FILTERS:
             return DENY.pipe
-        return DENY.wild if wild else file_reason(first, w[1:], True, repo)
+        return glob_reason(cmd, repo, server) or file_reason(first, w[1:], True, repo, server)
     if first == "vfg":
         if any(OBJECT_WORD.match(x) for x in w[2:]):
             return DENY.json_object
@@ -576,6 +715,8 @@ def command_reason(cmd: ShellCommand, repo: str | None, server: str) -> str | No
             return DENY.vfg(w)
         if w[1:3] == ["action", "run"] and not task_given(w):
             return DENY.action_task
+        if w[1:3] == ["action", "run"] and waits_for_trigger(w, repo, server):
+            return DENY.waits_for_trigger
         if w[1:3] == ["script", "logs"] and "--follow" in w:
             return DENY.follow
         if w[1:3] == ["script", "new"] and "--library" in w:
@@ -588,11 +729,10 @@ def command_reason(cmd: ShellCommand, repo: str | None, server: str) -> str | No
     if first in PYTHONS:
         if not allowed_form(w):
             return DENY.python
-        if wild:
-            return DENY.wild
-        return DENY.outside_bash if any(repo is None or not within(repo, f) for f in w[3:]) else None
-    if first == "ls" or first in FILTERS:
-        return DENY.wild if wild else file_reason(first, w[1:], False, repo)
+        return glob_reason(cmd, repo, server) or (
+            DENY.read_scope(server) if any(not readable(repo, server, f) for f in w[3:]) else None)
+    if first in ("ls", "cat", "sed") or first in FILTERS:
+        return glob_reason(cmd, repo, server) or file_reason(first, w[1:], False, repo, server)
     if first == "cd":
         return DENY.cd
     if first == "mkdir":
@@ -600,7 +740,7 @@ def command_reason(cmd: ShellCommand, repo: str | None, server: str) -> str | No
     if first in READERS:
         return DENY.read
     if first in FINDERS:
-        return DENY.find
+        return DENY.find(server)
     if first in FILE_CHANGERS:
         return DENY.files(server)
     if first in PROCESSES:
@@ -608,13 +748,63 @@ def command_reason(cmd: ShellCommand, repo: str | None, server: str) -> str | No
     return DENY.shape
 
 
+# What a script waits on when a player must do something before it acts: the kit's click, hold,
+# charge and crouch watchers and their stats, the sneak and projectile_lands presets (copied in as
+# functions), and a launch pad's pad_block. Hot fireball (from boom_bow) and High Step (from
+# launch_pad) were bound this way on six5, and a cast never fired them.
+_WAITS = re.compile(r"\bitems\.(clicks|holds|charged|sneaking)\s*\(|\bitems\.(CLICK|SNEAK)\b|^def (sneak|projectile_lands)\(|"
+                    r"\bv\[\s*[\"']pad_block[\"']\s*\]", re.M)
+_ACTION_FIELD = re.compile(r"^\s*(script|runs)\s*=\s*[\"']([a-z_]+)[\"']", re.M)
+
+
+def _action_fields(repo: str, server: str, name: str, depth: int = 0) -> dict:
+    """An action's script and runs, from its file (this server's made one, else the library's),
+    following one base class it imports from the library."""
+    for path in (os.path.join(repo, "made", server, "actions", name + ".py"), os.path.join(repo, "actions", name + ".py")):
+        try:
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+        except OSError:
+            continue
+        found = dict((k, v) for k, v in _ACTION_FIELD.findall(text))
+        base = re.search(r"^from actions\.([a-z_]+) import", text, re.M)
+        if base and depth < 2 and ("script" not in found or "runs" not in found):
+            found = {**_action_fields(repo, server, base.group(1), depth + 1), **found}
+        return found
+    return {}
+
+
+def waits_for_trigger(words: list[str], repo: str | None, server: str) -> bool:
+    """Does `vfg action run incantation_create ... action=<name>` bind a made action whose script runs
+    until stopped and waits for a crouch, a click or a pad? A cast starts its copy, which would wait
+    and never act. Only this server's made scripts are read; anything not found is let through."""
+    if repo is None:
+        return False
+    action, _ = run_words(words[3:])
+    if action != "incantation_create":
+        return False
+    bound = next((x.split("=", 1)[1] for x in words[3:] if x.startswith("action=")), "")
+    if not MADE_NAME.fullmatch(bound or ""):
+        return False
+    fields = _action_fields(repo, server, bound)
+    if fields.get("runs") != "until_stopped":
+        return False
+    try:
+        with open(os.path.join(repo, "made", server, "scripts", fields.get("script") or bound, "main.py"),
+                  encoding="utf-8") as f:
+            return _WAITS.search(f.read()) is not None
+    except OSError:
+        return False
+
+
 def check_bash(command: str, repo: str | None = None, server: str = "main") -> str | None:
     """Why an implementer's Bash command is refused, or None to let the rules decide. Claude Code's
     own refusal of a disallowed command reads as if Bash itself were off, and a small model stops
     trying; each of these says what to send instead. vfg's own commands run, joined with && or ;,
     with 2>&1 or >/dev/null, piped into head, tail or grep; so do echo, sleep, py_compile, and ls,
-    grep, head and tail on files in the repository (`repo`; None: on none), with no ~name, brace or
-    glob outside quotes in their words, which bash would expand past the check of the literal path."""
+    cat, sed -n 'A,Bp', grep, head and tail on files in scripts/, actions/ and made/<server>/ of the
+    repository (`repo`; None: on none). No ~name or brace outside quotes, which bash would expand past
+    the check of the literal path; a glob in a read is expanded here as bash would, every match checked."""
     cmds = split_shell(command)
     # Server commands that are the owner's, however they are dressed up, and the server-wide settings:
     # in a vfg cmd, and in the commands an action run or an edit gives.
@@ -644,20 +834,26 @@ def check_bash(command: str, repo: str | None = None, server: str = "main") -> s
 
 
 def decide(call: dict, g: GuardContext) -> str | None:
-    """The guard's decision for one tool call: a reason to deny it, or None to let the rules decide."""
+    """The guard's decision for one tool call: a reason to deny it, or None to let it run."""
     name = call.get("tool_name")
     inp = call.get("tool_input") or {}
+    if name in ("WebFetch", "WebSearch"):
+        return DENY.web
     if name == "Bash":
         if inp.get("run_in_background") is True:
             return DENY.background
         command = inp.get("command")
         return check_bash("" if command is None else str(command), g.repo, g.server)
 
-    # The Glob and Grep allow rules are unrestricted: keep them, and Read, inside the repository.
-    if name in ("Glob", "Grep") and inp.get("path") and not within(g.repo, str(inp["path"])):
-        return DENY.outside
-    if name == "Read" and inp.get("file_path") and not within(g.repo, str(inp["file_path"])):
-        return DENY.read_outside
+    # Glob, Grep and Read stay in scripts/, actions/ and made/<server>/; a search names its folder.
+    if name in ("Glob", "Grep"):
+        path = str(inp.get("path") or "")
+        pattern = str(inp.get("pattern") or "") if name == "Glob" else ""
+        if (not path or not readable(g.repo, g.server, path) or pattern.startswith(("/", "~"))
+                or ".." in pattern.split("/")):
+            return DENY.read_scope(g.server)
+    if name == "Read" and inp.get("file_path") and not readable(g.repo, g.server, str(inp["file_path"])):
+        return DENY.read_scope(g.server)
 
     # An implementer writes in this server's folder and nowhere else: never in the library.
     if name in ("Write", "Edit") and inp.get("file_path"):
@@ -720,7 +916,7 @@ def new_script_name(words: list[str]) -> str | None:
     args, positional = words[3:], []
     i = 0
     while i < len(args):
-        if args[i] in ("--from", "--preset"):
+        if args[i] in ("--from", "--preset", "--kind"):
             i += 2
             continue
         if not args[i].startswith("--"):
@@ -870,35 +1066,133 @@ async def check_running(call: dict, g: GuardContext) -> str | None:
     return None
 
 
-HookCallback = Callable[[dict, str | None, Any], Awaitable[dict]]
+# vfg test runs a run may make: the first, and a rerun after each of the three fixes the rules allow.
+TESTS_PER_RUN = 4
 
 
-def make_guard(g: GuardContext) -> HookCallback:
-    seen_effort: set[str] = set()
-    who = "implementer %s" % (g.task or "-")
+def test_names(call: dict) -> list[str]:
+    """The names a Bash call's `vfg test` commands test, in order."""
+    if call.get("tool_name") != "Bash":
+        return []
+    return [c.words[2] for c in split_shell(str((call.get("tool_input") or {}).get("command") or ""))
+            if c.words[:2] == ["vfg", "test"] and len(c.words) >= 3]
 
-    async def hook(inp: dict, tool_use_id: str | None, context: Any) -> dict:
-        if inp.get("hook_event_name") != "PreToolUse":
-            return {}
-        # The effort a turn actually runs at, after any downgrade for its model: logged once.
-        effort = inp.get("effort")
-        level = effort.get("level") if isinstance(effort, dict) else None
-        if level and level not in seen_effort:
-            seen_effort.add(level)
-            log("effort", "%s runs at %s" % (who, level))
-        call = {"tool_name": inp.get("tool_name"), "tool_input": inp.get("tool_input")}
-        reason = decide(call, g) or await check_running(call, g)
-        if reason:
-            log("guard", "denied %s %s: %s (%s)" % (who, call["tool_name"], reason, brief(call["tool_input"])))
-            return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                           "permissionDecisionReason": reason}}
-        if call["tool_name"] == "Bash":
-            note_made(call, g)
-        elif call["tool_name"] == "Write":
-            note_written(call, g)
-        return {}
 
-    return hook
+def code_print(data: bytes, path: str) -> bytes:
+    """What a file says, for the unchanged-rerun check: a Python file's code with its comments,
+    blank lines, formatting and docstrings dropped (ast), so an edit to those alone is no change;
+    any other file, or one that does not parse, as it is."""
+    if not path.endswith(".py"):
+        return data
+    try:
+        tree = ast.parse(data)
+    except (SyntaxError, ValueError):
+        return data
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if (isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and body
+                and isinstance(body[0], ast.Expr) and isinstance(getattr(body[0], "value", None), ast.Constant)
+                and isinstance(body[0].value.value, str)):
+            node.body = body[1:] or [ast.Pass()]
+    return ast.dump(tree).encode("utf-8")
+
+
+def test_print(name: str, g: GuardContext) -> str:
+    """What a test of `name` covers, as it is now: its test file (the task's, or a library script's),
+    the script and the action of that name, and every script, action and preset the task made, each
+    Python file by its code alone (code_print)."""
+    made = os.path.join(g.repo, "made", g.server)
+    paths = [os.path.join(made, "tests", name + ".py"), os.path.join(g.repo, "scripts", name, "test.py"),
+             os.path.join(made, "scripts", name), os.path.join(made, "actions", name + ".py")]
+    for kind in ("scripts", "actions", "presets"):
+        for n in g.made.get(kind) or []:
+            paths.append(os.path.join(made, kind, n) if kind == "scripts" else os.path.join(made, kind, n + ".py"))
+    h = hashlib.sha256()
+    for p in sorted(set(paths)):
+        files = [p] if not os.path.isdir(p) else sorted(
+            os.path.join(d, f) for d, _, fs in os.walk(p) if "__pycache__" not in d for f in fs)
+        for f in files:
+            try:
+                with open(f, "rb") as fh:
+                    h.update(f.encode() + b"\0" + hashlib.sha256(code_print(fh.read(), f)).digest())
+            except OSError:
+                h.update(f.encode() + b"\0-")
+    return h.hexdigest()
+
+
+# Server commands that only look: the shape of a hand probe of the live world.
+_LOOKS = (("data", "get"), ("list",), ("scoreboard", "players", "get"))
+
+
+def probe(command: str) -> bool:
+    """Does a vfg cmd's server command only look (execute if|unless with no run, data get, list,
+    scoreboard players get, or one of those after execute ... run)?"""
+    words = command.lstrip("/").split()
+    if words[:1] == ["execute"]:
+        if "run" not in words:
+            return True
+        words = words[len(words) - words[::-1].index("run"):]
+    words = [w.lstrip("/").lower() for w in words]
+    return any(tuple(words[:len(look)]) == look for look in _LOOKS)
+
+
+# Looks at the live world a run may take when there is a test server: its tests are its check.
+PROBES_PER_RUN = 3
+
+
+def probe_reason(call: dict, g: GuardContext) -> str | None:
+    """A hand probe of the live world: refused once the run's test runs are spent (the run reports),
+    and, when there is a test server, past PROBES_PER_RUN in a run (the check goes in the test). A
+    vfg cmd that acts (a build step) always runs. Counted when let through."""
+    if call.get("tool_name") != "Bash":
+        return None
+    looks = [c for c in split_shell(str((call.get("tool_input") or {}).get("command") or ""))
+             if c.words[:2] == ["vfg", "cmd"] and len(c.words) >= 3 and probe(" ".join(c.words[2:]))]
+    if not looks:
+        return None
+    if g.tests_run >= TESTS_PER_RUN:
+        return DENY.tests_spent
+    if g.test_server:
+        if g.probes_run + len(looks) > PROBES_PER_RUN:
+            return DENY.probes_spent
+        g.probes_run += len(looks)
+    return None
+
+
+def test_reason(call: dict, g: GuardContext) -> str | None:
+    """Why this call's `vfg test` may not run: a fifth in this run, or nothing it covers changed since
+    this run's last test of that name. A test is not a debugger. Counted and noted when let through."""
+    names = test_names(call)
+    if not names:
+        return None
+    if g.tests_run + len(names) > TESTS_PER_RUN:
+        return DENY.test_cap
+    prints = {n: test_print(n, g) for n in names}
+    if any(g.tested.get(n) == fp for n, fp in prints.items()):
+        return DENY.test_again
+    g.tests_run += len(names)
+    g.tested.update(prints)
+    return None
+
+
+async def gate(call: dict, g: GuardContext) -> str | None:
+    """The guard, for every adapter, before a tool runs: a reason to refuse the call, or None. A call
+    let through is first given to the run's snapshot (what it is about to change, kept), then what
+    it makes is recorded (note_made for a Bash call, note_written for a Write)."""
+    reason = decide(call, g) or await check_running(call, g) or test_reason(call, g) or probe_reason(call, g)
+    if reason:
+        return reason
+    if g.snapshot is not None:
+        try:
+            await g.snapshot.before(call)
+        except Exception as e:  # a snapshot that breaks never blocks the call
+            log("guard", "%s: the snapshot before %s broke: %s: %s" % (g.task or "-", call.get("tool_name"),
+                                                                      type(e).__name__, e))
+    if call.get("tool_name") == "Bash":
+        note_made(call, g)
+    elif call.get("tool_name") == "Write":
+        note_written(call, g)
+    return None
 
 
 def realish(p: str) -> str:

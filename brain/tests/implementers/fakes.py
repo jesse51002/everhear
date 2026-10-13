@@ -1,10 +1,12 @@
-"""Fakes for the implementer tests: the vfg runner and the Claude Agent SDK client. No process starts."""
+"""Fakes for the implementer tests: the vfg runner, and a harness whose runs give scripted events.
+No process starts, and nothing here knows Claude Code: the fake harness puts each tool call through
+the guard as every adapter must (harness/base.py)."""
 import asyncio
 import inspect
 from collections import deque
 
-from claude_agent_sdk import AssistantMessage, ResultMessage, SystemMessage, ToolUseBlock
-
+from brain.implementers.guard import gate
+from brain.implementers.harness.base import ERROR, OK, STOPPED, TURNS, Done, Request, Session, Text, ToolCall, ToolResult
 from brain.implementers.vfg import VfgResult
 
 
@@ -51,113 +53,142 @@ async def never(argv):
     await asyncio.Event().wait()
 
 
-def init(session: str = "s1", key: str = "none") -> SystemMessage:
-    return SystemMessage(subtype="init", data={"type": "system", "subtype": "init", "session_id": session,
-                                               "model": "claude-haiku-5-5", "permissionMode": "dontAsk",
-                                               "apiKeySource": key})
+# ---------------------------------------------------------------- a run's events
+
+def session(s: str = "s1") -> Session:
+    return Session(s)
 
 
-def result(text: str | None = "Done: it is built.", session: str = "s1", subtype: str = "success",
-           is_error: bool = False, errors: list[str] | None = None, model_usage: dict | None = None) -> ResultMessage:
-    return ResultMessage(subtype=subtype, duration_ms=1200, duration_api_ms=900, is_error=is_error, num_turns=3,
-                         session_id=session, result=text, errors=errors, model_usage=model_usage)
+def done(text: str | None = "Done: it is built.", ended: str = OK, errors: list[str] | None = None,
+         refused: list[str] | None = None) -> Done:
+    return Done(ended, text or "", turns=3, errors=errors or [], seconds=1.2, refused=refused or [])
 
 
-def tool(name: str, **inp) -> AssistantMessage:
-    """An assistant turn that calls one tool: the client puts it through the PreToolUse hook."""
-    return AssistantMessage(content=[ToolUseBlock(id="t%d" % id(inp), name=name, input=inp)],
-                            model="claude-haiku-5-5")
+def failed_turns(text: str = "") -> Done:
+    return done(text, TURNS)
 
 
-def bash(command: str) -> AssistantMessage:
+def error(text: str = "", errors: list[str] | None = None) -> Done:
+    return done(text, ERROR, errors)
+
+
+def stopped(why: str) -> Done:
+    return done(why, STOPPED)
+
+
+def tool(name: str, **inp) -> ToolCall:
+    """A tool the model calls: the fake harness puts it through the guard."""
+    return ToolCall(name, inp, "t%d" % id(inp))
+
+
+def bash(command: str) -> ToolCall:
     return tool("Bash", command=command)
 
 
-def haiku(inp: int, out: int, cost: float, read: int = 0, write: int = 0) -> dict:
-    """A modelUsage entry, Haiku 5.5's: the session's totals."""
-    return {"claude-haiku-5-5": {"inputTokens": inp, "outputTokens": out, "cacheReadInputTokens": read,
-                                 "cacheCreationInputTokens": write, "costUSD": cost}}
+def said(text: str) -> Text:
+    return Text(text)
 
 
-class FakeClient:
-    """One SDK client: its scripted messages after query(). Each tool an assistant turn calls goes
-    through the options' PreToolUse hook first, as the CLI sends it, and `effect(name, input)` does
-    what an allowed one would (writes the files vfg script new makes, say). With a gate, it holds
-    the last message until the gate opens; interrupt() opens it, unless told to ignore interrupts.
-    `raises` is raised by connect(), and `breaks` once the messages are out."""
+def result_of(call: ToolCall, text: str, error: bool = True) -> ToolResult:
+    return ToolResult(call.id, error, text)
 
-    def __init__(self, options, messages, gate: asyncio.Event | None, raises: Exception | None, deaf: bool,
-                 effect=None, breaks: Exception | None = None):
-        self.options = options
-        self.messages = list(messages)
+
+def request(input: int = 0, read: int = 0, write: int = 0, out: int = 0, model: str = "deepseek-flash",
+            at: float = 1_760_000_000.0) -> Request:
+    """One model request's tokens; `at` defaults to a Thursday, 08:53 UTC: DeepSeek's peak."""
+    return Request(model, input, read, write, out, at)
+
+
+class FakeRun:
+    """One run: its scripted events. Each ToolCall goes through the guard before it is given, and
+    `effect(name, input)` does what an allowed one would (writes the files vfg script new makes,
+    say). With a gate, it holds the last event until the gate opens; stop() opens it, unless told
+    to ignore stops. `breaks` is raised once the events are out. send() takes a message while the
+    run is live (until its Done is given), and `on_send(run, text)` does what reading it would."""
+
+    def __init__(self, kind: str, task: str, system, prompt: str, resumed: str | None, guard, events,
+                 gate: asyncio.Event | None, deaf: bool, effect, breaks: Exception | None, on_send=None):
+        self.kind, self.task, self.system, self.prompt, self.resumed, self.guard = kind, task, system, prompt, resumed, guard
+        self.script = list(events)
         self.gate = gate
-        self.raises = raises
         self.deaf = deaf
         self.effect = effect
         self.breaks = breaks
-        self.prompt: str | None = None
-        self.interrupted = False
-        self.disconnected = False
-        # (tool, input, the deny reason or None), for every tool call put through the hook
+        self.on_send = on_send
+        self.session = resumed
+        self.stopped = False
+        self.closed = False
+        self.ended = False
+        self.sent: list[str] = []
+        # (tool, input, the guard's reason or None), for every tool call put through the guard
         self.verdicts: list[tuple[str, dict, str | None]] = []
 
-    async def connect(self):
-        if self.raises:
-            raise self.raises
-
-    async def query(self, prompt: str):
-        self.prompt = prompt
-
-    async def receive_response(self):
-        for i, m in enumerate(self.messages):
-            if self.gate is not None and i == len(self.messages) - 1:
+    async def events(self):
+        for i, ev in enumerate(self.script):
+            if self.gate is not None and i == len(self.script) - 1:
                 await self.gate.wait()
-            if isinstance(m, AssistantMessage):
-                await self._tools(m)
-            yield m
-            if isinstance(m, ResultMessage):
+            if isinstance(ev, ToolCall):
+                reason = await gate({"tool_name": ev.name, "tool_input": ev.input}, self.guard)
+                self.verdicts.append((ev.name, ev.input, reason))
+                if reason is None and self.effect is not None:
+                    self.effect(ev.name, ev.input)
+            if isinstance(ev, Session):
+                self.session = ev.session
+            if isinstance(ev, Done):
+                self.ended = True
+            yield ev
+            if isinstance(ev, Done):
                 return
+        self.ended = True
         if self.breaks is not None:
             raise self.breaks
 
-    async def _tools(self, m: AssistantMessage) -> None:
-        hooks = [h for matcher in (self.options.hooks or {}).get("PreToolUse", []) for h in matcher.hooks]
-        for b in m.content:
-            if not isinstance(b, ToolUseBlock):
-                continue
-            reason = None
-            for hook in hooks:
-                out = await hook({"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": b.name,
-                                  "tool_input": b.input}, b.id, None)
-                reason = reason or (out.get("hookSpecificOutput") or {}).get("permissionDecisionReason")
-            self.verdicts.append((b.name, b.input, reason))
-            if reason is None and self.effect is not None:
-                self.effect(b.name, b.input)
+    async def send(self, text: str) -> bool:
+        if self.ended or self.closed:
+            return False
+        self.sent.append(text)
+        if self.on_send is not None:
+            self.on_send(self, text)
+        return True
 
-    async def interrupt(self):
-        self.interrupted = True
+    async def stop(self) -> None:
+        self.stopped = True
         if self.gate is not None and not self.deaf:
             self.gate.set()
 
-    async def disconnect(self):
-        self.disconnected = True
+    async def close(self) -> None:
+        self.closed = True
 
 
-class Clients:
-    """The client_factory: each client made takes the next script add() gave, else an init and a
-    Done result."""
+class FakeHarness:
+    """The harness: each run started or resumed takes the next script add() gave, else a session
+    and a Done. `raises` is raised by start() or resume() instead."""
+    name = "fake"
 
     def __init__(self):
         self.scripts: deque = deque()
-        self.made: list[FakeClient] = []
+        self.runs: list[FakeRun] = []
+        self.closed = False
 
-    def add(self, *messages, gate: asyncio.Event | None = None, raises: Exception | None = None,
-            deaf: bool = False, effect=None, breaks: Exception | None = None) -> "Clients":
-        self.scripts.append((messages or (init(), result()), gate, raises, deaf, effect, breaks))
+    def add(self, *events, gate: asyncio.Event | None = None, raises: Exception | None = None,
+            deaf: bool = False, effect=None, breaks: Exception | None = None, on_send=None) -> "FakeHarness":
+        self.scripts.append((events or (session(), done()), gate, raises, deaf, effect, breaks, on_send))
         return self
 
-    def __call__(self, options) -> FakeClient:
-        script = self.scripts.popleft() if self.scripts else ((init(), result()), None, None, False, None, None)
-        c = FakeClient(options, *script)
-        self.made.append(c)
-        return c
+    def _next(self, kind, task, system, prompt, resumed, guard) -> FakeRun:
+        events, gate, raises, deaf, effect, breaks, on_send = (
+            self.scripts.popleft() if self.scripts else ((session(), done()), None, None, False, None, None, None))
+        if raises is not None:
+            raise raises
+        run = FakeRun(kind, task, system, prompt, resumed, guard, events, gate, deaf, effect, breaks, on_send)
+        self.runs.append(run)
+        return run
+
+    async def start(self, task, system, brief, guard) -> FakeRun:
+        return self._next("start", task, system, brief, None, guard)
+
+    async def resume(self, task, system, session, text, guard) -> FakeRun:
+        return self._next("resume", task, system, text, session, guard)
+
+    async def close(self) -> None:
+        self.closed = True

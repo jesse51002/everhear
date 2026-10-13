@@ -1,6 +1,7 @@
-"""Every implementer test runs with HOME a temp dir and no VFG_* setting from outside, and the log
-quiet: none can reach ~/.vfg, ~/.claude or the real vfg. Each test's actions catalogs are dropped
-after it. It leans on nothing in tests/conftest.py, which is the brain's."""
+"""Every implementer test runs with HOME a temp dir, no VFG_* setting and no provider's key from
+outside, and the log quiet: none can reach ~/.vfg, ~/.claude, the real vfg or a provider. Each
+test's actions catalogs are dropped after it. It leans on nothing in tests/conftest.py, which is
+the brain's."""
 import os
 
 import pytest
@@ -15,7 +16,7 @@ set_quiet(True)
 def _isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     for key in list(os.environ):
-        if key.startswith("VFG_"):
+        if key.startswith("VFG_") or key in ("DEEPSEEK_API_KEY", "OPEN_ROUTER_API"):
             monkeypatch.delenv(key)
     yield
     actions.forget()

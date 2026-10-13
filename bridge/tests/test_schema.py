@@ -65,7 +65,8 @@ class TestSchema(Box):
         self.assertEqual(self.query("PRAGMA journal_mode"), [("wal",)])
         self.assertEqual(self.query("PRAGMA user_version"), [(4,)])
         columns = [row[1] for row in self.query("PRAGMA table_info(usage)")]
-        self.assertEqual(columns[-5:], ["cache_read_tokens", "cache_write_tokens", "ok", "error", "ms"])
+        self.assertEqual(columns[-6:], ["cache_read_tokens", "cache_write_tokens", "ok", "error", "ms",
+                                        "largest_tokens"])
         self.assertEqual([row[1] for row in self.query("PRAGMA table_info(feed)")],
                          ["seq", "at", "line", "processed_at"])
         columns = [row[1] for row in self.query("PRAGMA table_info(lines)")]
@@ -181,7 +182,7 @@ class TestSchema(Box):
             self.assertFalse(db.rebuild_check(database.conn, table, column, values, renamed))
         self.assertEqual([row[1] for row in self.query("PRAGMA table_info(usage)")],
                          ["id", "at", "component", "model", "input_tokens", "output_tokens", "cost_usd", "ref",
-                          "cache_read_tokens", "cache_write_tokens", "ok", "error", "ms"])
+                          "cache_read_tokens", "cache_write_tokens", "ok", "error", "ms", "largest_tokens"])
         conn = sqlite3.connect(self.db_path, isolation_level=None)
         self.addCleanup(conn.close)
         for component, ok, error in (("planner", 0, "no answer from m within 20 s"), ("alias", 1, None)):

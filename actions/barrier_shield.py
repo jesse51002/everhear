@@ -1,7 +1,7 @@
 from actions._types import Action, Live, Place, Players, preset
 
 
-class BarrierShield(Action, preset("around"), preset("push")):
+class BarrierShield(Action, preset("around"), preset("push"), preset("launch")):
     """A barrier round a player, or round a place such as their base: a bubble of light that throws back every mob that comes inside it."""
 
     script = "barrier_shield"

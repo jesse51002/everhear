@@ -47,6 +47,10 @@ ADDED = {
     "ice_queen": {"boss_minion": "the boss preset's; her abilities replace its minions, so it does nothing",
                   "boss_minions": "the boss preset's; her abilities replace its minions, so it does nothing"},
     # end c3
+    # 2026-10-12: push throws a player by the launch preset, so a script holding push holds launch too
+    **{s: {k: "the launch preset's: push throws a player by it"
+           for k in ("launch_way", "launch_strength", "launch_landing", "launch_method")}
+       for s in ("barrier_shield", "gravity_staff", "projectile_shield", "weapon_chest")},
 }
 # Values renamed as their script was ported, where the old name cannot be a field: {script: {old: new}}.
 RENAMED = {

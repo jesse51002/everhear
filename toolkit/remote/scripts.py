@@ -16,6 +16,8 @@
 # it names has that stamp, it starts the copy; when one does not (missing, another, or none: a
 # folder an older vfg swapped in has none), it starts nothing and answers {"needs": "tars",
 # "stale": ["scripts/_lib", ...]}, exit 0, and vfg sends the run again with the tars.
+#   {"vfg": "/opt/vfg", "op": "stale", "stamps": [{"root", "stamps"}]}   answers {"stale": [...]}, the
+#    folders a deploy would have to send (vfg test, before it runs a test there)
 #   {"vfg": "/opt/vfg", "op": "info", "copy": "galick_gun_2"}
 #   {"vfg": "/opt/vfg", "op": "logs", "name": "galick_gun_2", "n": 40, "follow": false}
 #   {"vfg": "/opt/vfg", "op": "copies"}
@@ -244,6 +246,10 @@ def op_run():
     if not got["running"] and got["code"]:
         got.update(error=b.error(name), tail=b.tail(name, 20))
     answer(got)
+
+
+def op_stale():
+    answer({"stale": stale(ARGS.get("stamps") or [])})
 
 
 def op_info():
@@ -484,4 +490,4 @@ def op_state():
 
 
 {"deploy": op_deploy, "run": op_run, "info": op_info, "logs": op_logs, "copies": op_copies,
- "state": op_state}[ARGS["op"]]()
+ "state": op_state, "stale": op_stale}[ARGS["op"]]()

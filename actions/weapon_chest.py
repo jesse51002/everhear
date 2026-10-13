@@ -2,7 +2,7 @@ from actions._types import Action, Field, Live, Place, Players, preset
 
 
 class WeaponChest(Action, preset("damage_hits"), preset("lightning"), preset("around"), preset("projectile_lands"),
-                  preset("explosion"), preset("freeze"), preset("push")):
+                  preset("explosion"), preset("freeze"), preset("push"), preset("launch")):
     """A chest of six weapons with powers beside us: an exploding bow, a freezing bow, a lightning trident, a lightning sword, a blast axe and a lifting mace."""
 
     script = "weapon_chest"

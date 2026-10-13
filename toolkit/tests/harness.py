@@ -342,11 +342,17 @@ class Box(object):
         them: a run then sends only the stamps, as to a box deployed once already."""
         mod = vfg_module()
         src, dest = os.path.join(self.repo, "scripts"), os.path.join(self.rvfg, "scripts")
-        for name in sorted(os.listdir(src)):
-            if os.path.isdir(os.path.join(src, name)) and (name == "_lib" or not name.startswith(("_", "."))):
-                shutil.copytree(os.path.join(src, name), os.path.join(dest, name),
-                                ignore=shutil.ignore_patterns("__pycache__", ".*", "*.pyc"))
-                write(os.path.join(dest, name, ".vfg-stamp"), mod.stamp(list(mod.tree(src, name))) + "\n")
+        with self.environ():
+            cfg = mod.Config()
+            for name in sorted(os.listdir(src)):
+                if os.path.isdir(os.path.join(src, name)) and (name == "_lib" or not name.startswith(("_", "."))):
+                    shutil.copytree(os.path.join(src, name), os.path.join(dest, name),
+                                    ignore=shutil.ignore_patterns("__pycache__", ".*", "*.pyc"))
+                    made = mod.action_defaults(cfg, src, name)    # what vfg writes beside each script
+                    for path, _st, data in made:
+                        with open(os.path.join(dest, path), "wb") as f:
+                            f.write(data)
+                    write(os.path.join(dest, name, ".vfg-stamp"), mod.stamp(list(mod.tree(src, name, made))) + "\n")
 
     # -- the PC
     def env(self, **extra):
