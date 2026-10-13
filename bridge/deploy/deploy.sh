@@ -15,11 +15,14 @@
 #   deploy.sh                         the bridge: vfg_feed.py, vfg_bridge/, tests/, the two vfg units,
 #                                     and the kit it imports (scripts/_lib, by vfg script deploy --kit,
 #                                     stamped as vfg sends it); applies the schema and restarts
-#                                     vfg-bridge (and vfg-jev if deployed).
+#                                     vfg-bridge. When Jev is on the box, it is stopped before the
+#                                     schema and deployed from this checkout after (jev/deploy.sh):
+#                                     the CHECK on Jev's classes is the bridge's, so the two never
+#                                     run apart.
 #
 # Only provision and env touch /opt/vfg/.env; none touches the database (beyond the schema), the
 # feed, watch.json, lookout.md, menu.md or /opt/mc (beyond what provision.sh does). The Jev filter's program has its own
-# jev/deploy.sh.
+# jev/deploy.sh, which this one runs when Jev is on the box.
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -189,25 +192,36 @@ cmd_deploy() {
   push --chmod=F644 "$HERE/systemd/vfg-bridge.service" "$HERE/systemd/vfg-jev.service" \
     "$SSH_USER@$SSH_HOST:/tmp/vfg-units/" || die "could not send the units"
 
+  # Jev's classes are the CHECK the bridge's schema sets: a Jev on the box is stopped before the
+  # schema changes and deployed from this checkout after it, never left running against it.
+  local jev=0 rc=0
+  remote 'test -f /opt/vfg/jev/jev_filter.py' || rc=$?
+  case $rc in 0) jev=1 ;; 1) ;; *) die "could not reach the box to look for Jev" ;; esac
+
   log "installing the units, applying the schema, restarting"
-  remote 'bash -s' <<'REMOTE'
+  remote "JEV=$jev bash -s" <<'REMOTE'
 set -euo pipefail
 sudo install -m 644 -o root -g root /tmp/vfg-units/vfg-bridge.service /tmp/vfg-units/vfg-jev.service \
   /etc/systemd/system/
 rm -rf /tmp/vfg-units
 sudo systemctl daemon-reload
 sudo systemctl enable vfg-bridge vfg-jev
+if [ "$JEV" = 1 ]; then
+  sudo systemctl stop vfg-jev
+fi
 cd /opt/vfg
 PYTHONPATH=/opt/vfg/lib:/opt/vfg/bridge /opt/vfg/python/bin/python3 -m vfg_bridge --init-db
 sudo systemctl restart vfg-bridge
-if [ -f /opt/vfg/jev/jev_filter.py ]; then
-  sudo systemctl restart vfg-jev
-fi
 sleep 2
-for unit in minecraft vfg-bridge vfg-jev; do
+for unit in minecraft vfg-bridge; do
   printf '%-11s %s\n' "$unit" "$(systemctl is-active "$unit" || true)"
 done
 REMOTE
+  if (( jev )); then
+    log "deploying Jev from this checkout with the bridge (jev/deploy.sh)"
+    VFG_SSH_HOST=$SSH_HOST VFG_SSH_USER=$SSH_USER VFG_SSH_KEY=$SSH_KEY "$BRIDGE/../jev/deploy.sh" \
+      || die "Jev did not deploy, and vfg-jev is stopped: run jev/deploy.sh"
+  fi
 }
 
 case "${1-}" in

@@ -14,8 +14,10 @@ Real:  a Minecraft 26.3 server with Carpet's fake players Steve and Alex (integr
        written), the implementers on the Claude subscription (Haiku 5.5), vfg, the actions and
        the scripts, the stand-in box's feed writer and vfg.db, with its tasks table.
 Stand-ins: SSH (realmc's bin/ssh), and Jev: each player's line is put into the feed as a LINE
-       row through the stand-in's vfg_feed, as Jev puts it there, several in one write when a
-       check needs them to arrive together.
+       row through the stand-in's vfg_feed, as Jev puts a line said to the AI there (class
+       to_ai), several in one write when a check needs them to arrive together. Every line goes
+       to Respond first, which answers talk and hands an ask up to the brain's loop
+       (Prototype_Addressing_The_AI).
 
 It starts from a clean slate: the stand-in's vfg.db (its -wal and -shm with it) and feed.log are
 set aside in a timestamped folder beside them, never deleted, and made again by
@@ -29,8 +31,8 @@ Three brains, one after another, on the one server and feed:
    attribute by its old name, a sword's enchantments in the component's old form); another
    player's items read with the tool; item asks by slot; the brain's own copy started, edited
    and stopped; Steve's second line waiting for his loop while Alex's runs at once; Steve's three
-   lines waiting and a fourth turned away by a private message naming them; a conversational
-   line for Respond; one hand-off on the real implementer, its brief in parts in the tasks table,
+   lines waiting and a fourth turned away by a private message naming them; a line of talk
+   Respond answers alone; one hand-off on the real implementer, its brief in parts in the tasks table,
    its report starting a new loop, then a follow-up and a stop by the task's name.
 2. VFG_LOOP_STEPS=2 and VFG_IMPLEMENTER_MINUTES=1: a loop that reaches its step limit and ends
    with a reply or a hand-off; and a report going ahead of Steve's waiting lines: a hand-off
@@ -336,7 +338,7 @@ class Live:
 
     def lines(self, *said):
         """Players' lines into the feed in one write, as the Jev filter feeds a batch."""
-        entries = [("LINE", "%s voice %s %s -9dB" % (who, cls, "0.93" if cls == "action_oriented" else "0.88"),
+        entries = [("LINE", "%s voice %s %s -9dB" % (who, cls, "0.93" if cls == "to_ai" else "0.88"),
                     text, None) for who, cls, text in said]
         seqs = self.writer.append_batch(entries)
         at = time.time()
@@ -407,7 +409,7 @@ class Run:
             out.append(a)
         return out
 
-    def ask(self, who, text, cls="action_oriented", timeout=60):
+    def ask(self, who, text, cls="to_ai", timeout=60):
         """One line into the feed; waits for its turn to end and its reply."""
         a, = self.batch((who, cls, text))
         self.await_reply(a, timeout)
@@ -830,9 +832,9 @@ def two_players(run):
     rep.head("7. Steve's second line waits for his loop, while Alex's runs at once")
     bread, pick, shield = (live.count_items("Steve", "bread"), live.count_items("Steve", "iron_pickaxe"),
                            live.count_items("Alex", "shield"))
-    s1, s2, x = run.batch(("Steve", "action_oriented", "give me 16 bread"),
-                          ("Steve", "action_oriented", "and an iron pickaxe"),
-                          ("Alex", "action_oriented", "can I get a shield"))
+    s1, s2, x = run.batch(("Steve", "to_ai", "give me 16 bread"),
+                          ("Steve", "to_ai", "and an iron pickaxe"),
+                          ("Alex", "to_ai", "can I get a shield"))
     for a in (s1, x, s2):
         run.await_reply(a, 90)
     r1, r2, rx = ("#%d" % a["seq"] for a in (s1, s2, x))
@@ -847,7 +849,7 @@ def two_players(run):
               "Steve's second loop began %.1f s after his first ended" % ((c2[0] - l1["at"]) if l1 and c2 else -1),
               "%s ¶ %s" % (run.evidence(r1), run.evidence(r2)))
     rep.check(c1 and cx and overlap(c1, cx) > 0,
-              "Alex's loop ran beside Steve's first: their first steps overlapped %.1f s"
+              "Alex's turn ran beside Steve's first: their first model calls overlapped %.1f s"
               % (overlap(c1, cx) if c1 and cx else -1), "%s ¶ %s" % (run.evidence(r1), run.evidence(rx)))
 
 
@@ -855,9 +857,9 @@ def waiting(run):
     rep, live = run.rep, run.live
     rep.head("8. Three of Steve's lines wait, and a fourth is turned away by a private message naming them")
     time.sleep(4)  # Steve's last turn waits up to VFG_TURN_SETTLE_S for its rows to come back: his lane is free
-    first, *chat, fourth = run.batch(("Steve", "action_oriented", "give me a stack of torches"),
-                                     *(("Steve", "conversational", t) for t in CHAT),
-                                     ("Steve", "conversational", "ok and one more thing"))
+    first, *chat, fourth = run.batch(("Steve", "to_ai", "give me a stack of torches"),
+                                     *(("Steve", "to_ai", t) for t in CHAT),
+                                     ("Steve", "to_ai", "ok and one more thing"))
     gone = "#%d" % fourth["seq"]
     away = wait_for(lambda: run.turn_log(r"%s Steve turned away, 3 waiting" % re.escape(gone)), 30)
     rep.check(away, "brain.log: %s Steve turned away, 3 waiting" % gone, short(live.log_since(live.mark)[-2000:]))
@@ -889,8 +891,8 @@ def waiting(run):
 
 def talk(run):
     rep, live = run.rep, run.live
-    rep.head("9. A conversational line: Respond")
-    a = run.ask("Alex", "haha thanks AI, you're a legend", cls="conversational", timeout=30)
+    rep.head("9. Talk said to the AI: Respond alone")
+    a = run.ask("Alex", "haha thanks AI, you're a legend", timeout=30)
 
     def use():  # the usage row goes out beside the reply, nobody waiting: it may come a moment after
         return sorted(u["component"] for u in live.sql("SELECT component FROM usage WHERE ref = ? OR ref LIKE ?",
@@ -1109,12 +1111,12 @@ def report_first(run):
         rep.check(False, "the report came after Steve's lines were fed", "%s reported within 15 s: nothing was "
                   "waiting" % tid)
         return
-    lines = run.batch(("Steve", "action_oriented", "give me the same item Alex is holding, exactly the same"),
-                      *(("Steve", "action_oriented", t) for t in FILLERS[:2]))
+    lines = run.batch(("Steve", "to_ai", "give me the same item Alex is holding, exactly the same"),
+                      *(("Steve", "to_ai", t) for t in FILLERS[:2]))
     more = list(FILLERS[2:])
     while not reported() and time.time() < at + 80:
         if more and sum(not run.calls("#%d" % x["seq"]) for x in lines) <= 2:   # one running, at most one waiting
-            lines += run.batch(("Steve", "action_oriented", more.pop(0)))
+            lines += run.batch(("Steve", "to_ai", more.pop(0)))
         time.sleep(0.5)
     res = wait_for(reported, 30, 0.5)
     for x in lines:

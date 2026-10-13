@@ -12,7 +12,7 @@ what retries, because the loop is what keeps the failing clock.
 ERRORS. `JevRefused` for 400, 413 and 422 — the API answered and said no to
 this request. `JevDown` for everything else: a timeout, no connection, 401,
 403, 429, 5xx, a malformed or missing answer the call requires (the routing
-call's `d_what`), or no key. A message never carries the key, the headers or
+call's `to_the_ai`), or no key. A message never carries the key, the headers or
 the state.
 """
 import http.client
@@ -152,7 +152,7 @@ class Jev:
         """One state, every question about it, one attempt. Answers a `Result`.
         Raises `JevDown` when the answer `required` names is missing or
         malformed; None requires none. Every caller says which: the filter's
-        routing call `d_what`, its gather call None."""
+        routing call `to_the_ai`, its gather call None."""
         if not self.key:
             raise JevDown("no key (TYPESAFE_API_KEY)")
         # UTF-8 JSON, not \u-escaped: the state's size here is the size the

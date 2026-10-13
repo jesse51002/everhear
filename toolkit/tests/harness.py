@@ -80,7 +80,7 @@ CREATE TABLE lines (id TEXT PRIMARY KEY, at TEXT NOT NULL, ended_at TEXT,
   player_uuid TEXT, player_name TEXT NOT NULL,
   source TEXT NOT NULL CHECK (source IN ('voice','chat','ai')), text TEXT NOT NULL,
   peak_dbfs REAL, mean_dbfs REAL, client_line_id TEXT UNIQUE,
-  jev_class TEXT CHECK (jev_class IN ('action_oriented','conversational','context','not_relevant')),
+  jev_class TEXT CHECK (jev_class IN ('to_ai','context','not_relevant')),
   jev_confidence REAL, jev_judged_at TEXT, fed_at TEXT);
 CREATE INDEX lines_at ON lines(at);
 CREATE TABLE events (id TEXT PRIMARY KEY, at TEXT NOT NULL, kind TEXT NOT NULL,
@@ -309,12 +309,12 @@ class Box(object):
         con.executescript(schema + (TASKS if tasks else ""))
         con.execute("PRAGMA journal_mode=WAL")
         lines = [
-            ("L1", now - timedelta(minutes=5), "Steve", "voice", "build me a castle", "action_oriented", 0.93),
+            ("L1", now - timedelta(minutes=5), "Steve", "voice", "build me a castle", "to_ai", 0.93),
             ("L2", now - timedelta(minutes=4), "Alex", "chat", "that cave by spawn", "context", 0.71),
             ("L3", now - timedelta(minutes=3), "Alex", "chat", "lol", None, None),
             ("L4", now - timedelta(minutes=2), "AI", "ai", "on it — castle at spawn", None, None),
             ("L5", now - timedelta(minutes=20), "Steve", "voice", "hmm", "not_relevant", 0.4),
-            ("L6", now - timedelta(hours=1), "Bob", "voice", "thanks AI", "conversational", 0.88),
+            ("L6", now - timedelta(hours=1), "Bob", "voice", "thanks AI", "to_ai", 0.88),
         ]
         for lid, at, player, source, text, cls, conf in lines:
             con.execute("INSERT INTO lines (id, at, player_name, source, text, jev_class, jev_confidence)"

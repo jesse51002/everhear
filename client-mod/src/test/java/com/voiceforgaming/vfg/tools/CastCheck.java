@@ -116,9 +116,11 @@ public final class CastCheck {
 		List<Incantation> list = new ArrayList<>(o.incantations);
 		IncantationClient lister = new IncantationClient(
 			() -> new IncantationClient.Target(VfgConfig.endpoint(o.bridge, "", "/v1/incantations"), key), 0, ms -> {},
-			(version, got) -> {
+			(version, got, serverPhrases) -> {
 				say("The bridge lists %d incantation%s for %s (version %d): %s", got.size(), got.size() == 1 ? "" : "s",
 					o.player, version, got.stream().map(i -> "\"" + i.phrase() + "\" " + i.aliases()).toList());
+				say("The server's phrases (hotwords): %s", serverPhrases == null ? "not sent (an older bridge)"
+					: serverPhrases);
 				list.addAll(0, got);
 			});
 		IncantationClient.Poll poll = lister.poll(o.player);

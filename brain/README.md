@@ -14,8 +14,8 @@ context, and runs two agents on it:
   every action of a step lands, its reply goes out and the loop is done in that one step; when one
   does not, every result comes back and the next step fixes it. The orchestrator call and the retry
   planner are gone as calls of their own: what they did is tools of the loop now.
-- **Respond** ([`respond.py`](brain/respond.py)), the cheap mode, for a conversational line: it
-  answers, or hands the line up to the brain.
+- **Respond** ([`respond.py`](brain/respond.py)), the cheap mode, which takes every line said to the
+  AI first: it answers, or hands the line up to the brain.
 
 A player's lines take turns, whichever agent takes them: one thing runs for a player at a time, the
 next line waits for it, and different players' turns run at once.
@@ -24,18 +24,21 @@ next line waits for it, and different players' turns run at once.
 
 | Event | Comes from | What runs |
 |---|---|---|
-| `LINE` | a `LINE` Jev classed `action_oriented`; or a `conversational` one Respond handed up | a loop, in the player's turn |
+| `LINE` | a `LINE` Jev classed `to_ai` that Respond handed up | a loop, in the player's turn |
 | `REPORT` | an implementer ending (`Implementers`' `on_report`) | once the task has taken what the implementer made, its `DESCRIPTION:` line and its action's variables (Tasks, below): a loop in the task's player's turn, at the front of their queue, which reads the report whole and writes the player's chat line, the task's record and its status, and may act on it (A report's loop, below) |
 
-A conversational `LINE` is one Respond call, and a loop when Respond hands it up. There is no other
-call: no model is called for what nobody asked. A game event, a system notice and the brain's own
+A `to_ai` `LINE` is one Respond call, and a loop when Respond hands it up (Prototype_Addressing_The_AI:
+Jev passes a line only when it is said to the AI, naming it, "AI" or "brain", or answering what the
+AI asked; its two classes for the AI before, `action_oriented` and `conversational`, are one now,
+and a feed row with either old name is read as `to_ai`, `context.py`). There is no other call: no
+model is called for what nobody asked. A game event, a system notice and the brain's own
 rows wait for the next loop or Respond call, which reads them as NEW.
 
 A `LINE`'s text can hold several pieces one player said in a row, joined with " … ", the ask last:
 Jev's gather call joins the earlier pieces that belong to the ask (`docs/CONTRACTS.md` §5). Both
 prompts say so, and to read them as one ask.
 
-**Respond** takes a `conversational` line: a cheap model (DeepSeek V4 Flash, reasoning off) on the
+**Respond** takes every `to_ai` line first: a cheap model (DeepSeek V4 Flash, reasoning off) on the
 same context that keeps up the banter and replies, or hands the line up to the brain, whose loop
 then runs it in the same turn. It answers talk, and a rule or a preference about the future only
 ("talk like a pirate from now on"), which holds because the brain reads the same conversation. It
@@ -63,8 +66,8 @@ live, whatever its time (the box's clock may be a minute off the PC's).
   take any more right now — wait a bit, then ask again.` Each line is cut short so the whole stays
   one chat line under 200 characters; the first five are named and the rest counted. The whisper's
   `AI say` row reads `(to <player>) …`.
-- **A conversational line's turn is Respond's**; when Respond hands it up, the brain's loop runs in
-  that same turn, with what Respond read.
+- **A line's turn is Respond's first**; when Respond hands it up, the brain's loop runs in that same
+  turn, with what Respond read.
 - **A hand-off ends the turn as soon as the implementer is started**: the implementer runs on its
   own and holds nobody's turn.
 - **An implementer's report waits for its task's player's turn too, at the front of their queue**,
@@ -95,7 +98,7 @@ read are its NEW rows.
 Respond's prompt. It stays in the feed and `vfg.db`, and in the context's rows, for a memory that
 will summarise it later; the brain marks it processed as it arrives (and, at a start, every one
 still unmarked), so nothing waits on it. Every `GAME` row, every `SYS` row, the brain's own `AI`
-rows and the `action_oriented` and `conversational` lines are shown.
+rows and the `to_ai` lines are shown.
 
 A step's prompt is laid out for the cache ([`call.py`](brain/call.py)):
 

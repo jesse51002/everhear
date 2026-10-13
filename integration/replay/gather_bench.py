@@ -4,12 +4,17 @@ of the 2026-10-08 playtest, and the gather call on every line it sends to the br
 gather_score.py scores it.
 
 THE FILTER IS PRODUCTION'S. Each line goes through `filter.Filter._judge_one` itself: the routing call
-(`prompt.questions`, D2's two, on the production state `prompt.build_state`: the neutral rules, the
-lookout the brain sets, `brain/prompts/lookout.md`, the examples block, the brain's menu), walked by
-`prompt.route`; a refused call asked once more with half the history, then passed as context; and,
-for a line classed `action_oriented` or `conversational`, `Filter._gather`: the window from
-`store.Store.gather_window`, one call with `prompt.gather_questions` on the gather state
-(`GATHER_RULES`, `GATHER_HEADING`), the yes lines fitted by `filter.fit_group`. The window is read
+(`prompt.questions` on the production state `prompt.build_state`: the rules, the lookout the brain
+sets, `brain/prompts/lookout.md`, the examples block, the brain's menu), walked by `prompt.route`; a
+refused call asked once more with half the history, then passed as context; and, for a line sent to
+the AI, `Filter._gather`: the window from `store.Store.gather_window`, one call with
+`prompt.gather_questions` on the gather state (`GATHER_RULES`, `GATHER_HEADING`, `GATHER_EXAMPLES`),
+the yes lines fitted by `filter.fit_group`. The routing call is whatever production asks: D2's two
+questions onto four classes when `prod/` was recorded (2026-10-11), the to-the-AI-or-a-friend question
+onto three since Prototype_Addressing_The_AI (2026-10-13); a line to the AI is `to_ai`, or in rows
+recorded before it `action_oriented` or `conversational`, and every reader here takes all three. The
+gather call's state is what it was when `prod/` was recorded: GATHER_RULES and GATHER_EXAMPLES are the
+rules and examples of then, word for word. The window is read
 from a sqlite database built from §4's schema (`jev/tests/schema.sql`), holding every line of the
 playtest with THIS replay's verdicts so far, so the window's rule is production's own.
 
@@ -18,7 +23,7 @@ Two things are the bench's:
   it judged the line then (tree_bench.Bench's rows: the lines and the brain's records visible by
   the line's `judged` time, three hours back), since the database holds every line, said or not
   yet said. The clock stands at the line's `judged` time.
-- RETRIES. A call that fails (`JevDown`: a timeout, no connection, a 5xx, `d_what` missing) is
+- RETRIES. A call that fails (`JevDown`: a timeout, no connection, a 5xx, the routing answer missing) is
   tried again, a second apart, five times, before the filter sees it fail, as the other benches
   do; production would retry the routing call on the next step and send the ask alone on a failed
   gather call. Every failed try is in the row. A refusal goes straight to the filter.
@@ -80,7 +85,7 @@ import prompt  # noqa: E402  (jev/prompt.py)
 from filter import GATHER_LOOKBACK, GATHER_MAX, Config, Filter, fit_group  # noqa: E402  (jev/filter.py)
 from jev_api import ENDPOINT, MODEL, PRICE_PER_INPUT_TOKEN, Jev, JevDown, JevRefused  # noqa: E402
 from jev_clock import iso, parse_iso  # noqa: E402
-from prompt import GATHER_HEADING, GATHER_RULES, PART_OF_IT, build_state, estimate  # noqa: E402
+from prompt import GATHER_EXAMPLES, GATHER_HEADING, GATHER_RULES, PART_OF_IT, build_state, estimate  # noqa: E402
 from store import Store  # noqa: E402
 
 REPO = HERE.parents[1]
@@ -89,6 +94,7 @@ LOOKOUT = REPO / "brain" / "prompts" / "lookout.md"   # what the brain sets with
 LABELS = HERE / "labels_2026-10-08.jsonl"
 INPUTS = HERE / "whole_asks_2026-10-08.jsonl"
 FAR = 10 ** 9   # a window's limit with no cap
+TO_THE_AI = ("to_ai", "action_oriented", "conversational")   # a line sent to the AI, now and in older rows
 
 
 # ------------------------------------------------------------------ the wordings of the gather call
@@ -188,9 +194,9 @@ class ReplayStore(Store):
         super().__init__(path)
         self.windows = []
 
-    def gather_window(self, ask, since, limit=10):
-        rows = super().gather_window(ask, since, limit)
-        every = super().gather_window(ask, since, FAR)
+    def gather_window(self, ask, since, limit=10, sent_since=None):
+        rows = super().gather_window(ask, since, limit, sent_since=sent_since)
+        every = super().gather_window(ask, since, FAR, sent_since=sent_since)
         self.windows.append({"ask": ask["id"], "since": since, "ids": [r["id"] for r in rows], "all": len(every)})
         return rows
 
@@ -266,11 +272,14 @@ def replay_filter(history: History):
 
         kept = None
 
-        def _state(self, marked, began, share=1.0, rules=prompt.RULES, heading=prompt.HISTORY_HEADING):
-            others = history.others(began, [r["id"] for _, r in marked])
+        def _state(self, marked, others, share=1.0, rules=prompt.RULES, heading=prompt.HISTORY_HEADING,
+                   examples=None):
+            # production's `others` is read from the replay database, which holds every line, said or not
+            # yet: the history is rebuilt as it was then, at the clock's time (the line's `judged` time)
+            others = history.others(self.clock.time(), [r["id"] for _, r in marked])
             menu = self.menu.text()
             state, self.kept = build_state(self.lookout.text(), marked, others, self.cfg.state_tokens, share, menu,
-                                           rules, heading)
+                                           rules, heading, examples)
             return state
 
     return ReplayFilter
@@ -319,6 +328,7 @@ def meta(b: Bench, path: Path, **more) -> None:
         "lookout": str(LOOKOUT), "lookout_is_default": LOOKOUT.read_text(encoding="utf-8").strip()
         == prompt.DEFAULT_LOOKOUT, "menu_lines": len(b.menu.splitlines()), "gather_lookback": GATHER_LOOKBACK,
         "gather_max": GATHER_MAX, "rules": prompt.RULES, "gather_rules": GATHER_RULES, "examples": prompt.EXAMPLES,
+        "gather_examples": GATHER_EXAMPLES,
         "gather_criteria": prompt.GATHER_CRITERIA, **more}, indent=1, ensure_ascii=False))
 
 
@@ -421,7 +431,8 @@ def gather_call(b: Bench, history: History, lookout: str, ask: dict, window: lis
     tokens, yes, group, missing, estimate, history_kept, tries}. Refused, or failed five times: `failed`."""
     marked = [("ask", ask)] + list(enumerate(window, 1))
     others = history.others(parse_iso(judged), [r["id"] for _, r in marked])
-    state, kept = build_state(lookout, marked, others, STATE_TOKENS, 1.0, b.menu, GATHER_RULES, GATHER_HEADING)
+    state, kept = build_state(lookout, marked, others, STATE_TOKENS, 1.0, b.menu, GATHER_RULES, GATHER_HEADING,
+                              GATHER_EXAMPLES)
     qs = qfun(ask, window)
     row = {"window": [r["id"] for r in window], "estimate": estimate(state), "history_kept": kept, "tries": []}
     for _ in range(TRIES):
@@ -496,7 +507,7 @@ def ten(args) -> None:
     done = {r["id"] for r in have}
     eligible = []
     for k, r in enumerate(rows):
-        if r["class"] not in ("action_oriented", "conversational"):
+        if r["class"] not in TO_THE_AI:
             continue
         unsent = [x for x in rows[:k] if x["who"] == r["who"] and x["class"] in ("context", "not_relevant")
                   and x["text"].strip()]
@@ -567,8 +578,8 @@ def live_states(root: Path):
         menu = prompt.read_menu(str(folder / "menu.md"))[0]
         src = sqlite3.connect("file:%s?mode=ro" % (folder / "vfg.db"), uri=True)
         src.row_factory = sqlite3.Row
-        asks = src.execute("SELECT id, at FROM lines WHERE jev_class IN ('action_oriented', 'conversational') "
-                           "ORDER BY at, id").fetchall()
+        asks = src.execute("SELECT id, at FROM lines WHERE jev_class IN (%s) ORDER BY at, id"
+                           % ",".join("?" * len(TO_THE_AI)), TO_THE_AI).fetchall()
         src.close()
         for ask_id, ask_at in asks:
             tmp = Path(tempfile.mkdtemp())
@@ -592,7 +603,7 @@ def live_states(root: Path):
                     others = sorted(list(st.history(since, exclude=[r["id"] for _, r in marked]))
                                     + st.ai_records(since), key=lambda r: (r["at"], r["id"]), reverse=True)
                     state, kept = build_state(lookout, marked, others, STATE_TOKENS, 1.0, menu, GATHER_RULES,
-                                              GATHER_HEADING)
+                                              GATHER_HEADING, GATHER_EXAMPLES)
                     yield name, folder, ask, window, state, kept
                 st.close()
             finally:

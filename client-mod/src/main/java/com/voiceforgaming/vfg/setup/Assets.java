@@ -64,6 +64,9 @@ public final class Assets {
 		new Asset(Kind.MODEL, "parakeet-110m",
 			"asr-models/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8.tar.bz2", 108035095L,
 			"f628312e9fdf8686374cb01a69425c41732529d540860311f16f37cbc32cfe9b"),
+		new Asset(Kind.MODEL, "parakeet-0.6b-v2",
+			"asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2", 482468385L,
+			"157c157bc51155e03e37d2466522a3a737dd9c72bb25f36eb18912964161e1ad"),
 		new Asset(Kind.TURN, TurnDetectors.SMART_TURN, "https://huggingface.co/soniqo/Smart-Turn-v3.2-ONNX/resolve/"
 			+ "b48fdbe20772bcec1fef02f4a1a355236ef6359e/smart-turn-v3.2-int8.onnx", 11123370L,
 			"00cd131551e8d1e9011f31345edb632a26116dd83e159782c4ddff610718ea31"),
@@ -84,7 +87,8 @@ public final class Assets {
 		new Asset(Kind.VOSK_NATIVES, "osx-x64", VOSK_JAR, 25861916L, VOSK_JAR_SHA256),
 		new Asset(Kind.VOSK_NATIVES, "osx-aarch64", VOSK_JAR, 25861916L, VOSK_JAR_SHA256));
 
-	/** The config's {@code model} values, the default first. */
+	/** The config's {@code model} values, the default first: Parakeet TDT 0.6B v2, then 110M, its fallback. */
+	public static final String PARAKEET_06B = "parakeet-0.6b-v2-en";
 	public static final String PARAKEET_110M = "parakeet-110m-en";
 	public static final String MOONSHINE_BASE = "moonshine-base-en";
 	public static final String MOONSHINE_TINY = "moonshine-tiny-en";
@@ -141,12 +145,16 @@ public final class Assets {
 		return find(Kind.VAD, "silero");
 	}
 
-	/** The archive for a config {@code model} value: {@code parakeet-110m-en}, {@code moonshine-base-en} or {@code moonshine-tiny-en}. */
+	/**
+	 * The archive for a config {@code model} value: {@code parakeet-0.6b-v2-en} (and any value it does not
+	 * know), {@code parakeet-110m-en}, {@code moonshine-base-en} or {@code moonshine-tiny-en}.
+	 */
 	public static Asset model(String modelSetting) {
 		return find(Kind.MODEL, switch (modelSetting) {
+			case PARAKEET_110M -> "parakeet-110m";
 			case MOONSHINE_BASE -> "base";
 			case MOONSHINE_TINY -> "tiny";
-			default -> "parakeet-110m";
+			default -> "parakeet-0.6b-v2";
 		});
 	}
 
@@ -232,9 +240,11 @@ public final class Assets {
 		return switch (a.kind()) {
 			case NATIVES -> vfgRoot.resolve("natives").resolve("sherpa-onnx-" + SHERPA_VERSION + "-" + a.variant());
 			case VAD -> vfgRoot.resolve("models").resolve("silero-vad");
-			case MODEL -> vfgRoot.resolve("models").resolve(isParakeet(a)
-				? "parakeet-tdt-110m-en-36000-int8"
-				: "moonshine-" + a.variant() + "-en-" + MODEL_DATE);
+			case MODEL -> vfgRoot.resolve("models").resolve(switch (a.variant()) {
+				case "parakeet-110m" -> "parakeet-tdt-110m-en-36000-int8";
+				case "parakeet-0.6b-v2" -> "parakeet-tdt-0.6b-v2-int8";
+				default -> "moonshine-" + a.variant() + "-en-" + MODEL_DATE;
+			});
 			case TURN -> vfgRoot.resolve("models").resolve("turn").resolve(a.variant());
 			case KWS -> vfgRoot.resolve("models").resolve("kws").resolve(archiveFolder(a));
 			case VOSK -> vfgRoot.resolve("models").resolve("vosk").resolve(archiveFolder(a));

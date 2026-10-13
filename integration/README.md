@@ -35,9 +35,9 @@ About a minute. The box's side (bridge, Jev filter, the toolkit's remote program
 |---|---|
 | 0 | setup as the brain does it (§12): `vfg up`, the brain's watchers, its lookout, Jev's menu (`vfg jev menu set` with `vfg action list`'s lines), `vfg context --json`, then `vfg watch --after` its last seq, which keeps no cursor |
 | 1 | `POST /v1/lines` → a `lines` row → Jev → one `LINE#seq` in `vfg watch`, unprocessed |
-| 2 | typed chat in Jev's four classes and watched game events reach `vfg watch`; `not_relevant` is stored, not fed; a `conversational` line flushes the waiting context at once |
+| 2 | typed chat in Jev's three classes and watched game events reach `vfg watch`; `not_relevant` is stored, not fed; a `to_ai` line flushes the waiting context at once |
 | 3 | `vfg say` writes an `ai` line Jev never judges and an `AI say` feed row in the same call, `AI say castle_steve` for `--task castle_steve`; Jev's next state holds the AI's lines, the brain's `action` (a loop's one record), `task` and `result` rows, a task's named in front of its text, and not an older brain's notes, the lookout and `menu.md` |
-| 4 | `vfg history` by date, source, player, each of the four classes, events and feed |
+| 4 | `vfg history` by date, source, player, each of the three classes (the old names refused), events and feed |
 | 5 | `vfg feed post AI` for each kind, its field a task's name or `-`, each row written processed; `GAME` of any kind, `SYS`; `ORCH`, a task number and bad `AI` fields refused; `vfg context`, `--json` (the rows, then `{tasks}`, then `{last_seq}`) and `vfg context mark` on the rows the brain reads |
 | 6 | `usage` rows: one per Jev call; `vfg usage add` writes them, cached tokens included: a step of the brain's loop (`#seq s1`, `#seq s2`, a report's `<task> s1`), Respond's (`#seq`), an implementer's (its task's name), and an older brain's `orchestrator` row, which the table still takes; `structured()`'s queued rows (the brain's steps, an older brain's `planner` row, an alias call's), a failed step's among them (its cost NULL when an attempt was cut off in flight), sent by `vfg usage flush` with `ok`, `error` and `ms` |
 | 7 | killing and restarting Jev, the brain's watch (`--after` its last seq) and the bridge loses and repeats nothing, and keeps the processed marks; an ask killed while its group waits for the feed is fed once, alone, and one killed after its group's feed write is not fed again |
@@ -132,19 +132,23 @@ OpenRouter, the loop's steps on Gemini 3.8 Flash and Respond's on DeepSeek V4 Fl
 `OPEN_ROUTER_API` from the environment, else from the first `.env` above this repo, or its
 `Internal/.env`, that holds it; given to the brain's process only, never printed or written.
 Each player's line goes into the feed as a `LINE` row through the box's `vfg_feed`, as Jev would
-put it there. It checks an action ask done in the world in one step, its loop ended with its
-reply (`AI say -`) and one record (`AI action -`), no task, the brain's own copy `command_steve`;
-an item ask on the right slot; a conversational line answered by Respond, with no step of the
-brain; a conversational ask handed up and acted on by a loop that replies or ends silent (the
-night says it); two players' lines in the same second both answered, their loops at once, each
+put a line said to the AI there (`to_ai`), and goes to Respond first (Prototype_Addressing_The_AI).
+It checks an action ask Respond hands up and the brain's loop does in the world in one step, its
+loop ended with its reply (`AI say -`) and one record (`AI action -`), no task, the brain's own
+copy `command_steve`; an item ask on the right slot, handed up the same way; talk answered by
+Respond, with no step of the brain; a casual ask handed up and acted on by a loop that replies or
+ends silent (the night says it); two players' lines in the same second both answered, their loops at once, each
 reply told apart by the words its loop logged, each player's copy named for them; the rows a
 call read marked processed; a context line marked read at once with no call, and a game event
 read by the next call; and `vfg brain stop`, with no row in `vfg.db`'s tasks table: nothing was
 handed off. Then each line's time to its reply with its loop's steps, cost, cache rate and
-ending (brain.log's `loop` line), and what the run cost. About a minute and eight model calls,
-about $0.03: each step about $0.005-0.006, its 30K-token prompt 94% read from the cache.
-On 2026-10-12, two runs: 39 of 39 checks passed each time, every loop one step, replies 6.3-13.9 s
-after the line (the step's call 4.9-11.0 s). Not part of any test suite.
+ending (brain.log's `loop` line), and what the run cost. About a minute and twelve model calls,
+about $0.035: each step about $0.005-0.008, its 30K-token prompt 95% read from the cache, and each
+Respond call about $0.0006. On 2026-10-12, two runs: 39 of 39 checks passed each time, every loop
+one step, replies 6.3-13.9 s after the line (the step's call 4.9-11.0 s). On 2026-10-13, with every
+line to the AI going to Respond first: 41 of 41, each ask handed up by Respond in 0.96-1.25 s and
+then one step, replies 8.3-13.3 s after the line, talk answered by Respond in 1.5-2.0 s. Not part
+of any test suite.
 
 ## The brain live, on realmc
 
@@ -174,7 +178,8 @@ after another on the one feed:
    action); Steve's second line waiting for his loop (`turn #… Steve waits for their turn`)
    while Alex's runs beside it; three of Steve's lines waiting and a fourth turned away, never
    answered, by a private message naming the three (`AI say - | (to Steve) Still on: …`), the
-   three taking his turn one after another; a conversational line for Respond; and one hand-off
+   three taking his turn one after another; talk Respond answers alone (every line goes to
+   Respond first, which hands an ask up to the loop); and one hand-off
    on the implementers' default, DeepSeek V4.1 Flash through OpenRouter (`docs/CONTRACTS.md` §10;
    the 2026-10-12 run below was on Haiku 5.5, the subscription): its task's name, its `AI task` row, its brief in
    `vfg.db` under its five headings with its done-when items, the turn ended as the implementer

@@ -221,7 +221,9 @@ class Playtest:
         peak = "%ddB" % int(ln.peak + 0.5) if ln.peak is not None else "-"
         c = "-" if conf is None else "%.2f" % conf
         text = f"LINE#0 {ln.at[11:19]} {'_'.join(ln.who.split())} voice {cls} {c} {peak} | {clean_text(ln.text)}"
-        return Entry(fed, (0, ln.at, ln.id), parse(text, seq=0, at=ln.at), n=ln.n, line_id=ln.id)
+        row = parse(text, seq=0, at=ln.at)
+        row.cls = cls  # the class the bench routes on, as benched: parse reads the old two for the AI as to_ai
+        return Entry(fed, (0, ln.at, ln.id), row, n=ln.n, line_id=ln.id)
 
     # ------------------------------------------------------------- the world and the tasks
 

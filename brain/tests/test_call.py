@@ -15,7 +15,7 @@ from brain.world import Seen
 
 from conftest import NOW, FakeRefs, act, catalog, cmd, follow_up, hand_off, made, rows, step
 
-LINE = "LINE#40 18:29:58 Steve voice action_oriented 0.93 -8dB | give me a diamond pickaxe"
+LINE = "LINE#40 18:29:58 Steve voice to_ai 0.93 -8dB | give me a diamond pickaxe"
 
 
 def check(answer: dict, **moment):
@@ -285,7 +285,7 @@ def test_each_event_puts_its_own_tail_after_the_conversation():
     p = call.prompt(line, ctx, seen, "TASKS: none yet", new[:2], FakeRefs())
     assert p.head[0][1] and "THE CONVERSATION SO FAR" in p.head[0][0]
     assert p.head[1] == ("18:29:50 game, death: Alex tried to swim in lava\n"
-                         "18:29:58 Steve (action_oriented): give me a diamond pickaxe\n", False)
+                         "18:29:58 Steve (to_ai): give me a diamond pickaxe\n", False)
     tail = p.tail
     assert (tail.index("THE WORLD NOW") < tail.index("TASKS: none yet") < tail.index("NEW SINCE")
             < tail.index("THE EVENT"))

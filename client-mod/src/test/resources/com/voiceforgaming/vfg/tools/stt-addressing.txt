@@ -1,0 +1,101 @@
+# The addressing set for ./gradlew sttCompare: lines that name the AI ("AI", "brain"), players and
+# incantations, modelled on the kinds of lines speech-to-text broke in a playtest, and everyday talk
+# with no name in it, to count false hotwords. Invented players, phrases and lines: this repo is public.
+#
+# players: the names online (the tab list), as the mod gets them.
+# phrases: the server's incantation phrases (the bridge's server_phrases).
+# Each other line is one thing said: what Kokoro says, then "=>" and what was meant when that differs
+# (a name spelled as the player list spells it).
+
+players: Pyrothane, DuskJR, Steve_123, Mirelle, Tobble
+phrases: fire ball, frost nova, blizzard aura, ember shield, destroy everything, freeze, thunder step, ice aura
+
+# --- the AI by name ---
+Hey AI, give me food.
+AI, set the time to day.
+Set the time to day, AI, please.
+Hello AI, can you hear me?
+AI, can you give me a stack of steak?
+Do I have any incantations, AI?
+Hey AI, what's the weather doing?
+AI, make it stop raining.
+Okay AI, build me a small house here.
+Can you teleport me home, AI?
+AI, the frost aura does no more damage.
+Can you delete the ice aura, AI? Get rid of it.
+AI, can you remove the cooldown on all my spells?
+Hey AI, I want a sword with fire on it.
+It always thinks I'm talking to AI.
+I think the AI is a bit slow today.
+# --- the brain ---
+Hey brain, do I have any incantations?
+Brain, give me sixty four arrows.
+Okay brain, turn off the rain.
+Can you hear me, brain?
+# --- players by name ---
+Can you teleport me to Pyrothane?
+Give Pyrothane a diamond sword.
+AI, teleport Mirelle to me.
+Where is Mirelle right now?
+Teleport me to Dusk J R. => Teleport me to DuskJR.
+Dusk J R, come over here. => DuskJR, come over here.
+Give Steve some bread, AI. => Give Steve_123 some bread, AI.
+Steve, look behind you! => Steve_123, look behind you!
+Tobble, did you take my pickaxe?
+AI, spawn a zombie next to Tobble.
+# --- incantations and command words ---
+Turn off blizzard aura.
+Stop my ice aura.
+Yes, unbind freeze.
+Just unbind freeze, that's probably better.
+AI, unbind frost nova.
+Just try destroy everything.
+Can you make a fire ball spell that is bound to fire ball?
+Give me an ember shield bound to shield.
+Thunder step is way too fast.
+Does the frost nova do damage to mobs?
+How many incantations do I have?
+Can you set the cooldown to ten seconds?
+Freeze! Freeze! It's not working.
+I cast fire ball at the creeper.
+# --- talk with no name in it ---
+Where are you going? What are you doing?
+Do you think this pose is big enough?
+I set the time today.
+Hey, I found a cave over here.
+Hey, I need some food.
+It's so slow though. Why is this so slow?
+Oh, sorry, did you want that?
+How much damage does it do to you?
+The first time it hit me it was eight hearts.
+Wait, is that on me again?
+I don't know if I want to give away that information.
+That does no damage to you though.
+I think it might not have cooled down yet.
+Thank you.
+Did you see that creeper?
+There's a skeleton right behind you.
+I'm almost out of arrows.
+Let's go to the nether after this.
+I have an idea for the base.
+Oh, I see it now.
+A diamond! I found a diamond!
+I'll be right back.
+Today was really fun.
+Are you building a house?
+Bring the iron back to the base.
+Nice shot!
+Where did you put the chest?
+Follow me to the village.
+I can't find the portal anywhere.
+I'm over here, by the tree.
+I died again.
+Stop hitting me.
+Let me try that one more time.
+Do you want this sword or not?
+I need a bucket of water.
+The sun is going down, we should go inside.
+I bet I can beat you to the top.
+Can you hear the zombies?
+That was a really close one.
+I said I would do it later.

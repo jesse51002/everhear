@@ -45,6 +45,10 @@ class AssetInstallerTest {
 	private final Map<String, byte[]> files = new ConcurrentHashMap<>();
 	private final List<String> requests = Collections.synchronizedList(new ArrayList<>());
 	private final List<Long> sleeps = Collections.synchronizedList(new ArrayList<>());
+	private final List<String> ranges = Collections.synchronizedList(new ArrayList<>());
+	private final Map<String, Integer> cutAfter = new ConcurrentHashMap<>();
+	private volatile boolean rangesHonoured = true;
+	private volatile boolean wrongRange;
 
 	@BeforeEach
 	void start() throws IOException {
@@ -64,9 +68,28 @@ class AssetInstallerTest {
 				exchange.close();
 				return;
 			}
-			exchange.sendResponseHeaders(200, body.length);
+			String range = exchange.getRequestHeaders().getFirst("Range");
+			ranges.add(range == null ? "" : range);
+			int from = 0;
+			if (range != null && rangesHonoured && range.startsWith("bytes=") && range.endsWith("-")) {
+				from = Integer.parseInt(range.substring(6, range.length() - 1));
+				if (wrongRange) { // answers another range than the one asked: unusable
+					from = 0;
+				}
+				exchange.getResponseHeaders().add("Content-Range", "bytes " + from + "-" + (body.length - 1) + "/" + body.length);
+				exchange.sendResponseHeaders(206, body.length - from);
+			} else {
+				exchange.sendResponseHeaders(200, body.length);
+			}
+			Integer cut = cutAfter.remove(path); // a connection that drops after so many bytes
 			try (OutputStream out = exchange.getResponseBody()) {
-				out.write(body);
+				if (cut != null) {
+					out.write(body, from, Math.min(cut, body.length - from));
+					out.flush();
+					exchange.close(); // short of what was promised: the client sees the stream end early
+					return;
+				}
+				out.write(body, from, body.length - from);
 			}
 		});
 		server.start();
@@ -500,9 +523,120 @@ class AssetInstallerTest {
 		assertTrue(Assets.isParakeet(parakeet));
 		assertFalse(Assets.isParakeet(Assets.model("moonshine-base-en")));
 		assertEquals(Path.of("r/models/parakeet-tdt-110m-en-36000-int8"), Assets.folder(Path.of("r"), parakeet));
+		assertEquals(482468385L, Assets.model("parakeet-0.6b-v2-en").bytes());
 		assertEquals("v1.13.8/sherpa-onnx-native-lib-win-x64-1.13.8.jar", Assets.natives("win-x64").path());
 		assertEquals(Path.of("r/models/moonshine-tiny-en-2026-02-27"),
 			Assets.folder(Path.of("r"), Assets.model("moonshine-tiny-en")));
 		assertEquals(Path.of("r/natives/sherpa-onnx-1.13.8-win-x64"), Assets.folder(Path.of("r"), Assets.natives("win-x64")));
+	}
+
+	private static byte[] bigFile() {
+		byte[] data = new byte[3_000_000];
+		new java.util.Random(5).nextBytes(data);
+		return data;
+	}
+
+	@Test
+	void aDownloadThatBreaksOffCarriesOnFromWhereItStopped() throws Exception {
+		byte[] data = bigFile();
+		Assets.Asset model = serve(Assets.Kind.VAD, "silero", "asr-models/big.onnx", data);
+		cutAfter.put("asr-models/big.onnx", 1_000_000);
+		installer().install(model);
+		assertArrayEquals(data, Files.readAllBytes(dir.resolve("vfg/models/silero-vad/silero_vad.onnx")));
+		assertEquals(2, ranges.size(), String.valueOf(ranges));
+		assertEquals("", ranges.get(0), "the first try asks for all of it");
+		assertTrue(ranges.get(1).startsWith("bytes="), "the second carries on: " + ranges.get(1));
+		long from = Long.parseLong(ranges.get(1).substring(6, ranges.get(1).length() - 1));
+		assertTrue(from > 0 && from <= 1_000_000, "from what it had: " + from);
+		assertFalse(Files.exists(dir.resolve("vfg/downloads/big.onnx.part")));
+	}
+
+	@Test
+	void aPartLeftByAnEarlierStartIsCarriedOn() throws Exception {
+		byte[] data = bigFile();
+		Assets.Asset model = serve(Assets.Kind.VAD, "silero", "asr-models/big.onnx", data);
+		Path part = dir.resolve("vfg/downloads/big.onnx.part");
+		Files.createDirectories(part.getParent());
+		Files.write(part, java.util.Arrays.copyOf(data, 1_234_567));
+		installer().install(model);
+		assertEquals(List.of("bytes=1234567-"), ranges);
+		assertArrayEquals(data, Files.readAllBytes(dir.resolve("vfg/models/silero-vad/silero_vad.onnx")));
+	}
+
+	@Test
+	void aServerThatSendsTheWholeFileStartsItAgain() throws Exception {
+		byte[] data = bigFile();
+		Assets.Asset model = serve(Assets.Kind.VAD, "silero", "asr-models/big.onnx", data);
+		Path part = dir.resolve("vfg/downloads/big.onnx.part");
+		Files.createDirectories(part.getParent());
+		Files.write(part, java.util.Arrays.copyOf(data, 500_000));
+		rangesHonoured = false;
+		installer().install(model);
+		assertEquals(List.of("bytes=500000-"), ranges);
+		assertArrayEquals(data, Files.readAllBytes(dir.resolve("vfg/models/silero-vad/silero_vad.onnx")));
+	}
+
+	@Test
+	void aPartThatIsNoPrefixOfTheFileIsDeletedAndDownloadedWhole() throws Exception {
+		byte[] data = bigFile();
+		Assets.Asset model = serve(Assets.Kind.VAD, "silero", "asr-models/big.onnx", data);
+		Path part = dir.resolve("vfg/downloads/big.onnx.part");
+		Files.createDirectories(part.getParent());
+		Files.write(part, new byte[700_000]); // zeros: the hash of the whole comes out wrong
+		installer().install(model);
+		assertEquals(List.of("bytes=700000-", ""), ranges, "carried on, wrong, deleted, fetched whole");
+		assertEquals(List.of(2000L), sleeps);
+		assertArrayEquals(data, Files.readAllBytes(dir.resolve("vfg/models/silero-vad/silero_vad.onnx")));
+	}
+
+	@Test
+	void aResumeAnsweredForAnotherRangeDeletesThePartAndTheNextTryStartsClean() throws Exception {
+		byte[] data = bigFile();
+		Assets.Asset model = serve(Assets.Kind.VAD, "silero", "asr-models/big.onnx", data);
+		Path part = dir.resolve("vfg/downloads/big.onnx.part");
+		Files.createDirectories(part.getParent());
+		Files.write(part, java.util.Arrays.copyOf(data, 800_000));
+		wrongRange = true;
+		installer().install(model);
+		assertEquals(List.of("bytes=800000-", ""), ranges, "one failed resume, then the whole file, not the range again");
+		assertEquals(List.of(2000L), sleeps);
+		assertArrayEquals(data, Files.readAllBytes(dir.resolve("vfg/models/silero-vad/silero_vad.onnx")));
+	}
+
+	@Test
+	void aPartOfTheWholeSizeWithTheRightHashIsUsedWithoutARequest() throws Exception {
+		byte[] data = bigFile();
+		Assets.Asset model = serve(Assets.Kind.VAD, "silero", "asr-models/big.onnx", data);
+		Path part = dir.resolve("vfg/downloads/big.onnx.part");
+		Files.createDirectories(part.getParent());
+		Files.write(part, data); // finished, then the game was killed before the hash check and move
+		installer().install(model);
+		assertTrue(requests.isEmpty(), String.valueOf(requests));
+		assertArrayEquals(data, Files.readAllBytes(dir.resolve("vfg/models/silero-vad/silero_vad.onnx")));
+		assertFalse(Files.exists(part));
+	}
+
+	@Test
+	void aPartOfTheWholeSizeWithTheWrongHashIsDeletedAndFetchedWhole() throws Exception {
+		byte[] data = bigFile();
+		Assets.Asset model = serve(Assets.Kind.VAD, "silero", "asr-models/big.onnx", data);
+		Path part = dir.resolve("vfg/downloads/big.onnx.part");
+		Files.createDirectories(part.getParent());
+		Files.write(part, new byte[data.length]);
+		installer().install(model);
+		assertEquals(List.of(""), ranges);
+		assertArrayEquals(data, Files.readAllBytes(dir.resolve("vfg/models/silero-vad/silero_vad.onnx")));
+	}
+
+	@Test
+	void aPartLongerThanTheWholeIsDeletedAndFetchedWhole() throws Exception {
+		byte[] data = bigFile();
+		Assets.Asset model = serve(Assets.Kind.VAD, "silero", "asr-models/big.onnx", data);
+		Path part = dir.resolve("vfg/downloads/big.onnx.part");
+		Files.createDirectories(part.getParent());
+		Files.write(part, new byte[data.length + 10]);
+		installer().install(model);
+		assertEquals(List.of(""), ranges);
+		assertArrayEquals(data, Files.readAllBytes(dir.resolve("vfg/models/silero-vad/silero_vad.onnx")));
 	}
 }

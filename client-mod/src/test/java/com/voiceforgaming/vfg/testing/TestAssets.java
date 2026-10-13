@@ -5,6 +5,7 @@ import com.voiceforgaming.vfg.kws.SpotterVad;
 import com.voiceforgaming.vfg.kws.Vosk;
 import com.voiceforgaming.vfg.setup.AssetInstaller;
 import com.voiceforgaming.vfg.setup.Assets;
+import com.voiceforgaming.vfg.speech.Hotwords;
 import com.voiceforgaming.vfg.speech.SpeechEngine;
 import com.voiceforgaming.vfg.turn.TurnDetector;
 import com.voiceforgaming.vfg.turn.TurnDetectors;
@@ -67,13 +68,23 @@ public final class TestAssets {
 		return Wav.read(fetch(KENNEDY_WAV));
 	}
 
-	/** A config {@code model} value's folder: {@code parakeet-110m-en}, {@code moonshine-base-en} or {@code moonshine-tiny-en}. */
+	/** A config {@code model} value's folder: {@code parakeet-0.6b-v2-en}, {@code parakeet-110m-en}, {@code moonshine-base-en} or {@code moonshine-tiny-en}. */
 	public static Path modelDir(String model) {
 		return Assets.folder(root(), Assets.model(model));
 	}
 
-	/** Installs (once) and loads the engine exactly as the mod does, for a config {@code model} value. */
+	/**
+	 * Installs (once) and loads the engine exactly as the mod does by default, for a config
+	 * {@code model} value: a Parakeet model with the hotwords ("AI", "brain", the command words;
+	 * nobody online, no phrases), by beam search.
+	 */
 	public static SpeechEngine engine(String model, int sttThreads, float vadThreshold) throws Exception {
+		return engine(model, sttThreads, vadThreshold, Assets.isParakeet(Assets.model(model)) ? new Hotwords() : null);
+	}
+
+	/** The same with these {@code hotwords}, or none ({@code null}: greedy, as with {@code hotwords: false}). */
+	public static SpeechEngine engine(String model, int sttThreads, float vadThreshold, Hotwords hotwords)
+			throws Exception {
 		String platform = Assets.currentPlatform();
 		if (platform == null) {
 			throw new IllegalStateException("unsupported platform: " + System.getProperty("os.name") + " "
@@ -85,7 +96,7 @@ public final class TestAssets {
 		installer().installAll(List.of(natives, vad, modelAsset));
 		return SpeechEngine.load(Assets.folder(root(), natives), Assets.isParakeet(modelAsset),
 			Assets.folder(root(), modelAsset), Assets.folder(root(), vad).resolve(Assets.VAD_FILE), sttThreads,
-			vadThreshold);
+			vadThreshold, hotwords, Assets.PARAKEET_06B.equals(model) ? Hotwords.PARAKEET_06B : null);
 	}
 
 	/** This PC's natives folder, where {@link #engine} installs them. */

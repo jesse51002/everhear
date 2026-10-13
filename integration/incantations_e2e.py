@@ -197,6 +197,8 @@ def run_checks(br, p, env):
     check("Steve's list holds his two", code == 200 and phrases == ["fire ball", "ice wall"], "%s %s" % (code, phrases))
     code, doc = br.get("/v1/incantations?player=Alex")
     check("Alex's list is empty", code == 200 and doc["incantations"] == [], "%s %s" % (code, doc))
+    check("and its server_phrases are every player's phrases, Steve's two (his mod's speech-to-text hotwords)",
+          code == 200 and doc.get("server_phrases") == ["fire ball", "ice wall"], "%s %s" % (code, doc))
     t0 = time.time()
     code, _ = br.get("/v1/incantations?player=Steve&after=%d&wait=1" % doc["version"])
     check("an unchanged list is 304 after its wait", code == 304, "%s in %.2f s" % (code, time.time() - t0))

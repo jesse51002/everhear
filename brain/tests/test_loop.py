@@ -22,28 +22,28 @@ from brain.tasks import Tasks
 from brain.turns import turned_away_line
 from brain.vfg import VfgResult
 
-from conftest import STATE, act, cmd, follow_up, hand_off, made, ran, rows, step
+from conftest import HAND_UP, STATE, act, cmd, follow_up, hand_off, made, ran, rows, step
 
-ASK = "LINE#{seq} 18:29:58 Steve voice action_oriented 0.93 -8dB | give me a diamond pickaxe"
-TALK = "LINE#{seq} 18:29:59 Steve voice conversational 0.88 - | haha thanks AI"
+ASK = "LINE#{seq} 18:29:58 Steve voice to_ai 0.93 -8dB | give me a diamond pickaxe"
+TALK = "LINE#{seq} 18:29:59 Steve voice to_ai 0.88 - | haha thanks AI"
 PICKAXE = act("command", "give Steve a diamond pickaxe", cmd("give Steve diamond_pickaxe"))
 GIVE = step(PICKAXE, reply="there you go")
 
 
-def line(seq: int, who: str = "Steve", text: str = "give me a diamond pickaxe", cls: str = "action_oriented") -> str:
+def line(seq: int, who: str = "Steve", text: str = "give me a diamond pickaxe", cls: str = "to_ai") -> str:
     return f"LINE#{seq} 18:29:58 {who} voice {cls} 0.9 - | {text}"
 
 
 async def test_each_row_goes_where_its_class_says_and_a_read_marks_what_it_took(kit):
     k = kit(rows("GAME#1 18:29:40 join Alex | Alex joined the game", "AI#2 18:29:41 say - | hi"),
-            Step=GIVE, Response={"reply": "anytime!", "hand_up": False, "reason": "thanks"})
+            Step=GIVE, Response=[HAND_UP, {"reply": "anytime!", "hand_up": False, "reason": "thanks"}])
     for text in ("GAME#3 18:29:50 death Alex | Alex tried to swim in lava", "SYS#0 18:29:51 | vfg watch: reconnected",
                  "LINE#4 18:29:52 Alex voice context 0.7 - | ouch, I'm by the lava", ASK.format(seq=5),
                  TALK.format(seq=6)):
         k.brain.feed(text)
         await asyncio.sleep(0)  # as `vfg watch` gives them: one line at a time
     await k.settle()
-    assert [c["output"] for c in k.ask.calls] == ["Step", "Response"]  # Steve's second line waited its turn
+    assert [c["output"] for c in k.ask.calls] == ["Response", "Step", "Response"]  # Respond first; #6 waited its turn
     tail = k.ask.of("Step")[0]["cached"][-1][0]
     assert "Alex joined the game" in tail.split("NEW SINCE")[1] and "Alex tried to swim in lava" in tail
     for c in k.ask.calls:                  # the context line: in no prompt, cached or not, of any call
@@ -53,14 +53,15 @@ async def test_each_row_goes_where_its_class_says_and_a_read_marks_what_it_took(
     assert k.vfg.of("context", "mark") == [["context", "mark", "4"], ["context", "mark", "1", "3", "5"],
                                            ["context", "mark", "6"]]
     # each call names its usage row, which structured() queues; the brain only sends the queue, per call
-    assert [(c["component"], c["call_id"]) for c in k.ask.calls] == [("brain", "#5 s1"), ("respond", "#6")]
-    assert k.vfg.of("usage", "add") == [] and k.vfg.of("usage") == [["usage", "flush"]] * 2
+    assert [(c["component"], c["call_id"]) for c in k.ask.calls] == [("respond", "#5"), ("brain", "#5 s1"),
+                                                                      ("respond", "#6")]
+    assert k.vfg.of("usage", "add") == [] and k.vfg.of("usage") == [["usage", "flush"]] * 3
     assert k.ctx.unprocessed() == [] and k.ctx.last_seq == 6
 
 
 async def test_respond_replies_or_hands_up_never_both_and_a_hand_up_is_the_brains_loop(kit):
     k = kit(Step=GIVE, Response={"reply": "sure thing!", "hand_up": True, "reason": "asks for rain"})
-    k.brain.feed("LINE#7 18:29:59 Steve voice conversational 0.9 - | lol make it rain")
+    k.brain.feed("LINE#7 18:29:59 Steve voice to_ai 0.9 - | lol make it rain")
     await k.settle()
     assert [c["output"] for c in k.ask.calls] == ["Response", "Step"]
     assert "handed this line up to you: asks for rain" in k.ask.calls[1]["cached"][-1][0]
@@ -172,20 +173,20 @@ def test_respond_decides_first_and_always_writes_its_reason():
 
 async def test_history_is_the_old_feed_at_the_start_and_a_line_on_the_watch_is_live_whatever_its_time(kit):
     k = kit(rows("LINE#8 18:29:50 Alex voice context 0.9 - | so hungry",
-                 "LINE#9 18:20:00 Steve voice action_oriented 0.9 - | give me a diamond pickaxe"), Step=GIVE)
+                 "LINE#9 18:20:00 Steve voice to_ai 0.9 - | give me a diamond pickaxe"), Step=GIVE)
     k.brain.start = 9
     assert [r.seq for r in k.brain.catch_up()] == [9]      # ten minutes old as the brain starts: history
     await k.settle()                                      # and a context line unread, whatever its age, read
     assert k.ask.calls == [] and k.vfg.of("context", "mark") == [["context", "mark", "8", "9"]]
     # the box's clock 90 s ahead of the PC's: a line said now reads as yesterday's 18:31:30, and is live
-    k.brain.feed("LINE#10 18:31:30 Steve voice action_oriented 0.9 - | give me a diamond pickaxe")
+    k.brain.feed("LINE#10 18:31:30 Steve voice to_ai 0.9 - | give me a diamond pickaxe")
     await k.settle()
-    assert len(k.ask.calls) == 1 and "LINE #10" in k.ask.calls[0]["cached"][-1][0].split("THE EVENT")[1]
+    assert len(k.ask.of("Step")) == 1 and "LINE #10" in k.ask.of("Step")[0]["cached"][-1][0].split("THE EVENT")[1]
     # after a drop, the backlog the watch catches up with is judged by its age, as a start's is
     k.brain.feed("SYS#0 18:30:00 | reconnected")
-    k.brain.feed("LINE#11 18:21:00 Steve voice action_oriented 0.9 - | give me a diamond axe")
+    k.brain.feed("LINE#11 18:21:00 Steve voice to_ai 0.9 - | give me a diamond axe")
     await k.settle()
-    assert len(k.ask.calls) == 1
+    assert len(k.ask.of("Step")) == 1
 
 
 # ------------------------------------------------------------------ the loop
@@ -197,7 +198,7 @@ async def test_an_ask_whose_actions_all_land_is_one_step_its_reply_said_and_one_
                       reply="suited up, and 64 cobble", record="gave KrownJM netherite armor and 64 cobblestone"))
     k.brain.feed(line(5, "KrownJM", "give me netherite armor and 64 cobblestone"))
     await k.settle()
-    assert len(k.ask.calls) == 1 and k.ask.calls[0]["call_id"] == "#5 s1"  # no second call
+    assert len(k.ask.of("Step")) == 1 and k.ask.of("Step")[0]["call_id"] == "#5 s1"  # no second step
     assert len(k.vfg.of("action", "run")) == 2
     assert k.vfg.said() == [["suited up, and 64 cobble"]]
     assert k.vfg.rows() == [("action -", "gave KrownJM netherite armor and 64 cobblestone")]  # ONE record
@@ -369,7 +370,7 @@ async def test_a_call_that_fails_mid_loop_tells_the_player_and_records_what_ran(
     out = capsys.readouterr().out
     assert "brain #7 s2 FAILED (9400 ms $0.004000, 18000 in, 0% cached, 900 out): google/" in out
     assert "loop #7 Steve: 2 step(s), $0.006000, 5% cached" in out and "ended failed" in out
-    assert k.vfg.of("usage") == [["usage", "flush"]] * 2  # each step's row, sent, the failed one's too
+    assert k.vfg.of("usage") == [["usage", "flush"]] * 3  # Respond's row and each step's, sent, the failed one's too
     assert loop.errored("Alex", LlmError("no answer from m within 30 s")) == \
         "Alex: that errored out — no answer from m within 30 s"   # a timeout keeps its short reason
     assert loop.errored("Alex", LlmError("m twice failed to match Step:\n- (the answer): Value error, the reply "
@@ -383,7 +384,7 @@ async def test_a_call_that_fails_mid_loop_tells_the_player_and_records_what_ran(
 
 
 async def test_each_steps_prompt_is_the_next_steps_cached_prefix_at_most_four_marks(kit):
-    convo = rows(*(f"LINE#{i} 18:{i:02d}:00 Alex voice conversational 0.9 - | line {i}" for i in range(1, 25)),
+    convo = rows(*(f"LINE#{i} 18:{i:02d}:00 Alex voice to_ai 0.9 - | line {i}" for i in range(1, 25)),
                  processed=True)
     more = step(act("command", "give Steve bread", cmd("give Steve bread")), end="next")
     k = kit(convo, Step=[more, more, step(reply="three loaves")])
@@ -578,7 +579,7 @@ async def test_the_brains_tasks_and_running_now_are_in_full(kit):
                                  "live": ["cooldown"], "task": None}})
     k.brain.feed(ASK.format(seq=5))
     await k.settle()
-    tail = k.ask.calls[0]["cached"][-1][0]
+    tail = k.ask.of("Step")[0]["cached"][-1][0]
     assert "- galick_gun_styrk, for Styrkaeopteryx, open, 18:30:00: A Galick Gun for Styrkaeopteryx" in tail
     assert "  made: nothing yet; running now: none" in tail
     assert "- railgun_steve: railgun, the brain started it\n  live: " in tail and "cooldown=5 (0..60)" in tail
@@ -636,7 +637,7 @@ async def test_there_is_no_batch_whatever_waits_unread_waits_for_the_next_call(k
     assert [r.seq for r in k.ctx.unprocessed()] == [1]    # the game event waits for the next call; the context line not
     k.brain.feed(ASK.format(seq=3))
     await k.settle()
-    assert "Alex tried to swim in lava" in k.ask.calls[0]["cached"][-1][0].split("NEW SINCE")[1]
+    assert "Alex tried to swim in lava" in k.ask.of("Step")[0]["cached"][-1][0].split("NEW SINCE")[1]
 
 
 async def test_respond_sees_each_players_place_and_state_but_no_items(kit):
@@ -673,13 +674,13 @@ async def test_a_burst_of_calls_sends_the_usage_queue_once_more_never_two_flushe
         k.brain.feed(line(seq, f"P{seq}"))
     while k.brain.inflight:
         await asyncio.gather(*k.brain.inflight)
-    assert len(k.ask.calls) == 5 and k.vfg.of("usage") == [["usage", "flush"]] and running[0] == 1
+    assert len(k.ask.of("Step")) == 5 and k.vfg.of("usage") == [["usage", "flush"]] and running[0] == 1
     down.set()
     await k.settle()
     assert k.vfg.of("usage") == [["usage", "flush"]] * 2 and most[0] == 1  # one more for the four, after it
-    k.brain.feed(line(10, "P10"))  # nothing running: a call's own flush, at once
+    k.brain.feed(line(10, "P10"))  # nothing running: each call's own flush, Respond's then the step's, at once
     await k.settle()
-    assert len(k.vfg.of("usage")) == 3 and most[0] == 1
+    assert len(k.vfg.of("usage")) == 4 and most[0] == 1
 
 
 async def test_a_line_whose_event_breaks_tells_the_player_it_errored_out(kit):
@@ -688,7 +689,7 @@ async def test_a_line_whose_event_breaks_tells_the_player_it_errored_out(kit):
     async def broken(*a, **kw):
         raise RuntimeError("the world broke")
     k.brain.world.seen = broken
-    k.brain.feed("LINE#7 18:29:59 Steve voice action_oriented 0.9 - | give me a diamond pickaxe")
+    k.brain.feed("LINE#7 18:29:59 Steve voice to_ai 0.9 - | give me a diamond pickaxe")
     await k.settle()
     assert k.vfg.said() == [["Steve: that errored out — the world broke"]]
 
@@ -780,7 +781,7 @@ async def test_a_report_goes_ahead_of_the_players_waiting_lines(kit):
 async def test_a_hand_up_keeps_the_turn_and_a_hand_off_frees_it_at_once(kit):
     held = Held(step(end="handoff", reply="on it", hand_offs=(hand_off(),)))
     k = kit(Step=held, Response={"reason": "asks for a fireball", "hand_up": True, "reply": ""})
-    k.brain.feed(line(5, "KrownJM", "a fireball on my words?", cls="conversational"))
+    k.brain.feed(line(5, "KrownJM", "a fireball on my words?"))
     await turns()
     assert [c["output"] for c in k.ask.calls] == ["Response", "Step"]  # handed up: the brain's loop, same turn
     assert k.brain.feed(line(6, "KrownJM", "and a shield")) == "waiting"  # the turn is still Respond's line's
@@ -849,7 +850,7 @@ async def test_the_loops_clock_starts_with_the_turn_so_respond_counts_against_th
         return {"reason": "asks for a fireball", "hand_up": True, "reply": ""}
 
     k = kit(Response=slow, Step=step(end="handoff", reply="handing it on", hand_offs=(hand_off(),)))
-    k.brain.feed(line(5, "KrownJM", "a fireball on my words?", cls="conversational"))
+    k.brain.feed(line(5, "KrownJM", "a fireball on my words?"))
     await k.settle()
     assert k.ask.of("Step")[0]["prompt"].startswith("\nSTEP 1 of at most 10; 130 s of 120 used.\nTHIS IS THE LAST")
 

@@ -67,10 +67,9 @@ from pydantic import BaseModel, Field  # noqa: E402
 
 from brain import actions, config  # noqa: E402
 from brain.__main__ import asker  # noqa: E402
-from brain.context import LIVE  # noqa: E402
 from brain.loop import jev_menu  # noqa: E402
 from brain.respond import Respond  # noqa: E402
-from classes import HISTORY_H, STATE_TOKENS, TRIES, jev_rows, typesafe_key  # noqa: E402
+from classes import HISTORY_H, LIVE, STATE_TOKENS, TRIES, jev_rows, typesafe_key  # noqa: E402
 from jev_api import ENDPOINT, MODEL, PRICE_PER_INPUT_TOKEN, Jev, JevDown, JevRefused  # noqa: E402
 from prompt import QUOTE_MAX_CHARS, cut, estimate, one_line, read_lookout, read_menu  # noqa: E402
 from prompt import when as jev_when  # noqa: E402

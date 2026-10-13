@@ -14,6 +14,7 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
@@ -37,8 +38,14 @@ import org.slf4j.LoggerFactory;
  * <p>For each one: if its folder's {@code .ok} holds the source's SHA-256 it is skipped;
  * else a file of that name in {@code downloads/} with the right hash is used (a player
  * behind a firewall can put the files there by hand); else it is downloaded there through
- * {@code <file>.part}, hashed as it streams, three tries waiting 2 then 4 s. Then it is
- * unpacked, {@code .ok} is written last, and the download is deleted.
+ * {@code <file>.part}, hashed as it streams, three tries waiting 2 then 4 s. A {@code .part}
+ * left by a try that broke off, or by an earlier start, is carried on from where it stopped
+ * (an HTTP range request; a server that answers with the whole file starts it again, and one that
+ * answers the range unusably, a 206 for another range or a 4xx, has the part deleted, so the next
+ * try starts clean; a part already the whole size is hashed and used if right), so a
+ * dropped connection late in the 482 MB speech model costs only what was not yet fetched; a
+ * finished file with the wrong hash is deleted. Then it is unpacked, {@code .ok} is written
+ * last, and the download is deleted.
  */
 public final class AssetInstaller {
 	private static final Logger LOG = LoggerFactory.getLogger("vfg");
@@ -190,19 +197,54 @@ public final class AssetInstaller {
 	private void downloadOnce(String url, Assets.Asset a, Path file) throws IOException, SetupException,
 			InterruptedException {
 		Path part = file.resolveSibling(file.getFileName() + ".part");
-		Files.deleteIfExists(part);
-		HttpRequest request = HttpRequest.newBuilder(URI.create(url)).timeout(HEADERS_TIMEOUT).GET().build();
-		HttpResponse<InputStream> response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
-		MessageDigest md = newSha256();
-		long done = 0;
-		try (InputStream in = response.body()) {
-			if (response.statusCode() != 200) {
-				throw new IOException("HTTP " + response.statusCode());
+		long have = Files.isRegularFile(part) ? Files.size(part) : 0;
+		if (have == a.bytes()) {
+			// the whole of it: a download that finished but was stopped before its hash check and move
+			if (sha256(part).equals(a.sha256())) {
+				LOG.info("{}: the download was already whole", a.fileName());
+				move(part, file);
+				return;
 			}
+			Files.deleteIfExists(part);
+			have = 0;
+		} else if (have > a.bytes()) { // longer than the whole: no download of this file
+			Files.deleteIfExists(part);
+			have = 0;
+		}
+		MessageDigest md = newSha256();
+		if (have > 0) {
+			hashInto(md, part);
+		}
+		HttpRequest.Builder request = HttpRequest.newBuilder(URI.create(url)).timeout(HEADERS_TIMEOUT).GET();
+		if (have > 0) {
+			request.header("Range", "bytes=" + have + "-");
+		}
+		HttpResponse<InputStream> response = http.send(request.build(), HttpResponse.BodyHandlers.ofInputStream());
+		long done;
+		try (InputStream in = response.body()) {
+			int status = response.statusCode();
+			boolean resumed = have > 0 && status == 206 && rangeStartsAt(response, have);
+			if (!resumed && status != 200) {
+				if (have > 0 && status >= 200 && status < 500) {
+					// An answer to the range that cannot carry the part on (a 206 for another range, a 416):
+					// the next try starts clean instead of asking the same again.
+					Files.deleteIfExists(part);
+				}
+				throw new IOException("HTTP " + status);
+			}
+			if (!resumed && have > 0) {
+				LOG.info("{}: the server sent the whole file; starting it again", a.fileName());
+				md = newSha256();
+				have = 0;
+			} else if (resumed) {
+				LOG.info("{}: carrying on from {} MB", a.fileName(), have / 1_000_000);
+			}
+			done = have;
 			StallWatch watch = new StallWatch(in);
-			try (OutputStream out = Files.newOutputStream(part)) {
+			try (OutputStream out = resumed ? Files.newOutputStream(part, StandardOpenOption.APPEND)
+				: Files.newOutputStream(part)) {
 				byte[] buf = new byte[1 << 16];
-				long lastReport = 0;
+				long lastReport = done;
 				int n;
 				while ((n = in.read(buf)) > 0) {
 					watch.tick();
@@ -213,6 +255,9 @@ public final class AssetInstaller {
 						lastReport = done;
 						progress.update(progressBase + Math.min(done, a.bytes()), Math.max(progressTotal, a.bytes()));
 					}
+					if (Thread.currentThread().isInterrupted()) { // the part stays, for the next setup to carry on
+						throw new InterruptedException("download of " + a.fileName() + " stopped");
+					}
 				}
 			} finally {
 				watch.stop();
@@ -220,9 +265,6 @@ public final class AssetInstaller {
 			if (watch.stalled()) {
 				throw new IOException("download stalled");
 			}
-		} catch (IOException | RuntimeException e) {
-			Files.deleteIfExists(part);
-			throw e;
 		}
 		String actual = HexFormat.of().formatHex(md.digest());
 		if (!actual.equals(a.sha256())) {
@@ -230,6 +272,22 @@ public final class AssetInstaller {
 			throw new SetupException("wrong SHA-256 for " + a.fileName());
 		}
 		move(part, file);
+	}
+
+	/** Whether a {@code 206}'s {@code Content-Range} starts at {@code from}: {@code bytes <from>-<to>/<size>}. */
+	static boolean rangeStartsAt(HttpResponse<?> response, long from) {
+		String range = response.headers().firstValue("Content-Range").orElse("").trim();
+		return range.startsWith("bytes " + from + "-");
+	}
+
+	private static void hashInto(MessageDigest md, Path file) throws IOException {
+		try (InputStream in = Files.newInputStream(file)) {
+			byte[] buf = new byte[1 << 16];
+			int n;
+			while ((n = in.read(buf)) > 0) {
+				md.update(buf, 0, n);
+			}
+		}
 	}
 
 	private static void prepareFolder(Path folder) throws IOException {

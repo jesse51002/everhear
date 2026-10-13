@@ -27,8 +27,12 @@ import org.slf4j.LoggerFactory;
  * once; then again after each answer, with the version it has, and the bridge holds the request
  * until the list changes or 25 s pass, answering {@code 304} for no change.
  *
+ * <p>The answer also carries {@code server_phrases} (since 0.3.5's bridge): every incantation phrase
+ * on the server, whoever's, deduplicated, phrases only. The mod's hotwords hold them; a bridge
+ * that does not send the field gives the listener {@code null}, and the player's own phrases stand in.
+ *
  * <ul>
- * <li>{@code 200}: the list and its version, to the listener.
+ * <li>{@code 200}: the list, the server's phrases and the version, to the listener.
  * <li>{@code 304}: unchanged; asked again at once.
  * <li>No answer, {@code 5xx} or anything else: asked again after 1, 2, 5, 10, 30, 30… s.
  * <li>{@code 401}: the token is rejected; asked again after 60 s.
@@ -58,8 +62,11 @@ public final class IncantationClient {
 
 	/** Called on {@code vfg-incantations}. */
 	public interface Listener {
-		/** A new list for the player, and its version. */
-		void updated(long version, List<Incantation> incantations);
+		/**
+		 * A new list for the player, and its version; {@code serverPhrases} is every incantation phrase
+		 * on the server, or {@code null} from a bridge that does not send them.
+		 */
+		void updated(long version, List<Incantation> incantations, List<String> serverPhrases);
 
 		default void tokenRejected() {}
 	}
@@ -190,21 +197,43 @@ public final class IncantationClient {
 			return Poll.FAILED;
 		}
 		List<Incantation> list;
+		List<String> serverPhrases;
 		long next;
 		try {
 			JsonObject o = JsonParser.parseString(response.body()).getAsJsonObject();
 			next = o.get("version").getAsLong();
 			list = parse(o.getAsJsonArray("incantations"));
+			serverPhrases = phrases(o.get("server_phrases"));
 		} catch (RuntimeException e) {
 			LOG.warn("incantations: the bridge's answer does not parse ({})", e.toString());
 			return Poll.FAILED;
 		}
 		version = next;
-		listener.updated(next, list);
+		listener.updated(next, list, serverPhrases);
 		if (next == after) {
 			sleeper.sleep(BACKOFF_MILLIS[0]); // the bridge did not hold an unchanged list; do not spin
 		}
 		return Poll.UPDATED;
+	}
+
+	/**
+	 * {@code server_phrases}: its strings, trimmed, the blank and repeated ones left out; {@code null}
+	 * when the field is missing or not a list (a bridge before 0.3.5).
+	 */
+	static List<String> phrases(JsonElement field) {
+		if (field == null || !field.isJsonArray()) {
+			return null;
+		}
+		List<String> out = new ArrayList<>();
+		for (JsonElement e : field.getAsJsonArray()) {
+			if (e.isJsonPrimitive() && e.getAsJsonPrimitive().isString()) {
+				String p = e.getAsString().strip();
+				if (!p.isEmpty() && !out.contains(p)) {
+					out.add(p);
+				}
+			}
+		}
+		return out;
 	}
 
 	static List<Incantation> parse(JsonArray array) {

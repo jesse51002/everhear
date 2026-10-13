@@ -47,7 +47,7 @@ KIT_LIB = os.path.join(os.path.dirname(HERE), "scripts", "_lib")
 KINDS = ["join", "leave", "death", "advancement", "server"]
 TYPES = ["LINE", "GAME", "AI", "SYS"]
 AI_KINDS = ["say", "action", "task", "result", "note"]
-CLASSES = ["action_oriented", "conversational", "context", "not_relevant", "unjudged"]
+CLASSES = ["to_ai", "context", "not_relevant", "unjudged"]  # Jev's classes (Contracts §5), or none yet
 # lib/py/vfg_llm.py's Component, and the usage table's CHECK (bridge/vfg_bridge/db.py): brain,
 # respond, planner and orchestrator are the brain's, alias the incantation alias call's;
 # conversation stays valid for the rows that have it.
@@ -4465,7 +4465,7 @@ def build_parser():
     s.add_argument("--until", metavar="T", help="ISO-8601, or -90s, -10m, -2h, -1d")
     s.add_argument("--player", metavar="NAME", help="one player, any case")
     s.add_argument("--class", dest="cls", metavar="C,…",
-                   help="action_oriented, conversational, context, not_relevant, unjudged")
+                   help="to_ai, context, not_relevant, unjudged")
     s.add_argument("--source", choices=["voice", "chat", "ai"])
     g = s.add_mutually_exclusive_group()
     g.add_argument("--events", action="store_true", help="game events instead of lines")

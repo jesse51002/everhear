@@ -11,7 +11,7 @@ from brain import config
 from brain.__main__ import GREETING, NoImplementers, serve
 from brain.vfg import VfgResult
 
-from conftest import FakeAsk, FakeImplementers, FakeRefs, FakeVfg, act, catalog, cmd, step
+from conftest import HAND_UP, FakeAsk, FakeImplementers, FakeRefs, FakeVfg, act, catalog, cmd, step
 
 
 def feed(seq: int, at: datetime, rest: str, processed: bool = False) -> str:
@@ -36,9 +36,9 @@ async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fail
     tasks = [row("castle_alex", "open", "2026-10-11T10:00:00.000Z"),  # open when the last run died
              row("ice_trail_steve", "done", "2026-10-11T09:00:00.000Z", closed_at="2026-10-11T09:02:00.000Z")]
     vfg = FakeVfg().on("context", "--since", answer=VfgResult(0, "\n".join([
-        feed(10, now - timedelta(minutes=30), "Steve voice action_oriented 0.9 - | give me bread"),  # history
+        feed(10, now - timedelta(minutes=30), "Steve voice to_ai 0.9 - | give me bread"),  # history
         feed(11, now - timedelta(minutes=29), "Alex voice context 0.9 - | so hungry", processed=True),
-        feed(12, now - timedelta(seconds=20), "Steve voice action_oriented 0.9 - | give me a diamond pickaxe"),
+        feed(12, now - timedelta(seconds=20), "Steve voice to_ai 0.9 - | give me a diamond pickaxe"),
         json.dumps({"tasks": tasks}),
         json.dumps({"last_seq": 12}),
     ]) + "\n", ""))
@@ -46,11 +46,11 @@ async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fail
 
     async def watch(after: int):
         seen_after.append(after)
-        yield f"LINE#13 {now:%H:%M:%S} Alex voice action_oriented 0.9 - | a diamond pickaxe for me too"
+        yield f"LINE#13 {now:%H:%M:%S} Alex voice to_ai 0.9 - | a diamond pickaxe for me too"
         await stop.wait()
 
     ask = FakeAsk(Step=step(act("command", "give a diamond pickaxe", cmd("give Steve diamond_pickaxe")),
-                            reply="there you go"))
+                            reply="there you go"), Response=HAND_UP)
     run = asyncio.create_task(serve(cfg, stop, vfg=vfg, watch=watch, catalog=catalog(), refs=FakeRefs(), ask=ask,
                                     make_implementers=lambda on_report, on_session: impl))
     for _ in range(200):
@@ -67,8 +67,9 @@ async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fail
     assert "command — Run vanilla commands" in vfg.of("jev", "menu", "set")[0][3]
     assert vfg.of("context", "--since") == [["context", "--since", "-6h", "--json"]] and seen_after == [12]
     assert ["context", "mark", "10"] in vfg.calls  # history: marked read, never acted on
-    assert len(ask.calls) == 2 and "give me bread" not in ask.calls[0]["cached"][-1][0].split("THE EVENT")[1]
-    assert "THE OWNER: KrownJM." in ask.calls[0]["cached"][0][0]
+    steps = ask.of("Step")
+    assert len(steps) == 2 and "give me bread" not in steps[0]["cached"][-1][0].split("THE EVENT")[1]
+    assert "THE OWNER: KrownJM." in steps[0]["cached"][0][0]
     assert [GREETING] in vfg.said() and impl.closed
     # the tasks from the box: the open one failed by name, written through, its AI result row
     record = "castle_alex failed: interrupted, the brain restarted while it ran"
@@ -82,10 +83,10 @@ async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fail
     assert json.loads(retired.read_text()) == old
     assert not any(w in json.dumps(vfg.calls) for w in ("old_castle", "by the old brain"))
     assert all("--task" not in c for c in vfg.calls)    # the lines' actions and replies carry no task
-    # the usage queue sent at the start, after the two calls and at the stop; never a row of its own. The calls
-    # asked at once: one flush for both, or one and the one more after it, never two running at once
+    # the usage queue sent at the start, after the calls (each line's Respond and step) and at the stop; never a
+    # row of its own. The calls asked at once: one flush for them, or one and the one more after it, never two at once
     flushes = vfg.of("usage")
-    assert 3 <= len(flushes) <= 4 and flushes == [["usage", "flush"]] * len(flushes)
+    assert 3 <= len(flushes) <= 6 and flushes == [["usage", "flush"]] * len(flushes)
     assert vfg.calls[-1] == ["usage", "flush"] and vfg.calls.index(flushes[0]) < vfg.calls.index(vfg.of("say")[0])
 
 

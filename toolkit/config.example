@@ -66,8 +66,9 @@ VFG_PLACES_TTL_S=
 # it, and the implementers on openrouter. OPEN_ROUTER_API in the environment wins over the file.
 # Default: ~/.vfg/openrouter.key
 VFG_OPENROUTER_KEY=
-# The OpenRouter model of every step of the brain's loop (a loop per event: an action-oriented
-# line, a line Respond hands up, an implementer's report), and its reasoning effort.
+# The OpenRouter model of every step of the brain's loop (a loop per event: a line Respond hands
+# up, since every line to the AI goes to Respond first, or an implementer's report), and its
+# reasoning effort.
 # Defaults: google/gemini-3.8-flash, low
 VFG_BRAIN_MODEL=
 VFG_BRAIN_REASONING=
@@ -80,7 +81,7 @@ VFG_BRAIN_TIMEOUT_S=
 # starts at either is the last, and ends with a reply or a hand-off. Defaults: 10, 120
 VFG_LOOP_STEPS=
 VFG_LOOP_SECONDS=
-# Respond, the brain's cheap mode, which answers a conversational line or hands it up.
+# Respond, the brain's cheap mode, which takes every line said to the AI first and answers it or hands it up.
 # DeepSeek V4 Flash with reasoning off: at low it thinks ~900 tokens, about 7.7 s a call.
 VFG_RESPOND_MODEL=~deepseek/deepseek-v4-flash-latest
 VFG_RESPOND_REASONING=off

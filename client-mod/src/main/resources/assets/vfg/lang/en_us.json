@@ -29,7 +29,8 @@
 	"vfg.settings.test_mic.off": "Test mic: Off",
 	"vfg.settings.heard": "Heard: %s",
 	"vfg.settings.model": "Model",
-	"vfg.settings.model.parakeet": "Parakeet — best (default)",
+	"vfg.settings.model.parakeet": "Parakeet 0.6B — best (default)",
+	"vfg.settings.model.parakeet_110m": "Parakeet 110M — less memory",
 	"vfg.settings.model.base": "Moonshine base",
 	"vfg.settings.model.tiny": "Moonshine tiny — lightest",
 	"vfg.settings.icon_corner": "Icon corner",
@@ -61,5 +62,9 @@
 	"vfg.status.turn.loading": "Turn model: loading…",
 	"vfg.status.turn.ready": "Turn model: %s",
 	"vfg.status.turn.retrying": "Turn model, retrying: %s",
-	"vfg.status.turn.failed": "Turn model failed: %s"
+	"vfg.status.turn.failed": "Turn model failed: %s",
+	"vfg.status.stt.upgrading": "Parakeet 0.6B: downloading %s%%; 110M listens meanwhile",
+	"vfg.status.stt.retrying": "Parakeet 0.6B: download failed, retrying (%s); on 110M",
+	"vfg.status.stt.fallback": "Parakeet 0.6B did not load (%s); on 110M",
+	"vfg.status.stt.crashed": "Parakeet 0.6B did not finish loading twice; on 110M"
 }

@@ -281,12 +281,17 @@ class FakeRefs:
 
 # ------------------------------------------------------------------ a brain, by hand
 
+# Respond's answer when a test gives none: it hands the line up, so the brain's loop runs it
+# (Prototype_Addressing_The_AI: every line to the AI goes to Respond first).
+HAND_UP = {"reason": "asks for something in the game", "hand_up": True, "reply": ""}
+
 class Kit:
     """A Brain wired to fakes, its parts at hand. A turn does not wait for its rows to come back
     (settle_s 0) unless a test sets the brain's settle_s."""
 
     def __init__(self, tmp: Path, ctx: Context | None = None, *, cat=None, **answers: Any):
         self.vfg = FakeVfg()
+        answers.setdefault("Response", HAND_UP)  # every line to the AI goes to Respond first
         self.ask = FakeAsk(**answers)
         self.impl = FakeImplementers()
         self.tick = Tick()

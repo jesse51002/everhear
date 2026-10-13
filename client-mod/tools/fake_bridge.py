@@ -13,7 +13,9 @@ One line is printed per accepted request: time, player, peak and mean, text.
 --incantation binds a phrase, with its aliases after "=", for every player. A cast of a bound
 phrase is answered 202 {"id", "status": "fired", "copy"}, one not bound 404; a repeated
 client_cast_id gets the first answer. The list is version 1, every player's the same; asked with
-after=1 it is held for wait seconds (at most 30), then answered 304.
+after=1 it is held for wait seconds (at most 30), then answered 304. Its server_phrases are every bound
+phrase and each --server-phrase (another player's, say), deduplicated; --no-server-phrases leaves the
+field out, as a bridge before 0.3.5 did.
 """
 
 import argparse
@@ -137,6 +139,8 @@ class State:
         self.status = status
         self.delay = delay
         self.incantations = list(incantations)
+        # every phrase on the server; None leaves the field out (a bridge before 0.3.5)
+        self.server_phrases = list(dict.fromkeys(i["phrase"] for i in self.incantations))
         self.requests = 0
         self.ids = {}
         self.casts = {}
@@ -276,7 +280,10 @@ class Handler(BaseHTTPRequestHandler):
             time.sleep(min(float((query.get("wait") or ["25"])[0]), 30.0))
             self.reply_empty(304)
             return
-        self.reply(200, {"version": 1, "player": player, "incantations": st.incantations})
+        answer = {"version": 1, "player": player, "incantations": st.incantations}
+        if st.server_phrases is not None:
+            answer["server_phrases"] = st.server_phrases
+        self.reply(200, answer)
 
 
 def main(argv=None):
@@ -288,6 +295,10 @@ def main(argv=None):
     parser.add_argument("--delay", type=float, default=0.0, help="seconds to wait before answering")
     parser.add_argument("--incantation", action="append", default=[], metavar="PHRASE[=ALIAS,...]",
                         help="bind a phrase (and its aliases) for every player; repeatable")
+    parser.add_argument("--server-phrase", action="append", default=[], metavar="PHRASE",
+                        help="another phrase on the server, listed in server_phrases only; repeatable")
+    parser.add_argument("--no-server-phrases", action="store_true",
+                        help="leave server_phrases out of GET /v1/incantations, as an older bridge does")
     args = parser.parse_args(argv)
     token = os.environ.get("VFG_CLIENT_TOKEN", "")
     if not token:
@@ -295,6 +306,11 @@ def main(argv=None):
         return 2
     Handler.state = State(token, args.fail, args.status, args.delay,
                           [parse_incantation(i) for i in args.incantation])
+    if args.no_server_phrases:
+        Handler.state.server_phrases = None
+    else:
+        phrases = [i["phrase"] for i in Handler.state.incantations] + [p.strip() for p in args.server_phrase]
+        Handler.state.server_phrases = list(dict.fromkeys(p for p in phrases if p))
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     print("fake bridge on http://%s:%d/v1/lines" % (args.host, httpd.server_address[1]), flush=True)
     try:
