@@ -34,13 +34,16 @@ From the repo's root on the owner's PC:
 
 ```sh
 bridge/deploy/ec2.sh launch|start|stop|status|ssh-ip|retire   # the box itself (AWS CLI v2)
-bridge/deploy/deploy.sh provision [--restore]                 # Java, Python 3.12, Minecraft, the firewall, /opt/vfg/.env
+bridge/deploy/deploy.sh provision [--restore]                 # Java, Python 3.12, Minecraft, the firewall, /opt/vfg/.env, the test server
 bridge/deploy/deploy.sh env                                   # the secrets in VFG_BOX_ENV into /opt/vfg/.env
-bridge/deploy/deploy.sh                                       # the bridge and the units, and Jev when it is there; restarts them
+bridge/deploy/deploy.sh                                       # the bridge and the units, and Jev when it is there; restarts them; the test server kept current
+bridge/deploy/deploy.sh testserver [--fresh]                  # the test server alone; --fresh makes its template world again
 bridge/deploy/set-secret.sh VFG_CLIENT_TOKEN                  # a value into /opt/vfg/.env, typed hidden
 bridge/deploy/client-token.sh                                 # prints the client token, to a terminal only
 ```
 
+`ec2.sh stop` stops `minecraft-test`, then `vfg-jev`, `vfg-bridge` and `minecraft`, so the world
+saves, then the instance.
 `ec2.sh retire` backs up `/opt/mc` and the history into `VFG_BACKUP_DIR`, checks both copies by
 sha256, then terminates the instance. `provision --restore` puts them back on a new box. The last
 two retires are kept as `mc-backup.tgz` and `vfg-backup.tgz` with their `.prev.tgz`; each
@@ -54,6 +57,34 @@ by sha256) in `/opt/vfg/uv/` and CPython 3.12, installed by uv, behind the link 
 provisioned before this has no `/opt/vfg/python`: `deploy.sh provision` adds it, and `deploy.sh`
 refuses until it is there.
 
+**The test server** (`deploy/testserver.sh`, which runs `deploy/testserver.py` as `ec2-user`) is a
+second Minecraft server beside the live one, where `vfg test` runs implementers' tests and nobody
+plays (`docs/CONTRACTS.md` §1, `toolkit/README.md`): `/opt/mc-test`, the live `server.jar` copied
+(sha256-equal) with Fabric Loader and Carpet, fetched from their official URLs and checked against
+the pins in `testserver.py`; game `127.0.0.1:25566`, RCON `25576` with its own password, both
+dropped off loopback by the nftables table `inet vfg_test` (`/etc/nftables/vfg-test.nft`);
+`/opt/vfg-test`, with no `.env`, its store in `state/`; the system user `vfgtest`, which a sandboxed
+test runs as (not `ec2-user`, the live services' uid), writing only `/opt/vfg-test/run` and
+`state`, reading `server.properties` (`640`, its group) and reaching nothing but the test server's
+RCON on loopback (the table's output chain); the marker `/opt/mc-test/.vfg-test-server`, with
+`"test_user": "vfgtest"`; and the unit
+`minecraft-test` (`deploy/systemd/minecraft-test.service`), whose every start runs
+`/opt/mc-test/reset.sh` first: a fresh copy of `world.template/`, the live world's datapacks copied
+in, and the token `world/vfg-fresh`. The template (seed `20261009`, the kit's sky stage at x 3000, z
+3000 generated and forceloaded) is made once by starting the server outside its unit, again with
+`--fresh` or when the live jar changes, and then a start is recorded as Java's AOT cache
+(`test-server.aot`, again when Java changes), which with `CPUQuota=200%`, two CPUs' threads and the
+C1 compiler keeps a restart near 13 CPU-seconds; while the unit runs it is stopped for that. It reads the
+live folders and never writes them, and never starts, stops or restarts the live server. It is
+step 11 of `provision`, before the live heap and unit, where a failure only says so; `deploy.sh testserver` runs it alone, and a
+plain `deploy.sh` runs it after the bridge, changing only what changed, making the test server
+where it is missing, and restarting `minecraft-test` only when something it reads changed or it
+is not running. It also sets the live heap, `minecraft.service.d/heap.conf`: memory in whole GiB,
+rounded up, less 4, less `minecraft-test`'s `MemoryMax` rounded up (3), 9G on an `m7i.xlarge`, as
+`provision`'s step 12 does where the test server is installed (its marker and its unit; without
+them, 12G); it applies at the live server's next restart, which `provision` makes when the heap
+changes and `testserver.sh` never does.
+
 ## Test it
 
 ```sh
@@ -63,6 +94,15 @@ cd bridge && python3 -m unittest discover -s tests
 No network and no EC2, under a second: a temporary database, feed and console log, an injected
 clock and poll, and `tests/fixtures/console-26.3.log`, real 26.3 console shapes with placeholder
 names. One test runs the bridge as a process and stops it with SIGTERM.
+
+```sh
+python3 -m unittest discover -s bridge/deploy/tests      # from the repo's root; a second or two
+```
+
+The test server's setup: `testserver.py`'s layout, refusals and pins, the unit file and
+`reset.sh`, the toolkit's fake `systemctl` that realmc's `minecraft-test` uses, and the pins realmc
+takes from `testserver.py`. No Minecraft runs there: the template and the real server are tried
+on realmc (`integration/realmc/README.md`).
 
 ## Incantations
 

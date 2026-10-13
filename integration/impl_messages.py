@@ -132,7 +132,10 @@ async def main(argv=None) -> int:
 
     imps = Watched(cfg, on_report, harness=h)
 
-    async def report_of(name, timeout=720):
+    async def report_of(name, timeout=None):
+        """The task's next report: within a run's time limit (VFG_IMPLEMENTER_MINUTES, 20) and 2
+        minutes for its report, unless `timeout` says otherwise."""
+        timeout = timeout or cfg.time_limit_s + 120
         while True:
             r = await asyncio.wait_for(reports.get(), timeout)
             if r["task"] == name:

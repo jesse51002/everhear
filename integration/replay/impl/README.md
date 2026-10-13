@@ -66,12 +66,22 @@ aws-backup archive, never the `.env` beside it), and `integration/replay/tasks.j
 
 ## Running a game eval
 
-Each scenario is played as a game on a pair of realmc servers, a live one and its test server:
+Each scenario is played as a game on a realmc server with its test server beside it, laid out as
+the box's (`integration/realmc/up NAME --test-server`: `NAME/mc-test` and `NAME/vfg-test`, the live
+folders + "-test", the unit `minecraft-test`, a fresh world at every start, each test in its
+sandbox); both are made fresh for every scenario, and `VFG_TEST_BOX` is unset, so the implementers'
+`vfg test` takes exactly the box's path:
 1. The stand-in brain writes the brief.
-2. The implementer (DeepSeek V4.1 Flash through OpenRouter, on the Claude Code adapter) builds it.
+2. The implementer (DeepSeek V4.1 Flash through OpenRouter, on the Claude Code adapter) builds it,
+   on the runner's settings: `VFG_IMPL_EFFORT` (high by default; `off` is the old thinking-disabled),
+   `VFG_IMPLEMENTER_MINUTES` (20; a turn waits 25 minutes for its report), Together first in the
+   host order. Its tests play on the test server, never on the live one.
 3. The player tries it on the live server.
 4. A simulated player answers, until he is done or out of turns.
 5. The judge marks the checklist.
+
+At the end, also on a failure or Ctrl-C, the server and its test server are stopped (`--keep-up` to
+leave them running).
 
 OPEN_ROUTER_API is read from `Internal/.env` (or `$VFG_IMPL_ENV`) into the process's environment
 only.
@@ -83,7 +93,23 @@ only.
         --budget-file ~/.vfg/impl-replay/game-budget --out ~/.vfg/impl-replay/game-ih-d1
     python3 ../integration/impl_game_tests.py ~/.vfg/impl-replay/game-ih-d1   # the table, false passes, lowered bars
 
-Run three pairs at once with one `--budget-file`: `--stop-at` is then the whole run's budget.
+Run three servers at once (each with its test server) with one `--budget-file`: `--stop-at` is then
+the whole run's budget. A server's first `up --test-server` makes the test server's template world
+(27 s on an idle PC, 85 s at a load of 15); after that each scenario's fresh start is a restart.
+
+The same scenarios with the implementers' thinking at high and off (Prototype_Implementer_Quality's
+Test): `VFG_IMPL_EFFORT` set for the process, each arm on servers of its own with a budget file of
+its own (one file for both would make `--stop-at` the two arms' total), and one `--out` per server:
+
+    VFG_IMPL_EFFORT=high uv run python ../integration/impl_game.py --name iq-e-h1 --only T207,T212,T216 \
+        --stop-at 2.00 --budget-file ~/.vfg/impl-replay/effort-high-budget --out ~/.vfg/impl-replay/game-effort-high-1
+    VFG_IMPL_EFFORT=off uv run python ../integration/impl_game.py --name iq-e-o1 --only T207,T212,T216 \
+        --stop-at 2.00 --budget-file ~/.vfg/impl-replay/effort-off-budget --out ~/.vfg/impl-replay/game-effort-off-1
+    python3 ../integration/impl_game_tests.py ~/.vfg/impl-replay/game-effort-high-*     # then the off arm's
+
+Each request's line in the out folder's `brain.log` has its `reasoning=` tokens; each `vfg test` an
+implementer ran is a `testcall`/`testresult` pair there, and whole in `tests.jsonl`, its SERVER line
+naming the test server and its sandbox.
 
 ## Running the judge alone
 

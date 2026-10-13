@@ -154,6 +154,93 @@ What Carpet 26.3 does that a test must allow for, all seen on this server:
   `kill` takes him off the server (he leaves; he does not die).
 - `vfg state` shows a fake player as `online    Steve 0 85 0 overworld`.
 
+## The test server beside it, as the box's
+
+The box runs a second, small server beside the live one for implementers' tests (`vfg test`):
+`/opt/mc-test` and `/opt/vfg-test`, unit `minecraft-test`, a fresh world at every start
+(`bridge/deploy/testserver.sh`, which `deploy.sh testserver` and `provision.sh` run). realmc lays
+out the same thing beside a realmc server, with the same code, so the PC runs the production path:
+
+```sh
+integration/realmc/up iq1 --test-server        # the server iq1, then its test server
+integration/realmc/realmc.py testserver iq1    # the same for one already up; --fresh: a new template
+integration/realmc/realmc.py testserver iq1 --stop
+integration/realmc/down iq1                    # stops the test server too
+```
+
+- **The same setup.** `bridge/deploy/testserver.py` runs on the stand-in's Python 3.12
+  (`<NAME>/vfg/python/bin/python3`, as `/opt/vfg/python/bin/python3` on the box) with the live
+  folders `<NAME>/mc` and `<NAME>/vfg` and the test ones `<NAME>/mc-test` and `<NAME>/vfg-test`
+  (the contract's "-test" rule), its game and RCON ports free ones on 127.0.0.1 (kept while they
+  stay free). It reads the live folders and never writes them. Fabric and Carpet come from
+  `shared/`, checked against the pins in `testserver.py`, the one place they are kept (realmc.py
+  imports them); on the box the same jars are fetched from their official URLs and checked the same.
+- **What it makes:** the marker `mc-test/.vfg-test-server` (JSON; the live folder never has it), a
+  copy of the live `server.jar` (sha256-equal), `launch.args` (the unit's java line), its own
+  `server.properties` (the live settings without secrets or ports, then the test overrides, its own
+  RCON password), `eula.txt` only when the live one says `eula=true`, `reset.sh`, and the template
+  world `world.template/`: seed `20261009`, the 26 x 26 chunks around the kit's sky stage (x 3000,
+  z 3000) generated, the stage's 97 x 97 blocks forceloaded, the world spawn on it. Made once (27 s
+  here, 14 of them generating 676 chunks), again with `--fresh` or when the live jar changes.
+  `vfg-test/` gets `python` (a link to the live one's), `scripts/`, `run/`, `tests/`, `state/`,
+  `made/`, an empty store `state/incantations.json` with its lock, `protected.json` (`[]`) and no
+  `.env`.
+- **One user here.** On the box a sandboxed test runs as the system user `vfgtest`, not as the live
+  services' `ec2-user` (`testserver.sh` makes it and passes `--test-user vfgtest`; the marker says
+  `"test_user"`): it can write only `vfg-test/run` and `vfg-test/state`, reads its RCON password
+  from `server.properties` (`640`, its group), and its traffic is refused everywhere but the test
+  server's RCON on loopback. realmc has no root to make a user or a firewall rule, so its test
+  server is laid out without `--test-user` and a test runs as you, the weaker user-mode sandbox.
+- **The unit.** `<NAME>/box/units/minecraft-test.exec` makes the fake systemctl's `minecraft-test`
+  a real one: `start`, `stop`, `restart [--no-block]`, `is-active`, `show -p LoadState`, `reset-failed`
+  and `journalctl -u minecraft-test` do on this PC what the box's unit does. A supervisor
+  (`realmc.py unit NAME minecraft-test run`) runs `reset.sh` (a fresh copy of the template, the
+  live world's datapacks copied in, the token `world/vfg-fresh`), then `java -Xms256M
+  -Xmx<MC_TEST_HEAP> @launch.args` at nice 10, the console appended to `mc-test/console.log` and
+  the unit's `Server stopped` line after it, and starts it again 5 s after it ends unless it was
+  stopped (`Restart=always`). It reads the heap and those settings from
+  `bridge/deploy/systemd/minecraft-test.service`, and runs java in a `systemd-run --user --scope`
+  with the unit's `CPUQuota`, `CPUWeight` and `MemoryMax` where your user manager gives one (the
+  journal line says so). `restart` returns once `reset.sh` ran and java started, as systemd's does;
+  `--no-block` at once.
+- **Measured** (2026-10-13, this PC at load 8–15 from other builders; java as the unit runs it, at
+  nice 10, with `-XX:ActiveProcessorCount=4` as the box's 4 vCPU): the template 27 s once; a restart
+  to RCON answering 10–21 s; `reset.sh` 12–35 ms (a reflink here; a plain copy of the 17 MB template
+  took 33 ms with its sync); a `/stop` from inside back by itself, fresh, in 15–27 s.
+
+  | `-Xmx` | start → RCON | RSS idle | idle CPU | RSS peak, test load | heap used, heavy load | RSS peak, heavy load |
+  |---|---|---|---|---|---|---|
+  | 1G | 11.5 s | 598 MB | 3.0% of a core | 923 MB | 807 of 929 MB committed | 1322 MB |
+  | 1.5G (the unit's) | 13.8 s | 607 MB | 3.4% | 935 MB | 751 of 863 MB | 1294 MB |
+  | 2G | 13.9 s | 680 MB | 3.6% | 885 MB | — | — |
+
+  Those were with `-XX:ActiveProcessorCount` left to the JVM; since then `launch.args` gives it two
+  CPUs' threads, the C1 compiler only and an AOT cache (`test-server.aot`, recorded after the
+  template), and the unit `CPUQuota=200%`. A restart is most of a test server's CPU: one after
+  every test. Measured 2026-10-13 with this test server and a live realmc server (one Carpet player,
+  60 mobs, unpaused) both pinned to 4 CPUs, as the box's 4 vCPU, the PC at load 9–17 from other
+  builders; three back-to-back restarts each, interleaved:
+
+  | | start → RCON | CPU-seconds by RCON | 10 s later | live server, avg / worst P99 mspt during |
+  |---|---|---|---|---|
+  | before (no quota, JVM defaults) | 9.5–15.9 s | 28–37 | +1.3 | 5.0–6.4 / 30–51 ms |
+  | after (200%, 2 CPUs, C1, AOT) | 8.5–18.6 s | 10.6–17.9 | +0.5 | 5.0–5.7 / 21–36 ms |
+  | live server alone | | | | 3.7–7.7 / 12–22 ms |
+
+  One at a time: `CPUQuota=200%` alone changes no CPU-seconds (it bounds them: two of four
+  CPUs stay the live server's); two CPUs' threads take a third off, the AOT cache a little more, C1
+  half again. C1's code ran the stage under a test's load (150 zombies, fills, fireballs, TNT) at
+  9.7–10.5 ms a tick against C2's 6.1–6.7, far from 50, and `fireball_cast`'s test passed the same.
+  The AOT cache took 18 s to record (in a 2560M, 200% scope, as on the box) and is 111 MB.
+
+  The test load: the stage's barrier floor, 6 fake players on it, 200 pigs and 100 zombies, then
+  RCON as fast as it answers for 60 s (fills, particles, fireballs, teleports, `data get`): 800–1200
+  commands a second, about 3 cores. The heavy load adds the 6 players thrown 700–4200 blocks apart
+  (each generating its own 21 x 21 chunks), 1000 armor stands and 64 x 64 x 16 fills.
+
+`list` and `status` show it under its server (`+ test`, and `"test"` in `--json`). After
+`eval "$(integration/realmc/env NAME)"`, `vfg test` finds it as on the box: the live folders + "-test".
+
 ## The box's .env, and the TypeSafe key
 
 Every server's `vfg/.env` (what `toolkit/remote/jev.py` reads as `/opt/vfg/.env`) is a link to
@@ -232,6 +319,7 @@ cleanup takes its TNT away), Steve taken off, down. PASS or FAIL per check; 35 p
 | `REALMC_NAME` | `main` | the server, when a command names none (`env` exports it) |
 | `REALMC_ROOT` | `integration/realmc/.server` | where everything is kept |
 | `REALMC_HEAP` | `2G` | each server's `-Xmx` |
+| `REALMC_TEST_HEAP` | the unit's `MC_TEST_HEAP` | a test server's `-Xmx` |
 | `VFG_JAVA` | newest `~/.local/share/jdk/*/bin/java`, else `java` | a Java 25 or newer |
 | `VFG_EC2_PYTHON` | `uv python find 3.12` | the box's Python, linked as `<NAME>/vfg/python/bin/python3`; the stand-in's own `python3` is the 3.9 `uv` finds, as Amazon Linux's, else this one |
 | `REALMC_BACKUP` | `$VFG_BACKUP_DIR/mc-backup.tgz` | where `server.jar` comes from |
@@ -243,7 +331,8 @@ cleanup takes its TNT away), Steve taken off, down. PASS or FAIL per check; 35 p
 ```text
 integration/realmc/
   up, down, env          the three commands most people need (they run realmc.py)
-  realmc.py              up, down, env, list, status, cmd, carpet, key
+  realmc.py              up, down, env, list, status, cmd, testserver, carpet, key (and unit, the
+                         fake systemctl's minecraft-test)
   players.py             Carpet's fake players over RCON
   smoke.sh               the smoke test
   bin/vfg, bin/ssh       vfg pointed at a server's stand-in; toolkit/tests/fake_ssh on its PATH
@@ -255,5 +344,10 @@ integration/realmc/
                          scripts/, made/, run/, .env, python/bin/python3 (the box's Python 3.12),
                          set-aside-<time>/ (an earlier vfg.db and feed.log, brain_live's clean slate)
     <NAME>/home/.vfg/    the VFG_HOME vfg uses for it
-    <NAME>/box/          the box's PATH (python3 is 3.9, Amazon Linux's own) and the fake systemctl's units
+    <NAME>/box/          the box's PATH (python3 is 3.9, Amazon Linux's own) and the fake systemctl's units:
+                         minecraft (a state), minecraft-test (.exec, .journal, .pid: the real test server)
+    <NAME>/mc-test/      /opt/mc-test, its test server: .vfg-test-server, server.jar (a copy), libraries/,
+                         mods/, launch.args, server.properties (600), reset.sh, world.template/, world/
+    <NAME>/vfg-test/     /opt/vfg-test: python (a link), scripts/, run/, tests/, made/,
+                         state/ (incantations.json, the store, and its lock), protected.json; no .env
 ```

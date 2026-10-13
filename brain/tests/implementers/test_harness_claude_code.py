@@ -6,8 +6,8 @@ import json
 import os
 
 import pytest
-from claude_agent_sdk import (AssistantMessage, ResultMessage, SystemMessage, TextBlock, ToolResultBlock,
-                              ToolUseBlock, UserMessage)
+from claude_agent_sdk import (AssistantMessage, ResultMessage, SystemMessage, TextBlock, ThinkingBlock,
+                              ToolResultBlock, ToolUseBlock, UserMessage)
 
 from brain.implementers.config import ImplementerConfig
 from brain.implementers.guard import DENY, GuardContext
@@ -37,8 +37,9 @@ def test_on_openrouter_the_cli_talks_to_the_relay_with_one_model_and_the_guard_i
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "owner-login")
     g = GuardContext(repo=cfg.repo, task="hot_fireball")
     o = build_options(cfg, SYSTEM, g, "http://127.0.0.1:5/r/0123456789abcdef", resume="s1")
+    # the effort is the relay's to set (high by default): the CLI is told neither
     assert (o.model, o.effort, o.thinking, o.max_turns, o.permission_mode, o.cwd, o.resume) == (
-        "deepseek/deepseek-v4.1-flash", None, {"type": "disabled"}, 100, "bypassPermissions", cfg.repo, "s1")
+        "deepseek/deepseek-v4.1-flash", None, None, 100, "bypassPermissions", cfg.repo, "s1")
     assert o.system_prompt == {"type": "file", "path": SYSTEM}
     assert o.tools == TOOLS == ["Bash", "Read", "Write", "Edit", "Glob", "Grep"] and o.allowed_tools == []
     assert (o.setting_sources, o.skills, o.strict_mcp_config, o.settings) == ([], [], True, None)
@@ -51,6 +52,21 @@ def test_on_openrouter_the_cli_talks_to_the_relay_with_one_model_and_the_guard_i
     assert e["CLAUDE_CODE_TOTAL_TOKENS_REMINDER"] == "off"  # no tokens-left note before each turn
     assert e["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == e["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "1000000"
     assert e["PYTHONPYCACHEPREFIX"] == cfg.brain_dir + "/pycache"
+    # a vfg test that waits its turn is not cut short at the CLI's own 2 minutes
+    assert (e["BASH_DEFAULT_TIMEOUT_MS"], e["BASH_MAX_TIMEOUT_MS"]) == ("600000", "1200000")
+
+
+def test_at_effort_off_the_cli_is_told_thinking_disabled_and_the_relay_sends_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(claude_code, "as_root", lambda: False)
+    c = ImplementerConfig.load({"VFG_REPO": str(tmp_path), "VFG_HOME": str(tmp_path / "h"), "OPEN_ROUTER_API": "k",
+                                "VFG_IMPL_EFFORT": "off", "VFG_IMPLEMENTER_MINUTES": "5"})
+    o = build_options(c, SYSTEM, GuardContext(repo=c.repo), "http://127.0.0.1:5/r/x")
+    assert (o.effort, o.thinking) == (None, {"type": "disabled"})
+    assert (o.env["BASH_DEFAULT_TIMEOUT_MS"], o.env["BASH_MAX_TIMEOUT_MS"]) == ("300000", "300000")  # the run's 5 minutes
+    assert ClaudeCode(c).relay.effort == "off"
+    for effort in ("low", "high", "max"):
+        c.effort = effort
+        assert ClaudeCode(c).relay.effort == effort and build_options(c, SYSTEM, GuardContext(repo=c.repo)).thinking is None
 
 
 def test_as_root_it_runs_dontask_with_every_use_of_each_tool_allowed(cfg, monkeypatch):
@@ -59,12 +75,17 @@ def test_as_root_it_runs_dontask_with_every_use_of_each_tool_allowed(cfg, monkey
     assert (o.permission_mode, o.allowed_tools) == ("dontAsk", TOOLS)
 
 
-def test_on_anthropic_the_owners_login_at_low_effort_with_no_key_and_no_address(tmp_path, monkeypatch):
+def test_on_anthropic_the_owners_login_at_its_effort_with_no_key_and_no_address(tmp_path, monkeypatch):
     monkeypatch.setattr(claude_code, "as_root", lambda: False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-never")
     c = anthropic(tmp_path)
     o = build_options(c, SYSTEM, GuardContext(repo=c.repo))
-    assert (o.model, o.effort, o.thinking, o.permission_mode) == ("claude-haiku-5-5", "low", None, "bypassPermissions")
+    assert (o.model, o.effort, o.thinking, o.permission_mode) == ("claude-haiku-5-5", "high", None, "bypassPermissions")
+    c.effort = "low"
+    assert build_options(c, SYSTEM, GuardContext(repo=c.repo)).effort == "low"
+    c.effort = "off"  # the CLI's thinking disabled, and no effort
+    o_off = build_options(c, SYSTEM, GuardContext(repo=c.repo))
+    assert (o_off.effort, o_off.thinking) == (None, {"type": "disabled"})
     assert json.loads(o.settings) == {"promptCacheTtl": "5m"}
     assert o.env["CLAUDE_CODE_TOTAL_TOKENS_REMINDER"] == "off"
     assert not {"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL",
@@ -177,6 +198,18 @@ def test_on_anthropic_an_api_key_stops_it_and_each_request_is_read_from_its_mess
     assert m.events(assistant(TextBlock("d"), mid="msg_1", usage=u1)) == [Text("d")]  # given once
     end = m.events(result())
     assert [(e.id, e.output) for e in end if isinstance(e, Request)] == [("msg_2", 5)] and isinstance(end[-1], Done)
+    assert (r1.reasoning, r1.reasoning_estimated) == (0, False)  # it did not think
+
+
+def test_on_anthropic_a_requests_reasoning_is_estimated_from_its_thinking_blocks():
+    m = Mapper("t", "anthropic", "claude-haiku-5-5")
+    m.events(init("s1"))
+    u = {"input_tokens": 10, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0, "output_tokens": 200}
+    m.events(assistant(ThinkingBlock("z" * 150, "sig"), mid="msg_1", usage=u))
+    m.events(assistant(ThinkingBlock("z" * 150, "sig"), mid="msg_1", usage=u))
+    m.events(assistant(TextBlock("a"), mid="msg_1", usage=u))
+    [r] = [e for e in m.events(result()) if isinstance(e, Request)]
+    assert (r.output, r.reasoning, r.reasoning_estimated) == (200, 100, True)
 
 
 # ---------------------------------------------------------------- a run, on a fake client
@@ -330,8 +363,48 @@ async def test_a_stop_during_a_turn_ends_the_run_at_its_result_with_the_message_
     await run.close()
 
 
+class SettlingRelay:
+    """The relay as a run ends: a broken request's count is given while it settles."""
+
+    def __init__(self):
+        self.run = None
+
+    async def settle(self, address, timeout):
+        await asyncio.sleep(0.01)
+        r = Request("deepseek/deepseek-v4.1-flash", 1000, 4000, 0, 300, 0.0)
+        r.broken = True
+        self.run.request(r)
+        return True
+
+    def forget(self, address):
+        pass
+
+
+async def test_a_request_counted_as_the_run_ends_comes_before_its_done_and_none_after():
+    relay = SettlingRelay()
+    run = claude_code.ClaudeCodeRun("t", None, Mapper("t", "openrouter", "m"), relay, "http://x/r/0")
+    relay.run = run
+    await run._end(Done(OK, "Done."))
+    evs = [e async for e in run.events()]
+    assert [type(e) for e in evs] == [Request, Done] and evs[0].broken
+    run.request(Request("m", 1, 0, 0, 1, 0.0))  # after the Done: not this run's to count
+    assert run._q.empty()
+
+
+async def test_after_a_stop_the_late_requests_are_given_once_up_to_the_runs_end():
+    relay = SettlingRelay()
+    run = claude_code.ClaudeCodeRun("t", None, Mapper("t", "openrouter", "m"), relay, "http://x/r/0")
+    relay.run = run
+    run.request(Request("m", 5, 0, 0, 2, 0.0))  # in flight at the stop
+    await run._end(Done(STOPPED, "stopped"))   # the CLI's result after the interrupt
+    late = await run.late_requests()
+    assert [(q.input, q.broken) for q in late] == [(5, False), (1000, True)]
+    assert run._q.empty()  # taken off with the Done: never given twice
+
+
 def test_the_relay_carries_openrouters_routing_and_only_there(tmp_path):
     on_or = ClaudeCode(ImplementerConfig.load({"VFG_REPO": str(tmp_path), "VFG_HOME": str(tmp_path), "OPEN_ROUTER_API": "k"}))
-    assert on_or.relay.extra["provider"]["order"] == ["digitalocean", "ionstream", "together"]
+    assert on_or.relay.extra["provider"]["order"] == ["together", "digitalocean", "ionstream"]
+    assert on_or.relay.extra["provider"]["allow_fallbacks"] is True and on_or.relay.effort == "high"
     on_ds = ClaudeCode(ImplementerConfig.load({"VFG_REPO": str(tmp_path), "VFG_HOME": str(tmp_path), "DEEPSEEK_API_KEY": "k"}))
     assert on_ds.relay.extra == {}

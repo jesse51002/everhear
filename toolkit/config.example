@@ -123,13 +123,16 @@ VFG_IMPL_MODEL=
 VFG_IMPL_BASE_URL=
 # On openrouter: the providers every request tries first, in order, and those it never uses,
 # comma-separated, fallbacks allowed. Each keeps its own prompt cache, so a run that moves
-# between them misses it; none empties a list.
-# Defaults: digitalocean,ionstream,together and venice,morph,relace
+# between them misses it; none empties a list. Together first, the fastest.
+# Defaults: together,digitalocean,ionstream and venice,morph,relace
 VFG_IMPL_OR_ORDER=
 VFG_IMPL_OR_IGNORE=
-# The effort (the anthropic provider's only), the model requests a run may make (warned 5
+# How hard the model thinks, on every provider and harness: off, low, high or max (medium is
+# read as high; anything else stops the brain with an error). DeepSeek's own scale puts low,
+# high and max at 50, 75 and 100 of 100, as DigitalOcean and Ionstream do through OpenRouter;
+# Together puts them at 25, 50 and 100. Then the model requests a run may make (warned 5
 # before the cap) and the minutes it may run (warned 1 before), past which it is stopped and its
-# task failed. Defaults: low, 100, 10
+# task failed. Defaults: high, 100, 20
 VFG_IMPL_EFFORT=
 VFG_IMPL_MAX_TURNS=
 VFG_IMPLEMENTER_MINUTES=
@@ -145,15 +148,6 @@ VFG_LIVE_POLL_S=
 # sets no timeout_s of its own; past it the answer is that it still runs. Default: 20
 VFG_DISPATCH_ACTION_TIMEOUT_S=
 
-# --- Tests (vfg test) ---
-# The test server, a second box where vfg test runs an ability's test, never the live one: a file
-# of its settings (VFG_SSH, VFG_SSH_HOST, VFG_SSH_USER, VFG_SSH_KEY, VFG_REMOTE_VFG and
-# VFG_REMOTE_MC, read over these). On realmc: the paired server's home/.vfg/config.
-# Default: none, and vfg test says so
-VFG_TEST_BOX=
-# Seconds a test may run before it is stopped. Default: 60
-VFG_TEST_TIMEOUT_S=
-
 # --- The router (vfg route) and the implementers' cache ---
 # Seconds vfg route waits for Jev before it picks by words instead. Default: 3
 VFG_ROUTE_TIMEOUT_S=
@@ -166,12 +160,27 @@ VFG_ROUTE_LOAD=
 VFG_IMPL_CACHE_TTL=
 
 # --- The test server (vfg test) ---
-# A file of the test server's settings, KEY=value lines as this file has them, of which VFG_SSH,
-# VFG_SSH_HOST, VFG_SSH_USER, VFG_SSH_KEY, VFG_REMOTE_VFG and VFG_REMOTE_MC are read over the live
-# box's: a second Minecraft server with Carpet's fake players, where an implementer's test runs,
-# never the live one. On realmc, the paired server's own config,
-# $REALMC_ROOT/<name>-test/home/.vfg/config; a second instance on the EC2 box needs only
-# VFG_REMOTE_VFG and VFG_REMOTE_MC. Default: none (vfg test exits 3)
+# Where vfg test runs an implementer's test: a second Minecraft server with Carpet's fake players,
+# never the live one. Empty or box: the live box's own, beside the live server, /opt/vfg-test and
+# /opt/mc-test (VFG_REMOTE_VFG and VFG_REMOTE_MC + "-test"; on realmc, <name>/vfg-test and
+# <name>/mc-test), which deploy.sh testserver makes (provision and deploy.sh too). none: no test
+# server (vfg test exits 3). Anything else: a file of a test box's settings, KEY=value lines as
+# this file has them, of which VFG_SSH, VFG_SSH_HOST, VFG_SSH_USER, VFG_SSH_KEY, VFG_REMOTE_VFG
+# and VFG_REMOTE_MC are read over these (a key it leaves out is the live box's: leave out the
+# host, whose IP changes with each relaunch, for a test server on the live box). Default: box
 VFG_TEST_BOX=
 # Seconds a test may run before it is stopped, 5 to 600. Default: 60
 VFG_TEST_TIMEOUT_S=
+# Seconds a test waits for the tests before it on the test server (one runs at a time) before
+# vfg test gives up with exit 5, 0 to 3600; at most what a vfg test's 590 s leave once its own
+# --timeout, VFG_TEST_WARM_GRACE (30 s), one VFG_TEST_BOOT_S and overhead are counted, always
+# leaving at least 30 s here; a --timeout too large for even that is refused.
+# Default: 300
+VFG_TEST_QUEUE_S=
+# Seconds the test server may take to answer RCON after vfg test restarts it (for a fresh world,
+# or because it was down) before vfg test gives up with exit 5, 5 to 600. Default: 120
+VFG_TEST_BOOT_S=
+# How a test is kept from the live server: auto (a transient systemd unit, sudo -n systemd-run,
+# else systemd-run --user, else a plain process, said in its output), system, user or none.
+# Default: auto
+VFG_TEST_SANDBOX=
