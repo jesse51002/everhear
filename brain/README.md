@@ -298,12 +298,12 @@ event says so: the task stays open, with the record as its result so far.
 ## Measured
 
 - **The 2026-10-11 session, replayed**: its 110 brain events (one player, 80 minutes) through this
-  loop on realmc, on this branch's code after its first fix round
-  ([`integration/replay/loop/report.md`](../integration/replay/loop/report.md)). The brain cost
-  **$0.89**, against the $1.18 that night's one GPT-6.1 Sol call per event cost. 107 loops ended in
-  one step and 3 in two or more. An ask that did not hand off had its reply 8.4 s after its loop
-  started at the median and 18.3 s at p90 (39 asks). A loop's first step read 96.4% of its prompt
-  from the cache (109 steps), a later step 96.6% (3).
+  loop on realmc, on the brain as of its fix round 5, as
+  [`integration/replay/loop/report.md`](../integration/replay/loop/report.md) gives them. The brain
+  cost **$0.86**, against the $1.18 that night's one GPT-6.1 Sol call per event cost. 109 loops
+  ended in one step and 1 in two or more. An ask that did not hand off had its reply 10.7 s after
+  its loop started at the median and 19.4 s at p90 (37 asks). A loop's first step read 96.2% of its
+  prompt from the cache (110 steps), a later step 95.8% (1).
 - **Live on realmc**: the brain's live checks, on this branch's code after its second fix round
   ([`integration/README.md`](../integration/README.md), _The brain live on realmc_). A one-step
   ask's reply came 6.0–8.9 s after its line; a step cost a median $0.0056, its 32–35K-token prompt
