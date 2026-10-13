@@ -268,7 +268,7 @@ class Box(object):
         with open(self.feed, "w") as f:
             f.write("".join(line + "\n" for _seq, line in self.feed_rows))
         shutil.copy(os.path.join(TESTS, "fake_vfg_feed.py"), os.path.join(self.rvfg, "lib", "vfg_feed.py"))
-        for u in ("minecraft", "vfg-bridge", "vfg-jev"):
+        for u in ("minecraft", "vfg-bridge", "vfg-jev", "vfg-engine"):
             write(os.path.join(self.units, u), "active\n")
         self.calls = []         # every SSH call vfg made: {"args": the program's ARGS} or {"cmd": ...}
         self.down = False       # SSH answers 255: EC2 unreachable

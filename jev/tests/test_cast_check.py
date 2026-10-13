@@ -34,6 +34,14 @@ def entry(player, phrase, action="hot_fireball", aliases=(), **more):
     return e
 
 
+def bound(player, phrase, ability="fireball", aliases=(), **more):
+    """An entry of the game engine's export (its incantation bound to an ability)."""
+    e = {"id": "%s.%s" % (player.lower(), "_".join(phrase.lower().split())), "player": player, "phrase": phrase,
+         "aliases": list(aliases), "everyday_aliases": [], "ability": ability, "cooldown_s": 5.0}
+    e.update(more)
+    return e
+
+
 class CastJev(FakeJev):
     """FakeJev, and the cast question answered from `casts[text]`, a `(label, probability,
     confidence)` (probability None: the answer gives none); `not_a_cast` 0.95 for any other
@@ -105,6 +113,7 @@ class CastBase(Base):
         self.jev = CastJev()
         self.bridge = FakeBridge(self.db)
         self.cfg.incantations = os.path.join(self.dir, "incantations.json")
+        self.cfg.engine_export = os.path.join(self.dir, "engine-incantations.json")   # none until written
         self.write_store(entry("Steve", "hot fireball", aliases=["hot fire ball", "hut fireball"]),
                          entry("Steve", "ice beam", action="ice_beam_cast"),
                          entry("@a", "juicy steak", action="command",
@@ -120,6 +129,12 @@ class CastBase(Base):
         with open(self.cfg.incantations + ".tmp", "w") as f:
             json.dump({"version": 1, "incantations": list(entries)}, f)
         os.replace(self.cfg.incantations + ".tmp", self.cfg.incantations)
+
+    def write_export(self, *entries, version=1):
+        """The game engine's export, as it writes it: whole, replaced."""
+        with open(self.cfg.engine_export + ".tmp", "w") as f:
+            json.dump({"version": version, "incantations": list(entries)}, f)
+        os.replace(self.cfg.engine_export + ".tmp", self.cfg.engine_export)
 
     def cast(self, text, label, p=0.92, confidence=None):
         """Jev's answer to the cast check on `text`: `label`, with probability `p` (None: none
@@ -479,6 +494,18 @@ class TestTheCall(CastBase):
             '18:22:29 Steve cast "ice beam"', "[1] 18:22:31 Steve: Beam"])
         self.assertEqual(self.bridge.asked, [(line, "ice beam")])
 
+    def test_recent_shows_a_cast_still_waiting_on_the_engine(self):
+        """A `pending` row (the bridge asking the engine about an engine binding's cast) is a cast
+        taken for that saying, as a fired one is; only `duplicate` is the same words twice."""
+        for k, (started, status) in enumerate(((T0 - 2, "pending"), (T0 - 1.9, "duplicate"))):
+            self.conn.execute("INSERT INTO casts (id, at, started_at, ended_at, player_name, phrase, layer, status) "
+                              "VALUES (?, ?, ?, ?, 'Steve', 'ice beam', 'spotter', ?)",
+                              ("P%d" % k, iso(started), iso(started), iso(started + 0.4), status))
+        self.lines.add(T0, "Steve", "voice", "Beam")
+        self.step()
+        state, _ = self.jev.calls[0]
+        self.assertEqual(state["recent"].split("\n")[1:], ['18:22:29 Steve cast "ice beam"', "[1] 18:22:31 Steve: Beam"])
+
     def test_recent_keeps_the_newest_and_works_without_the_casts_table(self):
         self.conn.execute("DROP TABLE casts")
         for n in range(12):
@@ -510,6 +537,71 @@ class TestTheLongWording(CastBase):
         self.assertEqual((short_state["rules"], short_state["examples"]), (casting.RULES, casting.EXAMPLES))
         self.assertTrue(q["instructions"].endswith(casting.ASK % "Steve"))
         self.assertEqual(q["criteria"]["not_a_cast"], casting.NOT_A_CAST_TEXT)
+
+
+class TestEngineBindings(CastBase):
+    """The game engine's bindings (the game engine spec, "Incantations"), from its export: offered
+    first, hiding the store's entry with their phrase, and cast by their own phrase."""
+
+    def criteria(self, n=0):
+        return self.jev.calls[n][1][casting.QUESTION]["criteria"]
+
+    def test_an_engine_binding_is_offered_and_cast_by_its_own_phrase(self):
+        self.write_export(bound("Steve", "frost nova", ability="frost", aliases=["frost over", "Frost-Nova"]))
+        line = self.lines.add(T0, "Steve", "voice", "Frost over.")
+        self.cast("Frost over.", "cast_frost_nova")
+        self.step()
+        self.assertEqual(list(self.criteria()),
+                         ["cast_frost_nova", "cast_hot_fireball", "cast_ice_beam", "cast_juicy_steak", "not_a_cast"])
+        self.assertEqual(self.criteria()["cast_frost_nova"],
+                         'Cast "frost nova": line [1] is "frost nova", or words that sound like it, or as '
+                         '"frost over", or a piece of it. It casts the ability frost.')
+        self.assertEqual(self.bridge.asked, [(line, "frost nova")])
+        self.assertEqual(self.row(line)["dropped"], "cast")
+
+    def test_it_hides_the_stores_entry_with_its_phrase_own_or_everyones(self):
+        self.write_export(bound("steve", "Hot-Fireball"), bound("Steve", "Juicy steak", ability="feast"))
+        line = self.lines.add(T0, "Steve", "voice", "Hot variable.")
+        self.cast("Hot variable.", "cast_hot_fireball")
+        self.step()
+        got = self.criteria()
+        self.assertEqual(list(got), ["cast_hot_fireball", "cast_juicy_steak", "cast_ice_beam", "not_a_cast"])
+        self.assertTrue(got["cast_hot_fireball"].endswith("It casts the ability fireball."))   # not the store's action
+        self.assertTrue(got["cast_juicy_steak"].endswith("It casts the ability feast."))        # not the @a command
+        self.assertEqual(self.bridge.asked, [(line, "Hot-Fireball")])   # as bound: the bridge normalises it
+        alex = casting.Incantations(self.cfg.incantations, self.cfg.engine_export).for_player("Alex")
+        self.assertEqual([(e["phrase"], e.get("action")) for e in alex], [("juicy steak", "command")])   # Steve's alone
+
+    def test_a_player_with_only_engine_bindings_is_checked(self):
+        os.remove(self.cfg.incantations)
+        self.write_export(bound("Alex", "rock wall", ability="wall"))
+        self.lines.add(T0, "Alex", "voice", "Rock. Wall.")
+        self.lines.add(T0 + 1, "Steve", "voice", "Hot variable.")   # nothing of Steve's anywhere now
+        self.step()
+        self.assertEqual(self.jev.kinds(), ["cast", "route", "route"])
+        self.assertEqual(list(self.criteria()), ["cast_rock_wall", "not_a_cast"])
+
+    def test_the_export_is_read_again_when_it_changes_and_a_bad_one_has_none(self):
+        incs = casting.Incantations(self.cfg.incantations, self.cfg.engine_export)
+        phrases = lambda: [e["phrase"] for e in incs.for_player("Steve")]
+        self.assertEqual(phrases(), ["hot fireball", "ice beam", "juicy steak"])   # no export yet
+        self.write_export(bound("Steve", "dash", ability="dash"))
+        self.assertEqual(phrases(), ["dash", "hot fireball", "ice beam", "juicy steak"])
+        self.write_export(bound("Steve", "Ice Beam", ability="ice"), {"player": "Steve", "phrase": 7}, "junk",
+                          bound("Steve", "heal", ability=""), version=2)          # each bad entry left out
+        self.assertEqual(phrases(), ["Ice Beam", "hot fireball", "juicy steak"])   # the store's ice beam hidden
+        self.assertTrue(incs.for_player("Steve")[0]["engine"])
+        with open(self.cfg.engine_export, "w") as f:
+            f.write("{not json")
+        self.assertEqual(phrases(), ["hot fireball", "ice beam", "juicy steak"])
+        self.write_export(bound("Steve", "dash"), version=None)                   # no version: as the bridge, none
+        self.assertEqual(phrases(), ["hot fireball", "ice beam", "juicy steak"])
+
+    def test_the_setting(self):
+        from filter import Config
+        self.assertEqual(Config().engine_export, "/opt/vfg/engine/incantations.json")
+        cfg, problems = Config.from_env({"VFG_ENGINE_EXPORT": "/x/engine.json"})
+        self.assertEqual((cfg.engine_export, problems), ("/x/engine.json", []))
 
 
 class TestIncantations(unittest.TestCase):

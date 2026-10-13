@@ -53,7 +53,8 @@ timedatectl set-timezone UTC
 
 # 2. Folders, all ec2-user's.
 install -d -o "$OWNER" -g "$OWNER" -m 755 "$MC" "$VFG" \
-  "$VFG/lib" "$VFG/bridge" "$VFG/jev" "$VFG/scripts" "$VFG/run" "$VFG/state"
+  "$VFG/lib" "$VFG/bridge" "$VFG/jev" "$VFG/scripts" "$VFG/run" "$VFG/state" "$VFG/engine" \
+  "$VFG/made" "$VFG/made/main" "$VFG/made/main/content"
 
 # 3. Python 3.12 in /opt/vfg, by uv: what the scripts, vfg's remote programs and the units run on.
 bash "$HERE/python.sh" "$VFG"

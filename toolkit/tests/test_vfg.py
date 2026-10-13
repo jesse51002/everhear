@@ -1121,7 +1121,8 @@ class TestUp(BoxCase):
         r = self.vfg("up")
         self.assertEqual(r.stdout.splitlines(), ["ssh         ok  ec2-user@fakebox",
                                                  "minecraft   active  started  rcon ok", "vfg-bridge  active",
-                                                 "vfg-jev     active", "feed        last seq 3", "scripts     running: none"])
+                                                 "vfg-jev     active", "vfg-engine  active", "feed        last seq 3",
+                                                 "scripts     running: none"])
         os.remove(self.box.feed)
         self.assertIn("feed        no feed.log yet", self.vfg("up").stdout)
 

@@ -6,7 +6,7 @@ from collections import namedtuple
 Config = namedtuple("Config", "db feed watch state console_log bind port client_token"
                               " base mc kit incantations owner live_poll_s cast_gap_s cast_slack_s"
                               " cast_wait_s incant_allowance incant_layer2 incant_layer2_max_words"
-                              " jev_cast_max_age_s")
+                              " jev_cast_max_age_s engine_socket engine_export engine_cast_wait_s")
 
 DEFAULTS = {
     "VFG_DB": "/opt/vfg/vfg.db",
@@ -26,6 +26,7 @@ DEFAULTS = {
     "VFG_INCANT_LAYER2": "on",
     "VFG_INCANT_LAYER2_MAX_WORDS": "6",
     "VFG_JEV_CAST_MAX_AGE_S": "2.0",
+    "VFG_ENGINE_CAST_WAIT_S": "1.0",
 }
 OFF = ("0", "off", "false", "no")
 
@@ -86,4 +87,9 @@ def load(environ=None):
         incant_layer2=get("VFG_INCANT_LAYER2").strip().lower() not in OFF,
         incant_layer2_max_words=whole("VFG_INCANT_LAYER2_MAX_WORDS"),
         jev_cast_max_age_s=number("VFG_JEV_CAST_MAX_AGE_S"),
+        # The game engine (casts.py, engine.py): its control socket, the export of the
+        # incantations bound to its abilities, and how long a cast waits for its answer.
+        engine_socket=env.get("VFG_ENGINE_SOCKET") or os.path.join(base, "engine", "engine.sock"),
+        engine_export=env.get("VFG_ENGINE_EXPORT") or os.path.join(base, "engine", "incantations.json"),
+        engine_cast_wait_s=number("VFG_ENGINE_CAST_WAIT_S"),
     )

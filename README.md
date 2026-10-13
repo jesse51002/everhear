@@ -25,14 +25,17 @@ flowchart TB
       Bridge -->|"GAME"| Feed
     end
     subgraph Game["the game"]
+      Engine["game engine<br/>one loop · content classes"]
       Run["running copies<br/>scripts · kit"]
-      MC["Minecraft server"]
+      MC["Minecraft server<br/>datapack"]
       Places["🗄️ saved places<br/>everhear:places"]
+      Engine -->|"RCON · one lock"| MC
       Run -->|"RCON · one lock"| MC
       MC -->|"command storage"| Places
     end
     Tasks["🗄️ tasks<br/>vfg.db"]
     Game -->|"console.log"| Listen
+    Listen -->|"casts · engine socket"| Game
     Listen -.->|"bridge creates"| Tasks
   end
 
@@ -83,7 +86,7 @@ flowchart TB
   classDef ext    fill:#ffd9a8,stroke:#d2691e,color:#4a2c08;
   classDef tool   fill:#fdf6d8,stroke:#caab2f,color:#4a3d08;
   class Mod client;
-  class Bridge,Jev,Brain,Respond,Impl,Vfg svc;
+  class Bridge,Jev,Engine,Brain,Respond,Impl,Vfg svc;
   class Feed,Tasks,MC,Places,Cache,Refs,TypeSafe,OpenRouter,Claude,Wiki ext;
   class Run,Actions,Library,Made,Lib tool;
   style Player fill:#eaf2ff,stroke:#2f6fb0,stroke-width:3px;
@@ -132,6 +135,12 @@ flowchart TB
   did, in order, read whole at the start of every loop and by every Respond call; the lines Jev
   files as context are kept but shown to no model yet. A loop leaves it one short record of what it
   did, never its steps. What arrives between reads is read by the next one.
+- The **game engine**, on the box beside Minecraft, is one process and one loop that runs abilities,
+  items, marks, actors and scenarios written as Python classes (`made/<server>/content/`), one
+  version of each for everyone, reloaded while the server runs. A datapack is its senses and it
+  writes over RCON, so the server stays vanilla and any client joins. A player's phrase can be bound
+  to one of its abilities: the bridge sends the cast to the engine, which runs it if that player has
+  it. The brain grants, gives, binds and rewrites an ability's numbers through the engine's actions.
 - **Saved places** live in the world itself, in the command storage `everhear:places`. Every agent reads and
   saves them with `vfg place`, which keeps a 30-second copy in `~/.vfg/places.json`.
 - A command Minecraft refuses comes back to the brain's next step with Minecraft's error and the
@@ -149,6 +158,7 @@ What each part takes in and puts out is in [docs/CONTRACTS.md](docs/CONTRACTS.md
 | [`installer/`](installer/README.md) | one link for players that installs Fabric, the mod and today's server |
 | [`bridge/`](bridge/README.md) | on the box: the speech endpoint, the console tail, the feed; `deploy/` launches, provisions and retires the box |
 | [`jev/`](jev/README.md) | on the box: the Jev filter |
+| [`engine/`](engine/README.md) | on the box: the game engine, one loop running abilities, items, marks, actors and scenarios as Python classes, and its datapack; [`WRITING.md`](engine/WRITING.md) is how they are written |
 | [`toolkit/`](toolkit/README.md) | `vfg`, and [`config.example`](toolkit/config.example), every setting with its default |
 | [`brain/`](brain/README.md) | the brain's loop, Respond and the implementers it starts: a loop of steps per event, one turn per player, its [prompts](brain/prompts/), the implementers' guard |
 | [`actions/`](actions/README.md) | what anything can run on the server: one pydantic class per file, naming the script it runs and the values it takes; no code |
@@ -193,7 +203,7 @@ bridge/deploy/ec2.sh launch
 # 3. Provision Java and Minecraft. --restore brings back the world ec2.sh retire saved.
 bridge/deploy/deploy.sh provision          # or: bridge/deploy/deploy.sh provision --restore
 
-# 4. Deploy the bridge, then the Jev filter.
+# 4. Deploy the bridge and the game engine (with its datapack), then the Jev filter.
 bridge/deploy/deploy.sh
 jev/deploy.sh
 

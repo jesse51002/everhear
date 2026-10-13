@@ -100,9 +100,9 @@ def cast_once(cfg, key, text, player, raw=False):
     current store and menu and no recent lines. Prints the answer —
     `hot fireball p 0.92 → a cast · 210ms · 900tok`, or `no p 0.88 …`, or `… has no incantations` —
     and writes nothing, casts nothing."""
-    entries = casting.Incantations(cfg.incantations).for_player(player)
+    entries = casting.Incantations(cfg.incantations, cfg.engine_export).for_player(player)
     if not entries:
-        print("%s has no incantations in %s: no call" % (player, cfg.incantations))
+        print("%s has no incantations in %s or %s: no call" % (player, cfg.engine_export, cfg.incantations))
         return 0
     jev = Jev(key, url=cfg.jev_url, model=cfg.model, timeout=cfg.timeout)
     row = {"id": "cast", "at": iso(time.time()), "player_name": player, "source": "voice", "text": text,

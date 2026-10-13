@@ -65,6 +65,32 @@ About 25 s, most of it the server's start and stop; `--speech` adds about 15 s, 
 models loading. On 2026-10-10: a posted cast's effect landed 31–46 ms after the post, a
 transcript cast's 39–57 ms after its line, and "Fire ball!" spoken 0.53 s after the phrase ended.
 
+## The game engine, on a real server
+
+`integration/engine_e2e.py` is the game engine spec's live test, on realmc, the engine run as on the
+box: installed into the stand-in's `/opt/vfg` with `engine/deploy/install.sh` (its venv, its
+datapack loaded into the world), started as `vfg-engine` starts it with the stand-in's paths, the
+real bridge against it, Carpet's Steve and Alex, and the content (the four examples and six test
+classes, written fresh into `made/<NAME>/content/`) deployed by `vfg engine reload`. It drives
+`vfg engine …`, `vfg action run engine_*`, the bridge's casts and the fake players, and checks each
+step in the world: the Fire Staff's give, wrong base, modifier, a right-click's Fireball on a zombie
+(about its declared damage, then its cooldown), a drop and Alex's own pick-up; Giant and Shrunk on
+`scale` beside a vanilla Speed II; a Config rewritten, refused four times (a dropped field, code
+in a formula, `__import__` in a value: refused before they are sent and never run; a value out of
+bounds: put back) and undone; `vfg engine overview --json`; an incantation bound and cast through
+`POST /v1/casts`; a blast with `self_damage` off that spares its caster and hits Alex once;
+`mob_griefing` held twice, released both ways; a scenario's actor, stopped leaving nothing, one
+killed in the world, and two orphans swept (one whose chunk unloaded and loaded again, one taken out
+of the saved state); a call cut at 50 ms; a SIGTERM restart with everything back and a stray item
+modifier removed; and the engine's own damage never coming back as a hit. The engine's socket is in `$XDG_RUNTIME_DIR`, linked from the
+stand-in's `<vfg>/engine/engine.sock`, whose path is longer than a socket's address holds.
+
+```sh
+REALMC_ROOT=<a realmc .server with the jar> VFG_ACCEPT_EULA=true integration/engine_e2e.py [--name ge-e2e] [--keep]
+```
+
+About 90 s on a quiet PC. It prints the tick times `status` reported along the way and the latencies it measured.
+
 ## Implementers on DeepSeek, on realmc
 
 Prototype_Implementer_Harness's tests, each script's docstring saying how to run it. All but

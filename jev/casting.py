@@ -31,6 +31,7 @@ piece said right after a cast reads as part of it.
 """
 import http.client
 import json
+import math
 import os
 import re
 import unicodedata
@@ -104,49 +105,120 @@ def normalize(text):
     return " ".join(re.sub(r"[\W_]+", " ", s).split())
 
 
-class Incantations:
-    """The bridge's store, `/opt/vfg/incantations.json` (§10), read again whenever it changes
-    (a write replaces it whole). Missing or unreadable is none, and is read again next time.
+def _strings(value):
+    """A list of strings from an export field, or None when it is not one."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        return None
+    return list(value)
 
-    A copy of the kit's reading (scripts/_lib/incantations.py: `normalize`, `Store.read`,
-    `Store.for_player`, and the bridge's one phrase each, `Casts._one_per_phrase`), not an import
-    of it: the kit reaches the box with `vfg action run`, and the Jev filter, deployed alone by
-    jev/deploy.sh, must not wait on it. tests/test_kit_pin.py holds the two to the same answers."""
 
-    def __init__(self, path):
+def engine_entry(raw):
+    """An entry of the game engine's export as the bridge reads it (bridge/vfg_bridge/engine.py,
+    `_entry`), marked ``"engine": True``; None when the bridge would leave it out."""
+    if not isinstance(raw, dict):
+        return None
+    for key in ("player", "phrase", "ability"):
+        if not isinstance(raw.get(key), str) or not raw[key].strip():
+            return None
+    aliases, everyday = _strings(raw.get("aliases")), _strings(raw.get("everyday_aliases"))
+    if aliases is None or everyday is None:
+        return None
+    cooldown = raw.get("cooldown_s")
+    if cooldown is not None and (isinstance(cooldown, bool) or not isinstance(cooldown, (int, float))
+                                 or not math.isfinite(cooldown) or cooldown < 0):
+        return None
+    entry = dict(raw, aliases=aliases, everyday_aliases=everyday, engine=True)
+    entry["id"] = str(raw.get("id") or "%s.%s" % (raw["player"].lower(),
+                                                   "_".join(raw["phrase"].lower().split())))
+    entry["cooldown_s"] = 0.0 if cooldown is None else float(cooldown)
+    return entry
+
+
+class _File:
+    """One JSON file, parsed again only when it changes (each is replaced whole); missing or
+    unreadable is ``parse(None)``, and is read again next time."""
+
+    def __init__(self, path, parse):
         self.path = path
+        self.parse = parse
         self._stamp = None
-        self._items = []
+        self._items = parse(None)
 
-    def _entries(self):
+    def items(self):
+        if not self.path:
+            return self.parse(None)
         try:
             st = os.stat(self.path)
         except OSError:
-            self._stamp, self._items = None, []
+            self._stamp, self._items = None, self.parse(None)
             return self._items
         stamp = (st.st_ino, st.st_size, st.st_mtime_ns)
         if stamp != self._stamp:
             try:
                 with open(self.path, encoding="utf-8") as f:
                     data = json.load(f)
-                items = data.get("incantations") if isinstance(data, dict) else None
-                if not (isinstance(items, list) and all(isinstance(e, dict) for e in items)
-                        and isinstance(data.get("version"), int)):
-                    items = []   # as the kit's Store.read: a store it cannot read has none
             except (OSError, ValueError):
-                return []   # the stamp is not kept: read again next time
-            self._stamp, self._items = stamp, items
+                return self.parse(None)   # the stamp is not kept: read again next time
+            self._stamp, self._items = stamp, self.parse(data)
         return self._items
 
+
+def _store_items(data):
+    """As the kit's Store.read: a store it cannot read has none."""
+    items = data.get("incantations") if isinstance(data, dict) else None
+    if not (isinstance(items, list) and all(isinstance(e, dict) for e in items)
+            and isinstance(data.get("version"), int)):
+        return []
+    return items
+
+
+def _engine_items(data):
+    """As the bridge reads the engine's export: none unless {"version": n, "incantations": [...]},
+    and each entry it cannot use left out on its own."""
+    items = data.get("incantations") if isinstance(data, dict) else None
+    version = data.get("version") if isinstance(data, dict) else None
+    if not isinstance(items, list) or isinstance(version, bool) or not isinstance(version, int):
+        return []
+    return [e for e in (engine_entry(raw) for raw in items) if e is not None]
+
+
+class Incantations:
+    """A player's incantations, as the bridge offers them: the game engine's bindings, from its
+    export (VFG_ENGINE_EXPORT, /opt/vfg/engine/incantations.json; the game engine spec,
+    "Incantations"), then the bridge's store, `/opt/vfg/incantations.json` (§10), whose entry with
+    the same normalised phrase as an engine binding of that player is hidden, theirs or @a. Each
+    file is read again whenever it changes (a write replaces it whole); missing or unreadable is
+    none, and is read again next time.
+
+    A copy of the kit's reading (scripts/_lib/incantations.py: `normalize`, `Store.read`,
+    `Store.for_player`) and of the bridge's (vfg_bridge/engine.py's export entries, and casts.py's
+    `Casts._entries` and one phrase each, `Casts._one_per_phrase`), not an import of them: the kit
+    reaches the box with `vfg action run`, and the Jev filter, deployed alone by jev/deploy.sh, must
+    not wait on either. tests/test_kit_pin.py holds the copy to their answers."""
+
+    def __init__(self, path, engine_path=None):
+        self.path = path
+        self.engine_path = engine_path
+        self._store = _File(path, lambda data: _store_items(data) if data is not None else [])
+        self._engine = _File(engine_path, lambda data: _engine_items(data) if data is not None else [])
+
+    def _entries(self):
+        return self._store.items()
+
     def for_player(self, name):
-        """The player's own (case-insensitive), then the @a ones, one per phrase: the player's own
-        before an @a one, as the bridge looks a phrase up."""
-        items = self._entries()
+        """The player's engine bindings (case-insensitive), then their own store entries, then the
+        @a ones, one per phrase: as the bridge looks a phrase up."""
         key = str(name or "").lower()
+        bound = [e for e in self._engine.items() if e["player"].lower() == key]
+        hidden = set(normalize(e["phrase"]) for e in bound)
+        items = self._entries()
         own = [e for e in items if str(e.get("player") or "") != EVERYONE
                and str(e.get("player") or "").lower() == key]
         out, seen = [], set()
-        for e in own + [e for e in items if e.get("player") == EVERYONE]:
+        for e in bound + [e for e in own + [e for e in items if e.get("player") == EVERYONE]
+                          if normalize(e.get("phrase")) not in hidden]:
             phrase = normalize(e.get("phrase"))
             if phrase and phrase not in seen:
                 seen.add(phrase)
@@ -171,8 +243,11 @@ def menu_lines(menu):
 
 
 def does(entry, menu):
-    """What casting it does, short: a `command` incantation's commands, else its action's line
-    on the brain's menu, else that it runs the action, by name."""
+    """What casting it does, short: an engine binding's ability, by name; a `command`
+    incantation's commands, else its action's line on the brain's menu, else that it runs the
+    action, by name."""
+    if entry.get("engine"):
+        return cut(one_line("casts the ability %s" % entry.get("ability")).strip(), DOES_MAX)
     action = str(entry.get("action") or "")
     text = ""
     if action == "command":

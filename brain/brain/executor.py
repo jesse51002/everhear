@@ -20,8 +20,8 @@ and says which of five things happened (`Ran.kind`):
 - "timeout": vfg itself did not answer in time (exit 124). It may still have happened, so it
   is never retried.
 - "not_run": it could not be run at all, so nothing of it happened: exit 2 (a value or a key vfg
-  refused), 3 (the box's scripts are not deployed), 4 (SSH down), 5 (RCON down), or no JSON line,
-  or vfg itself missing. `code` keeps the exit, so the brain can tell a refused value (fix it) from
+  refused), 3 (the box's scripts are not deployed), 4 (SSH down), 5 (RCON down), 6 (the game engine
+  not running, for an engine action), or no JSON line, or vfg itself missing. `code` keeps the exit, so the brain can tell a refused value (fix it) from
   a box out of reach (try again).
 """
 
@@ -40,7 +40,7 @@ from .vfg import Vfg, VfgResult, why
 # deploy inside it), so vfg's answer is the one seen: what is outside it is vfg's own start
 # (uv, pydantic, the actions), the pack and the SSH call, a new connection to EC2 included.
 GRACE_S = 10
-NOT_RUN = (2, 3, 4, 5, 127)
+NOT_RUN = (2, 3, 4, 5, 6, 127)
 
 
 Kind = Literal["ok", "refused", "timeout", "not_run", "partial"]

@@ -112,9 +112,9 @@ A step's prompt is laid out for the cache ([`call.py`](brain/call.py)):
    12, level 5, survival; effects: speed II 0:30, night vision ∞; Steve's items, by slot: …`, the
    items of the event's player alone, the speaker or a report's task's player, and what Minecraft did
    not answer left out; RUNNING NOW, every copy with who started it and every value of its action,
-   its value now, its limits or choices, live or restart; the saved places, the incantations, the
-   time and the weather); TASKS (below); what is new since the last read; and the event. Marked on
-   the first step;
+   its value now, its limits or choices, live or restart; the saved places, the incantations (an
+   engine binding as the ability it casts), ENGINE (the game engine's part, below), the time and the
+   weather); TASKS (below); what is new since the last read; and the event. Marked on the first step;
 4. **THE LOOP SO FAR**, from the second step on: one block per earlier step, what it ran and read,
    what it meant to end with and what each tool came to, the last block marked;
 
@@ -143,7 +143,8 @@ alone. Its fields:
   does and for whom, and its values written in full, one `{key, value}` per field it sets (closed
   objects, as OpenAI's schemas demand; a field that holds another action's values as `values.<name>`
   keys); and `order`, `together` or `in_turn`;
-- `read_items`: players whose items to read;
+- `read_items`: players whose items to read; `read_configs`: engine classes whose Config to read,
+  as written, before an `engine_config` rewrites it;
 - `hand_offs`, each a new task's `name` and `description` and its brief in parts: `words` (the
   player's own), `picture` (how it behaves, looks, sounds and feels), `assumed` (what the player
   takes for granted), `cast` (how it is cast, and for whom) and `done_when` (the checklist the
@@ -169,7 +170,8 @@ starts nothing (`respond.promises()`, its offers left out: a status of the speak
 passes, and a report's loop whose follow-up already runs is not checked); a hand-off's name not
 `^[a-z][a-z0-9_]{1,31}$`, `cast`, a library action's bare name or another hand-off's, a brief with a
 part left empty or no `done_when`; a follow-up that names no task, a task followed up twice, a
-follow-up that does not cancel and has no brief; and on the last step, any action or read, an ending
+follow-up that does not cancel and has no brief; a Config to read that is no class's name
+(`^[a-z][a-z0-9_]{0,63}$`); and on the last step, any action or read (`read_configs` too), an ending
 but `reply` or `handoff`, or a follow-up of a task not under TASKS.
 
 **What would have no effect is dropped and logged, never sent back**: a status outside a report's
@@ -192,8 +194,11 @@ on the last step). A hand-off or a follow-up under `reply` or `silent` is carrie
    earlier step may have stopped it).
 3. **The reads**: the player's items by slot, from a `vfg state --json --items` fetched for that read
    and waited for up to 15 s (two reads, two fetches), its own fetch's answer and never a state
-   another fetch left from before the step's actions; the name matched in any case. A fetch that fails is refused (nothing read, try again), and so are
-   Minecraft not answering and a player not online.
+   another fetch left from before the step's actions; the name matched in any case. A fetch that
+   fails is refused (nothing read, try again), and so are Minecraft not answering and a player not
+   online. A Config read is `vfg engine config get <class>`, never kept from before: its file and
+   lines and the class as written, shown to the next step whole (at most 8000 characters), its
+   lines kept; the engine not running, or a class it has not, is refused.
 
 **An action lands when it ran without an error**: vfg checked its values and Minecraft did not
 refuse it, and it did not say it changed nothing. Each tool comes to one of:
@@ -206,11 +211,12 @@ refuse it, and it did not say it changed nothing. Each tool comes to one of:
   no longer on the menu) or by vfg (a value or a key, `vfg refused it before it ran: …`); a player
   not online; or Minecraft's error, with the reference of every command it used: this server's
   syntax and the wiki's Java Edition notes ([`refs.py`](brain/refs.py)), at most 6000 characters;
-- `did not run`: vfg could not run it (the box out of reach, the action not deployed). Nothing of it
-  happened, and the prompt says to run it once more;
+- `did not run`: vfg could not run it (the box out of reach, the action not deployed, the game
+  engine not running for an engine action: vfg's exit 6). Nothing of it happened, and the prompt
+  says to run it once more;
 - `failed`: it timed out, or partly happened. It may have happened, and is never run blindly again;
 - `not run`: in turn, after one that did not land;
-- `read`: a player's items.
+- `read`: a player's items, or a Config as written.
 
 Nothing is retried in code: a refused command goes back to the next step, which fixes it.
 
@@ -220,6 +226,32 @@ call. A step that does not land, or ends `next`, sends nothing at all, no reply,
 task, and its block goes into THE LOOP SO FAR: each tool with its values, its state and its words (at
 most 600 characters), and what the step meant to end with, marked NOT SENT. The next step runs only
 what is still to do, and writes the ending again.
+
+## The game engine
+
+The game engine (Specs/2026-10-12-Prototype_Game_Engine) runs its own abilities, items, marks,
+actors and scenarios, one version of each for everyone; the brain reaches it the way it reaches
+anything, through actions and reads:
+
+- **ENGINE in THE WORLD NOW** ([`world.py`](brain/world.py)): one `vfg engine overview --json`,
+  the classes and the instances in one SSH call, at most every 10 s and again after an engine
+  action ran: each
+  kind's classes by name with its summary cut to 80 characters (marks by name alone), at most 12 a
+  kind and the rest counted; then what each player has (`- Steve has: ability fireball, item
+  fire_staff`) and the scenarios and actors running for the world. An ability granted to an actor
+  is the actor's, not shown. `ENGINE: not running (vfg-engine is down)` while vfg says exit 6, and
+  `ENGINE: unknown (…)` when its classes could not be read; instances the engine refused leave the
+  classes shown, and a log line.
+- **The engine's menu actions**, `engine_grant`, `engine_revoke`, `engine_give`, `engine_start`,
+  `engine_stop`, `engine_bind`, `engine_unbind` and `engine_config` (`actions/engine_*.py`, each
+  naming its op in `engine`), run as `vfg action run` runs any action; vfg sends them to the
+  engine, with no copy. A grant and its bind never go in one step (the prompt's rule).
+- **A Config rewritten** (the spec's "rewritten by the brain"): `read_configs` first, ending `next`;
+  then `engine_config` with `class_id` and `config`, the whole class as Python, as read, comments
+  and all. An `engine_config` of a class whose Config no earlier step of the loop read is refused at
+  the tool, before it runs. vfg splices it into the class's file on this PC, checks it, deploys and
+  reloads it; a refusal comes back with the check that failed, the old version still running, and
+  one already as written comes back `changed nothing`.
 
 ## The ending
 
@@ -429,7 +461,7 @@ loop #812 Steve: 2 step(s), $<cost>, <n>% cached, reply at <s> s, <s> s, ended f
 
 - `brain <ref> s<n>`, one a step: what its call spent (`$<cost>+` when an attempt in flight was cut
   off, its cost unknown), what it did (`<order>: <action> (<instruction>), …`, `read <player>`, `hand
-  off <name>`, `follow up <name>`, `cancel <name>`, or `nothing run`; then `|| end <ending>` and its
+  off <name>`, `follow up <name>`, `cancel <name>`, `read the Config of <class>`, or `nothing run`; then `|| end <ending>` and its
   reply, record and status), and what came of it (`<action> <state>, …`; `read <player>'s items`, or
   `read <player>'s items: refused`; `follow up <task>: refused`; and `(not landed)` when it did
   not); `FAILED (<spent>): <why>` for a call that failed for good.
@@ -460,7 +492,8 @@ No model, no network, no process, no sleeping: one fake `structured()` with cann
 of them for a loop's steps), contexts built by hand, a fake `vfg` that records argv, fake implementers and a clock moved by
 hand. `tests/test_turns.py` holds the turns to their order, the limit and the front of the queue;
 `tests/test_refs.py` checks the command references against the real 26.3 command tree and a few wiki
-pages.
+pages; `tests/test_engine.py` the game engine's part of the world, its Config read and rewrite, and
+its actions.
 
 ## Contracts
 

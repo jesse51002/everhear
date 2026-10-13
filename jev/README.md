@@ -69,9 +69,16 @@ delay and a player's clock a few seconds off; a clock further behind than that l
 check, and the lines go to routing as before). The journal says
 `cast-check <id> Steve · too old to cast (2.5 s since it was read here) → routing, no call`.
 
-The store is read by a copy of the kit's reading (`scripts/_lib/incantations.py`), not the kit
-itself: the kit reaches the box with `vfg action run`, and this folder is deployed alone.
-`tests/test_kit_pin.py` holds the copy to the kit's answers. `VFG_JEV_CAST_MIN` over 1 turns the
+A player's incantations are what the bridge offers them: **the game engine's bindings first**, from
+its export (`VFG_ENGINE_EXPORT`, `/opt/vfg/engine/incantations.json`; each casts an ability, and its
+option says so, `It casts the ability fireball.`), then the store's, their own and then the `@a`
+ones, one per phrase; an engine binding hides the store's entry with the same normalised phrase,
+theirs or `@a`. A cast of either goes to the same `POST /v1/jev/casts`, which casts an engine
+binding through the engine. Both files are read by a copy of the kit's reading
+(`scripts/_lib/incantations.py`) and of the bridge's (`vfg_bridge/engine.py`'s export entries,
+`Casts._entries`), not the kit or the bridge itself: the kit reaches the box with `vfg action run`,
+and this folder is deployed alone. `tests/test_kit_pin.py` holds the copy to the kit's answers and,
+with the engine's export beside the store, to the bridge's own code. `VFG_JEV_CAST_MIN` over 1 turns the
 check off, and so does a missing `VFG_CLIENT_TOKEN` (said once, at the start).
 
 **One call a line, two questions** (D2, chosen on 2026-10-11): what should happen with the line —
@@ -188,6 +195,7 @@ From the environment (systemd reads `/opt/vfg/.env`):
 | `VFG_JEV_CAST_SURE` | `0.7`: a short cast this sure drops its line; under it, cast and routed too; over 1, no line dropped |
 | `VFG_JEV_CAST_MAX_AGE_S` | `2.0`, the bridge's: no cast check call for a line older (above) |
 | `VFG_INCANTATIONS`, `VFG_BRIDGE_PORT` | `/opt/vfg/incantations.json`, `8787`: the store, and the bridge on 127.0.0.1 |
+| `VFG_ENGINE_EXPORT` | `/opt/vfg/engine/incantations.json`: the game engine's bindings, offered first (the bridge's setting too) |
 | `VFG_CLIENT_TOKEN` | the bridge's, from the environment or else `VFG_ENV_FILE`; never logged; none, no cast check |
 
 `deploy.sh` reads `VFG_SSH_HOST`, `VFG_SSH_USER` (default `ec2-user`) and `VFG_SSH_KEY` from

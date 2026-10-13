@@ -2,7 +2,9 @@
 no real ~/.vfg.
 
 - catalog(): the core actions and railgun, from a small copy of the repo's actions/ beside a
-  stub of each script, loaded once; made() writes a server's own action into a catalog of its own.
+  stub of each script, loaded once; made() writes a server's own action into a catalog of its own;
+  engine_catalog(): the same with the game engine's menu actions (actions/engine_*.py), as this
+  server's own.
 - FakeAsk stands in for structured(): canned answers per output class ("Step", "Response"), one
   for every call or a list taken in order, each validated against the class as structured() does.
 - FakeVfg stands in for the vfg runner: it records every argv and answers by prefix.
@@ -58,6 +60,7 @@ def _repo_copy() -> Path:
 
 
 REPO_COPY = _repo_copy()
+_engine_shared = None
 _servers = itertools.count(1)
 _shared = None
 
@@ -68,6 +71,19 @@ def catalog():
     if _shared is None:
         _shared = actions.load(REPO_COPY, None)
     return _shared
+
+
+def engine_catalog():
+    """The core actions and the engine's menu actions, loaded once: this server's own actions, in
+    the same repo copy as catalog()'s (one actions/_types.py for both), made/engine/actions/."""
+    global _engine_shared
+    if _engine_shared is None:
+        folder = REPO_COPY / "made" / "engine" / "actions"
+        folder.mkdir(parents=True)
+        for path in sorted((REPO / "actions").glob("engine_*.py")):
+            shutil.copy(path, folder)
+        _engine_shared = actions.load(REPO_COPY, "engine")
+    return _engine_shared
 
 
 def made(name: str, source: str):

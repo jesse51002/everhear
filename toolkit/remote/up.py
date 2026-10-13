@@ -1,10 +1,10 @@
 # up.py: vfg up. ARGS: {"mc": "/opt/mc", "vfg": "/opt/vfg", "wait": 90}
-# Starts minecraft, vfg-bridge and vfg-jev if they are down, then waits until
-# all three are active and RCON answers `list`.
+# Starts minecraft, vfg-bridge, vfg-jev and vfg-engine (the game engine spec's one engine process)
+# if they are down, then waits until all four are active and RCON answers `list`.
 import glob
 import subprocess
 
-UNITS = ["minecraft", "vfg-bridge", "vfg-jev"]
+UNITS = ["minecraft", "vfg-bridge", "vfg-jev", "vfg-engine"]
 
 
 def run(argv, timeout=60):

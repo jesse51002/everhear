@@ -1,0 +1,12 @@
+{
+  "values": [
+    "#minecraft:air", "minecraft:light", "minecraft:structure_void", "minecraft:barrier",
+    "minecraft:water", "minecraft:bubble_column",
+    "minecraft:short_grass", "minecraft:tall_grass", "minecraft:fern", "minecraft:large_fern",
+    "minecraft:dead_bush", "minecraft:bush", "minecraft:short_dry_grass", "minecraft:tall_dry_grass",
+    "minecraft:seagrass", "minecraft:tall_seagrass", "minecraft:fire", "minecraft:soul_fire",
+    "minecraft:vine", "minecraft:glow_lichen", "minecraft:resin_clump", "minecraft:leaf_litter",
+    "minecraft:hanging_roots", "minecraft:warped_roots", "minecraft:crimson_roots",
+    "minecraft:nether_sprouts", "#minecraft:small_flowers"
+  ]
+}

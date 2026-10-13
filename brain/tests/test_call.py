@@ -166,8 +166,8 @@ def test_the_schema_is_the_same_for_every_catalog_and_every_moment():
     for d in objects:
         assert d["required"] == list(d["properties"]), d["title"]
     assert schema["properties"]["status"]["default"] == ""   # defaults kept, for a model that writes them
-    assert list(schema["properties"]) == ["order", "actions", "read_items", "hand_offs", "follow_ups", "end",
-                                          "reply", "record", "status"]
+    assert list(schema["properties"]) == ["order", "actions", "read_items", "read_configs", "hand_offs", "follow_ups",
+                                          "end", "reply", "record", "status"]
     assert list(schema["$defs"]["HandOff"]["properties"]) == ["name", "description", "words", "picture", "assumed",
                                                               "cast", "done_when"]
 

@@ -1,0 +1,259 @@
+{
+  "criteria": {
+    "b0": {
+      "trigger": "minecraft:player_killed_entity",
+      "conditions": {
+        "entity": {
+          "type": "minecraft:entity_properties",
+          "entity": "this",
+          "predicate": {
+            "minecraft:entity_type": "#everhear:bit/0"
+          }
+        }
+      }
+    },
+    "n0": {
+      "trigger": "minecraft:player_killed_entity",
+      "conditions": {
+        "entity": {
+          "type": "minecraft:inverted",
+          "term": {
+            "type": "minecraft:entity_properties",
+            "entity": "this",
+            "predicate": {
+              "minecraft:entity_type": "#everhear:bit/0"
+            }
+          }
+        }
+      }
+    },
+    "b1": {
+      "trigger": "minecraft:player_killed_entity",
+      "conditions": {
+        "entity": {
+          "type": "minecraft:entity_properties",
+          "entity": "this",
+          "predicate": {
+            "minecraft:entity_type": "#everhear:bit/1"
+          }
+        }
+      }
+    },
+    "n1": {
+      "trigger": "minecraft:player_killed_entity",
+      "conditions": {
+        "entity": {
+          "type": "minecraft:inverted",
+          "term": {
+            "type": "minecraft:entity_properties",
+            "entity": "this",
+            "predicate": {
+              "minecraft:entity_type": "#everhear:bit/1"
+            }
+          }
+        }
+      }
+    },
+    "b2": {
+      "trigger": "minecraft:player_killed_entity",
+      "conditions": {
+        "entity": {
+          "type": "minecraft:entity_properties",
+          "entity": "this",
+          "predicate": {
+            "minecraft:entity_type": "#everhear:bit/2"
+          }
+        }
+      }
+    },
+    "n2": {
+      "trigger": "minecraft:player_killed_entity",
+      "conditions": {
+        "entity": {
+          "type": "minecraft:inverted",
+          "term": {
+            "type": "minecraft:entity_properties",
+            "entity": "this",
+            "predicate": {
+              "minecraft:entity_type": "#everhear:bit/2"
+            }
+          }
+        }
+      }
+    },
+    "b3": {
+      "trigger": "minecraft:player_killed_entity",
+      "conditions": {
+        "entity": {
+          "type": "minecraft:entity_properties",
+          "entity": "this",
+          "predicate": {
+            "minecraft:entity_type": "#everhear:bit/3"
+          }
+        }
+      }
+    },
+    "n3": {
+      "trigger": "minecraft:player_killed_entity",
+      "conditions": {
+        "entity": {
+          "type": "minecraft:inverted",
+          "term": {
+            "type": "minecraft:entity_properties",
+            "entity": "this",
+            "predicate": {
+              "minecraft:entity_type": "#everhear:bit/3"
+            }
+          }
+        }
+      }
+    },
+    "b4": {
+      "trigger": "minecraft:player_killed_entity",
+      "conditions": {
+        "entity": {
+          "type": "minecraft:entity_properties",
+          "entity": "this",
+          "predicate": {
+            "minecraft:entity_type": "#everhear:bit/4"
+          }
+        }
+      }
+    },
+    "n4": {
+      "trigger": "minecraft:player_killed_entity",
+      "conditions": {
+        "entity": {
+          "type": "minecraft:inverted",
+          "term": {
+            "type": "minecraft:entity_properties",
+            "entity": "this",
+            "predicate": {
+              "minecraft:entity_type": "#everhear:bit/4"
+            }
+          }
+        }
+      }
+    },
+    "b5": {
+      "trigger": "minecraft:player_killed_entity",
+      "conditions": {
+        "entity": {
+          "type": "minecraft:entity_properties",
+          "entity": "this",
+          "predicate": {
+            "minecraft:entity_type": "#everhear:bit/5"
+          }
+        }
+      }
+    },
+    "n5": {
+      "trigger": "minecraft:player_killed_entity",
+      "conditions": {
+        "entity": {
+          "type": "minecraft:inverted",
+          "term": {
+            "type": "minecraft:entity_properties",
+            "entity": "this",
+            "predicate": {
+              "minecraft:entity_type": "#everhear:bit/5"
+            }
+          }
+        }
+      }
+    },
+    "b6": {
+      "trigger": "minecraft:player_killed_entity",
+      "conditions": {
+        "entity": {
+          "type": "minecraft:entity_properties",
+          "entity": "this",
+          "predicate": {
+            "minecraft:entity_type": "#everhear:bit/6"
+          }
+        }
+      }
+    },
+    "n6": {
+      "trigger": "minecraft:player_killed_entity",
+      "conditions": {
+        "entity": {
+          "type": "minecraft:inverted",
+          "term": {
+            "type": "minecraft:entity_properties",
+            "entity": "this",
+            "predicate": {
+              "minecraft:entity_type": "#everhear:bit/6"
+            }
+          }
+        }
+      }
+    },
+    "b7": {
+      "trigger": "minecraft:player_killed_entity",
+      "conditions": {
+        "entity": {
+          "type": "minecraft:entity_properties",
+          "entity": "this",
+          "predicate": {
+            "minecraft:entity_type": "#everhear:bit/7"
+          }
+        }
+      }
+    },
+    "n7": {
+      "trigger": "minecraft:player_killed_entity",
+      "conditions": {
+        "entity": {
+          "type": "minecraft:inverted",
+          "term": {
+            "type": "minecraft:entity_properties",
+            "entity": "this",
+            "predicate": {
+              "minecraft:entity_type": "#everhear:bit/7"
+            }
+          }
+        }
+      }
+    }
+  },
+  "requirements": [
+    [
+      "b0",
+      "n0"
+    ],
+    [
+      "b1",
+      "n1"
+    ],
+    [
+      "b2",
+      "n2"
+    ],
+    [
+      "b3",
+      "n3"
+    ],
+    [
+      "b4",
+      "n4"
+    ],
+    [
+      "b5",
+      "n5"
+    ],
+    [
+      "b6",
+      "n6"
+    ],
+    [
+      "b7",
+      "n7"
+    ]
+  ],
+  "rewards": {
+    "function": "everhear:ev/kill"
+  },
+  "sends_telemetry_event": false,
+  "__comment": "A player killed an entity. Generated by engine/datapack/generate.py; the reward reads the bits."
+}

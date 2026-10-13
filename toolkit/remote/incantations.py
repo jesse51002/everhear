@@ -4,8 +4,12 @@
 #   {"vfg": "/opt/vfg", "op": "list", "stamps": [{"root": "scripts", "stamps": {"_lib": "<sha256>", "command": ...}}]}
 # It prints one JSON object: {"store": the store as scripts/_lib/incantations.py keeps it in
 # <vfg>/incantations.json ({"version": 0, "incantations": []} when there is none), "stale": the
-# folders "stamps" names that the box does not have as stamped, ["scripts/command", ...]}.
-# The store is read as it lies, with no lock: every write to it is a tmp file and a rename.
+# folders "stamps" names that the box does not have as stamped, ["scripts/command", ...], "engine": the
+# engine's bindings, its export <vfg>/engine/incantations.json ({"version", "incantations": [{"id",
+# "player", "phrase", "aliases", "everyday_aliases", "ability", "cooldown_s"}]}, the game engine
+# spec), or null when the engine has written none (it is not installed, or never started); one that
+# cannot be read is empty, with "error" saying why}.
+# Both are read as they lie, with no lock: every write to either is a tmp file and a rename.
 # The stamp rule is scripts.py's (stale): a folder is stale when its .vfg-stamp is missing or
 # another; vfg then deploys it with scripts.py's deploy.
 import re
@@ -29,6 +33,20 @@ def store():
     return data
 
 
+def engine():
+    """The engine's export of its bindings, or None when there is none to read."""
+    try:
+        with open(os.path.join(BASE, "engine", "incantations.json"), encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as e:   # the action incantations still list, with why beside them
+        return {"version": 0, "incantations": [], "error": "the engine's incantations cannot be read: %s" % e}
+    if not isinstance(data, dict) or not isinstance(data.get("incantations"), list):
+        return {"version": 0, "incantations": [], "error": "the engine's incantations are not {version, incantations}"}
+    return data
+
+
 def stale(entries):
     out = []
     for t in entries or []:
@@ -48,4 +66,4 @@ def stale(entries):
 
 if ARGS.get("op") != "list":
     die(2, "unknown op %r" % ARGS.get("op"))
-print(json.dumps({"store": store(), "stale": stale(ARGS.get("stamps"))}, ensure_ascii=False))
+print(json.dumps({"store": store(), "stale": stale(ARGS.get("stamps")), "engine": engine()}, ensure_ascii=False))

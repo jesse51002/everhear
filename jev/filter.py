@@ -71,6 +71,7 @@ class Config:
         "state_tokens": ("VFG_JEV_STATE_TOKENS", 8000, int),
         "history_hours": ("VFG_JEV_HISTORY_HOURS", 3.0, float),
         "incantations": ("VFG_INCANTATIONS", "/opt/vfg/incantations.json", str),
+        "engine_export": ("VFG_ENGINE_EXPORT", "/opt/vfg/engine/incantations.json", str),   # its bindings first
         "cast_min": ("VFG_JEV_CAST_MIN", 0.5, float),
         "cast_min_long": ("VFG_JEV_CAST_MIN_LONG", 0.7, float),   # a long line's: over 1, long lines unchecked
         "cast_sure": ("VFG_JEV_CAST_SURE", 0.7, float),   # a short cast this sure drops its line; less, kept
@@ -170,10 +171,10 @@ class Filter:
             log.info("cast check off: VFG_JEV_CAST_MIN is %g, over 1", cfg.cast_min)
         elif self.bridge is not None:
             log.info("cast check on · at %.2f or over, dropped at %.2f, a long line at %s · the bridge on "
-                     "127.0.0.1:%d · incantations %s", cfg.cast_min, cfg.cast_sure,
+                     "127.0.0.1:%d · incantations %s, the engine's %s", cfg.cast_min, cfg.cast_sure,
                      "%.2f" % cfg.cast_min_long if cfg.cast_min_long <= 1 else "none (unchecked)",
-                     cfg.bridge_port, cfg.incantations)
-        self.incantations = casting.Incantations(cfg.incantations)
+                     cfg.bridge_port, cfg.incantations, cfg.engine_export)
+        self.incantations = casting.Incantations(cfg.incantations, cfg.engine_export)
         self.cast_checked = {}       # line ids checked, oldest first: each line is checked once
         self.first_seen = {}         # line id -> when a cast pass first read it, on the filter's clock
         self._menu_cut = None        # the menu last said not to fit, so it is said once

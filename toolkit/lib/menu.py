@@ -28,12 +28,13 @@ def line(name, entry):
 
 def describe(name, entry):
     """An action whole, as the cache renders it (vfg_actions.describe); from an entry without that
-    text, its line, its script and how it runs."""
+    text, its line, its script (an engine action's op) and how it runs."""
     text = (entry or {}).get("describe")
     if isinstance(text, str) and text.strip():
         return text.rstrip("\n")
-    return "%s\nscript %s · runs %s" % (line(name, entry), (entry or {}).get("script") or "?",
-                                        str((entry or {}).get("runs") or "?").replace("_", " "))
+    runs = (entry or {}).get("engine")
+    head = "engine %s" % runs if runs else "script %s" % ((entry or {}).get("script") or "?")
+    return "%s\n%s · runs %s" % (line(name, entry), head, str((entry or {}).get("runs") or "?").replace("_", " "))
 
 
 def near(name, names, n=5):

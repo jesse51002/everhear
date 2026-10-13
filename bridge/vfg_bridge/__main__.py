@@ -57,6 +57,9 @@ def serve(cfg):
 
     db = DB(cfg.db)
     db.init()
+    left = db.fail_pending()
+    if left:
+        log.warning("%d engine cast(s) the bridge left pending when it stopped are now failed", left)
     watch = WatchFile(cfg.watch, vfg_feed)
     watch.ensure()
     watch.check()

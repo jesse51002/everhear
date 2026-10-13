@@ -1,6 +1,6 @@
 # actions — what anything can run on the server
 
-**An action makes one script callable, and actions are the only thing anything calls.** One file per action, `actions/<name>.py`, holding one pydantic class named as the file in CamelCase: `gatling_gun.py` holds `class GatlingGun`. The class is the action's whole definition and holds no code: its docstring's first line is its line on the menu, its ClassVars name the script it runs and how, and its fields are the values the script reads. What implementers make goes in `made/<server>/actions/<name>.py`, by the same rules, under a name no library action has.
+**An action makes one script callable, or one of the game engine's operations (*Engine actions*, below), and actions are the only thing anything calls.** One file per action, `actions/<name>.py`, holding one pydantic class named as the file in CamelCase: `gatling_gun.py` holds `class GatlingGun`. The class is the action's whole definition and holds no code: its docstring's first line is its line on the menu, its ClassVars name the script it runs and how, and its fields are the values the script reads. What implementers make goes in `made/<server>/actions/<name>.py`, by the same rules, under a name no library action has.
 
 [`_types.py`](_types.py) has the `Action` and `Values` bases and the value types; [`lib/py/vfg_actions.py`](../lib/py/vfg_actions.py) loads, checks and renders the actions and keeps `~/.vfg/actions.json`. The spec: `Internal/workspace/pages/home/children/Specs/children/2026-10-09-Prototype_Actions/`, and its `Library_Actions` child for which actions to write.
 
@@ -68,6 +68,7 @@ class GatlingGun(Railgun):
 | `int`, `float` with `Field(ge=, le=)` | a number | out of range is clamped to the limit and a note says so, as the kit does |
 | `bool`, `Literal[...]`, `str`, `list[...]` | true or false, one of a few words, text, several of a type | a word from the command line is read as the type: `yes`/`off`/`1`, an option in any case, a list as `a,b,c` or JSON |
 | `Live[T]` | any of these | as `T` |
+| `Annotated[str, Kind("python")]` | Python source, such as a whole Config class (`engine_config`'s `config`) | taken whole, every line, its indentation and comments kept, where any other text is one line: line ends made `\n`, no other control character but a tab, at most 20,000 characters; whether it parses is the engine's check |
 
 `Field` and `Literal` are importable from `actions._types` too, so a preset needs that one import.
 
@@ -102,3 +103,50 @@ cd lib/py && uv run --group dev python -m pytest
 `command`, `teleport`, `summon_around` and `save_place` are the dispatcher's first actions, each a class over a script of its own name; `stop` and `edit` end and change a running copy, by its name (`CopyName`): `edit`'s `values` are the values to change, checked against the copy's own action. A script runs only through an action. Their tests: [`tests/test_core_actions.py`](tests/test_core_actions.py).
 
 `incantation_create`, `incantation_edit` and `incantation_remove` make, change and remove a player's incantations, the phrases that fire an action the moment they are said: one script, `incantations`, writes the box's store, after vfg has checked the phrase, the players, the bound action and its values (`toolkit/README.md`, Incantations).
+
+## Engine actions
+
+The game engine's operations are actions too, so the brain and implementers run them as they run any
+(the game engine spec; `engine/README.md` has the engine's control ops): one file each,
+`actions/engine_<op>.py`, with no script. Its ClassVar `engine` names the control op its values go to,
+and `script` stays empty:
+
+```python
+# actions/engine_grant.py
+from typing import ClassVar
+
+from actions._types import Action, Field
+
+
+class EngineGrant(Action):
+    """Give a player one of the engine's abilities, by its name under ENGINE: it works for them from now on, as the ability says, until revoked."""
+
+    engine: ClassVar[str] = "grant"   # the engine's control op its values go to: no script
+    runs = "once"
+    takes = ["player", "ability"]
+
+    player: str = Field("", pattern=r"^(|[A-Za-z0-9_]{1,16})$")
+    """who gets it: one player's exact name"""
+    ability: str = Field("", pattern=r"^(|[a-z][a-z0-9_]{0,63})$")
+    """the ability, by its name under ENGINE, such as fireball"""
+```
+
+- **The eight**: `engine_grant` and `engine_revoke` (`player`, `ability`), `engine_give` (`player`, `item`),
+  `engine_start` (`scenario`) and `engine_stop` (`scenario` or `instance`), `engine_bind` (`player`,
+  `phrase`, `ability`: an incantation for one player, its aliases made as `incantation_create` makes
+  them) and `engine_unbind` (`player`, `phrase`), and `engine_config` (`class_id`, and `config`, the
+  class's whole new Config in Python).
+- **How they run**: `vfg action run` checks the values as any action's, then `run_named` sends them to
+  the engine as `vfg engine <op>` does (`vfg_actions.engine_op(cls)` names the op): no copy, `copy`
+  empty and `running` false in its one line, `facts` the engine's reply, a refusal `"ok": false` with the
+  engine's words, exit 6 when the engine is not running. `as=` names no copy of one, and an incantation
+  never fires one: an ability is bound with `engine_bind`.
+- **Checked** by `vfg action check` as any action, but for the script: `engine` must be an op's name
+  (`^[a-z][a-z0-9_]{0,31}$`) and `script` empty. In `actions.json` each entry's `engine` is its op (null
+  for a script's action), and `vfg action show` says `engine grant · runs once` where a script's says
+  `script railgun`.
+- **A field of Python**, `Annotated[str, Kind("python")]` (`vfg_actions.python_fields`): its value is
+  source, taken whole (the table above). `engine_config`'s `config` is one: the brain reads the class's
+  Config first and sends it back whole, comments and all, with only the values asked changed.
+
+Their tests: [`tests/test_engine_actions.py`](tests/test_engine_actions.py).

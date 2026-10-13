@@ -15,7 +15,12 @@
   happened failed (it may have happened: never run blindly again). One that ran but whose facts say
   it changed nothing (`changed` empty: an edit or an incantation edit to what already was) "changed
   nothing", and is not landed either: a reply written up front never claims a fix on it.
-- The reads: another player's items, by slot, from a state fetched for it (World.items).
+- The reads: another player's items, by slot, from a state fetched for it (World.items); an engine
+  class's Config, as written, with its file and lines (World.config, `vfg engine config get`), shown
+  to the next step whole. An engine_config, the Config rewritten (the game engine spec), is refused at
+  the tool unless an earlier step of the loop read that class's Config: the brain sends back the
+  whole class as written, comments and all, so it must have seen it. An engine action that ran
+  makes the world read the engine again for the next loop (World.engine_changed).
 - The ending's pieces, which the loop puts together once a step lands and ends (loop.py): a hand-off's
   task opened under a name no task, action, script or running copy has (names.unique), its brief
   rendered from its parts (call.HandOff.brief), and its `AI task <name> | new: …` row; a follow-up's
@@ -35,7 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from vfg_actions import check_edit, check_values
+from vfg_actions import check_edit, check_values, engine_op
 
 from . import names
 from .actions import Catalog, command_fields, commands_in, word
@@ -51,6 +56,7 @@ ROW_MAX = 400        # an AI row's text
 BRIEF_SHORT = 160    # a brief in an `AI task` row
 SAID_MAX = 600       # a result's words, as the next step reads them
 REFERENCE_MAX = 6000  # a refused command's reference, as the next step reads it
+CONFIG_MAX = 8000    # a Config read, as the next step reads it: whole, unless far longer than any is
 PLAYER = re.compile(r"^[A-Za-z0-9_]{1,16}$")  # a player's name, as --for takes it
 # The cancel words of Prototype_Implementer_Harness, exactly: a follow-up with `cancel` sends these.
 CANCEL = ("CANCELLED: the player said never mind. Stop building and put everything back the way it was before "
@@ -143,6 +149,8 @@ class Result:
     reference: str = ""             # a refused command's reference
     tried: bool = False             # an action vfg ran, whatever came of it
     instruction: str = ""           # an action's instruction, for a record written in code
+    config_of: str = ""             # a Config read: the class's name
+    whole: bool = False             # `said` shown as it is, its lines kept (a Config as written)
 
     @property
     def ok(self) -> bool:
@@ -152,7 +160,10 @@ class Result:
         text = f"- {self.what}"
         if self.values is not None:
             text += " " + (" ".join(f"{k}={word(v)}" for k, v in self.values.items()) or "(its defaults)")
-        text += f"\n  {self.state.upper()}: {short(self.said, SAID_MAX)}"
+        if self.whole:
+            text += f"\n  {self.state.upper()}:\n{cap(self.said, CONFIG_MAX)}"
+        else:
+            text += f"\n  {self.state.upper()}: {short(self.said, SAID_MAX)}"
         if self.reference:
             text += ("\n  THE REFERENCE OF THE COMMANDS IT USED (each command's syntax on this server, then the "
                      f"wiki's Java Edition notes):\n{self.reference}")
@@ -275,11 +286,14 @@ class Acts:
 
     # ------------------------------------------------------------- the step
 
-    async def run(self, step: StepBase, *, n: int, player: str, seen: Seen, refs, ref: str) -> StepRun:
+    async def run(self, step: StepBase, *, n: int, player: str, seen: Seen, refs, ref: str,
+                  earlier: list[StepRun] = ()) -> StepRun:
         """Every tool of `step`: the checks, the actions (together or in turn), then the reads.
         `player` is whose copies the actions are when they name nobody (a report's: its task's
-        player); `ref` (`#<seq> s<n>`) labels the log lines."""
+        player); `ref` (`#<seq> s<n>`) labels the log lines; `earlier` is the loop's steps before
+        it, whose reads an engine_config needs."""
         out = StepRun(step, n)
+        read = {r.config_of for run in earlier for r in run.reads if r.config_of and r.state == READ}
         for f in step.follow_ups:
             task = f.task.strip()
             if self.tasks.get(task) is None:
@@ -292,17 +306,19 @@ class Acts:
                     out.actions.append(Result(f"{a.to}: {one_line(a.instruction)}", NOT_RUN,
                                               "an earlier one did not land", a.values(), instruction=a.instruction))
                     continue
-                out.actions.append(await self.action(a, i, player, seen, refs, ref))
+                out.actions.append(await self.action(a, i, player, seen, refs, ref, read))
         elif acts:
-            running = [asyncio.create_task(self.action(a, i, player, seen, refs, ref), name=f"action {ref} #{i + 1}")
+            running = [asyncio.create_task(self.action(a, i, player, seen, refs, ref, read),
+                                           name=f"action {ref} #{i + 1}")
                        for i, a in enumerate(acts)]
             try:
                 out.actions = list(await asyncio.gather(*running))
             finally:
                 for t in running:
                     t.cancel()
-        if step.read_items:
-            out.reads = list(await asyncio.gather(*(self.read(p) for p in step.read_items)))
+        if step.read_items or step.read_configs:
+            out.reads = list(await asyncio.gather(*(self.read(p) for p in step.read_items),
+                                                  *(self.read_config(c) for c in dict.fromkeys(step.read_configs))))
         return out
 
     def values(self, name: str, cls, given: dict[str, Any], seen: Seen) -> tuple[dict[str, Any], list[str]]:
@@ -326,12 +342,19 @@ class Acts:
         checked = check_values(cls, given, places=places)
         return {k: checked.values[k] for k in given}, checked.notes
 
-    async def action(self, a, i: int, player: str, seen: Seen, refs, ref: str) -> Result:
+    async def action(self, a, i: int, player: str, seen: Seen, refs, ref: str,
+                     read: set[str] = frozenset()) -> Result:
         name, cls = a.to, self.catalog.get(a.to)
         what = f"{name}: {one_line(a.instruction)}"
         given = a.values(cls)
         if cls is None:
             return Result(what, REFUSED, f"{name} is no longer on the menu", given, instruction=a.instruction)
+        op = engine_op(cls)
+        if op == "config" and str(given.get("class_id") or "").strip() not in read:
+            which = str(given.get("class_id") or "").strip() or "its class"
+            return Result(what, REFUSED, f"refused before it ran: read {which}'s Config first (read_configs "
+                          f"[\"{which}\"], end next), then send the whole class back as you read it, every line and "
+                          "comment kept, only what was asked changed", given, instruction=a.instruction)
         try:
             values, notes = self.values(name, cls, given, seen)
         except (NotRunning, ValueError) as e:
@@ -340,6 +363,8 @@ class Acts:
                             for_player=for_whom(name, values, player), label=f" {ref} #{i + 1}")
         if name in ("stop", "edit") or (ran.kind == "ok" and getattr(cls, "runs", "") == "until_stopped"):
             self.world.refetch_running()
+        if op and ran.kind != "not_run":
+            self.world.engine_changed()
         log("action", f"{ref} #{i + 1} {name} {ran.kind}: {ran.summary[:200]}")
         if ran.kind == "ok":
             if changed_nothing(ran.facts):
@@ -374,6 +399,12 @@ class Acts:
     async def read(self, player: str) -> Result:
         ok, said = await self.world.items(player)
         return Result(f"read {player.strip()}'s items", READ if ok else REFUSED, said)
+
+    async def read_config(self, name: str) -> Result:
+        """The read tool for a Config: the class's Config as written, whole, for the next step."""
+        ok, said = await self.world.config(name)
+        return Result(f"read {name.strip()}'s Config", READ if ok else REFUSED, said, config_of=name.strip(),
+                      whole=ok)
 
     # ------------------------------------------------------------- the ending's pieces
 

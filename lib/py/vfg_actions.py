@@ -9,6 +9,7 @@ router all go through here:
     cat = Catalog(repo, server="main")        every action; cat.refresh() reloads what changed
     cat.names(), cat.get(name), cat.source(name), cat.file(name), cat.errors()
     check_action(name, cls)                   what `vfg action check` says; [] when it is fine
+    engine_op(cls), python_fields(cls)        an engine action's op, and its fields of Python source
     check_values(cls, {"cooldown": "0"}, places=...)  -> Checked(values, notes, live)
     check_edit(cls, current, {"cooldown": "0"})       -> Edit(values, changed, live_only, notes)
     menu_line(name, cls), describe(name, cls, current=None)
@@ -24,6 +25,12 @@ and reloads what changed: a made action file alone; when anything in actions/ or
 changed, everything, since a variant holds its parent's class. A file that will not import,
 holds no class named as the file in CamelCase (or more than one action class), or fails
 check_action is logged and left out, with why in errors().
+
+An engine action (actions/engine_*.py, the game engine spec) runs no script: its ClassVar
+`engine` names the engine's control op its values go to, which vfg routes through `vfg engine`.
+It is checked as every action is, but for its script, and a field of the kind "python",
+Annotated[str, Kind("python")] (a rewritten Config), is taken as text whole, its lines and comments
+kept, where any other text is one line of words.
 """
 
 from __future__ import annotations
@@ -50,7 +57,9 @@ logger = logging.getLogger(__name__)
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
 SCRIPT_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
+ENGINE_OP_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 RUNS = ("once", "until_stopped")
+PYTHON_MAX = 20000  # characters of Python source one value may hold: a Config is far less
 
 
 def _types(cls=None):
@@ -270,7 +279,13 @@ def _check(name: str, cls, repo: Path | None, source: str, server: str | None) -
     doc = inspect.cleandoc(vars(cls).get("__doc__") or "")
     if not doc.split("\n", 1)[0].strip():
         out.append("no docstring: its first line is the action's line on the menu, in players' words")
-    if not isinstance(cls.script, str) or not SCRIPT_RE.match(cls.script):
+    op = engine_op(cls)
+    if op is not None:
+        if not ENGINE_OP_RE.match(op):
+            out.append("engine is the engine's control op its values go to, not %r" % (op,))
+        if cls.script:
+            out.append("an engine action runs no script: script is %r" % (cls.script,))
+    elif not isinstance(cls.script, str) or not SCRIPT_RE.match(cls.script):
         out.append("script is the folder of the script it runs, not %r" % (cls.script,))
     elif repo is not None:
         where = [repo / "scripts" / cls.script / "main.py"]
@@ -336,6 +351,34 @@ def _check(name: str, cls, repo: Path | None, source: str, server: str | None) -
     return out
 
 
+def engine_op(cls) -> str | None:
+    """The engine's control op an engine action's values go to (grant, give, bind, config ...),
+    or None for an action that runs a script."""
+    op = getattr(cls, "engine", None)
+    return op if isinstance(op, str) and op else None
+
+
+def python_fields(cls) -> list[str]:
+    """The fields of `cls` that hold Python source (Annotated[str, Kind("python")]): text whole,
+    newlines, indentation and comments kept."""
+    T = _types(cls)
+    return [k for k, f in getattr(cls, "model_fields", {}).items() if T.kind(f.annotation, f.metadata) == "python"]
+
+
+def _python(key: str, raw: Any) -> str:
+    """A Python field's value as it is sent: text, its line ends made \\n, none of the other
+    control characters a terminal or a file would mangle, at most PYTHON_MAX characters. Whether it
+    parses, and what it changes, are the engine's checks."""
+    if not isinstance(raw, str):
+        raise ValueError("%s is Python source, as text" % key)
+    text = raw.replace("\r\n", "\n").replace("\r", "\n")
+    if any(ord(c) < 32 and c not in "\n\t" or ord(c) == 127 for c in text):
+        raise ValueError("%s holds a control character that is not a line end or a tab" % key)
+    if len(text) > PYTHON_MAX:
+        raise ValueError("%s is %d characters of Python; at most %d" % (key, len(text), PYTHON_MAX))
+    return text
+
+
 def _code_in(cls) -> list[str]:
     """An action holds no code: no method or validator of its own."""
     T = _types(cls)
@@ -382,10 +425,13 @@ def check_values(cls, given: dict, *, places: dict | None = None, allow_fixed: b
             raise ValueError("%s: %s" % (_snake(cls), "; ".join(
                 "%s is fixed at %s" % (k, _word(cls.fixed[k])) for k in fixed)))
     notes: list[str] = []
+    # Python source is no word: its lines go through whole, checked as text (_python), and the
+    # rest of the values as their fields read them.
+    source = {k: _python(k, given[k]) for k in python_fields(cls) if k in given}
     data = {k: f.get_default(call_default_factory=True) for k, f in cls.model_fields.items()}
-    data.update(given)
-    model = _validate(cls, data, {"notes": notes, "places": places, "given": set(given)})
-    return Checked(model.model_dump(mode="json"), notes, live_fields(cls))
+    data.update((k, v) for k, v in given.items() if k not in source)
+    model = _validate(cls, data, {"notes": notes, "places": places, "given": set(given) - set(source)})
+    return Checked(dict(model.model_dump(mode="json"), **source), notes, live_fields(cls))
 
 
 def check_edit(cls, current: dict, given: dict, *, places: dict | None = None) -> Edit:
@@ -472,6 +518,7 @@ KIND_WORDS = {
     "replace rules": 'rules in order, each "from > to", such as solid > 70% lava 30% keep',
     "replace rule": 'a rule "from > to", such as solid > 70% lava 30% keep',
     "item name": "the name of an item a script gave, such as Spirit Bomb, or empty for none",
+    "python": "Python source, every line, its indentation and its comments as written",
 }
 LIST_WORDS = {
     "int": "whole numbers", "number": "numbers", "bool": "trues and falses", "str": "texts",
@@ -494,7 +541,8 @@ def describe(name: str, cls, current: dict | None = None) -> str:
     live or not, its default (fixed; or its value now, when `current` is given) and its
     description."""
     T = _types(cls)
-    head = ["script %s" % cls.script, "runs %s" % (cls.runs or "?").replace("_", " ")]
+    op = engine_op(cls)
+    head = ["engine %s" % op if op else "script %s" % cls.script, "runs %s" % (cls.runs or "?").replace("_", " ")]
     if cls.timeout_s:
         head.append("timeout %d s" % cls.timeout_s)
     lines = [menu_line(name, cls), " · ".join(head), "values (* = the planner fills it):"]
@@ -602,7 +650,8 @@ def entry(name: str, cls, source: str, file: str) -> dict:
                        "default": to_jsonable_python(f.get_default(call_default_factory=True)),
                        "ge": lo, "le": hi, "choices": T.choices(f.annotation, f.metadata),
                        "live": T.is_live(f.metadata), "description": (f.description or "").strip()}
-    return {"line": menu_line(name, cls).split(" — ", 1)[1], "script": cls.script, "runs": cls.runs,
+    return {"line": menu_line(name, cls).split(" — ", 1)[1], "script": cls.script, "engine": engine_op(cls),
+            "runs": cls.runs,
             "takes": list(cls.takes), "fixed": to_jsonable_python(cls.fixed),
             "defaults": to_jsonable_python(cls.defaults), "descriptions": dict(cls.descriptions),
             "timeout_s": cls.timeout_s, "source": source,
@@ -632,7 +681,7 @@ def cache(repo: Path, server: str, home: Path, *, catalog: Catalog | None = None
     reads the actions without loading them:
 
         {"built_at": epoch, "files": [every action file, from the repo],
-         "actions": {name: {"line", "script", "runs", "takes", "fixed", "defaults", "descriptions",
+         "actions": {name: {"line", "script", "engine", "runs", "takes", "fixed", "defaults", "descriptions",
                             "timeout_s", "source", "file", "fields": {field: {"type", "default", "ge",
                             "le", "choices", "live", "description"}}, "describe"}},
          "errors": {file stem: why it was left out}}

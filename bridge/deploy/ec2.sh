@@ -204,8 +204,9 @@ cmd_start() {
 }
 
 stop_units() {
-  if remote 'sudo systemctl stop vfg-jev vfg-bridge minecraft'; then
-    log "stopped vfg-jev, vfg-bridge and minecraft"
+  # The engine first, so it saves its state while Minecraft still answers.
+  if remote 'sudo systemctl stop vfg-engine vfg-jev vfg-bridge minecraft'; then
+    log "stopped vfg-engine, vfg-jev, vfg-bridge and minecraft"
   else
     log "could not stop the units over SSH; stopping the instance stops them too"
   fi

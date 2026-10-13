@@ -22,7 +22,7 @@ repo reads, with its default. Nothing is deployed to EC2 for vfg itself: the pro
 ## One example per command
 
 ```sh
-vfg up                                         # units started if down; RCON answering
+vfg up                                         # units started if down (minecraft, vfg-bridge, vfg-jev, vfg-engine); RCON answering
 vfg watch                                      # the feed from the cursor, then follow; one at a time, the newest wins
 vfg watch --tail 20                            # for a person at a terminal
 vfg watch --after 812                          # for the brain: from seq 813 on; no cursor, no lock, no valve
@@ -81,11 +81,17 @@ vfg usage add --component brain --model google/gemini-3.8-flash --in 9000 --out 
 vfg usage add --component implementer --model haiku --in 900 --out 120 --cache-read 15000 --cache-write 2000
 vfg usage add --component implementer --model deepseek-flash --in 4000 --out 900 --cache-read 310000 --largest 104322
 vfg usage flush                                # the queued rows, every structured() call's among them; none, nothing sent
+vfg engine status                              # the game engine: its tick, players, instances, classes; exit 6 when it is not running
+vfg engine reload fireball                     # made/<VFG_SERVER>/content/ deployed, fireball.py reloaded: what loaded, what failed
+vfg engine grant Steve fireball                # also revoke, give/take, apply/clear, start/stop, spawn, bind/unbind
+vfg engine config get fireball                 # its Config exactly as written, with its file and lines
+vfg engine config set fireball < config.py     # the whole new Config class: spliced in, checked, deployed, reloaded
+vfg engine config undo fireball                # its last kept Config back
 ```
 
 Exit codes: 0 done, 1 refused or failed, 2 bad arguments, 3 not configured, 4 EC2
-unreachable or no answer in time, 5 Minecraft not answering RCON. A failure prints
-one line on stderr. `vfg --help` and `vfg <command> --help` list every option.
+unreachable or no answer in time, 5 Minecraft not answering RCON, 6 the game engine not
+running. A failure prints one line on stderr. `vfg --help` and `vfg <command> --help` list every option.
 
 ## The brain's commands
 
@@ -329,6 +335,95 @@ here (`run_incantation`):
   Values show as they differ from the action's own, caster fields as `player=<caster>`, and
   the everyday aliases after the aliases (`; everyday, not spotted: ice cream, i scream`).
 
+## The game engine
+
+The game engine (Specs/2026-10-12-Prototype_Game_Engine) is one process on the box, `vfg-engine`,
+that runs abilities, items, marks, actors and scenarios written as Python classes. `vfg engine
+<op>` sends one of its control ops through `remote/engine.py`, which speaks its control socket,
+`<VFG_REMOTE_VFG>/engine/engine.sock`, through its folder when that path is longer than a socket's address
+holds, as a realmc stand-in's is (`engine/vfg_engine/server.py` has the protocol: one
+connection a request, one JSON line in with `timeout_s`, one out), in one SSH call. Each prints the
+reply in words, or with `--json` as it came; exit 0 when the engine did it, 1 when it refused (its
+error on stderr), 2 for bad arguments (refused here, with no SSH call), 4 when it took the request
+and did not answer in time (it says whether it may still do it), 6 when it is not running.
+
+```sh
+vfg engine status                              # engine running since …; tick 4821 at 10 a second; p50 1.2 ms, p95 3.4 ms; players; instances by kind; classes; slow
+vfg engine classes                             # ability   fireball  Burns for burn_s seconds, …  (made/main/content/fireball.py)
+vfg engine overview --json                     # {"ok", "classes", "instances"}: both in one SSH call, what the brain shows as ENGINE
+vfg engine meta [fireball]                     # one table: kind, id, damage@0, damage@10, damage@20, the required fields, own: name=value …
+vfg engine world                               # mob_griefing = false (it was true); held by scenario:horde#1: false at priority 10 since …
+vfg engine instances [--kind ability] [--user Steve]   # instance kind id user started ends
+vfg engine log [-n 40]                         # <time> <level> <message> {its fields}
+vfg engine reload [fireball …]                 # deployed made/main/content: …; loaded: …; refused <file> (<Class>): <check> failed: …; switched: N; stopped …
+vfg engine grant Steve fireball                # granted fireball to Steve; revoke: took fireball away from Steve
+vfg engine give Alex fire_staff [--base B]     # gave Alex fire_staff (a base that is not the class's is refused); take: took every …
+vfg engine apply Steve giant [--seconds 30]    # put giant on Steve for 30 s; clear: took giant off Steve
+vfg engine start horde [waves=3 …]             # started horde as scenario:horde#1; its args each JSON when they read as JSON
+vfg engine stop horde | --instance scenario:horde#1    # stopped horde (scenario:horde#1)
+vfg engine spawn ice_queen --at 10 64 -20 | --near Steve   # spawned ice_queen as <uuid>
+vfg engine bind Steve 'fire ball' fireball [--by TASK]     # "fire ball" for Steve now casts fireball; aliases fireball; notes on stderr
+vfg engine unbind Steve 'fire ball'            # removed Steve's incantation "fire ball"
+vfg engine incantations [--player Steve]       # Steve: "fire ball" → ability fireball (engine) cooldown 5s; aliases fireball
+vfg engine config get|set|undo fireball        # below
+```
+
+- **Content** is written on this PC in `made/<VFG_SERVER>/content/<file>.py` (gitignored, as
+  `made/` is) and deployed whole to `/opt/vfg/made/<server>/content/`: the folder packed as a
+  script's is (no caches, no dotfiles), unpacked beside it on the box and swapped in under
+  `run/deploy.lock`, left as it is when every file is the same. `reload` deploys first, then sends
+  `reload` with the named files' paths there (none named: every content dir), and prints what
+  loaded, each check that failed and why (the old version keeps running), how many running instances
+  switched and which stopped; exit 1 when a check failed.
+- **`bind`** is an action incantation's checks and aliases (`run_incantation`): the phrase
+  normalised, one player and never `@a`, the alias call (20 variants, the code's checks, the
+  everyday ones), in a thread while one SSH call reads the engine's classes (an ability it has not
+  is refused before the bind), the player's engine bindings and the action incantations' store;
+  then the bind warnings against every other phrase of the player's, both kinds, and the everyday
+  note, as notes. An action incantation with the same phrase is a note, either way round. The
+  binding goes into the cache as the engine's reply has it stored (its `entry`: its aliases as kept
+  and the ability's cooldown).
+- **`overview`** asks the engine for its classes and its instances in one SSH call (two requests in
+  one remote/engine.py run) and prints both, or with `--json` `{"ok": true, "classes": [...],
+  "instances": [...]}`, as the `classes` and `instances` ops give them. One the engine refused is
+  left out, `ok` false, `error` naming it (`instances: …`), the other kept, exit 1. The brain's
+  ENGINE part is one `vfg engine overview --json` (brain/brain/world.py).
+- **`config get <class>`** prints the class's Config exactly as written on this PC, `made/main/
+  content/fireball.py, lines 10 to 33: the Config of Fireball, as written`, then its lines; the
+  engine says which file and class (its `config_get`), and a box that runs another version than
+  this PC holds is a warning. **`config set <class>`** takes the whole new Config class on stdin, at
+  any indentation: the engine's `engine/vfg_engine/rewrite.py` (standard library, loaded by its
+  path) splices it into exactly the old one's lines and runs the static checks (it parses, the same
+  fields and formulas, nothing outside the Config changed, and only values: every formula's code and
+  the `class Config` line as they were, each value a literal or `Field(<literals>)`); a failed one
+  is exit 1 with the checks' own words, several numbered `(1) …; (2) …`, and nothing is sent. Then the old file is kept, the new one written, deployed and reloaded under
+  `$VFG_HOME/engine.lock`; when the engine refuses it (a reload check: in bounds, damage at three
+  powers, imports), or is down, or does not answer, this PC's file is put back and deployed again,
+  and the error is the answer, saying so. A Config already as written changes nothing (`"changed":
+  []`). **`config undo <class>`** splices the Config of that class's last kept version back into
+  the file as it is now, checked, deployed and reloaded the same way, and moves the version to
+  `undone/`, so the next undo goes one further back. The kept versions are
+  `made/<server>/content/.history/<file>/<YYYYmmdd-HHMMSS-ffffff>-<Class>.py`, the whole file
+  before each change, and `.history/log.jsonl` one line a change or a refusal (`at`, `op`, `class`,
+  `class_name`, `file`, `ok`, `kept` or `error`, `by`); a deploy skips dot folders, so none reaches
+  the box.
+- **The menu's engine actions** (`actions/engine_*.py`, each naming its op in `engine`: grant,
+  revoke, give, start, stop, bind, unbind and config) run through `vfg action run` as any action, so the
+  brain and the implementers run them so: `run_named` sends an action whose class names an
+  `engine` op (`vfg_actions.engine_op`) to `run_engine_action`, which checks its values as any
+  action's and runs the op as `vfg engine` does: one JSON line, `copy` empty and `running` false,
+  its `facts` the engine's reply, a refusal `"ok": false` with the engine's error. `engine_config`'s
+  `config` is Python source (`Annotated[str, Kind("python")]`): vfg_actions takes it whole, its
+  lines and comments kept, where any other text field is one line. An incantation never fires an
+  engine action (`incantation_create action=engine_grant` is exit 2: an ability is bound with
+  `engine_bind`), and `as=` names no copy of one.
+- **`vfg incantation list`** lists the engine's bindings beside the action incantations: the
+  incantations program reads the engine's export, `/opt/vfg/engine/incantations.json`, in the same
+  SSH call, and the cache keeps it as `"engine"`. A binding's line is `Steve: "fire ball" → ability
+  fireball (engine) cooldown 5s; aliases …`, and in `--json` `{"player", "phrase", "action": null,
+  "engine": true, "ability", "values": {}, "cooldown_s", "aliases", "everyday_aliases"}`. `engine
+  bind` and `unbind` write through to the cache.
+
 ## The router and the implementer's prompt
 
 - **`vfg route [--task NAME] [--ref REF] < brief`** reads the implementer's brief on stdin, and
@@ -440,6 +535,13 @@ names one, with `vfg_llm` mocked, and no OpenRouter key passes in.
   edited, set by hand), `values.<name>=`
   words, a binding following its action after a run, and `vfg incantation list` with its cache;
   one box for a class.
+- `test_engine.py`: every `vfg engine` op against `fake_engine.py`, the engine's control socket
+  served in this process, its replies shaped as `engine/vfg_engine/ops.py`'s: the reads, the ops,
+  the content's deploy and reload, a Config set, refused and put back, undone, engine bindings in
+  `vfg incantation list`, and the menu's engine actions through `vfg action run`; a Config is held to
+  the engine's own `engine/vfg_engine/rewrite.py`. `TestRealEngine` runs the
+  same against the engine itself, `python -m vfg_engine --fake-io` (no Minecraft), and skips, saying
+  why, when it cannot start.
 - `test_e2e.py`: a handful with vfg as a process, through `tests/fake_ssh`, which runs the remote
   command here with bash: a command and its SSH options, closed descriptors, and watches
   following the feed.

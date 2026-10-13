@@ -1275,15 +1275,16 @@ def stamp(entries):
     return h.hexdigest()
 
 
-def pack(cfg, names, root=None):
+def pack(cfg, names, root=None, defaults=True):
     """The folders as a gzipped tar in memory, base64, and each one's stamp, from the same bytes:
-    (tar, {name: stamp})."""
+    (tar, {name: stamp}); with `defaults` false, without the action defaults a script's folder
+    gets (the engine's content is no script)."""
     root = root or scripts_dir(cfg)
     buf = io.BytesIO()
     stamps = {}
     with tarfile.open(fileobj=buf, mode="w:gz") as tf:
         for name in names:
-            entries = list(tree(root, name, action_defaults(cfg, root, name)))
+            entries = list(tree(root, name, action_defaults(cfg, root, name) if defaults else ()))
             stamps[name] = stamp(entries)
             for path, st, data in entries:
                 ti = tarfile.TarInfo(path)
@@ -1296,7 +1297,8 @@ def pack(cfg, names, root=None):
                     tf.addfile(ti, io.BytesIO(data))
     data = buf.getvalue()
     if len(data) > DEPLOY_MAX:
-        raise Fail(1, "the scripts pack to %d MB; at most 20 MB" % (len(data) // (1024 * 1024)))
+        raise Fail(1, "the %s pack to %d MB; at most 20 MB" % ("scripts" if defaults else ", ".join(names),
+                                                               len(data) // (1024 * 1024)))
     return base64.b64encode(data).decode("ascii"), stamps
 
 
@@ -1744,7 +1746,8 @@ def action_words(words):
 def run_named(cfg, a, name, given, as_=None, task=None, for_=None):
     """Any action, as vfg action run and its shortcuts run it: edit through run_edit and stop
     through run_stop, which write the copy they name through to running.json; the incantation
-    actions through run_incantation; the rest through run_action, a copy for `for_` named
+    actions through run_incantation; an engine action (actions/engine_*.py) through the engine,
+    run_engine_action, which starts no copy; the rest through run_action, a copy for `for_` named
     <action>_<player> (the brain's own copy: railgun_steve, then railgun_steve_2), which edit,
     stop and the incantation actions leave alone; after a run that went well, which deployed the
     action's script as it is here, the incantations bound to it made to follow it
@@ -1756,6 +1759,11 @@ def run_named(cfg, a, name, given, as_=None, task=None, for_=None):
         return run_stop(cfg, a, given["copy"], as_, task)
     if name in INCANT_ACTIONS:
         return run_incantation(cfg, a, name, given, as_, task)
+    va, _, cls = action_class(cfg, name)
+    if va.engine_op(cls):
+        if as_ is not None:
+            raise Fail(2, "as=%s: %s is the engine's to run, with no copy to name" % (as_, name))
+        return run_engine_action(cfg, a, name, va, cls, given, task)
     base = "%s_%s" % (name, for_.lower()) if for_ and name != "stop" else None
     line = run_action(cfg, a, name, given, as_, task, base=base)
     if line["ok"]:
@@ -2893,10 +2901,13 @@ def read_incant_cache(cfg):
         return None
 
 
-def write_incant_cache(cfg, version, rows, fetched_at):
+def write_incant_cache(cfg, version, rows, fetched_at, engine=None):
+    """The cache: the action incantations' store, and `engine`, the engine's bindings as its export
+    has them ({"version", "incantations"}), or None when the box had none."""
     cfg.ensure_home()
     atomic_write(incant_cache_path(cfg), json.dumps({"fetched_at": fetched_at, "version": version,
-                                                     "incantations": rows}, ensure_ascii=False) + "\n")
+                                                     "incantations": rows, "engine": engine},
+                                                    ensure_ascii=False) + "\n")
 
 
 def incant_ttl(cfg):
@@ -2908,9 +2919,10 @@ def incant_ttl(cfg):
 
 
 def fetch_incantations(cfg, a, stamps=None):
-    """The box's store, written to the cache, and of `stamps` ([{"root", "stamps"}], as
-    stamps_for makes them) the folders the box does not have as stamped: (store, stale). One
-    SSH call."""
+    """The box's store, written to the cache with the engine's bindings beside it (its export, read
+    in the same call: store["engine"], None when the box has none), and of `stamps` ([{"root",
+    "stamps"}], as stamps_for makes them) the folders the box does not have as stamped: (store,
+    stale). One SSH call."""
     rc, o, e = remote(cfg, a, "incantations.py", {"op": "list", "stamps": stamps or []}, 30)
     if rc != 0:
         finish(rc, b"", e)  # raises Fail with the remote's one line
@@ -2918,14 +2930,18 @@ def fetch_incantations(cfg, a, stamps=None):
         got = json.loads(o.decode("utf-8").strip().splitlines()[-1])
         store = got["store"]
         rows, stale = store["incantations"], got["stale"]
-        if not (isinstance(rows, list) and isinstance(stale, list)):
+        engine = got.get("engine")
+        if not (isinstance(rows, list) and isinstance(stale, list)) or \
+                not (engine is None or isinstance(engine, dict) and isinstance(engine.get("incantations"), list)):
             raise TypeError
     except (ValueError, KeyError, IndexError, TypeError):
         raise Fail(1, "the box's incantation store is not JSON")
+    if engine is not None and engine.get("error"):
+        warn(engine["error"])
     cfg.ensure_home()
     with flocked(os.path.join(cfg.home, "incantations.lock")):
-        write_incant_cache(cfg, store.get("version") or 0, rows, time.time())
-    return store, stale
+        write_incant_cache(cfg, store.get("version") or 0, rows, time.time(), engine=engine)
+    return dict(store, engine=engine), stale
 
 
 def note_incantations(cfg, put=(), drop=(), version=None):
@@ -2941,7 +2957,8 @@ def note_incantations(cfg, put=(), drop=(), version=None):
             data, age = cached
             gone = set(drop) | set(e.get("id") for e in put)
             rows = [e for e in data["incantations"] if e.get("id") not in gone] + list(put)
-            write_incant_cache(cfg, data.get("version") if version is None else version, rows, time.time() - age)
+            write_incant_cache(cfg, data.get("version") if version is None else version, rows, time.time() - age,
+                               engine=data.get("engine"))
     except OSError as e:
         warn("incantations.json not written: %s" % e)
 
@@ -3063,9 +3080,13 @@ def incant_bound(cfg, name):
     if name in ("edit", "stop") or name.startswith("incantation_"):
         raise Fail(2, "action=%s: an incantation fires an action that does something in the game, not %s" % (name, name))
     try:
-        return action_class(cfg, name)
+        got = action_class(cfg, name)
     except Fail as f:
         raise Fail(2, "action=%s: %s" % (name, f.msg))
+    if got[0].engine_op(got[2]):
+        raise Fail(2, "action=%s: an incantation fires an action with a script; a phrase that casts an engine "
+                      "ability is bound with engine_bind" % name)
+    return got
 
 
 def incant_deploy(cfg, a, home, folders):
@@ -3197,13 +3218,18 @@ def run_incantation(cfg, a, name, given, as_=None, task=None):
     if call is not None:
         call["dropped"] = dropped   # what the code left out of the model's, for whoever looks
     rows = store["incantations"]
-    notes += incant_warnings(inc, phrase, aliases, players, rows)
+    bound = [e for e in ((store.get("engine") or {}).get("incantations") or []) if isinstance(e, dict)]
+    notes += incant_warnings(inc, phrase, aliases, players, rows + bound)
     if everyday:
         notes.append('"%s" is everyday talk, so it will fire whenever it is said in conversation.' % phrase)
     for p in players:
         old = incant_find(inc, rows, p, phrase)
         if old:
             notes.append('replaces %s "%s", which fired %s' % (incant_whose(old["player"]), phrase, old.get("action")))
+        for e in bound:
+            if inc.normalize(e.get("phrase") or "") == phrase and (p == "@a" or inc.applies_to(e, p)):
+                notes.append('%s "%s" casts the engine ability %s too: engine_unbind takes that one away'
+                             % (incant_whose(e.get("player")), phrase, e.get("ability")))
     if stale:
         incant_deploy(cfg, a, home, folders)
     stored = dict(checked.values, **dict((k, "") for k in caster))
@@ -3412,34 +3438,1081 @@ def incant_line(e, acts):
 
 def cmd_incantation(cfg, a):
     """vfg incantation list [--player P] [--json] [--fresh]: from the cache while it is younger
-    than VFG_INCANT_TTL_S, else fetched; a failed fetch with any cache prints it, warns, exits 0."""
+    than VFG_INCANT_TTL_S, else fetched; a failed fetch with any cache prints it, warns, exits 0.
+    The engine's bindings are listed with the action incantations, each marked as the engine's
+    (`"engine": true` and its `ability`, in --json): a phrase that casts an engine ability."""
     if a.player is not None and not PLAYER_RE.match(a.player):
         raise Fail(2, "--player must be a player name (letters, digits, _; at most 16)")
     cached = read_incant_cache(cfg)
     if cached is not None and not a.fresh and 0 <= cached[1] < incant_ttl(cfg):
-        rows = cached[0]["incantations"]
+        data = cached[0]
     else:
         try:
-            rows = fetch_incantations(cfg, a)[0]["incantations"]
+            store = fetch_incantations(cfg, a)[0]
+            data = {"incantations": store["incantations"], "engine": store.get("engine")}
         except Fail as f:
             if cached is None:
                 raise
             warn("incantations from %d s ago: %s" % (max(0, round(cached[1])), f.msg))
-            rows = cached[0]["incantations"]
-    rows = [e for e in rows if isinstance(e, dict)]
+            data = cached[0]
+    rows = [e for e in data["incantations"] if isinstance(e, dict)]
+    rows += [dict(e, engine=True) for e in ((data.get("engine") or {}).get("incantations") or []) if isinstance(e, dict)]
     if a.player is not None:
         inc = incantations_module()
         rows = [e for e in rows if inc.applies_to(e, a.player)]
-    rows.sort(key=lambda e: (e.get("player") == "@a", str(e.get("player") or "").lower(), e.get("phrase") or ""))
-    acts = actions_cache(cfg).get("actions") or {}
+    rows.sort(key=lambda e: (e.get("player") == "@a", str(e.get("player") or "").lower(), e.get("phrase") or "",
+                             bool(e.get("engine"))))
+    acts = (actions_cache(cfg).get("actions") or {}) if any(not e.get("engine") for e in rows) else {}
     if a.json:
-        out(json.dumps([{"player": e.get("player"), "phrase": e.get("phrase"), "action": e.get("action"),
+        out(json.dumps([{"player": e.get("player"), "phrase": e.get("phrase"), "action": None, "engine": True,
+                         "ability": e.get("ability"), "values": {}, "cooldown_s": e.get("cooldown_s"),
+                         "aliases": e.get("aliases") or [], "everyday_aliases": e.get("everyday_aliases") or []}
+                        if e.get("engine") else
+                        {"player": e.get("player"), "phrase": e.get("phrase"), "action": e.get("action"),
                          "values": incant_shown(e, acts), "cooldown_s": e.get("cooldown_s"),
                          "aliases": e.get("aliases") or [], "everyday_aliases": e.get("everyday_aliases") or []}
                         for e in rows], ensure_ascii=False))
     else:
-        out("\n".join(incant_line(e, acts) for e in rows) if rows else "none")
+        out("\n".join(engine_incant_line(e) if e.get("engine") else incant_line(e, acts) for e in rows)
+            if rows else "none")
     return 0
+
+
+# ------------------------------------------------------------------- engine
+
+# The game engine (Specs/2026-10-12-Prototype_Game_Engine): one process on the box, vfg-engine, that
+# runs the abilities, items, marks, actors and scenarios written as Python classes. vfg reaches it
+# through its control ops (grant, give, start, bind, reload ...: the build's design, THE CONTROL OPS),
+# which remote/engine.py sends to its control socket, <vfg>/engine/engine.sock, one JSON line in and
+# one out; every reply is {"ok": true|false, "error"?: why, ...}. `vfg engine <op>` prints a reply in
+# words, or with --json as it came; the engine's menu actions (actions/engine_*.py, each naming its
+# op in `engine`) come here through `vfg action run` (run_engine_action), so the brain runs them as
+# any action.
+# Exit 0 when the engine did it, 1 when it refused (its error on stderr), 2 bad arguments, 4 no
+# answer in time (it may still do it), 6 the engine not running.
+#
+# Content classes are written on this PC, in made/<server>/content/<file>.py, and deployed whole to
+# <vfg>/made/<server>/content/ by `engine reload`, `config set` and `config undo` (remote/engine.py,
+# swapped in under the box's deploy lock as a script's folder is), then reloaded there: the engine
+# runs every check before anything switches, and a class that fails one leaves the old one running.
+#
+# The brain changes a class's numbers by rewriting its Config ("One version for everyone, rewritten
+# by the brain"): `config get` shows it as written, with its file and lines; `config set` takes the
+# whole new Config class on stdin, and the engine's rewrite.py (standard library only, imported here
+# by its path) splices it into exactly the old one's lines and runs the static checks (it parses,
+# the same fields, nothing outside the Config changed). Then the file is deployed and reloaded, the
+# engine's full checks among it; when the box refuses, the PC file is put back and deployed again,
+# and the engine's error is the answer. Every change keeps the file as it was, in
+# made/<server>/content/.history/<file>/ (a deploy skips dot folders), and logs it there
+# (log.jsonl), so `config undo` puts that class's last Config back; an undone version moves to
+# undone/ beside them, so the next undo goes one further back.
+ENGINE_DOWN = 6               # vfg's exit when the engine is not running
+ENGINE_TIMEOUT_S = 10.0       # an op's answer: the engine takes it in its next tick
+ENGINE_RELOAD_S = 120.0       # a reload's: the engine's every check of each class it reloads (its own default)
+ENGINE_CONFIG_S = 60.0        # a Config's reload, inside the brain's loop of 120 s
+ENGINE_KINDS = ("ability", "item", "mark", "actor", "scenario")
+ENGINE_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}\Z")             # a class's id: fireball, fire_staff
+ENGINE_CLASS_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}\Z")   # an id, or a class's name: Fireball
+ENGINE_FILE_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}\Z")        # a content file's stem
+ENGINE_INSTANCE_RE = re.compile(r"^[A-Za-z0-9_.:@#-]{1,96}\Z")   # ability:fireball#12
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\Z")
+REWRITE = os.path.join(os.path.dirname(HERE), "engine", "vfg_engine", "rewrite.py")
+_REWRITE = []
+
+
+def engine_remote(cfg, a, args, timeout):
+    """remote/engine.py, in one SSH call: the JSON object it prints. A box that cannot be reached
+    raises as every call does; one that answers is read by the caller (engine_faults)."""
+    rc, o, e = remote(cfg, a, "engine.py", args, timeout + 30)
+    if rc != 0:
+        finish(rc, b"", e)  # raises Fail with the remote's one line
+    try:
+        got = json.loads(o.decode("utf-8").strip().splitlines()[-1])
+        if not isinstance(got, dict) or not isinstance(got.get("replies"), list):
+            raise TypeError
+    except (ValueError, IndexError, TypeError):
+        raise Fail(1, "remote/engine.py answered something that is not its JSON")
+    return got
+
+
+def engine_faults(got, done=""):
+    """Fail 6 when the engine is not running, 4 when it took a request and did not answer in time;
+    `done` says what happened before it (a deploy)."""
+    for key, code in (("down", ENGINE_DOWN), ("timeout", 4)):
+        if got.get(key):
+            raise Fail(code, (done + ", but " if done else "") + got[key])
+
+
+def engine_ask(cfg, a, requests, timeout=ENGINE_TIMEOUT_S, store=False):
+    """The engine's reply to each of `requests` ([(op, args)]), in order, in one SSH call; with
+    `store`, the action incantations' store too (got["store"]). Fail 6 or 4 as engine_faults."""
+    got = engine_remote(cfg, a, {"op": "ask", "requests": [{"op": op, "args": args} for op, args in requests],
+                                 "timeout": timeout, "store": bool(store)}, timeout * max(1, len(requests)))
+    engine_faults(got)
+    if len(got["replies"]) != len(requests):
+        raise Fail(1, "the engine answered %d of %d requests" % (len(got["replies"]), len(requests)))
+    return got
+
+
+def engine_one(cfg, a, op, args, timeout=ENGINE_TIMEOUT_S):
+    """One control op: the engine's reply, refused or not."""
+    return engine_ask(cfg, a, [(op, args)], timeout)["replies"][0]
+
+
+def engine_error(reply):
+    return str(reply.get("error") or "").strip() or "the engine refused it and said no more"
+
+
+def engine_show(a, reply, text):
+    """A reply, with --json as it came, else `text` (words, or a function of the reply that gives
+    them); a refusal exits 1 with the engine's error."""
+    if getattr(a, "json", False):
+        out(json.dumps(reply, ensure_ascii=False))
+    elif reply.get("ok"):
+        out(text(reply) if callable(text) else text)
+    if not reply.get("ok"):
+        raise Fail(1, engine_error(reply))
+    return 0
+
+
+def engine_when(x):
+    """A time the engine gave: epoch seconds as ISO UTC, anything else as it is."""
+    if isinstance(x, (int, float)) and not isinstance(x, bool) and x > 1e9:
+        return now_iso(float(x))
+    return "" if x is None else str(x)
+
+
+def engine_count(x):
+    """A count the engine gave: a number; a list, its length and its items; a dict of counts by
+    kind, their sum and each (`3: ability 2, item 1`)."""
+    if isinstance(x, dict):
+        counts = dict((k, v) for k, v in x.items() if isinstance(v, int) and not isinstance(v, bool))
+        return "%d%s" % (sum(counts.values()), ": " + ", ".join("%s %d" % kv for kv in sorted(counts.items()))
+                         if counts else "")
+    if isinstance(x, list):
+        names = [str(v.get("instance") or v.get("id") or v) if isinstance(v, dict) else str(v) for v in x]
+        return "%d%s" % (len(names), ": " + ", ".join(names) if names else "")
+    return x
+
+
+def engine_cell(x):
+    """One value in a table: a whole number bare, a number to 4 places, a list joined, none as -."""
+    if x is None or x == "":
+        return "-"
+    if isinstance(x, bool):
+        return "true" if x else "false"
+    if isinstance(x, float):
+        return fmt_s(round(x, 4))
+    if isinstance(x, (list, tuple)):
+        return ",".join(engine_cell(v) for v in x) or "-"
+    if isinstance(x, dict):
+        return json.dumps(x, ensure_ascii=False, separators=(",", ":"))
+    return one_line(x, 120)
+
+
+def engine_table(rows, columns):
+    """Rows of dicts as aligned columns, a header first."""
+    cells = [[engine_cell(r.get(c)) for c in columns] for r in rows]
+    widths = [max([len(c)] + [len(row[i]) for row in cells]) for i, c in enumerate(columns)]
+    lines = ["  ".join(c.ljust(w) for c, w in zip(columns, widths)).rstrip()]
+    lines += ["  ".join(v.ljust(w) for v, w in zip(row, widths)).rstrip() for row in cells]
+    return "\n".join(lines)
+
+
+def engine_file(cfg, path):
+    """A file the engine named, from <vfg>/: made/main/content/fireball.py."""
+    path = str(path or "")
+    return path[len(cfg.rvfg) + 1:] if path.startswith(cfg.rvfg + "/") else path
+
+
+def engine_status_text(r):
+    ms = r.get("tick_ms")
+    if isinstance(ms, dict):
+        ms = "p50 %s ms, p95 %s ms" % (engine_cell(ms.get("p50")), engine_cell(ms.get("p95")))
+    elif isinstance(ms, (list, tuple)) and len(ms) == 2:
+        ms = "p50 %s ms, p95 %s ms" % tuple(engine_cell(x) for x in ms)
+    elif ms is not None:
+        ms = "%s ms" % engine_cell(ms)
+    tick = "%s" % engine_cell(r.get("tick"))
+    if r.get("tick_hz"):
+        tick += " at %s a second" % engine_cell(r.get("tick_hz"))
+    if ms:
+        tick += "; " + ms
+    since = engine_when(r.get("started_at"))
+    rows = [("engine", "running" + (" since " + since if since else "")), ("tick", tick)]
+    rows += [(k, engine_cell(engine_count(r.get(k)))) for k in ("players", "instances", "classes", "slow", "orphans")
+             if k in r]
+    return "\n".join("%-11s%s" % row for row in rows)
+
+
+def engine_classes_text(cfg, r):
+    rows = [c for c in r.get("classes") or [] if isinstance(c, dict)]
+    if not rows:
+        return "none"
+    order = dict((k, i) for i, k in enumerate(ENGINE_KINDS))
+    rows.sort(key=lambda c: (order.get(c.get("kind"), len(order)), str(c.get("id"))))
+    width = max(len(str(c.get("id") or "")) for c in rows)
+    return "\n".join(("%-9s %-*s  %s" % (c.get("kind") or "?", width, c.get("id") or "?",
+                                         one_line(c.get("summary") or "(no summary)", 120))).rstrip()
+                     + ("  (%s)" % engine_file(cfg, c.get("file")) if c.get("file") else "") for c in rows)
+
+
+def engine_meta_row(x):
+    """One class's meta row, flat: its kind and id, its damage at power 0, 10 and 20, its required
+    fields (the summary apart), then its own fields as `name=value`."""
+    if not any(isinstance(x.get(k), dict) for k in ("required", "damage", "fields")):
+        return x
+    out = {"kind": x.get("kind"), "id": x.get("id")}
+    damage = x.get("damage") if isinstance(x.get("damage"), dict) else {}
+    for power in ("0", "10", "20"):
+        out["damage@" + power] = damage.get(power)
+    for k, v in (x.get("required") or {}).items():
+        if k not in ("summary", "damage"):
+            out[k] = v
+    own = x.get("fields") if isinstance(x.get("fields"), dict) else {}
+    out["own"] = " ".join("%s=%s" % (k, engine_cell(v)) for k, v in own.items()) or None
+    return out
+
+
+def engine_meta_text(r):
+    """`engine meta`: every class as one table (the spec: the required fields, damage at power 0,
+    10 and 20, then the class's own fields)."""
+    rows = r.get("rows") or []
+    if not rows:
+        return "none"
+    if all(isinstance(x, dict) for x in rows):
+        rows = [engine_meta_row(x) for x in rows]
+        columns = []
+        for x in rows:
+            columns += [k for k in x if k not in columns and k != "own"]
+        if any("own" in x for x in rows):
+            columns.append("own")
+        return engine_table(rows, columns)
+    return "\n".join("  ".join(engine_cell(v) for v in x) if isinstance(x, (list, tuple)) else engine_cell(x)
+                     for x in rows)
+
+
+def engine_world_text(r):
+    """Every world setting a holder holds: its value, what it was, and who holds what."""
+    lines = []
+    for s in r.get("settings") or []:
+        if not isinstance(s, dict):
+            continue
+        lines.append("%s = %s (it was %s)" % (s.get("name"), engine_cell(s.get("value")),
+                                              engine_cell(s.get("original"))))
+        for h in s.get("holds") or []:
+            if isinstance(h, dict):
+                lines.append("  held by %s: %s at priority %s since %s" % (
+                    h.get("holder"), engine_cell(h.get("value")), engine_cell(h.get("priority")),
+                    engine_when(h.get("since")) or "-"))
+    return "\n".join(lines) or "no world setting is held"
+
+
+def engine_instances_text(r):
+    rows = [dict(i, started=engine_when(i.get("started")), ends=engine_when(i.get("ends")))
+            for i in r.get("instances") or [] if isinstance(i, dict)]
+    return engine_table(rows, ["instance", "kind", "id", "user", "started", "ends"]) if rows else "none"
+
+
+def engine_log_text(r):
+    """The engine's log lines: one it gave as {"t", "level", "msg", ...} as `<time> <level> <msg>`
+    and its other fields as JSON; text as it is."""
+    lines = []
+    for x in r.get("lines") or []:
+        if isinstance(x, dict) and "msg" in x:
+            more = dict((k, v) for k, v in x.items() if k not in ("t", "at", "level", "msg"))
+            lines.append(" ".join(str(b) for b in (engine_when(x.get("t", x.get("at"))), x.get("level") or "",
+                                                    x["msg"], json.dumps(more, ensure_ascii=False) if more else "")
+                                  if b).strip())
+        else:
+            lines.append(x if isinstance(x, str) else json.dumps(x, ensure_ascii=False))
+    return "\n".join(lines) or "the log is empty"
+
+
+def engine_incant_line(e):
+    """`Steve: "fire ball" → ability fireball (engine) cooldown 5s; aliases fireball, fire bowl`."""
+    text = '%s: "%s" → ability %s (engine)' % (e.get("player"), e.get("phrase"), e.get("ability"))
+    cd = e.get("cooldown_s")
+    if isinstance(cd, (int, float)) and not isinstance(cd, bool):
+        text += " cooldown %ss" % fmt_s(float(cd))
+    text += "; " + ("aliases " + ", ".join(e["aliases"]) if e.get("aliases") else "no aliases")
+    if e.get("everyday_aliases"):
+        text += "; everyday, not spotted: " + ", ".join(e["everyday_aliases"])
+    return text
+
+
+def engine_said(op, args, reply):
+    """What a done op did, in words: `granted fireball to Steve`."""
+    who = args.get("who") or args.get("player") or ""
+    if op == "grant":
+        note = reply.get("note")
+        return "granted %s to %s%s" % (args["ability"], who, " (%s)" % note if note else "")
+    if op == "revoke":
+        return "took %s away from %s" % (args["ability"], who)
+    if op == "give":
+        return "gave %s %s" % (who, args["item"])
+    if op == "take":
+        return "took every %s from %s" % (args["item"], who)
+    if op == "apply":
+        return "put %s on %s%s" % (args["mark"], who,
+                                   " for %s s" % fmt_s(args["seconds"]) if args.get("seconds") else "")
+    if op == "clear":
+        return "took %s off %s" % (args["mark"], who)
+    if op == "start":
+        return "started %s%s" % (args["scenario"], " as %s" % reply["instance"] if reply.get("instance") else "")
+    if op == "stop":
+        what = args.get("instance") or args.get("scenario")
+        got = reply.get("stopped") if reply.get("stopped") is not None else reply.get("instance")
+        got = [got] if isinstance(got, str) else list(got or [])
+        return "stopped %s%s" % (what, " (%s)" % ", ".join(str(g) for g in got) if got and got != [what] else "")
+    if op == "spawn":
+        return "spawned %s%s" % (args["actor"], " as %s" % reply["uuid"] if reply.get("uuid") else "")
+    if op == "unbind":
+        return 'removed %s\'s incantation "%s"' % (who, args["phrase"])
+    return "%s: done" % op
+
+
+def engine_id(x, what):
+    """An id the engine names a class by, or exit 2."""
+    if not isinstance(x, str) or not ENGINE_ID_RE.match(x):
+        shown = x if isinstance(x, str) and x.isprintable() else repr(x)
+        raise Fail(2, "%s %s is not an engine class's name (a-z, 0-9 and _, starting with a letter), like "
+                      "fireball — vfg engine classes" % (what, shown))
+    return x
+
+
+def engine_who(x):
+    """A player's name or an actor's uuid, or exit 2."""
+    if not isinstance(x, str) or not (PLAYER_RE.match(x) or UUID_RE.match(x)):
+        raise Fail(2, "%r is not a player's name or an actor's uuid" % (x,))
+    return x
+
+
+def engine_player(x):
+    if not isinstance(x, str) or not PLAYER_RE.match(x):
+        raise Fail(2, "%r is not one player's name (letters, digits, _; at most 16): engine bindings, grants and "
+                      "gives are per player, never @a" % (x,))
+    return x
+
+
+def engine_words(words):
+    """`key=value` words as a scenario's args: each value JSON when it reads as JSON, else its text."""
+    out = {}
+    for w in words or []:
+        k, eq, v = w.partition("=")
+        if not eq or not KEY_RE.match(k):
+            raise Fail(2, "%r is not key=value" % w)
+        if k in out:
+            raise Fail(2, "%s is given twice" % k)
+        out[k] = incant_word(v)
+    return out
+
+
+def cmd_engine(cfg, a):
+    """vfg engine <op>: one of the engine's control ops, in words or with --json as it came."""
+    op = a.op
+    if op == "config":
+        return cmd_engine_config(cfg, a)
+    if op == "reload":
+        return cmd_engine_reload(cfg, a)
+    if op == "bind":
+        if a.by is not None:
+            check_task(a.by, "--by")
+        reply, said, notes, _ = engine_bind(cfg, a, a.player, a.phrase, a.ability, by=a.by or "")
+        for n in notes if reply.get("ok") else ():   # a failure is one line on stderr
+            warn(n)
+        return engine_show(a, reply, said)
+    if op == "status":
+        return engine_show(a, engine_one(cfg, a, "status", {}), engine_status_text)
+    if op == "classes":
+        return engine_show(a, engine_one(cfg, a, "classes", {}), lambda r: engine_classes_text(cfg, r))
+    if op == "overview":
+        return engine_show(a, engine_overview(cfg, a), lambda r: "%s\n\n%s" % (
+            engine_classes_text(cfg, r), engine_instances_text(r)))
+    if op == "meta":
+        args = {"id": engine_id(a.id, "meta")} if a.id else {}
+        return engine_show(a, engine_one(cfg, a, "meta", args), engine_meta_text)
+    if op == "world":
+        return engine_show(a, engine_one(cfg, a, "world", {}), engine_world_text)
+    if op == "instances":
+        args = {}
+        if a.kind:
+            if a.kind not in ENGINE_KINDS:
+                raise Fail(2, "--kind is one of %s" % ", ".join(ENGINE_KINDS))
+            args["kind"] = a.kind
+        if a.user:
+            args["user"] = engine_who(a.user)
+        return engine_show(a, engine_one(cfg, a, "instances", args), engine_instances_text)
+    if op == "log":
+        if not 1 <= a.n <= 1000:
+            raise Fail(2, "-n is 1 to 1000")
+        return engine_show(a, engine_one(cfg, a, "log", {"n": a.n}), engine_log_text)
+    if op == "incantations":
+        args = {"player": engine_player(a.player)} if a.player else {}
+        return engine_show(a, engine_one(cfg, a, "incantations", args),
+                           lambda r: "\n".join(engine_incant_line(e) for e in r.get("incantations") or []
+                                               if isinstance(e, dict)) or "none")
+    args = engine_args(op, a)
+    reply = engine_one(cfg, a, op, args)
+    if reply.get("ok") and op == "unbind":
+        note_engine_incantations(cfg, drop=[(args["player"], args["phrase"])], version=reply.get("version"))
+    return engine_show(a, reply, lambda r: engine_said(op, args, r))
+
+
+def engine_overview(cfg, a):
+    """`engine overview`: the classes and the instances in one SSH call, {"ok", "classes",
+    "instances"}, what the brain's world shows of the engine. One the engine refused leaves its
+    key out and says so in `error`, the other kept."""
+    classes, instances = engine_ask(cfg, a, [("classes", {}), ("instances", {})])["replies"]
+    got, errors = {"ok": True}, []
+    for key, reply in (("classes", classes), ("instances", instances)):
+        if reply.get("ok") and isinstance(reply.get(key), list):
+            got[key] = reply[key]
+        else:
+            errors.append("%s: %s" % (key, engine_error(reply)))
+    if errors:
+        got.update(ok=False, error="; ".join(errors))
+    return got
+
+
+def engine_args(op, a):
+    """The args of grant, revoke, give, take, apply, clear, start, stop, spawn and unbind, from
+    the command line, checked."""
+    if op in ("grant", "revoke"):
+        return {"who": engine_who(a.who), "ability": engine_id(a.ability, "ability")}
+    if op in ("give", "take"):
+        args = {"player": engine_player(a.player), "item": engine_id(a.item, "item")}
+        if op == "give" and a.base:
+            if not re.match(r"^(minecraft:)?[a-z0-9_]{1,64}\Z", a.base):
+                raise Fail(2, "--base %s is not an item id, like carrot_on_a_stick" % a.base)
+            args["base"] = a.base
+        return args
+    if op in ("apply", "clear"):
+        args = {"who": engine_who(a.who), "mark": engine_id(a.mark, "mark")}
+        if op == "apply" and a.seconds is not None:
+            if not (0 < a.seconds <= 86400) or math.isnan(a.seconds):
+                raise Fail(2, "--seconds is more than 0, at most a day (86400)")
+            args["seconds"] = a.seconds
+        return args
+    if op == "start":
+        args = {"scenario": engine_id(a.scenario, "scenario")}
+        given = engine_words(a.args)
+        if given:
+            args["args"] = given
+        return args
+    if op == "stop":
+        if bool(a.scenario) == bool(a.instance):
+            raise Fail(2, "stop what? a scenario's name, or --instance <instance> — vfg engine instances")
+        if a.instance:
+            if not ENGINE_INSTANCE_RE.match(a.instance):
+                raise Fail(2, "--instance %r is not an instance's name — vfg engine instances" % a.instance)
+            return {"instance": a.instance}
+        return {"scenario": engine_id(a.scenario, "scenario")}
+    if op == "spawn":
+        args = {"actor": engine_id(a.actor, "actor")}
+        if a.at and a.near:
+            raise Fail(2, "--at or --near, not both")
+        if a.at:
+            try:
+                at = [float(x) for x in a.at]
+            except ValueError:
+                raise Fail(2, "--at takes three numbers: x y z")
+            if any(math.isnan(x) or math.isinf(x) for x in at):
+                raise Fail(2, "--at takes three numbers: x y z")
+            args["at"] = at
+        elif a.near:
+            args["near"] = engine_player(a.near)
+        return args
+    if op == "unbind":
+        try:
+            phrase = incantations_module().check_phrase(a.phrase)
+        except ValueError as e:
+            raise Fail(2, "phrase=%s: %s" % (a.phrase, e))
+        return {"player": engine_player(a.player), "phrase": phrase}
+    raise Fail(2, "unknown engine op %s" % op)
+
+
+# ---- incantations bound to an engine ability
+
+def engine_bind(cfg, a, player, phrase, ability, by=""):
+    """An engine binding: `phrase`, for one player, casts `ability` (the spec's Incantations: per
+    player, never @a). The same checks and aliases as an action incantation's (run_incantation):
+    the phrase normalised, the alias call (in a thread while one SSH call reads the engine's classes,
+    the player's engine bindings and abilities, and the action incantations' store), the code's
+    aliases and checks, the bind warnings against every other phrase of the player's, both kinds,
+    the everyday note, and one when the player has not been granted the ability; then the engine's
+    bind op. (the reply, its words, the notes, the facts: its id, and the
+    alias call's)."""
+    inc = incantations_module()
+    if not player:
+        raise Fail(2, "whose incantation? player=<the player who asked>: one player, never @a")
+    player = engine_player(player)
+    try:
+        phrase = inc.check_phrase(phrase)
+    except ValueError as e:
+        raise Fail(2, "phrase=%s: %s" % (phrase, e))
+    if not ability:
+        raise Fail(2, "which ability does it cast? ability=<its name under ENGINE> — vfg engine classes")
+    engine_id(ability, "ability")
+    import threading
+    answer = []
+    caller = threading.Thread(target=lambda: answer.append(incant_alias_call(cfg, phrase)), daemon=True)
+    caller.start()
+    got = engine_ask(cfg, a, [("classes", {}), ("incantations", {"player": player}),
+                              ("instances", {"kind": "ability", "user": player})], store=True)
+    classes, mine, granted = got["replies"]
+    if not classes.get("ok"):
+        return classes, "", [], {}
+    have = sorted(str(c.get("id")) for c in classes.get("classes") or [] if isinstance(c, dict)
+                  and c.get("kind") == "ability")
+    if ability not in have:
+        return {"ok": False, "error": "the engine has no ability %s (its abilities: %s) — vfg engine classes"
+                % (ability, ", ".join(have) or "none")}, "", [], {}
+    caller.join()
+    variants, marked, everyday, why, call = answer[0] if answer else (
+        [], [], False, "aliases from code only: the alias call failed", None)
+    notes = [why] if why else []
+    aliases, marks, dropped = incant_aliases(inc, phrase, variants, marked)
+    if call is not None:
+        call["dropped"] = dropped
+    bound = [e for e in (mine.get("incantations") or []) if isinstance(e, dict)] if mine.get("ok") else []
+    store = got.get("store") or {}
+    if store.get("error"):
+        notes.append("the action incantations were not checked against: %s" % store["error"])
+    actions_ = [e for e in store.get("incantations") or [] if isinstance(e, dict)]
+    notes += incant_warnings(inc, phrase, aliases, [player], actions_ + bound)
+    if everyday:
+        notes.append('"%s" is everyday talk, so it will fire whenever it is said in conversation.' % phrase)
+    if granted.get("ok") and not any(isinstance(i, dict) and i.get("id") == ability
+                                     for i in granted.get("instances") or []):
+        notes.append("%s does not have %s yet: saying it casts nothing until it is granted (engine_grant)"
+                     % (player, ability))
+    old = incant_find(inc, bound, player, phrase)
+    if old:
+        notes.append('replaces %s "%s", which cast %s' % (incant_whose(old.get("player") or player), phrase,
+                                                           old.get("ability")))
+    for e in actions_:
+        if inc.applies_to(e, player) and inc.normalize(e.get("phrase") or "") == phrase:
+            notes.append('%s "%s" fires the action %s too: incantation_remove takes that one away'
+                         % (incant_whose(e.get("player")), phrase, e.get("action")))
+    args = {"player": player, "phrase": phrase, "ability": ability, "aliases": aliases, "everyday_aliases": marks,
+            "by": by or ""}
+    reply = engine_one(cfg, a, "bind", args)
+    facts = {"alias_call": call} if call is not None else {}
+    if not reply.get("ok"):
+        return reply, "", notes, facts
+    # The binding as the engine stored it (its `entry`, the incantations op's row): its aliases as
+    # it kept them and the ability's cooldown; what was sent, for an engine whose reply has none.
+    entry = reply.get("entry") if isinstance(reply.get("entry"), dict) else {}
+    row = {"id": entry.get("id") or reply.get("id"), "player": entry.get("player") or player,
+           "phrase": entry.get("phrase") or phrase, "aliases": entry.get("aliases", aliases),
+           "everyday_aliases": entry.get("everyday_aliases", marks), "ability": entry.get("ability") or ability,
+           "cooldown_s": entry.get("cooldown_s")}
+    facts.update(id=row["id"], entry=row)
+    note_engine_incantations(cfg, put=[row], version=reply.get("version"))
+    said = '"%s" for %s now casts %s; %s' % (row["phrase"], row["player"], row["ability"],
+                                             "aliases " + ", ".join(row["aliases"]) if row["aliases"] else "no aliases")
+    return reply, said, notes, facts
+
+
+def note_engine_incantations(cfg, put=(), drop=(), version=None):
+    """An engine bind or unbind written through to the incantations cache's engine part, keeping
+    its age: the entries bound (by player and phrase), and the (player, phrase) pairs removed. No
+    cache: nothing to update (a few entries would pass for the whole store). A cache from before
+    the engine had any binding (its export not there yet) had none: a bind starts its list."""
+    def key(player, phrase):
+        return str(player or "").lower(), str(phrase or "")
+    try:
+        cfg.ensure_home()
+        with flocked(os.path.join(cfg.home, "incantations.lock")):
+            cached = read_incant_cache(cfg)
+            if cached is None:
+                return
+            data, age = cached
+            had = data.get("engine")
+            if not isinstance(had, dict):
+                if not put:
+                    return
+                had = {"version": 0, "incantations": []}
+            eng = dict(had, **({"version": version} if version is not None else {}))
+            gone = set(key(p, ph) for p, ph in drop) | set(key(e.get("player"), e.get("phrase")) for e in put)
+            eng["incantations"] = [e for e in eng.get("incantations") or []
+                                   if key(e.get("player"), e.get("phrase")) not in gone] + list(put)
+            write_incant_cache(cfg, data.get("version"), data["incantations"], time.time() - age, engine=eng)
+    except OSError as e:
+        warn("incantations.json not written: %s" % e)
+
+
+# ---- the menu's engine actions
+
+# The fields of an engine action whose op names them otherwise: grant's player is the op's who.
+ENGINE_ARGS = {"grant": {"player": "who"}, "revoke": {"player": "who"}}
+ENGINE_NEEDS = {
+    "grant": ("player", "ability"), "revoke": ("player", "ability"), "give": ("player", "item"),
+    "start": ("scenario",), "unbind": ("player", "phrase"),
+}
+
+
+def run_engine_action(cfg, a, name, va, cls, given, task=None):
+    """An engine action (actions/engine_*.py), as vfg action run runs it: its values checked as any
+    action's, then its op through the engine (bind with its aliases, config through the rewrite):
+    the one JSON line's dict, `copy` empty and `running` false, since the engine runs it."""
+    cfg.require_ssh()
+    op = va.engine_op(cls)
+    try:
+        checked = va.check_values(cls, given)
+    except ValueError as e:
+        raise Fail(2, str(e))
+    v, notes = checked.values, list(checked.notes)
+    if op == "bind":
+        reply, said, more, facts = engine_bind(cfg, a, v.get("player"), v.get("phrase"), v.get("ability"),
+                                               by=task or "")
+    elif op == "config":
+        reply, said, more, facts = engine_config_set(cfg, a, v.get("class_id"), v.get("config"), by=task)
+    else:
+        for k in ENGINE_NEEDS.get(op, ()):
+            if incant_blank(v.get(k)):
+                raise Fail(2, "%s needs %s=<%s>" % (name, k, "a player's name" if k == "player"
+                                                    else "its name under ENGINE"))
+        args = dict((ENGINE_ARGS.get(op, {}).get(k, k), x) for k, x in v.items() if not incant_blank(x))
+        if op == "stop" and len([k for k in ("scenario", "instance") if k in args]) != 1:
+            raise Fail(2, "engine_stop needs scenario=<its name> or instance=<its instance>, one of them")
+        if op == "unbind":
+            try:
+                args["phrase"] = incantations_module().check_phrase(args["phrase"])
+            except ValueError as e:
+                raise Fail(2, "phrase=%s: %s" % (args["phrase"], e))
+        reply = engine_one(cfg, a, op, args)
+        said = engine_said(op, args, reply) if reply.get("ok") else ""
+        more = []
+        facts = dict((k, x) for k, x in reply.items() if k not in ("ok", "error"))
+        if reply.get("ok") and op == "unbind":
+            note_engine_incantations(cfg, drop=[(args["player"], args["phrase"])], version=reply.get("version"))
+    line = {"ok": bool(reply.get("ok")), "copy": "", "action": name, "running": False, "summary": said,
+            "facts": facts, "notes": notes + more}
+    if not reply.get("ok"):
+        line["error"] = engine_error(reply)
+    return line
+
+
+# ---- content: the deploy and the reload
+
+def content_dir(cfg):
+    """made/<server>/content/ on this PC: where the engine's content classes are written."""
+    return os.path.join(cfg.repo, "made", server_name(cfg), "content")
+
+
+def content_rel(cfg, path):
+    """A path in content_dir, as made/<server>/content/<rel> shows it."""
+    return os.path.relpath(path, cfg.repo)
+
+
+def engine_deploy(cfg, a, reload_, timeout=ENGINE_RELOAD_S):
+    """made/<server>/content/ deployed whole to the box, then, with `reload_` (its files, by their
+    paths in the folder, or "all"), reloaded there: remote/engine.py's object, its "deployed" and
+    its "replies" (the reload's), with "down" or "timeout" when the engine did not answer."""
+    folder = content_dir(cfg)
+    if not os.path.isdir(folder):
+        raise Fail(1, "no made/%s/content/ in %s: nothing to deploy" % (server_name(cfg), tilde(cfg.repo)))
+    tar, _ = pack(cfg, ["content"], os.path.dirname(folder), defaults=False)
+    return engine_remote(cfg, a, {"op": "deploy", "server": server_name(cfg), "tar": tar, "reload": reload_,
+                                  "timeout": timeout}, timeout)
+
+
+def deployed_text(d):
+    if not isinstance(d, dict):
+        return "deployed nothing"
+    if not d.get("swapped"):
+        return "deployed %s: unchanged, %d files" % (d.get("folder"), d.get("files") or 0)
+    bits = []
+    if d.get("changed"):
+        bits.append("changed " + ", ".join(d["changed"]))
+    if d.get("removed"):
+        bits.append("removed " + ", ".join(d["removed"]))
+    return "deployed %s: %d files%s" % (d.get("folder"), d.get("files") or 0, "; " + "; ".join(bits) if bits else "")
+
+
+def reload_text(cfg, r):
+    """A reload's reply in words: what loaded, which check failed and why, how many instances
+    switched, which stopped."""
+    lines = ["loaded: " + (", ".join(str(x) for x in r.get("loaded") or []) or "nothing")]
+    for e in r.get("errors") or []:
+        if isinstance(e, dict):
+            lines.append("refused %s%s: %s failed: %s — the old version keeps running" % (
+                engine_file(cfg, e.get("file")) or "?", " (%s)" % e["class"] if e.get("class") else "",
+                e.get("check") or "a check", one_line(e.get("error") or "", 600)))
+        else:
+            lines.append("refused: %s" % one_line(e, 600))
+    switched = r.get("switched")
+    lines.append("switched: %s running instance%s" % (engine_cell(switched), "" if switched == 1 else "s"))
+    for s in r.get("stopped") or []:
+        if isinstance(s, dict):
+            lines.append("stopped %s: %s" % (s.get("instance"), one_line(s.get("reason") or "", 300)))
+    return "\n".join(lines)
+
+
+def problems_text(problems, most=400):
+    """Problems in one line: one as it is; several numbered, (1) …; (2) …, as a problem may hold a
+    semicolon of its own."""
+    texts = [one_line(p, most) for p in problems]
+    return texts[0] if len(texts) == 1 else "; ".join("(%d) %s" % (i + 1, t) for i, t in enumerate(texts))
+
+
+def reload_refused(r):
+    """Why a reload's reply is a refusal, or None: each check that failed and why (the engine's
+    reply says only how many in its error), else its error when it is not ok."""
+    errors = r.get("errors") or []
+    if errors:
+        return problems_text(["%s%s failed: %s" % ("%s's " % e["class"] if e.get("class") else "",
+                                                   e.get("check") or "a check", e.get("error") or "")
+                              if isinstance(e, dict) else e for e in errors], 600)
+    if not r.get("ok"):
+        return engine_error(r)
+    return None
+
+
+def cmd_engine_reload(cfg, a):
+    """vfg engine reload [id …]: made/<server>/content/ deployed, then those files reloaded (every
+    content dir when none is named): what loaded, what each failed check said, how many instances
+    switched and which stopped. Exit 1 when a check failed."""
+    folder = content_dir(cfg)
+    files = []
+    for x in a.ids:
+        if not ENGINE_FILE_RE.match(x):
+            raise Fail(2, "%r is not a content file's name: made/%s/content/<name>.py, like fireball"
+                       % (x, server_name(cfg)))
+        if not os.path.isfile(os.path.join(folder, x + ".py")):
+            raise Fail(2, "there is no made/%s/content/%s.py" % (server_name(cfg), x))
+        files.append(x + ".py")
+    got = engine_deploy(cfg, a, files or "all")
+    engine_faults(got, deployed_text(got.get("deployed")))
+    reply = got["replies"][0]
+    if a.json:
+        out(json.dumps(dict(reply, deployed=got.get("deployed")), ensure_ascii=False))
+    else:
+        out(deployed_text(got.get("deployed")))
+        if reply.get("ok") or "errors" in reply:
+            out(reload_text(cfg, reply))
+    why = reload_refused(reply)
+    if why:
+        raise Fail(1, why)
+    return 0
+
+
+# ---- a class's Config, rewritten
+
+def rewrite_module():
+    """engine/vfg_engine/rewrite.py, the engine's own (standard library only), loaded by its path
+    once: find_config(source, class_name), splice(source, class_name, new_config) and
+    static_checks(old_source, new_source, class_name)."""
+    if not _REWRITE:
+        import importlib.util
+        if not os.path.isfile(REWRITE):
+            raise Fail(3, "not configured: there is no engine/vfg_engine/rewrite.py beside this toolkit")
+        spec = importlib.util.spec_from_file_location("vfg_engine_rewrite", REWRITE)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = mod
+        spec.loader.exec_module(mod)
+        _REWRITE.append(mod)
+    return _REWRITE[0]
+
+
+def snake(name):
+    """FireStaff -> fire_staff, IceQueenBoss -> ice_queen_boss: a class's id when it sets none, as the
+    engine makes it (vfg_engine/content.py's snake)."""
+    s = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
+    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s).lower()
+
+
+def class_id(node):
+    """A content class's id as the engine gives it (vfg_engine/content.py): the `id = "…"` its body
+    sets (`id: ClassVar[str] = "…"` too), else its name in snake case."""
+    import ast
+    for b in node.body:
+        targets = b.targets if isinstance(b, ast.Assign) else [b.target] if isinstance(b, ast.AnnAssign) else []
+        if any(isinstance(t, ast.Name) and t.id == "id" for t in targets) \
+                and isinstance(b.value, ast.Constant) and isinstance(b.value.value, str):
+            return b.value.value
+    return snake(node.name)
+
+
+def content_class(source, wanted, line=None):
+    """The name of the class in `source` whose Config is `wanted`'s: the top-level class that holds
+    line `line` (where the engine says the Config is), else the one whose id (class_id) or name is
+    `wanted`, else the only one with a Config. None when none fits, or two do."""
+    import ast
+    try:
+        tree_ = ast.parse(source)
+    except SyntaxError:
+        return None
+    classes = [n for n in tree_.body if isinstance(n, ast.ClassDef)
+               and any(isinstance(b, ast.ClassDef) and b.name == "Config" for b in n.body)]
+    if line is not None:
+        for n in classes:
+            if n.lineno <= line <= (n.end_lineno or n.lineno):
+                return n.name
+    hits = [n.name for n in classes if class_id(n) == wanted or n.name == wanted]
+    if len(hits) == 1:
+        return hits[0]
+    return classes[0].name if len(classes) == 1 and not hits else None
+
+
+def config_lines(source, start, end):
+    """Lines start to end (1-based, both in) of `source`, as written."""
+    return "".join(source.splitlines(True)[start - 1:end])
+
+
+def fit_config(new, source, start):
+    """The new Config class indented as the old one is in `source` (line `start`), whatever
+    indentation it came with: its own dedented, then that indentation before each line that has
+    anything on it; one line end at the end."""
+    import textwrap
+    lines = source.splitlines()
+    first = lines[start - 1] if 0 < start <= len(lines) else ""
+    indent = first[:len(first) - len(first.lstrip())]
+    body = textwrap.dedent(new.expandtabs(4) if "\t" in new and "\t" not in indent else new).strip("\n")
+    return "".join((indent + l if l.strip() else "") + "\n" for l in body.split("\n"))
+
+
+class Target(object):
+    """A class's Config, found: where the engine runs it, and where it is written on this PC."""
+
+    def __init__(self, wanted, box, path, rel, source, name, start, end):
+        self.wanted, self.box, self.path, self.rel = wanted, box, path, rel
+        self.source, self.name, self.start, self.end = source, name, start, end
+
+    @property
+    def config(self):
+        return config_lines(self.source, self.start, self.end)
+
+
+def config_target(cfg, a, wanted):
+    """`wanted`'s Config: the engine says which file holds it (config_get), and this PC's copy of
+    that file, made/<server>/content/<file>, is read, its class found and the Config's lines in it
+    (rewrite.find_config). (Target, None), or (None, the engine's refusal as a reply)."""
+    if not isinstance(wanted, str) or not ENGINE_CLASS_RE.match(wanted):
+        raise Fail(2, "%r is not an engine class's name, like fireball — vfg engine classes" % (wanted,))
+    box = engine_one(cfg, a, "config_get", {"class": wanted})
+    if not box.get("ok"):
+        return None, box
+    root = "%s/made/%s/content/" % (cfg.rvfg, server_name(cfg))
+    where = str(box.get("file") or "")
+    if not where.startswith(root):
+        raise Fail(1, "%s's Config is in %s, not in made/%s/content/: only this server's content is rewritten "
+                      "here" % (wanted, engine_file(cfg, where) or "a file the engine did not name",
+                                server_name(cfg)))
+    rel = where[len(root):]
+    path = os.path.join(content_dir(cfg), *rel.split("/"))
+    try:
+        source = read_text(path)
+    except OSError as e:
+        raise Fail(1, "the engine runs %s from %s, which this PC does not have (%s): vfg made restore, or write it "
+                      "there" % (wanted, content_rel(cfg, path), e.strerror or e))
+    start = box.get("start") if isinstance(box.get("start"), int) else None
+    same = isinstance(box.get("source"), str) and start is not None and \
+        config_lines(source, start, box.get("end") or start) == box["source"]
+    # The engine names the class (config_get's "class"); else it is found in the file.
+    name = box.get("class") if isinstance(box.get("class"), str) and ENGINE_CLASS_RE.match(box["class"]) \
+        else content_class(source, wanted, start if same else None)
+    if name is None:
+        raise Fail(1, "no class in %s holds %s's Config" % (content_rel(cfg, path), wanted))
+    try:
+        s, e = rewrite_module().find_config(source, name)
+    except (ValueError, SyntaxError, LookupError) as err:
+        raise Fail(1, "%s: %s's Config cannot be found: %s" % (content_rel(cfg, path), name, err))
+    return Target(wanted, box, path, rel, source, name, s, e), None
+
+
+def history_dir(cfg):
+    return os.path.join(content_dir(cfg), ".history")
+
+
+def keep_version(cfg, t):
+    """The file as it is before a change to `t`'s Config, kept: .history/<file>/<time>-<Class>.py."""
+    folder = os.path.join(history_dir(cfg), *os.path.splitext(t.rel)[0].split("/"))
+    os.makedirs(folder, exist_ok=True)
+    d = datetime.now(timezone.utc)
+    path = os.path.join(folder, "%s-%06d-%s.py" % (d.strftime("%Y%m%d-%H%M%S"), d.microsecond, t.name))
+    atomic_write(path, t.source, 0o644)
+    return path
+
+
+def kept_versions(cfg, t):
+    """The kept versions of the file `t` is in, holding a change of `t`'s class, oldest first."""
+    folder = os.path.join(history_dir(cfg), *os.path.splitext(t.rel)[0].split("/"))
+    try:
+        names = sorted(n for n in os.listdir(folder) if n.endswith("-%s.py" % t.name))
+    except OSError:
+        return []
+    return [os.path.join(folder, n) for n in names]
+
+
+def history_log(cfg, row):
+    """One line of .history/log.jsonl: every change, and every one refused."""
+    try:
+        os.makedirs(history_dir(cfg), exist_ok=True)
+        append_line(os.path.join(history_dir(cfg), "log.jsonl"), json.dumps(dict({"at": now_iso()}, **row),
+                                                                            ensure_ascii=False) + "\n", 0o644)
+    except OSError as e:
+        warn("the content history's log not written: %s" % e)
+
+
+def engine_change(cfg, a, t, new_source, how, by=None, kept=None):
+    """`t`'s file as `new_source` on this PC, deployed and reloaded; when the box refuses it, or does
+    not answer, the file put back as it was and deployed again, and the refusal returned: (the
+    reply, ok with the reload's, or a refusal; notes)."""
+    notes = []
+    atomic_write(t.path, new_source, 0o644)
+
+    def put_back(why, code=None, reload_old=False):
+        atomic_write(t.path, t.source, 0o644)
+        if kept:
+            try:
+                os.remove(kept)
+            except OSError:
+                pass
+        history_log(cfg, {"op": how, "class": t.wanted, "class_name": t.name, "file": content_rel(cfg, t.path),
+                          "ok": False, "error": why, "by": by})
+        said = "%s; %s is put back on this PC as it was" % (why, content_rel(cfg, t.path))
+        try:
+            again = engine_deploy(cfg, a, [t.rel] if reload_old else None, ENGINE_CONFIG_S)
+            if reload_old:
+                engine_faults(again)
+            said += ", and on the box: the old version keeps running"
+        except Fail as f:
+            said += ", but could not be deployed again (%s): vfg engine reload %s deploys it" % (
+                f.msg, os.path.splitext(t.rel)[0])
+        if code is not None:
+            raise Fail(code, said)
+        return {"ok": False, "error": said}
+
+    try:
+        got = engine_deploy(cfg, a, [t.rel], ENGINE_CONFIG_S)
+    except Fail as f:
+        return put_back("the deploy failed (%s)" % f.msg, f.code), notes
+    if got.get("down"):
+        return put_back("deployed, but %s" % got["down"], ENGINE_DOWN), notes
+    if got.get("timeout"):
+        return put_back("deployed, but %s" % got["timeout"], 4, reload_old=True), notes
+    reply = got["replies"][0]
+    why = reload_refused(reply)
+    if why:
+        return put_back("the engine refused %s's new Config: %s" % (t.wanted, why)), notes
+    history_log(cfg, {"op": how, "class": t.wanted, "class_name": t.name, "file": content_rel(cfg, t.path),
+                      "ok": True, "kept": os.path.relpath(kept, content_dir(cfg)) if kept else None, "by": by})
+    return dict(reply, deployed=got.get("deployed")), notes
+
+
+def config_said(t, reply, what):
+    switched = reply.get("switched")
+    bits = ["%s for everyone" % what]
+    if isinstance(switched, int):
+        bits.append("%d running instance%s switched" % (switched, "" if switched == 1 else "s"))
+    stopped = [s.get("instance") for s in reply.get("stopped") or [] if isinstance(s, dict)]
+    if stopped:
+        bits.append("stopped: " + ", ".join(str(s) for s in stopped))
+    return "; ".join(bits)
+
+
+def engine_config_set(cfg, a, wanted, new_config, by=None):
+    """`config set`: the whole new Config class of `wanted` spliced into its file on this PC in
+    place of the old one (rewrite.splice), the static checks run (rewrite.static_checks), the old
+    file kept, then deployed and reloaded (engine_change). (the reply, its words, notes, facts);
+    a refusal is a reply whose ok is false, its error the check's or the engine's, and nothing changed."""
+    if not isinstance(new_config, str) or not new_config.strip():
+        raise Fail(2, "the new Config is empty: the whole class Config, as Python, from its class Config line on")
+    cfg.ensure_home()
+    with flocked(os.path.join(cfg.home, "engine.lock")):
+        t, refused = config_target(cfg, a, wanted)
+        if refused is not None:
+            return refused, "", [], {}
+        rw = rewrite_module()
+        try:
+            new_source = rw.splice(t.source, t.name, fit_config(new_config, t.source, t.start))
+        except (ValueError, SyntaxError, LookupError) as e:
+            return {"ok": False, "error": "%s's new Config could not be put in place: %s; nothing changed"
+                    % (wanted, one_line(e, 600))}, "", [], {}
+        problems = rw.static_checks(t.source, new_source, t.name)
+        if problems:
+            history_log(cfg, {"op": "set", "class": wanted, "class_name": t.name, "file": content_rel(cfg, t.path),
+                              "ok": False, "error": problems_text(problems), "by": by})
+            return {"ok": False, "error": "%s's new Config was refused before it was sent: %s; nothing changed, the "
+                    "old version keeps running" % (wanted, problems_text(problems))}, "", [], {}
+        if new_source == t.source:
+            return {"ok": True, "changed": []}, "%s's Config is already as written: nothing changed" % wanted, [], \
+                {"changed": []}
+        kept = keep_version(cfg, t)
+        reply, notes = engine_change(cfg, a, t, new_source, "set", by, kept)
+    if not reply.get("ok"):
+        return reply, "", notes, {}
+    facts = dict((k, reply.get(k)) for k in ("loaded", "switched", "stopped", "errors") if k in reply)
+    facts.update(changed=[wanted], file=content_rel(cfg, t.path), kept=os.path.relpath(kept, content_dir(cfg)))
+    return reply, config_said(t, reply, "%s's new Config is in, " % wanted + "and reloaded"), notes, facts
+
+
+def engine_config_undo(cfg, a, wanted, by=None):
+    """`config undo`: the Config of `wanted`'s last kept version spliced back into its file, the
+    static checks run, deployed and reloaded as a set is; then that version moved to undone/, so
+    the next undo goes one further back. A refusal changes nothing and keeps the version."""
+    cfg.ensure_home()
+    with flocked(os.path.join(cfg.home, "engine.lock")):
+        t, refused = config_target(cfg, a, wanted)
+        if refused is not None:
+            return refused, ""
+        versions = kept_versions(cfg, t)
+        if not versions:
+            return {"ok": False, "error": "no kept version of %s's Config to put back: none was rewritten with vfg "
+                    "engine config set" % wanted}, ""
+        last = versions[-1]
+        rw = rewrite_module()
+        old = read_text(last)
+        try:
+            s, e = rw.find_config(old, t.name)
+            new_source = rw.splice(t.source, t.name, fit_config(config_lines(old, s, e), t.source, t.start))
+        except (ValueError, SyntaxError, LookupError) as err:
+            return {"ok": False, "error": "%s's kept Config (%s) could not be put back: %s" % (
+                wanted, os.path.relpath(last, history_dir(cfg)), one_line(err, 600))}, ""
+        problems = rw.static_checks(t.source, new_source, t.name)
+        if problems:
+            return {"ok": False, "error": "%s's kept Config (%s) no longer fits its class as it is now: %s; nothing "
+                    "changed" % (wanted, os.path.relpath(last, history_dir(cfg)), problems_text(problems))}, ""
+        if new_source == t.source:
+            reply, said = {"ok": True, "changed": []}, "%s's Config is already as kept: nothing changed" % wanted
+        else:
+            reply, _ = engine_change(cfg, a, t, new_source, "undo", by)
+            said = config_said(t, reply, "%s's Config is back as it was (%s), " % (
+                wanted, os.path.basename(last)) + "and reloaded") if reply.get("ok") else ""
+        if reply.get("ok"):
+            undone = os.path.join(os.path.dirname(last), "undone")
+            os.makedirs(undone, exist_ok=True)
+            os.replace(last, os.path.join(undone, os.path.basename(last)))
+    return reply, said
+
+
+def cmd_engine_config(cfg, a):
+    """vfg engine config get|set|undo <class>."""
+    if a.config_op == "get":
+        t, refused = config_target(cfg, a, a.cls)
+        if refused is not None:
+            return engine_show(a, refused, "")
+        box = t.box
+        if isinstance(box.get("source"), str) and box["source"] != t.config:
+            warn("the box runs another version of this Config than %s holds: this PC's is shown, which vfg engine "
+                 "reload %s deploys" % (content_rel(cfg, t.path), os.path.splitext(t.rel)[0]))
+        if a.json:
+            out(json.dumps({"ok": True, "class": t.wanted, "class_name": t.name, "file": content_rel(cfg, t.path),
+                            "start": t.start, "end": t.end, "source": t.config}, ensure_ascii=False))
+            return 0
+        out("%s, lines %d to %d: the Config of %s, as written\n%s" % (content_rel(cfg, t.path), t.start, t.end,
+                                                                     t.name, t.config.rstrip("\n")))
+        return 0
+    if a.config_op == "set":
+        reply, said, notes, facts = engine_config_set(cfg, a, a.cls, sys.stdin.read())
+        for n in notes if reply.get("ok") else ():
+            warn(n)
+        return engine_show(a, dict(reply, **facts) if reply.get("ok") else reply, said)
+    reply, said = engine_config_undo(cfg, a, a.cls)
+    return engine_show(a, reply, said)
 
 
 # ------------------------------------------------------------------- made
@@ -4430,6 +5503,7 @@ def build_parser():
     p = Parser(prog="vfg", description="The one command every agent uses to reach the EC2 box. "
                "Exit 0 done, 1 refused or failed, 2 bad arguments, 3 not configured, "
                "4 EC2 unreachable or no answer in time, 5 Minecraft not answering RCON, "
+               "6 the game engine not running, "
                "124 vfg action run's call out of time (it may still have happened).")
     p.add_argument("--version", action="version", version="vfg " + VERSION)
     p.add_argument("--timeout", type=float, metavar="S",
@@ -4437,7 +5511,7 @@ def build_parser():
     sub = p.add_subparsers(dest="command", metavar="<command>", title="commands")
     sub.required = True
 
-    sub.add_parser("up", help="check SSH and the minecraft, vfg-bridge and vfg-jev units, "
+    sub.add_parser("up", help="check SSH and the minecraft, vfg-bridge, vfg-jev and vfg-engine units, "
                    "start any that are down, print their status")
 
     s = sub.add_parser("watch", help="print the feed after the cursor, then follow it; never exits on its own")
@@ -4702,6 +5776,83 @@ def build_parser():
                    "cooldown_s, aliases, everyday_aliases}")
     w.add_argument("--fresh", action="store_true", help="fetch from the box, whatever the cache's age")
 
+    s = sub.add_parser("engine", help="the game engine on the box: its classes and who has what, reload, grant, "
+                       "give, start, bind, and a class's Config; exit 1 refused, 6 the engine not running")
+    es = s.add_subparsers(dest="op", metavar="<op>")
+    es.required = True
+
+    def op(name, text, js=True, **kw):
+        w = es.add_parser(name, help=text, **kw)
+        if js:
+            w.add_argument("--json", action="store_true", help="the engine's reply as it came, one JSON object")
+        return w
+    op("status", "running or not: its tick, its tick time, the players, instances and classes")
+    op("classes", "every class in the registry: its kind, id, summary and file")
+    op("overview", "the classes and the instances, in one call: what the brain shows of the engine")
+    w = op("meta", "every class as one table: the required fields, damage at power 0, 10 and 20, then its own")
+    w.add_argument("id", nargs="?", help="one class, by its id")
+    op("world", "the world settings held: each one's value, what it was, and who holds it at what priority")
+    w = op("instances", "what runs: each instance, its kind, its class, its user, when it started and ends")
+    w.add_argument("--kind", metavar="KIND", help="only ability, item, mark, actor or scenario")
+    w.add_argument("--user", metavar="WHO", help="only a player's, or an actor's (its uuid)")
+    w = op("log", "the engine's last log lines: each one's time, level and message, then its fields")
+    w.add_argument("-n", type=int, default=40, metavar="N", help="how many, 1 to 1000 (40)")
+    w = op("reload", "deploy made/<VFG_SERVER>/content/ to the box, then reload those files (every content dir "
+                     "when none is named): what loaded, which check failed and why, what switched, what stopped")
+    w.add_argument("ids", nargs="*", metavar="file", help="a content file, by its name: fireball for "
+                   "made/<VFG_SERVER>/content/fireball.py")
+    for name, text in (("grant", "grant an ability to a player or an actor"),
+                       ("revoke", "take an ability away from a player or an actor")):
+        w = op(name, text)
+        w.add_argument("who", help="a player's name, or an actor's uuid")
+        w.add_argument("ability")
+    w = op("give", "give a player an item, a stack of one on the item's base")
+    w.add_argument("player")
+    w.add_argument("item")
+    w.add_argument("--base", metavar="ITEM", help="the base item; one that is not the class's is refused")
+    w = op("take", "clear every stack of an item from a player")
+    w.add_argument("player")
+    w.add_argument("item")
+    w = op("apply", "put a mark on a player or an actor")
+    w.add_argument("who", help="a player's name, or an actor's uuid")
+    w.add_argument("mark")
+    w.add_argument("--seconds", type=float, metavar="S", help="how long, in place of the mark's own duration")
+    w = op("clear", "take a mark off a player or an actor")
+    w.add_argument("who", help="a player's name, or an actor's uuid")
+    w.add_argument("mark")
+    w = op("start", "start a scenario; prints its instance")
+    w.add_argument("scenario")
+    w.add_argument("args", nargs="*", metavar="key=value", help="its args, each value JSON when it reads as JSON")
+    w = op("stop", "stop a scenario, every run of it, or one instance")
+    w.add_argument("scenario", nargs="?")
+    w.add_argument("--instance", metavar="INSTANCE", help="one instance, as vfg engine instances names it")
+    w = op("spawn", "spawn an actor; prints its uuid")
+    w.add_argument("actor")
+    w.add_argument("--at", nargs=3, metavar=("X", "Y", "Z"), help="where")
+    w.add_argument("--near", metavar="PLAYER", help="beside this player")
+    w = op("bind", "bind a phrase to a player's ability: an incantation, its aliases made as an action "
+                   "incantation's are (the alias call)")
+    w.add_argument("player", help="one player's name; never @a")
+    w.add_argument("phrase", help="what they say to cast it; quote one of several words")
+    w.add_argument("ability")
+    w.add_argument("--by", metavar="NAME", help="the task that bound it")
+    w = op("unbind", "remove a player's engine incantation")
+    w.add_argument("player")
+    w.add_argument("phrase")
+    w = op("incantations", "the engine's bindings: player, phrase, ability, cooldown, aliases")
+    w.add_argument("--player", metavar="P", help="only P's")
+    w = op("config", "a class's Config: get it as written, set a new one (on stdin), undo the last change",
+           js=False)
+    cs = w.add_subparsers(dest="config_op", metavar="get|set|undo")
+    cs.required = True
+    for name, text in (("get", "print the class's Config exactly as written, with its file and lines"),
+                       ("set", "the whole new Config class on stdin: spliced in, checked, the old file kept, "
+                               "deployed and reloaded; when the box refuses, the old file goes back"),
+                       ("undo", "put the class's last kept Config back, deployed and reloaded")):
+        c = cs.add_parser(name, help=text)
+        c.add_argument("cls", metavar="class", help="its id, like fireball")
+        c.add_argument("--json", action="store_true", help="as one JSON object")
+
     s = sub.add_parser("usage", help="write a usage row, or send the queued ones; queued locally when EC2 is down")
     us = s.add_subparsers(dest="op", metavar="add|flush")
     us.required = True
@@ -4822,6 +5973,8 @@ def run(argv, started):
         return cmd_place(cfg, a)
     if a.command == "incantation":
         return cmd_incantation(cfg, a)
+    if a.command == "engine":
+        return cmd_engine(cfg, a)
     if a.command == "preset":
         return cmd_preset(cfg, a)
     if a.command == "made":
@@ -4839,10 +5992,11 @@ def run(argv, started):
     raise Fail(2, "unknown command")
 
 
-# The commands that may load the actions (pydantic). vfg prefix ends with the library's actions,
+# The commands that may load the actions (pydantic); vfg engine bind makes the alias call, which needs it
+# too. vfg prefix ends with the library's actions,
 # from the cache it builds again when stale; vfg route reads the cache as it is, and builds it only
 # when there is none.
-NEEDS_ACTIONS = ("action", "cmd", "script", "place", "state", "preset", "incantation", "prefix", "test")
+NEEDS_ACTIONS = ("action", "cmd", "script", "place", "state", "preset", "incantation", "prefix", "test", "engine")
 
 
 def under_uv(argv):

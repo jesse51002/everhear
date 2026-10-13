@@ -12,24 +12,32 @@
 #                                     VFG_BOX_ENV names (default ~/.vfg/box.env), into /opt/vfg/.env;
 #                                     a client token made on the box if there is still none; restarts
 #                                     the vfg units that are installed.
-#   deploy.sh                         the bridge: vfg_feed.py, vfg_bridge/, tests/, the two vfg units,
+#   deploy.sh                         the bridge: vfg_feed.py, vfg_bridge/, tests/, the three vfg units,
 #                                     and the kit it imports (scripts/_lib, by vfg script deploy --kit,
-#                                     stamped as vfg sends it); applies the schema and restarts
-#                                     vfg-bridge (and vfg-jev if deployed).
+#                                     stamped as vfg sends it); the game engine, as `engine` does;
+#                                     applies the schema and restarts vfg-engine, vfg-bridge (and
+#                                     vfg-jev if deployed).
+#   deploy.sh engine                  the game engine alone: engine/vfg_engine/ and engine/examples/
+#                                     to /opt/vfg/engine/, its venv (/opt/vfg/engine/.venv, pydantic
+#                                     pinned by hash) and its datapack (into /opt/mc/world/datapacks/,
+#                                     loaded over RCON when it changed) by engine/deploy/install.sh,
+#                                     and vfg-engine.service; restarts vfg-engine, which saves its
+#                                     state as it stops.
 #
 # Only provision and env touch /opt/vfg/.env; none touches the database (beyond the schema), the
-# feed, watch.json, lookout.md, menu.md or /opt/mc (beyond what provision.sh does). The Jev filter's program has its own
-# jev/deploy.sh.
+# feed, watch.json, lookout.md, menu.md, the engine's state or /opt/mc (beyond what provision.sh
+# does and the engine's datapack). The Jev filter's program has its own jev/deploy.sh.
 set -euo pipefail
 shopt -s inherit_errexit
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 BRIDGE=$(dirname "$HERE")
+ENGINE=$(dirname "$BRIDGE")/engine
 # shellcheck source=lib.sh
 . "$HERE/lib.sh"
 
 usage() {
-  printf 'usage: %s [provision [--restore] | env]\n' "${0##*/}" >&2
+  printf 'usage: %s [provision [--restore] | env | engine]\n' "${0##*/}" >&2
   exit 2
 }
 
@@ -155,6 +163,9 @@ cmd_env() {
   send_env
   remote 'bash -s' <<'REMOTE'
 set -euo pipefail
+if [ -f /etc/systemd/system/vfg-engine.service ]; then
+  sudo systemctl restart vfg-engine
+fi
 if [ -f /etc/systemd/system/vfg-bridge.service ]; then
   sudo systemctl restart vfg-bridge
 fi
@@ -162,7 +173,48 @@ if [ -f /opt/vfg/jev/jev_filter.py ]; then
   sudo systemctl restart vfg-jev
 fi
 sleep 2
-for unit in minecraft vfg-bridge vfg-jev; do
+for unit in minecraft vfg-engine vfg-bridge vfg-jev; do
+  printf '%-11s %s\n' "$unit" "$(systemctl is-active "$unit" || true)"
+done
+REMOTE
+}
+
+# send_engine -- the engine's package, examples, datapack and install pieces to /opt/vfg/engine/, then
+# engine/deploy/install.sh there as ec2-user: the venv, and the datapack into the world.
+send_engine() {
+  [[ -d $ENGINE/vfg_engine && -d $ENGINE/datapack/everhear && -f $ENGINE/deploy/requirements.txt ]] \
+    || die "run it from the repo: no engine in $ENGINE"
+  remote 'test -x /opt/vfg/uv/uv && mkdir -p /opt/vfg/engine/datapack /opt/vfg/engine/deploy' \
+    || die "the box has no /opt/vfg/uv/uv, which makes the engine's venv: deploy.sh provision first"
+  log "sending engine/vfg_engine/, examples/, datapack/everhear/ and deploy/ to /opt/vfg/engine/"
+  local folders=("$ENGINE/vfg_engine")
+  if [[ -d $ENGINE/examples ]]; then folders+=("$ENGINE/examples"); fi
+  push --recursive --delete --exclude='__pycache__/' --exclude='*.pyc' --chmod=D755,F644 \
+    "${folders[@]}" "$SSH_USER@$SSH_HOST:/opt/vfg/engine/" || die "could not send the engine"
+  push --recursive --delete --chmod=D755,F644 "$ENGINE/datapack/everhear" \
+    "$SSH_USER@$SSH_HOST:/opt/vfg/engine/datapack/" || die "could not send the datapack"
+  push --chmod=F644 "$ENGINE/deploy/install.sh" "$ENGINE/deploy/requirements.txt" \
+    "$SSH_USER@$SSH_HOST:/opt/vfg/engine/deploy/" || die "could not send the engine's install pieces"
+  log "the engine's venv and datapack"
+  remote 'bash /opt/vfg/engine/deploy/install.sh' || die "the engine's install failed (above)"
+}
+
+cmd_engine() {
+  ssh_setup
+  send_engine
+  remote 'rm -rf /tmp/vfg-units && mkdir -m 700 /tmp/vfg-units'
+  push --chmod=F644 "$ENGINE/deploy/vfg-engine.service" "$SSH_USER@$SSH_HOST:/tmp/vfg-units/" \
+    || die "could not send vfg-engine.service"
+  log "installing vfg-engine.service, restarting the engine"
+  remote 'bash -s' <<'REMOTE'
+set -euo pipefail
+sudo install -m 644 -o root -g root /tmp/vfg-units/vfg-engine.service /etc/systemd/system/
+rm -rf /tmp/vfg-units
+sudo systemctl daemon-reload
+sudo systemctl enable vfg-engine
+sudo systemctl restart vfg-engine
+sleep 2
+for unit in minecraft vfg-engine; do
   printf '%-11s %s\n' "$unit" "$(systemctl is-active "$unit" || true)"
 done
 REMOTE
@@ -185,26 +237,30 @@ cmd_deploy() {
   # it, before the restart, so a bridge never runs on a kit older than itself.
   log "sending the kit, scripts/_lib/, to /opt/vfg/scripts/"
   retry 3 "$BRIDGE/../toolkit/vfg" script deploy --kit || die "could not send the kit"
+  # The bridge casts the engine's incantations through its socket: the engine goes with it.
+  send_engine
   remote 'rm -rf /tmp/vfg-units && mkdir -m 700 /tmp/vfg-units'
   push --chmod=F644 "$HERE/systemd/vfg-bridge.service" "$HERE/systemd/vfg-jev.service" \
-    "$SSH_USER@$SSH_HOST:/tmp/vfg-units/" || die "could not send the units"
+    "$ENGINE/deploy/vfg-engine.service" "$SSH_USER@$SSH_HOST:/tmp/vfg-units/" \
+    || die "could not send the units"
 
   log "installing the units, applying the schema, restarting"
   remote 'bash -s' <<'REMOTE'
 set -euo pipefail
 sudo install -m 644 -o root -g root /tmp/vfg-units/vfg-bridge.service /tmp/vfg-units/vfg-jev.service \
-  /etc/systemd/system/
+  /tmp/vfg-units/vfg-engine.service /etc/systemd/system/
 rm -rf /tmp/vfg-units
 sudo systemctl daemon-reload
-sudo systemctl enable vfg-bridge vfg-jev
+sudo systemctl enable vfg-engine vfg-bridge vfg-jev
 cd /opt/vfg
 PYTHONPATH=/opt/vfg/lib:/opt/vfg/bridge /opt/vfg/python/bin/python3 -m vfg_bridge --init-db
+sudo systemctl restart vfg-engine
 sudo systemctl restart vfg-bridge
 if [ -f /opt/vfg/jev/jev_filter.py ]; then
   sudo systemctl restart vfg-jev
 fi
 sleep 2
-for unit in minecraft vfg-bridge vfg-jev; do
+for unit in minecraft vfg-engine vfg-bridge vfg-jev; do
   printf '%-11s %s\n' "$unit" "$(systemctl is-active "$unit" || true)"
 done
 REMOTE
@@ -213,6 +269,7 @@ REMOTE
 case "${1-}" in
   provision) shift; cmd_provision "$@" ;;
   env) shift; [[ $# -eq 0 ]] || usage; cmd_env ;;
+  engine) shift; [[ $# -eq 0 ]] || usage; cmd_engine ;;
   "") cmd_deploy ;;
   -h|--help|*) usage ;;
 esac

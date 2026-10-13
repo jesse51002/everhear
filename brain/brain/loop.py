@@ -477,7 +477,8 @@ class Brain:
                 loop.spend(answer)
                 self.flush()
                 step = answer.value
-                run = await self.acts.run(step, n=n, player=player, seen=seen, refs=self.refs, ref=f"{ref} s{n}")
+                run = await self.acts.run(step, n=n, player=player, seen=seen, refs=self.refs, ref=f"{ref} s{n}",
+                                          earlier=loop.runs)
                 loop.runs.append(run)
                 log("brain", f"{ref} s{n} {spent(answer)} | {describe(step)} -> {run.summary()}")
                 if run.landed and step.end != NEXT:

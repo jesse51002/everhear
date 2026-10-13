@@ -1,0 +1,74 @@
+"""Scenarios: world-level things with phases and a timeline (the game engine spec, "Actors,
+players and scenarios").
+
+A scenario is started by the `start` op (or by content), with args (`self.args`). Its phases are
+its own state and its timeline is timers (`self.after(30, "phase_two")`). It hears every event,
+not only those about a user (it has none). It owns what it spawns, the marks it applies and the
+world settings it holds, so ending it (`stop`, its duration, `self.end()`) leaves nothing in the
+world.
+
+A zone is a scenario watching an area (`self.watch("arena", center=(0, 64, 0), radius=20)`):
+the engine works out from each snapshot who came in and who went out, and sends `enter` and
+`exit` events, which the watching instance always hears.
+"""
+
+from __future__ import annotations
+
+import math
+
+from .events import make
+from .records import Record
+
+
+def start(rt, scenario: str, args=None, source=None) -> str:
+    info = rt.classes.get(scenario)
+    if info is None or info.kind != "scenario":
+        raise ValueError("%r is not a loaded scenario" % scenario)
+    rec = rt.add(Record(rt.new_iid("scenario", scenario), "scenario", scenario, None, rt.now,
+                        source=source, args=dict(args or {})))
+    rt.later(lambda: rt.start(rec))
+    return rec.iid
+
+
+def set_end(rt, rec: Record):
+    ok, seconds = rt.formula(rec, "duration_s")
+    if ok:
+        rec.ends = None if seconds == math.inf else rt.now + float(seconds)
+
+
+def step(rt):
+    """The scenarios phase: end the ones past their end, then run their timers."""
+    for rec in list(rt.records.values()):
+        if rec.kind == "scenario" and rec.started and not rec.ending and rec.ends is not None and rec.ends <= rt.now:
+            rt.end_record(rec, "duration")
+    rt.run_timers(("scenario",))
+
+
+def inside(area: dict, dim: str, pos) -> bool:
+    if dim != area["dim"]:
+        return False
+    if "radius" in area:
+        return math.dist(pos, area["center"]) <= area["radius"]
+    lo, hi = area["box"]
+    return all(lo[i] <= pos[i] <= hi[i] for i in range(3))
+
+
+def crossings(rt) -> list:
+    """Enter and Exit events for every watched area, from this tick's snapshot."""
+    out = []
+    players = rt.snapshot.players
+    for rec in list(rt.records.values()):
+        if rec.ending or rec.paused_at is not None:
+            continue
+        for owned in [rec.owned] + [r.owned for r in rec.runs.values()]:
+            for name, area in owned.areas.items():
+                now_in = sorted(p.name for p in players.values() if p.alive and inside(area, p.dim, p.pos))
+                was_in = area.get("inside") or []
+                for who in now_in:
+                    if who not in was_in:
+                        out.append(make("enter", who, {"area": name}, area=name, instance=rec.iid))
+                for who in was_in:
+                    if who not in now_in:
+                        out.append(make("exit", who, {"area": name}, area=name, instance=rec.iid))
+                area["inside"] = now_in
+    return out

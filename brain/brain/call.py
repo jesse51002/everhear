@@ -7,12 +7,13 @@ Two events, one `Step`, so the cached prefix is the same whatever the event:
 - REPORT: an implementer's result.
 
 A step may run actions from the menu, written in full, together or in turn (`order`); read another
-player's items; hand new work off to an implementer with a brief in parts; follow a task up, or
-cancel its last run; and end the loop (`end`): with a reply, silent, or with the hand-off. `end` is
-also the send-if-all-land flag: `reply`, `silent` and `handoff` say "if every action of this step
-lands, send the reply, write the record, open the tasks, and the loop is done"; `next` says "run
-these and show me the results". The reply and the record are written up front, in the same answer,
-so most asks end in one step.
+player's items, or an engine class's Config as written (before engine_config rewrites it: the game
+engine spec's "rewritten by the brain"); hand new work off to an implementer with a brief in parts;
+follow a task up, or cancel its last run; and end the loop (`end`): with a reply, silent, or with
+the hand-off. `end` is also the send-if-all-land flag: `reply`, `silent` and `handoff` say "if
+every action of this step lands, send the reply, write the record, open the tasks, and the loop is
+done"; `next` says "run these and show me the results". The reply and the record are written up
+front, in the same answer, so most asks end in one step.
 
 The schema never changes, not with the actions, the step's number or the last step, so the cached
 prefix holds: `to` is a name and `action` the values, both checked here against the actions as
@@ -23,8 +24,9 @@ and no reply. A validator sends back only what code cannot carry out, or would c
 (structured() asks once more, at the price of the whole prompt again): an action not on the menu,
 values its action refuses (a command that places blocks among them), an instruction that does
 nothing, a teleport that moves nobody, an ending with nothing to end on, a hand-off with a brief
-missing, and on the last step any action or read. A field that would have no effect is dropped and
-logged, never sent back: a status outside a report's loop, a reply or a record on a `next` step.
+missing, a Config to read that is no class's name, and on the last step any action or read. A field
+that would have no effect is dropped and logged, never sent back: a status outside a report's loop,
+a reply or a record on a `next` step.
 
 The prompt, in the order the cache needs, its text fixed for the whole loop:
 1. the opening, marked: the rules (prompts/brain.md, the owner named), the menu, every library
@@ -70,6 +72,8 @@ LOOP_MARKS = 2  # conversation marks in a step's prompt: the opening and the loo
 # An instruction that does nothing.
 PLACEHOLDER = re.compile(r"^\W*(nothing( to do)?|none( needed)?|n/?a|no[ -]?op|skip|not needed|do nothing|"
                          r"no action( needed)?|empty|placeholder|tbd)?\W*$", re.IGNORECASE)
+# An engine class's name, as ENGINE shows it and `vfg engine config get` takes it.
+CLASS_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}\Z")
 # A teleport to where the player already is: an action invented to fill the list.
 NO_MOVE = re.compile(r"\bto (his|her|their|its|your) (own )?((current|present) )?(position|location)\b"
                      r"|\bto (his|her|their|its|your) (own )?(current|present) (spot|place)\b"
@@ -200,6 +204,10 @@ class StepBase(BaseModel):
     actions: list[ActBase] = Field(default_factory=list, description="the actions this step runs, in order")
     read_items: list[str] = Field(default_factory=list, description="players whose items to read, by name, for "
                                                                     "the next step; only with end next; else []")
+    read_configs: list[str] = Field(default_factory=list, description="engine classes whose Config to read as "
+                                                                      "written, by their names under ENGINE, for the "
+                                                                      "next step, before an engine_config; only with "
+                                                                      "end next; else []")
     hand_offs: list[HandOff] = Field(default_factory=list, description="new work for an implementer; only with "
                                                                        "end handoff; else []")
     follow_ups: list[FollowUp] = Field(default_factory=list, description="changes, fixes or a cancel for a task "
@@ -262,9 +270,12 @@ def step_type(catalog: Catalog, *, last: bool = False, report: bool = False,
             if (self.hand_offs or self.follow_ups) and self.end == NEXT:
                 raise ValueError("hand_offs and follow_ups end the loop: end handoff, or leave them for the step "
                                  "that ends it")
-            if self.end == NEXT and not self.actions and not self.read_items:
+            if self.end == NEXT and not self.actions and not self.read_items and not self.read_configs:
                 raise ValueError("end next runs or reads something: with nothing to run, end reply, silent or "
                                  "handoff")
+            for name in self.read_configs:
+                if not CLASS_NAME.match(name.strip()):
+                    raise ValueError(f"read_configs {name!r}: a class's name as ENGINE shows it, such as fireball")
             if self.end == REPLY and not reply:
                 raise ValueError("end reply needs the reply")
             promised = promise is not None and self.end == REPLY and not self.actions and promise(reply)
@@ -305,7 +316,7 @@ def step_type(catalog: Catalog, *, last: bool = False, report: bool = False,
                     raise ValueError(f"task {f.task.strip()!r} is not under TASKS: follow up one that is, or hand "
                                      "it off as new")
             if last:
-                if self.actions or self.read_items:
+                if self.actions or self.read_items or self.read_configs:
                     raise ValueError("this is the last step: run no action and read nothing; end reply or handoff")
                 if self.end not in (REPLY, HANDOFF):
                     raise ValueError("this is the last step: end reply or handoff")
@@ -330,6 +341,9 @@ def step_type(catalog: Catalog, *, last: bool = False, report: bool = False,
             if self.read_items and self.end != NEXT and not last:
                 dropped.append(f"read_items {', '.join(self.read_items)} (a read comes back only to a next step)")
                 self.read_items = []
+            if self.read_configs and self.end != NEXT and not last:
+                dropped.append(f"read_configs {', '.join(self.read_configs)} (a read comes back only to a next step)")
+                self.read_configs = []
             if dropped:
                 log("step", f"end {self.end}: dropped, it would do nothing: {'; '.join(dropped)}")
 
@@ -478,6 +492,8 @@ def describe(step: StepBase) -> str:
         bits.append(f"{step.order}: " + ", ".join(f"{a.to} ({one_line(a.instruction)[:80]})" for a in step.actions))
     if step.read_items:
         bits.append("read " + ", ".join(step.read_items))
+    if step.read_configs:
+        bits.append("read the Config of " + ", ".join(step.read_configs))
     bits += [f"hand off {h.name}" for h in step.hand_offs]
     bits += [f"{'cancel' if f.cancel else 'follow up'} {f.task}" for f in step.follow_ups]
     tail = "".join(f" || {k}: {v}" for k, v in (("reply", step.reply), ("record", step.record),

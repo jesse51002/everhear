@@ -182,8 +182,10 @@ class Store:
         """For the cast check: `line`'s speaker's lines, a dropped one too (it was a cast), and the
         AI's, said since `since` and before `line` (by `at`, then `id`); and that speaker's casts
         (the bridge's `casts`, when it has the table) started since `since` and by the time `line`
-        ended, but no `duplicate`, the same words cast twice. The newest `limit` of them, oldest
-        first, as dicts `{at, player_name, kind ("line" or "cast"), text}` (a cast's text its phrase)."""
+        ended, but no `duplicate`, the same words cast twice; a `pending` one, an engine cast the
+        bridge is asking the engine about, is shown: the saying was taken as a cast. The newest
+        `limit` of them, oldest first, as dicts `{at, player_name, kind ("line" or "cast"), text}`
+        (a cast's text its phrase)."""
         rows = self.conn.execute(
             "SELECT at, player_name, text FROM lines WHERE ((player_name = ? AND source != 'ai') OR source = 'ai') "
             "AND at >= ? AND (at < ? OR (at = ? AND id < ?)) ORDER BY at DESC, id DESC LIMIT ?",
