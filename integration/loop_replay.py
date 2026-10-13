@@ -9,9 +9,11 @@
 
 **What it replays.** The 110 brain calls of that night (integration/replay/loop/, built by its
 build.py from the box's vfg.db, that night's brain.log and the implementers' transcripts): the 69
-lines the brain was called for (action_oriented ones, and conversational ones Respond handed up,
-with Respond's reason) and the 41 implementer reports, in the order their calls started. Each is
-one loop of the new brain, run in this process, one after another.
+lines the brain was called for (that night Jev classed them action_oriented, or conversational and
+Respond handed them up, with Respond's reason; both classes are to_ai now, and brain/context.py
+reads them so) and the 41 implementer reports, in the order their calls started. Each is one loop
+of the new brain, run in this process, one after another, from the hand-up on: Respond is not
+called again.
 
 **What is real.** A realmc server of its own (`--name loop`, its world fresh from the template, its
 stand-in's vfg.db, feed and incantations set aside, `made/loop/` cleared), with a Carpet fake

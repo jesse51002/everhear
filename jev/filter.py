@@ -22,14 +22,14 @@ import sqlite3
 import casting
 from jev_clock import iso, parse_iso
 from jev_api import ENDPOINT, MODEL, JevDown, JevRefused
-from prompt import (GATHER_HEADING, GATHER_RULES, HISTORY_HEADING, KEPT, PART_OF_IT, RULES, Lookout, Menu,
-                    build_state, gather_questions, in_short, questions, route)
+from prompt import (GATHER_EXAMPLES, GATHER_HEADING, GATHER_RULES, HISTORY_HEADING, KEPT, PART_OF_IT, QUESTION, RULES,
+                    TO_AI, Lookout, Menu, build_state, gather_questions, in_short, questions, route)
 
 log = logging.getLogger("vfg-jev")
 
 # Fixed in code, because the contract fixes them.
 FAIL_OPEN_AFTER = 10.0     # seconds of Jev failing before every line passes as context
-AT_ONCE = ("action_oriented", "conversational")   # both get a live answer: the batch goes at once
+AT_ONCE = (TO_AI,)         # a line to the AI gets a live answer: the batch goes at once
 GATHER_LOOKBACK = 180.0    # the gather call looks this far back from the ask, at most
 GATHER_MAX = 10            # and asks about this many of the speaker's lines, the newest
 GROUP_JOIN = " … "         # a group's lines, in the order said, the ask last
@@ -68,7 +68,9 @@ class Config:
         "jev_url": ("VFG_JEV_URL", ENDPOINT, str),
         "model": ("VFG_JEV_MODEL", MODEL, str),
         "timeout": ("VFG_JEV_TIMEOUT", 3.0, float),
-        "state_tokens": ("VFG_JEV_STATE_TOKENS", 8000, int),
+        # 8,000 until Prototype_Addressing_The_AI, whose rules, examples and lookout are 837 bytes longer (about
+        # 279 tokens by `prompt.estimate`): 8,280 gives the menu and the history the room they had
+        "state_tokens": ("VFG_JEV_STATE_TOKENS", 8280, int),
         "history_hours": ("VFG_JEV_HISTORY_HOURS", 3.0, float),
         "incantations": ("VFG_INCANTATIONS", "/opt/vfg/incantations.json", str),
         "cast_min": ("VFG_JEV_CAST_MIN", 0.5, float),
@@ -357,9 +359,10 @@ class Filter:
         return sorted(list(self.store.history(since, exclude=exclude)) + self.store.ai_records(since),
                       key=lambda r: (r["at"], r["id"]), reverse=True)
 
-    def _state(self, marked, others, share=1.0, rules=RULES, heading=HISTORY_HEADING):
+    def _state(self, marked, others, share=1.0, rules=RULES, heading=HISTORY_HEADING, examples=None):
         menu = self.menu.text()
-        state, _ = build_state(self.lookout.text(), marked, others, self.cfg.state_tokens, share, menu, rules, heading)
+        state, _ = build_state(self.lookout.text(), marked, others, self.cfg.state_tokens, share, menu, rules, heading,
+                               examples)
         if menu and state.get("actions") != menu and menu != self._menu_cut:
             self._menu_cut = menu
             log.warning("menu %s is over half the state's room; Jev sees its first lines", self.cfg.menu)
@@ -367,7 +370,7 @@ class Filter:
 
     def _ask(self, row, began, share=1.0):
         self._asked = (row["id"], self._history(began, [row["id"]]))   # the gather call reads it again
-        return self.jev.ask(self._state([(1, row)], self._asked[1], share), questions(row), required="d_what")
+        return self.jev.ask(self._state([(1, row)], self._asked[1], share), questions(row), required=QUESTION)
 
     def _judge_one(self, row):
         """The routing call for `row`, and the gather call when it goes to the AI.
@@ -427,7 +430,7 @@ class Filter:
         others = ([r for r in others if r["id"] not in skip] if asked == ask["id"]
                   else self._history(self.clock.time(), [r["id"] for _, r in marked]))
         try:
-            state = self._state(marked, others, rules=GATHER_RULES, heading=GATHER_HEADING)
+            state = self._state(marked, others, rules=GATHER_RULES, heading=GATHER_HEADING, examples=GATHER_EXAMPLES)
             result = self.jev.ask(state, gather_questions(ask, window), required=None)
         except (JevDown, JevRefused) as e:
             log.warning("gather %s failed: %s — the ask goes alone", ask["id"], e)
@@ -489,7 +492,7 @@ class Filter:
     # -- feeding -------------------------------------------------------------------
 
     def fields(self, row):
-        """`<player> <voice|chat> <action_oriented|conversational|context> <confidence|-> <NdB|->`"""
+        """`<player> <voice|chat> <to_ai|context> <confidence|-> <NdB|->`"""
         conf = row["jev_confidence"]
         peak = row["peak_dbfs"]
         parts = [
@@ -548,9 +551,9 @@ class Filter:
         return [(r, t) for r, t in waiting if r["id"] not in found]
 
     def feed(self, force=False):
-        """Feed what is waiting: owed SYS lines first, then the batch, if an
-        action_oriented or conversational line is in it or `VFG_BATCH_SECONDS`
-        have passed since the earliest verdict in it (or `force`)."""
+        """Feed what is waiting: owed SYS lines first, then the batch, if a
+        to_ai line is in it or `VFG_BATCH_SECONDS` have passed since the
+        earliest verdict in it (or `force`)."""
         now = self.clock.time()
         if self.unmarked:
             self.store.mark_fed(self.unmarked, iso(now))

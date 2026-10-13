@@ -29,7 +29,7 @@ TYPES = ("LINE", "GAME", "AI", "SYS")
 TEXT_MAX = 500
 UTC = dt.timezone.utc
 
-LINE_RE = re.compile(r"^[A-Za-z0-9_]{1,16} (voice|chat) (action_oriented|conversational|context) "
+LINE_RE = re.compile(r"^[A-Za-z0-9_]{1,16} (voice|chat) (to_ai|context) "
                      r"(\d\.\d\d|-) (-?\d+dB|-)( was=not_relevant)?$")
 GAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31} ([A-Za-z0-9_]{1,16}|-)$")
 AI_RE = re.compile(r"^(say|action|task|result|note) ([a-z][a-z0-9_]{1,31}|-)$")  # the bridge's: a task's name

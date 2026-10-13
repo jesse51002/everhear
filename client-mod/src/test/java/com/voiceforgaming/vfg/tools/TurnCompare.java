@@ -131,7 +131,7 @@ public final class TurnCompare {
 		}
 
 		// The mod's VAD and Parakeet first: loading them loads ONNX Runtime, which the turn models then share.
-		SpeechEngine engine = SttModels.engine(SttModels.PARAKEET_110M, THREADS, null, 0);
+		SpeechEngine engine = SttModels.engine(SttModels.PARAKEET_110M, THREADS);
 		TurnCompare compare = new TurnCompare(engine, SttModels.install(SttModels.PARAKEET_110M));
 		compare.runs.add(new Run(TurnDetectors.SMART_TURN, "Smart Turn v3.2",
 			TestAssets.turnDetector(TurnDetectors.SMART_TURN)));

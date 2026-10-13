@@ -381,15 +381,19 @@ class TestHistory(BoxCase):
     def test_lines_oldest_first_and_their_filters(self):
         out = self.lines()
         self.assertEqual(len(out), 6)
-        self.assertIn(" Bob voice conversational 0.88 | thanks AI", out[0])
-        self.assertRegex(out[2], r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d Steve voice action_oriented 0\.93 \| build me a castle$")
+        self.assertIn(" Bob voice to_ai 0.88 | thanks AI", out[0])
+        self.assertRegex(out[2], r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d Steve voice to_ai 0\.93 \| build me a castle$")
         self.assertTrue(out[4].endswith(" Alex chat - | lol"))
         self.assertTrue(out[5].endswith(" AI ai - | on it — castle at spawn"))
         self.assertEqual(self.texts("--player", "steve"), ["hmm", "build me a castle"])
         self.assertEqual(self.texts("--class", "unjudged"), ["lol"])
-        self.assertEqual(self.texts("--class", "action_oriented,context", "--since", "-10m"),
+        self.assertEqual(self.texts("--class", "to_ai,context", "--since", "-10m"),
                          ["build me a castle", "that cave by spawn"])
-        self.assertEqual(self.texts("--class", "not_relevant,conversational"), ["thanks AI", "hmm"])
+        self.assertEqual(self.texts("--class", "not_relevant,to_ai"), ["thanks AI", "hmm", "build me a castle"])
+        for retired in ("action_oriented", "conversational"):  # Jev's two classes for the AI before to_ai
+            r = self.vfg("history", "--class", retired)
+            self.assertEqual(r.returncode, 2, retired)
+            self.assertIn("--class takes to_ai, context, not_relevant, unjudged", r.stderr)
         self.assertEqual(self.texts("--source", "ai"), ["on it — castle at spawn"])
         self.assertEqual(len(self.lines("--source", "voice")), 3)
         self.assertEqual(self.texts("--limit", "2"), ["lol", "on it — castle at spawn"])

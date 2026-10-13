@@ -73,7 +73,7 @@ from pydantic import BaseModel, Field  # noqa: E402
 
 from brain import actions, config, running  # noqa: E402
 from brain.__main__ import asker  # noqa: E402
-from brain.context import LIVE, Context, Row  # noqa: E402
+from brain.context import Context, Row  # noqa: E402
 from brain.respond import Respond, promises  # noqa: E402
 from brain.tasks import Tasks  # noqa: E402
 from brain.world import Seen  # noqa: E402
@@ -82,6 +82,7 @@ from trees_questions import route_d  # noqa: E402
 INPUTS = HERE / "whole_asks_2026-10-08.jsonl"
 PROMPTS = HERE / "respond_prompts"
 CLASS_OF = {"brain": "action_oriented", "respond": "conversational", "context": "context"}
+LIVE = ("action_oriented", "conversational")  # Jev's two classes for the AI when this was benched (to_ai now)
 SETS = ("playtest", "invented")
 
 # ------------------------------------------------------------------ the versions

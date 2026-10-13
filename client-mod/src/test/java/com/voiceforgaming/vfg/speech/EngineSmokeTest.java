@@ -19,8 +19,8 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
- * The real natives, Silero VAD and the default model (Parakeet TDT 110M), installed into
- * {@code build/vfg-test-assets/} once through the mod's own installer, pushed
+ * The real natives, Silero VAD and the default model (Parakeet TDT 0.6B v2, with the hotwords, as
+ * the mod runs it), installed into {@code build/vfg-test-assets/} once through the mod's own installer, pushed
  * through {@link CaptureProcessor}, {@link SttWorker} and {@link LineAssembler} with the
  * clock driven by the sample count. Run with {@code ./gradlew engineTest}.
  */
@@ -176,6 +176,43 @@ class EngineSmokeTest {
 				System.out.printf(Locale.ROOT, "  %-18s %.2f s -> \"%s\"%n", model, (System.nanoTime() - t0) / 1e9, text);
 				assertEquals(1, count(normalize(text), PHRASE), model + ": " + text);
 			}
+		}
+	}
+
+	/** With hotwords (beam search over the pieces' code names) a Parakeet model hears what it hears greedily. */
+	@Test
+	void hotwordsDecodeTheClipAsGreedyDoesAndANameComesThrough() throws Exception {
+		assertTrue(engine.hotwords(), "the default model decodes with hotwords");
+		for (String model : List.of(VfgConfig.MODEL_PARAKEET, VfgConfig.MODEL_PARAKEET_110M)) {
+			Hotwords h = new Hotwords();
+			h.players(List.of("SteveJM"));
+			h.phrases(List.of("fire ball"), null);
+			try (SpeechEngine greedy = TestAssets.engine(model, 2, 0.5f, null);
+					SpeechEngine hot = TestAssets.engine(model, 2, 0.5f, h)) {
+				assertTrue(hot.hotwords());
+				String g = greedy.transcribe(speech);
+				String t = hot.transcribe(speech);
+				System.out.printf(Locale.ROOT, "  %-20s greedy \"%s\", hotwords \"%s\"%n", model, g, t);
+				assertEquals(normalize(g), normalize(t), model);
+			}
+		}
+	}
+
+	/** The 0.6B is swapped into a running engine whose 110M listened while it downloaded; the VAD stays. */
+	@Test
+	void aBiggerModelIsSwappedIntoARunningEngine() throws Exception {
+		Hotwords h = new Hotwords();
+		try (SpeechEngine e = TestAssets.engine(VfgConfig.MODEL_PARAKEET_110M, 2, 0.5f, h)) {
+			String before = e.transcribe(speech);
+			assertTrue(e.replaceRecognizer(SpeechEngine.recognition(TestAssets.modelDir(VfgConfig.MODEL_PARAKEET), true, 2,
+				true)));
+			String after = e.transcribe(speech);
+			System.out.printf(Locale.ROOT, "  110M \"%s\", then 0.6B \"%s\"%n", before, after);
+			assertEquals(1, count(normalize(after), PHRASE), after);
+			assertTrue(e.hotwords());
+			e.close();
+			assertTrue(!e.replaceRecognizer(SpeechEngine.recognition(TestAssets.modelDir(VfgConfig.MODEL_PARAKEET_110M),
+				true, 2, false)), "a released engine takes no recognizer");
 		}
 	}
 

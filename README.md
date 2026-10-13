@@ -102,23 +102,25 @@ flowchart TB
 - The **client mod** turns speech into text on the player's own PC (no audio leaves it) and posts
   each line to the **bridge** on the server's EC2 box. The bridge also tails the Minecraft console
   for joins, deaths and the like.
-- The **Jev filter** asks Jev (TypeSafe) what should become of each line: the brain acts on it
-  (`action_oriented`), Respond answers it (`conversational`), it is kept as context, or it is
-  dropped. A line for the brain or Respond goes with its speaker's earlier lines that belong to the
-  same ask, which a second Jev call gathers. It writes what it keeps to the **feed**, one line per
-  entry, beside the bridge's game events.
-- The **brain**, on the owner's PC, follows the feed over SSH (`vfg watch`). Every action-oriented
-  line is a loop of steps, each one call to an OpenRouter model (`structured()`, Gemini 3.8 Flash).
-  A step runs **actions** written in full (an item, an effect, a teleport, a saved place, a
-  castle, a weapon: one action over each script, and every one implementers make), together or in
-  turn, and writes the player's reply with them: when every action lands, the reply goes out and
-  the loop is done in one step; when one does not land, its result comes back and the next step
-  fixes it. A step can also read another player's items, edit or stop a running copy, hand
-  something new off to an implementer under a task's name (`galick_gun_styrk`) with a brief in
-  parts, or follow a task up or cancel it. Each task is a row in the box's `vfg.db`, which only
-  the brain writes.
-- **Respond**, the brain's cheap mode, answers a conversational line on a cheaper model, or hands it
-  up to the brain when it asks for something to happen.
+- The **Jev filter** asks Jev (TypeSafe) whether each line is said to the AI or to a friend. A line
+  goes to the AI (`to_ai`) only when it names it, "AI" or "brain", and is said to it, or answers a
+  question the AI asked; Jev judges a misheard name too. Anything else is kept as context or
+  dropped, however much it sounds like an ask, and its player is told nothing. A line to the AI
+  goes with its speaker's earlier lines that belong to the same ask, which a second Jev call
+  gathers. It writes what it keeps to the **feed**, one line per entry, beside the bridge's game
+  events.
+- The **brain**, on the owner's PC, follows the feed over SSH (`vfg watch`). Every line to the AI
+  goes to Respond first (below); one Respond hands up is a loop of steps, each one call to an
+  OpenRouter model (`structured()`, Gemini 3.8 Flash). A step runs **actions** written in full (an
+  item, an effect, a teleport, a saved place, a castle, a weapon: one action over each script, and
+  every one implementers make), together or in turn, and writes the player's reply with them:
+  when every action lands, the reply goes out and the loop is done in one step; when one does not
+  land, its result comes back and the next step fixes it. A step can also read another player's
+  items, edit or stop a running copy, hand something new off to an implementer under a task's name
+  (`galick_gun_styrk`) with a brief in parts, or follow a task up or cancel it. Each task is a row
+  in the box's `vfg.db`, which only the brain writes.
+- **Respond**, the brain's cheap mode, takes every line to the AI first, on a cheaper model: it
+  answers it, or hands it up to the brain when it asks for something to happen.
 - **One turn per player**: a player's lines run one at a time, whichever of the two takes them,
   while different players' run at once. At most three wait (`VFG_TURN_WAITING`); one more is turned
   away with a private message, and an implementer's report goes to the front.

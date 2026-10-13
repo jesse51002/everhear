@@ -1,5 +1,6 @@
-- Anything said to the AI, or about what it built, gave, said or did: asks, questions, praise, complaints.
-- A player answering a question the AI asked, or saying an earlier ask again, more fully or corrected.
+- Anything said to the AI by name ("AI" or "brain", or a mishearing of it): asks, questions, praise, complaints.
+- A player answering a question the AI asked, whoever it asked.
+- What players say to each other about what the AI built, gave, said or did.
 - Names of places, bases, builds and coordinates, and whose they are.
 - Plans the group is making: where they are going, what they want to build, fight or find next, and rules they set.
 - A player in trouble: lost, low on health, stuck, trapped, or asking for help.

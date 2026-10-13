@@ -46,7 +46,7 @@ class FakeBridgeContractTest {
 			port = s.getLocalPort();
 		}
 		ProcessBuilder pb = new ProcessBuilder("python3", script.toString(), "--port", Integer.toString(port),
-			"--incantation", "fire ball=fireball,fire bowl");
+			"--incantation", "fire ball=fireball,fire bowl", "--server-phrase", "ice wall");
 		pb.environment().put("VFG_CLIENT_TOKEN", TOKEN);
 		pb.redirectErrorStream(true);
 		bridge = pb.start();
@@ -182,12 +182,17 @@ class FakeBridgeContractTest {
 	@Test
 	void theFakeBridgeListsTheIncantationsAndHoldsAnUnchangedList() throws Exception {
 		List<List<com.voiceforgaming.vfg.kws.Incantation>> lists = new ArrayList<>();
+		List<List<String>> serverPhrases = new ArrayList<>();
 		IncantationClient client = new IncantationClient(() -> new IncantationClient.Target(base + "/v1/incantations",
-			TOKEN), 0, ms -> {}, (version, list) -> lists.add(list));
+			TOKEN), 0, ms -> {}, (version, list, phrases) -> {
+				lists.add(list);
+				serverPhrases.add(phrases);
+			});
 		assertEquals(IncantationClient.Poll.UPDATED, client.poll("Steve"));
 		assertEquals(1, client.version());
 		assertEquals(List.of(List.of(new com.voiceforgaming.vfg.kws.Incantation("fire ball",
 			List.of("fireball", "fire bowl"), 3.0))), lists);
+		assertEquals(List.of(List.of("fire ball", "ice wall")), serverPhrases, "every phrase on the server");
 		assertEquals(IncantationClient.Poll.UNCHANGED, client.poll("Steve"), "after=1 and wait=0: 304 at once");
 	}
 

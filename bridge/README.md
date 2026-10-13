@@ -18,12 +18,17 @@ the name a task's (`galick_gun_styrk`, `[a-z][a-z0-9_]{1,31}`). Older `T<n>` row
 
 **An older history is brought up to date** whenever the schema is applied: the columns added since
 §4's DDL (`db.COLUMNS`), and `lines` and `usage` rebuilt once, in one transaction, when their CHECK
-lists are older (`db.CHECKS`: Jev's four classes, `direct_ask` becoming `action_oriented` and
-`not_useful` becoming `not_relevant`; the brain's `brain`, `respond` and `planner` usage, and the
-incantation alias call's `alias`). `usage`'s added columns are the cache counts and a model call's
-`ok`, `error` and `ms`, which `structured()` records for every call. Every other column
-on those tables is kept. Deploy the bridge and `jev/` together: once the history has the four
-classes, an older Jev filter's verdicts fail the CHECK until it is replaced.
+lists are older (`db.CHECKS`: Jev's three classes `to_ai`, `context` and `not_relevant`, the two
+classes for the AI before them, `action_oriented` and `conversational`, and the older `direct_ask`
+all becoming `to_ai`, and `not_useful` becoming `not_relevant`; the brain's `brain`, `respond` and
+`planner` usage, and the incantation alias call's `alias`). `usage`'s added columns are the cache
+counts and a model call's `ok`, `error` and `ms`, which `structured()` records for every call.
+Every other column on those tables is kept. The feed's rows are never rewritten: a `LINE` row fed
+before keeps its old class, which its readers take as `to_ai`. The bridge and `jev/` are deployed
+together, since an older Jev's verdicts fail the new CHECK and a newer Jev's `to_ai` an older
+bridge's: when Jev is on the box, `deploy.sh` stops it before the schema and deploys `jev/` from
+the same checkout after (`jev/deploy.sh`), and `jev/deploy.sh` alone refuses a box whose bridge
+predates `to_ai`.
 
 From the repo's root on the owner's PC:
 
@@ -31,7 +36,7 @@ From the repo's root on the owner's PC:
 bridge/deploy/ec2.sh launch|start|stop|status|ssh-ip|retire   # the box itself (AWS CLI v2)
 bridge/deploy/deploy.sh provision [--restore]                 # Java, Python 3.12, Minecraft, the firewall, /opt/vfg/.env, the test server
 bridge/deploy/deploy.sh env                                   # the secrets in VFG_BOX_ENV into /opt/vfg/.env
-bridge/deploy/deploy.sh                                       # the bridge and the units; restarts them; the test server kept current
+bridge/deploy/deploy.sh                                       # the bridge and the units, and Jev when it is there; restarts them; the test server kept current
 bridge/deploy/deploy.sh testserver [--fresh]                  # the test server alone; --fresh makes its template world again
 bridge/deploy/set-secret.sh VFG_CLIENT_TOKEN                  # a value into /opt/vfg/.env, typed hidden
 bridge/deploy/client-token.sh                                 # prints the client token, to a terminal only
@@ -124,13 +129,20 @@ and lines are stored as before. Every endpoint takes the client token.
   running as command_2`, or `... failed — <error>`. Also after the answer, a cast that came after
   its line drops that line, by the drop rule, if Jev has not judged it yet.
 - **`GET /v1/incantations?player=Steve&after=<version>&wait=<s>`**: `200 {"version", "player",
-  "incantations": [{"phrase", "aliases", "cooldown_s"}]}`, the player's own then the `@a` ones. With
+  "incantations": [{"phrase", "aliases", "cooldown_s"}], "server_phrases": [phrase, …]}`. `incantations`
+  is the player's own then the `@a` ones. With
   `after` the current version it is held until the store changes or `wait` s pass (default 25, at
-  most 30), then `304`. It is what the mod's keyword spotter listens for, so each incantation's
+  most 30), then `304`. The version is the store's, which every write bumps whoever's entry it
+  changed, so a held request answers when any player's incantations change. `incantations` is what the
+  mod's keyword spotter listens for, so each incantation's
   `aliases` leave out its `everyday_aliases` (`Casts.spotted`): those that are everyday talk of
   their own, "ice cream" and "i scream" for "ice beam", which would cast on ordinary
   conversation. Layer 2, the drop rule and the Jev cast check still use every alias; an entry
-  from before the marks has none.
+  from before the marks has none. `server_phrases` is every incantation phrase on the server,
+  whoever's (the player's own, the `@a` ones and every other player's), normalised, once each,
+  sorted, with no aliases (`Casts.server_phrases`): the mod's speech-to-text boosts them as
+  hotwords, since players talk about each other's spells (Prototype_Addressing_The_AI). An older
+  bridge leaves it out, and the mod then boosts the player's own phrases.
 - **`POST /v1/lines`**, for a player with incantations: Layer 2 (`match_line` at
   `VFG_INCANT_ALLOWANCE`), on a line of at most `VFG_INCANT_LAYER2_MAX_WORDS` words (6,
   normalised, fillers counted; 0 any length), may fire `transcript` casts, with the line's

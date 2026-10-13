@@ -402,6 +402,39 @@ class TestList(CastCase):
         self.assertEqual(self.get("player=Steve")[1]["incantations"][0],
                          {"phrase": "ice beam", "aliases": ["ice been", "nice beam"], "cooldown_s": 3.0})
 
+    def test_server_phrases_are_every_players_phrases_once_each_with_no_aliases(self):
+        self.write_store(entry("Steve", "fire ball", aliases=["fireball", "fire bowl"]),
+                         entry("Steve", "ice wall"), entry("Alex", "rock slide", aliases=["rocks lied"]),
+                         entry("Alex", "Fire Ball"), entry("@a", "light up"), entry("Notch", "ice wall"))
+        for player in ("Steve", "Alex", "Notch", "Herobrine"):
+            status, doc = self.get("player=" + player)
+            self.assertEqual(status, 200)
+            self.assertEqual(doc["server_phrases"], ["fire ball", "ice wall", "light up", "rock slide"], player)
+        self.assertEqual([e["phrase"] for e in self.get("player=Herobrine")[1]["incantations"]], ["light up"])
+        self.write_store()
+        self.assertEqual(self.get("player=Steve")[1]["server_phrases"], [])
+
+    def test_a_held_request_answers_when_another_players_phrases_change(self):
+        # the kit's own store, as incantation_create writes it: every write bumps the store's version
+        inc = KIT.modules()[0]
+        store = inc.Store(self.store_path)
+        version = store.version()
+        got = []
+        t = threading.Thread(target=lambda: got.append(self.get("player=Steve&after=%d&wait=10" % version)))
+        t.start()
+        time.sleep(0.1)                          # held: Steve's own list is unchanged by what follows
+        store.put(entry("Alex", "stone skin"))
+        t.join(5)
+        self.assertEqual(got[0][0], 200)
+        doc = got[0][1]
+        self.assertEqual(doc["version"], version + 1)
+        self.assertEqual([e["phrase"] for e in doc["incantations"]], ["fire ball", "ice wall", "light up"])
+        self.assertIn("stone skin", doc["server_phrases"])
+        self.assertEqual(self.get("player=Steve&after=%d&wait=0.1" % doc["version"]), (304, None))
+        store.remove("Alex", "rock slide")
+        doc = self.get("player=Steve&after=%d&wait=10" % doc["version"])[1]
+        self.assertNotIn("rock slide", doc["server_phrases"])
+
     def test_304_when_nothing_changes(self):
         start = time.monotonic()
         self.assertEqual(self.get("player=Steve&after=1&wait=0.1"), (304, None))
@@ -743,7 +776,7 @@ class TestJevCasts(CastCase):
     def test_a_kept_cast_may_come_after_jev_routed_the_line(self):
         _, line = self.line("ok watch this everybody, look at me, fire ball")
         conn = sqlite3.connect(self.db_path)
-        conn.execute("UPDATE lines SET jev_class = 'action_oriented'")   # routed first, as a long line is
+        conn.execute("UPDATE lines SET jev_class = 'to_ai'")   # routed first, as a long line is
         conn.commit()
         conn.close()
         status, doc = self.jev(line["id"], keep=True)

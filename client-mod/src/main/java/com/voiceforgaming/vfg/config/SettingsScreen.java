@@ -175,6 +175,7 @@ public final class SettingsScreen extends Screen {
 
 	private Component modelLabel() {
 		return Component.translatable(switch (draft.model) {
+			case VfgConfig.MODEL_PARAKEET_110M -> "vfg.settings.model.parakeet_110m";
 			case VfgConfig.MODEL_BASE -> "vfg.settings.model.base";
 			case VfgConfig.MODEL_TINY -> "vfg.settings.model.tiny";
 			default -> "vfg.settings.model.parakeet";
@@ -307,12 +308,14 @@ public final class SettingsScreen extends Screen {
 			g.text(font, font.plainSubstrByWidth(heard, fieldW), fieldX, row(4) + widgetH + 2, GREY);
 		}
 
-		// Status line; once voice is ready, the turn model's under it, in the same row.
+		// Status line; once voice is ready, under it the speech model's note if it has one (the bigger
+		// model downloading, or the smaller one standing in), else the turn model's, in the same row.
 		int statusW = retryButton != null && retryButton.visible ? fieldW - 64 : fieldW;
 		Component status = statusText(st);
 		int statusColor = st.setupFailed() || st.micError() != null || st.tokenRejected() ? RED
 			: st.setup() == VoiceStatus.Setup.RUNNING ? AMBER : GREEN;
-		Component turn = st.setup() == VoiceStatus.Setup.READY ? turnText(st) : null;
+		Component turn = st.setup() != VoiceStatus.Setup.READY ? null
+			: st.stt().note() != VoiceStatus.Stt.Note.NONE ? sttText(st.stt()) : turnText(st);
 		int statusY = turn == null ? row(7) + 12 + textDy : row(7) + 12 + (widgetH - 18) / 2;
 		g.text(font, font.plainSubstrByWidth(status.getString(), statusW), fieldX, statusY, statusColor);
 		if (turn != null) {
@@ -347,6 +350,17 @@ public final class SettingsScreen extends Screen {
 				}
 				yield Component.translatable(service.listening() ? "vfg.status.listening" : "vfg.status.ready");
 			}
+		};
+	}
+
+	/** The speech model's note: never red, voice works on the model standing in. */
+	private static Component sttText(VoiceStatus.Stt stt) {
+		return switch (stt.note()) {
+			case UPGRADING -> Component.translatable("vfg.status.stt.upgrading", stt.percent());
+			case UPGRADE_RETRYING -> Component.translatable("vfg.status.stt.retrying", nullToEmpty(stt.detail()));
+			case FALLBACK -> Component.translatable("vfg.status.stt.fallback", nullToEmpty(stt.detail()));
+			case CRASHED -> Component.translatable("vfg.status.stt.crashed");
+			case NONE -> Component.empty();
 		};
 	}
 

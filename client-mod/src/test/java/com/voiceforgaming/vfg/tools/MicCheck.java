@@ -8,6 +8,7 @@ import com.voiceforgaming.vfg.net.BridgeClient;
 import com.voiceforgaming.vfg.net.LinePayload;
 import com.voiceforgaming.vfg.speech.LineAssembler;
 import com.voiceforgaming.vfg.speech.Levels;
+import com.voiceforgaming.vfg.speech.Hotwords;
 import com.voiceforgaming.vfg.speech.SpeechEngine;
 import com.voiceforgaming.vfg.speech.Transcriber;
 import com.voiceforgaming.vfg.testing.PlaybackDevice;
@@ -53,11 +54,13 @@ public final class MicCheck {
 		  --bridge <url>         also POST each line to <url>/v1/lines, e.g. http://127.0.0.1:8787
 		  --token <t>            the client token for --bridge (default: $VFG_CLIENT_TOKEN)
 		  --player <name>        player_name in the posted lines (default MicCheck)
-		  --model <m>            parakeet-110m (Parakeet TDT 110M, the mod's default), base (Moonshine
-		                         base), tiny (Moonshine tiny), or parakeet (Parakeet TDT 0.6B v2,
-		                         482 MB, about 0.9 GB of memory; for comparison only, not in the mod)
-		  --hotwords <w,w,...>   Parakeet only: names and words to favour, e.g. SteveJM,Alex,creeper
-		                         (experimental; see ./gradlew sttCompare)
+		  --model <m>            parakeet (Parakeet TDT 0.6B v2, the mod's default: 482 MB once, about
+		                         0.9 GB of memory), parakeet-110m (Parakeet TDT 110M, its fallback),
+		                         base (Moonshine base) or tiny (Moonshine tiny)
+		  --players <n,n,...>    Parakeet: the players online, whose names are hotwords as in the mod
+		                         ("AI", "brain" and the command words always are), e.g. SteveJM,Alex
+		  --phrases <p,p,...>    Parakeet: the server's incantation phrases, hotwords too, e.g. fire ball,freeze
+		  --no-hotwords          decode greedily with no hotwords (hotwords: false in the mod)
 		  --turn <m>             the turn model: smart-turn-v3.2 (the mod's default), turn-1-mini, or off
 		                         (lines end on silence alone)
 		  --turn-threshold <x>   0.05-0.95: the score at which a line is finished (default: the model's own)
@@ -157,22 +160,22 @@ public final class MicCheck {
 
 		SttModels.Model model = switch (o.model) {
 			case "tiny" -> SttModels.MOONSHINE_TINY;
-			case "parakeet" -> SttModels.PARAKEET_06B;
+			case "parakeet-110m" -> SttModels.PARAKEET_110M;
 			case "base" -> SttModels.MOONSHINE_BASE;
-			default -> SttModels.PARAKEET_110M;
+			default -> SttModels.PARAKEET_06B;
 		};
-		Path hotwords = null;
-		if (o.hotwords != null) {
-			if (model.moonshine()) {
-				throw new IllegalArgumentException("--hotwords works with --model parakeet or parakeet-110m only");
-			}
-			hotwords = Files.writeString(Path.of("hotwords.txt").toAbsolutePath(),
-				String.join("\n", o.hotwords.split("\\s*,\\s*")) + "\n");
+		Hotwords hotwords = null;
+		if (!model.moonshine() && !o.noHotwords) {
+			hotwords = new Hotwords(model == SttModels.PARAKEET_06B ? Hotwords.PARAKEET_06B : Hotwords.DEFAULT);
+			hotwords.players(o.players == null ? List.of() : List.of(o.players.split("\\s*,\\s*")));
+			hotwords.phrases(o.phrases == null ? List.of() : List.of(o.phrases.split("\\s*,\\s*")), null);
+			say("Hotwords: %s", hotwords.entries().stream().map(Hotwords.Entry::text).toList());
 		}
 		say("");
 		say("Loading %s and the Silero VAD (downloaded once into %s)...", model.label(), TestAssets.root());
 		long t0 = System.nanoTime();
-		SpeechEngine engine = SttModels.engine(model, o.threads, hotwords, 1.5f, (float) o.vadThreshold);
+		SpeechEngine engine = SttModels.engine(model, o.threads, hotwords, SpeechEngine.MAX_ACTIVE_PATHS,
+			(float) o.vadThreshold);
 		say("Loaded in %.2f s.", (System.nanoTime() - t0) / 1e9);
 		TurnDetector turn = loadTurn(o.turn);
 
@@ -418,9 +421,11 @@ public final class MicCheck {
 		String bridge;
 		String token;
 		String wav;
-		String hotwords;
+		String players;
+		String phrases;
+		boolean noHotwords;
 		String player = "MicCheck";
-		String model = "parakeet-110m";
+		String model = "parakeet";
 		String turn = TurnDetectors.DEFAULT;
 		Double turnThreshold;
 		double silence = VfgConfig.DEFAULT_SILENCE_SECONDS;
@@ -446,7 +451,9 @@ public final class MicCheck {
 							throw new IllegalArgumentException("--model is base, tiny, parakeet-110m or parakeet");
 						}
 					}
-					case "--hotwords" -> o.hotwords = value(a, ++i, k);
+					case "--players", "--hotwords" -> o.players = value(a, ++i, k);
+					case "--phrases" -> o.phrases = value(a, ++i, k);
+					case "--no-hotwords" -> o.noHotwords = true;
 					case "--turn" -> {
 						o.turn = value(a, ++i, k);
 						if (!TurnDetectors.MODELS.contains(o.turn)) {

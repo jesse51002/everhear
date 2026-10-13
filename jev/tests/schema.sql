@@ -4,7 +4,7 @@ CREATE TABLE lines (id TEXT PRIMARY KEY, at TEXT NOT NULL, ended_at TEXT,
   player_uuid TEXT, player_name TEXT NOT NULL,
   source TEXT NOT NULL CHECK (source IN ('voice','chat','ai')), text TEXT NOT NULL,
   peak_dbfs REAL, mean_dbfs REAL, client_line_id TEXT UNIQUE,
-  jev_class TEXT CHECK (jev_class IN ('action_oriented','conversational','context','not_relevant')),
+  jev_class TEXT CHECK (jev_class IN ('to_ai','context','not_relevant')),
   jev_confidence REAL, jev_judged_at TEXT, fed_at TEXT);
 CREATE INDEX lines_at ON lines(at);
 CREATE INDEX lines_player_at ON lines(player_name, at);

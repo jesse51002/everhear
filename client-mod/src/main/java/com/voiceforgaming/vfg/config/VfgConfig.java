@@ -42,12 +42,22 @@ public final class VfgConfig {
 		.create();
 
 	public static final String FILE_NAME = "vfg-client.json";
-	/** The default: Parakeet TDT 110M. A saved Moonshine value is kept, never migrated. */
-	public static final String MODEL_PARAKEET = Assets.PARAKEET_110M;
+	/**
+	 * The default: Parakeet TDT 0.6B v2. Parakeet TDT 110M is its fallback, for a PC short of memory.
+	 * A saved Moonshine value is kept, never migrated.
+	 */
+	public static final String MODEL_PARAKEET = Assets.PARAKEET_06B;
+	public static final String MODEL_PARAKEET_110M = Assets.PARAKEET_110M;
 	public static final String MODEL_BASE = Assets.MOONSHINE_BASE;
 	public static final String MODEL_TINY = Assets.MOONSHINE_TINY;
-	public static final List<String> MODELS = List.of(MODEL_PARAKEET, MODEL_BASE, MODEL_TINY);
+	public static final List<String> MODELS = List.of(MODEL_PARAKEET, MODEL_PARAKEET_110M, MODEL_BASE, MODEL_TINY);
 	public static final String DEFAULT_MODEL = MODEL_PARAKEET;
+	/**
+	 * The file's version, {@code config_version}: 2 since 0.3.5. A file without it (version 1) that says
+	 * {@code parakeet-110m-en}, 0.3.4's default, moves to the new default once; a player who picks 110M
+	 * after that keeps it.
+	 */
+	public static final int CONFIG_VERSION = 2;
 	public static final List<String> CORNERS = List.of("top_left", "top_right", "bottom_left", "bottom_right");
 	public static final int DEFAULT_BRIDGE_PORT = 8787;
 
@@ -107,6 +117,11 @@ public final class VfgConfig {
 	public boolean vosk = true;
 	/** Whether a phrase Vosk hears casts only once the next partial, or the end of speech, still shows it. */
 	public boolean voskConfirm = false;
+	/**
+	 * Whether a Parakeet model favours the hotwords ("AI", "brain", the players online, the server's
+	 * incantation phrases, the command words), decoding by beam search; off, it decodes greedily.
+	 */
+	public boolean hotwords = true;
 
 	private transient Map<String, String> env = System.getenv();
 
@@ -133,6 +148,7 @@ public final class VfgConfig {
 		c.incantationSpotterAliases = incantationSpotterAliases;
 		c.vosk = vosk;
 		c.voskConfirm = voskConfirm;
+		c.hotwords = hotwords;
 		c.env = env;
 		return c;
 	}
@@ -233,6 +249,11 @@ public final class VfgConfig {
 	 * save wrote {@code silence_seconds: 5}: its 5 becomes 3, and the file is written back
 	 * once, with the new keys, so the move never happens again. Any other silence was the
 	 * player's own and is kept.
+	 *
+	 * <p>A file older than {@link #CONFIG_VERSION} 2 (it has no {@code config_version}) that says
+	 * {@code parakeet-110m-en}, which every save wrote while it was the default, moves to
+	 * {@code parakeet-0.6b-v2-en}, and the file is written back once with {@code config_version: 2},
+	 * so a player who picks 110M after that keeps it. Moonshine stays.
 	 */
 	public static VfgConfig load(Path file) {
 		if (!Files.exists(file)) {
@@ -248,11 +269,23 @@ public final class VfgConfig {
 			}
 			JsonObject o = root.getAsJsonObject();
 			VfgConfig c = fromJson(o);
+			boolean writeBack = false;
 			if (!o.has("turn_model")) {
 				if (c.silenceSeconds == OLD_SILENCE_SECONDS) {
 					c.silenceSeconds = DEFAULT_SILENCE_SECONDS;
 					LOG.info("config: silence_seconds 5 is now 3, the default with the turn model");
 				}
+				writeBack = true;
+			}
+			if (version(o) < 2) {
+				if (c.model.equals(MODEL_PARAKEET_110M)) {
+					c.model = MODEL_PARAKEET;
+					LOG.info("config: model {}, the default before 0.3.5, is now {}, the new default (Parakeet 110M "
+						+ "stays in Voice settings, for a PC short of memory)", MODEL_PARAKEET_110M, MODEL_PARAKEET);
+				}
+				writeBack = true;
+			}
+			if (writeBack) {
 				c.saveQuietly(file);
 			}
 			return c;
@@ -271,6 +304,16 @@ public final class VfgConfig {
 		}
 	}
 
+	/** The file's {@code config_version}; 1 when it has none (before 0.3.5) or it is not a whole number. */
+	static int version(JsonObject o) {
+		JsonElement e = o.get("config_version");
+		if (e == null || !e.isJsonPrimitive() || !e.getAsJsonPrimitive().isNumber()) {
+			return 1;
+		}
+		double v = e.getAsDouble();
+		return v == Math.rint(v) && v >= 1 ? (int) v : 1;
+	}
+
 	static VfgConfig fromJson(JsonObject o) {
 		VfgConfig c = new VfgConfig();
 		c.serverAddress = string(o, "server_address", "");
@@ -279,7 +322,9 @@ public final class VfgConfig {
 		c.micDevice = string(o, "mic_device", "");
 		c.model = string(o, "model", DEFAULT_MODEL);
 		if (c.model.equals("parakeet-110m")) {
-			c.model = MODEL_PARAKEET; // the short name works too
+			c.model = MODEL_PARAKEET_110M; // the short names work too
+		} else if (c.model.equals("parakeet-0.6b") || c.model.equals("parakeet-0.6b-v2")) {
+			c.model = MODEL_PARAKEET;
 		}
 		if (!MODELS.contains(c.model)) {
 			LOG.warn("config: model \"{}\" is not one of {}; using {}", c.model, MODELS, DEFAULT_MODEL);
@@ -319,6 +364,7 @@ public final class VfgConfig {
 			MAX_INCANTATION_SPOTTER_ALIASES);
 		c.vosk = bool(o, "vosk", true);
 		c.voskConfirm = bool(o, "vosk_confirm", false);
+		c.hotwords = bool(o, "hotwords", true);
 		return c;
 	}
 
@@ -393,6 +439,7 @@ public final class VfgConfig {
 
 	public JsonObject toJson() {
 		JsonObject o = new JsonObject();
+		o.addProperty("config_version", CONFIG_VERSION);
 		o.addProperty("server_address", serverAddress);
 		o.addProperty("bridge_url", bridgeUrl);
 		o.addProperty("client_token", clientToken);
@@ -418,6 +465,7 @@ public final class VfgConfig {
 		o.addProperty("incantation_spotter_aliases", incantationSpotterAliases);
 		o.addProperty("vosk", vosk);
 		o.addProperty("vosk_confirm", voskConfirm);
+		o.addProperty("hotwords", hotwords);
 		return o;
 	}
 
@@ -462,6 +510,6 @@ public final class VfgConfig {
 			+ ", incantations=" + incantations + ", incantation_threshold=" + incantationThreshold
 			+ ", incantation_boost=" + incantationBoost + ", incantation_recheck_seconds=" + incantationRecheckSeconds
 			+ ", incantation_paths=" + incantationPaths + ", incantation_spotter_aliases=" + incantationSpotterAliases
-			+ ", vosk=" + vosk + ", vosk_confirm=" + voskConfirm + "]";
+			+ ", vosk=" + vosk + ", vosk_confirm=" + voskConfirm + ", hotwords=" + hotwords + "]";
 	}
 }
