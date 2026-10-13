@@ -89,27 +89,88 @@ def held(path):
         os.close(fd)
 
 
+def _cgroup(pid):
+    try:
+        with open("/proc/%s/cgroup" % pid) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def _environ_has(pid, item):
+    try:
+        with open("/proc/%s/environ" % pid, "rb") as f:
+            return item.encode() in f.read().split(b"\0")
+    except OSError:
+        return False
+
+
+# This test's own processes are never "live": itself, whatever shares its sandbox's cgroup (the
+# unit vfg test runs it in, its copies with it), and, with no sandbox, whatever carries its run's
+# token (VFG_TEST_RUN, which vfg test sets and its copies inherit).
+_SELF = str(os.getpid())
+_MY_CGROUP = _cgroup("self")
+_MY_TOKEN = "VFG_TEST_RUN=" + os.environ["VFG_TEST_RUN"] if os.environ.get("VFG_TEST_RUN") else None
+# The test server's own folders: its java and copies run there, and it is not the live server.
+_TEST_DIRS = [os.path.realpath(p) for p in (os.path.dirname(os.environ.get("VFG_MC_PROPERTIES") or ""),
+                                            os.path.dirname((os.environ.get("VFG_RUN_DIR") or "").rstrip("/")))
+              if p]
+
+
+def _mine(pid):
+    if pid == _SELF:
+        return True
+    if _MY_CGROUP and "vfg-test-" in _MY_CGROUP and _cgroup(pid) == _MY_CGROUP:
+        return True
+    return bool(_MY_TOKEN) and _environ_has(pid, _MY_TOKEN)
+
+
+def _under(path, folder):
+    return path == folder or path.startswith(folder.rstrip("/") + "/")
+
+
+def _in_test_server(pid):
+    try:
+        cwd = os.path.realpath(os.readlink("/proc/%s/cwd" % pid))
+    except OSError:
+        return False
+    return any(_under(cwd, d) for d in _TEST_DIRS)
+
+
+def _names_live_folder(args):
+    """An argument that is the live mc or vfg folder or a path in it, the box's Python under the
+    live vfg folder (every Python on the box runs from it) aside; <vfg>-test is not under <vfg>/."""
+    py = [os.path.join(LIVE["vfg"], d) for d in ("python", "uv")]
+    for a in args:
+        if any(_under(a, p) for p in py):
+            continue
+        if _under(a, LIVE["mc"]) or _under(a, LIVE["vfg"]):
+            return True
+    return False
+
+
 def live_pids():
-    """The live server's processes this test can see: Minecraft (`-jar server.jar`), the bridge and
-    Jev, by command line, each whose cwd or root is in the live mc or vfg folder; {} when none are
-    visible (the box's sandbox hides them)."""
+    """The live server's processes this test can see: Minecraft (`-jar server.jar`, or Fabric under
+    realmc), the bridge and Jev, by command line, or any whose arguments name a path in the live mc
+    or vfg folder; never this test's own processes nor the test server's. {} when none are visible
+    (the box's sandbox hides them)."""
     found = {}
     try:
         entries = os.listdir("/proc")
     except OSError:
         return found
     for pid in entries:
-        if not pid.isdigit():
+        if not pid.isdigit() or _mine(pid):
             continue
         try:
             with open("/proc/%s/cmdline" % pid, "rb") as f:
-                cmd = f.read().replace(b"\x00", b" ").decode("utf-8", "replace")
+                args = [a.decode("utf-8", "replace") for a in f.read().split(b"\x00") if a]
         except OSError:
             continue
-        hit = (re.search(r"-jar\s+\S*server\.jar", cmd) or "fabric" in cmd.lower()
-               or LIVE["mc"] in cmd or LIVE["vfg"] in cmd
+        cmd = " ".join(args)
+        hit = (re.search(r"-jar\s+\S*server\.jar", cmd) or "fabric" in cmd.lower() or _names_live_folder(args)
                or "vfg_bridge" in cmd or "vfg-jev" in cmd or "vfg_jev" in cmd)
-        if hit and "vbox_escape" not in cmd:   # never this test itself
+        if hit and not _in_test_server(pid):
             found[pid] = cmd
     return found
 
