@@ -1,6 +1,8 @@
-"""python -m brain from start to stop, every part faked: the start's steps in order, the
-history it never acts on, the tasks it loads from the box, the old tasks file set aside, the
-feed followed, and a stop that fails what it interrupts."""
+"""python -m brain from start to stop, every part faked: the start's steps in order, the three
+agents wired with their own settings, the history it never acts on, the tasks it loads from the
+box, the old tasks file set aside, the feed followed, and a stop that fails what it interrupts;
+and the settings: DeepSeek V4.1 Flash for every agent, the step timeout by the reasoning, the
+loop's budget, the hold, and VFG_LOOP_SECONDS gone."""
 
 import asyncio
 import json
@@ -11,7 +13,7 @@ from brain import config
 from brain.__main__ import GREETING, NoImplementers, serve
 from brain.vfg import VfgResult
 
-from conftest import FakeAsk, FakeImplementers, FakeRefs, FakeVfg, act, catalog, cmd, step
+from conftest import FakeAsk, FakeImplementers, FakeRefs, FakeVfg, act, answer, catalog, cmd, route, step
 
 
 def feed(seq: int, at: datetime, rest: str, processed: bool = False) -> str:
@@ -50,8 +52,9 @@ async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fail
         await stop.wait()
 
     ask = FakeAsk(Step=step(act("command", "give a diamond pickaxe", cmd("give Steve diamond_pickaxe")),
-                            reply="there you go"))
+                            reply="there you go"), Response=answer(), Route=route())
     run = asyncio.create_task(serve(cfg, stop, vfg=vfg, watch=watch, catalog=catalog(), refs=FakeRefs(), ask=ask,
+                                    respond_ask=ask, router_ask=ask,
                                     make_implementers=lambda on_report, on_session: impl))
     for _ in range(200):
         if len([s for s in vfg.said() if s[0] == "there you go"]) == 2:
@@ -67,8 +70,11 @@ async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fail
     assert "command — Run vanilla commands" in vfg.of("jev", "menu", "set")[0][3]
     assert vfg.of("context", "--since") == [["context", "--since", "-6h", "--json"]] and seen_after == [12]
     assert ["context", "mark", "10"] in vfg.calls  # history: marked read, never acted on
-    assert len(ask.calls) == 2 and "give me bread" not in ask.calls[0]["cached"][-1][0].split("THE EVENT")[1]
-    assert "THE OWNER: KrownJM." in ask.calls[0]["cached"][0][0]
+    steps = ask.of("Step")
+    assert len(steps) == 2 and "give me bread" not in steps[0]["cached"][-1][0].split("THE EVENT")[1]
+    assert [c["component"] for c in ask.calls].count("router") == 2  # each line: the agent, the router, a loop
+    for c in steps + ask.of("Response") + ask.of("Route"):
+        assert "THE OWNER: KrownJM" in c["cached"][0][0]  # each prompt names the owner
     assert [GREETING] in vfg.said() and impl.closed
     # the tasks from the box: the open one failed by name, written through, its AI result row
     record = "castle_alex failed: interrupted, the brain restarted while it ran"
@@ -82,10 +88,10 @@ async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fail
     assert json.loads(retired.read_text()) == old
     assert not any(w in json.dumps(vfg.calls) for w in ("old_castle", "by the old brain"))
     assert all("--task" not in c for c in vfg.calls)    # the lines' actions and replies carry no task
-    # the usage queue sent at the start, after the two calls and at the stop; never a row of its own. The calls
-    # asked at once: one flush for both, or one and the one more after it, never two running at once
+    # the usage queue sent at the start, after the calls and at the stop; never a row of its own, and never two
+    # flushes running at once (calls that end meanwhile ask for one more)
     flushes = vfg.of("usage")
-    assert 3 <= len(flushes) <= 4 and flushes == [["usage", "flush"]] * len(flushes)
+    assert 3 <= len(flushes) <= 8 and flushes == [["usage", "flush"]] * len(flushes)
     assert vfg.calls[-1] == ["usage", "flush"] and vfg.calls.index(flushes[0]) < vfg.calls.index(vfg.of("say")[0])
 
 
@@ -106,9 +112,9 @@ async def test_with_no_rows_that_recent_it_follows_from_the_feeds_last_seq_and_a
         await asyncio.Event().wait()
         yield ""
 
-    ask = FakeAsk(Step=step(reply="never"))
+    ask = FakeAsk(Step=step(reply="never"), Response=answer(), Route=route())
     assert await serve(cfg, stop, vfg=vfg, watch=watch, catalog=catalog(), refs=FakeRefs(), ask=ask,
-                       make_implementers=lambda *_: FakeImplementers()) == 0
+                       respond_ask=ask, router_ask=ask, make_implementers=lambda *_: FakeImplementers()) == 0
     assert len(vfg.of("context", "--since")) == 3 and seen_after == [902] and ask.calls == []
 
 
@@ -128,22 +134,82 @@ async def test_with_no_implementers_a_new_task_reports_its_failure_with_five_arg
                     "", empty)]
 
 
-def test_the_loops_settings_and_the_removed_ones_ignored(tmp_path):
+async def test_each_agent_is_wired_with_its_own_settings_and_the_start_line_says_them(tmp_path, monkeypatch, capsys):
+    cfg = config.load({"VFG_HOME": str(tmp_path / "home")})
+    made: list[tuple] = []
+
+    def asker(model, reasoning, timeout, providers=()):
+        made.append((model, reasoning, timeout, providers))
+        return FakeAsk()
+
+    monkeypatch.setattr(main, "asker", asker)
+    vfg = FakeVfg().on("context", "--since", answer=VfgResult(0, json.dumps({"last_seq": 1}) + "\n", ""))
+    stop = asyncio.Event()
+
+    async def watch(after: int):
+        stop.set()
+        await asyncio.Event().wait()
+        yield ""
+
+    assert await serve(cfg, stop, vfg=vfg, watch=watch, catalog=catalog(), refs=FakeRefs(),
+                       make_implementers=lambda *_: FakeImplementers()) == 0
+    hosts = ("together", "coreweave", "parasail")
+    assert made == [("deepseek/deepseek-v4.1-flash", "low", 120.0, hosts),   # the brain's steps
+                    ("deepseek/deepseek-v4.1-flash", "off", 20.0, hosts),    # the conversation agent
+                    ("deepseek/deepseek-v4.1-flash", "off", 30.0, hosts)]    # the router
+    out = capsys.readouterr().out
+    assert ("respond deepseek/deepseek-v4.1-flash off 20 s; router deepseek/deepseek-v4.1-flash off 30 s, the hold "
+            "on; brain deepseek/deepseek-v4.1-flash low 120 s a step, 10 steps a line up to 20, taken up within "
+            "120 s;") in out
+
+
+def test_every_agent_runs_deepseek_v41_flash_and_a_steps_timeout_follows_its_reasoning():
     cfg = config.load({})
-    assert (cfg.model, cfg.reasoning, cfg.providers) == ("google/gemini-3.8-flash", "low", ())
-    assert (cfg.loop_steps, cfg.loop_seconds, cfg.turn_waiting, cfg.turn_settle_s) == (10, 120.0, 3, 3.0)
-    assert cfg.timeout_s == 45.0 and config.load({"VFG_BRAIN_TIMEOUT_S": "30"}).timeout_s == 30.0
-    assert cfg.respond_timeout_s == 20.0 and config.load({"VFG_RESPOND_TIMEOUT_S": "8"}).respond_timeout_s == 8.0
-    cfg = config.load({"VFG_BRAIN_MODEL": "openai/gpt-6.1-sol", "VFG_BRAIN_REASONING": "off",
-                       "VFG_BRAIN_PROVIDERS": "google-vertex, google-ai-studio", "VFG_LOOP_STEPS": "4",
-                       "VFG_LOOP_SECONDS": "45", "VFG_TURN_WAITING": "1", "VFG_TURN_SETTLE_S": "0"})
-    assert (cfg.model, cfg.reasoning, cfg.providers) == ("openai/gpt-6.1-sol", "off",
-                                                         ("google-vertex", "google-ai-studio"))
-    assert (cfg.loop_steps, cfg.loop_seconds, cfg.turn_waiting, cfg.turn_settle_s) == (4, 45.0, 1, 0.0)
+    hosts = ("together", "coreweave", "parasail")
+    assert (config.V41, config.V41_HOSTS) == ("deepseek/deepseek-v4.1-flash", hosts)
+    # the brain at low, the loop replay's choice (integration/replay/loop/report-deepseek-v4.1-flash-low.md)
+    assert (cfg.model, cfg.reasoning, cfg.providers, cfg.timeout_s) == (config.V41, "low", hosts, 120.0)
+    assert (cfg.respond_model, cfg.respond_reasoning, cfg.respond_providers, cfg.respond_timeout_s) == \
+        (config.V41, "off", hosts, 20.0)
+    assert (cfg.router_model, cfg.router_reasoning, cfg.router_providers, cfg.router_timeout_s) == \
+        (config.V41, "off", hosts, 30.0)
+    assert config.load({"VFG_BRAIN_REASONING": "off"}).timeout_s == 60.0     # a step that does not think: 1 minute
+    assert config.load({"VFG_BRAIN_REASONING": "low", "VFG_BRAIN_TIMEOUT_S": "45"}).timeout_s == 45.0  # set: it wins
+    assert config.load({"VFG_ROUTER_REASONING": "low"}).router_timeout_s == 60.0
+    assert config.load({"VFG_ROUTER_REASONING": "low", "VFG_ROUTER_TIMEOUT_S": "10"}).router_timeout_s == 10.0
+    assert config.load({"VFG_BRAIN_PROVIDERS": "none"}).providers == ()        # OpenRouter's choice
+    # the gate bench's model and hosts are still exported, though the agent no longer defaults to them
+    assert config.CHEAP == "~deepseek/deepseek-v4-flash-latest" and config.FAST[0] == "parasail"
+
+
+def test_the_hold_is_on_while_the_router_does_not_reason():
+    assert config.load({}).hold and config.load({"VFG_ROUTER_REASONING": "off"}).hold
+    assert not config.load({"VFG_ROUTER_REASONING": "low"}).hold
+    assert config.Config.effort_of("off") is False and config.Config.effort_of("low") == "low"
+
+
+def test_the_loops_budget_and_the_turns_settings_and_the_removed_ones_ignored(tmp_path, capsys):
+    cfg = config.load({})
+    assert (cfg.loop_steps, cfg.loop_cap, cfg.loop_take_up_s, cfg.turn_waiting, cfg.turn_settle_s) == \
+        (10, 20, 120.0, 3, 3.0)
+    cfg = config.load({"VFG_BRAIN_MODEL": "openai/gpt-6.1-sol", "VFG_BRAIN_REASONING": "minimal",
+                       "VFG_BRAIN_PROVIDERS": "openai, azure", "VFG_LOOP_STEPS": "4", "VFG_LOOP_CAP": "8",
+                       "VFG_LOOP_TAKE_UP_S": "30", "VFG_TURN_WAITING": "1", "VFG_TURN_SETTLE_S": "0"})
+    assert (cfg.model, cfg.reasoning, cfg.providers) == ("openai/gpt-6.1-sol", "minimal", ("openai", "azure"))
+    assert (cfg.loop_steps, cfg.loop_cap, cfg.loop_take_up_s, cfg.turn_waiting, cfg.turn_settle_s) == \
+        (4, 8, 30.0, 1, 0.0)
     assert config.load({"VFG_LOOP_STEPS": "0"}).loop_steps == 10  # under 1: the default
+    capsys.readouterr()
+    # a loop has no time limit now: VFG_LOOP_SECONDS, left in the environment or ~/.vfg/config, is said once and
+    # never read
+    cfg = config.load({"VFG_LOOP_SECONDS": "45"})
+    assert not hasattr(cfg, "loop_seconds")
+    out = capsys.readouterr().out
+    assert out.count("VFG_LOOP_SECONDS='45' is no longer read: a loop has no time limit now") == 1
     # the orchestrator's and the planner's keys, left in ~/.vfg/config, are ignored as every dead key is
     home = tmp_path / "home"
     home.mkdir()
-    (home / "config").write_text("VFG_ORCHESTRATOR_MODEL=x\nVFG_PLAN_MODEL=y\nVFG_PLAN_CHECK=on\n")
+    (home / "config").write_text("VFG_ORCHESTRATOR_MODEL=x\nVFG_PLAN_MODEL=y\nVFG_PLAN_CHECK=on\nVFG_LOOP_SECONDS=90\n")
     cfg = config.load({"VFG_HOME": str(home)})
     assert not any(hasattr(cfg, k) for k in ("orchestrator_model", "plan_model", "plan_check", "tasks_file"))
+    assert "VFG_LOOP_SECONDS='90' is no longer read" in capsys.readouterr().out

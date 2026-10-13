@@ -2,7 +2,9 @@
 
 Start: take the lock; `vfg up`; `vfg watchers set join,leave,death,advancement,server`; Jev's
 lookout (prompts/lookout.md) and menu (every action's line, set again when the actions change);
-the actions, which each loop reloads where a file changed; the command references in the
+the three agents, each with its own model settings (config.py): the conversation agent, the
+router and the brain's steps; the actions, which each front turn and report reloads where a file
+changed; the command references in the
 background (about 95 s the first time on a server version), tried again every 5 minutes until
 they load (the opening's command list, and a refused command's reference in its result); the
 old brain's tasks file in its folder set aside, renamed, never read; the context from `vfg
@@ -14,9 +16,10 @@ interrupted; then `vfg watch --after <seq>` followed for good, from the feed's h
 the context was read (`vfg context --json` gives it last, with rows or none), so nothing older is
 ever read as new; and the greeting, skipped when nobody is on. A read of the context that fails
 is tried again, never followed from 0.
-Stop (SIGTERM or SIGINT): read nothing new, drop what waits for a turn (a report dropped closes
-its task in code), let the loops in flight finish for up to 10 s, stop the implementers and fail
-their tasks as stopped, let the tasks' writes go out, send the usage
+Stop (SIGTERM or SIGINT): read nothing new, drop what waits for a turn and forget the saved
+loops, let the turns, loops and reports in flight finish for up to 10 s (a report that comes in
+meanwhile closes its task in code), stop the implementers and fail their tasks as stopped, let
+the tasks' writes go out, send the usage
 rows still queued, exit 0. The start sends the queue too (`vfg usage flush`), for the rows of
 calls made while it was down.
 """
@@ -45,6 +48,7 @@ from .config import Config, log
 from .context import Context, parse
 from .loop import Brain, jev_menu
 from .respond import Respond
+from .router import Router
 from .tasks import Tasks
 from .vfg import Later, follow, why
 from .vfg import vfg as run_vfg
@@ -201,8 +205,8 @@ def retire_tasks_file(cfg: Config) -> None:
 
 
 async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, catalog=None, refs=LOAD,
-                ask=None, respond_ask=None, make_implementers=implementers, http: httpx.AsyncClient | None = None,
-                clock=time.monotonic) -> int:
+                ask=None, respond_ask=None, router_ask=None, make_implementers=implementers,
+                http: httpx.AsyncClient | None = None, clock=time.monotonic) -> int:
     cfg.brain_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     retire_tasks_file(cfg)
     later = Later(vfg)
@@ -219,10 +223,13 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
     copies = running.Refresher(vfg, cfg.running_ttl_s)
     world = World(vfg, cfg.running_file, catalog, refresher=copies)
     call = Call(catalog, ask or asker(cfg.model, cfg.reasoning, cfg.timeout_s, cfg.providers), owner=cfg.owner,
-                hidden=hidden, checkpoint=cfg.checkpoint)
+                hidden=hidden, checkpoint=cfg.checkpoint, grant=cfg.loop_steps, cap=cfg.loop_cap)
     respond = Respond(catalog, respond_ask or asker(cfg.respond_model, cfg.respond_reasoning, cfg.respond_timeout_s,
                                                     cfg.respond_providers),
                       owner=cfg.owner, checkpoint=cfg.checkpoint)
+    router = Router(catalog, router_ask or asker(cfg.router_model, cfg.router_reasoning, cfg.router_timeout_s,
+                                                 cfg.router_providers),
+                    owner=cfg.owner, hidden=hidden, checkpoint=cfg.checkpoint)
 
     loaded = await load_context(vfg, cfg.history_hours, stop)
     if loaded is None:
@@ -245,11 +252,11 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
     impl = make_implementers(on_report, tasks.set_session)  # a session is kept as soon as the CLI names it
     acts = Acts(vfg=vfg, later=later, catalog=catalog, tasks=tasks, implementers=impl, world=world, repo=cfg.repo,
                 server=cfg.server, action_timeout_s=cfg.action_timeout_s)
-    brain = Brain(ctx=ctx, call=call, respond=respond, acts=acts, world=world, tasks=tasks, implementers=impl,
-                  later=later, catalog=catalog, refs=None if refs is LOAD else refs, clock=clock,
+    brain = Brain(ctx=ctx, call=call, respond=respond, router=router, acts=acts, world=world, tasks=tasks,
+                  implementers=impl, later=later, catalog=catalog, refs=None if refs is LOAD else refs, clock=clock,
                   start=start, load=lambda: load_context(vfg, cfg.history_hours),
-                  menu=lambda text: later("jev", "menu", "set", text), steps=cfg.loop_steps,
-                  seconds=cfg.loop_seconds, waiting=cfg.turn_waiting, settle_s=cfg.turn_settle_s)
+                  menu=lambda text: later("jev", "menu", "set", text), steps=cfg.loop_steps, cap=cfg.loop_cap,
+                  take_up_s=cfg.loop_take_up_s, hold=cfg.hold, waiting=cfg.turn_waiting, settle_s=cfg.turn_settle_s)
 
     for t in tasks.open_ones():  # their implementers went with the last run
         record = f"{t['name']} failed: interrupted, the brain restarted while it ran"
@@ -267,8 +274,12 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
         log("start", f"the greeting failed: {(greeting.stderr or greeting.stdout).strip()[-200:]}")
     log("start", f"pid {os.getpid()}; {len(ctx.rows)} rows of context, following from #{brain.position()} "
                  f"({len(history)} history marked read); {len(rows)} tasks; {len(catalog.names())} actions; "
-                 f"brain {cfg.model} {cfg.reasoning}, {cfg.loop_steps} steps and {cfg.loop_seconds:g} s a loop; "
-                 f"respond {cfg.respond_model}; turns: {cfg.turn_waiting} waiting, {cfg.turn_settle_s:g} s settle; "
+                 f"respond {cfg.respond_model} {cfg.respond_reasoning} {cfg.respond_timeout_s:g} s; "
+                 f"router {cfg.router_model} {cfg.router_reasoning} {cfg.router_timeout_s:g} s, "
+                 f"{'the hold on' if cfg.hold else 'no hold'}; "
+                 f"brain {cfg.model} {cfg.reasoning} {cfg.timeout_s:g} s a step, {cfg.loop_steps} steps a line up to "
+                 f"{cfg.loop_cap}, taken up within {cfg.loop_take_up_s:g} s; "
+                 f"turns: {cfg.turn_waiting} waiting, {cfg.turn_settle_s:g} s settle; "
                  f"owner {cfg.owner or '(not set)'}; server {cfg.server}")
 
     await stop.wait()

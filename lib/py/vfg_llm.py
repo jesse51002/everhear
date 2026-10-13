@@ -84,7 +84,8 @@ class Component(StrEnum):
     (toolkit/vfg COMPONENTS) and the usage table's CHECK (bridge/vfg_bridge/db.py)."""
     JEV = "jev"
     BRAIN = "brain"
-    RESPOND = "respond"
+    RESPOND = "respond"            # the conversation agent
+    ROUTER = "router"              # the router: who does the work a hand-off asks for
     IMPLEMENTER = "implementer"    # the Agent SDK's runs, recorded by the brain, not here
     PLANNER = "planner"            # valid only for old rows: the action planner, gone with the brain loop
     ALIAS = "alias"                # the incantation alias call

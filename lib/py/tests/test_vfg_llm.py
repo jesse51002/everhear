@@ -408,8 +408,8 @@ async def test_a_component_off_the_list_or_a_bad_call_id_asks_nothing(monkeypatc
     with pytest.raises(TypeError):
         await structured("Name two mobs.", Mobs)  # both are required
     assert seen == [] and queued(tmp_path) == []
-    assert [c.value for c in Component] == ["jev", "brain", "respond", "implementer", "planner", "alias",
-                                            "conversation", "orchestrator"]
+    assert [c.value for c in Component] == ["jev", "brain", "respond", "router", "implementer", "planner",
+                                            "alias", "conversation", "orchestrator"]
 
 
 async def test_a_row_that_cannot_be_written_never_reaches_the_caller(monkeypatch, tmp_path, caplog):

@@ -89,7 +89,7 @@ CREATE TABLE feed (seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, line
   processed_at TEXT);
 CREATE TABLE usage (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,
   component TEXT NOT NULL CHECK (component IN ('jev','conversation','orchestrator','implementer',
-                                               'brain','respond','planner','alias')),
+                                               'brain','respond','planner','alias','router')),
   model TEXT, input_tokens INTEGER, output_tokens INTEGER, cost_usd REAL, ref TEXT);
 """
 # The brain's tasks, as the bridge adds the table (bridge/vfg_bridge/db.py's ADDED).

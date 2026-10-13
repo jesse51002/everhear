@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
 """Scores the Respond bench (respond_bench.py): every version on the playtest inputs D2 sends Respond
-and on the invented set, side by side, over one or more runs (each run its own OUT).
+and on the invented set, side by side, over one or more runs (each run its own OUT); and the
+conversation agent (`front`) on the night's lines to the AI, beside V4 Flash's own answers that
+night (`v4-night`, written by `respond_bench.py recorded`).
 
     python3 integration/replay/respond_score.py OUT1 [OUT2 …] --to OUT1/score.md   # and score.json beside it
 
-Standard library only. A failed call counts as a hand-up, as the loop makes it.
+Standard library only. A failed call counts as a hand-up, as the loop makes it. For `front` a
+hand-up is a hand-off (`up` is the answer's hand_off after the code's checks), and its reply, an
+acknowledgement, is said beside it.
+
+- **The night** (`night`, `night-to_ai`), by hand label (night.py): `do` lines handed off (the bar:
+  every one), `look`, the talk lines (`F` and T `talk`: a wrong hand-off costs a router call), `U`;
+  the replies said with no hand-off, the acknowledgements said with one, silences; how often the
+  guard and the DONE check fired; latency median and p90 (the bar: p90 at most 3 s); cost. Then the
+  same on the 29 lines V4 Flash answered that night, beside its own answers, and every line, run
+  by run, for reading by hand; the misses with the agent's reason.
 
 - **Hand-ups by clean label** (the inputs' labels: request, answer_to_ai, talk_to_ai, context,
   noise), each run and each half.
@@ -39,6 +50,15 @@ HALVES = ("first", "second")
 PROMISE = re.compile(r"\b(on it|coming|i'?ll|i will|i can|let me|want (me|it|one|a)|say the word|if you want|"
                      r"whenever you want|here you go|there you go|done|fixed|on the way|right away|in a (sec|second|"
                      r"minute|moment|bit)|give it a)\b", re.I)
+# A word a claim that something is done or there often has: only a pointer, as PROMISE.
+CLAIM = re.compile(r"\b(done|all set|ready|fixed|there you go|here you go|all yours|gone|gave|made|built|spawned|"
+                   r"teleported|stopped|removed|unbound|bound|set to|turned off|is off|off now|cleared)\b", re.I)
+# An offer beside a hand-off, which the prompt rules out: a pointer.
+OFFER = re.compile(r"\b(want me|i can|i could|say the word|if you want)\b", re.I)
+NIGHT_LABELS = ("do", "look", "talk", "F", "U")
+NIGHT_SETS = ("night", "night-to_ai")
+FRONT, RECORDED = "front", "v4-night"
+P90_BAR_MS = 3000
 
 
 def read(path: Path) -> list[dict]:
@@ -60,8 +80,20 @@ def clean(text: str, n: int = 160) -> str:
 
 
 def said(r: dict) -> str:
-    """What the player would see: the reply, unless handed up."""
+    """What the player would see: the reply, unless handed up; the conversation agent's (`raw_up` in its
+    rows) beside a hand-off too, as its acknowledgement."""
+    if "raw_up" in r:
+        return r.get("reply", "").strip()
     return "" if r["up"] else r.get("reply", "").strip()
+
+
+def alone(r: dict) -> str:
+    """A reply said with no hand-off: the one that must never promise or claim."""
+    return "" if r["up"] else r.get("reply", "").strip()
+
+
+def ms_of(rows: list[dict]) -> list[int]:
+    return [r["ms"] for r in rows if "error" not in r]
 
 
 def order(names) -> list[str]:
@@ -75,9 +107,10 @@ class Runs:
         self.runs = [p.name for p in outs]
         self.play: dict[tuple[str, str], list[dict]] = {}
         self.inv: dict[tuple[str, str], list[dict]] = {}
+        self.night: dict[str, dict[tuple[str, str], list[dict]]] = {s: {} for s in NIGHT_SETS}
         for out in outs:
             for d in sorted(x for x in out.iterdir() if x.is_dir()):
-                for kind, into in (("playtest", self.play), ("invented", self.inv)):
+                for kind, into in (("playtest", self.play), ("invented", self.inv), *self.night.items()):
                     rows = read(d / kind / "rows.jsonl")
                     if rows:
                         into[(d.name, out.name)] = rows
@@ -129,6 +162,36 @@ def row_md(v: str, half: str, run: str, t: dict, bold: bool = False) -> str:
 
 def report(R: Runs, w, gate_b: Path | None = None) -> dict:
     summary: dict = {"runs": R.runs, "versions": {}}
+    if R.play:
+        playtest_report(R, w, summary)
+    inv_versions = order(v for v, _ in R.inv)
+    if inv_versions:
+        invented_report(R, w, summary, inv_versions)
+    for s in NIGHT_SETS:
+        if R.night[s]:
+            summary.setdefault("night", {})[s] = night_report(R, w, s)
+    if gate_b is not None:
+        gate = {r["id"]: bool(r["up"]) for r in read(gate_b)}
+        w("\n## old against Respond B's recorded run\n")
+        for run in R.runs:
+            single = [r for r in R.play.get(("old", run), []) if not r["merged"] and r["lines"][0] in gate]
+            if not single:
+                continue
+            agree = sum(1 for r in single if gate[r["lines"][0]] == r["up"])
+            w(f"- {run}: on the {len(single)} single-line inputs B also ran, old agrees with B on {agree} "
+              f"({pct(agree, len(single))}); B handed up {sum(1 for r in single if gate[r['lines'][0]])}, old "
+              f"{sum(1 for r in single if r['up'])}.")
+            summary.setdefault("gate_b", {})[run] = {"n": len(single), "agree": agree}
+
+    every = list(R.play.values()) + list(R.inv.values()) + [rows for s in NIGHT_SETS for (v, _), rows in
+                                                             R.night[s].items() if v != RECORDED]
+    total = sum(r.get("cost", 0) for rows in every for r in rows)
+    w(f"\nOpenRouter in these rows (the night's own recorded answers left out): ${total:.3f}.")
+    summary["cost"] = total
+    return summary
+
+
+def playtest_report(R: Runs, w, summary: dict) -> None:
     base = list(R.inputs.values())
     c = Counter(r["label"] for r in base)
     w("## The playtest inputs D2 sends Respond\n")
@@ -184,61 +247,202 @@ def report(R: Runs, w, gate_b: Path | None = None) -> dict:
                 w(f"- {'⚑ ' if PROMISE.search(said(r)) else ''}`{r['id'][-6:]}` [{r['label']}, {r['half']}] "
                   f"{clean(r['text'], 90)} → **{said(r)}**")
 
-    inv_versions = order(v for v, _ in R.inv)
-    if inv_versions:
-        w("\n## The invented set\n")
-        items: dict[str, dict] = {}
-        for rows in R.inv.values():
-            for r in rows:
-                items.setdefault(r["id"], r)
-        w("Each cell: how often the version did what the spec wants, over its runs, and its last answer.\n")
-        w("| Line | Point | Wants | Said | " + " | ".join(inv_versions) + " |")
-        w("|---|---|---|---|" + "---|" * len(inv_versions))
-        right, answers = Counter(), Counter()
-        for i, it in sorted(items.items()):
-            cells = []
-            for v in inv_versions:
-                got = [x for run in R.runs for x in R.inv.get((v, run), []) if x["id"] == i]
-                ok = sum(1 for x in got if x["up"] == (it["want"] == "up"))
-                right[v] += ok
-                answers[v] += len(got)
-                last = got[-1] if got else None
-                what = ("-" if last is None else "UP" if last["up"] else
-                        f"“{clean(said(last), 70)}”" if said(last) else "(nothing)")
-                cells.append(f"{ok} of {len(got)}: {what}")
-            w(f"| {i} | {it['point']} | {it['want']} | {it['who']}: “{it['text']}” | " + " | ".join(cells) + " |")
-        w("\nRight, of all runs' answers: " + ", ".join(f"{v} {right[v]} of {answers[v]}" for v in inv_versions)
-          + ".\n")
-        points = list(dict.fromkeys(r["point"] for r in items.values()))
-        w("| Version | Runs | " + " | ".join(points) + " | Cost |")
-        w("|---|---|" + "---|" * (len(points) + 1))
+
+def invented_report(R: Runs, w, summary: dict, inv_versions: list[str]) -> None:
+    w("\n## The invented set\n")
+    items: dict[str, dict] = {}
+    for rows in R.inv.values():
+        for r in rows:
+            items.setdefault(r["id"], r)
+    w("Each cell: how often the version did what the spec wants, over its runs, and its last answer (UP: handed "
+      "up or off, with the acknowledgement said beside it).\n")
+    w("| Line | Point | Wants | Said | " + " | ".join(inv_versions) + " |")
+    w("|---|---|---|---|" + "---|" * len(inv_versions))
+    right, answers = Counter(), Counter()
+    for i, it in sorted(items.items()):
+        cells = []
         for v in inv_versions:
-            got = [x for run in R.runs for x in R.inv.get((v, run), [])]
-            cells = []
-            for p in points:
-                xs = [x for x in got if x["point"] == p]
-                cells.append(f"{sum(1 for x in xs if x['up'] == (x['want'] == 'up'))} of {len(xs)}")
-            runs = sum(1 for run in R.runs if (v, run) in R.inv)
-            w(f"| {v} | {runs} | " + " | ".join(cells) + f" | ${sum(x.get('cost', 0) for x in got):.3f} |")
-            summary["versions"].setdefault(v, {})["invented"] = {"right": right[v], "of": answers[v], "runs": runs}
+            got = [x for run in R.runs for x in R.inv.get((v, run), []) if x["id"] == i]
+            ok = sum(1 for x in got if x["up"] == (it["want"] == "up"))
+            right[v] += ok
+            answers[v] += len(got)
+            last = got[-1] if got else None
+            what = ("-" if last is None else
+                    ("UP" + (f" “{clean(said(last), 40)}”" if said(last) else "")) if last["up"] else
+                    f"“{clean(said(last), 70)}”" if said(last) else "(nothing)")
+            cells.append(f"{ok} of {len(got)}: {what}")
+        w(f"| {i} | {it['point']} | {it['want']} | {it['who']}: “{it['text']}” | " + " | ".join(cells) + " |")
+    w("\nRight, of all runs' answers: " + ", ".join(f"{v} {right[v]} of {answers[v]}" for v in inv_versions)
+      + ".\n")
+    points = list(dict.fromkeys(r["point"] for r in items.values()))
+    w("| Version | Runs | " + " | ".join(points) + " | Latency median, p90 | Cost |")
+    w("|---|---|" + "---|" * (len(points) + 2))
+    for v in inv_versions:
+        got = [x for run in R.runs for x in R.inv.get((v, run), [])]
+        cells = []
+        for p in points:
+            xs = [x for x in got if x["point"] == p]
+            cells.append(f"{sum(1 for x in xs if x['up'] == (x['want'] == 'up'))} of {len(xs)}")
+        runs = sum(1 for run in R.runs if (v, run) in R.inv)
+        ms = ms_of(got)
+        w(f"| {v} | {runs} | " + " | ".join(cells) + f" | {st.median(ms) / 1000:.2f} s, {p90(ms) / 1000:.2f} s | "
+          f"${sum(x.get('cost', 0) for x in got):.3f} |")
+        summary["versions"].setdefault(v, {})["invented"] = {"right": right[v], "of": answers[v], "runs": runs}
+    fronts = [x for run in R.runs for x in R.inv.get((FRONT, run), [])]
+    if fronts:
+        w("")
+        checks(fronts, w, "The conversation agent on the invented set")
 
-    if gate_b is not None:
-        gate = {r["id"]: bool(r["up"]) for r in read(gate_b)}
-        w("\n## old against Respond B's recorded run\n")
-        for run in R.runs:
-            single = [r for r in R.play.get(("old", run), []) if not r["merged"] and r["lines"][0] in gate]
-            if not single:
+
+# ------------------------------------------------------------------ the night
+
+
+def night_tally(rows: list[dict]) -> dict:
+    """One version's rows on the night: hand-offs by label, the replies, the checks, time and cost."""
+    by = {lab: [r for r in rows if r["label"] == lab] for lab in NIGHT_LABELS}
+    talk = by["F"] + by["talk"]
+    ms = ms_of(rows)
+    prompt = sum(r.get("prompt_tokens", 0) for r in rows)
+    return {
+        "n": len(rows),
+        "up": {lab: [sum(r["up"] for r in by[lab]), len(by[lab])] for lab in NIGHT_LABELS},
+        "do_model": sum(1 for r in by["do"] if r.get("raw_up", r["up"])),
+        "talk_up": [sum(r["up"] for r in talk), len(talk)],
+        "alone": sum(1 for r in rows if alone(r)), "silent": sum(1 for r in rows if not r["up"] and not said(r)),
+        "acks": sum(1 for r in rows if r["up"] and said(r)), "bare": sum(1 for r in rows if r["up"] and not said(r)),
+        "guard": sum(1 for r in rows if r.get("guard")), "done_drop": sum(1 for r in rows if r.get("done_drop")),
+        "offer_drop": sum(1 for r in rows if r.get("offer_drop")),
+        "cut": sum(1 for r in rows if r.get("cut")), "failed": sum(1 for r in rows if "error" in r),
+        "reason_first": sum(1 for r in rows if r.get("first") == "reason"),
+        "ms": ms, "median": st.median(ms) if ms else 0, "p90": p90(ms), "max": max(ms) if ms else 0,
+        "cost": sum(r.get("cost", 0) for r in rows),
+        "cached": sum(r.get("cached_tokens", 0) for r in rows) / prompt if prompt else 0,
+    }
+
+
+def night_md(name: str, run: str, t: dict, bold: bool = False) -> str:
+    (d, dn), (k, kn) = t["up"]["do"], t["talk_up"]
+    cells = " | ".join(f"{a} of {b}" for a, b in (t["up"][lab] for lab in ("look", "talk", "F", "U")))
+    head = f"**{name}** | **{run}**" if bold else f"{name} | {run}"
+    bar = "" if t["p90"] <= P90_BAR_MS else " ✗"
+    return (f"| {head} | {t['n']} | **{d} of {dn}**{'' if d == dn else ' ✗'} ({t['do_model']} by the model) | "
+            f"{cells} | **{k} of {kn} "
+            f"({pct(k, kn)})** | {t['alone']} | {t['acks']} | {t['bare']} | {t['silent']} | {t['guard']} | "
+            f"{t['done_drop']} | {t['offer_drop']} | {t['failed']} | {t['median'] / 1000:.2f} s, "
+            f"**{t['p90'] / 1000:.2f} s**{bar} | "
+            f"${t['cost']:.4f} ({t['cost'] / max(1, t['n']):.5f} a call, {100 * t['cached']:.0f}% cached) |")
+
+
+NIGHT_HEAD = ("| Version | Run | Calls | **do: handed off** | look | talk | F | U | "
+              "**Talk lines (F and talk) handed off** | "
+              "Replies alone | Acknowledgements with a hand-off | Hand-offs with nothing said | Silences | Guard "
+              "fired | DONE check fired | Offer beside a hand-off dropped | Failed | Latency median, **p90** | Cost |")
+
+
+def checks(rows: list[dict], w, what: str) -> None:
+    """Every reply said with no hand-off, every acknowledgement said beside one, and every time the
+    guard or the DONE check fired: for reading by hand."""
+    w(f"\n**{what}: every reply said with no hand-off** (⚑ a word a promise often has, ◆ one a claim of "
+      "something done often has: pointers only, the judging is by hand)\n")
+    for r in rows:
+        if alone(r):
+            mark = ("⚑ " if PROMISE.search(alone(r)) else "") + ("◆ " if CLAIM.search(alone(r)) else "")
+            w(f"- {mark}`{r['id']}` [{r.get('label') or r.get('point')}] {clean(r['text'], 80)} → **{alone(r)}**")
+    acks = Counter(said(r) for r in rows if r["up"] and said(r))
+    w(f"\n**{what}: the acknowledgements said with a hand-off**, by how often: "
+      + "; ".join(f"“{a}” {n}" for a, n in acks.most_common()) + "\n")
+    w(f"\n**{what}: the acknowledgements with a word a claim or an offer often has** (◆ a claim, ⚑ a promise "
+      "or an offer: pointers, for reading by hand; beside a hand-off nothing is done yet)\n")
+    for r in rows:
+        ack = said(r) if r["up"] else ""
+        if ack and (CLAIM.search(ack) or OFFER.search(ack)):
+            w(f"- {'◆ ' if CLAIM.search(ack) else ''}{'⚑ ' if OFFER.search(ack) else ''}`{r['id']}` "
+              f"[{r.get('label') or r.get('point')}] {clean(r['text'], 70)} → **{ack}**")
+    for r in rows:
+        if r.get("guard") or r.get("done_drop") or r.get("offer_drop") or r.get("cut"):
+            w(f"- `{r['id']}` [{r.get('label') or r.get('point')}] guard {r.get('guard') or '-'}, DONE check "
+              f"{'dropped' if r.get('done_drop') else '-'}{', offer dropped' if r.get('offer_drop') else ''}"
+              f"{', cut' if r.get('cut') else ''}: the model wrote "
+              f"hand_off {str(r.get('raw_up')).lower()}, “{clean(r.get('raw_reply', ''), 100)}”")
+
+
+def night_report(R: Runs, w, s: str) -> dict:
+    got = R.night[s]
+    runs = [run for run in R.runs if (FRONT, run) in got]
+    rec = next((rows for (v, _), rows in R.night["night"].items() if v == RECORDED), [])
+    fronts = [r for run in runs for r in got[(FRONT, run)]]
+    out: dict = {"runs": runs}
+    w(f"\n## The night of 2026-10-12/13 (`{s}`)\n")
+    base = got[(FRONT, runs[0])] if runs else rec
+    c = Counter(r["label"] for r in base)
+    w(f"{len(base)} lines Jev sent to the AI: " + ", ".join(f"{c[x]} {x}" for x in NIGHT_LABELS)
+      + " (night.py: `do` asks for something in the game, the bar; `look` a question only a look answers; `talk` "
+      "said to the AI, talk; `F` not said to the AI; `U` unclear). V4 Flash's own answers that night "
+      f"(`{RECORDED}`) are on the {len(rec)} lines Jev classed conversational; the others went to the brain.\n")
+    w(NIGHT_HEAD)
+    w("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    for run in runs:
+        t = night_tally(got[(FRONT, run)])
+        out[run] = {k: x for k, x in t.items() if k != "ms"}
+        w(night_md(FRONT, run, t))
+    if len(runs) > 1:
+        t = night_tally(fronts)
+        out["all"] = {k: x for k, x in t.items() if k != "ms"}
+        w(night_md(FRONT, f"all {len(runs)}", t, bold=True))
+    if s == "night" and rec:
+        w("\nOn the lines V4 Flash answered that night, the same lines only:\n")
+        w(NIGHT_HEAD)
+        w("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+        t = night_tally(rec)
+        out[RECORDED] = {k: x for k, x in t.items() if k != "ms"}
+        w(night_md(f"{RECORDED} (the night)", "1", t))
+        mine = [r for r in fronts if r.get("v4")]
+        t = night_tally(mine)
+        out["front_on_v4_lines"] = {k: x for k, x in t.items() if k != "ms"}
+        w(night_md(FRONT, f"all {len(runs)}, same lines", t, bold=True))
+
+    w("\n### Every line, run by run\n")
+    w("UP: handed off, with the acknowledgement said beside it; a quote alone: a reply with no hand-off; "
+      "(silent): nothing said, nothing handed off.\n")
+    names = ([RECORDED] if s == "night" and rec else []) + [f"{FRONT} {run}" for run in runs]
+    w("| Line | Label | Jev that night | Who | Text | " + " | ".join(names) + " |")
+    w("|---|---|---|---|---|" + "---|" * len(names))
+    by_rec = {r["id"]: r for r in rec}
+    for r in base:
+        cells = []
+        for name in names:
+            x = by_rec.get(r["id"]) if name == RECORDED else next(
+                (y for y in got[(FRONT, name.split()[1])] if y["id"] == r["id"]), None)
+            if x is None:
+                cells.append("-")
                 continue
-            agree = sum(1 for r in single if gate[r["lines"][0]] == r["up"])
-            w(f"- {run}: on the {len(single)} single-line inputs B also ran, old agrees with B on {agree} "
-              f"({pct(agree, len(single))}); B handed up {sum(1 for r in single if gate[r['lines'][0]])}, old "
-              f"{sum(1 for r in single if r['up'])}.")
-            summary.setdefault("gate_b", {})[run] = {"n": len(single), "agree": agree}
+            text = ("UP" + (f" “{clean(said(x), 40)}”" if said(x) else "")) if x["up"] else \
+                f"“{clean(said(x), 70)}”" if said(x) else "(silent)"
+            flags = "".join(f" [{k}]" for k in ("guard", "done_drop") if x.get(k))
+            flags += " [failed]" if "error" in x else ""
+            cells.append(text + flags)
+        w(f"| `{r['id']}` | {r['label']} | {r.get('night_class', '')}{' typed' if r.get('typed') else ''} | "
+          f"{r['who']} | {clean(r['text'], 70)} | " + " | ".join(cells) + " |")
 
-    total = sum(r.get("cost", 0) for rows in list(R.play.values()) + list(R.inv.values()) for r in rows)
-    w(f"\nOpenRouter in these rows: ${total:.3f}.")
-    summary["cost"] = total
-    return summary
+    w("\n### The misses: `do` lines not handed off, with the agent's reason\n")
+    misses = [(run, r) for run in runs for r in got[(FRONT, run)]]
+    misses += [(RECORDED, r) for r in rec] if s == "night" else []
+    for run, r in misses:
+        if r["label"] == "do" and not r["up"]:
+            why = clean(r.get("reason", ""), 300)
+            w(f"- {run} `{r['id']}` {clean(r['text'], 90)} → “{said(r)}” — reason: {why}")
+    w("\n### Talk and unclear lines handed off, with the agent's reason\n")
+    for run in runs:
+        for r in got[(FRONT, run)]:
+            if r["label"] in ("F", "talk", "U") and r["up"]:
+                w(f"- {run} `{r['id']}` [{r['label']}] {clean(r['text'], 70)} → UP “{said(r)}” — "
+                  f"{clean(r.get('reason', ''), 200)}")
+    if fronts:
+        checks(fronts, w, f"The conversation agent on `{s}`")
+    hosts = Counter(r.get("host") or "?" for r in fronts if "error" not in r)
+    w("\nHosts that answered: " + ", ".join(f"{h} {n}" for h, n in hosts.most_common()) + ".")
+    return out
+
 
 
 def main() -> None:

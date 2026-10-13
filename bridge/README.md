@@ -19,7 +19,7 @@ the name a task's (`galick_gun_styrk`, `[a-z][a-z0-9_]{1,31}`). Older `T<n>` row
 **An older history is brought up to date** whenever the schema is applied: the columns added since
 §4's DDL (`db.COLUMNS`), and `lines` and `usage` rebuilt once, in one transaction, when their CHECK
 lists are older (`db.CHECKS`: Jev's four classes, `direct_ask` becoming `action_oriented` and
-`not_useful` becoming `not_relevant`; the brain's `brain`, `respond` and `planner` usage, and the
+`not_useful` becoming `not_relevant`; the brain's `brain`, `respond`, `router` and `planner` usage, and the
 incantation alias call's `alias`). `usage`'s added columns are the cache counts and a model call's
 `ok`, `error` and `ms`, which `structured()` records for every call. Every other column
 on those tables is kept. Deploy the bridge and `jev/` together: once the history has the four

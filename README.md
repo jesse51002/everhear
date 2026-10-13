@@ -39,12 +39,15 @@ flowchart TB
   subgraph Owner["🖥️ THE OWNER'S PC"]
     direction TB
     subgraph Agents["agents"]
-      Brain["brain<br/>a loop per event"]
-      Respond["Respond<br/>the cheap mode"]
+      Conv["conversation agent<br/>answers first"]
+      Router["router<br/>who does the work"]
+      Brain["brain<br/>loops side by side"]
       Impl["implementers"]
-      Respond -->|"hand up · same turn"| Brain
+      Conv -->|"hand-off · in the turn"| Router
+      Router -->|"new loop · a line added"| Brain
+      Router -->|"named task · brief"| Impl
       Brain -->|"named task · brief"| Impl
-      Impl -->|"report"| Brain
+      Impl -->|"report"| Conv
     end
     Vfg["🔒 vfg"]
     subgraph Repo["this repo"]
@@ -73,7 +76,7 @@ flowchart TB
   Box -->|"feed · vfg watch"| Owner
   Owner -->|"vfg over SSH"| Box
   Box -->|"judge each line · pick scripts"| TypeSafe
-  Owner -->|"brain · Respond"| OpenRouter
+  Owner -->|"conversation agent · router · brain"| OpenRouter
   Owner -->|"implementers · Agent SDK"| Claude
   Owner -->|"command pages, once"| Wiki
 
@@ -83,7 +86,7 @@ flowchart TB
   classDef ext    fill:#ffd9a8,stroke:#d2691e,color:#4a2c08;
   classDef tool   fill:#fdf6d8,stroke:#caab2f,color:#4a3d08;
   class Mod client;
-  class Bridge,Jev,Brain,Respond,Impl,Vfg svc;
+  class Bridge,Jev,Conv,Router,Brain,Impl,Vfg svc;
   class Feed,Tasks,MC,Places,Cache,Refs,TypeSafe,OpenRouter,Claude,Wiki ext;
   class Run,Actions,Library,Made,Lib tool;
   style Player fill:#eaf2ff,stroke:#2f6fb0,stroke-width:3px;
@@ -102,35 +105,38 @@ flowchart TB
 - The **client mod** turns speech into text on the player's own PC (no audio leaves it) and posts
   each line to the **bridge** on the server's EC2 box. The bridge also tails the Minecraft console
   for joins, deaths and the like.
-- The **Jev filter** asks Jev (TypeSafe) what should become of each line: the brain acts on it
-  (`action_oriented`), Respond answers it (`conversational`), it is kept as context, or it is
-  dropped. A line for the brain or Respond goes with its speaker's earlier lines that belong to the
-  same ask, which a second Jev call gathers. It writes what it keeps to the **feed**, one line per
-  entry, beside the bridge's game events.
-- The **brain**, on the owner's PC, follows the feed over SSH (`vfg watch`). Every action-oriented
-  line is a loop of steps, each one call to an OpenRouter model (`structured()`, Gemini 3.8 Flash).
-  A step runs **actions** written in full (an item, an effect, a teleport, a saved place, a
-  castle, a weapon: one action over each script, and every one implementers make), together or in
-  turn, and writes the player's reply with them: when every action lands, the reply goes out and
-  the loop is done in one step; when one does not land, its result comes back and the next step
-  fixes it. A step can also read another player's items, edit or stop a running copy, hand
-  something new off to an implementer under a task's name (`galick_gun_styrk`) with a brief in
-  parts, or follow a task up or cancel it. Each task is a row in the box's `vfg.db`, which only
-  the brain writes.
-- **Respond**, the brain's cheap mode, answers a conversational line on a cheaper model, or hands it
-  up to the brain when it asks for something to happen.
-- **One turn per player**: a player's lines run one at a time, whichever of the two takes them,
-  while different players' run at once. At most three wait (`VFG_TURN_WAITING`); one more is turned
-  away with a private message, and an implementer's report goes to the front.
-- **Implementers** are started by code from the brain's brief, one per task, each with the
-  scripts and presets Jev picks for the job (`vfg route`), whole, and the server's state. They act
+- The **Jev filter** asks Jev (TypeSafe) what should become of each line: it is said to the AI, to
+  act on (`action_oriented`) or to answer (`conversational`), it is kept as context, or it is
+  dropped. A line to the AI goes with its speaker's earlier lines that belong to the same ask, which
+  a second Jev call gathers. It writes what it keeps to the **feed**, one line per entry, beside
+  the bridge's game events.
+- The **brain**, on the owner's PC, follows the feed over SSH (`vfg watch`) and runs three agents,
+  each a call to an OpenRouter model (`structured()`, DeepSeek V4.1 Flash). The **conversation
+  agent** answers every line to the AI at once, and hands off a line that needs something done; the
+  **router** picks who does it: a brain loop, new or already on that thing, an implementer, new or
+  already on it, or nobody. A **loop** is steps, each one call. A step runs **actions** written in
+  full (an item, an effect, a teleport, a saved place, a castle, a weapon: one action over each
+  script, and every one implementers make), together or in turn, and writes the player's reply
+  with them: when every action lands, the reply goes out and the loop is done in one step; when one
+  does not land, its result comes back and the next step fixes it. A step can also read another
+  player's items, edit or stop a running copy, hand something new off to an implementer under a
+  task's name (`galick_gun_styrk`) with a brief in parts, or follow a task up or cancel it. Each
+  task is a row in the box's `vfg.db`, which only the brain writes.
+- **Loops run side by side**, one player's too: a line the router adds to a loop already on that
+  thing is read at its next step, or takes the loop up again within two minutes of its start.
+- **One turn per player**: a player's lines to the AI take turns for the conversation agent's call
+  and the router's, never for a loop, while different players' run at once. At most three wait
+  (`VFG_TURN_WAITING`); one more is turned away with a private message. An implementer's report
+  never waits: it goes to the conversation agent at once.
+- **Implementers** are started by code from the router's or a loop's brief, one per task, each
+  with the scripts and presets Jev picks for the job (`vfg route`), whole, and the server's state. They act
   through actions (`vfg action run`): they run one, change a running copy's values, or copy presets
   into a new script and its action with `vfg script new` in `made/<server>/`, all named after their
   task. The library in `scripts/` and `actions/` is read-only during play. Each reports to the
-  brain, which tells the player.
+  conversation agent, which tells the player and hands what is left to the router.
 - The **shared context** is the feed itself: every kept line, every game event and what the brain
-  did, in order, read whole at the start of every loop and by every Respond call; the lines Jev
-  files as context are kept but shown to no model yet. A loop leaves it one short record of what it
+  did, in order, read whole by every conversation agent and router call and at the start of every
+  loop; the lines Jev files as context are kept but shown to no model yet. A loop leaves it one short record of what it
   did, never its steps. What arrives between reads is read by the next one.
 - **Saved places** live in the world itself, in the command storage `everhear:places`. Every agent reads and
   saves them with `vfg place`, which keeps a 30-second copy in `~/.vfg/places.json`.
@@ -150,7 +156,7 @@ What each part takes in and puts out is in [docs/CONTRACTS.md](docs/CONTRACTS.md
 | [`bridge/`](bridge/README.md) | on the box: the speech endpoint, the console tail, the feed; `deploy/` launches, provisions and retires the box |
 | [`jev/`](jev/README.md) | on the box: the Jev filter |
 | [`toolkit/`](toolkit/README.md) | `vfg`, and [`config.example`](toolkit/config.example), every setting with its default |
-| [`brain/`](brain/README.md) | the brain's loop, Respond and the implementers it starts: a loop of steps per event, one turn per player, its [prompts](brain/prompts/), the implementers' guard |
+| [`brain/`](brain/README.md) | the brain: the conversation agent, the router, the loops and the implementers they start, one turn per player, its [prompts](brain/prompts/), the implementers' guard |
 | [`actions/`](actions/README.md) | what anything can run on the server: one pydantic class per file, naming the script it runs and the values it takes; no code |
 | [`scripts/`](scripts/README.md) | the script library: the kit every script imports, presets copied into scripts, and the scripts the actions run, which implementers copy |
 | `made/` | what implementers make during play, one folder per server (`VFG_SERVER`); gitignored |
@@ -163,7 +169,7 @@ What each part takes in and puts out is in [docs/CONTRACTS.md](docs/CONTRACTS.md
 - Claude Code, logged in with a Claude subscription, for the implementers, and
   [uv](https://docs.astral.sh/uv/) for the brain's Python. Implementers never run on an API key.
 - A TypeSafe API key, for Jev.
-- An [OpenRouter](https://openrouter.ai) API key, for the brain and Respond.
+- An [OpenRouter](https://openrouter.ai) API key, for the brain's three agents.
 - Minecraft Java 26.3 with Fabric, for every player (the installer sets Fabric up).
 - bash, ssh, rsync and curl on the owner's PC; `uv` runs everything there on Python 3.12, as on the box.
 - JDK 25 to build the mod (Gradle downloads one if there is none).
@@ -233,7 +239,7 @@ Rough guidance from list prices; check the current ones for your region and plan
 |---|---|
 | EC2 | `m7i.xlarge` on demand, about $0.20 an hour while running, plus a 30 GB gp3 disk until the box is retired. `ec2.sh stop` stops the hourly charge; `retire` ends both |
 | Jev (TypeSafe) | per call: one per line players say or type, and one more for a line to the AI when its speaker has earlier lines to gather; see TypeSafe's pricing |
-| OpenRouter | the brain and Respond: a fraction of a cent a call with the conversation cached, each step of the brain's loop a call (a median $0.0056 live on realmc). The 2026-10-11 session, 80 minutes of one player, came to $0.89 replayed through the loop as of its first fix round, against $1.18 on the brain before it ([the replay](integration/replay/loop/report.md)) |
+| OpenRouter | the brain's three agents: a fraction of a cent a call with the conversation cached, each step of a loop a call (a median $0.0056 a step live on realmc, on Gemini 3.8 Flash, the brain's model before DeepSeek V4.1 Flash). The 2026-10-11 session, 80 minutes of one player, came to $0.89 replayed through the Gemini loop as of its first fix round, against $1.18 on the brain before it ([the replay](integration/replay/loop/report.md)), and to $0.27 for the loops, the conversation agent and the router on DeepSeek V4.1 Flash at low ([the replay](integration/replay/loop/report-deepseek-v4.1-flash-low-final.md)) |
 | Claude | implementers run on a Claude subscription and count against its usage limits; at API prices they would be the largest cost by far. `vfg usage add` records each part's tokens and their API-price cost in the `usage` table |
 | S3 | the installer bucket holds a few MB, deleted after 8 days |
 
@@ -242,11 +248,11 @@ Rough guidance from list prices; check the current ones for your region and plan
 - **Players ask; they do not command.** Only the owner (`VFG_OWNER`) may ask for op or deop, kicks,
   bans, the whitelist, gamemode, difficulty or gamerule changes, stopping the server or resetting
   the world. A line claiming to speak for the owner counts as the player who said it.
-- **The brain and Respond run nothing but actions.** They are model calls that answer in one fixed
-  shape, with no tools of their own: each step of the brain's loop answers with actions, whose
-  values the brain and `vfg` check against each action's class before anything is sent (an edit or
-  a stop of a running copy among them), and with briefs for implementers; Respond only replies or
-  hands up.
+- **The brain's agents run nothing but actions.** They are model calls that answer in one fixed
+  shape, with no tools of their own: each step of a loop answers with actions, whose values the
+  brain and `vfg` check against each action's class before anything is sent (an edit or a stop of a
+  running copy among them), and with briefs for implementers; the router answers with where the
+  work goes, and a brief; the conversation agent only replies or hands off.
 - **The implementers' guard** ([`brain/brain/implementers/guard.py`](brain/brain/implementers/guard.py)),
   a hook on every tool call, and their allow rules refuse:
   - `stop`, `op`, `deop`, `ban`, `ban-ip`, `pardon`, `pardon-ip`, `whitelist`, `kick` and `save-off`
