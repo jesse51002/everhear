@@ -13,5 +13,7 @@ with a knowingly wrong password).
 lock), writes the file to `made/<server>/tests/<task>.py`, runs `vfg test <task>`, and judges the
 `ESCAPE` lines: INFO on the PC (user mode, same user as the live services — weaker, so some reach),
 every one must be **refused** under `--box` (the box's system sandbox: a separate test user,
-`ProtectProc=invisible`, loopback-only, a private `/tmp`). It proves the test ran with one
-`t.check`, so the run exits 0 whenever the test itself worked.
+`ProtectProc=invisible`, loopback-only, a private `/tmp`). It is a livetest test file
+(`engine/vfg_engine/livetest.py`): its attempts run as livetest loads it, before the test's own engine
+starts, and `test(t)`'s one `t.check` proves they ran, so the run exits 0 whenever the test itself
+worked.

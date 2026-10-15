@@ -51,8 +51,8 @@ usage flush`), nobody waiting, never two at once; and a log line closes each run
 steps, its cost, its cache rate, the time to its reply, how it ended, its id, lines and state.
 
 An implementer's report never queues: it goes to the conversation agent at once, beside whatever
-the player's turn is doing. The task first takes what the implementer made, its DESCRIPTION line
-and its action's variables; the agent tells the player, writes the record and the status (the task
+the player's turn is doing. The task first takes what the implementer made and its DESCRIPTION
+line; the agent tells the player, writes the record and the status (the task
 closed, or kept open while a follow-up runs or a hand-off is on its way) and hands what is left, if
 anything, to the router: back to an implementer, to a loop that does it with actions, or nowhere.
 """
@@ -61,7 +61,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import dataclasses
 import functools
 import time
 import traceback
@@ -73,14 +72,12 @@ from vfg_llm import LlmError
 
 from . import actions
 from .act import LANDED, LOOP_SO_FAR, WROTE, Acts, StepRun, record_of, short, spent
-from .actions import variables_of
 from .call import NEXT, Call, Event, FollowUp, StepBase, added, describe, step_type
 from .config import log
 from .context import LIVE, Context, Row, parse
 from .loops import CAP, DELETED, ENDED, GRANT, TAKE_UP_S, Loop, Loops
 from .respond import ReportEvent, Respond, promises
 from .router import Router, RouterEvent
-from .running import full as running_in_full
 from .tasks import Tasks, board
 from .turns import Turns, turned_away_line
 from .vfg import Later
@@ -291,9 +288,8 @@ class Brain:
         self.later.flush_usage()
 
     def reload(self) -> list[str]:
-        """Before each front turn and report: every action file that changed is loaded again, so
-        an action an implementer saved a moment ago is on the menu, and Jev's menu with it, and
-        every task whose action changed has its variables read again. The names that changed."""
+        """Before each front turn and report: every action file that changed is loaded again (a
+        coding session's edit), and Jev's menu with it. The names that changed."""
         try:
             changed = actions.refresh(self.catalog)
         except Exception as e:  # noqa: BLE001 — the actions as they were are still good
@@ -301,39 +297,12 @@ class Brain:
             return []
         if changed and self.menu is not None:
             self.menu(jev_menu(self.catalog))
-        for t in self.tasks.all() if changed else []:
-            if self.action_of(t) in changed:
-                self.refresh_variables(t["name"])
         return changed
-
-    def action_of(self, task: dict) -> str | None:
-        """The action a task made: the one named after it, else the last it made that is loaded."""
-        if self.catalog.get(task["name"]) is not None:
-            return task["name"]
-        made = (task.get("made") or {}).get("actions") or []
-        return next((a for a in reversed(made) if self.catalog.get(a) is not None), None)
-
-    def refresh_variables(self, name: str) -> None:
-        """The task's `variables`, read again from its action (none loaded: left as they are)."""
-        task = self.tasks.get(name)
-        action = self.action_of(task) if task is not None else None
-        if action is None:
-            return
-        try:
-            self.tasks.set_variables(name, variables_of(self.catalog, action))
-        except Exception as e:  # noqa: BLE001 — the variables as they were are still good
-            log("tasks", f"{name}: reading {action}'s variables failed ({type(e).__name__}: {e})")
 
     def board(self, seen: Seen) -> str:
         """TASKS in full (tasks.board): the brain's and the router's."""
-        return board(self.tasks.all(), seen.copies, self.implementers.running(),
+        return board(self.tasks.all(), seen.instances, self.implementers.running(),
                      today=self.now().astimezone(UTC).strftime("%Y-%m-%d"))
-
-    def in_full(self, seen: Seen) -> Seen:
-        """A glance with RUNNING NOW in full, every value of every copy, for the router: "make it
-        bigger" may be one value of a running copy, a brain's edit rather than an implementer's
-        build. No I/O: the copies are the glance's."""
-        return dataclasses.replace(seen, running=running_in_full(seen.copies, self.catalog))
 
     def busy(self) -> set[str]:
         """The players with work under way: a loop thinking, or an implementer running on one of
@@ -424,10 +393,12 @@ class Brain:
             await self.acts.say(reply)
             said_lines.append("agent")
         route, offered = None, [x.id for x in self.loops.offered()]
+        if await self.world.first_read():  # just started: the router waits for the engine's first read
+            seen = await self.world.glance()
         tasks_text = self.board(seen)
         try:
             got = await self.router.route(RouterEvent("LINE", row, said=reply, reason=reason, choice=choice),
-                                          self.ctx, self.in_full(seen), tasks_text,
+                                          self.ctx, seen, tasks_text,
                                           self.loops.show(brief=False), loops=offered, tasks=self.tasks.names(),
                                           refs=self.refs, busy=self.under_way(row.who))
         except LlmError as e:  # the line still needs doing: a loop of its own
@@ -531,7 +502,7 @@ class Brain:
         turn read as NEW, the line itself left out."""
         WROTE.set(None)
         try:
-            loop.seen = await self.world.seen(items=[loop.player] if loop.player else False, full=True)
+            loop.seen = await self.world.seen(items=[loop.player] if loop.player else False)
             loop.prompt = self.call.prompt(loop.event, self.ctx, loop.seen, self.board(loop.seen), new, self.refs)
             loop.seen_seq = self.ctx.last_seq
         except BaseException:  # the error is said by the spawn's guard; the loop can take no line
@@ -601,7 +572,7 @@ class Brain:
                 self.flush()
                 step = answer.value
                 run = await self.acts.run(step, n=n, player=loop.player, seen=loop.seen, refs=self.refs,
-                                          ref=f"{ref} s{n}")
+                                          ref=f"{ref} s{n}", earlier=loop.runs)
                 loop.runs.append(run)
                 loop.did = loop.did or any(r.state == LANDED for r in run.actions)
                 log("brain", f"{ref} s{n} {spent(answer)} | {describe(step)} -> {run.summary()}")
@@ -772,7 +743,7 @@ class Brain:
     async def report_front(self, name: str, status: str, text: str, description: str = "",
                            made: dict | None = None, following: bool = False) -> None:
         """An implementer ended: its task takes what it made, its DESCRIPTION line (when it gave
-        one; else the description it had stays) and the variables of its action; then the
+        one; else the description it had stays); then the
         conversation agent reads the report whole, reading what no call has read yet, and writes
         the player's line, the record and the status. The task is closed with them, or kept open
         while a follow-up to it runs (`following`) or the agent hands off what is left, which the
@@ -781,13 +752,12 @@ class Brain:
         are nobody's turn's (WROTE unset)."""
         WROTE.set(None)
         self.keep_session(name)
-        self.tasks.merge_made(name, made)
+        self.tasks.mirror_made(name, made)
         if description.strip():
             self.tasks.describe(name, description)
         recorded = False
         try:
             self.reload()
-            self.refresh_variables(name)
             task = self.tasks.get(name) or {"name": name, "player": None, "line": "", "brief": "", "description": ""}
             new = self.take()
             seen = await self.world.glance()
@@ -837,10 +807,12 @@ class Brain:
         name = str(task.get("name") or "")
         player = str(task.get("player") or "")
         route = None
+        if await self.world.first_read():  # just started: the router waits for the engine's first read
+            seen = await self.world.glance()
         try:
             routed = await self.router.route(RouterEvent("REPORT", task=task, said=said, status=got.status,
                                                          report=report, left=got.left),
-                                             self.ctx, self.in_full(seen), self.board(seen),
+                                             self.ctx, seen, self.board(seen),
                                              self.loops.show(brief=False), loops=[], tasks=self.tasks.names(),
                                              refs=self.refs)
         except LlmError as e:
@@ -888,7 +860,7 @@ class Brain:
         closes on its status, with a record written in code and no model call."""
         log("task", f"{name} reported {status} while the brain stops: {short(text, 200)}")
         self.keep_session(name)
-        self.tasks.merge_made(name, made)
+        self.tasks.mirror_made(name, made)
         if description.strip():
             self.tasks.describe(name, description)
         self.result(name, status, self.written(name, status), following)

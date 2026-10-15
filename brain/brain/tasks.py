@@ -4,8 +4,8 @@ writes, through `vfg task set` (Contracts §4, §8). There is no file.
 
     {"name": "galick_gun_styrk", "description": "A Galick Gun for Styrkaeopteryx: …",
      "player": "Styrkaeopteryx", "status": "open|done|failed", "line": "<the player's words>",
-     "brief": "<the latest brief>", "made": {"scripts": [], "actions": [], "presets": [], "copies": []},
-     "variables": [{"name": "cooldown", …}] or null, "session": null, "result": "<the brain's line>",
+     "brief": "<the latest brief>", "made": {"content": [], "bindings": [], "grants": []},
+     "variables": null, "session": null, "result": "<the brain's line>",
      "created_at": "<iso>", "updated_at": "<iso>", "closed_at": null}
 
 The tasks come in at the start from `vfg context --json`, every row of the table. Every change
@@ -17,7 +17,8 @@ newer change to the task has been written meanwhile, which carries the whole row
 
 Two views of them: show(), one line a task, for Respond; and board(), the brain's, which follows
 tasks up and cancels them: each task's status and when it was last written, what it is now, what
-it made, its copies running now and its last result.
+it made (the game engine spec: its classes, made/<server>/content/<id>.py, the bindings and the
+grants it made), what of it runs now (the engine's instances of its classes) and its last result.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ from . import names
 from .config import log, now_iso
 
 Send = Callable[[dict], Awaitable[bool]]   # True when `vfg task set` exited 0
-MADE_KINDS = ("scripts", "actions", "presets", "copies")
+MADE_KINDS = ("content", "bindings", "grants")   # a task's classes (their ids), bindings (theirs), grants (player:ability)
 STATUSES = ("open", "done", "failed")
 DESCRIPTION_MAX = 160  # characters of a description in TASKS
 RETRY_S = (2.0, 5.0, 15.0, 30.0)  # the waits before each new try of a write that failed
@@ -43,7 +44,7 @@ def no_made() -> dict[str, list[str]]:
 
 
 def made_of(made: Any) -> dict[str, list[str]]:
-    """`made` with all four kinds, each a list of names; anything else in it is left out."""
+    """`made` with every kind, each a list of names; anything else in it is left out."""
     out = no_made()
     if isinstance(made, dict):
         for k in MADE_KINDS:
@@ -66,14 +67,16 @@ def _when(at: str, today: str) -> str:
     return at[11:19] if at[:10] == today else f"{at[:10]} {at[11:19]}"
 
 
-def board(tasks: list[dict], copies: dict[str, dict], busy: Iterable[str] = (), *, today: str | None = None) -> str:
+def board(tasks: list[dict], instances: Iterable[dict], busy: Iterable[str] = (), *, today: str | None = None) -> str:
     """TASKS as the brain sees it: every task, oldest created first, its status (and whether an
     implementer is on it: `busy`), when it was last written and what it is now; then what it made,
-    its copies running now (running.json's task is its name) and its last result."""
+    what of it runs now (the engine's instances of the classes it made, by their names) and its last
+    result."""
     if not tasks:
         return "TASKS: none yet"
     today = today or datetime.now(UTC).strftime("%Y-%m-%d")
     busy = set(busy)
+    instances = [i for i in instances if isinstance(i, dict)]
     rows = []
     for t in sorted(tasks, key=lambda t: str(t.get("created_at") or "")):
         name = str(t.get("name") or "?")
@@ -84,7 +87,8 @@ def board(tasks: list[dict], copies: dict[str, dict], busy: Iterable[str] = (), 
             what = "; ".join(kinds) or "nothing yet"
         else:
             what = "not known"  # null: never recorded
-        running = sorted(c for c, info in copies.items() if str(info.get("task") or "").strip() == name)
+        mine = set((made or {}).get("content") or []) if isinstance(made, dict) else set()
+        running = sorted(str(i.get("instance")) for i in instances if i.get("id") in mine and i.get("instance"))
         status = str(t.get("status") or "?") + (", an implementer is on it" if name in busy else "")
         rows.append(f"- {name}, for {t.get('player') or 'nobody'}, {status}, "
                     f"{_when(t.get('updated_at') or t.get('created_at'), today)}: "
@@ -94,7 +98,7 @@ def board(tasks: list[dict], copies: dict[str, dict], busy: Iterable[str] = (), 
         if result:
             rows[-1] += f"\n  last result: {result}"
     return ("TASKS (oldest first: name, for whom, status, when last written, what it is now; what it made, and "
-            "its copies running now; its last result):\n" + "\n".join(rows))
+            "what of it runs now; its last result):\n" + "\n".join(rows))
 
 
 class Tasks:
@@ -186,27 +190,20 @@ class Tasks:
         elif t is None:
             self._unknown(name, "describe")
 
-    def merge_made(self, name: str, made: dict | None) -> None:
-        """What the implementer made, added to what the row has: each kind's names once, in order."""
+    def mirror_made(self, name: str, made: dict | None) -> None:
+        """What the task has made now, as its implementer's report gives it (guard.made_now: every
+        run's records, the classes still on disk, the bindings and grants the engine still has), in
+        place of what the row had: a class removed, a binding undone or a grant revoked leaves it,
+        as a deploy mirrors the folder. None (nothing known: no implementer ran) changes nothing."""
         t = self.tasks.get(name)
         if t is None:
-            return self._unknown(name, "merge what it made into")
-        if not made:
+            return self._unknown(name, "record what it made in")
+        if made is None:
             return None
-        now, more = made_of(t.get("made")), made_of(made)
-        merged = {k: now[k] + [n for n in dict.fromkeys(more[k]) if n not in now[k]] for k in MADE_KINDS}
-        if merged != t.get("made"):
-            self._change(name, made=merged)
-        return None
-
-    def set_variables(self, name: str, variables: list | None) -> None:
-        """The variables of the task's action, as vfg_actions.variables() reads them; a write only
-        when they changed."""
-        t = self.tasks.get(name)
-        if t is None:
-            return self._unknown(name, "set the variables of")
-        if variables != t.get("variables"):
-            self._change(name, variables=variables)
+        now = made_of(made)
+        mirrored = {k: list(dict.fromkeys(now[k])) for k in MADE_KINDS}
+        if mirrored != t.get("made"):
+            self._change(name, made=mirrored)
         return None
 
     def set_session(self, name: str, session: str | None) -> None:

@@ -1,0 +1,8 @@
+{
+  "criteria": {
+    "hurt": {"trigger": "minecraft:entity_hurt_player"}
+  },
+  "requirements": [["hurt"]],
+  "rewards": {"function": "everhear:ev/hurt"},
+  "sends_telemetry_event": false
+}

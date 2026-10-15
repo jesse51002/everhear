@@ -35,21 +35,25 @@ report's agent and router see under WORK UNDER WAY are those the night would hav
 two minutes.
 
 **What is real.** A realmc server of its own (`--name`, default loop; this build's is cr-loop), its
-world fresh from the template, its stand-in's vfg.db, feed and incantations set aside, `made/<name>/`
-cleared, with a Carpet fake player KrownJM, the owner, holding a plausible kit with an axe
-(session.json's `setup`); `vfg` against it; the brain's classes as brain/__main__.py wires them
-(Call, Respond, Router, Acts, World, Tasks, Brain); structured() on OpenRouter, on the brain's own
-settings (brain/brain/config.py: DeepSeek V4.1 Flash on Together first, reasoning low, 120 s a step;
-`--reasoning off` is VFG_BRAIN_REASONING=off, which makes the step's timeout 60 s), the
-conversation agent's and the router's on theirs. Stand-ins: the implementers (they record each
-hand-off's brief and each follow-up, and start nothing) and the feed: each event's context is built
-from the night's own feed rows before its call (`context_to`), with the rows no call had read yet
-(`new`) unread, so the prompt cache sees what it saw that night. Since nothing builds, what the
-night's implementers did to the world is done here at its time (world.jsonl): an action they saved
-is copied into made/<name>/ (as it was at the end of the night), and an incantation they stored is
-stored with the same `vfg action run`. A report goes to the task a loop opened where the night
-opened it; when none was opened there, the replay opens it under the night's name (session.json's
-`fallback_name`), so the reports still have their task.
+world fresh from the template, its stand-in's vfg.db, feed and deployed made/<name>/ set aside,
+`made/<name>/` cleared, with a Carpet fake player KrownJM, the owner, holding a plausible kit with
+an axe (session.json's `setup`); the game engine installed into its stand-in and run as on the box,
+its content the library (engine/library/) and made/<name>/content/, with no saved state
+(integration/brain_live.py's start_engine); `vfg` against it; the brain's classes as
+brain/__main__.py wires them (Call, Respond, Router, Acts, World, Tasks, Brain), every action one of
+the engine's ops; structured() on OpenRouter, on the brain's own settings (brain/brain/config.py:
+DeepSeek V4.1 Flash on Together first, reasoning low, 120 s a step; `--reasoning off` is
+VFG_BRAIN_REASONING=off, which makes the step's timeout 60 s), the conversation agent's and the
+router's on theirs. Stand-ins: the implementers (they record each hand-off's brief and each
+follow-up, and start nothing) and the feed: each event's context is built from the night's own feed
+rows before its call (`context_to`), with the rows no call had read yet (`new`) unread, so the
+prompt cache sees what it saw that night. What the night's implementers did to the world
+(world.jsonl: four script actions saved, and incantations stored in the old store, bound to them or
+to the old library's actions) is not put back: the engine runs neither, so each change is recorded
+as not done, at its time, and the reports and follow-ups about those things meet a world without
+them. A report goes to the task a loop opened where the night opened it; when none was opened
+there, the replay opens it under the night's name (session.json's `fallback_name`), so the reports
+still have their task.
 
 `--fake-model` runs all of that with no model: a canned answer per call (a Step that replies and
 runs nothing; the night's report as the agent's answer, a hand-off where Gemini's report loop acted
@@ -67,8 +71,8 @@ router's `<task>`): this process's structured() is pointed there alone (VFG_USAG
 the environment, since any `vfg usage add` would claim the queue it names and send it). `vfg usage
 flush` and `vfg context mark` (the night's seqs are not the server's) are answered here and never
 run. The OpenRouter key is OPEN_ROUTER_API from the environment, else found as
-integration/brain_e2e.py finds it; it is in this process's environment, as a live brain's is, so the
-vfg it runs has it too (incantation_create's alias call), and never printed or written. The rows of
+integration/brain_live.py finds it; it is in this process's environment, as a live brain's is, so the
+vfg it runs has it too (engine_bind's alias call), and never printed or written. The rows of
 those calls go to the server's stand-in, not to OUT: they are not the brain's.
 
 **What it measures**, per event: the brain's steps (each one's cost, tokens, cached share and ms,
@@ -108,11 +112,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import importlib.util
 import json
 import os
 import re
-import shutil
 import statistics
 import subprocess
 import sys
@@ -128,7 +130,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 DATA = HERE / "replay" / "loop"
 REALMC = HERE / "realmc"
-sys.path[:0] = [str(REPO / "brain"), str(REPO / "lib" / "py"), str(REALMC)]
+sys.path[:0] = [str(REPO / "brain"), str(REPO / "lib" / "py"), str(REALMC), str(HERE)]
 
 from brain.context import Context, Row, parse  # noqa: E402  (pure: no model, no I/O)
 
@@ -537,6 +539,7 @@ class RealmcRig:
         self.fake_model = fake_model  # canned answers, no OpenRouter
         self.env: dict[str, str] = {}
         self.players = None
+        self.live = None             # integration/brain_live.py's Live: the engine on the stand-in
         self.wired = None
 
     # -- the server
@@ -561,19 +564,19 @@ class RealmcRig:
         return env
 
     def clean_slate(self) -> None:
-        """The stand-in's vfg.db (its -wal and -shm), feed.log and incantations.json (an earlier run's
-        "juicy steak" would still be bound) set aside in vfg/set-aside-<time>/, never deleted, and
-        vfg.db made again by `vfg_bridge --init-db`; made/<name>/ moved into made/.replaced/
-        (integration/brain_live.py's clean slate)."""
+        """The stand-in's vfg.db (its -wal and -shm), feed.log and deployed made/<name>/ set aside in
+        vfg/set-aside-<time>/, never deleted, and vfg.db made again by `vfg_bridge --init-db`;
+        made/<name>/ moved into made/.replaced/ (integration/brain_live.py's clean slate). The
+        engine's saved state (an earlier run's "juicy steak" binding) goes as it is installed."""
         box = Path(self.env["REALMC_DIR"]) / "vfg"
-        old = [n for n in ("vfg.db", "vfg.db-wal", "vfg.db-shm", "feed.log", "incantations.json") if (box / n).exists()]
+        old = [n for n in ("vfg.db", "vfg.db-wal", "vfg.db-shm", "feed.log", f"made/{self.name}") if (box / n).exists()]
         if old:
             aside = box / ("set-aside-" + time.strftime("%Y%m%d-%H%M%S"))
             while aside.exists():
                 aside = aside.with_name(aside.name + "-2")
             aside.mkdir()
             for n in old:
-                (box / n).rename(aside / n)
+                (box / n).rename(aside / Path(n).name)
             say(f"  set aside {', '.join(old)} in {aside.relative_to(box.parent)}")
         r = subprocess.run([str(box / "python" / "bin" / "python3"), "-m", "vfg_bridge", "--init-db"],
                            env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONDONTWRITEBYTECODE": "1",
@@ -614,6 +617,10 @@ class RealmcRig:
         import players
         self.players = players.on(self.name)
         self.put_player()
+        import brain_live
+        self.live, rep = brain_live.Live(self.name, ""), brain_live.Report()
+        if not self.live.start_engine(rep):
+            raise RuntimeError(f"the game engine did not start on realmc {self.name}: {rep.failed()}")
         os.environ.clear()
         os.environ.update(self.env)          # the brain's vfg (PATH first realmc's bin/vfg) reaches this server
         if key:
@@ -624,22 +631,12 @@ class RealmcRig:
                 "settings": self.wired.settings, "route": self.route, "fake_model": self.fake_model}
 
     async def world(self, change: dict, rec: Record) -> None:
-        """One of the night's implementers' changes, done now: an action and its script copied into
-        made/<name>/, or an incantation stored with the night's own `vfg action run`."""
-        if change["kind"] == "made":
-            name, made = change["action"], REPO / "made" / self.name
-            for kind, src in (("actions", DATA / "made" / "actions" / f"{name}.py"),
-                              ("scripts", DATA / "made" / "scripts" / name)):
-                dest = made / kind / src.name
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                if src.is_dir():
-                    shutil.copytree(src, dest, dirs_exist_ok=True)
-                elif src.exists():
-                    shutil.copy2(src, dest)
-            rec.world.append({**change, "done": f"copied into made/{self.name}/"})
-            return
-        r = await self.wired.vfg_raw(*change["argv"], timeout=60)
-        rec.world.append({**change, "done": f"exit {r.code}: {short(r.stdout or r.stderr, 200)}"})
+        """One of the night's implementers' changes, at its time: recorded as not done. Each was the
+        old system's (a script action saved, an incantation stored in the old store), which the
+        engine does not run."""
+        why = ("a script action, which the engine does not load" if change["kind"] == "made"
+               else "the old incantation store's action, which the engine replaced")
+        rec.world.append({**change, "done": f"not put back: {why}"})
 
     async def run(self, ev: dict, ctx: Context, names: Names, fake: FakeImplementers, rec: Record) -> None:
         self.put_player()
@@ -648,17 +645,18 @@ class RealmcRig:
     async def close(self) -> None:
         if self.wired is not None:
             await self.wired.close()
+        if self.live is not None:
+            got = self.live.stop_engine()
+            say(f"the engine stopped: {got}")
         if not self.keep_up:
             d = subprocess.run([str(REALMC / "down"), self.name], capture_output=True, text=True)
             say(f"realmc down {self.name}: exit {d.returncode}")
 
 
 def find_key() -> tuple[str | None, str | None]:
-    """The OpenRouter key and where it came from, as integration/brain_e2e.py finds it; never printed."""
-    spec = importlib.util.spec_from_file_location("brain_e2e", HERE / "brain_e2e.py")
-    e2e = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(e2e)
-    return e2e.find_key()
+    """The OpenRouter key and where it came from, as integration/brain_live.py finds it; never printed."""
+    import brain_live
+    return brain_live.find_key()
 
 
 def load_refs():
@@ -711,7 +709,6 @@ class Wired:
     key_from: str | None
     vfg_raw: object
     later: object
-    copies: object
     world: object
     clock: NightClock
     settings: dict
@@ -744,7 +741,6 @@ class Wired:
             await self.later.drain(30)
 
     async def close(self) -> None:
-        await self.copies.stop()
         await self.world.close()
         await self.later.drain(10)
 
@@ -807,13 +803,14 @@ async def wire(where: str, out: Path, *, route: bool = True, fake_model: bool = 
     vfg (through Recording) to this server, structured() on each agent's settings with the call_id
     `replay <ref>` (or canned answers, --fake-model), the fake implementers, a Context the replay
     sets per event, and the night's clock. Each report's agent answer and each router answer is
-    kept in the event's record; `route` False stops a report's hand-off before the router."""
+    kept in the event's record; `route` False stops a report's hand-off before the router.
+    The world is read from the engine (`vfg engine overview`), as serve()'s World reads it."""
     import logging
 
     import vfg_llm
     from pydantic import ValidationError
 
-    from brain import actions, config, running
+    from brain import actions, config
     from brain.__main__ import _LogLines, asker
     from brain.act import Acts
     from brain.call import Call
@@ -834,7 +831,7 @@ async def wire(where: str, out: Path, *, route: bool = True, fake_model: bool = 
     rec = Recording(run_vfg)
     fake = FakeImplementers()
     later = Later(rec)
-    catalog = actions.load(cfg.repo, cfg.server)
+    catalog = actions.load(cfg.repo)
     hidden = actions.hidden_commands()
     refs, refs_dir = load_refs()
     clock = NightClock()
@@ -873,8 +870,7 @@ async def wire(where: str, out: Path, *, route: bool = True, fake_model: bool = 
         r = await rec("task", "set", json.dumps(row, ensure_ascii=False), timeout=30)
         return r.code == 0
 
-    copies = running.Refresher(rec, cfg.running_ttl_s)
-    world = World(rec, cfg.running_file, catalog, refresher=copies)
+    world = World(rec)
     tasks = Tasks(rows=[], send=send)
     call = Call(catalog, model(cfg.model, cfg.reasoning, cfg.timeout_s, cfg.providers), owner=cfg.owner,
                 hidden=hidden, checkpoint=cfg.checkpoint, grant=cfg.loop_steps, cap=cfg.loop_cap)
@@ -922,7 +918,6 @@ async def wire(where: str, out: Path, *, route: bool = True, fake_model: bool = 
         return loop
     brain.loops.new = new
 
-    copies.start()
     settings = {"brain": f"{cfg.model} {cfg.reasoning} {cfg.timeout_s:g} s a step, providers {','.join(cfg.providers)}",
                 "respond": f"{cfg.respond_model} {cfg.respond_reasoning} {cfg.respond_timeout_s:g} s",
                 "router": f"{cfg.router_model} {cfg.router_reasoning} {cfg.router_timeout_s:g} s",
@@ -931,7 +926,7 @@ async def wire(where: str, out: Path, *, route: bool = True, fake_model: bool = 
     return Wired(brain=brain, tasks=tasks, vfg=rec, fake=fake,
                  model="fake (no model)" if fake_model else cfg.model,
                  reasoning="-" if fake_model else cfg.reasoning, owner=cfg.owner, refs_dir=refs_dir, key_from=where,
-                 vfg_raw=run_vfg, later=later, copies=copies, world=world, clock=clock, settings=settings, route=route)
+                 vfg_raw=run_vfg, later=later, world=world, clock=clock, settings=settings, route=route)
 
 
 # ====================================================================== the run

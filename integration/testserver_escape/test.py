@@ -11,7 +11,8 @@ password (never one it read), and writes nothing live.
 integration/testserver_e2e.py fills in __CFG__ (the live folders, ports and RCON lock), writes this
 to made/<server>/tests/<task>.py and runs `vfg test <task>`, then judges the ESCAPE lines: INFO in
 user mode on the PC (the same user as the live services, weaker), every one refused under --box (the
-box's system sandbox: a separate test user). The t.check below only proves the test itself ran.
+box's system sandbox: a separate test user). It is a livetest test file (engine/vfg_engine/livetest.py):
+its attempts run as livetest loads it, and test(t)'s one check only proves they ran.
 """
 import fcntl
 import json
@@ -21,11 +22,10 @@ import socket
 import struct
 import subprocess
 
-from kit import test
+from vfg_engine.livetest import verdict
 
 LIVE = json.loads(r"""__CFG__""")   # {"mc", "vfg", "rcon_port", "game_port", "api_port", "lock"}
 
-t = test.Test("Steve")
 _tried = []
 
 
@@ -212,6 +212,9 @@ escape("hold the live RCON lock %s" % LIVE["lock"], lambda: held(LIVE["lock"]))
 escape("sudo -n true", lambda: subprocess.run(["sudo", "-n", "true"], timeout=5,
        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0)
 
-# the test itself worked: it made its attempts (the suite judges the ESCAPE lines, not this)
-t.check("the escape attempts ran", test.verdict(len(_tried) >= 10, "%d attempts" % len(_tried)))
-t.done()
+
+
+def test(t):
+    """The attempts above ran as livetest loaded this file, before its engine started; this check
+    only proves they did (the suite judges the ESCAPE lines, not this)."""
+    t.check("the escape attempts ran", verdict(len(_tried) >= 10, "%d attempts" % len(_tried)))

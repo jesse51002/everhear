@@ -66,7 +66,7 @@ class Loop:
     kept for a take-up, and what its current run (its start, or a take-up) spent and how it ended."""
     id: str                         # L<n>, counted per run of the brain
     event: Event                    # its first: a LINE, or what a REPORT left
-    player: str                     # whose items the tail shows and whose copies the actions are
+    player: str                     # whose items the tail shows: the speaker, or a report's task's player
     line: str                       # the first line's words: a new task's `line`
     created: float                  # the brain's clock at its creation: the take-up window counts from it
     created_at: str = ""            # HH:MM:SS UTC, as WORK UNDER WAY shows it

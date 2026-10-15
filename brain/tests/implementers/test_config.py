@@ -34,6 +34,18 @@ def test_the_defaults_then_vfgs_config_file_then_the_environment(tmp_path):
         "main", 3.0, "5m", 100, "openrouter"]
 
 
+def test_the_repo_and_the_brains_folder_from_vfgs_config_file_as_the_brain_reads_them(tmp_path):
+    # the brain (brain/config.py) reads both from ~/.vfg/config too: one set there must reach its
+    # implementers, or they work in another repo and keep their files in another folder
+    home = tmp_path / "vfg-home"
+    home.mkdir()
+    (home / "config").write_text("VFG_REPO=%s\nVFG_BRAIN_DIR=%s\n" % (tmp_path, tmp_path / "b"))
+    c = ImplementerConfig.load({"VFG_HOME": str(home)})
+    assert (c.repo, c.brain_dir) == (os.path.realpath(tmp_path), str(tmp_path / "b"))
+    c = ImplementerConfig.load({"VFG_HOME": str(home), "VFG_BRAIN_DIR": str(tmp_path / "env")})  # the environment first
+    assert c.brain_dir == str(tmp_path / "env")
+
+
 def test_effort_turns_and_minutes_are_read_from_vfgs_config_file_too(tmp_path):
     home = tmp_path / "vfg-home"
     home.mkdir()

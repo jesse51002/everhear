@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS usage (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT 
 # Tables added since section 4's DDL, each made by IF NOT EXISTS on every start, so a history made
 # before one gets it then, and nothing else changes.
 # casts: one row per cast an incantation got, fired or not (status fired, cooldown, duplicate,
-# failed or stale; layer spotter, transcript or jev).
+# failed or stale, and pending while an engine cast waits on the engine; layer spotter, transcript
+# or jev).
 # tasks: the brain's, one row per implementer task, written only through `vfg task set`; the bridge
 # creates it and never writes it.
 ADDED = """\
@@ -258,6 +259,19 @@ class DB:
             self.conn.execute("INSERT INTO casts (%s) VALUES (%s)" % (
                 ", ".join(self.CAST_COLUMNS), ", ".join("?" * len(self.CAST_COLUMNS))), values)
 
+    def finish_cast(self, cast_id, status, error):
+        """An engine cast's status and error, once the engine answered (it was stored ``pending``)."""
+        with self.lock:
+            self.conn.execute("UPDATE casts SET status = ?, error = ? WHERE id = ?", (status, error, cast_id))
+
+    def fail_pending(self):
+        """The engine casts a stopped bridge left ``pending``, made ``failed``: their answers never
+        came back. On start; answers how many."""
+        with self.lock:
+            return self.conn.execute(
+                "UPDATE casts SET status = 'failed', error = 'the bridge stopped before the game engine"
+                " answered' WHERE status = 'pending'").rowcount
+
     def cast_by_client_id(self, client_cast_id):
         """The cast stored for a client_cast_id, as a dict, or None."""
         with self.lock:
@@ -324,14 +338,6 @@ class DB:
         with self.lock:
             self.conn.execute("UPDATE lines SET cast_id = ? WHERE id = ? AND cast_id IS NULL",
                               (cast_id, line_id))
-
-    def last_fired(self, player_name, since):
-        """{incantation_id: the ``at`` it last fired} of a player's casts started at ``since`` or later."""
-        with self.lock:
-            rows = self.conn.execute(
-                "SELECT incantation_id, max(at) FROM casts WHERE player_name = ? AND started_at >= ?"
-                " AND status = 'fired' GROUP BY incantation_id", (player_name, since)).fetchall()
-        return dict(rows)
 
     def last_console_at(self):
         """The latest ``at`` stored from the console (events and chat lines), or None."""

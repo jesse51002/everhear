@@ -216,21 +216,14 @@ class TestSetup(Box):
             self.assertIn("libraries/" + rel, args)
             self.assertTrue(os.path.isfile(os.path.join(self.mc, "libraries", rel)))
         self.assertTrue(os.access(os.path.join(self.mc, "reset.sh"), os.X_OK))
-        # The vfg side: the live Python, the folders, an empty store, no secrets.
+        # The vfg side: the live Python, the folders, no secrets; nothing written into state/.
         self.assertEqual(os.readlink(os.path.join(self.vfg, "python")), os.path.join(self.live_vfg, "python"))
-        for d in ("scripts", "run", "tests", "state", "made"):
+        for d in ("run", "tests", "state", "made"):
             self.assertTrue(os.path.isdir(os.path.join(self.vfg, d)), d)
         self.assertEqual(json.load(open(os.path.join(self.vfg, "protected.json"))), [])
         self.assertFalse(os.path.exists(os.path.join(self.vfg, ".env")))
-        sys.path.insert(0, os.path.join(REPO, "scripts", "_lib"))
-        try:
-            import incantations
-            store = incantations.Store(os.path.join(self.vfg, "state", "incantations.json"))
-            self.assertEqual(store._read_strict(), {"version": 0, "incantations": []})
-            self.assertEqual(store.lock_path, os.path.join(self.vfg, "state", "incantations.lock"))
-            self.assertTrue(os.path.isfile(store.lock_path))
-        finally:
-            sys.path.remove(os.path.join(REPO, "scripts", "_lib"))
+        self.assertEqual(os.listdir(os.path.join(self.vfg, "state")), [])
+        self.assertFalse(os.path.exists(os.path.join(self.vfg, "scripts")))
         # Again: nothing changes, and the live side was only read.
         self.assertEqual(self.setup_rc(), ts.EXIT_OK)
         self.assertEqual(self.live_snapshot(), before)
@@ -373,9 +366,7 @@ class TestTestUser(Box):
         self.assertEqual(self.mode(self.vfg), (0o2755, self.gid))
         for d in ("run", "state"):
             self.assertEqual(self.mode(self.vfg, d), (0o2775, self.gid), d)
-        for f in ("incantations.json", "incantations.lock"):
-            self.assertEqual(self.mode(self.vfg, "state", f), (0o664, self.gid), f)
-        for d in ("scripts", "tests", "made"):   # this user writes there by name: never the test's
+        for d in ("tests", "made"):   # this user writes there by name: never the test's
             self.assertEqual(self.mode(self.vfg, d)[0], 0o755, d)
         self.assertTrue(os.path.islink(os.path.join(self.vfg, "python")))
         self.assertFalse(os.path.lexists(os.path.join(self.vfg, "incantations.json")))
@@ -491,8 +482,8 @@ class TestPins(Box):
             self.assertTrue(any(rel.startswith(p) for p in ts.MAVEN), rel)
         self.assertEqual(len(re.findall(r'\("((?:net|org)/[^"]+\.jar)",\s*"([0-9a-f]{40})"\)', src)), 7)
 
-    def test_the_stage_is_the_kits(self):
-        text = open(os.path.join(REPO, "scripts", "_lib", "kit", "_stage", "helpers.py")).read()
+    def test_the_stage_is_livetests(self):
+        text = open(os.path.join(REPO, "engine", "vfg_engine", "livetest.py")).read()
         x, z = re.search(r"^X, Z = (\d+), (\d+)", text, re.M).groups()
         floor = re.search(r"^FLOOR = (\d+)", text, re.M).group(1)
         clear = re.search(r"^CLEAR = (\d+)", text, re.M).group(1)

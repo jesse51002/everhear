@@ -11,7 +11,7 @@ import pytest
 from brain import checks
 from brain.call import FollowUp, HandOff
 
-from conftest import catalog, follow_up, hand_off, made
+from conftest import catalog, follow_up, hand_off
 
 
 def h(**parts) -> HandOff:
@@ -44,9 +44,8 @@ def test_good_hand_offs_and_follow_ups_pass():
     ([h(name="x")], "hand-off name 'x': lowercase letters"),
     ([h(name="a" * 33)], "2 to 32 characters"),
     ([h(name="9lives_sam")], "starting with a letter"),
-    ([h(name="cast")], "cast is the bridge's task for an incantation's copies, never a task's name: name the "
-                       "thing, then whose"),
-    ([h(name="railgun")], "railgun is a library action's name: add whose it is, as frost_bow_alex"),
+    ([h(name="cast")], "cast is never a task's name: name the thing, then whose"),
+    ([h(name="engine_start")], "engine_start is an action's name: add whose it is, as frost_bow_alex"),
     ([h(assumed=" ", cast="")], "the hand-off hot_fireball_krown's brief has no assumed, cast: write every part"),
     ([h(description="", words="", picture="", assumed="", cast="")],
      "brief has no description, words, picture, assumed, cast"),
@@ -66,23 +65,8 @@ def test_a_hand_off_is_checked_in_order_the_first_rule_that_fails_is_the_one_sen
     assert "brief has no picture" in refused(checks.hand_offs, [h(), h(picture="")], catalog())
 
 
-def test_a_server_actions_name_is_no_library_name_and_may_be_a_tasks():
-    cat = made("lava_moat_sam", '''
-        from actions._types import Action, Players
-
-
-        class LavaMoatSam(Action):
-            """Dig a lava moat round a player's base."""
-
-            script = "lava_moat_sam"
-            runs = "once"
-            takes = ["player"]
-
-            player: Players = "@a"
-            """whose base"""
-    ''')
-    assert cat.source("lava_moat_sam") != "library"
-    checks.hand_offs([h(name="lava_moat_sam")], cat)   # code adds _2 when the task opens, not a check
+def test_an_engine_classs_name_passes_the_check_its_task_frees_it_when_it_opens():
+    checks.hand_offs([h(name="fireball")], catalog())   # names.unique adds _2 when the task opens, not a check
 
 
 @pytest.mark.parametrize("given, tasks, words", [
@@ -118,8 +102,9 @@ def test_the_checks_read_only_the_fields_so_anything_shaped_like_them_will_do():
     plain.cast = ""
     assert "brief has no cast" in refused(checks.hand_offs, [plain], catalog())
     checks.follow_ups([SimpleNamespace(task="castle_steve", brief="", cancel=True)], ("castle_steve",))
-    fake = SimpleNamespace(get=lambda name: object(), source=lambda name: "main")  # any catalog shaped like one
-    checks.hand_offs([h(name="railgun")], fake)
+    checks.hand_offs([h(name="railgun")], SimpleNamespace(get=lambda name: None))  # any catalog shaped like one
+    assert "is an action's name" in refused(checks.hand_offs, [h(name="railgun")],
+                                            SimpleNamespace(get=lambda name: object()))
 
 
 def test_checks_never_imports_call_which_imports_it():

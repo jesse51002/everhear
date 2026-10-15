@@ -64,7 +64,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from .actions import Catalog
-from .call import all_required, library, menu_lines
+from .call import all_required, menu_lines, rules_text
 from .config import log
 from .context import Context, Row, show
 from .world import Seen
@@ -313,16 +313,16 @@ class Respond:
         self.catalog = catalog
         self.ask = ask  # structured() with the conversation agent's model, reasoning, providers and timeout
         self.checkpoint = checkpoint
-        rules = prompt.read_text(encoding="utf-8").rstrip("\n")
+        rules = rules_text(prompt)
         self.rules = rules.replace("{owner}", owner or "not named (VFG_OWNER is not set)")
         self._opening: tuple[tuple, str] | None = None
 
     def opening(self) -> str:
-        names = library(self.catalog)
+        names = self.catalog.names()
         key = tuple(names)
         if self._opening is None or self._opening[0] != key:
-            text = (f"{self.rules}\n\nWHAT THE AI CAN DO (its actions, done in seconds; anything else is built new, "
-                    f"which takes minutes):\n{menu_lines(self.catalog, names)}\n\n"
+            text = (f"{self.rules}\n\nWHAT THE AI CAN DO (its actions, done in seconds, on what ENGINE lists; anything "
+                    f"else is built new, which takes minutes):\n{menu_lines(self.catalog, names)}\n\n"
                     "THE CONVERSATION SO FAR (oldest first; each row: its time in UTC, who, and for a "
                     "player's line Jev's class):\n")
             self._opening = (key, text)

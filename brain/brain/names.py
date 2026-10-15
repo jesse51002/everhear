@@ -1,10 +1,10 @@
 """A task's name, and the names a new one must not take (Prototype_Named_Tasks).
 
 The brain's hand-off names a task from what is made and for whom (`galick_gun_styrk`); code adds
-`_2`, `_3` … when the name is taken. The name is the task's, its script's, its action's and its
-copy's, so it must be free as each of those: a task, an action (the library's or this server's),
-a script folder, a running copy, and never `cast`, the task the bridge gives an incantation's
-copies.
+`_2`, `_3` … when the name is taken. The name is the task's and the id of the class it makes (the
+game engine spec: made/<server>/content/<id>.py), so it must be free as each of those: a task, a
+class the engine has, a file in engine/library/ or made/<server>/content/, an action's name, and
+never `cast`.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from pathlib import Path
 
 NAME = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 MOST = 32                       # characters in a task's name
-RESERVED = frozenset({"cast"})  # never a task's name: the bridge's task for a cast's copy
+RESERVED = frozenset({"cast"})  # never a task's name: the bridge's task for a cast
 
 
 def unique(name: str, taken: Iterable[str], most: int = MOST) -> str:
@@ -33,13 +33,13 @@ def unique(name: str, taken: Iterable[str], most: int = MOST) -> str:
         n += 1
 
 
-def script_names(repo: Path, server: str) -> set[str]:
-    """The script folders in scripts/ and made/<server>/scripts/: the names `vfg script new`
-    refuses."""
+def content_names(repo: Path, server: str) -> set[str]:
+    """The classes written as files, engine/library/<id>.py and made/<server>/content/<id>.py, by
+    their file names: the ids a new task's class must not take."""
     out: set[str] = set()
-    for root in (repo / "scripts", repo / "made" / server / "scripts"):
+    for root in (repo / "engine" / "library", repo / "made" / server / "content"):
         try:
-            out |= {p.name for p in root.iterdir() if p.is_dir() and not p.name.startswith(("_", "."))}
+            out |= {p.stem for p in root.glob("*.py") if not p.name.startswith(("_", "."))}
         except OSError:
             pass
     return out

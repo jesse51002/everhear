@@ -3,14 +3,18 @@
 realmc") and the rule of Prototype_Addressing_The_AI (a line goes to the AI only when it names it, or
 answers a question it asked).
 
-    REALMC_ROOT=… python3 integration/jev_live.py [--name jr] [--keep-up] [--no-brain] [--rule-only]
+    REALMC_ROOT=… VFG_ACCEPT_EULA=true python3 integration/jev_live.py [--name jr] [--keep-up] [--no-brain]
+        [--rule-only]
 
 Real:  a Minecraft 26.3 server with Carpet's fake players Steve and Alex (integration/realmc, its
-       world fresh from the template), the bridge (as incantations_e2e.py starts it), the Jev
-       filter (jev/jev_filter.py on the box's Python 3.12) calling the real TypeSafe API with the
-       key in the stand-in's .env (REALMC_ROOT's shared/env, which only the filter reads), and the
-       brain (`vfg brain start`, as brain_live.py starts it), its model calls through OpenRouter
-       (OPEN_ROUTER_API, found as brain_e2e.py finds it, given to the brain's process only).
+       world fresh from the template); the game engine with its library, which the brain acts
+       through (as brain_live.py installs and starts it); the bridge against the engine's export
+       and socket (as incantations_e2e.py starts it); the Jev filter (jev/jev_filter.py on the
+       box's Python 3.12) calling the real TypeSafe API with the key in the stand-in's .env
+       (REALMC_ROOT's shared/env, which only the filter reads), reading the engine's export and
+       reaching the bridge as on the box; and the brain (`vfg brain start`, as brain_live.py
+       starts it), its model calls through OpenRouter (OPEN_ROUTER_API, found as brain_live.py
+       finds it, given to the brain's process only).
 Posted as the mod posts them: each line said (POST /v1/lines), a second or two apart.
 
 Each scenario is an ask said in two pieces, with the other player saying something between them
@@ -123,14 +127,17 @@ class Report(brain_live.Report):
 
 
 class Filter:
-    """The real Jev filter, on the box's Python, against the stand-in's vfg.db, feed and .env."""
+    """The real Jev filter, on the box's Python, against the stand-in's vfg.db, feed and .env, the
+    engine's export (the incantations its cast check reads) and the bridge (where it casts)."""
 
-    def __init__(self, srv):
+    def __init__(self, srv, bridge):
         self.path = os.path.join(srv.dir, "jev.log")
         env = {k: v for k, v in os.environ.items() if not k.startswith(("VFG_", "TYPESAFE_", KEY))}
         env.update({"VFG_DB": os.path.join(srv.vfg, "vfg.db"), "VFG_FEED": os.path.join(srv.vfg, "feed.log"),
                     "VFG_LIB": os.path.join(srv.vfg, "lib"), "VFG_ENV_FILE": os.path.join(srv.vfg, ".env"),
                     "VFG_LOOKOUT": os.path.join(srv.vfg, "lookout.md"), "VFG_MENU": os.path.join(srv.vfg, "menu.md"),
+                    "VFG_ENGINE_EXPORT": os.path.join(srv.vfg, "engine", "incantations.json"),
+                    "VFG_BRIDGE_PORT": str(bridge.port), "VFG_CLIENT_TOKEN": bridge.token,
                     "PYTHONUNBUFFERED": "1"})
         self.log = open(self.path, "w")
         self.proc = subprocess.Popen([os.path.join(srv.vfg, "python", "bin", "python3"), "-u",
@@ -378,8 +385,11 @@ def main():
     rep, live, bridge, jev, run = Report(), None, None, None, None
     try:
         live = brain_live.Live(args.name, key or "")
-        bridge = incantations_e2e.Bridge(srv, os.path.join(srv.dir, "bridge.log"))
-        jev = Filter(srv)
+        rep.head("the game engine and its library, as on the box")
+        if not live.start_engine(rep):
+            raise SystemExit("the engine did not start: nothing else can run")
+        bridge = incantations_e2e.Bridge(srv, live.engine, os.path.join(srv.dir, "bridge.log"))
+        jev = Filter(srv, bridge)
         run = Run(live, bridge, jev, rep, not args.no_brain)
         run.start_seq = live.last_seq()
         if setup(run, args.no_brain):
@@ -392,7 +402,7 @@ def main():
                 except Exception:
                     rep.check(False, "the step ran to its end", traceback.format_exc()[-1500:])
     finally:
-        for part in (live and live.stop, jev and jev.stop, bridge and bridge.stop):
+        for part in (live and live.stop, jev and jev.stop, bridge and bridge.stop, live and live.stop_engine):
             if part:
                 try:
                     part()

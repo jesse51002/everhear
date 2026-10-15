@@ -4,24 +4,30 @@
   never an exception: the next step reads it and fixes it (the spec: "refused at the tool, and the
   refusal comes back as a result").
 - The actions: `together` all at once, `in_turn` one after another, stopping at the first that does
-  not land, the rest not run. Each runs as `vfg action run … --for <player>`, with no task (only an
-  implementer's work is one: Prototype_Named_Tasks), so its copy is named `<action>_<player>` on the
-  box, after its values are checked as vfg checks them (the saved places and the running copies
-  included). An action lands when it ran without an error: vfg checked its values and Minecraft did
-  not refuse it. Nothing is retried here: a refused command's result carries Minecraft's error and
-  the reference of every command it used (refs.py), capped, for the next step to fix it. One vfg
-  could not run at all did not happen: a value vfg refused is refused (fix it), a box out of reach
-  or an action not deployed "did not run" (safe to try again); one that timed out or partly
-  happened failed (it may have happened: never run blindly again). One that ran but whose facts say
-  it changed nothing (`changed` empty: an edit or an incantation edit to what already was) "changed
-  nothing", and is not landed either: a reply written up front never claims a fix on it.
-- The reads: another player's items, by slot, from a state fetched for it (World.items).
+  not land, the rest not run. Each is one of the game engine's ops (the game engine spec), run as
+  `vfg action run …` with no task (only an implementer's work is one: Prototype_Named_Tasks), after
+  its values are checked as vfg checks them; a scenario's or a mark's args go to the engine, which
+  checks them against the class and refuses in words. An action lands when it ran without an
+  error: vfg checked its values and the engine did it. Nothing is retried here: a refused command's
+  result (the command scenario's) carries Minecraft's error and the reference of every command it
+  used (refs.py), capped, for the next step to fix it. One vfg could not run at all did not happen:
+  a value vfg refused is refused (fix it), a box out of reach or the engine not running "did not
+  run" (safe to try again); one that timed out failed (it may have happened: never run blindly
+  again). One that ran but whose facts say it changed nothing (`changed` empty: a Config already as
+  written) "changed nothing", and is not landed either: a reply written up front never claims a fix
+  on it.
+- The reads: another player's items, by slot, from a state fetched for it (World.items); an engine
+  class's Config, as written, with its file and lines (World.config, `vfg engine config get`), shown
+  to the next step whole. An engine_config, the Config rewritten (the game engine spec), is refused at
+  the tool unless an earlier step of the loop read that class's Config: the brain sends back the
+  whole class as written, comments and all, so it must have seen it. An engine action that ran
+  makes the world read the engine again for the next loop (World.engine_changed).
 - The ending's pieces, which the loop puts together once a step lands and ends (loop.py), and the
   front turn when the router places a line with an implementer: a hand-off's task opened under a
-  name no task, action, script or running copy has (names.unique), its brief rendered from its parts
-  (call.HandOff.brief), and its `AI task <name> | new: …` row; a follow-up's task opened again, with
-  its `AI task <name> | follow-up: …` row, the cancel words written here for a "never mind"; the
-  reply; the record; then each implementer started and each follow-up sent.
+  name no task, action or engine class has (names.unique), its brief
+  rendered from its parts (call.HandOff.brief), and its `AI task <name> | new: …` row; a follow-up's
+  task opened again, with its `AI task <name> | follow-up: …` row, the cancel words written here for
+  a "never mind"; the reply; the record; then each implementer started and each follow-up sent.
 No row is written per action: what a step ran stays inside its loop, which leaves the context one
 record. Every `vfg say` and AI row a player's turn writes is noted (WROTE, Echoes), so the player's
 next turn can wait for them to come back on the watch, and read what this one did; a loop holds no
@@ -37,10 +43,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from vfg_actions import check_edit, check_values
+from vfg_actions import check_values, engine_op
 
 from . import names
-from .actions import Catalog, command_fields, commands_in, word
+from .actions import Catalog, commands_in, word
 from .call import IN_TURN, NEXT, FollowUp, HandOff, StepBase, one_line
 from .config import log
 from .executor import Ran, execute
@@ -53,7 +59,7 @@ ROW_MAX = 400        # an AI row's text
 BRIEF_SHORT = 160    # a brief in an `AI task` row
 SAID_MAX = 600       # a result's words, as the next step reads them
 REFERENCE_MAX = 6000  # a refused command's reference, as the next step reads it
-PLAYER = re.compile(r"^[A-Za-z0-9_]{1,16}$")  # a player's name, as --for takes it
+CONFIG_MAX = 8000    # a Config read, as the next step reads it: whole, unless far longer than any is
 # The cancel words of Prototype_Implementer_Harness, exactly: a follow-up with `cancel` sends these.
 CANCEL = ("CANCELLED: the player said never mind. Stop building and put everything back the way it was before "
           "the run this cancels, then report Cancelled: and what you put back.")
@@ -72,10 +78,6 @@ LOOP_SO_FAR = ("THE LOOP SO FAR (your earlier steps for this event: what each ra
 WROTE: contextvars.ContextVar[list[asyncio.Future] | None] = contextvars.ContextVar("wrote", default=None)
 
 
-class NotRunning(Exception):
-    """An edit or a stop of a copy that is not running: refused at the tool."""
-
-
 def spent(got) -> str:
     """What a call spent, from its Answer or its LlmError: `840 ms $0.001234, 9000 in, 96% cached, 40 out`,
     the cost `$0.001234+` when it timed out with an attempt in flight, whose cost is not in it."""
@@ -90,11 +92,9 @@ def short(text: str, n: int) -> str:
 
 
 def told(ran: Ran, notes: list[str] = ()) -> str:
-    """The executor's summary; the copy's name when it keeps running and the summary does not say
-    it, so a later edit or stop can name it; and the numbers clamped to their limits."""
+    """The executor's summary (a scenario that goes on says its instance, which engine_stop takes),
+    and the numbers clamped to their limits."""
     text = ran.summary
-    if ran.running and ran.copy and ran.copy not in text:
-        text += f" (running as {ran.copy})"
     notes = [n for n in notes if n not in text]
     return text + (f" ({'; '.join(notes)})" if notes else "")
 
@@ -106,10 +106,9 @@ def offline_names(facts: dict[str, Any]) -> list[str]:
 
 def changed_nothing(facts: dict[str, Any]) -> bool:
     """An action that ran and says it changed nothing: its facts carry `changed`, what it changed,
-    and it is empty. `edit` says so for values a copy already has (vfg answers that itself, the box
-    too), `incantation_edit` for an entry already as asked ("…: nothing new"). Not landed: what was
-    meant did not happen, so the step's ending (a reply written up front, "fixed it") never goes out
-    on it, and the next step reads it."""
+    and it is empty: an engine_config to what the Config is already. Not landed: what was meant did
+    not happen, so the step's ending (a reply written up front, "fixed it") never goes out on it,
+    and the next step reads it."""
     return "changed" in facts and not facts["changed"]
 
 
@@ -122,17 +121,6 @@ def distinct(acts: list) -> list:
             seen.add(key)
             out.append(a)
     return out
-
-
-def for_whom(name: str, values: dict[str, Any], player: str) -> str | None:
-    """Whose copy an action's run is, for `--for`: its `player` value when that is one player's
-    name, else the speaker's; none for edit and stop, which name the copy they change."""
-    if name in ("edit", "stop"):
-        return None
-    for who in (values.get("player"), player):
-        if isinstance(who, str) and PLAYER.match(who):
-            return who
-    return None
 
 
 def cap(text: str, n: int) -> str:
@@ -150,6 +138,8 @@ class Result:
     reference: str = ""             # a refused command's reference
     tried: bool = False             # an action vfg ran, whatever came of it
     instruction: str = ""           # an action's instruction, for a record written in code
+    config_of: str = ""             # a Config read: the class's name
+    whole: bool = False             # `said` shown as it is, its lines kept (a Config as written)
 
     @property
     def ok(self) -> bool:
@@ -159,7 +149,10 @@ class Result:
         text = f"- {self.what}"
         if self.values is not None:
             text += " " + (" ".join(f"{k}={word(v)}" for k, v in self.values.items()) or "(its defaults)")
-        text += f"\n  {self.state.upper()}: {short(self.said, SAID_MAX)}"
+        if self.whole:
+            text += f"\n  {self.state.upper()}:\n{cap(self.said, CONFIG_MAX)}"
+        else:
+            text += f"\n  {self.state.upper()}: {short(self.said, SAID_MAX)}"
         if self.reference:
             text += ("\n  THE REFERENCE OF THE COMMANDS IT USED (each command's syntax on this server, then the "
                      f"wiki's Java Edition notes):\n{self.reference}")
@@ -291,11 +284,14 @@ class Acts:
 
     # ------------------------------------------------------------- the step
 
-    async def run(self, step: StepBase, *, n: int, player: str, seen: Seen, refs, ref: str) -> StepRun:
+    async def run(self, step: StepBase, *, n: int, player: str, seen: Seen, refs, ref: str,
+                  earlier: list[StepRun] = ()) -> StepRun:
         """Every tool of `step`: the checks, the actions (together or in turn), then the reads.
-        `player` is whose copies the actions are when they name nobody (a report's: its task's
-        player); `ref` (`#<seq> s<n>`) labels the log lines."""
+        `player` is the event's (the speaker; a report's: its task's player); `ref` (`#<seq> s<n>`)
+        labels the log lines; `earlier` is the loop's steps before it, whose reads an engine_config
+        needs."""
         out = StepRun(step, n)
+        read = {r.config_of for run in earlier for r in run.reads if r.config_of and r.state == READ}
         for f in step.follow_ups:
             task = f.task.strip()
             if self.tasks.get(task) is None:
@@ -308,54 +304,46 @@ class Acts:
                     out.actions.append(Result(f"{a.to}: {one_line(a.instruction)}", NOT_RUN,
                                               "an earlier one did not land", a.values(), instruction=a.instruction))
                     continue
-                out.actions.append(await self.action(a, i, player, seen, refs, ref))
+                out.actions.append(await self.action(a, i, seen, refs, ref, read))
         elif acts:
-            running = [asyncio.create_task(self.action(a, i, player, seen, refs, ref), name=f"action {ref} #{i + 1}")
+            running = [asyncio.create_task(self.action(a, i, seen, refs, ref, read),
+                                           name=f"action {ref} #{i + 1}")
                        for i, a in enumerate(acts)]
             try:
                 out.actions = list(await asyncio.gather(*running))
             finally:
                 for t in running:
                     t.cancel()
-        if step.read_items:
-            out.reads = list(await asyncio.gather(*(self.read(p) for p in step.read_items)))
+        if step.read_items or step.read_configs:
+            out.reads = list(await asyncio.gather(*(self.read(p) for p in step.read_items),
+                                                  *(self.read_config(c) for c in dict.fromkeys(step.read_configs))))
         return out
 
-    def values(self, name: str, cls, given: dict[str, Any], seen: Seen) -> tuple[dict[str, Any], list[str]]:
-        """What `vfg action run <name>` is given, checked as vfg checks it; raises ValueError, and
-        NotRunning for a copy that is not running."""
-        places = None if seen.known is None else {n: {} for n in seen.known}
-        if name in ("stop", "edit"):
-            copies = self.world.copies()  # as they are now: an earlier step may have stopped one
-            copy = str(given.get("copy") or "")
-            if copy not in copies:
-                raise NotRunning(f"nothing called {copy or '(no name)'} is running")
-            if name == "stop":
-                return {"copy": copy}, []
-            info = copies[copy]
-            copy_cls = self.catalog.get(str(info.get("action") or ""))
-            if copy_cls is None:
-                raise ValueError(f"{copy}'s action {info.get('action')} is not loaded")
-            asked = given.get("values") if isinstance(given.get("values"), dict) else {}
-            edit = check_edit(copy_cls, info.get("values") or {}, asked, places=places)
-            return {"copy": copy, **{k: edit.values[k] for k in asked}}, edit.notes
-        checked = check_values(cls, given, places=places)
+    @staticmethod
+    def values(cls, given: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+        """What `vfg action run <name>` is given, checked as vfg checks it; raises ValueError."""
+        checked = check_values(cls, given)
         return {k: checked.values[k] for k in given}, checked.notes
 
-    async def action(self, a, i: int, player: str, seen: Seen, refs, ref: str) -> Result:
+    async def action(self, a, i: int, seen: Seen, refs, ref: str, read: set[str] = frozenset()) -> Result:
         name, cls = a.to, self.catalog.get(a.to)
         what = f"{name}: {one_line(a.instruction)}"
         given = a.values(cls)
         if cls is None:
             return Result(what, REFUSED, f"{name} is no longer on the menu", given, instruction=a.instruction)
+        op = engine_op(cls)
+        if op == "config" and str(given.get("class_id") or "").strip() not in read:
+            which = str(given.get("class_id") or "").strip() or "its class"
+            return Result(what, REFUSED, f"refused before it ran: read {which}'s Config first (read_configs "
+                          f"[\"{which}\"], end next), then send the whole class back as you read it, every line and "
+                          "comment kept, only what was asked changed", given, instruction=a.instruction)
         try:
-            values, notes = self.values(name, cls, given, seen)
-        except (NotRunning, ValueError) as e:
+            values, notes = self.values(cls, given)
+        except ValueError as e:
             return Result(what, REFUSED, f"refused before it ran: {e}", given, instruction=a.instruction)
-        ran = await execute(name, cls, values, "", self.vfg, self.action_timeout_s,
-                            for_player=for_whom(name, values, player), label=f" {ref} #{i + 1}")
-        if name in ("stop", "edit") or (ran.kind == "ok" and getattr(cls, "runs", "") == "until_stopped"):
-            self.world.refetch_running()
+        ran = await execute(name, cls, values, "", self.vfg, self.action_timeout_s, label=f" {ref} #{i + 1}")
+        if ran.kind != "not_run":
+            self.world.engine_changed()
         log("action", f"{ref} #{i + 1} {name} {ran.kind}: {ran.summary[:200]}")
         if ran.kind == "ok":
             if changed_nothing(ran.facts):
@@ -373,15 +361,15 @@ class Acts:
                           instruction=a.instruction)
         if ran.kind != "refused":  # it timed out or partly happened: it may have, so never claimed
             return Result(what, FAILED, ran.summary, values, tried=True, instruction=a.instruction)
-        return Result(what, REFUSED, ran.summary, values, self.reference(cls, values, refs), tried=True,
+        return Result(what, REFUSED, ran.summary, values, self.reference(values, seen, refs), tried=True,
                       instruction=a.instruction)
 
     @staticmethod
-    def reference(cls, values: dict[str, Any], refs) -> str:
-        """The reference of every command a refused action used, capped; "" with none, or before
-        the references load."""
-        fields = [k for k in command_fields(cls) if k in cls.takes]
-        commands = commands_in(values, fields)
+    def reference(values: dict[str, Any], seen: Seen, refs) -> str:
+        """The reference of every command a refused action used, capped: the commands are the
+        args of a scenario's whose type is a command (the command scenario's), as ENGINE lists
+        them; "" with none, or before the references load."""
+        commands = commands_in(values, seen.classes)
         if refs is None or not commands:
             return ""
         used, subs = refs.used(commands)
@@ -391,14 +379,21 @@ class Acts:
         ok, said = await self.world.items(player)
         return Result(f"read {player.strip()}'s items", READ if ok else REFUSED, said)
 
+    async def read_config(self, name: str) -> Result:
+        """The read tool for a Config: the class's Config as written, whole, for the next step."""
+        ok, said = await self.world.config(name)
+        return Result(f"read {name.strip()}'s Config", READ if ok else REFUSED, said, config_of=name.strip(),
+                      whole=ok)
+
     # ------------------------------------------------------------- the ending's pieces
 
     def open_task(self, h: HandOff, *, player: str, line: str) -> str | None:
-        """A hand-off's task, open: its name made free of every task, action, script folder and
-        running copy, and of `cast`, its row written through with the brief rendered from its parts,
-        and its `AI task` row. The name, or None when it could not open."""
-        taken = (self.tasks.names() | set(self.catalog.names()) | names.script_names(self.repo, self.server)
-                 | set(self.world.copies()) | names.RESERVED)
+        """A hand-off's task, open: its name made free of every task, action and engine class (as
+        ENGINE lists them, and as files: names.content_names), and of `cast`, its row written through
+        with the brief rendered from its parts, and its `AI task` row. The name, or None when it
+        could not open."""
+        taken = (self.tasks.names() | set(self.catalog.names()) | names.content_names(self.repo, self.server)
+                 | {str(c.get("id")) for c in self.world.classes()} | names.RESERVED)
         name = names.unique(h.name.strip(), taken)
         try:
             self.tasks.open(name, player, line, h.brief(), h.description.strip())
@@ -436,7 +431,8 @@ class Acts:
         row = self.tasks.get(name) or {}
         try:
             await self.implementers.follow_up(name, text, session=row.get("session") or None,
-                                              brief=str(row.get("description") or ""))
+                                              brief=str(row.get("description") or ""),
+                                              made=row.get("made") if isinstance(row.get("made"), dict) else None)
         except Exception as e:  # noqa: BLE001
             self.fail(name, f"{name} failed: the implementer could not start: {short(f'{type(e).__name__}: {e}', 160)}")
             return

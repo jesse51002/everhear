@@ -2,10 +2,11 @@
 
 A small always-running Python process on the owner's PC, in place of the playtest's conversation
 agent and orchestrator agent and the dispatcher's selector (the specs: Prototype_Brain,
-Prototype_Named_Tasks, Prototype_Brain_Loop, then Prototype_Conversation_And_Router). It follows the
-feed with `vfg watch`, keeps every row in one shared context, and runs three agents on it, each a
-`structured()` call ([`lib/py/vfg_llm.py`](../lib/py/vfg_llm.py)) on DeepSeek V4.1 Flash: the
-conversation agent and the router with no reasoning, the brain's steps at low (Settings, below):
+Prototype_Named_Tasks, Prototype_Brain_Loop, Prototype_Implementer_Harness, then
+Prototype_Conversation_And_Router, and the game engine spec). It follows the feed with `vfg watch`,
+keeps every row in one shared context, and runs three agents on it, each a `structured()` call
+([`lib/py/vfg_llm.py`](../lib/py/vfg_llm.py)) on DeepSeek V4.1 Flash: the conversation agent and
+the router with no reasoning, the brain's steps at low (Settings, below):
 
 - **the conversation agent** ([`respond.py`](brain/respond.py), its class still `Respond`), for every
   line said to the AI and every implementer's report: one call that answers at once, with `reply`,
@@ -15,13 +16,16 @@ conversation agent and the router with no reasoning, the brain's steps at low (S
   on that thing, a new implementer, whose brief it writes, an implementer already on it, or
   nowhere, with a line of its own, said after the agent's. Code places the work there.
 - **the brain**, the loops: an agentic loop of steps, each step one call. A step runs actions from
-  the menu, written in full, together or in turn; reads another player's items; hands new work off
-  to a coding implementer (`brain/implementers/`) with a brief in parts; follows a task up, or
-  cancels its last run; and ends the loop with a reply, with silence or with the hand-off. When
-  every action of a step lands, its reply goes out and the loop is done in that one step; when one
+  the menu, the game engine's ops, written in full, together or in turn; reads another player's
+  items, or an engine class's Config; hands new work off to a coding implementer with a brief in
+  parts; follows a task up, or cancels its last run; and ends the loop with a reply, with silence
+  or with the hand-off. When every action of a step lands, its reply goes out and the loop is done in that one step; when one
   does not, every result comes back and the next step fixes it. The orchestrator call and the retry
   planner are gone as calls of their own: what they did is tools of the loop now. Loops hold no
   turn: they run side by side, one player's too.
+
+The implementers it starts ([`brain/implementers/`](brain/implementers/)) write engine classes in
+`made/<server>/content/`, each with its test, and report back (The implementers, below).
 
 A player's lines to the AI take turns, but a turn is only the conversation agent's call and the
 router's: the next line waits for those two calls, never for a loop, and different players' turns
@@ -32,7 +36,7 @@ run at once.
 | Event | Comes from | What runs |
 |---|---|---|
 | `LINE` | a `LINE` Jev classed `to_ai`: said to the AI | the front turn, in the player's turn: the conversation agent answers, and when it hands off, the router picks who does the work and code places it (The router, below): a new loop, which runs on its own; the line added to a loop already on that thing; an implementer, new or already on it; or nowhere |
-| `REPORT` | an implementer ending (`Implementers`' `on_report`) | at once, never queued: once the task has taken what the implementer made, its `DESCRIPTION:` line and its action's variables (Tasks, below), the conversation agent reads the report whole and writes the player's chat line, the task's record and its status; what is left, if anything, the router places (A report, below) |
+| `REPORT` | an implementer ending (`Implementers`' `on_report`) | at once, never queued: once the task has taken what the implementer made and its `DESCRIPTION:` line (Tasks, below), the conversation agent reads the report whole and writes the player's chat line, the task's record and its status; what is left, if anything, the router places (A report, below) |
 
 A loop's own event is the `LINE` the router sent it, or a `REPORT`: the work an implementer's report
 left, which the router sent it. A line the router adds to a loop already on that thing reaches the
@@ -46,7 +50,8 @@ and `conversational`, are one now, and a feed row with either old name is read a
 brain's own rows wait for the next front turn or report, which reads them as NEW. A line already in
 the feed when the brain read its context, said more than two minutes before that, is history: never
 acted on. A line that arrives on the watch is live, whatever its time (the box's clock may be a
-minute off the PC's).
+minute off the PC's), except the backlog `vfg watch` prints once it reconnects, which is judged by
+its age, as at a start, until a line of the last two minutes arrives.
 
 A `LINE`'s text can hold several pieces one player said in a row, joined with " … ", the ask last:
 Jev's gather call joins the earlier pieces that belong to the ask (`docs/CONTRACTS.md` §5). Every
@@ -114,7 +119,7 @@ that choice uses:
 
 | `to` | with | the work goes to |
 |---|---|---|
-| `new_loop` | nothing | a new brain loop: what the brain's actions do now, an edit or a stop of a running copy, a question only a look at the game answers, an ask of several parts, and anything not clearly an implementer's |
+| `new_loop` | nothing | a new brain loop: what the engine's actions do now, a class's numbers, a stop of what runs, a question only a look at the game answers, an ask of several parts, and anything not clearly an implementer's |
 | `loop` | `loop`, an id WORK UNDER WAY offers (`L3`) | the loop already on that thing, thinking or ended and still offered: a repeat, a correction, an addition, a "never mind" |
 | `new_implementer` | one hand-off: the task's name, description and whole brief, as the brain writes one | a new task, its implementer started on the brief |
 | `implementer` | one follow-up a task the line changes: the task under TASKS, its brief and description, or `cancel` | that task's implementer: a message into its run, or its session resumed; a cancel sends the cancel words (The ending, below) |
@@ -126,11 +131,11 @@ nowhere when it adds nothing: never a second worker beside it, since a loop that
 what the implementer then starts again to test it undoes its work.
 
 **Its prompt is laid out as a brain step's**, so it reads the same rows the same way: the opening,
-marked (its rules, the owner named, the menu, every library action in full and Minecraft's command
-list, so it knows what the brain can do); the conversation in minute-blocks, the last two of its
-checkpoints marked, as a step's; then the tail, never cached: this server's own actions in full, the
-world (every player without their items, and RUNNING NOW in full, every value of every copy: "make
-it bigger" may be one value of a running copy, a brain's edit and not an implementer's build), TASKS
+marked (its rules, the owner named, the menu, the game engine's ops in full, and Minecraft's
+command list, so it knows what the brain can do); the conversation in minute-blocks, the last two of
+its checkpoints marked, as a step's; then the tail, never cached: the world as glanced at (every
+player without their items, RUNNING NOW, INCANTATIONS and ENGINE, every class the engine has: "make
+it bigger" may be a number in a class's Config, the brain's, and not an implementer's build), TASKS
 in full, WORK UNDER WAY in full, and the event: `THE LINE` with the conversation agent's answer and
 reason, and whether it passed the line on to be looked up or to be done, or `THE REPORT` with what
 it left. Its schema is the same for every catalog, loop and task,
@@ -245,9 +250,8 @@ player's, in memory only: a restart forgets them, as it forgets what waited for 
 [`context.py`](brain/context.py) keeps every feed row in seq order with its processed mark: the
 lines Jev kept, with their class; the game's events; the system's notices; and the brain's own
 `AI` rows, the only rows the AI side writes (`vfg say` and `vfg feed post AI`): what it said, the
-record of each loop, each task opened or followed up, and each task's result. Older rows may hold
-one `AI action` per action run and `AI note` rows for a copy changed or stopped; nothing writes
-those now. Nothing an implementer writes is in it. Every front turn and every report takes in
+record of each loop, each task opened or followed up, and each task's result. Nothing an
+implementer writes is in it. Every front turn and every report takes in
 everything unread and marks it (`vfg context mark`), so the game's events since the last read are
 its NEW rows: the conversation agent's, and those of a new loop the router starts.
 
@@ -259,24 +263,27 @@ the `to_ai` lines are shown.
 
 A step's prompt is laid out for the cache ([`call.py`](brain/call.py)):
 
-1. **the opening**, marked: the rules ([`prompts/brain.md`](prompts/brain.md), the owner named),
-   the menu, every library action in full (its docstring, how it runs, and each field it fills with
-   its type, limits, default and description) and Minecraft's command list: the same on every step
-   of every loop while the library and the references stay as they are;
+1. **the opening**, marked: the rules ([`prompts/brain.md`](prompts/brain.md), the owner named, its
+   `# TODO` lines left out: `call.rules_text`), the menu, every action in full (its docstring and
+   each field it fills with its type, limits, default and description) and Minecraft's command
+   list, less the commands that place or remove blocks (the library's command scenario's `BLOCKED`,
+   `engine/library/command.py`: building is a scenario's) and the owner's, which the engine refuses
+   (`engine/vfg_engine/mc/commands.py`'s `REFUSED`; both read as text by
+   `actions.hidden_commands()`): the same on every step of every loop while the
+   actions and the references stay as they are;
 2. **the conversation**, a minute-block at a time (a run of rows sharing a minute, which never
    changes once the next minute starts), every `VFG_BRAIN_CHECKPOINT` (5) closed blocks marked, the
    last two of them;
-3. **the tail**, the event's own: this server's own actions (`made/<server>/actions/`, which an
-   implementer may add at any moment), in full; the world (from `vfg state --json --items`, every
-   online player on one line, `- Steve at 197 68 251 in overworld: 14/20 health, 18/20 food, armor
-   12, level 5, survival; effects: speed II 0:30, night vision ∞; Steve's items, by slot: …`, the
-   items of the event's player alone, the speaker or a report's task's player, and what Minecraft did
-   not answer left out; RUNNING NOW, every copy with who started it and every value of its action,
-   its value now, its limits or choices, live or restart; the saved places, the incantations, the
-   time and the weather); TASKS (below); what is new since the last read; and the event, with the
-   conversation agent's line (`(the conversation agent already answered the player: “On it!”; your
-   reply follows it — never repeat it)`, or `(the conversation agent said nothing)`) and the
-   router's reason (`(the router: …)`). Marked on the first step;
+3. **the tail**, the event's own: THE WORLD NOW ([`world.py`](brain/world.py)), every online player
+   on one line from `vfg state --json --items`, `- Steve at 197 68 251 in overworld: 14/20 health,
+   18/20 food, armor 12, level 5, survival; effects: speed II 0:30, night vision ∞; Steve's items, by
+   slot: …`, the items of the event's player alone, the speaker or a report's task's player, and what
+   Minecraft did not answer left out; the time and the weather; then the game engine's part, RUNNING
+   NOW, SAVED PLACES, INCANTATIONS and ENGINE (The game engine, below); TASKS (below); what is new
+   since the last read; and the event, with the conversation agent's line (`(the conversation agent
+   already answered the player: “On it!”; your reply follows it — never repeat it)`, or `(the
+   conversation agent said nothing)`) and the router's reason (`(the router: …)`). Marked on the
+   first step;
 4. **THE LOOP SO FAR**, from the second step on: one block per earlier step, what it ran and read,
    what it meant to end with and what each tool came to (`ENDED <end> AND SENT: …` for an ending that
    went out before a line was added; for a step whose call failed, that nothing of it ran and the
@@ -296,8 +303,8 @@ back in the results and in a line's block. Gemini on OpenRouter read it so: on t
 kept between loops, and a later step 96.6%; live on realmc every step read 95%.
 
 The conversation agent's prompt marks the last three checkpoints; its opening is its rules and the
-menu's lines, and its tail has the same players without their items, RUNNING NOW one line a copy, no
-saved places, TASKS one line a task, WORK UNDER WAY in brief, what is new and the line or the
+menu's lines, and its tail has the same players without their items, RUNNING NOW, INCANTATIONS and ENGINE
+from the last reads, never waited for, no saved places, TASKS one line a task, WORK UNDER WAY in brief, what is new and the line or the
 report. The router's is under The router, above.
 
 ## A step
@@ -310,9 +317,11 @@ alone (`status` was a report's field then). Its fields:
 
 - `actions`, each `{to, instruction, action}`: an action on the menu, one plain sentence of what it
   does and for whom, and its values written in full, one `{key, value}` per field it sets (closed
-  objects, as OpenAI's schemas demand; a field that holds another action's values as `values.<name>`
-  keys); and `order`, `together` or `in_turn`;
-- `read_items`: players whose items to read;
+  objects, as OpenAI's schemas demand; a scenario's or a mark's args one `args.<name>` key each,
+  which code gathers into one `args` object, and an `args` value written as text holding a JSON
+  object is read as that object: `ActBase.values`); and `order`, `together` or `in_turn`;
+- `read_items`: players whose items to read; `read_configs`: engine classes whose Config to read,
+  as written, before an `engine_config` rewrites it;
 - `hand_offs`, each a new task's `name` and `description` and its brief in parts: `words` (the
   player's own), `picture` (how it behaves, looks, sounds and feels), `assumed` (what the player
   takes for granted), `cast` (how it is cast, and for whom) and `done_when` (the checklist the
@@ -329,17 +338,18 @@ up front, in the same answer, so most asks end in one step.
 
 **What code cannot carry out, or would carry out wrongly, is sent back** by a validator, once, with
 why (`structured()` asks again, at the price of the whole prompt): an action not on the menu, values
-its action refuses (`check_values`, a command that places blocks among them), a field set twice, an
-instruction that does nothing, a teleport that moves nobody; `next` with nothing to run or read, or
+its action refuses (`check_values`), a field set twice, an instruction empty or that does nothing, a
+start of the teleport scenario that moves nobody; `next` with nothing to run or read, or
 with a hand-off or a follow-up; `reply` with no reply; `handoff` with neither a hand-off nor a
 follow-up; a reply over 300 characters (a hard cap over the prompt's soft 200: a reply a little over 200
 goes out rather than cost a second call); a reply that promises work when the step ends `reply` and
 starts nothing (`respond.promises()`, its offers left out: a status of the speaker's open task
 passes, and a report's loop whose follow-up already runs is not checked); a hand-off's name not
-`^[a-z][a-z0-9_]{1,31}$`, `cast`, a library action's bare name or another hand-off's, a brief with a
+`^[a-z][a-z0-9_]{1,31}$`, `cast`, an action's name or another hand-off's, a brief with a
 part left empty or no `done_when`; a follow-up that names no task, a task followed up twice, a
 follow-up that does not cancel and has no brief (the hand-off's and the follow-up's checks are
-[`checks.py`](brain/checks.py), the router's too); and on the last step, an ending but `reply` or
+[`checks.py`](brain/checks.py), the router's too); a Config to read that is no class's name
+(`^[a-z][a-z0-9_]{0,63}$`); and on the last step, an ending but `reply` or
 `handoff`, or a follow-up of a task not under TASKS. **While nothing of the
 loop has landed in the game** (a report's loop counts as landed: its implementer built something),
 a step that runs nothing may not end `reply` with a reply that says it is done (`claims_done()`),
@@ -358,33 +368,41 @@ or a follow-up under `reply` or `silent` is carried out as `handoff`.
    never an exception: the next step reads it.
 2. **The actions**: `together` all at once; `in_turn` one after another, stopping at the first that
    does not land, the rest `not run`. The same action with the same values twice in a step runs
-   once. Each runs as `vfg action run … --for <player>`, with no task (only an implementer's work is
-   one), the action's `player` value when it names one player, else the speaker (a report's: the
-   task's player), so its copy is named `<action>_<player>` on the box (`command_steve`, then
-   `command_steve_2`). Its values are checked first, as vfg checks them, the saved places included;
-   `edit` and `stop` name the copy they change, checked against `running.json` as it is then (an
-   earlier step may have stopped it).
+   once. Each is one of the game engine's ops, run as `vfg action run <action> key=value …` with no
+   task (only an implementer's work is one). Its values are checked first, as vfg checks them; a
+   scenario's or a mark's args go to the engine, which checks them against the class and refuses in
+   words. An `engine_config` of a class whose Config no earlier step of the loop read is refused
+   here. Every action that reached the engine, landed or not, makes the next loop read the engine
+   afresh.
 3. **The reads**: the player's items by slot, from a `vfg state --json --items` fetched for that read
    and waited for up to 15 s (two reads, two fetches), its own fetch's answer and never a state
-   another fetch left from before the step's actions; the name matched in any case. A fetch that fails is refused (nothing read, try again), and so are
-   Minecraft not answering and a player not online.
+   another fetch left from before the step's actions; the name matched in any case. A fetch that
+   fails is refused (nothing read, try again), and so are Minecraft not answering and a player not
+   online. A Config read is `vfg engine config get <class>`, never kept from before: its file and
+   lines and the class as written, shown to the next step whole (at most 8000 characters), its
+   lines kept, and whose (the library's, or this server's version over it); the engine not running,
+   a class it has not, and a class neither the library's nor in `made/<server>/content/` are refused.
 
-**An action lands when it ran without an error**: vfg checked its values and Minecraft did not
-refuse it, and it did not say it changed nothing. Each tool comes to one of:
+**An action lands when it ran without an error**: vfg checked its values, the engine did it (and
+Minecraft did not refuse a command a scenario sent), and it did not say it changed nothing. Each tool
+comes to one of:
 
-- `landed`: its summary, the copy's name when it keeps running, and the numbers vfg clamped;
-- `changed nothing`: it ran, but its facts say it changed nothing (`changed` empty: an `edit` to the
-  values a copy already has, an `incantation_edit` to what the entry already holds, "…: nothing
-  new"). Not landed, so a reply written up front ("fixed it") never goes out on it;
-- `refused`: it did not happen. Refused before it ran, here (a value, a copy not running, an action
-  no longer on the menu) or by vfg (a value or a key, `vfg refused it before it ran: …`); a player
-  not online; or Minecraft's error, with the reference of every command it used: this server's
+- `landed`: its summary (a scenario that goes on says its instance, which `engine_stop` takes) and
+  the numbers vfg clamped;
+- `changed nothing`: it ran, but its facts say it changed nothing (`changed` empty: an
+  `engine_config` to the Config as it already is). Not landed, so a reply written up front ("fixed
+  it") never goes out on it;
+- `refused`: it did not happen. Refused before it ran, here (a value, a Config not read first, an
+  action no longer on the menu) or by vfg (a value or a key, `vfg refused it before it ran: …`); a
+  player not online; or the engine's error, and for a command a scenario sent Minecraft's, with the
+  reference of every command it used (the args whose type ENGINE gives as a command): this server's
   syntax and the wiki's Java Edition notes ([`refs.py`](brain/refs.py)), at most 6000 characters;
-- `did not run`: vfg could not run it (the box out of reach, the action not deployed). Nothing of it
-  happened, and the prompt says to run it once more;
+- `did not run`: vfg could not run it (not configured, the box out of reach, Minecraft or the game
+  engine not running: vfg's exit 3 to 6; vfg itself missing). Nothing of it happened, and the
+  prompt says to run it once more;
 - `failed`: it timed out, or partly happened. It may have happened, and is never run blindly again;
 - `not run`: in turn, after one that did not land;
-- `read`: a player's items.
+- `read`: a player's items, or a Config as written.
 
 Nothing is retried in code: a refused command goes back to the next step, which fixes it.
 
@@ -395,21 +413,69 @@ at all, no reply, no record and no task, and its block goes into THE LOOP SO FAR
 values, its state and its words (at most 600 characters), and what the step meant to end with,
 marked NOT SENT. The next step runs only what is still to do, and writes the ending again.
 
+## The game engine
+
+Everything that happens in the game is an engine class (the game engine spec,
+[`engine/WRITING.md`](../engine/WRITING.md)): an ability (granted, then cast), an item (held), a
+mark (applied, for a while), an actor (a body a scenario spawns) or a scenario (started, with its
+args); one class a file, the library's `engine/library/<id>.py` and this server's
+`made/<server>/content/<id>.py`, one version of each for everyone, run by one process on the box.
+The brain reaches it through reads and its menu, and nothing else:
+
+- **THE WORLD NOW's engine part** ([`world.py`](brain/world.py)): one `vfg engine overview --json`,
+  the engine's classes, instances, places and incantations in one SSH call, fetched at a loop's
+  start beside `vfg state --json --items` and waited for up to 3 s (past that the last good read is
+  shown, and the fetch finishes for the next call); each read is shared while younger than 2 s, and
+  an action that reached the engine makes the next loop read it afresh (`engine_changed()`).
+  RUNNING NOW is every instance the engine runs, scenarios first: its name (what `engine_stop`
+  takes for a scenario's), its kind and class, whose it is (`granted to Steve`, `held by Steve`,
+  `on Steve`, a scenario's `for the world`, an actor's `in the world`) and when it ends, in UTC; at
+  most 40, the rest counted. SAVED PLACES are the engine's own, per world: `castle 197 68 251
+  overworld (castle_steve)`, a place's name, where, and the task that saved it. INCANTATIONS is each
+  binding, `- "fire ball" for Steve: casts fireball`, or `starts meteor {"at":"caster"}`: the bridge
+  casts a phrase it hears in the engine with no loop, and its `game, cast` row is context. ENGINE is
+  every class by kind, scenarios first, its summary cut to 120 characters, and under a scenario and
+  a mark its args, one `args.count: whole number 1..100, default 10: how many fall` line each. While
+  vfg says exit 6 each part says the engine is not running; a read that fails keeps the last good
+  parts, and a part with none, or one the engine refused, reads `unknown`, with why, and a log line.
+- **The menu** is the engine's eleven actions (`actions/engine_*.py`, each naming its op in
+  `engine`: [`actions/README.md`](../actions/README.md)): `engine_start` (a scenario and its args)
+  and `engine_stop` (a scenario, every run of it, or one instance), `engine_give` and `engine_take`
+  (an item), `engine_grant` and `engine_revoke` (an ability), `engine_apply` (a mark, its args and
+  seconds) and `engine_clear`, `engine_bind` (a player's phrase to an ability, or to a scenario with
+  set args, `caster` for a Player or Place arg filled by whoever casts it; `cooldown_s` for a
+  scenario's; its aliases made as it is bound) and `engine_unbind`, and `engine_config`. Each runs
+  as `vfg action run` runs any action, and vfg sends its op to the engine. A start waits for a
+  one-off scenario's result (vfg's `VFG_ENGINE_START_WAIT_S`, 15 s) and answers with it; one that
+  goes on answers that it is running as its instance. The prompt names the everyday scenarios by id:
+  `command` (raw server commands, `args.commands`), `teleport`, `save_place` and `summon_around`. A
+  grant and its bind never go in one step (the prompt's rule).
+- **A Config rewritten** (the spec's "rewritten by the brain"): `read_configs` first, ending `next`;
+  then `engine_config` with `class_id` and `config`, the whole class as Python, as read, comments
+  and all. An `engine_config` of a class whose Config no earlier step of the loop read is refused at
+  the tool, before it runs. vfg splices it into the class's file on this PC, checks it, deploys and
+  reloads it; a refusal comes back with the check that failed, the old version still running, and
+  one already as written comes back `changed nothing`. A library class's first rewrite copies its
+  file into `made/<server>/content/`, which then runs in the library's place, one version for
+  everyone (`toolkit/README.md`, `config set`).
+
 ## The ending
 
 [`loop.py`](brain/loop.py), once the last step landed, in this order:
 
-1. **Each hand-off's task opens.** Its name is made free of every task, action, script folder and
-   running copy, and of `cast`, with `_2`, `_3` … ([`names.py`](brain/names.py)). Its brief is
-   rendered from its parts under `THE PLAYER'S WORDS`, `THE WHOLE PICTURE`, `WHAT THE PLAYER TAKES
-   FOR GRANTED`, `HOW IT IS CAST, AND FOR WHOM` and `DONE WHEN` (one `- ` item a line), and kept as
-   the task's `brief`. `AI task <name> | new: <description>` is posted.
+1. **Each hand-off's task opens.** Its name, which the class it makes takes too, is made free of
+   every task, action and engine class (those ENGINE lists, and the files in `engine/library/` and
+   `made/<server>/content/`), and of `cast`, with `_2`, `_3` … ([`names.py`](brain/names.py)). Its
+   brief is rendered from its parts under `THE PLAYER'S WORDS`, `THE WHOLE PICTURE`, `WHAT THE
+   PLAYER TAKES FOR GRANTED`, `HOW IT IS CAST, AND FOR WHOM` and `DONE WHEN` (one `- ` item a line),
+   and kept as the task's `brief`. `AI task <name> | new: <description>` is posted.
 2. **Each follow-up's task opens again** with its new brief and description, and `AI task <name> |
    follow-up: <brief, cut to 160>` is posted. **A cancel** ("never mind") is a follow-up whose brief
    is the cancel words of Prototype_Implementer_Harness, written by code: `CANCELLED: the player said
    never mind. Stop building and put everything back the way it was before the run this cancels,
-   then report Cancelled: and what you put back.` The description stays, and the row says `follow-up: never mind
-   — put back what its last run built`. A stop is for running copies only.
+   then report Cancelled: and what you put back.` The description stays, and the row says
+   `follow-up: never mind — put back what its last run built`. Stopping what runs (`engine_stop`,
+   `engine_revoke`, `engine_clear`, `engine_take`) is an action, and changes no task.
 3. **The reply**, through `vfg say … --task <name>`: a report's loop's task, else the first opened,
    else the first followed up. With none from the step, nothing is said.
 4. **The record**, `AI action - | <record>`, a report's loop's too: the step's, else written in code
@@ -432,7 +498,7 @@ start …`.
 
 **What the context keeps of a loop** is one short record an ending, its reply as the AI's line, and
 the `AI task` rows of its hand-offs and follow-ups: never its steps, its tool calls or their results.
-No row is written per action, and no `AI note` for an edit or a stop. A report's `AI result` is the
+No row is written per action. A report's `AI result` is the
 conversation agent's (A report, below), never a loop's.
 
 ## The limits, and a loop that fails
@@ -492,6 +558,9 @@ written in code; it stays open only while a follow-up to it runs.
 
 ## Measured
 
+All of it before the game engine, on the action menu it replaced (scripts and their running
+copies): the engine's menu has not been measured yet.
+
 - **The 2026-10-11 session, replayed**, measured on the brain before this build: Gemini 3.8 Flash at
   low, with no conversation agent in front and no router. Its 110 brain events (one player, 80
   minutes) went through the loop on realmc, on the brain as of its fix round 5, as
@@ -541,29 +610,123 @@ written in code; it stays open only while a follow-up to it runs.
 the box's `vfg.db`, which only the brain writes. Every change sends the whole row with `vfg task set`
 in the background, one task's writes in order; the box keeps the newer `updated_at` should two ever
 cross. A write that fails (EC2 out of reach for a moment) is sent again after 2, 5, 15 and 30 s,
-unless a newer change to the task carries the row first. A row: `name`, `description` (what the thing is now, for whom; players never see it),
-`player`, `status` (`open`, `done`, `failed`), `line` (the player's words), `brief` (the latest: a
-hand-off's rendered parts, a follow-up's brief, or the cancel words), `made` (`{"scripts",
-"actions", "presets", "copies"}`), `variables` (its action's fields, as `vfg_actions.variables()`
-reads them), `session`, `result`, `created_at`, `updated_at`, `closed_at`.
+unless a newer change to the task carries the row first. A row: `name`, `description` (what the
+thing is, for whom; players never see it), `player`, `status` (`open`, `done`, `failed`), `line`
+(the player's words), `brief` (the latest: a hand-off's rendered parts, a follow-up's brief, or the
+cancel words), `made` (`{"content", "bindings", "grants"}`: the ids of the classes it wrote in
+`made/<server>/content/`, the engine's ids of the bindings it made, `steve.frost_bolt`, and its
+grants, `Steve:frost_staff_steve`; each name once, added at each report and never taken out),
+`variables` (null on every task the brain opens: a class's numbers are its Config), `session`,
+`result`, `created_at`, `updated_at`, `closed_at`.
 
-- **A report** first adds what the implementer made to `made`, takes its `DESCRIPTION:` line as the
-  description (with none, the one the brain wrote stays), and reads `variables` from the task's
-  action: the one named as the task, else the last of `made.actions` that is loaded. A changed action
-  file reads them again at the next front turn or report.
+- **A report** sets `made` to what the implementer says the task has made now (what its guard
+  recorded over every run, checked against the disk and the engine: The implementers, below), in
+  place of what the row had, as a deploy mirrors the folder: a class removed, a binding undone or a
+  grant revoked leaves it (`tasks.mirror_made`; a report with nothing known, None, changes nothing).
+  It takes its `DESCRIPTION:` line as the description (with none, the one the brain wrote stays).
 - **TASKS** in a step's tail and the router's ([`tasks.board()`](brain/tasks.py)): every task, oldest
   first, `- galick_gun_styrk, for Styrkaeopteryx, open, an implementer is on it, 21:40:02:
-  <description>`, the time it was last written (with its date when not today), then `made: …;
-  running now: <its copies>` and `last result: …`; `TASKS: none yet` with none. The router and the
-  brain name a new task in a hand-off, and follow one up by its name. The conversation agent's TASKS
-  is one line a task, `- galick_gun_styrk for Styrkaeopteryx, an implementer is on it: <description,
-  cut to 160>`.
+  <description>`, the time it was last written (with its date when not today), then `made: content
+  galick_gun_styrk; bindings styrkaeopteryx.galick_gun; running now: <the engine's instances of the
+  classes it made>` (`made: nothing yet` with none) and `last result: …`; `TASKS: none yet` with
+  none. The router and the brain name a new task in a hand-off, and follow one up by its name. The
+  conversation agent's TASKS is one line a task, `- galick_gun_styrk for Styrkaeopteryx, an
+  implementer is on it: <description, cut to 160>`.
 - **A start** takes every row from `vfg context --json` and fails each one still open (`<name>
   failed: interrupted, the brain restarted while it ran`, with its `AI result` row). When the feed
   restarts, the rows read again are merged: one the memory lacks is added, one the read lacks (a box
   provisioned again) or holds older than the memory (a write that never landed) is written back, and
   for a name in both the memory wins.
 - **A stop** fails each task whose implementer it stopped, and gives the writes still going out 5 s.
+
+## The implementers
+
+[`implementers/runner.py`](brain/implementers/runner.py): a task's implementer is one run at a time,
+in the harness `VFG_IMPL_HARNESS` names (Claude Code or OpenCode: `implementers/harness/`), on
+DeepSeek V4.1 Flash unless the settings say otherwise. It is the main agent, with nothing around
+it: it writes engine classes and their tests, sets up what the job needs through `vfg engine`,
+checks it, and ends with its report, which reaches the brain as a `REPORT` with what the task made.
+The brain never waits for it.
+
+- **Its system prompt**: [`prompts/implementer.md`](prompts/implementer.md), the server's name
+  filled in, then `vfg prefix`: `engine/WRITING.md`, `engine/KIT.md`, and every library class's
+  kind, first line, Config and Args as written ([`prefix.py`](brain/implementers/prefix.py)). It is
+  read once and written to `implementer-system-<hash>.md` in the brain's folder, so every
+  implementer's prompt starts with the same bytes; without `vfg prefix`, the rules alone.
+- **Its first message** ([`brief.py`](brain/implementers/brief.py)): the brain's brief; `YOUR TASK:
+  <name>`, the name its class (`made/<server>/content/<name>.py`, another it needs `<name>_<what>`),
+  its test (`made/<server>/tests/<name>.py`) and every bind it sends (`--by <name>`) take; SAVED
+  PLACES (`vfg engine places --json`); and the EXAMPLES block
+  ([`examples.py`](brain/implementers/examples.py)): the classes `vfg route` picks for the job (at
+  most three, by Jev, or by words when Jev is slow; the ones that run the job first, with how to use
+  them as they are), whole, a made one followed by its test; the task's own test; every class the
+  brief names; what the engine runs; who is online, where, the time and the weather; and every
+  class this server's implementers made, by first line. The route, the state and the instances are
+  read at once, for at most `VFG_ROUTE_TIMEOUT_S` and a second; what fails is said or left out, and
+  the brief still goes.
+- **The prompt's ladder**: use what exists (start a scenario with its args, grant, give, apply,
+  bind, or one `vfg cmd`); else write one new class from the closest, importing only `vfg_engine`
+  and its kit, and `vfg engine reload` it; a variant with other numbers only is the brain's Config
+  change, named in the report. Every number is in the class's Config, the same for everyone, and
+  where and for whom are a scenario's Args.
+- **The guard** ([`guard.py`](brain/implementers/guard.py)): one check before every tool call,
+  whatever the harness, the harness's own permission checks off. An implementer reads and searches
+  only `engine/` and `made/<server>/` (Read, Glob, Grep; `ls`, `cat`, `sed -n 'A,Bp'`, `grep`,
+  `head`, `tail`); writes only `made/<server>/content/<id>.py` and `made/<server>/tests/<id>.py`,
+  with Write and Edit, never a class of a library class's id (it would run in the library's place
+  for everyone); and runs `vfg engine` (`reload`; the reads; `start`, `stop`, `grant`,
+  `revoke`, `give`, `take`, `apply`, `clear`, `bind`, `unbind`) in the forms its prompt gives, `vfg
+  cmd`, `vfg test`, `vfg state`, `vfg history`, `python3 -m py_compile`, `sleep` and `echo`, joined
+  with `&&` or `;` and piped only into `head`, `tail` or `grep`. Refused, each with one line saying
+  what to send instead: `vfg engine config set|undo` (the brain's), `vfg engine spawn`, `@a` or `@r`
+  for a player, a bind without `--by <its task>`, an owner's command (the engine's `REFUSED`) or a
+  server-wide setting (`setworldspawn`, `defaultgamemode`, `difficulty`, `worldborder`) in a `vfg
+  cmd` or in a scenario's command args, loops, variables, redirections into files, the background
+  and the web. `vfg test` runs at most four times a run, and never again with nothing changed since
+  that test's last run (comments, docstrings and formatting are no change); a look at the live world
+  (a `vfg cmd` of `data get`, `list`, `scoreboard players get`, or an `execute` with no `run`) at
+  most three times a run when there is a test server, and never once the tests are spent.
+- **What it made**: the guard records each class file it writes, each binding it sends (the
+  engine's id, `steve.fire_ball`) and each grant (`Steve:fireball`), over the task's runs; a task
+  this process did not start begins from its row's `made` (the follow-up passes it), so the record
+  covers every run. At the report they are checked against the disk and the engine (`vfg engine
+  incantations`, `vfg engine instances --kind ability`), and what is there is what the task has.
+- **Its test**: `made/<server>/tests/<task>.py`, a `test(t)` with one check per DONE WHEN item,
+  which `vfg test <task>` writes a skeleton of when there is none, and runs on the test server
+  (`VFG_TEST_BOX`): livetest's own engine with the library, this server's content and the bindings
+  the task made, on a stage high in the sky with fake players
+  ([`engine/README.md`](../engine/README.md), _Tests of content: livetest_). With no test server,
+  `vfg test` exits 3, and the check is the engine's answer to one start, grant, give or apply.
+- **Its report**: its last message, first word `Done`, `Failed` or `Cancelled` (the task's `done`,
+  `failed`, and `done` for a cancel), a line per DONE WHEN item, then `DESCRIPTION:`, which code
+  takes off (at most 600 characters) for the task's description. An error, a crash, its turns used
+  up or a stop at its limit is `failed`; a run that ends on a summary of its conversation instead of
+  a report is resumed once for it.
+- **Follow-ups**: one that comes while the run is live goes into it as `MESSAGE from the brain: …`,
+  and the run's one report covers it; after the run it resumes the task's session, which the task's
+  row keeps (`session`), so a restart keeps it too; follow-ups queued behind a run make one run.
+  With no session to resume, a new implementer starts on the task's description and the follow-up.
+- **Never mind, and the limits**: a cancel goes into a live run as the cancel words, or resumes the
+  last run's session with them (with no session, code alone puts back); one for a task whose first
+  run has not begun reports `Cancelled` with nothing made. Near its limit (the 95th of
+  `VFG_IMPL_MAX_TURNS`' 100 model requests, or a minute before `VFG_IMPLEMENTER_MINUTES`' 10) a run
+  gets the `LIMIT:` words once; at the limit it is stopped and reported `failed` from what the guard
+  saw: what it made and changed, and its last five commands with their errors.
+- **The put-back** ([`putback.py`](brain/implementers/putback.py)): before each call the guard lets
+  through, the run's snapshot keeps what the call is about to change: a made file's bytes, or that
+  it was not there; a binding as the engine lists it; whether the player had the ability. After a
+  cancel, a stop at the limit, or a warned run that did not report done, code makes each what it
+  was: each file written back or removed, one `vfg engine reload` when a class file was among them
+  (a class that goes with its file takes its instances with it), each binding the run made unbound
+  and each it replaced or unbound bound again as it was (its aliases, everyday aliases, cooldown
+  and `--by`, with `--aliases`: no alias call), each grant it made revoked and each it revoked
+  granted again. Its line, `Code put back: …`, ends the report, and what it could not put back makes
+  the report `failed`. A scenario the run started, an item it gave, a mark it applied and a place it
+  saved are the implementer's own to undo. The snapshot is kept until the task's next run, in memory
+  and in `implementer-snapshots/<task>.json`, so a cancel after the run, or after a restart, puts
+  back from it.
+- **Usage**: one `vfg usage add` row a run, its ref the task's name, each model request priced at
+  its own size and time (`implementers/config.py`'s `PRICES`).
 
 ## Run it
 
@@ -575,7 +738,7 @@ vfg brain stop      # SIGTERM to the brain alone: what waits for a turn dropped 
 
 While it stops, an implementer that ends closes its task on its own status, with a record written in
 code (`castle_steve done: <its description>`, an `AI result` row) and no model call. `vfg brain stop`
-signals the brain's pid, not its process group, where the implementers' claude CLIs run: the brain
+signals the brain's pid, not its process group, where the implementers' harnesses run: the brain
 interrupts them itself; the group gets SIGKILL only after 15 s.
 
 `run` syncs the dependencies from `uv.lock` and execs `python -m brain`. A start takes the lock,
@@ -584,7 +747,9 @@ sets aside a `tasks.json` an older brain left in `~/.vfg/brain/` (renamed
 carried over), runs `vfg up`, sets the watchers (`join,leave,death,advancement,server`), Jev's lookout
 ([`prompts/lookout.md`](prompts/lookout.md)) and Jev's menu (every action's line, set again when
 an action changes), loads the context and the tasks from `vfg context --json` (tried again every 5 s
-while it fails), fails the tasks a crash left open, follows `vfg watch --after <seq>` from the feed's highest
+while it fails), reads the engine once beside it, waited for by nobody but a router call made while it
+goes, 2 s at most, so the first router call sees ENGINE and RUNNING NOW and the conversation agent
+answers at once (the engine down or hung is logged in words, those parts unknown until a read lands), fails the tasks a crash left open, follows `vfg watch --after <seq>` from the feed's highest
 seq that read gave (`last_seq`, its last object: with no row in the last 6 h, the watch still never
 replays old rows as new), and greets, unless nobody is online. When the feed restarts while it runs
 (`vfg watch` says `feed restarted`, or gives a seq it had passed), it reads the context again and
@@ -601,9 +766,10 @@ component `router`, which a box's `usage` CHECK from before it refuses. `vfg usa
 each row on its own, so nothing else is held up, but a refused row is skipped with a warning and
 lost, until the bridge's start rebuilds the CHECK (`docs/CONTRACTS.md` §4).
 
-The OpenRouter key: `OPEN_ROUTER_API` in the environment, else alone in `~/.vfg/openrouter.key`
-(mode 600), as `structured()` reads it; the implementers read it too on the `openrouter` provider, and
-`DEEPSEEK_API_KEY`, from the environment only, on `deepseek` (Settings, below).
+The OpenRouter key: `OPEN_ROUTER_API` in the environment, else alone in the file
+`VFG_OPENROUTER_KEY` names (default `~/.vfg/openrouter.key`, mode 600), as `structured()` reads it;
+the implementers read it too on the `openrouter` provider, and `DEEPSEEK_API_KEY`, from the
+environment only, on `deepseek` (Settings, below).
 
 ## Settings
 
@@ -626,10 +792,11 @@ From the environment, then `~/.vfg/config`:
 | `VFG_TURN_SETTLE_S` | `3` s at most that a turn waits for the AI rows it wrote to come back on the watch before the player's next turn starts (`0`: no wait) |
 | `VFG_BRAIN_CHECKPOINT` | `5` minute-blocks between cache marks, every call's |
 | `VFG_BRAIN_HISTORY_HOURS` | `6`: how much of the feed the context starts with |
-| `VFG_BRAIN_DIR` | `~/.vfg/brain` |
-| `VFG_SERVER` | `main`: whose `made/<server>/actions/` are on the menu |
-| `VFG_RUNNING_TTL_S` | `30` s between background fetches of the running copies; `0`: never |
-| `VFG_DISPATCH_ACTION_TIMEOUT_S` | `20` s per once action, unless its class sets `timeout_s` |
+| `VFG_DISPATCH_ACTION_TIMEOUT_S` | `20` s per engine op, unless its action sets `timeout_s` (`engine_start` 45, `engine_bind` 40, `engine_config` 60); vfg's answer is waited for 10 s past it |
+| `VFG_ENGINE_START_WAIT_S` | `15` s, 0 to 30: how long vfg's start waits for a one-off scenario's result (vfg's own) |
+| `VFG_SERVER` | `main`: the server whose `made/<server>/content/` the implementers write, and a new task's name keeps clear of |
+| `VFG_REPO` | this repo: `actions/`, `engine/` and `made/`, and the implementers' working directory |
+| `VFG_HOME`, `VFG_BRAIN_DIR` | `~/.vfg` and `~/.vfg/brain`; from the environment only for `VFG_HOME` |
 | `VFG_IMPL_HARNESS` | `claude-code`, or `opencode`: the harness an implementer runs in (`brain/implementers/harness/`) |
 | `VFG_IMPL_PROVIDER` | `deepseek` when `DEEPSEEK_API_KEY` is set, else `openrouter`: DeepSeek V4.1 Flash at that provider; or `anthropic`, Haiku 5.5 on your Claude subscription, Claude Code only and untested |
 | `VFG_IMPL_MODEL` | the provider's: `deepseek-flash`, `deepseek/deepseek-v4.1-flash`, `claude-haiku-5-5`; `VFG_IMPLEMENTER_MODEL` is read when it is empty |
@@ -640,7 +807,8 @@ From the environment, then `~/.vfg/config`:
 | `VFG_IMPLEMENTER_MINUTES` | `20`: warned a minute before, stopped at it and its task failed. A shell command an implementer runs may take 10 minutes when it sets no timeout (a `vfg test` waiting its turn), the run's limit at most |
 | `VFG_IMPL_CACHE_TTL` | `5m` (or `1h`): the `anthropic` provider's prompt cache; `VFG_SUBAGENT_CACHE_TTL` is read when it is empty |
 | `VFG_OPENCODE_BIN` | `opencode` on the PATH, else `~/.opencode/bin/opencode`: OpenCode's program; from the environment only |
-| `VFG_TEST_BOX` | `box`: the live box's own test server, where `vfg test` runs an implementer's test (`docs/CONTRACTS.md` §8); or the file of a test server's settings; `none`: no test server, and the check is one action run. With one, a run's looks at the live world are budgeted |
+| `VFG_ROUTE_TIMEOUT_S` | `3` s, 0.1 to 60, that `vfg route` may take for an implementer's EXAMPLES block, which waits a second more at most |
+| `VFG_TEST_BOX` | `box`: the live box's own test server, where `vfg test` runs an implementer's test in its sandbox, with an engine of its own (`docs/CONTRACTS.md` §8); or the file of a test server's settings; `none`: no test server, `vfg test` exits 3 and the check is the engine's one answer. With one, a run's looks at the live world are budgeted |
 | `VFG_TEST_TIMEOUT_S` | `60` s a test may run, 5 to 600, before it is stopped |
 
 A number that does not read, or is under its least, is logged and its default used. The
@@ -650,9 +818,11 @@ logged as the settings load (`config VFG_LOOP_SECONDS='120' is no longer read: �
 
 ## Files
 
-In `~/.vfg/brain/`: `brain.log`, `brain.pid`, `lock`, and `refs/`. The tasks are not here: they are
-rows of the box's `tasks` table (Tasks, above), which `vfg route --task` and `vfg brain status` read,
-and a `tasks.json` from before them is set aside at the start.
+In `~/.vfg/brain/`: `brain.log`, `brain.pid`, `lock`, `refs/` (the command references, by server
+version), `implementer-system-<hash>.md` (the implementers' system prompt),
+`implementer-snapshots/<task>.json` (each task's last run's snapshot, for the put-back), `pycache/`
+(`py_compile`'s), and `opencode/` on the OpenCode harness. The tasks are not here: they are rows of
+the box's `tasks` table (Tasks, above), which `vfg route --task` and `vfg brain status` read.
 
 `brain.log` is one `<ISO time> <area> <message>` per line. A line's front turn and its loop, the
 time left off, the ref `#<seq>` for a line and the task's name for a report:
@@ -663,9 +833,10 @@ respond #812 Steve: 'AI, take me home and make it day' -> 'On it!', handed off (
 router #812 <ms> ms $<cost>, <in> in, <n>% cached, <out> out
 router #812 -> a new loop L1: <its reason>
 front #812 Steve: agent handoff <ms> ms; router <ms> ms: new_loop L1; said agent
-action #812 s1 #1 teleport ok: <its summary, 200 characters>
-action #812 s1 #2 command refused: <what Minecraft said, 200 characters>
-brain #812 s1 <ms> ms $<cost>, <in> in, <n>% cached, <out> out | in_turn: teleport (take Steve home), command (set the time to day) || end silent || record: took Steve home and set the time to day -> teleport landed, command refused (not landed)
+exec - #812 s1 #1 engine_start ok (exit 0) 412 ms: <vfg's summary, 300 characters>
+action #812 s1 #1 engine_start ok: <its summary, 200 characters>
+action #812 s1 #2 engine_start refused: <the engine's or Minecraft's words, 200 characters>
+brain #812 s1 <ms> ms $<cost>, <in> in, <n>% cached, <out> out | in_turn: engine_start (take Steve home), engine_start (set the time to day) || end silent || record: took Steve home and set the time to day -> engine_start landed, engine_start refused (not landed)
 brain #812 s2 FAILED (<ms> ms $<cost>, …): <why>
 loop #812 Steve: 2 step(s), $<cost>, <n>% cached, reply at <s> s, <s> s, ended failed; L1 saved, 2 of 10 steps, lines #812
 ```
@@ -686,14 +857,15 @@ loop #812 Steve: 2 step(s), $<cost>, <n>% cached, reply at <s> s, <s> s, ended f
   L4` when it failed; `<what it said>, so <where it went>` when code placed it elsewhere), and `said
   <agent|router|code|nothing>`, the lines said, in order.
 - `brain <ref> s<n>`, one a step: what its call spent (`$<cost>+` when an attempt in flight was cut
-  off, its cost unknown), what it did (`<order>: <action> (<instruction>), …`, `read <player>`, `hand
-  off <name>`, `follow up <name>`, `cancel <name>`, or `nothing run`; then `|| end <ending>` and its
+  off, its cost unknown), what it did (`<order>: <action> (<instruction>), …`, `read <player>`, `read
+  the Config of <class>`, `hand off <name>`, `follow up <name>`, `cancel <name>`, or `nothing run`; then `|| end <ending>` and its
   reply and record), and what came of it (`<action> <state>, …`; `read <player>'s items`, or
   `read <player>'s items: refused`; `follow up <task>: refused`; and `(not landed)` when it did
   not); `FAILED (<spent>): <why>` for a call that failed for good.
 - `step end <ending>: dropped, it would do nothing: …`: a field the step's answer set that its
   ending ignores, the last step's actions and reads (`(the last step runs and reads nothing)`), or
   `end reply (it hands off: end handoff)`.
+- `exec - <ref> s<n> #<i>`, one an action: vfg's run, its kind, its exit and how long it took.
 - `action <ref> s<n> #<i>`, one an action: how vfg's run went (`ok`, `refused`, `partial`, `timeout`,
   `not_run`) and its summary.
 - `loop <ref> <player|nobody>`, one a run of a loop (its start, or a take-up): its steps, its cost,
@@ -707,9 +879,15 @@ loop #812 Steve: 2 step(s), $<cost>, <n>% cached, reply at <s> s, <s> s, ended f
   once logs nothing); and the AI rows a turn did not see come back within the settle.
 - `task`: a task started, followed up, kept open or failed, and the hand-offs that did not open,
   the router's included.
+- `world`: a state or engine read that failed, or took over its wait.
 - `stop`: what the stop dropped, each line it marked read, and the saved loops it forgot (`forgot 2
   saved loop(s)`).
 - `config`: a number that does not read, and a key no longer read.
+- An implementer's: `implementer <task> …` (its run started or resumed, each tool call, what it
+  says, how it ended, its report and what it made), `request <task> …` (each model request: its
+  tokens in, cached, written and out, its size and price), `denied <task> …` (each call the guard
+  refused, at the run's end), `brief` (each part's size), `route` (the router's picks and what was
+  loaded), `prefix`, `guard`, `putback` and `usage` (the run's row).
 
 ## Test it
 
@@ -721,11 +899,17 @@ cd brain && uv run --group dev python -m pytest tests/implementers -q           
 No model, no network, no process, no sleeping: one fake `structured()` with canned answers by output
 class (`Step`, the brain's; `Response` and `ReportAnswer`, the conversation agent's; `Route`, the
 router's; a list of them for several calls), contexts built by hand, a fake `vfg` that records argv,
-fake implementers and a clock moved by hand. `tests/test_turns.py` holds the turns to their order
-and the limit; `tests/test_loops.py` holds the loops to their budget, their take-up window, the cap
+the menu loaded from a copy of `actions/`, a fake ENGINE, fake implementers and a clock moved by
+hand. `tests/test_turns.py` holds the turns to their order and the limit; `tests/test_loops.py` holds the loops to their budget, their take-up window, the cap
 and WORK UNDER WAY; `tests/test_router.py` and `tests/test_respond.py` hold the two calls' answers,
 their checks and their prompts; `tests/test_refs.py` checks the command references against the real
-26.3 command tree and a few wiki pages.
+26.3 command tree and a few wiki pages; `tests/test_engine.py` the game engine's part of the world,
+its bindings among the incantations, its Config read and rewrite, and its actions.
+
+The implementers': HOME a temporary folder, no `VFG_*` setting or provider key from outside, a fake
+`vfg` and a fake harness whose runs give scripted events, each tool call put through the guard;
+both adapters against fakes of the Claude Code client and of `opencode serve` (the OpenCode
+plugin's JavaScript under node, when node is there).
 
 ## Contracts
 

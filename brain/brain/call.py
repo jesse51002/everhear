@@ -12,36 +12,38 @@ Two events, one `Step`, so the cached prefix is the same whatever the event:
 A line the router adds to a loop already on that thing comes before the loop's next step, as a
 LINE ADDED block (added()).
 
-A step may run actions from the menu, written in full, together or in turn (`order`); read another
-player's items; hand new work off to an implementer with a brief in parts; follow a task up, or
-cancel its last run; and end the loop (`end`): with a reply, silent, or with the hand-off. `end` is
-also the send-if-all-land flag: `reply`, `silent` and `handoff` say "if every action of this step
-lands, send the reply, write the record, open the tasks, and the loop is done"; `next` says "run
-these and show me the results". The reply and the record are written up front, in the same answer,
-so most asks end in one step. Picking who does the work is the router's now; the brain still hands
-off or follows a task up when an ask turns out bigger than its actions.
+A step may run actions from the menu (the game engine's ops), written in full, together or in turn
+(`order`); read another player's items, or an engine class's Config as written (before
+engine_config rewrites it: the game engine spec's "rewritten by the brain"); hand new work off to
+an implementer with a brief in parts; follow a task up, or cancel its last run; and end the loop
+(`end`): with a reply, silent, or with the hand-off. `end` is also the send-if-all-land flag:
+`reply`, `silent` and `handoff` say "if every action of this step lands, send the reply, write the
+record, open the tasks, and the loop is done"; `next` says "run these and show me the results".
+The reply and the record are written up front, in the same answer, so most asks end in one step.
+Picking who does the work is the router's now; the brain still hands off or follows a task up when
+an ask turns out bigger than its actions.
 
 The schema never changes, not with the actions, the step's number or the last step, so the cached
-prefix holds: `to` is a name and `action` the values, both checked here against the actions as
+prefix holds: `to` is a name and `fields` the values, both checked here against the actions as
 they are now, and every rule that depends on the moment is a validator (step_type). Every property
 is required in the schema (all_required), so the model writes each field, its default included,
 rather than leave one out: on the first pilot Gemini answered a report with `end` and `status` alone,
 and no reply. A validator sends back only what code cannot carry out, or would carry out wrongly
 (structured() asks once more, at the price of the whole prompt again): an action not on the menu,
-values its action refuses (a command that places blocks among them), an instruction that does
-nothing, a teleport that moves nobody, an ending with nothing to end on, a hand-off with a brief
-missing (checks.py, the router's bar too), and on the last step any action or read. A field that
-would have no effect is dropped and logged, never sent back: a reply or a record on a `next` step.
-There is no status: the conversation agent writes a report's.
+values its action refuses, an instruction that does nothing, a teleport that moves nobody, an
+ending with nothing to end on, a hand-off with a brief missing (checks.py, the router's bar too),
+and a Config to read that is no class's name. A field that would have no effect is dropped and
+logged, never sent back: a reply or a record on a `next` step, and on the last step any action or
+read. There is no status: the conversation agent writes a report's.
 
 The prompt, in the order the cache needs, its text fixed for the loop's life:
-1. the opening, marked: the rules (prompts/brain.md, the owner named), the menu, every library
-   action in full and Minecraft's command list;
+1. the opening, marked: the rules (prompts/brain.md, the owner named, its `# TODO` lines left out),
+   the menu, every action in full (the game engine's ops) and Minecraft's command list;
 2. the conversation, a minute-block at a time, marked at checkpoints (context.py), fewer of them
    than the conversation agent's (LOOP_MARKS);
-3. the tail, the event's own, read once at the loop's start: this server's own actions, the world
-   (the speaker's items by slot; other players' come from the read tool), RUNNING NOW and TASKS in
-   full (running.py, tasks.py), what is new since the last read, and the event;
+3. the tail, the event's own, read once at the loop's start: the world (the speaker's items by slot;
+   other players' come from the read tool; RUNNING NOW, SAVED PLACES, INCANTATIONS and ENGINE, the
+   game engine's: world.py), TASKS (tasks.py), what is new since the last read, and the event;
 4. THE LOOP SO FAR: each earlier step, what it ran, read and would have ended with, and what each
    came to (act.py), one block a step, a LINE ADDED block where a line came in, the last marked;
 then a trailer, never cached: the step's number, the loop's limit now, and on the last step the
@@ -79,6 +81,8 @@ LOOP_MARKS = 2  # conversation marks in a step's prompt: the opening and the loo
 # An instruction that does nothing.
 PLACEHOLDER = re.compile(r"^\W*(nothing( to do)?|none( needed)?|n/?a|no[ -]?op|skip|not needed|do nothing|"
                          r"no action( needed)?|empty|placeholder|tbd)?\W*$", re.IGNORECASE)
+# An engine class's name, as ENGINE shows it and `vfg engine config get` takes it.
+CLASS_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}\Z")
 # A teleport to where the player already is: an action invented to fill the list.
 NO_MOVE = re.compile(r"\bto (his|her|their|its|your) (own )?((current|present) )?(position|location)\b"
                      r"|\bto (his|her|their|its|your) (own )?(current|present) (spot|place)\b"
@@ -89,14 +93,16 @@ class Value(BaseModel):
     """One value of an action: a closed object, as OpenAI's schemas demand, so the schema stays
     the same whatever the actions."""
     key: str = Field(description="one field's name, exactly as the action's FIELDS list it, never the action's "
-                                 "own name: `commands` for command, `player` for railgun, `values.cooldown` for edit")
+                                 "own name: `scenario` for engine_start, `player` for engine_grant, `args.commands` "
+                                 "for one of a scenario's args")
     value: str | int | float | bool | list[str] | list[int | float] = Field(
         description="its value: text, a number, true or false, or a list for a list field")
 
 
 class ActBase(BaseModel):
-    to: str = Field(description="the name of one action on the menu, exactly as the menu writes it: `command`, "
-                                "`teleport`, `edit`; never a player, a field, an ending or an order")
+    to: str = Field(description="the name of one action on the menu, exactly as the menu writes it: "
+                                "`engine_start`, `engine_give`, `engine_bind`; never a player, a field, an ending or "
+                                "an order")
     instruction: str = Field(description="one short sentence in plain words: what it does, for whom, the player "
                                          "names and amounts as said")
     # `fields`, never `action`: named `action`, DeepSeek read it as "which action" and echoed the action's name
@@ -105,26 +111,19 @@ class ActBase(BaseModel):
                                                                   "each, as the action's FIELDS name them")
 
     def values(self, cls=None) -> dict[str, Any]:
-        """The action as `vfg action run` takes it: {field: value}; for edit, the copy and the
-        values to change, {"copy": …, "values": {…}}, whether each came as a key of its own or
-        as `values.<name>`, or some each way. A Value cannot hold an object, so a field that
-        holds another action's values (incantation_create's) comes as `values.<name>` keys,
-        gathered here into {"values": {…}}. A field of `cls` (the action) that holds an object,
-        given as text that reads as a JSON object (`"{\"power\": 6}"`, as Gemini wrote
-        incantation_edit's `values` twice on the 10-11 replay), is read as that object here,
-        never sent back to the model; a text field is never read so."""
+        """The action as `vfg action run` takes it: {field: value}. A Value cannot hold an object, so
+        the field that holds a scenario's or a mark's args (Args) comes as `args.<name>` keys,
+        gathered here into {"args": {…}}; an args field given as text that reads as a JSON object
+        (`"{\"at\": \"home\"}"`) is read as that object, never sent back to the model; a text field
+        is never read so."""
         given = {v.key.strip(): v.value for v in self.fields}
         for k, v in given.items():
-            if k == "values" or holds_object(cls, k):
+            if holds_object(cls, k):
                 given[k] = as_object(v)
-        inner = {k.split(".", 1)[1].strip(): given.pop(k) for k in list(given) if k.startswith("values.")}
+        inner = {k.split(".", 1)[1].strip(): given.pop(k) for k in list(given) if k.startswith("args.")}
         if inner:
-            given["values"] = {**(given["values"] if isinstance(given.get("values"), dict) else {}), **inner}
-        if self.to != "edit":
-            return given
-        copy = given.pop("copy", "")
-        nested = given.pop("values", None)
-        return {"copy": copy, "values": {**given, **nested} if isinstance(nested, dict) else given}
+            given["args"] = {**(given["args"] if isinstance(given.get("args"), dict) else {}), **inner}
+        return given
 
 
 def holds_object(cls, key: str) -> bool:
@@ -152,12 +151,12 @@ def echoes(to: str, fields: list) -> list:
 
 def renamed(to: str, cls, action: list) -> list:
     """The action's values with a key under the action's own name read as the one field it plainly
-    means, as as_object() reads JSON text: DeepSeek writes `command` for `commands`, and the
+    means, as as_object() reads JSON text: DeepSeek wrote `command` for `commands`, and the old
     incantation actions' values under their own names (10 of the low loop replay's 19 answers sent
     back, and the send-back's hint did not change the second answer). Only three readings, never a
-    guess beyond them: the field named the action's name and an "s" (command → commands); the one
-    field that holds an object (an incantation's `values`), for a value that is an object or reads
-    as one; or the action's one required field. Each is one not given already. Logged; any other
+    guess beyond them: the field named the action's name and an "s"; the one field that holds an
+    object (a scenario's `args`), for a value that is an object or reads as one; or the action's one
+    required field. Each is one not given already. Logged; any other
     key stays as written, for check_values to refuse."""
     name = to.strip()
     fields = getattr(cls, "model_fields", {})
@@ -250,14 +249,14 @@ def unknown_action(to: str, catalog: Catalog, given: list) -> str:
     which names no field (`fields` holds an action's own values); else the plain refusal."""
     name = to.strip()
     low = name.lower().replace("-", "_").replace(" ", "_")
-    fix = f"{name} is not on the menu: `to` is the name of one action on the menu, as `command`"
+    fix = f"{name} is not on the menu: `to` is the name of one action on the menu, as `engine_start`"
     if low in ENDINGS:
         return f"{fix}; {name} is an ending: it goes in `end`"
     if low in ORDERS:
         return f"{fix}; {name} is an order: it goes in `order`"
     if low in ("action", "actions"):
-        return (f'{fix}; `to` holds the action\'s own name as THE MENU lists it (command, teleport, stop, '
-                f'edit…), never the word "{name}"')
+        return (f'{fix}; `to` holds the action\'s own name as THE MENU lists it (engine_start, '
+                f'engine_bind, engine_stop…), never the word "{name}"')
     if low in STEP_FIELDS:
         return f"{fix}; {name} is a field of the step, not an action: write it there, or name the action"
     owners = [n for n in catalog.names() if low in getattr(catalog.get(n), "model_fields", {})]
@@ -298,6 +297,10 @@ class StepBase(BaseModel):
     actions: list[ActBase] = Field(default_factory=list, description="the actions this step runs, in order")
     read_items: list[str] = Field(default_factory=list, description="players whose items to read, by name, for "
                                                                     "the next step; only with end next; else []")
+    read_configs: list[str] = Field(default_factory=list, description="engine classes whose Config to read as "
+                                                                      "written, by their names under ENGINE, for the "
+                                                                      "next step, before an engine_config; only with "
+                                                                      "end next; else []")
     hand_offs: list[HandOff] = Field(default_factory=list, description="new work for an implementer; only with "
                                                                        "end handoff; else []")
     follow_ups: list[FollowUp] = Field(default_factory=list, description="changes, fixes or a cancel for a task "
@@ -342,7 +345,8 @@ def step_type(catalog: Catalog, *, last: bool = False, tasks: frozenset[str] | s
                 raise ValueError(f"the {self.to} action has no instruction")
             if PLACEHOLDER.match(said):
                 raise ValueError(f"the instruction {self.instruction!r} does nothing: leave the action out")
-            if self.to == "teleport" and NO_MOVE.search(said):
+            if self.to == "engine_start" and str(self.values(cls).get("scenario")) == "teleport" \
+                    and NO_MOVE.search(said):
                 raise ValueError(f"{self.instruction!r} moves nobody: leave it out")
             written = len(self.fields)
             self.fields = echoes(self.to, self.fields)
@@ -374,9 +378,12 @@ def step_type(catalog: Catalog, *, last: bool = False, tasks: frozenset[str] | s
             if (self.hand_offs or self.follow_ups) and self.end == NEXT:
                 raise ValueError("hand_offs and follow_ups end the loop: end handoff, or leave them for the step "
                                  "that ends it")
-            if self.end == NEXT and not self.actions and not self.read_items:
+            if self.end == NEXT and not self.actions and not self.read_items and not self.read_configs:
                 raise ValueError("end next runs or reads something: with nothing to run, end reply, silent or "
                                  "handoff")
+            for name in self.read_configs:
+                if not CLASS_NAME.match(name.strip()):
+                    raise ValueError(f"read_configs {name!r}: a class's name as ENGINE shows it, such as fireball")
             if self.end == REPLY and not reply:
                 raise ValueError("end reply needs the reply")
             promised = promise is not None and self.end == REPLY and not self.actions and promise(reply)
@@ -400,11 +407,12 @@ def step_type(catalog: Catalog, *, last: bool = False, tasks: frozenset[str] | s
             """The fields this step's ending would ignore, dropped and logged rather than sent back;
             a hand-off or a follow-up under a reply or silent ending makes it a hand-off's."""
             dropped = []
-            if last and (self.actions or self.read_items):  # nothing comes after it: what it runs is never read
+            if last and (self.actions or self.read_items or self.read_configs):  # nothing comes after it
                 dropped += [f"{a.to} ({one_line(a.instruction)[:80]})" for a in self.actions]
                 dropped += [f"read_items {', '.join(self.read_items)}"] if self.read_items else []
+                dropped += [f"read_configs {', '.join(self.read_configs)}"] if self.read_configs else []
                 dropped[-1] += " (the last step runs and reads nothing)"
-                self.actions, self.read_items = [], []
+                self.actions, self.read_items, self.read_configs = [], [], []
                 if self.end == NEXT and self.reply.strip():
                     dropped.append("end next (the last step ends: end reply)")
                     self.end = REPLY
@@ -425,6 +433,9 @@ def step_type(catalog: Catalog, *, last: bool = False, tasks: frozenset[str] | s
             if self.read_items and self.end != NEXT:
                 dropped.append(f"read_items {', '.join(self.read_items)} (a read comes back only to a next step)")
                 self.read_items = []
+            if self.read_configs and self.end != NEXT:
+                dropped.append(f"read_configs {', '.join(self.read_configs)} (a read comes back only to a next step)")
+                self.read_configs = []
             if dropped:
                 log("step", f"end {self.end}: dropped, it would do nothing: {'; '.join(dropped)}")
 
@@ -528,35 +539,23 @@ class Prompt:
         return blocks + [(text, i == len(self.steps) - 1) for i, text in enumerate(self.steps)]
 
 
-def library(catalog: Catalog) -> list[str]:
-    return [n for n in catalog.names() if catalog.source(n) == "library"]
-
-
-def made(catalog: Catalog) -> list[str]:
-    return [n for n in catalog.names() if catalog.source(n) != "library"]
+def rules_text(prompt: Path) -> str:
+    """A prompt file as the model reads it: its `# TODO` lines, notes for whoever edits it, left out."""
+    lines = prompt.read_text(encoding="utf-8").rstrip("\n").split("\n")
+    return "\n".join(line for line in lines if not line.startswith("# TODO"))
 
 
 def menu_lines(catalog: Catalog, names: list[str]) -> str:
     return "\n".join(f"- {menu_line(n, catalog.get(n))}" for n in names)
 
 
-def own_actions(catalog: Catalog) -> str:
-    """This server's own actions, made by implementers, in full: they change while the opening
-    stays, so they come after the conversation (a brain step's tail, and the router's)."""
-    names = made(catalog)
-    if not names:
-        return "THIS SERVER'S OWN ACTIONS: none yet"
-    full = "\n".join(view(n, catalog.get(n)) for n in names)
-    return (f"THIS SERVER'S OWN ACTIONS (made by implementers; on the menu like the rest):\n"
-            f"{menu_lines(catalog, names)}\n\n{full}")
-
-
 class Opening:
-    """A prompt's opening, the brain's and the router's: the rules, the menu, every library action
-    in full and Minecraft's command list, then the conversation's header. Built again only when the
-    library or the references change, so it stays the cached prefix of every call meanwhile. The
-    words that differ between the two prompts are given: the menu's and the commands' headings, and
-    what the command list says before the references load."""
+    """A prompt's opening, the brain's and the router's: the rules, the menu (every action, the game
+    engine's ops) in full and Minecraft's command list, then the conversation's header. Built again
+    only when the actions or the references change, so it stays the cached prefix of every call
+    meanwhile; what the engine has (its classes, which a reload changes) is the tail's, ENGINE in
+    THE WORLD NOW. The words that differ between the two prompts are given: the menu's and the
+    commands' headings, and what the command list says before the references load."""
 
     def __init__(self, rules: str, catalog: Catalog, hidden: frozenset[str], *, menu: str, commands: str,
                  not_loaded: str):
@@ -565,7 +564,7 @@ class Opening:
         self._built: tuple[tuple, str] | None = None
 
     def __call__(self, refs) -> str:
-        names = library(self.catalog)
+        names = self.catalog.names()
         key = (id(refs), tuple((n, id(self.catalog.get(n))) for n in names))
         if self._built is None or self._built[0] != key:
             listed = refs.menu(exclude=self.hidden) if refs is not None else self.not_loaded
@@ -585,29 +584,27 @@ class Call:
         self.ask = ask  # structured() with the brain's model, reasoning, providers and timeout
         self.hidden = hidden
         self.checkpoint = checkpoint
-        rules = prompt.read_text(encoding="utf-8").rstrip("\n")
+        rules = rules_text(prompt)
         who = owner or "not named (VFG_OWNER is not set)"
         # The limits as the loops keep them (VFG_LOOP_STEPS, VFG_LOOP_CAP), so the prompt never says others.
         self.rules = rules.replace("{owner}", who).replace("{grant}", str(grant)).replace("{cap}", str(cap))
         self._opening = Opening(self.rules, catalog, hidden,
-                                menu="THE MENU (each action: its name and what it does; this server's own actions "
-                                     "are at the end, after the conversation)",
+                                menu="THE MENU (each action: its name and what it does; what each can start, grant, "
+                                     "give or apply is under ENGINE, in THE WORLD NOW)",
                                 commands="MINECRAFT COMMANDS (name — what it does)",
                                 not_loaded="(not loaded yet: write commands from what you know of 26.3)")
 
     def opening(self, refs) -> str:
-        """The rules, the menu, every library action in full and the command list: the same for
-        every step while the library and the references stay as they are."""
+        """The rules, the menu, every action in full and the command list: the same for every step
+        while the actions and the references stay as they are."""
         return self._opening(refs)
-
-    def own_actions(self) -> str:
-        return own_actions(self.catalog)
 
     def tail(self, event: Event, seen: Seen, tasks: str, new: list[Row]) -> str:
         """Everything after the conversation that is the event's own, read once at the loop's
-        start: the world as it was then (seen, its RUNNING NOW in full), TASKS, NEW and the event."""
+        start: the world as it was then (seen: RUNNING NOW, SAVED PLACES, INCANTATIONS and ENGINE,
+        the engine's), TASKS, NEW and the event."""
         unread = show(new) or "nothing"
-        return (f"\n{self.own_actions()}\n\n{seen.show()}\n\n{tasks}\n\n"
+        return (f"\n{seen.show()}\n\n{tasks}\n\n"
                 f"NEW SINCE THE LAST READ (rows no call had read; they end the conversation above):\n{unread}\n\n"
                 f"THE EVENT:\n{event.show()}\n")
 
@@ -637,12 +634,14 @@ class Call:
 
 
 def describe(step: StepBase) -> str:
-    """One log line: `together: command, railgun | read Alex | hand off frost_bow_alex || end reply: …`."""
+    """One log line: `together: engine_start, engine_give | read Alex | hand off frost_bow_alex || end reply: …`."""
     bits = []
     if step.actions:
         bits.append(f"{step.order}: " + ", ".join(f"{a.to} ({one_line(a.instruction)[:80]})" for a in step.actions))
     if step.read_items:
         bits.append("read " + ", ".join(step.read_items))
+    if step.read_configs:
+        bits.append("read the Config of " + ", ".join(step.read_configs))
     bits += [f"hand off {h.name}" for h in step.hand_offs]
     bits += [f"{'cancel' if f.cancel else 'follow up'} {f.task}" for f in step.follow_ups]
     tail = "".join(f" || {k}: {v}" for k, v in (("reply", step.reply), ("record", step.record)) if v)

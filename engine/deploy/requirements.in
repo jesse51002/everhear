@@ -1,0 +1,8 @@
+# The engine venv's packages on the box (/opt/vfg/engine/.venv): pydantic and what it needs, at
+# brain/uv.lock's versions. requirements.txt is made from this with hashes:
+#   uv pip compile requirements.in --generate-hashes --python-version 3.12 --universal -o requirements.txt
+pydantic==2.14.0
+pydantic-core==2.50.0
+annotated-types==0.8.0
+typing-extensions==4.16.0
+typing-inspection==0.4.4

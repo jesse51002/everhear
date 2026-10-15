@@ -14,7 +14,7 @@ from brain.context import parse
 from brain.respond import promises
 from brain.world import Seen
 
-from conftest import NOW, FakeRefs, act, catalog, cmd, follow_up, hand_off, line, made, rows, step
+from conftest import NOW, FakeRefs, act, catalog, cmd, follow_up, hand_off, line, rows, start, step
 
 LINE = line(40)
 
@@ -24,40 +24,43 @@ def check(answer: dict, **moment):
 
 
 def test_good_steps_pass():
-    s = check(step(act("command", "give Steve a diamond pickaxe", cmd("give Steve diamond_pickaxe")),
-                   act("railgun", "a railgun for Alex", {"player": "Alex"}), reply="there you go"))
-    assert [a.to for a in s.actions] == ["command", "railgun"] and s.order == "together" and s.end == "reply"
-    assert s.actions[0].values() == {"commands": ["give Steve diamond_pickaxe"]}
-    assert check(step(act("command", "give Steve bread", cmd("give Steve bread")), end="silent")).reply == ""
-    assert check(step(act("command", "give Steve bread", cmd("give Steve bread")), end="next")).end == "next"
+    s = check(step(act("engine_start", "give Steve a diamond pickaxe", cmd("give Steve diamond_pickaxe")),
+                   act("engine_give", "a fire staff for Alex", {"player": "Alex", "item": "fire_staff"}),
+                   reply="there you go"))
+    assert [a.to for a in s.actions] == ["engine_start", "engine_give"] and s.order == "together"
+    assert s.end == "reply"
+    assert s.actions[0].values() == {"scenario": "command", "args": {"commands": ["give Steve diamond_pickaxe"]}}
+    assert check(step(act("engine_start", "give Steve bread", cmd("give Steve bread")), end="silent")).reply == ""
+    assert check(step(act("engine_start", "give Steve bread", cmd("give Steve bread")), end="next")).end == "next"
     assert check(step(end="next", read=("Alex",))).read_items == ["Alex"]
     assert check(step(reply="a path to where, the surface?")).actions == []  # a question back: no tool
     handed = check(step(end="handoff", reply="on it", hand_offs=(hand_off(),)))
     assert handed.hand_offs[0].name == "hot_fireball_krown"
     cancelled = check(step(end="handoff", follow_ups=(follow_up("hot_fireball_krown", cancel=True),)))
     assert cancelled.follow_ups[0].cancel and cancelled.follow_ups[0].brief == ""
-    edit = check(step(act("edit", "no cooldown on Alex's railgun", {"copy": "railgun_alex", "values.cooldown": 0}),
-                      reply="no more cooldown"))
-    assert edit.actions[0].values() == {"copy": "railgun_alex", "values": {"cooldown": 0}}
+    giant = check(step(act("engine_apply", "Alex giant for a minute", {"player": "Alex", "mark": "giant", "seconds": 60,
+                                                                         "args.factor": 3}), reply="huge"))
+    assert giant.actions[0].values() == {"player": "Alex", "mark": "giant", "seconds": 60, "args": {"factor": 3}}
     # the last step: an ending with no action and no read; a follow-up of a task there is
     assert check(step(reply="couldn't do the rest, sorry"), last=True).end == "reply"
     assert check(step(end="handoff", follow_ups=(follow_up("castle_steve", "a moat", "A castle with a moat."),)),
                  last=True, tasks={"castle_steve"}).follow_ups[0].task == "castle_steve"
 
 
-BREAD = act("command", "give Steve bread", cmd("give Steve bread"))
+BREAD = act("engine_start", "give Steve bread", cmd("give Steve bread"))
 WRONG = [
     (step(act("castle_maker", "a castle", {"at": "home"}), reply="ok"), {}, "castle_maker is not on the menu"),
-    (step(act("command", "a wall", cmd("fill 1 1 1 5 5 5 stone")), reply="ok"), {},
-     "an action's that builds it, else an implementer's: hand it off"),
-    (step(act("command", "", cmd("give Steve bread")), reply="ok"), {}, "has no instruction"),
-    (step(act("command", "nothing", cmd("give Steve bread")), reply="ok"), {}, "does nothing"),
-    (step(act("teleport", "teleport Steve to his current position", {"player": "Steve", "to": "spawn_point"}),
+    (step(act("engine_start", "", cmd("give Steve bread")), reply="ok"), {}, "has no instruction"),
+    (step(act("engine_start", "nothing", cmd("give Steve bread")), reply="ok"), {}, "does nothing"),
+    (step(act("engine_start", "teleport Steve to his current position", start("teleport", players="Steve")),
           reply="ok"), {}, "moves nobody"),
-    (step({"to": "command", "instruction": "give Steve bread", "fields": [
-        {"key": "commands", "value": ["give Steve bread"]}, {"key": "commands", "value": ["x"]}]}, reply="ok"), {},
+    (step({"to": "engine_start", "instruction": "give Steve bread", "fields": [
+        {"key": "scenario", "value": "command"}, {"key": "scenario", "value": "x"}]}, reply="ok"), {},
      "sets a field twice"),
-    (step(act("railgun", "a railgun for Steve", {"player": "Steve", "range": "far"}), reply="ok"), {}, "range=far"),
+    (step(act("engine_apply", "Steve giant for ever", {"player": "Steve", "mark": "giant", "seconds": "forever"}),
+          reply="ok"), {}, "seconds=forever"),
+    (step(act("engine_grant", "fireball for everyone", {"player": "@a", "ability": "fireball"}), reply="ok"), {},
+     "player=@a: should be one player's exact name"),
     (step(end="next"), {}, "end next runs or reads something"),
     (step(end="next", reply="there"), {}, "end next runs or reads something"),
     (step(BREAD), {}, "end reply needs the reply"),
@@ -67,8 +70,8 @@ WRONG = [
      "end handoff needs a hand-off or a follow-up"),                       # the pilot's #97
     (step(BREAD, end="next", hand_offs=(hand_off(),)), {}, "hand_offs and follow_ups end the loop"),
     (step(end="handoff", hand_offs=(hand_off("Hot Fireball"),)), {}, "lowercase letters"),
-    (step(end="handoff", hand_offs=(hand_off("cast"),)), {}, "the bridge's task"),
-    (step(end="handoff", hand_offs=(hand_off("railgun"),)), {}, "railgun is a library action's name"),
+    (step(end="handoff", hand_offs=(hand_off("cast"),)), {}, "cast is never a task's name"),
+    (step(end="handoff", hand_offs=(hand_off("engine_grant"),)), {}, "engine_grant is an action's name"),
     (step(end="handoff", hand_offs=(hand_off(assumed=" ", cast=""),)), {}, "has no assumed, cast"),
     (step(end="handoff", hand_offs=(hand_off(done_when=[" "]),)), {}, "has no done_when"),
     (step(end="handoff", hand_offs=(hand_off(), hand_off())), {}, "two hand-offs share a name"),
@@ -136,22 +139,9 @@ def test_a_follow_up_of_a_task_that_is_not_there_is_the_tools_to_refuse_until_th
     assert s.follow_ups[0].task == "castle_bob"  # act.py refuses it, and the next step reads why
 
 
-def test_the_schema_is_the_same_for_every_catalog_and_every_moment():
+def test_the_schema_is_the_same_for_every_moment():
     one = step_type(catalog())
-    two = step_type(made("glimmer_trail_x", '''
-        from actions._types import Action, Players
-
-
-        class GlimmerTrailX(Action):
-            """Leave a trail of ice behind a player."""
-
-            script = "glimmer_trail_x"
-            runs = "until_stopped"
-            takes = ["player"]
-
-            player: Players = "@a"
-            """who leaves the trail"""
-    '''), last=True, tasks={"castle_steve"})
+    two = step_type(catalog(), last=True, tasks={"castle_steve"})
     assert one.__name__ == two.__name__ == "Step"
     assert one.model_json_schema() == two.model_json_schema()
     schema = one.model_json_schema()
@@ -161,8 +151,8 @@ def test_the_schema_is_the_same_for_every_catalog_and_every_moment():
     for d in objects:
         assert d["required"] == list(d["properties"]), d["title"]
     assert schema["properties"]["reply"]["default"] == ""    # defaults kept, for a model that writes them
-    assert list(schema["properties"]) == ["order", "actions", "read_items", "hand_offs", "follow_ups", "end",
-                                          "reply", "record"]  # no status: the conversation agent writes a report's
+    assert list(schema["properties"]) == ["order", "actions", "read_items", "read_configs", "hand_offs", "follow_ups",
+                                          "end", "reply", "record"]  # no status: the conversation agent writes a report's
     assert list(schema["$defs"]["HandOff"]["properties"]) == ["name", "description", "words", "picture", "assumed",
                                                               "cast", "done_when"]
 
@@ -178,94 +168,46 @@ def test_the_brief_is_rendered_from_its_parts_under_headings():
         "DONE WHEN\n- saying it fires one\n- it explodes there")
 
 
-def test_values_keys_are_gathered_into_the_values_an_incantation_binds():
-    a = ActBase.model_validate(act("incantation_create", "juicy steak gives Steve 64 steak", {
-        "player": "Steve", "phrase": "juicy steak", "action": "command",
-        "values.commands": ["give Steve minecraft:cooked_beef 64"]}))
-    assert a.values() == {"player": "Steve", "phrase": "juicy steak", "action": "command",
-                          "values": {"commands": ["give Steve minecraft:cooked_beef 64"]}}
+def test_args_keys_are_gathered_into_the_args_a_start_or_a_bind_sets():
+    a = ActBase.model_validate(act("engine_bind", "Alex says castle here to build one where Alex stands", {
+        "player": "Alex", "phrase": "castle here", "scenario": "castle", "args.at": "caster", "args.size": 31}))
+    assert a.values() == {"player": "Alex", "phrase": "castle here", "scenario": "castle",
+                          "args": {"at": "caster", "size": 31}}
 
 
-SPELL = '''
-    from typing import Any
-
-    from actions._types import Action
-
-
-    class BindSpell(Action):
-        """Change a player's spell: its values, each by its name in the action it fires."""
-
-        script = "bind_spell"
-        runs = "once"
-        takes = ["player", "phrase", "values", "title"]
-
-        player: str = ""
-        """whose spell"""
-        phrase: str = ""
-        """what they say"""
-        values: dict[str, Any] = {}
-        """the values to change"""
-        title: str = ""
-        """a title shown, as Minecraft's JSON text"""
-'''
-
-
-def test_an_object_field_given_as_json_text_is_read_as_the_object_never_sent_back():
-    """The 10-11 replay's event 18: incantation_edit's `values` written as one string of JSON."""
-    cat = made("bind_spell", SPELL)
-    given = act("bind_spell", "edit KrownJM's spell to break blocks", {
-        "player": "KrownJM", "phrase": "hot fireball",
-        "values": "{\"explosion_power\": 6, \"explosion_spread\": 6, \"explosion_breaks\": true, "
-                  "\"fireball_damage\": 40}",
-        "title": "{\"text\": \"BOOM\"}"})
-    s = step_type(cat).model_validate_json(json.dumps(step(given, reply="done")))
-    got = s.actions[0].values(cat.get("bind_spell"))
-    assert got["values"] == {"explosion_power": 6, "explosion_spread": 6, "explosion_breaks": True,
-                             "fireball_damage": 40}
-    assert got["title"] == '{"text": "BOOM"}'           # a text field keeps its JSON text as text
-    bad = act("bind_spell", "x", {"values": "{not json"})
-    with pytest.raises(ValidationError, match="valid dictionary"):  # text that is no JSON object: sent back
+def test_args_given_as_json_text_are_read_as_the_object_never_sent_back():
+    """The 10-11 replay's event 18: an object field written as one string of JSON."""
+    cat = catalog()
+    given = act("engine_start", "a horde of 30 round Steve", {
+        "scenario": "horde", "args": "{\"count\": 30, \"players\": \"Steve\"}", "args.mob": "zombie"})
+    s = step_type(cat).model_validate_json(json.dumps(step(given, reply="here they come")))
+    assert s.actions[0].values(cat.get("engine_start")) == {
+        "scenario": "horde", "args": {"count": 30, "players": "Steve", "mob": "zombie"}}
+    bad = act("engine_start", "x", {"scenario": "horde", "args": "{not json"})
+    with pytest.raises(ValidationError, match="args is an object"):  # text that is no JSON object: sent back
         step_type(cat).model_validate_json(json.dumps(step(bad, reply="done")))
-    edit = ActBase.model_validate(act("edit", "no cooldown on Alex's railgun", {
-        "copy": "railgun_2", "values": "{\"cooldown\": 0}", "values.length": 80}))
-    assert edit.values() == {"copy": "railgun_2", "values": {"cooldown": 0, "length": 80}}
+    phrase = act("engine_bind", "x", {"player": "Steve", "phrase": "{\"a\": 1}", "ability": "fireball"})
+    s = step_type(cat).model_validate_json(json.dumps(step(phrase, reply="done")))
+    assert s.actions[0].values(cat.get("engine_bind"))["phrase"] == '{"a": 1}'   # a text field keeps its text
 
 
-def test_an_edit_keeps_its_flat_keys_beside_its_values_keys():
-    a = ActBase.model_validate(act("edit", "no cooldown and a longer railgun for Alex", {
-        "copy": "railgun_2", "values.cooldown": 0, "length": 80}))
-    assert a.values() == {"copy": "railgun_2", "values": {"cooldown": 0, "length": 80}}
-    a = ActBase.model_validate(act("edit", "a longer railgun for Alex", {"copy": "railgun_2", "length": 80}))
-    assert a.values() == {"copy": "railgun_2", "values": {"length": 80}}
-
-
-def test_the_opening_holds_the_rules_the_owner_and_the_library_and_the_tail_this_servers_own_actions():
-    cat = made("glimmer_trail", '''
-        from actions._types import Action, Players
-
-
-        class GlimmerTrail(Action):
-            """Leave a trail of ice behind a player."""
-
-            script = "glimmer_trail"
-            runs = "until_stopped"
-            takes = ["player"]
-
-            player: Players = "@a"
-            """who leaves the trail"""
-    ''')
-    call, refs = Call(cat, None, owner="KrownJM"), FakeRefs()
+def test_the_opening_holds_the_rules_the_owner_and_the_menu_and_the_tail_the_engine():
+    call, refs = Call(catalog(), None, owner="KrownJM"), FakeRefs()
     opening = call.opening(refs)
-    assert "THE OWNER: KrownJM." in opening and "ACTION: railgun" in opening and "give — Gives" in opening
-    assert "grappling hook" in opening and "FINISH IN ONE STEP" in opening  # the new rules
-    for asked in ("fireball", "High Step", "nuke", "Speed Dash", "netherite", "cobblestone", "meteor"):
+    assert "THE OWNER: KrownJM." in opening and "ACTION: engine_start" in opening and "give — Gives" in opening
+    assert "grappling hook" in opening and "FINISH IN ONE STEP" in opening and "THE ENGINE\n" in opening
+    # fireball, fire_staff, giant and meteor are the engine's own examples now (the spec's names)
+    for asked in ("High Step", "nuke", "Speed Dash", "netherite", "cobblestone"):
         assert asked.lower() not in opening.lower(), asked  # the replay's asks never in the prompt it tests
     assert "orchestrator" not in opening.lower() and "{owner}" not in opening
+    rules = call.rules                    # brain.md as the model reads it: its authors' TODO lines left out
+    assert "TODO" not in opening and not any(w in rules for w in ("copies", "copy", "@a", "scripts", " script"))
     assert opening.endswith("THE CONVERSATION SO FAR (oldest first; each row: its time in UTC, who, and for a "
                             "player's line Jev's class):\n")
-    assert "glimmer_trail" not in opening  # an implementer's action never changes the cached opening
-    tail = call.tail(Event("LINE", parse(LINE, now=NOW)), Seen(), "TASKS: none yet", [])
-    assert "glimmer_trail — Leave a trail of ice behind a player." in tail and "ACTION: glimmer_trail" in tail
+    seen = Seen(engine="ENGINE (every class …):\nSCENARIOS:\n- glimmer_trail: Leave a trail of ice.")
+    tail = call.tail(Event("LINE", parse(LINE, now=NOW)), seen, "TASKS: none yet", [])
+    assert "- glimmer_trail: Leave a trail of ice." in tail
+    assert "glimmer_trail" not in opening         # the classes are the tail's: a reload never changes the opening
     assert call.opening(refs) is opening  # built once while the actions and references stay
     assert "(not loaded yet" in call.opening(None)
 
@@ -350,7 +292,7 @@ def test_the_last_step_drops_what_it_would_run_or_read_and_keeps_its_ending(caps
     s = check(step(BREAD, act("castle_maker", "a castle", {"at": "home"}), reply="you got 9 bread", read=("Alex",)),
               last=True)                                  # even an action not on the menu: dropped, never sent back
     assert (s.actions, s.read_items, s.end, s.reply) == ([], [], "reply", "you got 9 bread")
-    assert "end reply: dropped, it would do nothing: command (give Steve bread); castle_maker (a castle); read_items " \
+    assert "end reply: dropped, it would do nothing: engine_start (give Steve bread); castle_maker (a castle); read_items " \
            "Alex (the last step runs and reads nothing)" in capsys.readouterr().out
     s = check(step(BREAD, end="next", reply="you got 9 bread", record="gave Steve bread"), last=True)
     assert (s.actions, s.end, s.reply, s.record) == ([], "reply", "you got 9 bread", "gave Steve bread")  # next: reply
@@ -377,11 +319,12 @@ def test_with_nothing_landed_a_step_that_runs_nothing_may_not_claim_it_done_or_e
     ("next", "next is an ending: it goes in `end`"),
     ("follow_up", "follow_up is a field of the step, not an action"),
     ("hand_offs", "hand_offs is a field of the step, not an action"),
-    ("action", '`to` holds the action\'s own name as THE MENU lists it (command, teleport, stop, edit…), never '
-               'the word "action"'),
-    ("actions", '`to` holds the action\'s own name as THE MENU lists it (command, teleport, stop, edit…), never '
+    ("action", '`to` holds the action\'s own name as THE MENU lists it (engine_start, engine_bind, engine_stop…), never '
+                'the word "action"'),
+    ("actions", '`to` holds the action\'s own name as THE MENU lists it (engine_start, engine_bind, engine_stop…), never '
                 'the word "actions"'),
-    ("commands", "commands is a field of command: name the action in `to`, and the field as a `key`"),
+    ("scenario", "scenario is a field of engine_bind, engine_start, engine_stop: name the action in `to`, and the "
+                 "field as a `key`"),
     ("KrownJM", "KrownJM looks like a player: players go in the action's values, as `player`"),
 ])
 def test_a_to_that_is_not_an_action_is_sent_back_naming_the_likely_fix(to, says):
@@ -393,8 +336,8 @@ def test_a_to_that_is_not_an_action_is_sent_back_naming_the_likely_fix(to, says)
 def test_the_schema_says_what_goes_in_to_and_in_a_values_key():
     defs = step_type(catalog()).model_json_schema()["$defs"]
     to, key = defs["Act"]["properties"]["to"]["description"], defs["Value"]["properties"]["key"]["description"]
-    assert "never a player, a field, an ending or an order" in to and "`command`" in to
-    assert "never the action's own name: `commands` for command" in key
+    assert "never a player, a field, an ending or an order" in to and "`engine_start`" in to
+    assert "never the action's own name: `scenario` for engine_start" in key and "`args.commands`" in key
 
 
 def test_the_brains_rules_take_the_loops_limits_from_the_settings():
@@ -406,22 +349,18 @@ def test_the_brains_rules_take_the_loops_limits_from_the_settings():
 
 
 def test_a_value_under_the_actions_own_name_is_read_as_the_field_it_plainly_means(capsys):
-    s = check(step(act("command", "give Steve 64 steak", {"command": ["give Steve minecraft:cooked_beef 64"]}),
-                   reply="steak's yours"))
-    assert s.actions[0].values() == {"commands": ["give Steve minecraft:cooked_beef 64"]}  # command -> commands
-    assert "the command action's value under its own name read as 'commands'" in capsys.readouterr().out
-    cat = made("bind_spell", SPELL)                       # the one field that holds an object, for an object
-    s = step_type(cat).model_validate_json(json.dumps(step(act("bind_spell", "KrownJM's spell breaks blocks", {
-        "player": "KrownJM", "phrase": "hot fireball", "bind_spell": "{\"explosion_breaks\": true}"}), reply="done")))
-    assert s.actions[0].values(cat.get("bind_spell"))["values"] == {"explosion_breaks": True}
+    cat = catalog()                                       # the one field that holds an object, for an object
+    s = step_type(cat).model_validate_json(json.dumps(step(act("engine_start", "a horde round Steve", {
+        "scenario": "horde", "engine_start": "{\"players\": \"Steve\"}"}), reply="here they come")))
+    assert s.actions[0].values(cat.get("engine_start")) == {"scenario": "horde", "args": {"players": "Steve"}}
+    assert "the engine_start action's value under its own name read as 'args'" in capsys.readouterr().out
     # never a guess beyond those: a field of no such name, a text for the object field, or the field given already
-    for wrong in (act("railgun", "a railgun for Alex", {"railgun": "Alex"}),
-                  act("command", "give Steve bread", {"command": ["give Steve bread"], "commands": ["give Steve x"]})):
-        with pytest.raises(ValidationError, match="has no value (railgun|command)"):
+    for wrong in (act("engine_grant", "a railgun for Alex", {"engine_grant": "Alex"}),
+                  act("engine_start", "a horde", {"scenario": "horde", "engine_start": "zombies"}),
+                  act("engine_start", "a horde", {"scenario": "horde", "engine_start": "{\"players\": \"Steve\"}",
+                                                  "args": "{\"mob\": \"zombie\"}"})):
+        with pytest.raises(ValidationError, match="has no value engine_(grant|start)"):
             check(step(wrong, reply="there"))
-    with pytest.raises(ValidationError, match="has no value bind_spell"):
-        step_type(cat).model_validate_json(json.dumps(step(act("bind_spell", "x", {"bind_spell": "fire"}),
-                                                           reply="done")))
 
 
 @pytest.mark.parametrize("reply, kept", [
@@ -448,18 +387,18 @@ def test_an_actions_values_are_its_fields_and_an_echo_of_its_name_there_is_dropp
     assert act_schema["properties"]["fields"]["description"] == ("every field the action sets, one key and value "
                                                                  "each, as the action's FIELDS name them")
     assert "Write each action in full in `fields`" in PROMPT.read_text()
-    beside = {"to": "command", "instruction": "give KrownJM a netherite pickaxe", "fields": [
-        {"key": "command", "value": "command"}, {"key": "commands", "value": ["give KrownJM netherite_pickaxe"]}]}
+    beside = {"to": "engine_start", "instruction": "give KrownJM a netherite pickaxe", "fields": [
+        {"key": "engine_start", "value": "engine_start"}, {"key": "scenario", "value": "command"},
+        {"key": "args.commands", "value": ["give KrownJM netherite_pickaxe"]}]}
     s = check(step(beside, reply="pickaxe's yours"))                  # #512: the echo dropped, the real field runs
-    assert s.actions[0].values() == {"commands": ["give KrownJM netherite_pickaxe"]}
-    assert "the command action's echo of its own name dropped from its fields" in capsys.readouterr().out
-    alone = {"to": "command", "instruction": "give KrownJM a stack of 64 dirt",
-             "fields": [{"key": "command", "value": "command"}]}
+    assert s.actions[0].values() == {"scenario": "command", "args": {"commands": ["give KrownJM netherite_pickaxe"]}}
+    assert "the engine_start action's echo of its own name dropped from its fields" in capsys.readouterr().out
+    alone = {"to": "engine_start", "instruction": "give KrownJM a stack of 64 dirt",
+             "fields": [{"key": "engine_start", "value": "engine_start"}]}
     with pytest.raises(ValidationError, match="sets no field: `fields` holds each field it sets"):
         check(step(alone, reply="dirt's yours"))                      # #213: nothing else written: sent back
-    cat = made("bind_spell", SPELL)
-    for wrong in ({"key": "bind_spell", "value": "player"},           # #71: a field's name, not an echo
-                  {"key": "bind_spell", "value": "player: KrownJM, phrase: ice beam"}):  # #443: text pairs
-        with pytest.raises(ValidationError, match="has no value bind_spell"):
-            step_type(cat).model_validate_json(json.dumps(step(
-                {"to": "bind_spell", "instruction": "KrownJM's ice beam wider", "fields": [wrong]}, reply="done")))
+    for wrong in ({"key": "engine_bind", "value": "player"},          # #71: a field's name, not an echo
+                  {"key": "engine_bind", "value": "player: KrownJM, phrase: ice beam"}):  # #443: text pairs
+        with pytest.raises(ValidationError, match="has no value engine_bind"):
+            check(step({"to": "engine_bind", "instruction": "KrownJM's ice beam wider", "fields": [wrong]},
+                       reply="done"))

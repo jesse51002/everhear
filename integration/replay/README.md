@@ -1,18 +1,21 @@
 # replay — the playtest of 2026-10-08, again
 
 The playtest of 2026-10-08 (2.5 h, three players: KrownJM, Eclipszr, Styrkaeopteryx) replayed
-against the parts that replace what ran then. **The replay now is `lines.py` and `classes.py`**:
-the playtest's own lines through the brain's real calls, offline, model calls only, scored against
-what the conversation agent did with each line. They are Prototype_Brain's first two required
-tests (_Test_). `run.py`, the live task replay, drove the orchestrator, which the brain replaced:
-it no longer runs on this branch and **needs rewriting for the brain** (below).
+against the parts that replace what ran then: its lines through Jev's routing and Respond, offline,
+model calls only, each bench scored against what the conversation agent did with each line or
+against hand-checked labels; and the 2026-10-11 session through the brain's loop on realmc
+(`../loop_replay.py`). The brain's menu in every bench is today's, the game engine's ops
+(`actions/engine_*.py`), so Jev's menu and Respond's prompt are what they are live.
+
+The replay of every direct ask through Prototype_Brain's one call (`lines.py`, `lines_score.py`) is
+gone with that call: the brain's loop replaced it, and `../loop_replay.py` is the loop's replay. The
+live replay of the playtest's 172 tasks is not here: `tasks.jsonl` is its data, for a replay
+written for the brain.
 
 | File | Is |
 |---|---|
 | `playtest.py` | the playtest's data as the brain would have had it: the context row by row in the order it would have arrived, the world, the open tasks, the batch timer, and what the conversation did with each line |
-| `lines.py`, `lines_score.py` | the raw-line replay: every direct ask through the brain's one call, with the whole conversation |
 | `classes.py`, `classes_score.py` | Jev's four classes on every line, against TypeSafe, then Respond on every line Jev classes `conversational` |
-| `taskcall.py`, `taskcall_score.py`, `taskcall_prompts/` | the named-tasks orchestrator, one `structured()` call per implementer part, before it is built: every part the brain's full `lines.py` run sent to an implementer, through it, two models compared; results in `taskcall.md`, every miss in `taskcall_scores/` |
 | `gate_bench.py`, `gate_score.py`, `gate_set.jsonl`, `gate_prompts/` | the gate bench: six ways to decide whether a line needs the brain or is talk (Respond as it was, Respond deciding first on DeepSeek and on Gemini, the Jev council in one call and in four), every one on the same fixed set of 592 lines; results and the commands in `gate_bench.md` |
 | `tree_bench.py`, `tree_score.py`, `tree_questions.py` | the tree bench: Jev routing each line by a decision tree of class questions (who it is said to; worth keeping; what the speaker wants), all asked in one Jev call, with and without a council of three questions a level, against Jev today on all 843 lines; results and the commands in `tree_bench.md` |
 | `trees_bench.py`, `trees_score.py`, `trees_questions.py` | the trees bench: five genuinely different ways to build that tree (who then what; kind first; a cheapest-first ladder; consequence first with two keys; observable signals with the tree in code), each one Jev call a line, against Jev today on all 843 lines; results and the commands in `trees_bench.md` |
@@ -20,8 +23,8 @@ it no longer runs on this branch and **needs rewriting for the brain** (below).
 | `whole_asks_build.py`, `whole_asks_2026-10-08.jsonl`, `whole_asks_check.jsonl`, `whole_asks_review.md`, `state_v2.py`, `whole_asks_bench.py`, `whole_asks_score.py`, `whole_asks_score.md` | whole asks: the lines of one ask a player split across utterances merged into one input (Jev with hindsight judges each ask's same-speaker neighbours, checked by hand), then Jev today and the five trees routed on them with Jev's old state and its new one (neutral rules, one set of definitions, a lookout, examples); results and the commands in `whole_asks.md` |
 | `state_v1.py`, `lookout_v1.md` | Jev's state before the Jev routing (its rules, four classes, the re-ask's questions, the brain's old lookout), verbatim, so the benches above still build the state they measured |
 | `gather_bench.py`, `gather_score.py` | the Jev routing as it ships: Jev's production filter line by line on all 843 lines, D's two questions and the gather call, with the gather call's windows from production's own query; D with and without the gather call on the clean labels, and the gather call's wordings; results and the commands in `gather_bench.md` |
-| `respond_bench.py`, `respond_score.py`, `respond_prompts/` | Respond's prompt before and after its rewrite, and its code guard against promises and offers, on the whole-ask inputs D sends Respond and an invented set; results and the commands in `respond_bench.md` |
-| `run.py`, `measure.py`, `tasks.jsonl` | the live task replay against the orchestrator: gone with it |
+| `respond_bench.py`, `respond_score.py`, `respond_prompts/` | Respond's prompt before and after its rewrite, and its code guard against promises and offers, on the whole-ask inputs D sends Respond and an invented set (its world the game engine's: what it runs, as `vfg engine overview` gives it, and named tasks); results and the commands in `respond_bench.md` |
+| `tasks.jsonl` | the playtest's 172 implementer tasks as the conversation wrote them, each with what it was and the run's figures for it: below, _tasks.jsonl_ |
 | `loop/`, `../loop_replay.py` | the 2026-10-11 session through the brain's loop, live on realmc (Prototype_Brain_Loop's _Test_, then Prototype_Conversation_And_Router's brain on DeepSeek): below, _The loop replay_ |
 
 ## The data
@@ -46,7 +49,7 @@ rows, the AI's chat as `AI say` rows, each task the conversation wrote as an `AI
 …`) and each ORCH done or failed as an `AI result` row (`T7 done: …`), so the brain sees task ids
 as it would live. It only grows, in arrival order, so the prompt cache sees what it sees live. The
 world says who is online and that positions, items, the time and the weather are unknown; nothing
-was a running copy of an action then, and no place was saved. A call's NEW rows are what no read
+runs (RUNNING NOW: none), and no place is saved. A call's NEW rows are what no read
 took in: each line's call is a live read, and the batch timer (60 s with no read and something
 unread) takes in the rest.
 
@@ -58,8 +61,8 @@ model, the reasoning and `VFG_OWNER` are what a live brain on this PC would use.
 key as `structured()` reads it; the TypeSafe key as `TYPESAFE_API_KEY`, else from `--env FILE`
 (default: realmc's stand-in box's `integration/realmc/.server/shared/env`, here or in the
 `script-library` worktree), never printed. Every model call is a row of the one usage log, as a
-live call is (`docs/CONTRACTS.md` §4): the component of what it replays (`brain`, `respond`, or
-`orchestrator` for `taskcall.py`) and a call_id that starts `replay `, queued in the run's own
+live call is (`docs/CONTRACTS.md` §4): the component of what it replays (`brain` or `respond`)
+and a call_id that starts `replay `, queued in the run's own
 OUT (`gate_bench.py`: OUT/X), never in `$VFG_HOME`, whose queue the brain's next `vfg usage
 flush` sends into the live usage table. Each replay sets `VFG_USAGE_QUEUE`, the folder of the
 queue (`playtest.queue_usage()`), to OUT unless it is set already; `VFG_HOME` stays, since it
@@ -68,102 +71,33 @@ finds the OpenRouter key. A replay's rows reach the box only when sent on purpos
 
 ```sh
 PY=brain/.venv/bin/python; DB=DIR/vfg/vfg.db
-$PY integration/replay/lines.py --db $DB --out OUT --limit 20             # a pilot: check the cost a call
-$PY integration/replay/lines.py --db $DB --out OUT                        # all 357 direct asks
-python3 integration/replay/lines_score.py OUT                             # OUT/score.md, score.json
-
-$PY integration/replay/taskcall.py --db $DB --lines OUT/lines.jsonl --out OUT3 \
-    --model google/gemini-3.8-flash --reasoning low --limit 15          # the orchestrator: a 15-part pilot
-$PY integration/replay/taskcall.py --db $DB --lines OUT/lines.jsonl --out OUT3 \
-    --model google/gemini-3.8-flash --reasoning low                     # goes on to all 168 parts
-python3 integration/replay/taskcall_score.py OUT3                         # OUT3/score.md, score.json
-$PY integration/replay/taskcall.py --db $DB --lines OUT/lines.jsonl --out OUT4 --built --limit 3   # the built one: a smoke
-$PY integration/replay/taskcall.py --db $DB --lines OUT/lines.jsonl --out OUT4 --built --budget 1.5  # all 168 parts
-python3 integration/replay/taskcall_score.py OUT4                         # scored as OUT3, reply-only parts apart
-
 $PY integration/replay/classes.py jev --db $DB --out OUT2                 # 843 lines, one TypeSafe call each
 $PY integration/replay/classes.py respond --db $DB --out OUT2             # every line now conversational
 python3 integration/replay/classes_score.py OUT2                          # OUT2/classes.md, classes.json
 ```
 
-A run into an OUT that has rows goes on after the last one. `lines.py --only 13,15,18` asks those
-lines alone, by their LINE numbers, the context still built in full; `--dry` writes the prompts
-and calls nothing; `--budget` (4 dollars) stops a run that spends more. `classes.py respond
---budget` is 1 dollar.
+A run into an OUT that has rows goes on after the last one. `classes.py respond --budget` (1
+dollar) stops a run that spends more.
 
-On 2026-10-10 a full `lines.py` run took about 24 minutes and $3.02 (a call: median $0.0084 and
-3.7 s; the prompt grew from 25K to 68K tokens, 98% of it cached), the Jev step 3.5 minutes and
-$0.27, and the Respond step 9 minutes and $1.01 for the first 322 of the 382 lines Jev classed
-`conversational`, where its $1 budget stopped it: all of them would be about $1.2. A window of
-lines, `--only`, costs a cold first call (about $0.10) and then what the full run's calls do.
-
-`taskcall.py` needs a full `lines.py` run first: its `lines.jsonl` gives the implementer parts.
-`--model` is any OpenRouter id, `--reasoning` off or an effort, `--version` the prompt in
-`taskcall_prompts/` (v3, the one to ship, is the default); `--budget` (1 dollar) stops it. A run
-into an OUT that has rows goes on after the last line, the tasks rebuilt from the answers there.
-On 2026-10-10 the full 168 parts took about 9 minutes and $1.18 on Gemini 3.8 Flash at low
-reasoning (a call: median 3.0 s, p90 5.0 s), and 11 minutes and $0.16 on DeepSeek V4 Flash with
-reasoning off (3.6 s, 5.0 s); at low reasoning DeepSeek took 7.7 s, p90 26 s.
-
-`taskcall.py --built` asks the orchestrator as it is built (Prototype_Named_Tasks): `brain/brain/
-orchestrator.py`'s opening, tail and checks, its prompt `brain/prompts/orchestrator.md`, and the
-model, reasoning, providers and timeout of the brain's `VFG_ORCHESTRATOR_*` settings unless given.
-It reads the routes `implementer` and `orchestrator` alike, so an earlier `lines.jsonl` still
-serves. Its TASKS shows each task as a row of the tasks table, what it made not known (null), and
-RUNNING NOW is none, so an edit or a stop cannot be answered; the conversation's task rows read
-as the brain posts them (`AI task [<name>]: new: …`, `follow-up: …`). Its answers are a `kind`
-(new, follow_up, edit, stop or reply) with the fields the brain gets; a reply only is counted on
-its own line by `taskcall_score.py`. Without `--built`, `--version v3` runs as before.
-
-On 2026-10-11 the built orchestrator (prompt 8b7d42168ac4) ran all 168 parts on both models
-(`taskcall_scores/gemini-built.md`, `deepseek-built.md`). Gemini 3.8 Flash at low reasoning: follow-ups
-by script 36 of 41 (87.8%, bar met), new tasks taken for follow-ups 2 of 9 (22.2%, bar not met),
-0 calls failed, 52 tasks, a call median 3.1 s and p90 5.5 s, $1.21. DeepSeek V4 Flash with reasoning
-off: follow-ups 34 of 41 (82.9%, bar not met), new taken 2 of 9 (22.2%), 6 calls failed its checks
-twice (3 an empty reply, 3 an edit or stop of a copy RUNNING NOW does not hold), 26 tasks, 3.3 s
-and p90 5.3 s, $0.16. Gemini is the better, and stays the orchestrator's model.
-
-Jesse then ruled that those two new tasks are right either way (`either` in `tasks.jsonl`, which
-`taskcall_score.py` reads). T59 (#239): the brain gave the barrier to the `barrier_shield`
-action, so the line's one implementer part was the Infinity fix, which was rightly followed up.
-T115 (#517): the Ice Staff had been removed five minutes before, so rebuilding it as the Ice Beam
-Staff under the same task is as fine as a new one. The score files are scored with the rulings:
-Gemini takes 0 of 9 new tasks for follow-ups (bar met), and DeepSeek 1 of 9 (11.1%).
+On 2026-10-10 the Jev step took 3.5 minutes and $0.27, and the Respond step 9 minutes and $1.01 for
+the first 322 of the 382 lines Jev classed `conversational`, where its $1 budget stopped it: all of
+them would be about $1.2.
 
 ### What it leaves in OUT
 
 | Path | Is |
 |---|---|
-| `lines.jsonl` | one row per line: its words, when it was fed, what the conversation did (its tasks and their labels), the size of the context, the brain's decision (every part: `to`, `task`, instruction, action, drop) and reply, ms, cost, prompt, cached and completion tokens |
-| `meta.json` | the settings, the commit and a hash of `brain/prompts/brain.md` |
-| `usage.pending.jsonl`, `usage.pending.lock` | every model call's usage row, queued and not sent (`VFG_USAGE_QUEUE=OUT vfg usage flush` sends them); `classes.py respond`, `taskcall.py` and `gate_bench.py` leave them too |
-| `prompts/<n>.txt` | the whole prompt of every 50th call, `[MARK]` where the cache is marked |
+| `usage.pending.jsonl`, `usage.pending.lock` | every model call's usage row, queued and not sent (`VFG_USAGE_QUEUE=OUT vfg usage flush` sends them); `classes.py respond` and `gate_bench.py` leave them |
 | `jev.jsonl`, `jev-meta.json`, `menu.md` | per line: Jev's class then and now, its confidence, what the conversation did, and what fit in the state (the menu, the history, the AI records); a `flip` row when a `not_relevant` line asked about again flipped |
 | `respond.jsonl`, `respond-meta.json` | per conversational line: hand-up or reply as the model gave them and after Respond's code, the reason, ms, cost, tokens |
-| `taskcall.jsonl`, `tasks.json`, `meta.json` | the orchestrator's run: per line, each implementer part's answer (task, name, description, brief, reply, any edit or stop), the name it got, ms, cost, tokens, and the conversation's tasks for the line with the names that held their targets; every task at the end with its chain of T ids and every description it had |
 
 ## How it is scored
 
 The scorers' docstrings have every definition. In short: a line **became a task** when a task's
-context names it, and the tasks that name it first are its own, whose labels are its route.
-**Acted** is any part not `talk`. The **route** is the actions named, with `+implementer` for an
-implementer part, against the labels as `linescore.py` scored the earlier replay, `orchestrator`
-read as `implementer`; **lost** is actions alone where every accepted route needs an implementer.
-A **follow-up** is a line the conversation turned into `Change to T<n>` or `Cancel T<n>`, less
-those whose T<n> was written after the line reached the brain; it is right when an implementer
-part names T<n>, or a task of its chain. For Jev, a line was **answered in chat** when an AI chat
+context names it (playtest.py). For Jev, a line was **answered in chat** when an AI chat
 line followed within 60 s with no task and no result between: a heuristic, so `chat` holds
 declined asks as well as talk. `labels_2026-10-08.jsonl` replaces these labels for routing: it finds 298
 asks where they find 187 (`labels.md`).
-
-For the orchestrator (`taskcall_score.py`), each of the conversation's T ids is given to the name
-its line's parts answered, so a follow-up is right when it names the task whose chain holds its
-target. Two truths: **by script**, from the run's own record in `tasks.jsonl` (a task that wrote a
-new script is new; one that edited an earlier task's script follows that task up), which comes
-first; and **by the labels** (`Change to T<x>` is a follow-up, anything else fresh), which counts
-many right follow-ups as new tasks taken, since the conversation often wrote a fix as a fresh
-task. Since the chains are the replay's own, **one thing, one task** checks each task against the
-scripts its T ids touched: lumped tasks and split scripts.
 
 ## The loop replay: 2026-10-11 through the brain's loop
 
@@ -175,15 +109,21 @@ order, in one process, on a realmc server of its own.
 - **The data**, in `loop/`, made once by `loop/build.py` (its docstring has every field): the
   session's feed, each call with the feed it was answered in and what it cost then
   (`events.jsonl`), what that night's implementers did to the world and when (`world.jsonl`, and
-  the actions they made in `loop/made/`), and `session.json` (the counts against the spec's, the six
+  the script actions they made, in `loop/made/`, as a record), and `session.json` (the counts
+  against the spec's, the six
   tasks and their 35 follow-ups, the five misread asks, KrownJM's kit). It reads only `vfg/vfg.db`
   of `~/Documents/MinecraftServers/aws-backup/vfg-backup-2026-10-11.tgz` (never its `.env`), that
   night's `~/.vfg/brain/brain.log` and `tasks.json`, and the implementers' transcripts.
 - **The run**, `integration/loop_replay.py` (its docstring has the rest): the brain's classes as
-  `brain/__main__.py` wires them, the real `vfg` to the server and real model calls; the
-  implementers record each brief and follow-up and start nothing. Each loop reads the night's own
-  feed up to its call, so the prompt cache sees what it saw then; the night's T<n> task numbers
-  read as today's names. Its usage rows stay in OUT.
+  `brain/__main__.py` wires them, the real `vfg` to the server and real model calls, the game
+  engine on the server's stand-in with its library (integration/brain_live.py's `start_engine`),
+  every action one of the engine's ops; the implementers record each brief and follow-up and start
+  nothing. Each loop reads the night's own feed up to its call, so the prompt cache sees what it
+  saw then; the night's T<n> task numbers read as today's names. What the night's implementers did
+  to the world (`world.jsonl`: four script actions saved, incantations stored in the store before
+  the engine's) is the old system's, which the engine does not run: each change is recorded as not
+  done at its time, so the reports and follow-ups about those things meet a world without them. Its
+  usage rows stay in OUT.
 - **Under Prototype_Conversation_And_Router** the night's 69 lines each run as a new loop, as if the
   router had chosen `new_loop`, with no line of the conversation agent's before it (the event says
   it said nothing), so the loop's reply is the only line, as the night's call's was; the 41
@@ -246,67 +186,13 @@ router cost more. The reports in full are
 [`loop/report-deepseek-v4.1-flash-low-review.md`](loop/report-deepseek-v4.1-flash-low-review.md) and
 [`loop/report-deepseek-v4.1-flash-low-final.md`](loop/report-deepseek-v4.1-flash-low-final.md).
 
-## The live task replay: gone with the orchestrator
+## tasks.jsonl
 
-`run.py` sent the run's 172 tasks again with `vfg orch send`, one every 30 s, to the orchestrator's
-runner, against a real 26.3 server on this PC (`integration/realmc`), and `measure.py` measured
-each task as the run was measured. The orchestrator, `vfg orch send` and its runner are gone, so it
-**needs rewriting for the brain**: each task said as a LINE the brain answers, against realmc, with
-the implementers the brain starts and their reports. What follows is how it worked.
-
-### Run it
-
-```sh
-python3 integration/replay/run.py --only T18,T104,T117,T123 --out /tmp/replay-pilot   # a pilot
-python3 integration/replay/run.py --from T40 --limit 20                                 # a stretch
-python3 integration/replay/run.py --out /tmp/replay-full --cap 30                       # all 172
-python3 integration/replay/measure.py /tmp/replay-pilot                                 # again, any time
-python3 integration/replay/run.py --only T1,T2 --dry-run                                # what would be sent
-```
-
-| Option | Default | Is |
-|---|---|---|
-| `--every` | `30` | seconds between two sends |
-| `--only`, `--from`, `--limit` | all | which tasks, by the run's ids |
-| `--cap` | `20` | minutes after the last send to wait for every task to close |
-| `--out` | `$VFG_REPLAY_DIR` or the temp folder, `vfg-replay-<time>` | where every record goes |
-| `--name`, `--server` | `replay`, `replay` | the realmc server; `VFG_SERVER`, so `made/replay/` |
-| `--no-fresh`, `--keep-server` | off | keep the world as it is; leave the server up at the end |
-
-`run.py` starts the server fresh (`integration/realmc/up replay --fresh`, with Carpet), empties
-`made/replay/`, spawns Steve (the owner, realmc's `VFG_OWNER`), Alex and Sam at spread spots on the
-arena and puts back any who leaves or dies; starts the runner as `vfg orch start` does
-(`orchestrator/run`, detached, its pid in `runner.pid`, so `vfg orch status|stop` work) but with
-your own `HOME`, since through realmc's `bin/vfg` it would get the stand-in's and the CLI would not
-be logged in; its inbox, state and log are in `OUT/orch` (`VFG_ORCH_DIR`) and `vfg` points at the
-stand-in, so nothing reads or writes `~/.vfg`; sends the tasks; waits until all are closed, at
-most `--cap` minutes; stops the runner, every script instance and the players, copies every record
-into `OUT`, stops the server and runs `measure.py`. Ctrl-C stops everything the same way and keeps what there is.
-
-A task gets the next free id in the replay's own inbox, so the ids match the run's only when the
-replay starts at T1 with nothing left out. A reference in a task's words to an earlier task
-becomes that task's replay id, or "an earlier task" when it was not sent; `sent.jsonl` maps each
-replay id to the run's.
-
-### What it leaves in OUT
-
-| Path | Is |
-|---|---|
-| `orch/` | the runner's inbox, state (the router's picks per implementer), replies and log |
-| `sent.jsonl` | one line per task sent: replay id, run id, when, class |
-| `usage.jsonl` | the stand-in's usage rows written during the replay (orchestrator, implementer, jev) |
-| `transcripts/<session>/` | the orchestrator's session (`main.jsonl`) and every implementer (`subagents/`) |
-| `made/` | what the implementers made: `scripts/`, `presets/` |
-| `box/` | each instance's log, record and live values on the stand-in |
-| `scripts.txt`, `state.json` | what was running at the end, and the server's state |
-| `players.log`, `harness.log` | players put back; what the harness did |
-| `measure.md`, `measure.json` | the measurement |
-
-### tasks.jsonl
-
-One line per task of the run, in order: `id`, `at`, `task` and `context` as the conversation
-wrote them, with every player's name, in any spelling, replaced by Steve (the owner), Alex or Sam,
-the same player always by the same name; `class`, from the analysis behind the spec's figures:
+The 172 implementer tasks the conversation wrote on 2026-10-08, the data for a replay of them
+through the brain, which is not written yet. One line per task of the run, in order: `id`, `at`,
+`task` and `context` as the conversation wrote them, with every player's name, in any spelling,
+replaced by Steve (the owner), Alex or Sam, the same player always by the same name; `class`, from
+the analysis behind the spec's figures:
 
 | Class | Tasks | Is |
 |---|---|---|
@@ -321,16 +207,4 @@ words), `kind` (what the run did: a new script written, a script edited, command
 each implementer job: model, time, calls, calls before the first change, seconds per kind of call,
 turns, whether it hit the turn cap, cost; and the task's implementer and orchestrator cost.
 Two rows also carry `either`, a hand ruling with why: T59 and T115 are right as new tasks or as
-follow-ups, and `taskcall_score.py` counts them so.
-
-### How it is measured
-
-`measure.py`'s docstring has every definition. In short: the run's rules for what looks, acts and
-checks, and for the first change, with the commands the run did not have added (`vfg state` looks,
-`vfg script check` checks, `vfg script new|set|save|stop` and `vfg preset save` change); the rung
-a task took is the highest of its implementers' calls; a job's cost is its tokens at Anthropic's
-ratios (fresh 1, cache write 1.25, read 0.1, out 5), scaled so a model's jobs add up to its usage
-rows; an orchestrator row is split between the tasks open when it was written. The same code
-measured the run's 116 transcripts for `tasks.jsonl`, and gives the spec's figures: a median job
-of 56 s, 4 calls before the first change, 40% of call time looking, $12.33 for implementers, and
-4 of 25 Haiku jobs at the turn cap.
+follow-ups.

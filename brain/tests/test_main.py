@@ -6,14 +6,16 @@ loop's budget, no hold whatever the router's reasoning, and VFG_LOOP_SECONDS gon
 
 import asyncio
 import json
+import time
 from datetime import UTC, datetime, timedelta
 
 from brain import __main__ as main
 from brain import config
 from brain.__main__ import GREETING, NoImplementers, serve
 from brain.vfg import VfgResult
+from brain.world import World
 
-from conftest import FakeAsk, FakeImplementers, FakeRefs, FakeVfg, act, answer, catalog, cmd, route, step
+from conftest import FakeAsk, FakeImplementers, FakeRefs, FakeVfg, act, answer, catalog, cmd, overview, route, step
 
 
 def feed(seq: int, at: datetime, rest: str, processed: bool = False) -> str:
@@ -51,7 +53,7 @@ async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fail
         yield f"LINE#13 {now:%H:%M:%S} Alex voice to_ai 0.9 - | a diamond pickaxe for me too"
         await stop.wait()
 
-    ask = FakeAsk(Step=step(act("command", "give a diamond pickaxe", cmd("give Steve diamond_pickaxe")),
+    ask = FakeAsk(Step=step(act("engine_start", "give a diamond pickaxe", cmd("give Steve diamond_pickaxe")),
                             reply="there you go"), Response=answer(), Route=route())
     run = asyncio.create_task(serve(cfg, stop, vfg=vfg, watch=watch, catalog=catalog(), refs=FakeRefs(), ask=ask,
                                     respond_ask=ask, router_ask=ask,
@@ -67,7 +69,7 @@ async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fail
     assert firsts[0] == ["up"] and {"watchers", "lookout", "jev", "context"} <= {c[0] for c in vfg.calls[1:6]}
     assert vfg.of("watchers")[0][2] == "join,leave,death,advancement,server"
     assert "Names of places, bases, builds and coordinates" in vfg.of("lookout")[0][2]
-    assert "command — Run vanilla commands" in vfg.of("jev", "menu", "set")[0][3]
+    assert "engine_start — Start one of the engine's scenarios" in vfg.of("jev", "menu", "set")[0][3]
     assert vfg.of("context", "--since") == [["context", "--since", "-6h", "--json"]] and seen_after == [12]
     assert ["context", "mark", "10"] in vfg.calls  # history: marked read, never acted on
     steps = ask.of("Step")
@@ -76,6 +78,11 @@ async def test_a_start_answers_only_what_is_new_follows_the_feed_and_a_stop_fail
     for c in steps + ask.of("Response") + ask.of("Route"):
         assert "THE OWNER: KrownJM" in c["cached"][0][0]  # each prompt names the owner
     assert [GREETING] in vfg.said() and impl.closed
+    # one engine read at the start, which the start never waits for: the first router call does, so it shows the engine
+    first = ask.of("Route")[0]["prompt"]
+    assert "ENGINE (every class the game engine has" in first and "fire_staff" in first
+    assert "RUNNING NOW: nothing (no scenario runs" in first and "ENGINE: unknown" not in first
+    assert len(vfg.of("engine", "overview")) >= 1 and vfg.of("engine", "overview")[0] == ["engine", "overview", "--json"]
     # the tasks from the box: the open one failed by name, written through, its AI result row
     record = "castle_alex failed: interrupted, the brain restarted while it ran"
     assert vfg.rows("result") == [("result castle_alex", record)]
@@ -118,6 +125,56 @@ async def test_with_no_rows_that_recent_it_follows_from_the_feeds_last_seq_and_a
     assert len(vfg.of("context", "--since")) == 3 and seen_after == [902] and ask.calls == []
 
 
+async def test_an_engine_down_or_silent_at_the_start_is_said_in_words_and_never_holds_the_start(tmp_path, capsys):
+    down = World(FakeVfg().on("engine", "overview", answer=VfgResult(6, "", "vfg: the engine is not running")))
+    await main.read_engine_first(down, wait=1)
+    assert "start the engine is not running (" in capsys.readouterr().out
+    gate = asyncio.Event()
+
+    async def silent(argv):
+        await gate.wait()
+        return overview()
+
+    late = World(FakeVfg().on("engine", "overview", answer=silent))
+    began = time.monotonic()
+    await main.read_engine_first(late, wait=0.05)
+    assert time.monotonic() - began < 1
+    assert "the engine did not answer within 0.05 s of the start; ENGINE and RUNNING NOW are unknown" in \
+        capsys.readouterr().out
+    assert (await late.glance()).engine == "ENGINE: unknown"
+    gate.set()                                            # the read goes on alone, and the next glance has it
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert (await late.glance()).engine.startswith("ENGINE (every class")
+    await late.close()
+
+    # a whole start with the engine hung: the start never waits for it (only a router call does, 2 s at most)
+    assert main.ENGINE_FIRST_S == 2.0
+    cfg = config.load({"VFG_HOME": str(tmp_path / "home")})
+    hung = asyncio.Event()
+
+    async def never(argv):
+        await hung.wait()
+        return overview()
+
+    vfg = FakeVfg().on("context", "--since", answer=VfgResult(0, json.dumps({"last_seq": 3}) + "\n", ""))
+    vfg.on("engine", "overview", answer=never)
+    stop, seen_after = asyncio.Event(), []
+
+    async def watch(after: int):
+        seen_after.append(after)
+        stop.set()
+        await asyncio.Event().wait()
+        yield ""
+
+    ask = FakeAsk(Step=step(reply="never"), Response=answer(), Route=route())
+    began = time.monotonic()
+    assert await asyncio.wait_for(serve(cfg, stop, vfg=vfg, watch=watch, catalog=catalog(), refs=FakeRefs(), ask=ask,
+                                        respond_ask=ask, router_ask=ask,
+                                        make_implementers=lambda *_: FakeImplementers()), 5) == 0
+    assert time.monotonic() - began < 1 and seen_after == [3] and [GREETING] in vfg.said()
+
+
 async def test_with_no_implementers_a_new_task_reports_its_failure_with_five_arguments():
     got = []
 
@@ -127,11 +184,10 @@ async def test_with_no_implementers_a_new_task_reports_its_failure_with_five_arg
     none = NoImplementers(on_report, "No module named claude_agent_sdk")
     await none.start("galick_gun_styrk", "a Galick Gun")
     await none.follow_up("castle_steve", "a moat", session="sess-1", brief="a castle")
-    empty = {"scripts": [], "actions": [], "presets": [], "copies": []}
     assert got == [("galick_gun_styrk", "failed", "Failed: no implementers here (No module named claude_agent_sdk).",
-                    "", empty),
+                    "", None),        # nothing known of what it made: the row keeps its own
                    ("castle_steve", "failed", "Failed: no implementers here (No module named claude_agent_sdk).",
-                    "", empty)]
+                    "", None)]
 
 
 async def test_each_agent_is_wired_with_its_own_settings_and_the_start_line_says_them(tmp_path, monkeypatch, capsys):

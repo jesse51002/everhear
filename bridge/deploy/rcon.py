@@ -1,7 +1,7 @@
 import fcntl,os,socket,struct,sys,re
 # One RCON command: python3 rcon.py <command…>. The server answers every RCON connection from
 # one buffer, so the command holds /tmp/vfg-rcon-<port>.lock (VFG_RCON_LOCK) from send to
-# reply, as every script (mc.rcon) and vfg (remote/common.py) do.
+# reply, as the engine (vfg_engine.mc.rcon) and vfg (remote/common.py) do.
 props=open(__file__.rsplit('/',1)[0]+'/server.properties').read()
 pw=re.search(r'^rcon.password=(.*)$',props,re.M).group(1)
 m=re.search(r'^rcon.port=(\d+)',props,re.M); port=int(m.group(1)) if m else 25575

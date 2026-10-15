@@ -13,7 +13,7 @@ from brain.context import parse
 from brain.router import CHOICES, MARKS, PROMPT, Router, RouterEvent, route_type
 from brain.world import Seen
 
-from conftest import NOW, FakeAsk, FakeRefs, catalog, made, rows
+from conftest import NOW, FakeAsk, FakeRefs, catalog, rows
 
 LINE = "LINE#58 18:29:40 Alex voice to_ai 0.91 -9dB | can I get a grappling hook that pulls me up"
 TYPED = "LINE#60 18:29:50 Sam chat to_ai 0.88 - | never mind the moat"
@@ -75,7 +75,7 @@ def test_each_choice_with_its_own_field_passes():
 
 @pytest.mark.parametrize("reason, to", [
     ("Sam repeats the village ask L2 is on, so: loop L2", "loop"),
-    ("Alex asks for a change; no copy runs, so: implementer grappling_hook_alex", "implementer"),
+    ("Alex asks for a change no number covers, so: implementer grappling_hook_alex", "implementer"),
     ("arrows and the night so:new_loop", "new_loop"),
     ("a greeting to the AI, so: nowhere.", "nowhere"),
     ("Sam said so: dig it. Items now, so: a new loop", "new_loop"),     # no choice named after the last so:
@@ -106,7 +106,7 @@ WRONG = [
      "new_implementer hands off one thing: for several new things, choose new_loop, which splits them"),
     (route("new_implementer", hand_offs=(hook(name="Grappling Hook"),)), {}, "hand-off name 'Grappling Hook': "
                                                                              "lowercase letters"),
-    (route("new_implementer", hand_offs=(hook(name="railgun"),)), {}, "railgun is a library action's name"),
+    (route("new_implementer", hand_offs=(hook(name="engine_grant"),)), {}, "engine_grant is an action's name"),
     (route("new_implementer", hand_offs=(hook(picture=" "),)), {}, "the hand-off grappling_hook_alex's brief has no "
                                                                     "picture: write every part"),
     (route("new_implementer", hand_offs=(hook(done_when=[]),)), {}, "has no done_when"),
@@ -179,20 +179,7 @@ def test_target_names_where_the_work_goes():
 
 
 def test_the_schema_is_the_same_for_every_catalog_loops_tasks_and_event_and_every_field_is_required():
-    other = made("lava_moat_sam", '''
-        from actions._types import Action, Players
-
-
-        class LavaMoatSam(Action):
-            """Dig a lava moat round a player's base."""
-
-            script = "lava_moat_sam"
-            runs = "once"
-            takes = ["player"]
-
-            player: Players = "@a"
-            """whose base"""
-    ''')
+    other = catalog()
     one = route_type(catalog(), loops=LOOPS, tasks=TASKS)
     two = route_type(other, loops=[], tasks=set(), report=True)
     three = route_type(catalog(), loops=["L9"], tasks=["x_y"])
@@ -261,9 +248,11 @@ def test_the_opening_holds_the_rules_the_owner_the_library_and_the_commands_and_
     assert opening.startswith("You are the router of the AI")
     assert "THE OWNER: KrownJM, who runs the server." in opening and "{owner}" not in opening
     assert "THE FIVE CHOICES" in opening and "grappling hook" in opening
-    assert "THE MENU (each action the brain can run" in opening and "- railgun — Give a player a railgun" in opening
-    assert "THE ACTIONS IN FULL:\nACTION: " in opening and "ACTION: railgun" in opening and "ACTION: command" in opening
-    assert "MINECRAFT COMMANDS (the brain's command action runs them; name — what it does):\ngive — Gives" in opening
+    assert "THE MENU (each action the brain can run" in opening and "- engine_grant — Give a player one of" in opening
+    assert "THE ACTIONS IN FULL:\nACTION: " in opening and "ACTION: engine_start" in opening
+    assert "ACTION: engine_config" in opening and "under ENGINE, in THE WORLD NOW" in opening
+    assert "MINECRAFT COMMANDS (the brain runs them through the command scenario; name — what it does):\ngive — Gives" \
+        in opening
     assert opening.endswith("THE CONVERSATION SO FAR (oldest first; each row: its time in UTC, who, and for a "
                             "player's line Jev's class):\n")
     assert router.opening(refs) is opening                     # built once while the library and refs stay
@@ -290,20 +279,20 @@ def test_the_rules_hold_no_example_from_the_benches_lines():
                   "aura of ice", "ice one"):
         assert asked not in rules, asked
     assert "{owner}" in rules and "new_loop" in rules and "nowhere" in rules
-    # the replay's fixes: the reason ends in the choice; an edit only of a copy that runs; a stop is no
-    # cancel; a line that asks for nothing goes nowhere; one follow-up a task
-    for rule in ('"… so: implementer lava_moat_sam"', "an edit is only for a copy running now lists",
+    # the replay's fixes: the reason ends in the choice; numbers are the brain's, never an implementer's; a stop
+    # is no cancel; a line that asks for nothing goes nowhere; one follow-up a task
+    for rule in ('"… so: implementer lava_moat_sam"', "never an implementer for numbers alone",
                  "never a cancel", "does the line ask for anything?", "one follow-up for each task",
                  "never a second new task", "never by a word the line shares with a task's name",
                  "promises work nobody will now do", "always write your own reply",
                  # the second round: a broken thing, a clarification and a look ask; a stop only of what runs;
                  # never a second worker beside an implementer
                  "a fix, from that thing's task", "a clarification of an ask under way",
-                 "a question only a look at the game answers", "a stop is only of a copy running now lists",
+                 "a question only a look at the game answers", "a stop is only of what running now lists",
                  "while an implementer is on it", "two workers on one thing undo each other",
                  "steve echoes sam's ask",
                  # the last round: the busy task takes only a change to its own thing, its phrases included; a
-                 # complaint is a fix; the reason names the copy it rests on
+                 # complaint is a fix; the reason names the instance it rests on
                  "a line that asks that thing to change", "a phrase the task bound", "a new thing asked for while "
                  "another task builds is new", "never a reply that it is fixed", "running now lists none, so:",
                  "a new thing at the same base, not a change to the moat"):
@@ -332,7 +321,8 @@ async def test_a_line_is_routed_with_its_prompt_laid_out_for_the_cache():
         "18:27:10 Sam (to_ai): hey AI", "18:27:12 AI: Hey Sam!",
         "18:29:40 Alex (to_ai): can I get a grappling hook that pulls me up"]
     prompt = call["prompt"]
-    order = ["THIS SERVER'S OWN ACTIONS: none yet", "THE WORLD NOW:\nPLAYERS ONLINE: Alex, Sam", "TASKS: none yet",
+    assert prompt.startswith("\nTHE WORLD NOW:\nPLAYERS ONLINE: Alex, Sam")   # the tail, after the conversation
+    order = ["THE WORLD NOW:\nPLAYERS ONLINE: Alex, Sam", "TASKS: none yet",
              "WORK UNDER WAY: no brain loops", "THE LINE #58, 18:29:40: Alex said: can I get a grappling hook"]
     at = [prompt.index(part) for part in order]
     assert at == sorted(at), at
@@ -356,31 +346,6 @@ async def test_a_reports_hand_off_is_routed_under_the_tasks_name_and_never_to_a_
     assert [c["call_id"] for c in ask.calls] == ["lava_moat_sam", "lava_moat_sam"]
     assert ask.calls[-1]["prompt"].rstrip("\n").endswith("WHAT IS LEFT, as the conversation agent read it: the north "
                                                          "side")
-
-
-async def test_the_tail_shows_this_servers_own_actions_in_full_after_the_conversation():
-    cat = made("glimmer_path", '''
-        from actions._types import Action, Players
-
-
-        class GlimmerPath(Action):
-            """Leave a glowing path behind a player."""
-
-            script = "glimmer_path"
-            runs = "until_stopped"
-            takes = ["player"]
-
-            player: Players = "@a"
-            """who leaves the path"""
-    ''')
-    ask = FakeAsk(Route=route("new_loop"))
-    router = Router(cat, ask)
-    await router.route(RouterEvent("LINE", parse(LINE, now=NOW)), rows(), Seen(), "TASKS: none yet",
-                       "WORK UNDER WAY: no brain loops", loops=[], tasks=(), refs=FakeRefs())
-    prompt = ask.calls[0]["prompt"]
-    assert prompt.startswith("\nTHIS SERVER'S OWN ACTIONS (made by implementers; on the menu like the rest):\n"
-                             "- glimmer_path — Leave a glowing path behind a player.")
-    assert "ACTION: glimmer_path" in prompt and "glimmer_path" not in router.opening(FakeRefs())
 
 
 async def test_a_failed_call_is_the_callers_to_handle():
@@ -411,7 +376,6 @@ def test_the_router_and_the_brain_build_their_openings_alike():
             text.index("MINECRAFT COMMANDS (") < text.index("THE CONVERSATION SO FAR (")
     assert brains.split("THE ACTIONS IN FULL:")[1].split("MINECRAFT")[0] == \
         routers.split("THE ACTIONS IN FULL:")[1].split("MINECRAFT")[0]
-    assert router.own_actions() == call.own_actions() == "THIS SERVER'S OWN ACTIONS: none yet"
     assert router.opening(refs) is routers                 # built once while the library and the references stay
     assert "(not loaded yet: the brain writes commands" in router.opening(None)
 

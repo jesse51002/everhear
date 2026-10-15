@@ -147,6 +147,35 @@ PRICE_IN, PRICE_CACHED, PRICE_OUT = 0.30, 0.006, 1.20
 CHARS_PER_TOKEN = 4.0
 TID = re.compile(r"\bT(\d+)\b")
 FOLLOW_UP = re.compile(r"^\W*(change\s+to|cancel)\s+(T\d+)", re.I)
+
+
+def heads(text: str) -> tuple[str, list[str], str]:
+    """A conversation task's words as (kind, targets, rest): kind fresh, change or cancel; the T
+    ids its head names before the first colon (`Change to T115 and T124: …`); what follows. (The
+    orchestrator bench's, taskcall.py's, which went with the orchestrator.)"""
+    m = FOLLOW_UP.match(text)
+    if not m:
+        return "fresh", [], text
+    head, _, rest = text.partition(":")
+    kind = "cancel" if m.group(1).lower() == "cancel" else "change"
+    return kind, [f"T{n}" for n in TID.findall(head)], rest.strip() or text
+
+
+WROTE = re.compile(r"\bNEW\s+([a-z][a-z0-9_]*)")
+EDITED = re.compile(r"\b(?:edit|rerun)\s+([a-z][a-z0-9_]*(?:\s*\+\s*[a-z][a-z0-9_]*)*)")
+
+
+def runs() -> tuple[list[str], dict[str, tuple[set[str], set[str]]]]:
+    """The playtest's tasks in order, and each one's scripts (written, edited), from the run's
+    results in replay/tasks.jsonl. (taskcall_score.py's, which went with the orchestrator bench.)"""
+    order, out = [], {}
+    for x in (REPLAY / "tasks.jsonl").read_text().splitlines():
+        t = json.loads(x)
+        result = str((t.get("run") or {}).get("result") or "")
+        edited = {n.strip() for f in EDITED.findall(result) for n in f.split("+") if n.strip()}
+        order.append(t["id"])
+        out[t["id"]] = (set(WROTE.findall(result)), edited)
+    return order, out
 STOP_WORDS = {"a", "an", "the", "to", "for", "of", "and", "or", "all", "every", "with", "give", "make", "change",
               "add", "set", "fix", "get", "put", "his", "her", "their", "its", "my", "on", "in", "into", "so",
               "that", "it", "is", "be", "can", "you", "also", "around", "each", "online", "players", "player",
@@ -241,11 +270,10 @@ class PlaytestSet:
 
     def __init__(self, data: Path, labels: Path = LABELS):
         import playtest
-        import taskcall_score
         from brain import names
         self.names_mod = names
         self.pt = playtest.Playtest(data / "playtest-2026-10-08" / "vfg" / "vfg.db")
-        self.order, self.ran = taskcall_score.runs()
+        self.order, self.ran = runs()
         self.labels = {r["id"]: r for r in (json.loads(x) for x in labels.read_text().splitlines() if x.strip())
                        if "id" in r}
         self.short_max = playtest.BRIEF_MAX
@@ -266,7 +294,6 @@ class PlaytestSet:
         return (wrote | edited) - NOT_SCRIPTS
 
     def _chains(self) -> None:
-        from taskcall import heads
         self.done: list[str] = []   # the implementers' T<n>s placed so far, oldest first
         for t in sorted(self.pt.tasks, key=lambda t: (t["at"], int(t["id"][1:]))):
             tid = t["id"]
@@ -301,7 +328,6 @@ class PlaytestSet:
 
     def render(self, row: Row) -> None:
         """A conversation task's row under its task's name, or as the brain's action."""
-        from taskcall import heads
         if row.type != "AI":
             return
         if row.kind == "say":
@@ -339,7 +365,6 @@ class PlaytestSet:
 
     def visible(self, at: str) -> list[dict]:
         """Every task whose first T<n> was written by `at`, as a row of the tasks table."""
-        from taskcall import heads
         out = []
         for k in self.tasks.values():
             chain = [x for x in k["chain"] if self.at(x) <= at]
@@ -357,7 +382,7 @@ class PlaytestSet:
                       if reports else None)
             out.append({"name": k["name"], "description": description, "player": k["player"] or None,
                         "status": status, "line": "", "brief": "", "result": result,
-                        "made": {"scripts": scripts, "actions": [], "presets": [], "copies": []},
+                        "made": {"content": scripts, "bindings": [], "grants": []},   # the night's scripts, as classes
                         "created_at": self.at(chain[0]), "updated_at": self.at(chain[-1]),
                         "busy": bool(pending)})
         return out
@@ -784,8 +809,7 @@ class NightSim:
                 row = rows[name] = {"name": name, "description": self.ns.made_as.get(name) or
                                     (text if kind == "new" else own["description"]),
                                     "player": own["player"], "status": "open", "line": own["line"], "brief": "",
-                                    "result": None, "made": {"scripts": [], "actions": [], "presets": [],
-                                                             "copies": []},
+                                    "result": None, "made": {"content": [], "bindings": [], "grants": []},
                                     "created_at": at, "updated_at": at, "busy": True}
             row["updated_at"] = at
             if kind in ("new", "follow-up"):
@@ -794,8 +818,9 @@ class NightSim:
                 row["status"], row["busy"] = kind, False
                 row["result"] = self.rename(text)
                 made = json.loads(self.ns.box[box]["made"] or "{}")
-                row["made"] = {k: list(dict.fromkeys(row["made"].get(k, []) + list(made.get(k) or [])))
-                               for k in ("scripts", "actions", "presets", "copies")}
+                old = {"content": made.get("content") or made.get("scripts")}   # a night's row: its scripts
+                row["made"] = {k: list(dict.fromkeys(row["made"].get(k, []) + list(old.get(k) or made.get(k) or [])))
+                               for k in ("content", "bindings", "grants")}
         for name, t in self.followed.items():
             if name in rows and t <= self.now and t >= rows[name]["updated_at"]:
                 rows[name]["status"], rows[name]["busy"] = "open", True
@@ -902,7 +927,7 @@ class NightSim:
         name = names.unique(h.get("name") or "task", taken)
         self.own[name] = {"name": name, "description": h.get("description") or "", "player": m.who, "status": "open",
                           "line": m.words, "brief": "", "result": None,
-                          "made": {"scripts": [], "actions": [], "presets": [], "copies": []},
+                          "made": {"content": [], "bindings": [], "grants": []},
                           "created_at": self.now, "updated_at": self.now}
         return name
 
@@ -1001,7 +1026,7 @@ class Rig:
         from brain import actions, config
         self.args, self.out = args, out
         self.cfg = config.load()
-        self.catalog = actions.load(self.cfg.repo, None)
+        self.catalog = actions.load(self.cfg.repo)
         self.hidden = actions.hidden_commands()
         self.refs = load_refs()
         self.mod = router_module()

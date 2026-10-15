@@ -78,26 +78,6 @@ def db_uri(path, mode):
     return "file:" + quote(path) + "?mode=" + mode
 
 
-def pid_with_marker(pid, marker):
-    """True when `pid` is alive and its environment holds `marker` (KEY=value).
-
-    A zombie or a recycled pid has no such marker, so it never matches."""
-    try:
-        with open("/proc/%d/environ" % int(pid), "rb") as f:
-            env = f.read().split(b"\0")
-    except (OSError, ValueError):
-        return False
-    return marker.encode() in env
-
-
-def read_pid(path):
-    try:
-        with open(path) as f:
-            return int(f.read().strip())
-    except (OSError, ValueError):
-        return None
-
-
 def last_feed_seq(path):
     """The highest seq in the last 4 KiB of feed.log, or None without a feed."""
     import re
@@ -193,21 +173,31 @@ RCON_LOCK_WAIT = 15.0
 
 def rcon_lock_path(port):
     """The lock file every RCON client of the server on `port` holds from send to reply:
-    VFG_RCON_LOCK, else /tmp/vfg-rcon-<port>.lock, as scripts/_lib/mc.py's lock_path()."""
+    VFG_RCON_LOCK, else /tmp/vfg-rcon-<port>.lock, as the engine's (engine/vfg_engine/mc/rcon.py)
+    lock_path_for()."""
     return os.environ.get("VFG_RCON_LOCK") or "/tmp/vfg-rcon-%d.lock" % port
 
 
 def open_lock(path):
     """A descriptor flock can hold on `path`, made if missing. Read-only and without O_CREAT
     when it exists: flock needs neither write access nor ownership, and a sticky /tmp
-    refuses O_CREAT on another user's file (fs.protected_regular)."""
+    refuses O_CREAT on another user's file (fs.protected_regular). Never through a link, and only
+    when it is a plain file (OSError otherwise): /tmp is everyone's to write."""
+    import stat
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+
+    def plain(fd):
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            raise OSError("%s is not a plain file: not used as a lock" % path)
+        return fd
     for _ in range(3):
         try:
-            return os.open(path, os.O_RDONLY)
+            return plain(os.open(path, flags))
         except FileNotFoundError:
             pass
         try:
-            fd = os.open(path, os.O_RDONLY | os.O_CREAT | os.O_EXCL, 0o666)
+            fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o666)
         except FileExistsError:
             continue
         try:
@@ -215,13 +205,13 @@ def open_lock(path):
         except OSError:
             pass
         return fd
-    return os.open(path, os.O_RDONLY)
+    return plain(os.open(path, flags))
 
 
 def held_locks():
     """This process's RCON locks, {path: [thread ident, depth, the fd that holds the flock]},
     shared through one entry in sys.modules with every other RCON client loaded in the process
-    (scripts/_lib/mc.py's is the same), so a thread that already holds the lock takes it again
+    (the engine's and realmc's are the same), so a thread that already holds the lock takes it again
     without waiting on itself; other threads and processes still wait."""
     import threading
     h = sys.modules.get("_vfg_rcon_held")

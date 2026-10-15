@@ -20,7 +20,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import timeutil
-from .casts import NOTHING, Unavailable
+from .casts import NOTHING
 
 log = logging.getLogger("vfg_bridge")
 
@@ -351,9 +351,6 @@ class Handler(BaseHTTPRequestHandler):
             status, doc, after = casts.cast(cast["player_name"], cast["phrase"], cast["heard"],
                                             started, ended, cast["client_cast_id"],
                                             arrived=self._start)
-        except Unavailable as exc:
-            self._send(503, {"error": str(exc)})
-            return
         except (sqlite3.Error, OSError) as exc:
             log.error("a cast failed: %s: %s", type(exc).__name__, exc)
             self._send(503, {"error": "busy"})
@@ -385,9 +382,6 @@ class Handler(BaseHTTPRequestHandler):
         try:
             status, doc, after = casts.jev_cast(req["line_id"], req["phrase"], arrived=self._start,
                                                 keep=req["keep"])
-        except Unavailable as exc:
-            self._send(503, {"error": str(exc)})
-            return
         except (sqlite3.Error, OSError) as exc:
             log.error("a Jev cast failed: %s: %s", type(exc).__name__, exc)
             self._send(503, {"error": "busy"})
@@ -410,11 +404,7 @@ class Handler(BaseHTTPRequestHandler):
         if casts is None:
             self._send(503, {"error": "incantations are not set up on this bridge"})
             return
-        try:
-            status, doc = casts.listing(player, after, wait)
-        except Unavailable as exc:
-            self._send(503, {"error": str(exc)})
-            return
+        status, doc = casts.listing(player, after, wait)
         self._send(status, doc)
 
 

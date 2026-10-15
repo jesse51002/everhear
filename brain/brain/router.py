@@ -39,10 +39,11 @@ TASKS, a brief the brain's own checks refuse (checks.py), a reason that chose ot
 choice does not use is dropped and logged, never sent back.
 
 The prompt, laid out as a brain step's so it reads the same rows the same way:
-1. the opening, marked: the rules (prompts/router.md, the owner named), the menu, every library
-   action in full and Minecraft's command list, so it knows what the brain can do now;
+1. the opening, marked: the rules (prompts/router.md, the owner named), the menu (the game engine's
+   ops) in full and Minecraft's command list, so it knows what the brain can do now;
 2. the conversation, a minute-block at a time, marked at checkpoints (context.py);
-3. the tail, never cached: this server's own actions in full, the world, TASKS in full (tasks.board),
+3. the tail, never cached: the world as glanced at (World.glance: ENGINE, every class the engine
+   has, RUNNING NOW and INCANTATIONS), TASKS in full (tasks.board),
    WORK UNDER WAY in full (the core's text: every brain loop, its lines, its state, its steps), and
    the event: THE LINE with the conversation agent's answer, or THE REPORT with what it left.
 Its usage row: component router, `#<seq>` for a line, the task's name for a report.
@@ -60,7 +61,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from . import checks
 from .actions import Catalog
-from .call import REPLY_MAX, FollowUp, HandOff, Opening, all_required, one_line, own_actions
+from .call import REPLY_MAX, FollowUp, HandOff, Opening, all_required, one_line
 from .config import log
 from .context import Context, Row
 from .respond import claims_done, promises
@@ -282,27 +283,21 @@ class Router:
         rules = prompt.read_text(encoding="utf-8").rstrip("\n")
         self.rules = rules.replace("{owner}", owner or "not named (VFG_OWNER is not set)")
         self._opening = Opening(self.rules, catalog, hidden,
-                                menu="THE MENU (each action the brain can run: its name and what it does; this "
-                                     "server's own actions are at the end, after the conversation)",
-                                commands="MINECRAFT COMMANDS (the brain's command action runs them; name — what it "
-                                         "does)",
+                                menu="THE MENU (each action the brain can run: its name and what it does; what "
+                                     "each can start, grant, give or apply is under ENGINE, in THE WORLD NOW)",
+                                commands="MINECRAFT COMMANDS (the brain runs them through the command scenario; name "
+                                         "— what it does)",
                                 not_loaded="(not loaded yet: the brain writes commands from what it knows of 26.3)")
 
     def opening(self, refs) -> str:
-        """The rules, the menu, every library action in full and the command list: the same for
-        every call while the library and the references stay as they are (call.Opening, as a
-        brain step's)."""
+        """The rules, the menu, every action in full and the command list: the same for every call
+        while the actions and the references stay as they are (call.Opening, as a brain step's)."""
         return self._opening(refs)
 
-    def own_actions(self) -> str:
-        """This server's own actions, made by implementers, in full, after the conversation, as in
-        a brain step (call.own_actions)."""
-        return own_actions(self.catalog)
-
     def tail(self, event: RouterEvent, seen: Seen, board: str, under_way: str) -> str:
-        """Everything after the conversation, the event's own: the server's own actions, the
-        world, TASKS in full, WORK UNDER WAY in full and the event."""
-        return f"\n{self.own_actions()}\n\n{seen.show()}\n\n{board}\n\n{under_way}\n\n{event.show()}\n"
+        """Everything after the conversation, the event's own: the world (the engine's part with
+        it), TASKS in full, WORK UNDER WAY in full and the event."""
+        return f"\n{seen.show()}\n\n{board}\n\n{under_way}\n\n{event.show()}\n"
 
     async def route(self, event: RouterEvent, ctx: Context, seen: Seen, board: str, under_way: str, *,
                     loops: Collection[str], tasks: Collection[str], refs, busy: bool = False):

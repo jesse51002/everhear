@@ -1,5 +1,4 @@
-# rcon.py: vfg cmd and vfg say. ARGS:
-#   {"mode": "cmd", "mc": "/opt/mc", "command": "time set day"}
+# rcon.py: vfg say (vfg cmd goes through the engine's command scenario). ARGS:
 #   {"mode": "say", "mc": "/opt/mc", "vfg": "/opt/vfg", "to": null|"Steve",
 #    "commands": ["tellraw @a [...]", ...], "store": "<text as stored>", "task": null|"galick_gun_styrk"}
 # A say is stored as an ai line, then fed as `AI say <task's name|-> | <text as stored>` through
@@ -12,19 +11,6 @@ def connect():
         return Rcon(ARGS["mc"])
     except RconDown as e:
         die(5, str(e))
-
-
-def run_cmd():
-    r = connect()
-    try:
-        out = r.command(ARGS["command"])
-    except RconDown as e:
-        die(5, str(e))
-    r.close()
-    if out:
-        sys.stdout.write(out if out.endswith("\n") else out + "\n")
-    if mc_refused(out):
-        die(1, "minecraft rejected the command")
 
 
 def run_say():
@@ -77,7 +63,4 @@ def feed(at):
     vfg_feed.append("AI", "say %s" % (ARGS.get("task") or "-"), ARGS["store"], at)
 
 
-if ARGS["mode"] == "cmd":
-    run_cmd()
-else:
-    run_say()
+run_say()

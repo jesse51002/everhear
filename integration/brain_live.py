@@ -1,45 +1,57 @@
 #!/usr/bin/env python3
-"""The brain live, on a real 26.3 server on this PC: Prototype_Conversation_And_Router's "Live, on
-realmc" list, with the checks of Prototype_Brain_Loop's that still mean something.
+"""The brain live, on a real 26.3 server on this PC, with the game engine as on the box:
+Prototype_Conversation_And_Router's "Live, on realmc" list, with the checks of Prototype_Brain_Loop's
+that still mean something.
 
-    REALMC_ROOT=… python3 integration/brain_live.py [--name live] [--keep-up] [--only refused,read,…]
+    REALMC_ROOT=… VFG_ACCEPT_EULA=true python3 integration/brain_live.py [--name live] [--keep-up]
+                                                     [--only refused,read,…]
 
 Real:  a Minecraft 26.3 server with Carpet's fake players Steve and Alex (integration/realmc,
        its world fresh from the template, its test server beside it as the box's: `up NAME
-       --test-server`, where the implementers' `vfg test` plays), the brain (`vfg brain start`
-       through realmc's bin/vfg, which keeps this HOME), its model calls through OpenRouter on the brain's defaults (the
-       conversation agent and the router on DeepSeek V4.1 Flash with no reasoning, the steps at low;
-       OPEN_ROUTER_API: from the environment, else the first .env above this repo, or its
+       --test-server`, where the implementers' `vfg test` plays); the game engine installed into
+       its stand-in box and run as the vfg-engine unit runs it (integration/engine_e2e.py's
+       install and Engine), its content the library (engine/library/, deployed beside the engine
+       as on the box) and made/<name>/content/; the brain (`vfg brain start` through realmc's
+       bin/vfg, which keeps this HOME), its model calls through OpenRouter on the brain's defaults
+       (the conversation agent and the router on DeepSeek V4.1 Flash with no reasoning, the steps
+       at low; OPEN_ROUTER_API: from the environment, else the first .env above this repo, or its
        Internal/.env, that holds it; given to the brain's process only, never printed or
-       written), vfg, the actions and the scripts, the stand-in box's feed writer and vfg.db,
-       with its tasks table, and the implementers' real runner, relay and Claude Code CLI.
+       written), vfg and the actions (the engine's ops), the stand-in box's feed writer and
+       vfg.db, with its tasks table, and the implementers' real runner, relay and Claude Code CLI.
 Stand-ins: SSH (realmc's bin/ssh); Jev: each player's line is put into the feed as a LINE row
        through the stand-in's vfg_feed, as Jev puts a line said to the AI there (class to_ai),
-       several in one write when a check needs them to arrive together; the implementers' MODEL (integration/stand_in_model.py, on
-       127.0.0.1, the brain told so with VFG_IMPL_PROVIDER=deepseek, DEEPSEEK_API_KEY=stand-in and
-       VFG_IMPL_BASE_URL): it records what each implementer is sent and answers with a report after
-       the delay a check sets, building nothing and costing nothing; and a slow provider, on cue
-       (integration/shims/slow_step, on the brain's PYTHONPATH with VFG_TEST_SLOW): it holds a
-       chosen step, or a conversation agent's call, back for so many seconds before it goes out,
-       inside the call's own timeout, where a check needs a loop still thinking, a step past 45 s
-       or a player's turn busy.
+       several in one write when a check needs them to arrive together; the implementers' MODEL
+       (integration/stand_in_model.py, on 127.0.0.1, the brain told so with
+       VFG_IMPL_PROVIDER=deepseek, DEEPSEEK_API_KEY=stand-in and VFG_IMPL_BASE_URL): it records
+       what each implementer is sent and answers with a report after the delay a check sets,
+       building nothing and costing nothing; and a slow provider, on cue (integration/shims/
+       slow_step, on the brain's PYTHONPATH with VFG_TEST_SLOW): it holds a chosen step, or a
+       conversation agent's call, back for so many seconds before it goes out, inside the call's
+       own timeout, where a check needs a loop still thinking, a step past 45 s or a player's turn
+       busy.
 
 It starts from a clean slate: the stand-in's vfg.db (its -wal and -shm with it) and feed.log are
 set aside in a timestamped folder beside them, never deleted, and made again by
 `vfg_bridge --init-db`; what made/<name>/ held is saved with `vfg made save`, then moved into
-made/.replaced/, so the server's tasks and what they made start from none.
+made/.replaced/, and its deployed copy on the stand-in set aside too; the engine starts with no
+saved state (no grant, binding, instance or place), so the server's tasks and what they made start
+from none. The place `home` is put in the engine's places with its places_import op.
 
 What it checks. Every line to the AI takes its player's turn for two quick calls: the conversation
 agent answers (brain.log's `respond #<seq>` line), and a hand-off goes to the router, which places
 the work (`router #<seq> -> …`); the turn's `front #<seq>` line says both and the lines said. A
-brain loop runs behind the turn (`loop <ref> …: …; L3 saved, 1 of 10 steps, lines #5`). Three brains,
-one after another, on the one server and feed:
-1. On the defaults. Kept from Prototype_Brain_Loop, each now through the front turn: a one-step
-   ask whose actions all land (the agent's line, said at once, then the loop's reply and its one
-   record); actions together and in turn; a refused command the next step fixes; another player's
-   items read; item asks by slot; the brain's own copy started, edited and stopped; three of
-   Steve's lines waiting for his turn and a fourth turned away by a private message naming them; a
-   line the agent answers itself. New:
+brain loop runs behind the turn (`loop <ref> …: …; L3 saved, 1 of 10 steps, lines #5`). The brain
+acts only through the engine's ops, so an everyday ask (a give, a teleport, the time) needs the
+library's scenarios for it (`command`, `teleport`, …): one the library lacks fails its check, in the
+brain's own words; what the engine runs is read with `vfg engine instances`. Three brains, one
+after another, on the one server and feed:
+1. On the defaults. Kept from Prototype_Brain_Loop, each
+   now through the front turn: a one-step ask whose actions all land (the agent's line,
+   said at once, then the loop's reply and its one record; the engine's actions, nothing left
+   running); actions together and in turn; a refused command the next step fixes; another
+   player's items read; item asks by slot; an effect kept on Steve by the engine, changed and
+   stopped; three of Steve's lines waiting for his turn and a fourth turned away by a private
+   message naming them; a line the agent answers itself. New:
    - Steve's second line waits only for his first line's front turn, not its loop: his two loops
      run side by side, and Alex's line is answered beside them;
    - a step held past 45 s (a slow stand-in: 65 s at low, 47 s with no reasoning) lands inside its
@@ -62,17 +74,19 @@ one after another, on the one server and feed:
    past two: the line added to an ended loop takes it to the cap, its last step replies or hands off
    and it is deleted; the next line on that thing starts a new loop.
 
-At the end: every line read, no task open, a clean stop, no traceback or error in brain.log, the key
-in no file, every step a usage row `<ref> s<n>` and a line of brain.log, every front turn's calls
-`#<seq>` rows of respond and router, no report waiting for a turn, and the cost under $1. It prints
-each line's front turn and its work, with the time to the reply, every call's cost and the cache
-rate of the steps after a loop's first. `--only` runs the checks it names (the brain each needs is
-started for it). The server is left down unless --keep-up. Never `down --all`, `--purge-key`,
-`--regen`, `key` or `carpet`: other builders' servers share REALMC_ROOT, and its env file holds a
-real TypeSafe key, which nothing here reads or prints. Give a build's run a server of its own
-(`--name cr-live`): the clean slate sets aside whatever the server held before.
+At the end: every line read, no task open, a clean stop of the brain and of the engine, no
+traceback or error in brain.log, the key in no file, every step a usage row `<ref> s<n>` and a line
+of brain.log, every front turn's calls `#<seq>` rows of respond and router, no report waiting for a
+turn, and the cost under $1. It prints each line's front turn and its work, with the time to the
+reply, every call's cost and the cache rate of the steps after a loop's first. `--only` runs the
+checks it names (the brain each needs is started for it). The server is left down unless
+--keep-up. Never `down --all`, `--purge-key`, `--regen`, `key` or `carpet`: other builders'
+servers share REALMC_ROOT, and its env file holds a real TypeSafe key, which nothing here reads or
+prints. Give a build's run a server of its own (`--name cr-live`): the clean slate sets aside
+whatever the server held before.
 """
 import argparse
+import ast
 import datetime as dt
 import glob
 import importlib.util
@@ -83,6 +97,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 
@@ -92,6 +107,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 REALMC = os.path.join(HERE, "realmc")
 SHIM = os.path.join(HERE, "shims", "slow_step")
+sys.path.insert(0, HERE)
+import engine_e2e  # noqa: E402  (the engine's install and process on a stand-in box)
+
 KEY = "OPEN_ROUTER_API"
 BUDGET = 1.00      # dollars of OpenRouter the brain's three agents may spend in a run
 MODELS = ("brain", "respond", "router")   # the usage components on OpenRouter
@@ -130,14 +148,6 @@ BOOMERANG = ("make me a boomerang axe: when I throw my axe it flies ten blocks o
              "back to my hand")
 
 
-def load_e2e():
-    """brain_e2e.py beside this file: the key's finder and brain.log's grammar."""
-    spec = importlib.util.spec_from_file_location("brain_e2e", os.path.join(HERE, "brain_e2e.py"))
-    e2e = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(e2e)
-    return e2e
-
-
 def load_stand_in():
     spec = importlib.util.spec_from_file_location("stand_in_model", os.path.join(HERE, "stand_in_model.py"))
     m = importlib.util.module_from_spec(spec)
@@ -145,17 +155,156 @@ def load_stand_in():
     return m
 
 
-E2E = load_e2e()
-LOG_CALL, LOG_LOOP, LOG_STEP, ANY = E2E.LOG_CALL, E2E.LOG_LOOP, E2E.LOG_STEP, E2E.ANY
+FEED_RE = re.compile(r"^([A-Z]+)#(\d+) (\d\d:\d\d:\d\d) (?:([^|]*?) )?\| (.*)$")
+# A model call in brain.log that answered: a step of a brain loop (`brain #5 s1 …`), the conversation agent's
+# (`respond #5 …`) or the router's (`router #5 …`), for a line (#seq) or a report (the task's name); its cost
+# ends in + when an attempt cut off in flight is not in it.
+LOG_CALL = re.compile(r"^(\S+) (brain|respond|router) (#\d+|[a-z][a-z0-9_]{1,55})(?: s(\d+))? (\d+) ms \$([\d.]+)\+?, "
+                      r"(\d+) in")
+# A loop's run ends: `loop #5 Steve: 1 step(s), $0.004120, 91% cached, reply at 3.4 s, 3.6 s, ended reply; L1 saved,
+# 1 of 10 steps, lines #5`. Its ref is its first line's (`#5`), or a report's task; one loop logs a line per run (a
+# line added after it ended takes it up again). Groups: 1 at, 2 ref, 3 who, 4 steps, 5 cost, 6 cached, 7 reply at,
+# 8 seconds, 9 ended, 10 the loop's id, 11 its state after (saved, deleted), 12 steps used, 13 its limit, 14 lines.
+LOG_LOOP = re.compile(r"^(\S+) loop (#\d+|[a-z][a-z0-9_]{1,55}) (\S+): (\d+) step\(s\), \$([\d.]+)\+?, (\d+%|no) cached, "
+                      r"(?:reply at ([\d.]+) s|no reply), ([\d.]+) s, ended (cut off|\w+); (L\d+) (\w+), (\d+) of (\d+) "
+                      r"steps, lines (.+)$")
+# A step's line: `brain #5 s1 <spent> | <what it ran> || end reply || reply: … || record: … -> <what came of it>`.
+LOG_STEP = re.compile(r"^(\S+) brain (#\d+|[a-z][a-z0-9_]{1,55}) s(\d+) (\d+) ms \$([\d.]+)\+?, .*? \| (.*) -> (.*)$")
+STEP_REPLY = re.compile(r" \|\| reply: (.*?)(?: \|\| record: .*| \|\| status: .*)?$")
+# The conversation agent's answer: `respond #5 Alex: 'the line' -> 'its reply', handed off (why)`.
+LOG_RESPOND = re.compile(r"^\S+ respond (#\d+) \S+: .* -> ('(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\")(, handed off)? \(")
+# A front turn's line (brain/loop.py front()): `front #5 Steve: agent handoff 812 ms; router 1340 ms: new_loop L3;
+# said agent`, or with no hand-off `front #5 Steve: agent reply 790 ms; said agent`. When code placed the work
+# elsewhere than the router said: `router 1340 ms: loop L2, so new_loop L4`; the router failing: `router FAILED
+# 30001 ms, so new_loop L4`. Groups: 1 at, 2 seq, 3 who, 4 the agent's ending, 5 its ms, 6 FAILED, 7 the router's
+# ms, 8 and 9 the router's own choice when code placed it elsewhere, 10 where it went (new_loop, loop,
+# new_implementer, implementer, nowhere), 11 the loop's id or the task's name(s), 12 the lines said (agent,
+# router, code; "nothing").
+LOG_FRONT = re.compile(r"^(\S+) front #(\d+) (\S+): agent (reply|silent|handoff|failed) (\d+) ms"
+                       r"(?:; router (FAILED )?(\d+) ms(?::|, so)(?: (\w+) ([^,;]+), so)? (\w+) (.+?))?; said (.+)$")
+ANY = object()  # the turn said a line its log does not hold (an error line, the router's own line, a line in code)
 # A step or a call that failed for good, with what it spent: its usage row is written all the same (ok 0).
 LOG_FAILED = re.compile(r"^(\S+) (brain|respond|router) (#\d+|[a-z][a-z0-9_]{1,55})(?: s(\d+))? FAILED "
                         r"\((\d+) ms \$([\d.]+)")
-# One action a step ran: `action #5 s1 #2 command ok: …`.
+# One action a step ran: `action #5 s1 #2 engine_start ok: …`.
 LOG_ACTION = re.compile(r"^(\S+) action (#\d+|[a-z][a-z0-9_]{1,55}) s(\d+) #(\d+) (\w+) (\w+): (.*)$")
 
 
 def parse_iso(s):
     return dt.datetime.strptime(s.replace("Z", "+0000"), "%Y-%m-%dT%H:%M:%S.%f%z").timestamp()
+
+
+def front_of(log, ref):
+    """The front turn of the line `ref` (`#seq`), from brain.log: {at, who, agent (reply, silent, handoff,
+    failed), agent_ms, router_ms (None with no hand-off), chose and chose_target (the router's own choice,
+    when code placed it elsewhere), to, where (a loop's id or a task's name, "-" for none), said (the lines
+    it said: agent, router, code), reply (the agent's words, as it logged them, or None)}; None while its
+    turn has not ended."""
+    reply = None
+    for line in log.splitlines():
+        m = LOG_RESPOND.match(line)
+        if m and m.group(1) == ref:
+            reply = ast.literal_eval(m.group(2)).strip()
+            continue
+        m = LOG_FRONT.match(line)
+        if m and "#" + m.group(2) == ref:
+            said = [] if m.group(12) == "nothing" else m.group(12).split(", ")
+            return {"at": parse_iso(m.group(1)), "who": m.group(3), "agent": m.group(4),
+                    "agent_ms": int(m.group(5)), "router_failed": bool(m.group(6)),
+                    "router_ms": int(m.group(7)) if m.group(7) else None, "chose": m.group(8),
+                    "chose_target": m.group(9), "to": m.group(10), "where": m.group(11), "said": said,
+                    "reply": reply}
+    return None
+
+
+def loop_runs(log, loop=None, ref=None):
+    """The runs of brain loops in brain.log, in order, as LOG_LOOP reads them: {at, ref, who, steps, cost,
+    cached, reply_s, s, ended, loop, state, used, limit, lines}; those of the loop `loop` (L3), or whose
+    ref is `ref` (its first line's #seq, or a report's task), or all."""
+    out = []
+    for line in log.splitlines():
+        m = LOG_LOOP.match(line)
+        if not m or (loop and m.group(10) != loop) or (ref and m.group(2) != ref):
+            continue
+        out.append({"at": parse_iso(m.group(1)), "ref": m.group(2), "who": m.group(3),
+                    "steps": int(m.group(4)), "cost": float(m.group(5)), "cached": m.group(6),
+                    "reply_s": float(m.group(7)) if m.group(7) else None, "s": float(m.group(8)), "ended": m.group(9),
+                    "loop": m.group(10), "state": m.group(11), "used": int(m.group(12)), "limit": int(m.group(13)),
+                    "lines": m.group(14).split(", ")})
+    return out
+
+
+def run_reply(log, run):
+    """What a loop's run said, from the step line that ended it (the last step of its ref logged before its
+    loop line): its reply, "" when it said nothing, ANY for a line its log does not hold (an error line)."""
+    if run["reply_s"] is None:
+        return ""
+    if run["ended"] == "failed":
+        return ANY
+    step = None
+    for line in log.splitlines():
+        m = LOG_STEP.match(line)
+        if m and m.group(2) == run["ref"] and parse_iso(m.group(1)) <= run["at"] + 0.001:
+            step = m
+    said = STEP_REPLY.search(step.group(6)) if step else None
+    return said.group(1) if said else ANY
+
+
+def work_of(log, ref):
+    """The run of the loop that took the line `ref` (a new loop, or the loop the router added it to), the
+    first that ended after the line's front turn; None when the line went to no loop or its run has not
+    ended."""
+    front = front_of(log, ref)
+    if front is None or front["to"] not in ("new_loop", "loop"):
+        return None
+    runs = [r for r in loop_runs(log, loop=front["where"]) if r["at"] >= front["at"] - 0.001]
+    return runs[0] if runs else None
+
+
+def logged_reply(log, ref):
+    """What answered the line `ref` (`#seq`), or a report (its task's name), from brain.log: the reply of
+    the loop that took it, as the step that ended its run wrote it; for a line no loop took, the front
+    turn's line (the agent's words; ANY for the router's or code's own); "" when nothing was said; None
+    while it has not ended. A report's: its loop's reply, else ANY once the conversation agent answered."""
+    if not ref.startswith("#"):
+        runs = loop_runs(log, ref=ref)
+        if runs:
+            return run_reply(log, runs[0])
+        return ANY if re.search(r"^\S+ respond %s (done|failed): " % re.escape(ref), log, re.M) else None
+    front = front_of(log, ref)
+    if front is None:
+        return None
+    if front["to"] in ("new_loop", "loop"):
+        run = work_of(log, ref)
+        return None if run is None else run_reply(log, run)
+    return logged_ack(log, ref)
+
+
+def acked(log, ref):
+    """The agent's words its front turn said for the line `ref`, when the line's work is a loop's
+    (so a loop's error line, read as ANY, is never taken for it); None otherwise."""
+    front = front_of(log, ref)
+    if front and front["to"] in ("new_loop", "loop") and "agent" in front["said"]:
+        return front["reply"]
+    return None
+
+
+def logged_ack(log, ref):
+    """The front turn's own line for `ref`: the agent's words when it said its line, ANY for the router's
+    or code's line in its place, "" when it said none, None while the turn has not ended."""
+    front = front_of(log, ref)
+    if front is None:
+        return None
+    if "agent" in front["said"]:
+        return front["reply"] or ANY
+    return ANY if front["said"] else ""
+
+
+def same_words(a, b, n=40):
+    """Two chat lines are the same: their first `n` letters and digits (vfg say cleans what it stores)."""
+    def key(t):
+        return re.sub(r"[^a-z0-9]", "", str(t).lower())[:n]
+    return key(a) == key(b)
 
 
 def wait_for(fn, timeout, step=0.2):
@@ -173,8 +322,34 @@ def short(text, n=300):
 
 
 def find_key():
-    """The OpenRouter key and where it came from; never printed (as brain_e2e.py finds it)."""
-    return E2E.find_key()
+    """The OpenRouter key and where it came from (a path or "the environment"); never printed.
+    The first .env above this repo that holds it, or the Internal/.env beside one of them (the
+    company's repo, whose scripts read it)."""
+    if os.environ.get(KEY, "").strip():
+        return os.environ[KEY].strip(), "the environment"
+    dirs, d = [], REPO
+    while True:
+        dirs.append(d)
+        if os.path.dirname(d) == d:
+            break
+        d = os.path.dirname(d)
+    for path in [os.path.join(d, ".env") for d in dirs] + [os.path.join(d, "Internal", ".env") for d in dirs]:
+        try:
+            with open(path, encoding="utf-8") as f:
+                for raw in f:
+                    line = raw.strip()
+                    if line.startswith("export "):
+                        line = line[7:].lstrip()
+                    k, sep, v = line.partition("=")
+                    if sep and k.strip() == KEY:
+                        v = v.strip()
+                        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+                            v = v[1:-1]
+                        if v:
+                            return v, path
+        except OSError:
+            pass
+    return None, None
 
 
 # ----------------------------------------------------------------- the report
@@ -222,7 +397,72 @@ class Live:
         import players
         self.p = players.on(name)
         self.started = False
+        self.engine = None
         self.mark = len(self.log())
+
+    # -- the game engine, as on the box
+    def start_engine(self, rep):
+        """The engine installed into the stand-in as `deploy.sh engine` installs it (its venv, the
+        datapack loaded), the library rsynced beside it, and started as the vfg-engine unit starts
+        it, with no saved state; its content the library, then made/<name>/content/ (the unit's
+        default, for this server). Its socket is in $XDG_RUNTIME_DIR, linked from
+        <vfg>/engine/engine.sock, where vfg looks (a socket's address holds 107 bytes). Then
+        `vfg engine reload`: made/<name>/content/ deployed (made empty when there is none) and every
+        content folder loaded."""
+        srv = engine_e2e.realmc.Server(self.name)
+        r, secs = engine_e2e.install(srv)
+        lib = os.path.join(srv.vfg, "engine", "library")
+        subprocess.run(["rsync", "--recursive", "--delete", "--exclude=__pycache__/",
+                        os.path.join(REPO, "engine", "library") + "/", lib + "/"], check=True)
+        content = os.path.join(srv.vfg, "made", self.name, "content")
+        os.makedirs(content, exist_ok=True)
+        os.makedirs(os.path.join(REPO, "made", self.name, "content"), exist_ok=True)   # what the reload deploys
+        sock = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir(), "vfg-engine-%s.sock" % self.name)
+        os.symlink(sock, os.path.join(srv.vfg, "engine", "engine.sock"))
+        enabled = self.cmd("datapack list enabled")
+        if not rep.check(r.returncode == 0 and "file/everhear" in enabled,
+                         "the engine installed into the stand-in: its venv, the datapack loaded (%.1f s)" % secs,
+                         (r.stdout + r.stderr)[-800:]):
+            return False
+        self.engine = engine_e2e.Engine(srv, sock, lib + os.pathsep + content, os.path.join(self.dir, "engine-process.log"))
+        engine_e2e.stray_engine(sock, self.engine.dir)
+        try:
+            up = self.engine.start()
+        except SystemExit as e:
+            self.engine = None
+            return rep.check(False, "the engine runs as vfg-engine does", str(e))
+        r = self.vfg("engine", "reload", timeout=180)
+        loaded = re.search(r"^loaded: (.*)$", r.stdout, re.M)
+        library = sorted(f[:-3] for f in os.listdir(os.path.join(REPO, "engine", "library"))
+                         if re.match(r"^[a-z][a-z0-9_]*\.py$", f))
+        names = sorted(x.strip() for x in loaded.group(1).split(",")) if loaded else []
+        return rep.check(r.returncode == 0 and set(library) <= set(names),
+                         "the engine runs as vfg-engine does (its socket answered in %.1f s), and vfg engine reload "
+                         "loaded the library's %d classes with no error" % (up, len(library)),
+                         "exit %d; library %s; %s %s" % (r.returncode, library, r.stdout[-1500:], r.stderr[-800:]))
+
+    def stop_engine(self):
+        """SIGTERM, as systemd stops it: (exit code, seconds); None when it was not started."""
+        if self.engine is None:
+            return None
+        got, self.engine = self.engine.stop(), None
+        return got
+
+    def instances(self):
+        """What the engine runs: [{instance, kind, id, user, started, ends}], [] when it cannot say."""
+        r = self.vfg("engine", "instances", "--json", timeout=60)
+        try:
+            return json.loads(r.stdout.strip().splitlines()[-1]).get("instances") or []
+        except (ValueError, IndexError, AttributeError):
+            return []
+
+    def stop_scenarios(self, rep):
+        """Every scenario instance still running stopped, so the next check starts with none."""
+        left = [i for i in self.instances() if i.get("kind") == "scenario"]
+        for i in left:
+            self.vfg("engine", "stop", "--instance", i["instance"], timeout=60)
+        if left:
+            rep.note("stopped what was still running: %s" % ", ".join(i["instance"] for i in left))
 
     def realmc_env(self):
         """This environment, with `realmc/env <name>`'s exports applied, VFG_SERVER the server's
@@ -293,20 +533,22 @@ class Live:
 
     def clean_slate(self, rep):
         """No brain left running from an earlier run; the stand-in's vfg.db (its -wal and -shm with
-        it) and feed.log set aside in vfg/set-aside-<time>/, never deleted, and made again by
-        `vfg_bridge --init-db`, as realmc's up makes them; made/<name>/ saved with `vfg made save`,
-        then moved into made/.replaced/. False when a fresh vfg.db could not be made."""
+        it), feed.log and deployed made/<name>/ set aside in vfg/set-aside-<time>/, never deleted,
+        and vfg.db made again by `vfg_bridge --init-db`, as realmc's up makes it; made/<name>/
+        saved with `vfg made save`, then moved into made/.replaced/. False when a fresh vfg.db
+        could not be made. (The engine's saved state goes as the engine is installed.)"""
         rep.head("a clean slate: realmc %s's vfg.db, feed and made/%s/" % (self.name, self.name))
         self.vfg("brain", "stop", timeout=60)     # exits 1 when none runs
         box = os.path.dirname(self.db)
-        old = [n for n in ("vfg.db", "vfg.db-wal", "vfg.db-shm", "feed.log") if os.path.exists(os.path.join(box, n))]
+        old = [n for n in ("vfg.db", "vfg.db-wal", "vfg.db-shm", "feed.log", os.path.join("made", self.name))
+               if os.path.exists(os.path.join(box, n))]
         if old:
             aside = os.path.join(box, "set-aside-" + time.strftime("%Y%m%d-%H%M%S"))
             while os.path.lexists(aside):         # one set aside this second already
                 aside += "-2"
             os.makedirs(aside)
             for n in old:
-                os.rename(os.path.join(box, n), os.path.join(aside, n))
+                os.rename(os.path.join(box, n), os.path.join(aside, os.path.basename(n)))
             rep.note("set aside %s in %s" % (", ".join(old), os.path.relpath(aside, self.dir)))
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONDONTWRITEBYTECODE": "1", "VFG_DB": self.db,
                "PYTHONPATH": os.path.join(REPO, "bridge")}
@@ -321,15 +563,19 @@ class Live:
                        "%s; %r" % (r.stdout[-800:], fresh))
         made = os.path.join(REPO, "made", self.name)
         if os.path.isdir(made) and os.listdir(made):
-            s = self.vfg("made", "save", timeout=120)
-            if rep.check(s.returncode == 0, "what made/%s/ held is saved: %s" % (self.name, s.stdout.strip()),
-                         s.stdout + s.stderr):
+            # `vfg made save` keeps content/ and tests/, and refuses when both are empty (as a run
+            # leaves them when no implementer wrote anything): then there is nothing to keep.
+            held = any(files for f in ("content", "tests") for _, _, files in os.walk(os.path.join(made, f)))
+            s = self.vfg("made", "save", timeout=120) if held else None
+            if s is None or rep.check(s.returncode == 0, "what made/%s/ held is saved: %s" % (
+                    self.name, s.stdout.strip()), s.stdout + s.stderr):
                 kept = os.path.join(REPO, "made", ".replaced", "%s-%s" % (self.name, time.strftime("%Y%m%d-%H%M%S")))
                 while os.path.lexists(kept):
                     kept += "-2"
                 os.makedirs(os.path.dirname(kept), exist_ok=True)
                 os.rename(made, kept)
-                rep.note("made/%s/ cleared: moved to %s" % (self.name, os.path.relpath(kept, REPO)))
+                rep.note("made/%s/ cleared%s: moved to %s" % (self.name, "" if held else " (no class or test in it)",
+                                                               os.path.relpath(kept, REPO)))
             else:
                 ok = False
         return ok
@@ -348,14 +594,6 @@ class Live:
                 t[k] = None
         return t
 
-    def copy_meta(self, copy):
-        """A copy's meta file in the stand-in's run/, kept after the copy ends; None when there is none."""
-        try:
-            with open(os.path.join(self.dir, "vfg", "run", copy + ".json"), encoding="utf-8") as f:
-                return json.load(f)
-        except (OSError, ValueError):
-            return None
-
     # -- the feed and the database
     def sql(self, query, params=()):
         con = sqlite3.connect("file:%s?mode=ro" % self.db, uri=True, timeout=10)
@@ -368,7 +606,7 @@ class Live:
     def rows(self, after=0, kind=None):
         out = []
         for r in self.sql("SELECT seq, at, line, processed_at FROM feed WHERE seq > ? ORDER BY seq", (after,)):
-            m = E2E.FEED_RE.match(r["line"])
+            m = FEED_RE.match(r["line"])
             r.update(type=m.group(1) if m else "", fields=(m.group(4) or "") if m else "", text=m.group(5) if m else "")
             if kind is None or r["type"] == kind:
                 out.append(r)
@@ -412,13 +650,6 @@ class Live:
         m = re.search(r"is at (\d+) tick", self.cmd("time query day"))
         return int(m.group(1)) if m else None
 
-    def copies(self):
-        r = self.vfg("script", "list", "--json", "--fresh", timeout=60)
-        try:
-            return json.loads(r.stdout).get("copies") or {}
-        except ValueError:
-            return {}
-
 
 # ======================================================================= the run
 
@@ -457,20 +688,20 @@ class Run:
 
     def await_reply(self, a, timeout=60):
         """The ask's reply: the AI say row after its line with the words brain.log gives it (the
-        reply of the loop that took it, else the front turn's own line; E2E.logged_reply), so turns
+        reply of the loop that took it, else the front turn's own line; logged_reply), so turns
         at once are told apart; `AI say <name>` when it names a task (kept as the ask's task), else
         `AI say -`. None when nothing was said (a["silent"]) or nothing came in time."""
         live, ref = self.live, "#%d" % a["seq"]
 
         def got():
             log = self.log()
-            want = E2E.logged_reply(log, ref)
+            want = logged_reply(log, ref)
             if want == "":
                 return "silent"
-            ack = E2E.acked(log, ref)   # the front turn's own line, never a loop's reply
+            ack = acked(log, ref)   # the front turn's own line, never a loop's reply
             for r in live.ai(a["seq"]) if want is not None else ():
-                if r["seq"] not in self.claimed and (E2E.same_words(r["text"], want) if want is not ANY
-                                                     else not (ack and E2E.same_words(r["text"], ack))):
+                if r["seq"] not in self.claimed and (same_words(r["text"], want) if want is not ANY
+                                                     else not (ack and same_words(r["text"], ack))):
                     return r
             return None
         r = wait_for(got, timeout)
@@ -489,17 +720,17 @@ class Run:
         return r
 
     def await_front(self, a, timeout=40):
-        """The line's front turn, once logged (E2E.front_of): {agent, to, where, said, reply, …}."""
-        return wait_for(lambda: E2E.front_of(self.log(), "#%d" % a["seq"]), timeout) or None
+        """The line's front turn, once logged (front_of): {agent, to, where, said, reply, …}."""
+        return wait_for(lambda: front_of(self.log(), "#%d" % a["seq"]), timeout) or None
 
     def front(self, a):
-        return E2E.front_of(self.log(), "#%d" % a["seq"])
+        return front_of(self.log(), "#%d" % a["seq"])
 
     def work(self, a, timeout=0):
-        """The run of the loop that took the line (E2E.work_of): {ref, loop, steps, ended, state,
+        """The run of the loop that took the line (work_of): {ref, loop, steps, ended, state,
         used, limit, lines, …}; None when no loop took it or its run has not ended."""
         def find():
-            return E2E.work_of(self.log(), "#%d" % a["seq"])
+            return work_of(self.log(), "#%d" % a["seq"])
         return wait_for(find, timeout) if timeout else find()
 
     def ack_lines(self, a):
@@ -518,7 +749,7 @@ class Run:
             # The front line is logged as soon as its say returns: of the rows with the agent's words (another
             # line's "On it!" may have the same), the last said by then is this turn's.
             c = self.call_span("#%d" % a["seq"], "respond")
-            same = [r for r in rows if E2E.same_words(r["text"], f["reply"]) and parse_iso(r["at"]) <= f["at"] + 0.3
+            same = [r for r in rows if same_words(r["text"], f["reply"]) and parse_iso(r["at"]) <= f["at"] + 0.3
                     and (c is None or parse_iso(r["at"]) >= c[1] - 0.05)]
             return same[-1:]
         if f.get("to") not in ("new_loop", "loop") and a.get("reply_seq"):
@@ -625,7 +856,7 @@ class Run:
         def rows():
             return [(r["fields"], r["text"]) for r in self.live.ai(a["seq"], ("action",))
                     if parse_iso(r["at"]) >= steps[-1]["at"] - 0.5
-                    and (not logged or E2E.same_words(r["text"], logged.group(1)))]
+                    and (not logged or same_words(r["text"], logged.group(1)))]
         return wait_for(rows, timeout) or []
 
     def table(self):
@@ -725,7 +956,10 @@ def restart(run, rep, label):
 
 def setup(run):
     rep, live = run.rep, run.live
-    rep.head("setup: Steve and Alex on a fresh world, their items, the place home, the brain started")
+    rep.head("setup: the game engine and its library; Steve and Alex on a fresh world, their items, the place "
+             "home; the brain started")
+    if not live.start_engine(rep):
+        return False
     p = live.p
     arena = p.arena()
     # No hostile mobs: a night a check sets (2b) once let zombies kill both fake players, and a dead fake player
@@ -752,9 +986,18 @@ def setup(run):
               and "trident" in (live.data("Alex", "Inventory[{Slot:0b}]") or ""),
               "Steve holds a diamond axe, carries an iron sword and iron boots, wears diamond boots, no helmet; "
               "Alex holds a trident")
-    r = live.vfg("place", "save", "home", "--at", str(HOME[0]), str(arena["y"]), str(HOME[1]))
-    rep.check(r.returncode == 0, "the place home saved at %d %d %d" % (HOME[0], arena["y"], HOME[1]),
-              r.stdout + r.stderr)
+    # A place is the engine's own (its state, per world): put there as the old places were moved in.
+    got = live.engine.ask("places_import", {"places": [{"name": "home", "pos": [HOME[0], arena["y"], HOME[1]],
+                                                        "by": "brain_live"}], "force": True})
+    r = live.vfg("engine", "places", "--json", timeout=60)
+    try:
+        home = [x for x in json.loads(r.stdout.strip().splitlines()[-1]).get("places") or [] if x.get("name") == "home"]
+    except (ValueError, IndexError, AttributeError):
+        home = []
+    rep.check(got.get("imported") == ["home"] and home and [round(c) for c in home[0].get("pos") or []]
+              == [HOME[0], arena["y"], HOME[1]],
+              "the place home saved in the engine at %d %d %d: vfg engine places lists it" % (
+                  HOME[0], arena["y"], HOME[1]), "%r; %s %s" % (got, r.stdout[-400:], r.stderr[-300:]))
     seeded = live.seed_refs()
     rep.note("command references: %s" % (seeded or "none to copy: the brain fetches them (about 95 s)"))
     live.mark = len(live.log())
@@ -810,14 +1053,17 @@ def one_step(run):
               % (recs and recs[0][1]), "%r" % recs)
     rep.check(not live.ai(a["seq"], ("task", "note")), "no AI task and no AI note row",
               "%r" % [r["line"] for r in live.ai(a["seq"], ("task", "note"))])
-    meta = live.copy_meta("command_steve") or {}
-    fresh = meta.get("started") and parse_iso(meta["started"]) >= a["at"] - 2
-    rep.check(fresh and meta.get("action") == "command" and meta.get("task") is None,
-              "its copy is command_steve, with no task", "%r" % meta)
+    acts = run.work_actions(a)
+    left = [i for i in live.instances() if i.get("kind") == "scenario"]
+    rep.check(acts and all(x["name"].startswith("engine_") and x["kind"] == "ok" for x in acts) and not left,
+              "its actions were the engine's and landed (%s), and nothing of them runs on: a one-off ends" % (
+                  ", ".join("%s: %s" % (x["name"], short(x["said"], 80)) for x in acts) or "none"),
+              "instances %r; %s" % (left, run.evidence_of(a)))
 
 
 def together(run):
-    """Two parts no one action does both of: the command action's give, and summon_around's chickens."""
+    """Two parts no one start does both of: a give (the library's command scenario) and twenty
+    chickens (its horde, which took summon_around in); what goes on running is stopped after."""
     rep, live = run.rep, run.live
     rep.head("2a. A step with actions together")
     live.cmd("kill @e[type=minecraft:chicken]")
@@ -837,6 +1083,7 @@ def together(run):
     w = run.work(a, 10)
     rep.check(w and w["steps"] == 1 and w["ended"] in ("reply", "silent"),
               "one step, ended %s: %r" % (w and w["ended"], a["reply"]), run.evidence_of(a))
+    live.stop_scenarios(rep)
 
 
 def in_turn(run):
@@ -851,10 +1098,11 @@ def in_turn(run):
     steps, acts = run.work_steps(a), run.work_actions(a)
     s1 = sorted((x for x in acts if steps and x["step"] == steps[0]["n"]), key=lambda x: x["i"])
     rep.check(steps and steps[0]["did"].startswith("in_turn: ") and len(s1) == 2
-              and [x["name"] for x in s1] == ["teleport", "command"] and all(x["kind"] == "ok" for x in s1)
+              and all(x["name"].startswith("engine_") and x["kind"] == "ok" for x in s1)
               and s1[0]["at"] <= s1[1]["at"],
-              "its first step ran teleport, then command, in turn, both landed: %s" % ", ".join(
-                  "#%d %s %s" % (x["i"], x["name"], x["kind"]) for x in s1), run.evidence_of(a))
+              "its first step ran two of the engine's actions in turn, the move home first, both landed: %s" % ", ".join(
+                  "#%d %s %s (%s)" % (x["i"], x["name"], x["kind"], short(x["said"], 60)) for x in s1),
+              run.evidence_of(a))
     pos = p.pos("Steve") or (999, 0, 999)
     far = ((pos[0] - HOME[0]) ** 2 + (pos[2] - HOME[1]) ** 2) ** 0.5
     day = live.day_ticks()
@@ -946,33 +1194,39 @@ def item_asks(run):
     rep.check(a["reply"] and re.search(r"helmet|head", a["reply"], re.I), "the reply says so: %r" % a["reply"])
 
 
-def own_copy(run):
+def kept_effect(run):
     rep, live = run.rep, run.live
-    rep.head("6. The brain's own copy of keep_effects: started, edited and stopped by a loop's tools")
-    name = "keep_effects_steve"
+    rep.head("6. An effect the engine keeps on Steve: started, changed and stopped by a loop's actions")
+    before = {i["instance"] for i in live.instances()}
     a = run.ask("Steve", "keep speed two on me the whole time, even after I die, until I say stop")
-    copies = {k: v for k, v in live.copies().items() if v.get("action") == "keep_effects"}
+    mine = [i for i in live.instances() if i["instance"] not in before]
     lvl = live.effect_level("Steve", "speed")
-    rep.check(list(copies) == [name] and not copies[name].get("task") and lvl == 1,
-              "the start gives the copy %s, with no task, and Steve has Speed II" % name,
-              "copies %r; speed amplifier %r; %s" % (copies, lvl, run.evidence_of(a)))
+    acts = run.work_actions(a)
+    rep.check(mine and lvl == 1 and any(x["name"].startswith("engine_") and x["kind"] == "ok" for x in acts),
+              "the engine runs it (%s) and Steve has Speed II" % ", ".join(
+                  "%s %s for %s" % (i["kind"], i["id"], i.get("user") or "-") for i in mine),
+              "new instances %r; speed amplifier %r; %s" % (mine, lvl, run.evidence_of(a)))
     b = run.ask("Steve", "make it speed 5")
     f = run.front(b) or {}
     rep.note("the router put it: %s %s" % (f.get("to"), f.get("where")))
     lvl = wait_for(lambda: live.effect_level("Steve", "speed") == 4, 10) and 4 or live.effect_level("Steve", "speed")
-    edits = [x for x in run.work_actions(b) if x["name"] == "edit"]
-    rep.check(lvl == 4 and edits and edits[0]["kind"] == "ok" and name in live.copies(),
-              "the edit action landed: Speed V, %s still running" % name,
-              "speed amplifier %r; %s" % (lvl, run.evidence_of(b)))
+    now = [i for i in live.instances() if i["instance"] not in before]
+    acts = [x for x in run.work_actions(b) if x["kind"] == "ok"]
+    rep.check(lvl == 4 and acts and now, "changed by the engine's actions (%s): Speed V, %s running" % (
+        ", ".join(x["name"] for x in acts), ", ".join(i["id"] for i in now) or "nothing"),
+        "speed amplifier %r; instances %r; %s" % (lvl, now, run.evidence_of(b)))
     recs = run.records(b)
     rep.check(len(recs) == 1 and not live.ai(b["seq"], ("note",)),
               "one record for it (%r), no AI note row" % (recs and recs[0][1]),
               "%r %r" % (recs, live.ai(b["seq"], ("note",))))
     c = run.ask("Steve", "stop my effects")
-    gone = wait_for(lambda: name not in live.copies(), 10)
-    stops = [x for x in run.work_actions(c) if x["name"] == "stop"]
-    rep.check(gone and stops and stops[0]["kind"] == "ok", "the stop action landed: %s is gone" % name,
-              "copies %r; %s" % (live.copies(), run.evidence_of(c)))
+    gone = wait_for(lambda: not [i for i in live.instances() if i["instance"] not in before], 10)
+    stops = [x for x in run.work_actions(c) if x["name"] in ("engine_stop", "engine_clear", "engine_revoke")]
+    rep.check(gone and stops and stops[0]["kind"] == "ok",
+              "%s landed: nothing of it runs in the engine" % (stops and stops[0]["name"] or "no stop"),
+              "instances %r; %s" % (live.instances(), run.evidence_of(c)))
+    rep.note("Steve's speed after the stop: %r (the engine never clears a potion; it stops giving it)"
+             % live.effect_level("Steve", "speed"))
 
 
 def side_by_side(run):
@@ -1018,6 +1272,7 @@ def side_by_side(run):
     rep.check(cx and w1 and cx[0] < w1["at"],
               "Alex's line was answered beside them: its agent's call began %.1f s before Steve's first loop ended"
               % ((w1["at"] - cx[0]) if cx and w1 else -1), run.evidence_of(x))
+    live.stop_scenarios(rep)
 
 
 def waiting(run):
@@ -1143,7 +1398,7 @@ def added_lines(run):
     c = run.ask("Steve", "actually make those spruce logs instead", timeout=90)
     fc = run.front(c) or {}
     wc = run.work(c, 30)
-    runs = E2E.loop_runs(run.log(), loop=loop)
+    runs = loop_runs(run.log(), loop=loop)
     first_after = [s for s in run.steps(runs[-1]["ref"], after=fc.get("at", 1e12)) if runs] if runs else []
     use = live.sql("SELECT ref, input_tokens, cache_read_tokens FROM usage WHERE ref = ?",
                    ("%s s%d" % (runs[-1]["ref"], first_after[0]["n"]),)) if first_after else []
@@ -1184,7 +1439,9 @@ def implementer(run):
     a = run.ask("Steve", BOOMERANG, timeout=120)
     f = run.front(a) or {}
     tid = f.get("where") if f.get("to") == "new_implementer" else None
-    rep.check(tid and NAME_RE.match(tid) and not os.path.exists(os.path.join(REPO, "actions", tid + ".py")),
+    library = tid and any(os.path.exists(os.path.join(REPO, d, tid + ".py"))
+                          for d in ("actions", os.path.join("engine", "library")))   # names a task never takes
+    rep.check(tid and NAME_RE.match(tid) and not library,
               "the router started a new implementer: the task %s (the agent said %r)" % (tid, f.get("reply")),
               "%r; %s" % (f, run.evidence_of(a)))
     if not tid:
@@ -1377,6 +1634,9 @@ def end(run):
     log = run.log()
     rep.check(r is not None and r.returncode == 0 and re.search(r"^\S+ stop stopped$", log, re.M),
               "vfg brain stop: the brain stopped cleanly", "%s %s" % (r and r.stdout, r and r.stderr))
+    got = live.stop_engine()
+    rep.check(got and got[0] == 0, "the engine stopped cleanly on SIGTERM, its state saved (exit %s in %.1f s)"
+              % (got and got[0], got and got[1] or 0), "its output: %s" % os.path.join(live.dir, "engine-process.log"))
     rep.check("Traceback" not in log and not re.search(r"^\S+ error ", log, re.M), "no traceback or error in brain.log",
               short(log[max(0, log.find("Traceback")):][:1500]) + " ¶ " + " ¶ ".join(
                   x for x in log.splitlines() if re.match(r"^\S+ error ", x))[:1500])
@@ -1432,7 +1692,7 @@ def end(run):
     line("  steps after a loop's first", [u for u in brain if not u["ref"].endswith(" s1")])
     line("the conversation agent", [u for u in model if u["component"] == "respond"])
     line("the router", [u for u in model if u["component"] == "router"])
-    loops = E2E.loop_runs(log)
+    loops = loop_runs(log)
     if loops:
         n = [x["steps"] for x in loops]
         print("  loop runs: %d, %d of one step, %d of two or more; ended %s" % (
@@ -1447,7 +1707,7 @@ def end(run):
 STEPS = {   # the checks, in the order they run, each with the brain it needs
     "one_step": (one_step, "defaults"), "together": (together, "defaults"), "in_turn": (in_turn, "defaults"),
     "refused": (refused, "defaults"), "read": (read_items, "defaults"), "items": (item_asks, "defaults"),
-    "own_copy": (own_copy, "defaults"), "side_by_side": (side_by_side, "defaults"),
+    "kept_effect": (kept_effect, "defaults"), "side_by_side": (side_by_side, "defaults"),
     "waiting": (waiting, "defaults"), "talk": (talk, "defaults"), "slow_step": (slow_step, "defaults"),
     "added_lines": (added_lines, "defaults"), "implementer": (implementer, "defaults"),
     "one_line": (one_line_per_ask, "defaults"),
@@ -1519,10 +1779,11 @@ def main():
             end(run)
     finally:
         if live is not None:
-            try:
-                live.stop()
-            except Exception:
-                pass
+            for part in (live.stop, live.stop_engine):
+                try:
+                    part()
+                except Exception:
+                    pass
         if model is not None:
             model.stop()
         if not args.keep_up:

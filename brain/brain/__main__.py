@@ -4,7 +4,11 @@ Start: take the lock; `vfg up`; `vfg watchers set join,leave,death,advancement,s
 lookout (prompts/lookout.md) and menu (every action's line, set again when the actions change);
 the three agents, each with its own model settings (config.py): the conversation agent, the
 router and the brain's steps; the actions, which each front turn and report reloads where a file
-changed; the command references in the
+changed; one read of the game engine (`vfg engine overview --json`), started beside the context's
+and never waited for by the start or the conversation agent: only a router call made while it is
+still going waits for it, at most ENGINE_FIRST_S, so the first router call sees ENGINE and RUNNING
+NOW (the engine down, failing or hung is logged in words, and those parts stay unknown until a read
+lands); the command references in the
 background (about 95 s the first time on a server version), tried again every 5 minutes until
 they load (the opening's command list, and a refused command's reference in its result); the
 old brain's tasks file in its folder set aside, renamed, never read; the context from `vfg
@@ -41,7 +45,7 @@ from pathlib import Path
 import httpx
 import vfg_llm
 
-from . import actions, config, running
+from . import actions, config
 from .act import Acts
 from .call import Call
 from .config import Config, log
@@ -64,7 +68,32 @@ IMPLEMENTERS_GRACE_S = 2.0
 DRAIN_S = 1.5        # for the rows still being written and the usage sent, at the very end
 TASKS_DRAIN_S = 5.0  # for the tasks' writes still going out, before that
 RETIRED = "tasks.json"  # the brain's tasks before named tasks, in brain_dir: set aside at a start
-MADE_KINDS = ("scripts", "actions", "presets", "copies")
+ENGINE_FIRST_S = 2.0  # the start's engine read, which a router call waits for this long at most
+
+
+async def read_engine_first(world: World, wait: float | None = None) -> None:
+    """One engine read at the start (World.first), so the first router call's glance shows ENGINE
+    and RUNNING NOW: a router call made while it goes waits for it (World.first_read), the start and
+    the conversation agent never do. It takes `wait` (ENGINE_FIRST_S) at most: the engine not
+    running, not readable or not answering in time is logged in words, and the glance says unknown
+    until this read, still going on its own, or a loop's lands."""
+    wait = ENGINE_FIRST_S if wait is None else wait
+    try:
+        got = await world.fresh_engine(wait=wait)
+    except Exception as e:  # noqa: BLE001 — the start never fails for the engine
+        log("start", f"the engine could not be read at the start ({type(e).__name__}: {e}); ENGINE and RUNNING "
+                     "NOW are unknown until a loop reads them")
+        return
+    if got is None:
+        log("start", f"the engine did not answer within {wait:g} s of the start; ENGINE and RUNNING NOW are unknown "
+                     "until its read lands")
+    elif "down" in got:
+        log("start", f"the engine is not running ({got['down']}); ENGINE and RUNNING NOW say so until it is")
+    elif "error" in got and not isinstance(got.get("classes"), list):
+        log("start", f"the engine could not be read at the start ({got['error']}); ENGINE and RUNNING NOW are "
+                     "unknown until a loop reads them")
+    else:
+        log("start", f"the engine read: {len(world.classes())} classes, {len(world.instances())} instances running")
 
 
 class _LogLines(logging.Handler):
@@ -86,10 +115,10 @@ class NoImplementers:
         self.on_report, self.why = on_report, why
 
     async def start(self, name: str, brief: str) -> None:
-        await self.on_report(name, "failed", f"Failed: no implementers here ({self.why}).", "",
-                             {k: [] for k in MADE_KINDS})
+        await self.on_report(name, "failed", f"Failed: no implementers here ({self.why}).", "", None)
 
-    async def follow_up(self, name: str, text: str, session: str | None = None, brief: str = "") -> None:
+    async def follow_up(self, name: str, text: str, session: str | None = None, brief: str = "",
+                        made: dict | None = None) -> None:
         await self.start(name, text)
 
     def running(self) -> list[str]:
@@ -216,12 +245,12 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
     for args in (("watchers", "set", WATCHERS), ("lookout", "set", LOOKOUT.read_text(encoding="utf-8").strip())):
         later(*args)
 
-    catalog = actions.load(cfg.repo, cfg.server) if catalog is None else catalog
+    catalog = actions.load(cfg.repo) if catalog is None else catalog
     later("jev", "menu", "set", jev_menu(catalog))
     later("usage", "flush")  # the usage rows queued while the brain was down
     hidden = actions.hidden_commands()
-    copies = running.Refresher(vfg, cfg.running_ttl_s)
-    world = World(vfg, cfg.running_file, catalog, refresher=copies)
+    world = World(vfg)
+    world.first = asyncio.create_task(read_engine_first(world), name="engine at the start")  # nobody waits but the router
     call = Call(catalog, ask or asker(cfg.model, cfg.reasoning, cfg.timeout_s, cfg.providers), owner=cfg.owner,
                 hidden=hidden, checkpoint=cfg.checkpoint, grant=cfg.loop_steps, cap=cfg.loop_cap)
     respond = Respond(catalog, respond_ask or asker(cfg.respond_model, cfg.respond_reasoning, cfg.respond_timeout_s,
@@ -233,6 +262,7 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
 
     loaded = await load_context(vfg, cfg.history_hours, stop)
     if loaded is None:
+        await world.close()
         await later.drain(DRAIN_S)
         log("stop", "stopped before the context could be read")
         return 0
@@ -268,7 +298,6 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
     if refs is LOAD:
         background.append(asyncio.create_task(
             keep_loading_refs(cfg, vfg, http, brain, REFS_RETRY_S), name="refs"))
-    copies.start()
     greeting = await vfg("say", GREETING, timeout=30)
     if greeting.code != 0 and "nobody" not in (greeting.stderr + greeting.stdout).lower():
         log("start", f"the greeting failed: {(greeting.stderr or greeting.stdout).strip()[-200:]}")
@@ -287,7 +316,6 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
         t.cancel()
     await asyncio.gather(*background, return_exceptions=True)
     await brain.stop(cfg.stop_grace_s, IMPLEMENTERS_GRACE_S)
-    await copies.stop()
     await world.close()
     await tasks.drain(TASKS_DRAIN_S)
     later("usage", "flush")  # the rows of the calls the stop cut short; any not sent go with the next start's

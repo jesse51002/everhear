@@ -38,7 +38,7 @@ async def test_each_change_writes_the_whole_row_and_one_tasks_writes_go_out_in_o
     sent.hold["galick_gun_styrk"] = asyncio.Event()      # the first write is slow to land
     galick(tasks)
     tasks.set_session("galick_gun_styrk", "sess-1")
-    tasks.merge_made("galick_gun_styrk", {"scripts": ["galick_gun_styrk"], "actions": ["galick_gun_styrk"]})
+    tasks.mirror_made("galick_gun_styrk", {"content": ["galick_gun_styrk"], "grants": ["Styrkaeopteryx:galick_gun_styrk"]})
     tasks.close("galick_gun_styrk", "done", "galick_gun_styrk done: a Galick Gun")
     tasks.open("castle_steve", "Steve", "a castle", "a castle at spawn", "A stone castle at spawn.")
     for _ in range(10):
@@ -47,7 +47,7 @@ async def test_each_change_writes_the_whole_row_and_one_tasks_writes_go_out_in_o
     sent.hold["galick_gun_styrk"].set()
     await tasks.drain(1.0)
     gun = [r for r in sent.rows if r["name"] == "galick_gun_styrk"]
-    assert [(r["status"], r["session"], r["made"]["scripts"]) for r in gun] == [
+    assert [(r["status"], r["session"], r["made"]["content"]) for r in gun] == [
         ("open", None, []), ("open", "sess-1", []), ("open", "sess-1", ["galick_gun_styrk"]),
         ("done", "sess-1", ["galick_gun_styrk"])]
     assert gun[-1] == tasks.get("galick_gun_styrk") and set(gun[-1]) == {
@@ -74,21 +74,24 @@ async def test_a_change_is_written_only_when_it_changes_something_and_an_unknown
     galick(tasks)
     tasks.describe("galick_gun_styrk", "")               # no DESCRIPTION line
     tasks.describe("galick_gun_styrk", "A Galick Gun for Styrkaeopteryx: charge and fire.")  # the same
-    tasks.set_variables("galick_gun_styrk", None)        # not read yet, as it was
     tasks.set_session("galick_gun_styrk", None)
-    tasks.merge_made("galick_gun_styrk", None)
+    tasks.mirror_made("galick_gun_styrk", None)
     tasks.close("nobody_here", "done", "x")
     tasks.follow_up("nobody_here", "x", "y")
     await tasks.drain(1.0)
     assert len(sent.rows) == 1 and tasks.names() == {"galick_gun_styrk"}
-    tasks.set_variables("galick_gun_styrk", [{"name": "cooldown"}])
-    tasks.set_variables("galick_gun_styrk", [{"name": "cooldown"}])
-    tasks.merge_made("galick_gun_styrk", {"actions": ["galick_gun_styrk"], "copies": ["galick_gun_styrk"]})
-    tasks.merge_made("galick_gun_styrk", {"actions": ["galick_gun_styrk", "galick_beam"], "copies": []})
+    tasks.mirror_made("galick_gun_styrk", {"content": ["galick_gun_styrk"], "bindings": ["styrkaeopteryx.galick"]})
+    tasks.mirror_made("galick_gun_styrk", {"content": ["galick_gun_styrk", "galick_beam", "galick_beam"],
+                                           "bindings": ["styrkaeopteryx.galick"]})
+    tasks.mirror_made("galick_gun_styrk", {"content": ["galick_gun_styrk", "galick_beam"],
+                                           "bindings": ["styrkaeopteryx.galick"]})      # the same: nothing written
+    assert tasks.get("galick_gun_styrk")["made"] == {"content": ["galick_gun_styrk", "galick_beam"],
+                                                     "bindings": ["styrkaeopteryx.galick"], "grants": []}
+    # a class gone and a binding undone leave the row, as a deploy mirrors the folder
+    tasks.mirror_made("galick_gun_styrk", {"content": ["galick_beam"], "bindings": []})
     await tasks.drain(1.0)
     assert len(sent.rows) == 4
-    assert tasks.get("galick_gun_styrk")["made"] == {"scripts": [], "actions": ["galick_gun_styrk", "galick_beam"],
-                                                     "presets": [], "copies": ["galick_gun_styrk"]}
+    assert tasks.get("galick_gun_styrk")["made"] == {"content": ["galick_beam"], "bindings": [], "grants": []}
 
 
 async def test_open_refuses_a_taken_or_bad_name_and_a_follow_up_opens_the_task_again():
@@ -115,7 +118,7 @@ def test_tasks_shows_every_task_oldest_first_and_none_yet():
         {"name": "castle_steve", "description": "A stone castle at spawn, 40x40.", "player": "Steve", "status": "done",
          "created_at": "2026-10-11T18:10:00.000Z"},
         {"name": "galick_gun_styrk", "description": "A Galick Gun for Styrkaeopteryx: " + "x" * 200,
-         "player": "Styrkaeopteryx", "status": "open", "made": {"scripts": ["galick_gun_styrk"]},
+         "player": "Styrkaeopteryx", "status": "open", "made": {"content": ["galick_gun_styrk"]},
          "created_at": "2026-10-11T18:22:33.120Z"},
         {"name": "lost_one", "description": "", "status": "failed", "created_at": "2026-10-11T18:30:00.000Z"},
         {"description": "no name: left out"}])
@@ -126,8 +129,7 @@ def test_tasks_shows_every_task_oldest_first_and_none_yet():
     assert shown[2].startswith("- galick_gun_styrk for Styrkaeopteryx, an implementer is on it: A Galick Gun")
     assert len(shown[2].split(": ", 1)[1]) == 160 and shown[2].endswith("…")
     assert shown[3] == "- lost_one for nobody, failed: " and len(shown) == 4
-    assert tasks.get("galick_gun_styrk")["made"] == {"scripts": ["galick_gun_styrk"], "actions": [], "presets": [],
-                                                     "copies": []}
+    assert tasks.get("galick_gun_styrk")["made"] == {"content": ["galick_gun_styrk"], "bindings": [], "grants": []}
 
 
 async def test_merge_adds_what_the_memory_lacks_writes_back_what_the_read_lacks_and_the_memory_wins():
@@ -191,33 +193,31 @@ def row(name: str, **more) -> dict:
     """A task's row, as the brain keeps it and `vfg task list --json` prints it."""
     base = {"name": name, "description": f"what {name} is", "player": "Alex", "status": "done",
             "line": "make me one", "brief": "make one",
-            "made": {"scripts": [], "actions": [], "presets": [], "copies": []}, "variables": None,
+            "made": {"content": [], "bindings": [], "grants": []}, "variables": None,
             "session": None, "result": "", "created_at": "2026-10-10T18:20:00.000Z",
             "updated_at": "2026-10-10T18:21:00.000Z", "closed_at": None}
     return {**base, **more}
 
 
-def test_the_board_shows_each_task_oldest_first_with_what_it_made_its_copies_running_and_its_result():
+def test_the_board_shows_each_task_oldest_first_with_what_it_made_what_of_it_runs_and_its_result():
     tasks = [
         row("lava_moat_sam", player="Sam", status="open", description="A lava moat round Sam's base, 3 wide.",
             created_at="2026-10-10T18:25:00.000Z", updated_at="2026-10-10T18:26:10.500Z"),
         row("frost_bow_alex", description="A Frost Bow for Alex: right-click to shoot freezing arrows.",
-            made={"scripts": ["frost_bow_alex"], "actions": ["frost_bow_alex"], "presets": [],
-                  "copies": ["frost_bow_alex"]},
+            made={"content": ["frost_bow_alex"], "bindings": [], "grants": ["Alex:frost_bow_alex"]},
             result="frost_bow_alex done: the bow is in Alex's hand", created_at="2026-10-09T23:59:00.000Z",
             updated_at="2026-10-09T23:59:30.000Z"),
     ]
-    copies = {"frost_bow_alex": {"action": "frost_bow_alex", "task": "frost_bow_alex"},
-              "railgun_steve": {"action": "railgun", "task": None}}
-    lines = board(tasks, copies, busy=["lava_moat_sam"], today="2026-10-10").splitlines()
+    instances = [{"instance": "ability:frost_bow_alex#4", "kind": "ability", "id": "frost_bow_alex", "user": "Alex"},
+                 {"instance": "scenario:horde#2", "kind": "scenario", "id": "horde", "user": None}]
+    lines = board(tasks, instances, busy=["lava_moat_sam"], today="2026-10-10").splitlines()
     assert lines[0].startswith("TASKS (oldest first: name, for whom, status, when last written")
     assert lines[1] == ("- frost_bow_alex, for Alex, done, 2026-10-09 23:59:30: A Frost Bow for Alex: right-click "
                         "to shoot freezing arrows.")  # yesterday: its date shown
-    assert lines[2] == ("  made: scripts frost_bow_alex; actions frost_bow_alex; copies frost_bow_alex; "
-                        "running now: frost_bow_alex")
+    assert lines[2] == "  made: content frost_bow_alex; grants Alex:frost_bow_alex; running now: ability:frost_bow_alex#4"
     assert lines[3] == "  last result: frost_bow_alex done: the bow is in Alex's hand"
     assert lines[4] == ("- lava_moat_sam, for Sam, open, an implementer is on it, 18:26:10: A lava moat round Sam's "
                         "base, 3 wide.")
     assert lines[5] == "  made: nothing yet; running now: none" and len(lines) == 6  # no result yet: no line
-    assert board([], copies) == "TASKS: none yet"
-    assert "  made: not known; running now: none" in board([row("castle_bob", made=None)], {}, today="2026-10-10")
+    assert board([], instances) == "TASKS: none yet"
+    assert "  made: not known; running now: none" in board([row("castle_bob", made=None)], [], today="2026-10-10")

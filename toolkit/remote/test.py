@@ -1,15 +1,16 @@
-# test.py: the test server's side of vfg test, after the deploy (scripts.py). Appended after
-# common.py and ARGS:
+# test.py: the test server's side of vfg test. Appended after common.py and ARGS:
 #   {"vfg": "/opt/vfg-test", "mc": "/opt/mc-test", "task": "hot_fireball_steve", "server": "main",
 #    "file": "made/main/tests/hot_fireball_steve.py", "test": "<the test's text>",
-#    "actions": {name: its actions.json entry}, "incantations": [store entry, ...], "timeout": 60,
-#    "queue": 300, "boot": 120, "sandbox": "auto", "unit": "minecraft-test", "owner": "",
-#    "poll": 0.5, "tail": 15, "live": {"vfg", "mc"} (when the live server is on this host)}
+#    "engine": {"bindings": [{player, phrase, ability | scenario and args, aliases...}, ...],
+#               "content": "<base64 tar.gz of content/>" | null},
+#    "timeout": 60, "queue": 300, "boot": 120, "sandbox": "auto", "unit": "minecraft-test",
+#    "tail": 15, "live": {"vfg", "mc"} (when the live server is on this host)}
 #
 # The test server is a second Minecraft server (Prototype_Implementer_Quality): <mc>/.vfg-test-server,
 # its marker, written only by its setup ({"made", "rcon_port", "live_mc", "live_vfg"}), and the unit
-# minecraft-test, whose every start puts a fresh copy of the template world in place and writes the
-# freshness token <mc>/world/vfg-fresh. A test runs there and nowhere else:
+# minecraft-test, whose every start puts a fresh copy of the template world in place (the live
+# world's datapacks copied in, the engine's among them) and writes the freshness token
+# <mc>/world/vfg-fresh. A test runs there and nowhere else:
 #  1. No marker, a marker whose rcon_port is not the server's, or a vfg folder with a .env (the live
 #     box's secrets, which a test server never has): exit 3. The live server's folders
 #     (ARGS' "live", sent by vfg whenever the test server is on the live box's host; the marker's
@@ -19,38 +20,43 @@
 #     in <vfg>/tests/queue/ (this user's alone) and takes the lock only as the oldest live ticket,
 #     so a server that just freed up goes to the next in line, not to whoever calls again first; a
 #     ticket whose process is gone is skipped. Waited for at most "queue" s: past it, exit 5.
-#  3. What an earlier test left running is stopped: the sandbox's unit, and any copy run/ names.
+#  3. What an earlier test left running is stopped: the sandbox's unit, and a plain test's process.
 #  4. Up, with a fresh world: when the last test's restart (tests/restarted) is under "boot" s old,
 #     its fresh world is waited for; Minecraft not answering RCON is restarted (sudo -n systemctl
 #     restart minecraft-test) and waited for, "boot" s at most; a world without its token (a test
 #     used it) is restarted the same way. Then the token is deleted: this test has it. Down after
 #     that, or down with no unit to restart: exit 5, saying what was tried.
-#  5. The test is written to <vfg>/tests/<task>.py, its actions and the task's incantations beside
-#     it. tests/ is this user's alone; run/ and state/, which the test writes, are the test user's
-#     too, so nothing here writes there by name: inside the sandbox, as the test's own first step
-#     (tests/_vfg_runner.py), run/ is emptied and the store (<vfg>/state/incantations.json) made to
-#     hold exactly the task's incantations; after it, run/ is emptied again by unlinking.
-#  6. It runs on the box's Python as a copy runs (PYTHONPATH the kit, VFG_RUN_DIR, VFG_MC_PROPERTIES,
-#     VFG_INCANTATIONS, VFG_PROTECTED, all the test server's; VFG_SCRIPT test_<task> names its tag;
-#     VFG_TEST=1, which kit/test.py asks for and under which the kit talks to no server without the
-#     marker; VFG_TEST_TAIL, the log lines it shows of each copy on a failure), in a sandbox: a
-#     transient systemd unit in which the live Minecraft folder cannot be read, the live vfg folder
-#     is an empty read-only one (its Python bound back in, read-only), nothing but run/, state/ and
-#     a /tmp of its own can be written, sudo cannot raise it, and every process it starts dies with
-#     it. On the box (system mode: sudo -n systemd-run) it runs as the marker's test_user (vfgtest),
-#     never as this user, the live services' own: other users' processes are hidden from it
-#     (ProtectProc=invisible), so no /proc/<pid> of the live server's leads anywhere, and it has
-#     no network but loopback; a marker with no test_user, or one that does not exist, is exit 3
-#     (re-run deploy.sh testserver), and a sandbox that fails its probe is exit 5, never a run
-#     outside it. On the PC (user mode, systemd-run --user) it runs as this user, said in the
-#     output: weaker, the live server's processes stay visible. "sandbox" "auto" takes system,
-#     else user, else the plain process today's boxes had (setsid), said in the output; "system",
-#     "user" or "none" only that one. Past "timeout" s it gets SIGTERM (its cleanup runs), then
-#     SIGKILL 5 s later.
+#  5. The test is written to <vfg>/tests/<task>.py, the bindings the task made on the live server
+#     beside it (<task>.bindings.json), and this server's made content into tests/content/. tests/
+#     is this user's alone; run/ and state/, which the test writes, are the test user's too, so
+#     nothing here writes or reads there by name: livetest's state is state/engine, made and
+#     emptied by livetest itself, inside the sandbox; run/ is emptied after, by unlinking.
+#  6. It runs as the game engine's livetest (engine/vfg_engine/livetest.py): the live box's engine
+#     (the marker's live_vfg + /engine: its .venv, vfg_engine/ and library/, read-only; never its
+#     state, socket or log) with --properties the test server's, --state-dir <vfg>/state/engine,
+#     --content the library and tests/content/, the bindings bound first; VFG_TEST=1, under which
+#     livetest and its engine talk to no server without the marker and fall back to no live path;
+#     VFG_PROTECTED the test server's. Its own --timeout is "timeout" s (it stops itself and says
+#     so, exit 5 in its JSON); --tail "tail", the engine log's last lines when it did not pass. In a
+#     sandbox: a transient systemd unit in which the live Minecraft folder cannot be read, the live
+#     vfg folder is an empty read-only one (its Python and the engine's three folders bound back in,
+#     read-only), nothing but run/, state/ and a /tmp of its own can be written, sudo cannot raise
+#     it, and every process it starts dies with it. On the box (system mode: sudo -n systemd-run) it
+#     runs as the marker's test_user (vfgtest), never as this user, the live services' own: other
+#     users' processes are hidden from it (ProtectProc=invisible), so no /proc/<pid> of the live
+#     server's leads anywhere, and it has no network but loopback; a marker with no test_user, or
+#     one that does not exist, is exit 3 (re-run deploy.sh testserver), and a sandbox that fails its
+#     probe is exit 5, never a run outside it. On the PC (user mode, systemd-run --user) it runs as
+#     this user, said in the output: weaker, the live server's processes stay visible. "sandbox"
+#     "auto" takes system, else user, else the plain process today's boxes had (setsid), said in the
+#     output; "system", "user" or "none" only that one. Past "timeout" + LIVETEST_GRACE s (livetest
+#     stops itself before) it gets SIGTERM, then SIGKILL 5 s later. No engine on the live box to
+#     test with: exit 4 (as for the box out of reach: never the implementer's to fix).
 #  7. Then sudo -n systemctl restart --no-block minecraft-test: the next test's world warms up.
-# Prints a SERVER line (the queue's wait, what was restarted, the sandbox), what the test printed,
-# then one JSON line, last: {"code": its exit code, or null when it was stopped, "seconds" (the
-# test's own), "timed_out", "queued", "restarted"}.
+# Prints a SERVER line (the queue's wait, what was restarted, the sandbox), any SERVER note, then
+# what the test printed, livetest's own JSON last of it, then one JSON line, last: {"code": its exit
+# code (livetest's), or null when it was stopped, "seconds" (the test's own), "timed_out", "queued",
+# "restarted"}.
 import fcntl
 import hashlib
 import math
@@ -67,18 +73,20 @@ MARKER = ".vfg-test-server"
 FRESH = os.path.join(MC, "world", "vfg-fresh")
 RESTARTED = os.path.join(TESTS, "restarted")
 STATE = os.path.join(BASE, "state")
-STORE = os.path.join(STATE, "incantations.json")
-RUNNER = os.path.join(TESTS, "_vfg_runner.py")
+ENGINE_STATE = os.path.join(STATE, "engine")   # livetest's --state-dir: the test user's, made by livetest
+CONTENT = os.path.join(TESTS, "content")       # this server's made content, for the test's engine
 QUEUE = os.path.join(TESTS, "queue")
 TICKET_RE = re.compile(r"^(\d+)-(\d+)$")
-# A token unique to this `vfg test`, put in the test's environment (and so in every copy it starts,
-# which inherit the environment): in the plain fallback it is how this test's descendants, even those
-# in sessions of their own (setsid copies), are found and killed afterwards. ulid() is time-ordered.
+# A token unique to this `vfg test`, put in the test's environment (and so in every process it
+# starts, which inherit the environment): in the plain fallback it is how this test's descendants,
+# even those in sessions of their own, are found and killed afterwards. ulid() is time-ordered.
 TEST_RUN = ulid()
 UNIT = ARGS.get("unit") or "minecraft-test"
 TASK_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 KILL_AFTER = 5
 MEMORY_MAX = "1G"
+LIVETEST_GRACE = 15   # past livetest's own --timeout: its cleanup (the engine stopped, the stage cleared)
+ENGINE_BOOT = 60.0    # livetest's --boot: what the test's engine may take to start and load its content
 # What of this login's environment a test gets, besides what is set for it below: never a secret.
 ENV_KEEP = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "USER", "LOGNAME", "TZ")
 SECRET = re.compile(r"TOKEN|SECRET|PASSWORD|API_KEY")
@@ -106,37 +114,6 @@ PROBE = ("import json, os, sys\n"
          "for pid in c['pids']:\n"
          "    if os.path.exists('/proc/%d' % pid):\n"
          "        sys.exit('process %d of the live services\\' user is visible' % pid)\n")
-# The test's first step, inside the sandbox as the test's own user: run/ emptied, the store holding
-# exactly the task's incantations (argv[1], a JSON list), then the test itself (argv[2]) in its place.
-RUNNER_TEXT = '''import json, os, shutil, sys
-run = os.environ["VFG_RUN_DIR"]
-for name in os.listdir(run):
-    path = os.path.join(run, name)
-    try:
-        if os.path.isdir(path) and not os.path.islink(path):
-            shutil.rmtree(path)
-        else:
-            os.remove(path)
-    except OSError as e:
-        print("SERVER     run/%s was not cleared: %s" % (name, e.strerror or e), flush=True)
-import incantations
-store = incantations.Store()
-os.makedirs(os.path.dirname(store.path), exist_ok=True)
-with open(sys.argv[1], encoding="utf-8") as f:
-    entries = json.load(f)
-good = []
-for e in entries:
-    try:
-        store._prepared(e)   # the same check replace_all makes, per entry, so one bad one is dropped, not all
-        good.append(e)
-    except ValueError as x:
-        print("SERVER     incantation %r not put on the test server: %s" % (e.get("phrase"), x), flush=True)
-store.replace_all(good)
-sys.stdout.flush()
-os.execv(sys.executable, [sys.executable, "-u", sys.argv[2]])
-'''
-
-
 def real(path):
     return os.path.realpath(path)
 
@@ -159,6 +136,25 @@ def run(argv, timeout=30, env=None):
 def last_line(text):
     lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
     return lines[-1] if lines else "no output"
+
+
+def pid_with_marker(pid, marker):
+    """True when `pid` is alive and its environment holds `marker` (KEY=value). A zombie or a
+    recycled pid has no such marker, so it never matches."""
+    try:
+        with open("/proc/%d/environ" % int(pid), "rb") as f:
+            env = f.read().split(b"\0")
+    except (OSError, ValueError):
+        return False
+    return marker.encode() in env
+
+
+def read_pid(path):
+    try:
+        with open(path) as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
 
 
 # ------------------------------------------------------------------ 1. which server
@@ -232,11 +228,10 @@ def check_server(mark):
 # ------------------------------------------------------------------ 3, 4. clean and up
 
 def kill_strays():
-    """Anything an earlier test of this server left running outside a sandbox: its copies (run/'s
-    pid files) and the test itself (tests/running.pid), each only if it is this server's."""
-    pids = [os.path.join(RUN, n) for n in (os.listdir(RUN) if os.path.isdir(RUN) else []) if n.endswith(".pid")]
+    """What an earlier test of this server left running outside a sandbox: the test itself
+    (tests/running.pid, this user's), only if it is this server's. Its engine dies with it."""
     killed = 0
-    for path in pids + [os.path.join(TESTS, "running.pid")]:
+    for path in [os.path.join(TESTS, "running.pid")]:
         pid = read_pid(path)
         if pid and pid != os.getpid() and pid_with_marker(pid, "VFG_RUN_DIR=" + RUN):
             for kill in (os.killpg, os.kill):
@@ -409,26 +404,89 @@ def empty_run():
             pass
 
 
-def test_env(lib, acts, user=None):
-    task = ARGS["task"]
+def find_engine(mark):
+    """The live box's engine a test runs on: (its folder, its venv's python). The marker's live_vfg
+    first (the test server's setup wrote it), then the live folder vfg named, then /opt/vfg; each
+    + /engine, with .venv/bin/python, vfg_engine/livetest.py and library/. None of them: exit 4."""
+    homes = []
+    for vfg in (mark.get("live_vfg"), (ARGS.get("live") or {}).get("vfg"), "/opt/vfg"):
+        if vfg and os.path.join(vfg, "engine") not in homes:
+            homes.append(os.path.join(vfg, "engine"))
+    for home in homes:
+        home = real(home)
+        py = os.path.join(home, ".venv", "bin", "python")
+        if os.access(py, os.X_OK) and os.path.isfile(os.path.join(home, "vfg_engine", "livetest.py")) \
+                and os.path.isdir(os.path.join(home, "library")):
+            return home, py
+    die(4, "no game engine on the live box to test with (%s): deploy.sh engine installs it; report the ability "
+           "untested"
+        % ", ".join(os.path.join(h, ".venv") for h in homes))
+
+
+def unpack_content(b64):
+    """tests/content/ (this user's) made again from the tar of made/<server>/content/: plain files
+    and folders only, each under content/; none when there is no tar."""
+    import base64
+    import io
+    import tarfile
+    shutil.rmtree(CONTENT, ignore_errors=True)
+    if not b64:
+        return 0
+    try:
+        tf = tarfile.open(fileobj=io.BytesIO(base64.b64decode(b64)), mode="r:gz")
+        members = tf.getmembers()
+    except Exception as e:
+        die(2, "the test's content is not a readable tar (%s)" % e)
+    n = 0
+    for m in members:
+        parts = m.name.split("/")
+        if m.name.startswith("/") or ".." in parts or "" in parts[:-1] or parts[0] != "content":
+            die(2, "the test's content has an unsafe path %r" % m.name)
+        if not (m.isfile() or m.isdir()):
+            die(2, "the test's content has %r, which is not a plain file or folder" % m.name)
+        path = os.path.join(TESTS, *parts)
+        if m.isdir():
+            os.makedirs(path, mode=0o755, exist_ok=True)
+            continue
+        os.makedirs(os.path.dirname(path), mode=0o755, exist_ok=True)
+        atomic_write(path, tf.extractfile(m).read(), 0o644)
+        n += 1
+    return n
+
+
+def test_env(home, user=None):
+    """The test's environment: none of this login's secrets, VFG_TEST=1, the test server's paths."""
     env = dict((k, v) for k, v in os.environ.items()
                if (k in ENV_KEEP or k.startswith(("VFG_", "PYTHON", "LC_"))) and not SECRET.search(k))
+    for k in [k for k in env if k.startswith(("VFG_ENGINE_", "PYTHON"))] + ["VFG_RCON_LOCK", "VFG_INSTANCE", "VFG_OWNER"]:
+        env.pop(k, None)   # never the live engine's paths; a test's RCON lock is its server's port's
     if user:   # the test user's own: no home of this user's
         env.update(USER=user[0], LOGNAME=user[0], HOME=STATE)
-    env.update({"VFG_TEST": "1", "VFG_TEST_ACTIONS": acts, "VFG_TEST_TAIL": str(ARGS.get("tail", 15)),
-                "VFG_SCRIPT": ("test_" + task)[:48].rstrip("_"), "VFG_TASK": "",
-                "VFG_SERVER": ARGS.get("server") or "main", "VFG_RUN_DIR": RUN,
+    env.update({"VFG_TEST": "1", "VFG_SERVER": ARGS.get("server") or "main", "VFG_RUN_DIR": RUN,
                 "VFG_PROTECTED": os.path.join(BASE, "protected.json"),
-                "VFG_LIVE_POLL_S": str(ARGS.get("poll") or 0.5), "PYTHONPATH": lib, "PYTHONUNBUFFERED": "1",
-                "PYTHONDONTWRITEBYTECODE": "1", "VFG_MC_PROPERTIES": os.path.join(MC, "server.properties"),
-                "VFG_INCANTATIONS": STORE, "VFG_TEST_RUN": TEST_RUN})
-    for k in ("VFG_RCON_LOCK", "VFG_INSTANCE"):   # a test's RCON lock is its server's port's
-        env.pop(k, None)
-    if ARGS.get("owner"):
-        env["VFG_OWNER"] = ARGS["owner"]
-    else:
-        env.pop("VFG_OWNER", None)
+                "VFG_MC_PROPERTIES": os.path.join(MC, "server.properties"), "VFG_TEST_RUN": TEST_RUN,
+                "PYTHONPATH": home, "PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1"})
     return env
+
+
+def livetest_argv(home, py, path, bindings, timeout):
+    argv = [py, "-u", "-m", "vfg_engine.livetest", "--properties", os.path.join(MC, "server.properties"),
+            "--state-dir", ENGINE_STATE, "--content", os.path.join(home, "library")]
+    if os.path.isdir(CONTENT):
+        argv += ["--content", CONTENT]
+    argv += ["--test", path, "--boot", "%g" % min(ENGINE_BOOT, timeout), "--timeout", "%g" % timeout,
+             "--tail", str(max(0, int(ARGS.get("tail", 15))))]
+    if bindings:
+        argv += ["--bindings", bindings]
+    return argv
+
+
+def engine_binds(home, py):
+    """What the sandbox binds back, read-only, when the live vfg folder is hidden: the engine's venv,
+    package and library, and the Python its venv runs on. Never the engine's own folder: its state,
+    socket and log stay out of reach."""
+    py_home = os.path.dirname(os.path.dirname(real(py)))
+    return [real(os.path.join(home, d)) for d in (".venv", "vfg_engine", "library")] + [py_home]
 
 
 # ------------------------------------------------------------------ 6. the sandbox
@@ -516,7 +574,7 @@ def env_file(env):
     return path
 
 
-def sandbox_argv(mode, sdrun, unit, timeout, hide, user=None, envfile=None):
+def sandbox_argv(mode, sdrun, unit, timeout, hide, user=None, envfile=None, binds=()):
     py_home = os.path.dirname(os.path.dirname(real(sys.executable)))
     props = ["RuntimeMaxSec=%d" % int(math.ceil(timeout)), "TimeoutStopSec=%d" % KILL_AFTER, "Nice=10",
              "CPUWeight=20", "IOWeight=20", "MemoryMax=" + MEMORY_MAX, "TasksMax=512", "NoNewPrivileges=yes",
@@ -530,10 +588,11 @@ def sandbox_argv(mode, sdrun, unit, timeout, hide, user=None, envfile=None):
     for kind, path in hide:
         if kind == "mc":   # its RCON password, its world: not even read
             props.append("InaccessiblePaths=" + path)
-        else:              # an empty folder, read-only: its .env, vfg.db, scripts and store out of reach
+        else:              # an empty folder, read-only: its .env, vfg.db, the engine's state out of reach
             props.append("TemporaryFileSystem=%s:ro" % path)
-            if within(py_home, path):   # the box's Python lives in it: read-only, back in
-                props.append("BindReadOnlyPaths=" + py_home)
+            for b in [py_home] + [b for b in binds if b != py_home]:
+                if within(b, path):   # the box's Python and the engine live in it: read-only, back in
+                    props.append("BindReadOnlyPaths=" + b)
     if mode == "system":
         # another user: the live services' processes (theirs) hidden, their homes too, and no
         # network but loopback, where the test server is
@@ -651,11 +710,12 @@ def pick_sandbox(hide, mark):
     return "none", sdrun, unit, None, "; ".join(whys)
 
 
-def run_sandboxed(mode, sdrun, unit, timeout, hide, user, envfile, argv_test):
-    """The test in its unit: (output, exit code or None, timed out, a note or "")."""
-    argv = sandbox_argv(mode, sdrun, unit, timeout, hide, user, envfile)
+def run_sandboxed(mode, sdrun, unit, timeout, hide, user, envfile, cmd, binds=()):
+    """The test (cmd, its whole command line) in its unit: (output, exit code or None, timed out, a
+    note or "")."""
+    argv = sandbox_argv(mode, sdrun, unit, timeout, hide, user, envfile, binds)
     # its stderr into its stdout inside the unit: systemd-run's own stderr is then its status alone
-    argv += ["--", "/bin/sh", "-c", 'exec 2>&1; exec "$@"', "sh", real(sys.executable), "-u"] + argv_test
+    argv += ["--", "/bin/sh", "-c", 'exec 2>&1; exec "$@"', "sh"] + cmd
     p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                          env=manager_env())
     try:
@@ -679,8 +739,8 @@ def run_sandboxed(mode, sdrun, unit, timeout, hide, user, envfile, argv_test):
 
 
 def descendants():
-    """Every live pid of this test (its environment holds VFG_TEST_RUN=TEST_RUN): the test and the
-    copies it started, which run in sessions of their own (setsid) and so escape its process group.
+    """Every live pid of this test (its environment holds VFG_TEST_RUN=TEST_RUN): the test and what
+    it started, even in sessions of their own (setsid), which escape its process group.
     This process is never among them (it has no VFG_TEST_RUN)."""
     marker = "VFG_TEST_RUN=" + TEST_RUN
     found = []
@@ -695,7 +755,7 @@ def descendants():
 
 
 def reap_descendants():
-    """Everything this test started, after it (plain mode only): SIGTERM so each copy's cleanup
+    """Everything this test started, after it (plain mode only): SIGTERM so each one's cleanup
     runs, then SIGKILL the survivors; the test server's lock stays held until they are gone, so no
     next test overlaps them. The count left running (0 when all are gone)."""
     left = descendants()
@@ -715,11 +775,11 @@ def reap_descendants():
     return len(descendants())
 
 
-def run_plain(timeout, env, argv_test):
-    """The test as a plain process (no sandbox): (output, exit code or None, timed out). Its own
-    process group is killed on a timeout; reap_descendants (the caller) then catches the copies it
+def run_plain(timeout, env, cmd):
+    """The test (cmd) as a plain process (no sandbox): (output, exit code or None, timed out). Its
+    own process group is killed on a timeout; reap_descendants (the caller) then catches what it
     started in sessions of their own, which the group kill does not reach."""
-    proc = subprocess.Popen(["setsid", sys.executable, "-u"] + argv_test, cwd=TESTS, stdin=subprocess.DEVNULL,
+    proc = subprocess.Popen(["setsid"] + cmd, cwd=TESTS, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
     try:
         atomic_write(os.path.join(TESTS, "running.pid"), "%d\n" % proc.pid)
@@ -849,7 +909,11 @@ def main():
 
 def held(queued, timeout, boot, port, hide, mark):
     task = ARGS["task"]
-    lib = os.path.join(BASE, "scripts", "_lib")
+    engine = ARGS.get("engine")
+    if not isinstance(engine, dict):
+        die(4, "a test is the game engine's livetest, and this one came with no engine: vfg is older than "
+               "this test server's remote program; report the ability untested")
+    home, py = find_engine(mark)
     has_unit = unit_exists()
     for d in (RUN, STATE):   # the box's setup made them, the test user's to write too; elsewhere, here
         os.makedirs(d, exist_ok=True)
@@ -859,12 +923,12 @@ def held(queued, timeout, boot, port, hide, mark):
     strays = kill_strays() if mode == "none" else 0
     took, did, warning = ready(boot, has_unit)
     path = os.path.join(TESTS, task + ".py")
-    entries = os.path.join(TESTS, task + ".incantations.json")
-    env = test_env(lib, os.path.join(TESTS, task + ".actions.json"), user)
+    bindings = os.path.join(TESTS, task + ".bindings.json")
+    env = test_env(home, user)
     atomic_write(path, ARGS["test"].encode("utf-8"))
-    atomic_write(env["VFG_TEST_ACTIONS"], json.dumps(ARGS.get("actions") or {}).encode("utf-8"))
-    atomic_write(entries, json.dumps(ARGS.get("incantations") or []).encode("utf-8"))
-    atomic_write(RUNNER, RUNNER_TEXT.encode("utf-8"))
+    atomic_write(bindings, json.dumps(engine.get("bindings") or [], ensure_ascii=False).encode("utf-8"))
+    bindings = bindings if engine.get("bindings") else None
+    unpack_content(engine.get("content"))
     said = ["no wait in the queue" if queued < 0.5 else "%.1f s in the queue" % queued,
             warning or ("a fresh world" if not did else "a fresh world: %s, %.1f s" % ("; ".join(did), took)),
             {"system": "sandboxed: systemd-run as %s" % (user[0] if user else "?"),
@@ -879,16 +943,16 @@ def held(queued, timeout, boot, port, hide, mark):
     sys.stdout.flush()
     began = time.time()
     note = ""
-    argv_test = [RUNNER, entries, path]
+    cmd = livetest_argv(home, py, path, bindings, timeout)
     if mode == "none":
-        out, code, timed_out = run_plain(timeout, env, argv_test)
+        out, code, timed_out = run_plain(timeout + LIVETEST_GRACE, env, cmd)
     else:
-        out, code, timed_out, note = run_sandboxed(mode, sdrun, unit, timeout, hide, user, env_file(env),
-                                                   argv_test)
+        out, code, timed_out, note = run_sandboxed(mode, sdrun, unit, timeout + LIVETEST_GRACE, hide, user,
+                                                   env_file(env), cmd, engine_binds(home, py))
     seconds = time.time() - began
     if mode == "none":
-        # no cgroup to take the copies with it: kill this test's descendants by their token, holding
-        # the lock until they are gone so no next test overlaps them
+        # no cgroup to take what it started with it: kill this test's descendants by their token,
+        # holding the lock until they are gone so no next test overlaps them
         leftover = reap_descendants()
         if leftover:
             note = (note + "; " if note else "") + "%d process(es) this test started could not be killed" % leftover
@@ -897,11 +961,11 @@ def held(queued, timeout, boot, port, hide, mark):
         ok, said = restart(False)   # the next test's fresh world, warming up now
         if not ok:
             note = (note + "; " if note else "") + "not restarted for the next test: %s" % last_line(said)
+    if note:   # before the test's own lines: livetest's JSON stays the line before this one's
+        sys.stdout.write("%-10s %s\n" % ("SERVER", note))
     sys.stdout.buffer.write(out)
     if out and not out.endswith(b"\n"):
         sys.stdout.buffer.write(b"\n")
-    if note:
-        sys.stdout.write("%-10s %s\n" % ("SERVER", note))
     sys.stdout.flush()
     print(json.dumps({"code": code, "seconds": round(seconds, 1), "timed_out": timed_out,
                       "queued": round(queued, 1), "restarted": bool(did)}))

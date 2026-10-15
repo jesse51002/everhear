@@ -1,19 +1,16 @@
-"""menu: the actions as an implementer reads them, and the words the router matches on.
+"""menu: an action as `vfg action list` and `vfg action show` print it, and the words the router
+matches on.
 
-One place for what vfg and the brain's brief must say alike, so the two never drift:
+  - an action's menu line, `engine_grant — Give a player one of the engine's abilities ...`;
+  - its long form, `vfg action show <name>`: its line, the engine op it goes to, and every value
+    with its type, limits, default and description. The text itself is lib/py/vfg_actions.py's
+    describe(), kept in the actions cache ($VFG_HOME/actions.json) as each action's "describe";
+    this reads it from there;
+  - the words of a text as the router compares them (lowercased, stemmed, common words out): vfg
+    route's fallback when Jev cannot say.
 
-  - an action's menu line, `nuke — Drop a nuke on a player or a place: ...`, as `vfg action list`
-    and `vfg prefix` print it and the brief lists this server's made ones;
-  - its long form, `vfg action show <name>`, and each action the brief gives in full: its line,
-    its script, how it runs, and every value with its type, limits, default and description. The
-    text itself is lib/py/vfg_actions.py's describe(), kept in the actions cache
-    ($VFG_HOME/actions.json) as each action's "describe"; this reads it from there;
-  - the words of a text as the router compares them (lowercased, stemmed, common words out), and
-    the actions a job's words point to, best first, when Jev cannot say: vfg route's fallback,
-    and the brief's own when vfg route fails.
-
-It imports nothing of vfg's, so the brain loads it by path (brain/brain/implementers/actions.py),
-as guard.py loads scripts/_lib/commands.py. Python 3.9+, standard library only, like toolkit/vfg.
+It imports nothing of vfg's, so the brain can load it by path. Python 3.9+, standard library only,
+like toolkit/vfg.
 """
 import difflib
 import re
@@ -28,17 +25,16 @@ def line(name, entry):
 
 def describe(name, entry):
     """An action whole, as the cache renders it (vfg_actions.describe); from an entry without that
-    text, its line, its script and how it runs."""
+    text, its line and the engine op it goes to."""
     text = (entry or {}).get("describe")
     if isinstance(text, str) and text.strip():
         return text.rstrip("\n")
-    return "%s\nscript %s · runs %s" % (line(name, entry), (entry or {}).get("script") or "?",
-                                        str((entry or {}).get("runs") or "?").replace("_", " "))
+    return "%s\nengine %s" % (line(name, entry), (entry or {}).get("engine") or "?")
 
 
 def near(name, names, n=5):
     """Up to `n` of `names` that look like `name`: spelled alike first, then those sharing a word of
-    it (`incantation` → incantation_create, incantation_edit, ...)."""
+    it (`grant` → engine_grant, ...)."""
     out = difflib.get_close_matches(name, names, n=n, cutoff=0.6)
     parts = set(w for w in re.split(r"[^a-z0-9]+", name.lower()) if len(w) >= 3)
     for other in sorted(names):
@@ -51,26 +47,6 @@ def near(name, names, n=5):
 
 # ------------------------------------------------------------------ the action cards
 
-def action_cards(actions):
-    """One card per action in the actions cache ({"actions": {name: entry}}), as route.py's cards
-    are: name, kind "action", source, path (its file), first (its line), asks (none), values (the
-    names of its fields: what it takes first, then the rest) and presets (none). The library's by
-    name, then this server's."""
-    acts = (actions or {}).get("actions") if isinstance(actions, dict) else None
-    cards = []
-    for name, e in sorted((acts or {}).items(), key=lambda x: (not isinstance(x[1], dict) or
-                                                                x[1].get("source") != "library", x[0])):
-        if not isinstance(e, dict):
-            continue
-        fields = e.get("fields") if isinstance(e.get("fields"), dict) else {}
-        takes = [k for k in e.get("takes") or [] if k in fields]
-        cards.append({"name": name, "kind": "action", "source": "library" if e.get("source") == "library" else "made",
-                      "path": e.get("file") or "", "first": e.get("line") or "", "asks": [],
-                      "values": dict((k, None) for k in takes + [k for k in fields if k not in takes]),
-                      "presets": []})
-    return cards
-
-
 # --------------------------------------------------------------------- words
 
 STOP = set("""
@@ -81,7 +57,7 @@ hers him his how i if in into is it its just keep keeps let like make makes many
 much my no nor not now of off on once one only or other our out over own please put same
 say says she should so some still such than that the their them then there these they this
 those through to too two under until up us very was we were what when where which while who
-whom why will with would you your yours script scripts preset presets player players task
+whom why will with would you your yours class classes kind kinds player players task
 job ask asked asks asking run runs running new want wants him her them it's don't can't
 thing things way back now yes ok okay also report reports value values default use used
 using sure set right left time times first last next around block blocks chat second seconds
@@ -116,9 +92,9 @@ def words(text):
 
 
 def card_words(card):
-    """A card's words: its name's, its first line's and its asks'. Value names are
-    left out: damage_amount, cooldown and player are on half the library."""
-    return words(" ".join([card["name"], card["first"], " ".join(card["asks"])]))
+    """A card's words: its name's and its first line's. Field names are left out: radius, damage
+    and cooldown_s are on half the library."""
+    return words(" ".join([card["name"], card["first"]]))
 
 
 def common_words(among):
@@ -129,19 +105,3 @@ def common_words(among):
         for w in card_words(c):
             seen[w] = seen.get(w, 0) + 1
     return set(w for w, n in seen.items() if n > max(2, len(among) // 4))
-
-
-def actions_by_words(cards, text, among=None):
-    """[(card, shared)]: the action cards that share a word with the text, those whose name
-    shares the most first, then by how many they share, then by name. Words common to the
-    actions (`among`, default `cards`) are not counted. The caller keeps the first seven."""
-    job = words(text)
-    common = common_words(cards if among is None else among)
-    found = []
-    for c in cards:
-        shared = (job & card_words(c)) - common
-        if shared:
-            named = (job & words(c["name"])) - common
-            found.append((-len(named), -len(shared), c["name"], c, len(shared)))
-    found.sort(key=lambda x: x[:3])
-    return [(x[3], x[4]) for x in found]

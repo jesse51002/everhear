@@ -1,36 +1,34 @@
-"""The world a call sees: each player, the time, the running copies, the places."""
+"""The world a call sees: each player, the time, and the engine's part: what runs, the places, the
+incantations and every class."""
 
 import asyncio
 import json
 
-from brain import running
 from brain.vfg import VfgResult
-from brain.world import World, players
+from brain.world import RUNNING_MAX, World, engine_lines, incantation_lines, places_lines, players, running_lines
 
-from conftest import STATE, FakeVfg, catalog
+from conftest import CLASSES, STATE, FakeVfg, overview
 
 STEVE = ("- Steve at 10 64 -20 in overworld: 14.5/20 health, 18/20 food, armor 12, level 5, survival; "
          "effects: speed II 0:30, night vision ∞")
 
 
-async def test_the_world_shares_a_young_state_and_falls_back_to_the_last_good_one(tmp_path):
+async def test_the_world_shares_a_young_state_and_falls_back_to_the_last_good_one():
     vfg, now = FakeVfg(), [100.0]
-    world = World(vfg, tmp_path / "running.json", catalog(), clock=lambda: now[0])
-    (tmp_path / "running.json").write_text(json.dumps({"copies": {
-        "railgun_alex": {"action": "railgun", "values": {"player": "Alex", "cooldown": 0}, "task": None},
-        "frost_bow_alex": {"action": "frost_bow_alex", "values": {}, "task": "frost_bow_alex"},
-        "frost_bow_alex_2": {"action": "frost_bow_alex", "values": {"player": "Steve"}, "task": "frost_bow_alex"}}}))
+    world = World(vfg, clock=lambda: now[0])
     seen = await world.seen()
     assert seen.players == f"PLAYERS ONLINE:\n{STEVE}; Steve's items, by slot: hotbar.4 iron_sword (held)"
     assert seen.clock == "TIME: day (6000, day 3). WEATHER: clear."
-    assert seen.running.endswith("- frost_bow_alex: frost_bow_alex, its defaults\n"  # a task's copy: its own name
-                                 "- frost_bow_alex_2: frost_bow_alex, player=Steve, started by frost_bow_alex\n"
-                                 "- railgun_alex: railgun, player=Alex cooldown=0")
+    assert seen.running == "RUNNING NOW: nothing (no scenario runs, and nobody has an ability, an item or a mark)"
     assert seen.places == "SAVED PLACES: home 1 64 2 overworld (home_steve)" and seen.known == {"home"}
     assert seen.incantations == "INCANTATIONS: none"
+    assert [c["id"] for c in seen.classes] == [c["id"] for c in CLASSES]
     now[0] += 1.5
     await world.seen()
-    assert len(vfg.of("state")) == 1 and len(vfg.of("incantation")) == 1  # a 1.5 s old state is fresh enough
+    assert len(vfg.of("state")) == 1 and len(vfg.of("engine", "overview")) == 1  # 1.5 s old is fresh enough
+    world.engine_changed()                  # an engine action ran: the next call reads the engine again
+    await world.seen()
+    assert len(vfg.of("state")) == 1 and len(vfg.of("engine", "overview")) == 2
 
     async def stuck(argv):
         await asyncio.sleep(1)
@@ -71,9 +69,9 @@ def test_the_brain_sees_only_the_items_of_the_players_it_names():
     assert "items" not in players(world, items=[]) and players(world, items=False) == players(world, items=[])
 
 
-async def test_the_read_tool_fetches_a_state_of_its_own_and_says_who_is_not_online(tmp_path):
+async def test_the_read_tool_fetches_a_state_of_its_own_and_says_who_is_not_online():
     vfg, now = FakeVfg(), [100.0]
-    world = World(vfg, tmp_path / "running.json", catalog(), clock=lambda: now[0])
+    world = World(vfg, clock=lambda: now[0])
     await world.fresh_state()
     assert await world.items("steve") == (True, "Steve's items, by slot: hotbar.4 iron_sword (held)")
     assert await world.items("Bob") == (False, "Bob is not online")
@@ -109,46 +107,69 @@ async def test_the_read_tool_fetches_a_state_of_its_own_and_says_who_is_not_onli
     await world.close()
 
 
-async def test_the_brain_sees_running_now_in_full_respond_one_line_a_copy(tmp_path):
-    vfg = FakeVfg()
-    (tmp_path / "running.json").write_text(json.dumps({"copies": {
-        "railgun_alex": {"action": "railgun", "values": {"player": "Alex", "cooldown": 0}, "task": None}}}))
-    world = World(vfg, tmp_path / "running.json", catalog())
-    full = (await world.seen(full=True)).running
-    assert full.startswith("RUNNING NOW (each copy: its action, who started it; then every value")
-    assert "- railgun_alex: railgun, the brain started it\n  live: " in full and "cooldown=0 (0..60)" in full
-    assert (await world.seen()).running.endswith("- railgun_alex: railgun, player=Alex cooldown=0")
+INSTANCES = [{"instance": "scenario:horde#3", "kind": "scenario", "id": "horde", "user": None, "ends": None},
+             {"instance": "ability:fireball#1", "kind": "ability", "id": "fireball", "user": "Steve"},
+             {"instance": "mark:giant#2", "kind": "mark", "id": "giant", "user": "Alex", "ends": 1791880000}]
+BINDINGS = [{"player": "Steve", "phrase": "fire ball", "ability": "fireball", "scenario": None, "args": {}},
+            {"player": "Alex", "phrase": "meteor", "ability": None, "scenario": "horde", "args": {"count": 3}}]
+
+
+async def test_the_engine_part_running_now_incantations_and_every_class_with_its_args():
+    vfg = FakeVfg().on("engine", "overview", answer=overview(instances=INSTANCES, incantations=BINDINGS))
+    world = World(vfg)
+    seen = await world.seen()
+    assert seen.running.splitlines()[1:] == ["- scenario:horde#3: scenario horde, for the world",
+                                             "- ability:fireball#1: ability fireball, granted to Steve",
+                                             "- mark:giant#2: mark giant, on Alex, ends 08:26:40 UTC"]
+    assert seen.incantations.splitlines()[1:] == ['- "fire ball" for Steve: casts fireball',
+                                                  '- "meteor" for Alex: starts horde {"count":3}']
+    assert seen.engine.splitlines()[1:] == [
+        "SCENARIOS:",
+        "- command: Runs up to five vanilla commands in order; Minecraft's own replies are the result.",
+        "    args.commands: list of command, default []: the server commands to run, in order; at most five",
+        "- horde: A horde of mobs round each player until it is stopped.",
+        "    args.count: int 1..100, default 10: how many",
+        "- teleport: Moves a player, or everyone, to a saved place, coordinates or far away.",
+        "    args.players: players, default @a: who moves",
+        "    args.to: one of 'place', 'coords', 'far', default place: the kind of destination",
+        "    args.target: text, default \"\": a saved place's name, or 'x y z'",
+        "ABILITIES:",
+        "- fireball: Burns for burn_s seconds, then explodes in a radius.",
+        "ITEMS:",
+        "- fire_staff: A staff that shoots fire where you look.",
+        "MARKS:",
+        "- giant: Twice as big for a while.",
+        "    args.factor: float 1..16, default 2.0: how much bigger",
+    ]
+    assert seen.instances == INSTANCES
+    text = seen.show()
+    assert text.index("RUNNING NOW") < text.index("SAVED PLACES") < text.index("INCANTATIONS") < text.index("ENGINE")
     await world.close()
 
 
-COPIES = {
-    "railgun_steve": {"action": "railgun", "script": "railgun", "values": {"player": "Steve", "cooldown": 5,
-                                                                          "range": 100, "through_walls": True},
-                      "live": ["cooldown", "range"], "task": None},
-    "frost_bow_alex": {"action": "frost_bow_alex", "script": "frost_bow_alex",
-                       "values": {"power": 3, "name": "Frost Bow"}, "live": ["power"], "task": "frost_bow_alex"},
-    "summon_around": {"action": "summon_around", "values": {"mob": "zombie", "count": 20}, "task": "cast"},
-}
+async def test_an_engine_that_is_down_or_refuses_a_part_says_so_and_keeps_the_rest():
+    vfg = FakeVfg().on("engine", "overview", answer=VfgResult(6, "", "vfg: the game engine is not running"))
+    world = World(vfg)
+    seen = await world.seen()
+    assert seen.running.startswith("RUNNING NOW: unknown, the engine is not running")
+    assert seen.places == "SAVED PLACES: unknown (the engine is not running)" and seen.known is None
+    assert seen.engine.startswith("ENGINE: not running (vfg-engine is down)")
+    assert seen.classes == [] and seen.instances == []
+    refused = {"ok": False, "error": "places: no places op", "classes": CLASSES, "instances": [], "incantations": []}
+    vfg.rules.clear()
+    vfg.on("engine", "overview", answer=VfgResult(1, json.dumps(refused), ""))
+    world.engine_changed()
+    seen = await world.seen()
+    assert seen.places == "SAVED PLACES: unknown (it could not be read: places: no places op)" and seen.known is None
+    assert seen.incantations == "INCANTATIONS: none" and seen.engine.startswith("ENGINE (every class")
+    await world.close()
 
 
-def test_running_in_full_shows_each_value_now_its_limits_or_choices_live_or_restart_and_who_started_it():
-    text = running.full(COPIES, catalog())
-    lines = text.splitlines()
-    assert lines[0].startswith("RUNNING NOW (each copy: its action, who started it; then every value")
-    i = lines.index("- railgun_steve: railgun, the brain started it")
-    live, restart = lines[i + 1], lines[i + 2]
-    assert live.startswith("  live: ") and "cooldown=5 (0..60)" in live and "range=100 (4..300)" in live
-    assert "damage_what=all (all|mobs|hostile|players)" in live and "through_walls=true" in live
-    assert ("damage_type=magic (player_attack|magic|lightning_bolt|explosion|freeze|on_fire|sonic_boom|arrow|…+"
-            in live)  # choices capped at 8
-    assert restart == "  restart: player=Steve item=Railgun"  # not live: a restart; the default when not set
-    assert "fire=" not in text  # a fixed value is left out
-    # An action not loaded: running.json's values and live list.
-    assert "- frost_bow_alex: frost_bow_alex, started by task frost_bow_alex\n  live: power=3\n" \
-           "  restart: name=\"Frost Bow\"" in text
-    assert "- summon_around: summon_around, an incantation started it" in text
-    assert "count=20 (1..100)" in text and "mob=zombie" in text
-    assert running.full({}, catalog()) == "RUNNING NOW: none"
-    long = {"c": {"action": "command", "values": {"commands": ["x" * 80]}, "task": None}}
-    shown = running.full(long, catalog()).split("commands=", 1)[1].split()[0]
-    assert len(shown) == 40 and shown.endswith("…")
+def test_the_lines_of_each_part_when_there_is_nothing_and_when_there_is_much():
+    assert engine_lines([]) == "ENGINE: no classes yet (nothing to start, grant, give or apply)"
+    assert places_lines([]) == ("SAVED PLACES: none", set())
+    assert incantation_lines([]) == "INCANTATIONS: none"
+    many = [{"instance": "scenario:horde#%d" % n, "kind": "scenario", "id": "horde"} for n in range(RUNNING_MAX + 5)]
+    assert running_lines(many).splitlines()[-1] == "- and 5 more"
+    nether = places_lines([{"name": "fort", "dim": "minecraft:the_nether", "pos": [1.6, 70, -3.2]}])
+    assert nether == ("SAVED PLACES: fort 2 70 -3 the_nether", {"fort"})

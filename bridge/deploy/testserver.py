@@ -32,15 +32,15 @@ files and never writing them (it never starts, stops or restarts the live server
     <mc>/world.template/   made once (and with --fresh, or when the jar changes): seed SEED,
                            the sky stage's chunks generated and forceloaded, spawn on the stage;
                            template.json says from what
-    <vfg>/                 python -> <live vfg>/python; scripts/ tests/ made/ (written by this
-                           user only); run/ and state/ (the test's too); state/incantations.json
-                           (an empty store) and its lock; protected.json ([]); no .env
+    <vfg>/                 python -> <live vfg>/python; tests/ made/ (written by this user
+                           only); run/ and state/ (the test's too: livetest's state is
+                           state/engine); protected.json ([]); no .env
 
 --test-user (the box: vfgtest, a system user testserver.sh makes) is the user a sandboxed test runs
 as, so that it is not the live services' uid. Its group then owns <vfg> (2755: read, not written),
 run/ and state/ (2775: written, setgid, the store's two files 664), and reads server.properties
 (640) and the marker. Nothing this user writes into by name is writable by the test user: python,
-scripts/, tests/ and made/ stay 755. Without it (realmc), the test runs as this user, and the
+tests/ and made/ stay 755. Without it (realmc), the test runs as this user, and the
 modes are plain.
 
 Pins: the one source of truth for the Fabric and Carpet jars the test servers run;
@@ -119,13 +119,14 @@ JVM_FLAGS = ["-Xlog:os+container=off", "--enable-native-access=ALL-UNNAMED", "--
 JVM_CPU_FLAGS = ["-XX:ActiveProcessorCount=2", "-XX:TieredStopAtLevel=1"]
 AOT, AOT_INFO = "test-server.aot", "aot.json"
 
-# The sky stage the kit's tests stand on: scripts/_lib/kit/_stage/helpers.py's X, Z, FLOOR and
-# CLEAR (a test checks they agree). The template has every chunk within PREGEN chunks of its
-# middle generated (view-distance 10 around a player on it, and the border), the CLEAR area
-# forceloaded for good (a test's own forceload finds it loaded), and the world spawn on it.
-STAGE_X, STAGE_Z, STAGE_FLOOR, STAGE_CLEAR = 3000, 3000, 295, 48
+# The sky stage a live test stands on: engine/vfg_engine/livetest.py's X, Z, FLOOR and CLEAR (a
+# test checks they agree). The template has every chunk within PREGEN chunks of its middle
+# generated (view-distance 10 around a player on it, and the border), the CLEAR area forceloaded
+# for good (a test's own forceload finds it loaded), and the world spawn on it.
+STAGE_X, STAGE_Z, STAGE_FLOOR, STAGE_CLEAR = 160, 160, 295, 48
 PREGEN = 12
-TEMPLATE_FORMAT = 1       # bump when the template's making changes: every test server makes it again
+TEMPLATE_FORMAT = 2       # bump when the template's making changes: every test server makes it again
+                          # (2: the stage moved to livetest's, 160 160)
 GAMERULES = [("advance_time", "false"), ("advance_weather", "false"), ("respawn_radius", "0"),
              ("log_admin_commands", "false"), ("spawn_mobs", "false"), ("spawn_phantoms", "false")]
 
@@ -304,13 +305,13 @@ def test_properties(live_lines, test_lines, port, rcon_port):
 
 def rcon_lock_path(port):
     """The lock every RCON client of the server on `port` holds from send to reply, as
-    scripts/_lib/mc.py and toolkit/remote/common.py do (vanilla answers every connection from one
-    shared buffer)."""
+    the game engine (vfg_engine/mc/rcon.py) and toolkit/remote/common.py do (vanilla answers every
+    connection from one shared buffer)."""
     return os.environ.get("VFG_RCON_LOCK") or "/tmp/vfg-rcon-%d.lock" % port
 
 
 def open_lock(path):
-    """A descriptor flock can hold on `path`, as scripts/_lib/mc.py and toolkit/remote/common.py
+    """A descriptor flock can hold on `path`, as the game engine and toolkit/remote/common.py
     open it: read-only and without O_CREAT when it exists (flock needs neither write access nor
     ownership, and fs.protected_regular refuses O_CREAT on another user's file in /tmp), else made
     0666 so the test user and this one share it."""
@@ -695,14 +696,12 @@ def set_mode(path, mode, gid=None):
     return changed
 
 
-EMPTY_STORE = json.dumps({"version": 0, "incantations": []}) + "\n"
-
-
 def lay_out_vfg(vfg, live_vfg, gid=None):
-    """The test vfg folder, as vfg test, scripts.py and the kit use it; changed. With `gid` (the
-    test user's group) the test may write run/ and state/ and nothing else."""
+    """The test vfg folder, as vfg test (toolkit/remote/test.py) and livetest use it; changed. With
+    `gid` (the test user's group) the test may write run/ and state/ and nothing else. What an
+    earlier layout had (scripts/, the kit's store in state/) is left as it is, unused."""
     changed = False
-    for d in ("scripts", "run", "tests", "state", "made"):
+    for d in ("run", "tests", "state", "made"):
         path = os.path.join(vfg, d)
         if not os.path.isdir(path):
             os.makedirs(path)
@@ -717,19 +716,13 @@ def lay_out_vfg(vfg, live_vfg, gid=None):
         os.symlink(target, py)
         changed = True
     state = os.path.join(vfg, "state")
-    for name, text in (("incantations.json", EMPTY_STORE), ("incantations.lock", "")):
-        path = os.path.join(state, name)
-        if not os.path.lexists(path):
-            write_file(path, text, 0o664 if gid is not None else 0o644)
-            changed = True
-        elif os.path.islink(path) or not os.path.isfile(path):
-            raise Fail(3, "%s is not a plain file: the test server's store is made only by this setup" % path)
-    # The store was <vfg>/incantations.json before the test ran as its own user: gone, so nothing reads it.
+    # The kit's store was <vfg>/incantations.json before the test ran as its own user: gone, so
+    # nothing reads it (a test's bindings are its own now, tests/<task>.bindings.json).
     for name in ("incantations.json", "incantations.lock"):
         old = os.path.join(vfg, name)
         if os.path.lexists(old):
             os.remove(old)
-            say("%s: removed (the test server's store is state/incantations.json)" % old)
+            say("%s: removed (a test's bindings come with it)" % old)
             changed = True
     if not os.path.exists(os.path.join(vfg, "protected.json")):
         write_file(os.path.join(vfg, "protected.json"), "[]\n")
@@ -742,12 +735,10 @@ def lay_out_vfg(vfg, live_vfg, gid=None):
     # Who writes where: the test user only into run/ and state/, never where this user writes by name.
     if gid is None:
         modes = [(vfg, 0o755, None)] + [(os.path.join(vfg, d), 0o755, None)
-                                        for d in ("scripts", "run", "tests", "state", "made")]
+                                        for d in ("run", "tests", "state", "made")]
     else:
-        modes = [(vfg, 0o2755, gid), (os.path.join(vfg, "run"), 0o2775, gid), (state, 0o2775, gid),
-                 (os.path.join(state, "incantations.json"), 0o664, gid),
-                 (os.path.join(state, "incantations.lock"), 0o664, gid)]
-        modes += [(os.path.join(vfg, d), 0o755, None) for d in ("scripts", "tests", "made")]
+        modes = [(vfg, 0o2755, gid), (os.path.join(vfg, "run"), 0o2775, gid), (state, 0o2775, gid)]
+        modes += [(os.path.join(vfg, d), 0o755, None) for d in ("tests", "made")]
     for path, mode, g in modes:
         if set_mode(path, mode, g):
             say("%s: mode %o%s" % (path, mode, "" if g is None else ", group %s" % grp.getgrgid(g).gr_name))

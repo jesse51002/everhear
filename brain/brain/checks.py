@@ -24,10 +24,10 @@ PARTS = ("description", "words", "picture", "assumed", "cast")
 
 
 def hand_offs(hand_offs: Sequence, catalog) -> None:
-    """Each hand-off's name is a task's name (names.NAME), not `cast` (RESERVED), and not a
-    library action's bare name (an implementer's own action of that name would shadow it); every
-    part of its brief is written and its checklist has an item; no two share a name. `catalog` is
-    the actions now (actions.Catalog: get() and source())."""
+    """Each hand-off's name is a task's name (names.NAME), not `cast` (RESERVED), and not an
+    action's name (the engine's ops); every part of its brief is written and its checklist has an
+    item; no two share a name. `catalog` is the actions now (actions.Catalog: get()). A name an
+    engine class has is made free when its task opens (names.unique), never sent back."""
     names = [h.name.strip() for h in hand_offs]
     for h in hand_offs:
         name = h.name.strip()
@@ -35,10 +35,9 @@ def hand_offs(hand_offs: Sequence, catalog) -> None:
             raise ValueError(f"hand-off name {name!r}: lowercase letters, digits and underscores, starting "
                              "with a letter, 2 to 32 characters")
         if name in RESERVED:
-            raise ValueError(f"{name} is the bridge's task for an incantation's copies, never a task's "
-                             "name: name the thing, then whose")
-        if catalog.get(name) is not None and catalog.source(name) == "library":
-            raise ValueError(f"{name} is a library action's name: add whose it is, as frost_bow_alex")
+            raise ValueError(f"{name} is never a task's name: name the thing, then whose")
+        if catalog.get(name) is not None:
+            raise ValueError(f"{name} is an action's name: add whose it is, as frost_bow_alex")
         missing = [k for k in PARTS if not getattr(h, k).strip()]
         if missing:
             raise ValueError(f"the hand-off {name}'s brief has no {', '.join(missing)}: write every part")

@@ -91,15 +91,15 @@ import httpx  # noqa: E402
 import vfg_llm  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
-from brain import actions, config, running  # noqa: E402
+from brain import actions, config  # noqa: E402
 from brain.__main__ import asker  # noqa: E402
-from brain.call import library, menu_lines  # noqa: E402
+from brain.call import menu_lines  # noqa: E402
 from brain.context import LEGACY_TO_AI, Context, Row, show  # noqa: E402
 from brain.context import LIVE as TO_AI  # noqa: E402
 from brain.respond import PROMPT as FRONT_PROMPT  # noqa: E402
 from brain.respond import Respond, promises  # noqa: E402
 from brain.tasks import Tasks  # noqa: E402
-from brain.world import Seen  # noqa: E402
+from brain.world import Seen, running_lines  # noqa: E402
 from night import UNDER_WAY_NONE  # noqa: E402
 from trees_questions import route_d  # noqa: E402
 
@@ -174,7 +174,9 @@ def response(fields: dict[str, str], required: bool = False) -> type[BaseModel]:
 
 class Legacy:
     """Respond's opening and tail before this spec (main at 94e517e, the same as when v1 to v5 were
-    benched): what the old versions read, so they do not move with the conversation agent's."""
+    benched): what the old versions read, so they do not move with the conversation agent's. On the
+    game engine its menu is the engine's ops, every action the brain has (as game-engine's Respond
+    had it before the merge)."""
 
     def __init__(self, catalog, ask, *, owner: str = "", checkpoint: int = 5, prompt: Path = PROMPTS / "v5.md"):
         self.catalog, self.ask, self.checkpoint = catalog, ask, checkpoint
@@ -182,9 +184,9 @@ class Legacy:
         self.rules = rules.replace("{owner}", owner or "not named (VFG_OWNER is not set)")
 
     def opening(self) -> str:
-        names = library(self.catalog)
-        return (f"{self.rules}\n\nWHAT THE BRAIN CAN DO (its actions; anything else is made new by a "
-                f"coding implementer):\n{menu_lines(self.catalog, names)}\n\n"
+        names = self.catalog.names()
+        return (f"{self.rules}\n\nWHAT THE BRAIN CAN DO (its actions, on what ENGINE lists; anything else is "
+                f"made new by a coding implementer):\n{menu_lines(self.catalog, names)}\n\n"
                 "THE CONVERSATION SO FAR (oldest first; each row: its time in UTC, who, and for a "
                 "player's line Jev's class):\n")
 
@@ -252,8 +254,9 @@ class Item:
 
 # Each line: what it tests (`point`), what Respond should do (`want`), its speaker and words, the
 # conversation before it (who, the line's class or the AI row's kind, text, an AI row's task; nine
-# seconds apart), and the world it was said in: the time and weather, a running copy, an effect, an
-# open task. The owner is Sam.
+# seconds apart), and the world it was said in: the time and weather, what the game engine runs
+# (`instances`, as `vfg engine overview` gives them), an effect, an open task (its name, player and
+# description). An AI action row is the loop's record of what its engine actions did. The owner is Sam.
 INVENTED_OWNER = "Sam"
 INVENTED_AT = "2026-10-11T18:00:00.000Z"
 PLAYERS = {"Sam": "112 70 -35", "Riley": "98 64 -12", "Jordan": "140 31 -60"}
@@ -267,7 +270,7 @@ INVENTED = [
     {"id": "i02", "point": "future rule", "want": "answer", "who": "Sam",
      "text": "don't make any more weapons for Jordan today, he's had enough",
      "before": [("Jordan", "action_oriented", "AI give me another railgun"),
-                ("AI", "action", "railgun: give Jordan a railgun — ok: given to Jordan", "T3"),
+                ("AI", "action", "engine_give: the railgun to Jordan — done"),
                 ("AI", "say", "railgun number three, Jordan"),
                 ("Sam", "conversational", "bro you have like nine guns")]},
     {"id": "i03", "point": "future rule", "want": "answer", "who": "Jordan",
@@ -283,7 +286,8 @@ INVENTED = [
     {"id": "i05", "point": "future rule", "want": "answer", "who": "Jordan",
      "text": "next time I ask for a sword make it netherite, diamond is boring",
      "before": [("Jordan", "action_oriented", "can I have a sword"),
-                ("AI", "action", "command: give Jordan a diamond sword — ok: Gave 1 [Diamond Sword] to Jordan", "T2"),
+                ("AI", "action", "engine_start command: give Jordan a diamond sword — done: Gave 1 [Diamond Sword] "
+                                 "to Jordan"),
                 ("AI", "say", "diamond sword, all yours")]},
     # A question it can answer from what it knows: answer.
     {"id": "i06", "point": "knowledge", "want": "answer", "who": "Jordan",
@@ -301,7 +305,7 @@ INVENTED = [
     # Plain banter: answer.
     {"id": "i09", "point": "banter", "want": "answer", "who": "Jordan",
      "text": "AI you're honestly the best teammate on this server",
-     "before": [("AI", "action", "summon_around: 20 zombies round each player — ok: summoned 60", "T5"),
+     "before": [("AI", "action", "engine_start horde: 20 zombies round each player — done: summoned 60"),
                 ("Jordan", "conversational", "that horde was insane"),
                 ("Riley", "conversational", "I died twice")]},
     {"id": "i10", "point": "banter", "want": "answer", "who": "Riley",
@@ -325,27 +329,27 @@ INVENTED = [
     {"id": "i14", "point": "change", "want": "up", "who": "Riley",
      "text": "the ice thing is wrecking my farm, all my crops are ice now",
      "before": [("Riley", "action_oriented", "AI turn everything I walk on into ice"),
-                ("AI", "action", "ice_walk: ice under Riley as she walks — ok: running as ice_walk_1", "T4"),
+                ("AI", "action", "engine_grant: ice_walk to Riley, ice under her as she walks — done"),
                 ("AI", "say", "frozen feet, Riley")],
-     "running": {"ice_walk_1": {"action": "ice_walk", "values": {"player": "Riley"}, "task": "T4"}}},
+     "instances": [{"instance": "ability:ice_walk#4", "kind": "ability", "id": "ice_walk", "user": "Riley"}]},
     {"id": "i15", "point": "change", "want": "up", "who": "Riley",
      "text": "this speed is way too much, I keep running off cliffs",
      "before": [("Riley", "action_oriented", "give me speed five forever"),
-                ("AI", "action", "keep_effects: speed V on Riley until stopped — ok: running as keep_effects_1",
-                 "T6"),
+                ("AI", "action", "engine_apply: keep_effects on Riley, speed V until cleared — done"),
                 ("AI", "say", "speed five, go go go")],
-     "running": {"keep_effects_1": {"action": "keep_effects", "values": {"player": "Riley"}, "task": "T6"}},
+     "instances": [{"instance": "mark:keep_effects#6", "kind": "mark", "id": "keep_effects", "user": "Riley"}],
      "effects": {"Riley": "speed V ∞"}},
     {"id": "i16", "point": "change", "want": "up", "who": "Sam",
      "text": "oh and for the castle, put a moat around it",
      "before": [("Sam", "action_oriented", "AI build me a big stone castle at my base"),
-                ("AI", "task", "T7: build a big stone castle at Sam's base, for Sam", "T7"),
-                ("AI", "say", "on it, castle coming up at your base")],
-     "tasks": [("T7", "Sam", "build a big stone castle at Sam's base, for Sam")]},
+                ("AI", "task", "new: build a big stone castle at Sam's base, for Sam", "castle_sam"),
+                ("AI", "say", "on it, castle coming up at your base", "castle_sam")],
+     "tasks": [("castle_sam", "Sam", "A big stone castle at Sam's base")]},
     {"id": "i17", "point": "change", "want": "up", "who": "Jordan",
      "text": "the iron golem you gave me … he keeps wandering off, make him stay with me",
      "before": [("Jordan", "action_oriented", "can I have an iron golem bodyguard"),
-                ("AI", "action", "command: summon an iron golem by Jordan — ok: Summoned new Iron Golem", "T8"),
+                ("AI", "action", "engine_start command: summon an iron golem by Jordan — done: Summoned new Iron "
+                                 "Golem"),
                 ("AI", "say", "your bodyguard has arrived")]},
     # A rule the game itself would have to enforce: hand up.
     {"id": "i18", "point": "game rule", "want": "up", "who": "Sam",
@@ -382,7 +386,7 @@ def invented_tasks(k: int, it: dict, legacy: bool) -> tuple[str, set[str]]:
     return shown.show([tid for tid, _, _ in tasks]), {p for _, p, _ in tasks}
 
 
-def invented_items(catalog, limit: int = 0, legacy: bool = True):
+def invented_items(limit: int = 0, legacy: bool = True):
     for k, it in enumerate(INVENTED[:limit or None]):
         base = at_plus(INVENTED_AT, 300 * k)   # each line its own few minutes
         ctx = Context()
@@ -400,7 +404,7 @@ def invented_items(catalog, limit: int = 0, legacy: bool = True):
                             for p, pos in PLAYERS.items())
         seen = Seen(players=f"PLAYERS ONLINE:\n{players}",
                     clock=it.get("clock", "TIME: day (6000, day 2). WEATHER: clear."),
-                    running=running.block(it.get("running", {}), catalog), places="", incantations="INCANTATIONS: none")
+                    running=running_lines(it.get("instances", [])), places="", incantations="INCANTATIONS: none")
         tasks, busy = invented_tasks(k, it, legacy)
         fixed = {"id": it["id"], "set": "invented", "point": it["point"], "want": it["want"], "who": it["who"],
                  "text": it["text"], "context_rows": len(ctx.rows)}
@@ -609,7 +613,7 @@ async def run(args) -> None:
     cfg = config.load()
     model, reasoning, providers, timeout = model_of(args.version, cfg)
     timeout = args.timeout or timeout
-    catalog = actions.load(cfg.repo, cfg.server)
+    catalog = actions.load(cfg.repo)
     ask = playtest.replayed(asker(model, reasoning, timeout, providers)) if front else \
         asker(model, reasoning, timeout, providers)
     out = Path(args.out) / args.version / args.set
@@ -618,7 +622,7 @@ async def run(args) -> None:
     output = None if front else response(fields, args.version in REQUIRED)
     if args.set == "invented":
         owner = INVENTED_OWNER
-        items = invented_items(catalog, args.limit, legacy=not front)
+        items = invented_items(args.limit, legacy=not front)
         total = min(args.limit or len(INVENTED), len(INVENTED))
     elif args.set in NIGHT_SETS:
         if not args.night or not args.brain_log:

@@ -3,7 +3,7 @@
 Speech-to-text mishears incantations ("hot fireball" as "Hot variable.", "Affordable.", "Tybo.")
 and cuts them into pieces ("Ice.", "Beam"), which the deterministic layers (the spotter, Layer 2
 and the drop rule, §2) let through. So before the routing call, a voice line from a player with
-an incantation (their own or an `@a` one) that the bridge kept gets one Jev call of its own, in
+an incantation (one the game engine binds for them) that the bridge kept gets one Jev call of its own, in
 the routing call's style: one `choice` question, `cast`, whose options are one `cast_<phrase>` per
 incantation, each saying the phrase, its aliases and what it does, and `not_a_cast`.
 
@@ -18,8 +18,8 @@ as ever, so the rest of it reaches the AI. Talk about an incantation is a cast i
 A cast whose option Jev gave a probability of VFG_JEV_CAST_MIN or more (its `probabilities`,
 not its `confidence`, which runs lower; an answer with no probability for it is not a cast) goes
 to the bridge's one cast path,
-`POST /v1/jev/casts` on this box (layer `jev`): the same checks as every cast — the 1 s gap,
-the incantation's cooldown, the duplicate window, the `casts` row — and a short line whose cast is
+`POST /v1/jev/casts` on this box (layer `jev`): the same checks as every cast — the duplicate
+window, the stale wait, the engine's own cooldown, the `casts` row — and a short line whose cast is
 sure is dropped whatever came of it, so it is never routed nor fed; a long one, or a short one not
 sure, is kept (`"keep": true`) and routed as ever. Anything else, a failed call or a bridge that does
 not answer included, sends the line on to the routing call as before.
@@ -31,6 +31,7 @@ piece said right after a cast reads as part of it.
 """
 import http.client
 import json
+import math
 import os
 import re
 import unicodedata
@@ -39,7 +40,6 @@ import urllib.request
 
 from prompt import cut, one_line, quote, when
 
-EVERYONE = "@a"
 QUESTION = "cast"                 # the question's name
 NOT_A_CAST = "not_a_cast"
 MAX_WORDS = 6                     # a longer line is long: asked in LONG_ wording, a cast in it keeps it
@@ -96,7 +96,7 @@ HEADING = ("RECENT (what %s said and cast in the last minute, and the AI's repli
 # -- the incantations -------------------------------------------------------------------
 
 def normalize(text):
-    """The kit's normalisation (scripts/_lib/incantations.py): lowercase, accents and
+    """The bridge's normalisation (bridge/vfg_bridge/sounds.py): lowercase, accents and
     apostrophes dropped, every other mark a space, whitespace collapsed."""
     s = unicodedata.normalize("NFKD", str(text or "")).lower()
     s = "".join(c for c in s if not unicodedata.combining(c))
@@ -104,49 +104,102 @@ def normalize(text):
     return " ".join(re.sub(r"[\W_]+", " ", s).split())
 
 
-class Incantations:
-    """The bridge's store, `/opt/vfg/incantations.json` (§10), read again whenever it changes
-    (a write replaces it whole). Missing or unreadable is none, and is read again next time.
+def _strings(value):
+    """A list of strings from an export field, or None when it is not one."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        return None
+    return list(value)
 
-    A copy of the kit's reading (scripts/_lib/incantations.py: `normalize`, `Store.read`,
-    `Store.for_player`, and the bridge's one phrase each, `Casts._one_per_phrase`), not an import
-    of it: the kit reaches the box with `vfg action run`, and the Jev filter, deployed alone by
-    jev/deploy.sh, must not wait on it. tests/test_kit_pin.py holds the two to the same answers."""
 
-    def __init__(self, path):
+def engine_entry(raw):
+    """An entry of the game engine's export as the bridge reads it (bridge/vfg_bridge/engine.py,
+    `_entry`); None when the bridge would leave it out."""
+    if not isinstance(raw, dict):
+        return None
+    for key in ("player", "phrase"):
+        if not isinstance(raw.get(key), str) or not raw[key].strip():
+            return None
+    if len([k for k in ("ability", "scenario") if isinstance(raw.get(k), str) and raw[k].strip()]) != 1:
+        return None
+    if raw.get("args") is not None and not isinstance(raw.get("args"), dict):
+        return None
+    aliases, everyday = _strings(raw.get("aliases")), _strings(raw.get("everyday_aliases"))
+    if aliases is None or everyday is None:
+        return None
+    cooldown = raw.get("cooldown_s")
+    if cooldown is not None and (isinstance(cooldown, bool) or not isinstance(cooldown, (int, float))
+                                 or not math.isfinite(cooldown) or cooldown < 0):
+        return None
+    entry = dict(raw, aliases=aliases, everyday_aliases=everyday)
+    entry["id"] = str(raw.get("id") or "%s.%s" % (raw["player"].lower(),
+                                                   "_".join(raw["phrase"].lower().split())))
+    entry["cooldown_s"] = 0.0 if cooldown is None else float(cooldown)
+    return entry
+
+
+class _File:
+    """One JSON file, parsed again only when it changes (each is replaced whole); missing or
+    unreadable is ``parse(None)``, and is read again next time."""
+
+    def __init__(self, path, parse):
         self.path = path
+        self.parse = parse
         self._stamp = None
-        self._items = []
+        self._items = parse(None)
 
-    def _entries(self):
+    def items(self):
+        if not self.path:
+            return self.parse(None)
         try:
             st = os.stat(self.path)
         except OSError:
-            self._stamp, self._items = None, []
+            self._stamp, self._items = None, self.parse(None)
             return self._items
         stamp = (st.st_ino, st.st_size, st.st_mtime_ns)
         if stamp != self._stamp:
             try:
                 with open(self.path, encoding="utf-8") as f:
                     data = json.load(f)
-                items = data.get("incantations") if isinstance(data, dict) else None
-                if not (isinstance(items, list) and all(isinstance(e, dict) for e in items)
-                        and isinstance(data.get("version"), int)):
-                    items = []   # as the kit's Store.read: a store it cannot read has none
             except (OSError, ValueError):
-                return []   # the stamp is not kept: read again next time
-            self._stamp, self._items = stamp, items
+                return self.parse(None)   # the stamp is not kept: read again next time
+            self._stamp, self._items = stamp, self.parse(data)
         return self._items
 
+
+def _engine_items(data):
+    """As the bridge reads the engine's export: none unless {"version": n, "incantations": [...]},
+    and each entry it cannot use left out on its own."""
+    items = data.get("incantations") if isinstance(data, dict) else None
+    version = data.get("version") if isinstance(data, dict) else None
+    if not isinstance(items, list) or isinstance(version, bool) or not isinstance(version, int):
+        return []
+    return [e for e in (engine_entry(raw) for raw in items) if e is not None]
+
+
+class Incantations:
+    """A player's incantations, as the bridge offers them: the game engine's bindings, from its
+    export (VFG_ENGINE_EXPORT, /opt/vfg/engine/incantations.json; the game engine spec,
+    "Incantations"), one per phrase, read again whenever it changes (the engine replaces it whole);
+    missing or unreadable is none, and is read again next time.
+
+    A copy of the bridge's reading (vfg_bridge/engine.py's export entries, vfg_bridge/sounds.py's
+    `normalize`, casts.py's `Casts._one_per_phrase`), not an import of it: the Jev filter is
+    deployed alone by jev/deploy.sh. tests/test_bridge_pin.py holds the copy to the bridge's answers."""
+
+    def __init__(self, engine_path):
+        self.engine_path = engine_path
+        self._engine = _File(engine_path, lambda data: _engine_items(data) if data is not None else [])
+
     def for_player(self, name):
-        """The player's own (case-insensitive), then the @a ones, one per phrase: the player's own
-        before an @a one, as the bridge looks a phrase up."""
-        items = self._entries()
+        """The player's engine bindings (case-insensitive), one per phrase, the first kept: as the
+        bridge looks a phrase up."""
         key = str(name or "").lower()
-        own = [e for e in items if str(e.get("player") or "") != EVERYONE
-               and str(e.get("player") or "").lower() == key]
         out, seen = [], set()
-        for e in own + [e for e in items if e.get("player") == EVERYONE]:
+        for e in self._engine.items():
+            if e["player"].lower() != key:
+                continue
             phrase = normalize(e.get("phrase"))
             if phrase and phrase not in seen:
                 seen.add(phrase)
@@ -160,27 +213,16 @@ def short_enough(text):
     return len(normalize(text).split()) <= MAX_WORDS
 
 
-def menu_lines(menu):
-    """{action name: what it does} from the brain's menu, `name — what it does` a line."""
-    out = {}
-    for line in (menu or "").split("\n"):
-        name, dash, does = line.strip().lstrip("-* ").partition(" — ")
-        if dash and name.strip():
-            out[name.strip()] = does.strip()
-    return out
-
-
-def does(entry, menu):
-    """What casting it does, short: a `command` incantation's commands, else its action's line
-    on the brain's menu, else that it runs the action, by name."""
-    action = str(entry.get("action") or "")
-    text = ""
-    if action == "command":
-        commands = (entry.get("values") or {}).get("commands")
-        if isinstance(commands, list) and commands:
-            text = "runs " + "; ".join(str(c) for c in commands)
-    if not text:
-        text = menu.get(action, "") or "runs the action %s" % action
+def does(entry):
+    """What casting it does, short: its ability (or scenario), by name, with the engine's summary of
+    it when the export gives one."""
+    if entry.get("scenario"):
+        text = "starts %s" % entry["scenario"]
+    else:
+        text = "casts %s" % entry.get("ability")
+    summary = entry.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        text += ": " + summary.strip()
     return cut(one_line(text).strip(), DOES_MAX)
 
 
@@ -205,22 +247,22 @@ def _option(before, aliases, wrap, after):
         keep.pop()
 
 
-def describe(entry, menu):
+def describe(entry):
     """`Cast "hot fireball": line [1] is "hot fireball", or words that sound like it, or as "hot fire
     ball", "hut fireball", or a piece of it. It launches a fireball …`"""
     phrase = normalize(entry.get("phrase"))
     return _option('Cast "%s": line [1] is "%s", or words that sound like it' % (phrase, phrase),
                    _aliases(entry, phrase), ", or as %s",
-                   ", or a piece of it. It %s." % does(entry, menu).rstrip("."))
+                   ", or a piece of it. It %s." % does(entry).rstrip("."))
 
 
-def describe_long(entry, menu):
+def describe_long(entry):
     """`Cast "hot fireball": somewhere in line [1] the player says "hot fireball", or words that
     sound like it ("hot fire ball", …), to cast it now. It launches a fireball …`"""
     phrase = normalize(entry.get("phrase"))
     return _option('Cast "%s": somewhere in line [1] the player says "%s", or words that sound like it'
                    % (phrase, phrase), _aliases(entry, phrase), " (%s)",
-                   ", to cast it now. It %s." % does(entry, menu).rstrip("."))
+                   ", to cast it now. It %s." % does(entry).rstrip("."))
 
 
 def label(phrase, taken):
@@ -234,18 +276,17 @@ def label(phrase, taken):
 
 # -- the call --------------------------------------------------------------------------
 
-def questions(row, entries, menu_text="", long=None):
+def questions(row, entries, long=None):
     """`({"cast": the choice question}, {label: entry})`. The instructions are
     `Line [1], Steve at 18:22:31: “…”. Which of Steve's incantations is line [1], …?`; the
     options one per incantation, then `not_a_cast`. A long line (over MAX_WORDS) is asked in
     the LONG_ wording (`long`, or else its words counted here)."""
     if long is None:
         long = not short_enough(row["text"])
-    menu = menu_lines(menu_text)
     criteria, picked = {}, {}
     for e in entries:
         name = label(e.get("phrase"), set(criteria) | {NOT_A_CAST})
-        criteria[name] = (describe_long if long else describe)(e, menu)
+        criteria[name] = (describe_long if long else describe)(e)
         picked[name] = e
     criteria[NOT_A_CAST] = LONG_NOT_A_CAST_TEXT if long else NOT_A_CAST_TEXT
     who = row["player_name"]

@@ -13,9 +13,9 @@ tasks=False: a box whose bridge has not added it yet), feed.log and the feed's w
 SSH call it makes runs its remote program here too, as the box's Python would: BoxSsh below
 replaces Ssh's one subprocess call and nothing else, so the master check, the retry and the
 unreachable message are vfg's own. What vfg starts itself (vfg watch's follow, the router's Jev
-call) runs the program with this Python. A test class shares one FakeRcon (fake_rcon.py); a
-copy an action starts is a real process on the real kit and speaks RCON to it. box.process(...)
-runs vfg as a process through fake_ssh, for the few end-to-end tests.
+call) runs the program with this Python. A test class shares one FakeRcon (fake_rcon.py), which the
+remote programs speak RCON to. box.process(...) runs vfg as a process through fake_ssh, for the
+few end-to-end tests.
 """
 import ast
 import collections
@@ -67,8 +67,6 @@ TOOLKIT = os.path.dirname(TESTS)
 REPO = os.path.dirname(TOOLKIT)
 VFG = os.path.join(TOOLKIT, "vfg")
 PY = sys.executable
-REAL_LIB = os.path.join(REPO, "scripts", "_lib")
-SCRIPTS_TEST = os.path.join(REPO, "scripts", "_test")
 FEED_RE = re.compile(r"^([A-Z]+)#\d+ \d\d:\d\d:\d\d ")
 ISO_RE = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")
 if TESTS not in sys.path:
@@ -145,20 +143,6 @@ def program_args(data):
     return json.loads(ast.literal_eval(m.group(1))) if m else None
 
 
-class FastPoll(object):
-    """`time` for scripts/_lib/instances.py on the box here: Box.wait, which waits on a copy to the
-    end of a deadline, looks for it every 5 ms, not every 50 (a test's copy ends in about 30);
-    every other wait, and every clock, as they are."""
-
-    def __getattr__(self, name):
-        return getattr(time, name)
-
-    @staticmethod
-    def sleep(seconds):
-        time.sleep(min(seconds, 0.005) if sys._getframe(1).f_code.co_name == "wait" else seconds)
-
-
-FAST_POLL = FastPoll()
 _COMPILED = {}
 
 
@@ -268,7 +252,7 @@ class Box(object):
         with open(self.feed, "w") as f:
             f.write("".join(line + "\n" for _seq, line in self.feed_rows))
         shutil.copy(os.path.join(TESTS, "fake_vfg_feed.py"), os.path.join(self.rvfg, "lib", "vfg_feed.py"))
-        for u in ("minecraft", "vfg-bridge", "vfg-jev"):
+        for u in ("minecraft", "vfg-bridge", "vfg-jev", "vfg-engine"):
             write(os.path.join(self.units, u), "active\n")
         self.calls = []         # every SSH call vfg made: {"args": the program's ARGS} or {"cmd": ...}
         self.down = False       # SSH answers 255: EC2 unreachable
@@ -336,23 +320,6 @@ class Box(object):
     def write(self, rel, text):
         """A file in the repo."""
         return write(os.path.join(self.repo, rel), text)
-
-    def predeploy(self):
-        """The repo's scripts/_lib and scripts on the box, stamped, as vfg's first deploy leaves
-        them: a run then sends only the stamps, as to a box deployed once already."""
-        mod = vfg_module()
-        src, dest = os.path.join(self.repo, "scripts"), os.path.join(self.rvfg, "scripts")
-        with self.environ():
-            cfg = mod.Config()
-            for name in sorted(os.listdir(src)):
-                if os.path.isdir(os.path.join(src, name)) and (name == "_lib" or not name.startswith(("_", "."))):
-                    shutil.copytree(os.path.join(src, name), os.path.join(dest, name),
-                                    ignore=shutil.ignore_patterns("__pycache__", ".*", "*.pyc"))
-                    made = mod.action_defaults(cfg, src, name)    # what vfg writes beside each script
-                    for path, _st, data in made:
-                        with open(os.path.join(dest, path), "wb") as f:
-                            f.write(data)
-                    write(os.path.join(dest, name, ".vfg-stamp"), mod.stamp(list(mod.tree(src, name, made))) + "\n")
 
     # -- the PC
     def env(self, **extra):
@@ -505,8 +472,6 @@ class Box(object):
             exec(compiled(head), ns)
             ns["ARGS"] = args
             exec(compiled(tail[:cut]), ns)
-            if "instances" in ns:
-                ns["instances"].time = FAST_POLL
             exec(compiled(tail[cut:]), ns)
         return self.run_here(run, self.box_env())
 

@@ -3,9 +3,9 @@
 #
 # uv, a pinned release checked against its sha256, into VFG_DIR/uv/; CPython 3.12, installed by
 # uv, into VFG_DIR/uv/python/; and VFG_DIR/python a link to it, so VFG_DIR/python/bin/python3 is
-# the one interpreter the scripts, the kit, vfg's remote programs, the bridge and the Jev filter
-# run on, the same version as the owner's PC. Amazon Linux's own python3 (3.9) stays for the
-# host's tools. VFG_DIR defaults to /opt/vfg; provision.sh runs this as a step.
+# the one interpreter vfg's remote programs, the bridge and the Jev filter run on, and the
+# game engine's venv is made from, the same version as the owner's PC. Amazon Linux's own
+# python3 (3.9) stays for the host's tools. VFG_DIR defaults to /opt/vfg; provision.sh runs this as a step.
 # Idempotent: run again, it changes nothing that is already right.
 set -euo pipefail
 shopt -s inherit_errexit
@@ -44,8 +44,11 @@ if [[ $("$UV" --version 2>/dev/null || true) != "uv $UV_VERSION"* ]]; then
   mv -f "$UV.new" "$UV"
 fi
 
-# 2. CPython 3.12, uv's build (its download checked by uv); nothing put on root's PATH.
+# 2. CPython 3.12, uv's build (its download checked by uv); nothing put on root's PATH. Readable and
+#    runnable by every user: the engine's venv (ec2-user's) and the test server's sandboxed tests
+#    (vfgtest's) run on it.
 "$UV" python install --no-bin --quiet "$PYTHON"
+chmod -R u+rwX,go+rX,go-w "$VFG/uv/python"
 py=$("$UV" python find --managed-python --no-python-downloads "$PYTHON")
 home=$(dirname "$(dirname "$py")")
 

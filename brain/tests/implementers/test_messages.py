@@ -35,7 +35,8 @@ class Run:
     def __init__(self, cfg, vfg=None):
         self.cfg = cfg
         self.harness = FakeHarness()
-        self.vfg = vfg or FakeVfg().on("prefix", answer=ok("THE KIT\n")).on("place", "list", answer=ok("none\n"))
+        self.vfg = vfg or (FakeVfg().on("prefix", answer=ok("THE KIT\n"))
+                           .on("engine", "places", answer=ok('{"ok": true, "places": []}')))
         self.reports: list[tuple[str, str, str]] = []
         self.on_report = None
 
@@ -77,15 +78,10 @@ def write(path, text):
 
 
 def effects(r):
-    """What allowed calls do on disk: vfg script new writes the script and its action, a Write or an
-    Edit its file (the new text as given)."""
+    """What allowed calls do on disk: a Write or an Edit writes its file (the new text as given)."""
 
     def effect(name, inp):
-        if name == "Bash" and inp["command"].startswith("vfg script new "):
-            n = inp["command"].split()[3]
-            write(r.file("made/main/scripts/%s/main.py" % n), "copied")
-            write(r.file("made/main/actions/%s.py" % n), "copied")
-        elif name in ("Write", "Edit"):
+        if name in ("Write", "Edit"):
             write(r.file(inp["file_path"]), inp.get("content") or inp.get("new_string") or "")
 
     return effect
@@ -127,12 +123,12 @@ async def test_parts_that_come_while_a_run_reports_make_one_resumed_run(cfg):
 
 async def test_a_cancel_goes_into_the_live_run_as_it_is_and_code_puts_back_what_is_not_back(cfg):
     r = Run(cfg)
-    write(r.file("made/main/scripts/ice_beam_steve/main.py"), "v1")
+    write(r.file("made/main/content/ice_beam_steve.py"), "v1")
     gate = asyncio.Event()
     r.harness.add(session("s1"),
-                  tool("Edit", file_path="made/main/scripts/ice_beam_steve/main.py", old_string="v1", new_string="v2"),
-                  bash("vfg script new frost_ring --from ice_beam"),
-                  tool("Write", file_path="made/main/presets/cold.py", content="x"),
+                  tool("Edit", file_path="made/main/content/ice_beam_steve.py", old_string="v1", new_string="v2"),
+                  tool("Write", file_path="made/main/content/ice_beam_steve_ring.py", content="x"),
+                  tool("Write", file_path="made/main/tests/ice_beam_steve.py", content="x"),
                   done("Cancelled: I put the frost ring back; the beam I could not."), gate=gate, effect=effects(r))
     await r.imps.start("ice_beam_steve", BRIEF)
     run = await r.until_live("ice_beam_steve")
@@ -145,16 +141,19 @@ async def test_a_cancel_goes_into_the_live_run_as_it_is_and_code_puts_back_what_
     [(task, status, report)] = r.reports
     assert status == "done"  # Cancelled is done (Brain_Loop's tasks table: open, done, failed)
     assert report.startswith("Cancelled: I put the frost ring back; the beam I could not.\nCode put back: ")
-    assert "restored made/main/scripts/ice_beam_steve/main.py" in report and "removed made/main/scripts/frost_ring/" in report
-    assert "removed made/main/presets/cold.py" in report
-    assert open(r.file("made/main/scripts/ice_beam_steve/main.py")).read() == "v1"
-    assert not os.path.exists(r.file("made/main/scripts/frost_ring")) and not os.path.exists(r.file("made/main/presets/cold.py"))
+    assert report.endswith("Code put back: restored made/main/content/ice_beam_steve.py; removed "
+                           "made/main/content/ice_beam_steve_ring.py; removed made/main/tests/ice_beam_steve.py; "
+                           "reloaded the engine.")
+    assert open(r.file("made/main/content/ice_beam_steve.py")).read() == "v1"
+    assert not os.path.exists(r.file("made/main/content/ice_beam_steve_ring.py"))
+    assert r.vfg.made("engine", "reload") == [["engine", "reload"]]
 
 
 async def test_a_cancel_after_the_run_resumes_with_its_words_and_puts_back_that_runs_changes(cfg):
     r = Run(cfg)
-    r.harness.add(session("s1"), bash("vfg script new ice_beam_steve --from ice_beam"), done(), effect=effects(r))
-    r.harness.add(tool("Edit", file_path="made/main/scripts/ice_beam_steve/main.py", old_string="copied",
+    r.harness.add(session("s1"), tool("Write", file_path="made/main/content/ice_beam_steve.py", content="copied"),
+                  done(), effect=effects(r))
+    r.harness.add(tool("Edit", file_path="made/main/content/ice_beam_steve.py", old_string="copied",
                        new_string="v2"), done("Done: bigger."), effect=effects(r))
     r.harness.add(done("Cancelled: back as it was."))
     await r.imps.start("ice_beam_steve", BRIEF)
@@ -166,10 +165,10 @@ async def test_a_cancel_after_the_run_resumes_with_its_words_and_puts_back_that_
     cancel = r.harness.runs[2]
     assert (cancel.kind, cancel.resumed, cancel.prompt) == ("resume", "s1", cancel_prompt("ice_beam_steve", CANCEL))
     assert cancel.prompt == CANCEL + "\nEnd with your report, its last line DESCRIPTION: what ice_beam_steve is now."
-    # the run it cancels is the follow-up: its edit goes, and the script the first run made stays
-    assert open(r.file("made/main/scripts/ice_beam_steve/main.py")).read() == "copied"
+    # the run it cancels is the follow-up: its edit goes, and the class the first run made stays
+    assert open(r.file("made/main/content/ice_beam_steve.py")).read() == "copied"
     assert r.reports[-1] == ("ice_beam_steve", "done", "Cancelled: back as it was.\n"
-                             "Code put back: restored made/main/scripts/ice_beam_steve/main.py.")
+                             "Code put back: restored made/main/content/ice_beam_steve.py; reloaded the engine.")
 
 
 async def test_a_cancel_before_a_new_task_began_starts_nothing(cfg):
@@ -191,7 +190,7 @@ async def test_the_warning_near_the_turn_cap_then_the_runs_own_report_and_code_p
     cfg.max_turns = 8
     r = Run(cfg)
     reqs = [request(1000, 0, 0, 10)] * 3
-    r.harness.add(session("s1"), *reqs, tool("Write", file_path="made/main/presets/hot.py", content="x"),
+    r.harness.add(session("s1"), *reqs, tool("Write", file_path="made/main/content/speed_dash.py", content="x"),
                   done("Failed: tried a launch; no command moves a player."), effect=effects(r))
     await r.imps.start("speed_dash", BRIEF)
     await r.settle()
@@ -199,17 +198,17 @@ async def test_the_warning_near_the_turn_cap_then_the_runs_own_report_and_code_p
     assert LIMIT == ("LIMIT: you are about to run out of turns and time. Stop building now. Put everything back the "
                      "way it was before this run, then report Failed: what you tried, why it did not work, and what might.")
     assert r.reports == [("speed_dash", "failed", "Failed: tried a launch; no command moves a player.\n"
-                          "Code put back: removed made/main/presets/hot.py.")]
+                          "Code put back: removed made/main/content/speed_dash.py; reloaded the engine.")]
 
 
 async def test_a_run_past_its_turn_cap_is_stopped_put_back_and_reported_from_what_the_guard_saw(cfg):
     cfg.max_turns = 6
     r = Run(cfg)
-    write(r.file("made/main/scripts/speed_dash/main.py"), "v1")
-    edit = tool("Edit", file_path="made/main/scripts/speed_dash/main.py", old_string="v1", new_string="v9")
-    cmd = bash("vfg action run speed_dash player=Steve --task speed_dash")
-    r.harness.add(session("s1"), edit, bash("vfg script new dash_two --from speed_dash"), cmd,
-                  result_of(cmd, "Traceback: no such attribute velocity"), *[request(100, 0, 0, 1)] * 7,
+    write(r.file("made/main/content/speed_dash.py"), "v1")
+    edit = tool("Edit", file_path="made/main/content/speed_dash.py", old_string="v1", new_string="v9")
+    cmd = bash("vfg engine reload speed_dash dash_two")
+    r.harness.add(session("s1"), edit, tool("Write", file_path="made/main/content/dash_two.py", content="x"), cmd,
+                  result_of(cmd, "speed_dash: Traceback: no such attribute velocity"), *[request(100, 0, 0, 1)] * 7,
                   done("never seen"), gate=asyncio.Event(), effect=effects(r))
     await r.imps.start("speed_dash", BRIEF)
     await r.settle()
@@ -219,13 +218,13 @@ async def test_a_run_past_its_turn_cap_is_stopped_put_back_and_reported_from_wha
     assert status == "failed"
     assert report.split("\n") == [
         "Failed: stopped at its limit (its 6 turns); put back to the last working version.",
-        "It had made: scripts dash_two; actions dash_two.",
-        "It had changed: made/main/actions/dash_two.py, made/main/scripts/speed_dash/main.py.",
-        "Its last commands: `Edit made/main/scripts/speed_dash/main.py`; `vfg script new dash_two --from speed_dash`; "
-        "`vfg action run speed_dash player=Steve --task speed_dash` gave the error: Traceback: no such attribute velocity.",
-        "Code put back: removed made/main/actions/dash_two.py; restored made/main/scripts/speed_dash/main.py; "
-        "removed made/main/scripts/dash_two/."]
-    assert open(r.file("made/main/scripts/speed_dash/main.py")).read() == "v1"
+        "It had made: content speed_dash, dash_two.",
+        "It had changed: made/main/content/dash_two.py, made/main/content/speed_dash.py.",
+        "Its last commands: `Edit made/main/content/speed_dash.py`; `Write made/main/content/dash_two.py`; "
+        "`vfg engine reload speed_dash dash_two` gave the error: speed_dash: Traceback: no such attribute velocity.",
+        "Code put back: removed made/main/content/dash_two.py; restored made/main/content/speed_dash.py; "
+        "reloaded the engine."]
+    assert open(r.file("made/main/content/speed_dash.py")).read() == "v1"
 
 
 async def test_a_warned_runs_status_from_the_first_line_that_says_it(cfg):
@@ -247,7 +246,7 @@ async def test_the_clis_own_turn_cap_is_a_stop_at_the_limit_too(cfg):
     await r.imps.start("high_step", BRIEF)
     await r.settle()
     assert r.reports[0][1:] == ("failed", "Failed: stopped at its limit (its 100 turns); put back to the last working "
-                                "version.\nCode put back: nothing; the run had changed no made file, copy or place.")
+                                "version.\nCode put back: nothing; the run had changed no made file, binding or grant.")
 
 
 async def test_the_warning_near_the_time_limit_and_a_run_that_reports_after_it(cfg):
@@ -260,24 +259,24 @@ async def test_the_warning_near_the_time_limit_and_a_run_that_reports_after_it(c
     await r.settle()
     assert r.harness.runs[0].sent == [LIMIT] and not r.harness.runs[0].stopped
     assert r.reports == [("speed_dash", "failed", "Failed: ran out of time; it needs a velocity command.\n"
-                          "Code put back: nothing; the run had changed no made file, copy or place.")]
+                          "Code put back: nothing; the run had changed no made file, binding or grant.")]
 
 
-async def test_copies_are_put_back_through_vfg_after_a_cancel(cfg):
-    home = cfg.home
-    os.makedirs(home)
-    with open(os.path.join(home, "running.json"), "w") as f:
-        json.dump({"copies": {"beam_steve": {"action": "beam", "script": "beam", "values": {"radius": 5},
-                                             "task": "beam_steve", "started": 1}}}, f)
+async def test_bindings_and_grants_are_put_back_through_vfg_after_a_cancel(cfg):
     r = Run(cfg)
+    bindings = [{"id": "steve.fire_ball", "player": "Steve", "phrase": "fire ball", "ability": "fireball"}]
+    grants = []
+    r.vfg.on("engine", "incantations", answer=lambda argv: ok(json.dumps({"ok": True, "incantations": bindings})))
+    r.vfg.on("engine", "instances", answer=lambda argv: ok(json.dumps({"ok": True, "instances": [
+        {"instance": "ability:%s#1" % a, "kind": "ability", "id": a, "user": u} for u, a in grants]})))
 
-    def effect(name, inp):  # vfg script set changes the copy's values, as vfg writes running.json through
-        with open(os.path.join(home, "running.json"), "w") as f:
-            json.dump({"copies": {"beam_steve": {"action": "beam", "script": "beam", "values": {"radius": 9},
-                                                 "task": "beam_steve", "started": 1}}}, f)
+    def effect(name, inp):  # what the engine has after the calls
+        bindings[:] = [{"id": "steve.fire_ball", "player": "Steve", "phrase": "fire ball", "ability": "beam_steve"}]
+        grants[:] = [("Steve", "beam_steve")]
 
     gate = asyncio.Event()
-    r.harness.add(session("s1"), bash("vfg script set beam_steve radius=9"), done("Cancelled: radius back."),
+    r.harness.add(session("s1"), bash("vfg engine grant Steve beam_steve && vfg engine bind Steve 'fire ball' "
+                                      "beam_steve --by beam_steve"), done("Cancelled: as asked."),
                   gate=gate, effect=effect)
     await r.imps.start("beam_steve", BRIEF)
     await r.until_live("beam_steve")
@@ -286,8 +285,10 @@ async def test_copies_are_put_back_through_vfg_after_a_cancel(cfg):
     await r.imps.follow_up("beam_steve", CANCEL)
     gate.set()
     await r.settle()
-    assert r.vfg.made("script", "set") == [["script", "set", "beam_steve", "radius=5"]]
-    assert r.reports[-1][2].endswith("Code put back: set beam_steve back (radius).")
+    assert r.vfg.made("engine", "bind") == [["engine", "bind", "Steve", "fire ball", "fireball", "--aliases", "[]"]]
+    assert r.vfg.made("engine", "revoke") == [["engine", "revoke", "Steve", "beam_steve"]]
+    assert r.reports[-1][2].endswith("Code put back: bound steve.fire_ball again as it was; revoked beam_steve from "
+                                     "Steve.")
 
 
 # ---------------------------------------------------------------- the review's fixes
@@ -295,14 +296,14 @@ async def test_copies_are_put_back_through_vfg_after_a_cancel(cfg):
 async def test_a_warned_run_that_reports_done_keeps_its_work(cfg):
     cfg.max_turns = 8
     r = Run(cfg)
-    r.harness.add(session("s1"), *[request(1000, 0, 0, 10)] * 3, tool("Write", file_path="made/main/presets/hot.py",
+    r.harness.add(session("s1"), *[request(1000, 0, 0, 10)] * 3, tool("Write", file_path="made/main/content/hot.py",
                                                                     content="x"),
                   done("Done: built it just in time."), effect=effects(r))
     await r.imps.start("speed_dash", BRIEF)
     await r.settle()
     assert r.harness.runs[0].sent == [LIMIT]
     assert r.reports == [("speed_dash", "done", "Done: built it just in time.")]  # no put-back line
-    assert os.path.exists(r.file("made/main/presets/hot.py"))
+    assert os.path.exists(r.file("made/main/content/hot.py"))
 
 
 async def test_a_message_in_a_run_stopped_at_its_limit_goes_to_a_resume(cfg):
@@ -367,8 +368,8 @@ async def test_usage_is_written_at_shutdown_and_after_a_crash(cfg):
 
 async def test_a_cancel_after_a_restart_puts_back_from_the_snapshot_kept_on_disk(cfg):
     r = Run(cfg)
-    write(r.file("made/main/scripts/ice_beam_steve/main.py"), "v1")
-    r.harness.add(session("s1"), tool("Edit", file_path="made/main/scripts/ice_beam_steve/main.py", old_string="v1",
+    write(r.file("made/main/content/ice_beam_steve.py"), "v1")
+    r.harness.add(session("s1"), tool("Edit", file_path="made/main/content/ice_beam_steve.py", old_string="v1",
                                       new_string="v2"), done("Done: bigger."), effect=effects(r))
     await r.imps.start("ice_beam_steve", BRIEF)
     await r.settle()
@@ -378,8 +379,9 @@ async def test_a_cancel_after_a_restart_puts_back_from_the_snapshot_kept_on_disk
     again.harness.add(done("Cancelled: as asked."))
     await again.imps.follow_up("ice_beam_steve", CANCEL, session="s1")
     await again.settle()
-    assert open(r.file("made/main/scripts/ice_beam_steve/main.py")).read() == "v1"
-    assert again.reports[-1][2].endswith("Code put back: restored made/main/scripts/ice_beam_steve/main.py.")
+    assert open(r.file("made/main/content/ice_beam_steve.py")).read() == "v1"
+    assert again.reports[-1][2].endswith("Code put back: restored made/main/content/ice_beam_steve.py; reloaded the "
+                                         "engine.")
     again.harness.add(done("Done: bigger."))
     await again.imps.follow_up("ice_beam_steve", "bigger again")  # a real run: the old snapshot goes,
     await again.settle()  # and this run's is kept in its place

@@ -284,7 +284,7 @@ async def run_respond(name: str, opt: dict, args) -> None:
     playtest.queue_usage(out)
     pt = Playtest(Path(args.db))
     cfg = config.load()
-    catalog = actions.load(cfg.repo, cfg.server)
+    catalog = actions.load(cfg.repo)
     jev = jev_now(Path(args.jev))
     bench = read_set(Path(args.set), args.limit, args.view)
     prompt = DECIDE_PROMPT if opt["prompt"] == "decide" else TODAY_PROMPT
@@ -397,7 +397,7 @@ def run_council(name: str, opt: dict, args) -> None:
     out.mkdir(parents=True, exist_ok=True)
     pt = Playtest(Path(args.db))
     cfg = config.load()
-    catalog = actions.load(cfg.repo, cfg.server)
+    catalog = actions.load(cfg.repo)
     menu_path = out / "menu.md"
     menu_path.write_text(jev_menu(catalog) + "\n", encoding="utf-8")
     menu, _ = read_menu(str(menu_path))

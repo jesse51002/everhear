@@ -1,13 +1,12 @@
 # up.py: vfg up. ARGS: {"mc": "/opt/mc", "vfg": "/opt/vfg", "wait": 90}
-# Starts minecraft, vfg-bridge and vfg-jev if they are down, then waits until
-# all three are active and RCON answers `list`. The test server's unit, minecraft-test, where it
-# is installed, is only reported, and started without waiting when it is down (reset first when it
-# gave up): vfg up never waits for it nor fails on it, since vfg test restarts it after every test
-# and brings it up itself.
-import glob
+# Starts minecraft, vfg-bridge, vfg-jev and vfg-engine (the game engine spec's one engine process)
+# if they are down, then waits until all four are active and RCON answers `list`. The test
+# server's unit, minecraft-test, where it is installed, is only reported, and started without
+# waiting when it is down (reset first when it gave up): vfg up never waits for it nor fails on it,
+# since vfg test restarts it after every test and brings it up itself.
 import subprocess
 
-UNITS = ["minecraft", "vfg-bridge", "vfg-jev"]
+UNITS = ["minecraft", "vfg-bridge", "vfg-jev", "vfg-engine"]
 TEST_UNIT = "minecraft-test"
 
 
@@ -118,13 +117,6 @@ def main():
         rows.append((TEST_UNIT, test))
     seq = last_feed_seq(os.path.join(ARGS["vfg"], "feed.log"))
     rows.append(("feed", "no feed.log yet" if seq is None else "last seq %d" % seq))
-    running = []
-    for pidfile in sorted(glob.glob(os.path.join(ARGS["vfg"], "run", "*.pid"))):
-        name = os.path.basename(pidfile)[:-4]
-        pid = read_pid(pidfile)
-        if pid and pid_with_marker(pid, "VFG_SCRIPT=" + name):
-            running.append(name)
-    rows.append(("scripts", "running: " + (" ".join(running) if running else "none")))
     for name, text in rows:
         print("%-12s%s" % (name + " " if len(name) >= 12 else name, text))
     sys.stdout.flush()

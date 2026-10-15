@@ -110,7 +110,7 @@ def cli_env(cfg: ImplementerConfig, address: str | None) -> dict[str, str]:
     know reads, and the window is capped by that)."""
     env = session_env(os.environ)
     env["CLAUDE_AGENT_SDK_CLIENT_APP"] = "vfg-brain/0.1"
-    env["PYTHONPYCACHEPREFIX"] = os.path.join(cfg.brain_dir, "pycache")  # py_compile leaves no __pycache__ in scripts/
+    env["PYTHONPYCACHEPREFIX"] = os.path.join(cfg.brain_dir, "pycache")  # py_compile leaves no __pycache__ in made/
     default_ms, most_ms = bash_timeouts_ms(cfg)
     env["BASH_DEFAULT_TIMEOUT_MS"], env["BASH_MAX_TIMEOUT_MS"] = str(default_ms), str(most_ms)
     # No "<total_tokens>N tokens left</total_tokens>" note on every turn (a 15M countdown the CLI

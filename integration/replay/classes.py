@@ -113,7 +113,7 @@ def run_jev(args) -> None:
     out.mkdir(parents=True, exist_ok=True)
     pt = Playtest(Path(args.db))
     cfg = config.load()
-    catalog = actions.load(cfg.repo, cfg.server)
+    catalog = actions.load(cfg.repo)
     menu_path = out / "menu.md"
     menu_path.write_text(jev_menu(catalog) + "\n", encoding="utf-8")
     menu, _ = read_menu(str(menu_path))
@@ -232,7 +232,7 @@ async def run_respond(args) -> None:
     queue_usage(out)
     pt = Playtest(Path(args.db))
     cfg = config.load()
-    catalog = actions.load(cfg.repo, cfg.server)
+    catalog = actions.load(cfg.repo)
     classes = final_classes(out)
     entries = pt.entries({i: (c, fed) for i, (c, fed, _, _) in classes.items()})
     clock = Clock(entries, getattr(cfg, "batch_s", 60.0))

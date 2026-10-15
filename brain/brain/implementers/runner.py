@@ -1,6 +1,6 @@
 """The implementers: one run per task, in the harness the settings name (VFG_IMPL_HARNESS: Claude
 Code by default), which code starts from the brief the brain wrote. A task is known by its name
-(Prototype_Named_Tasks), which the script, the action and the copy its implementer makes take too.
+(Prototype_Named_Tasks), which the class its implementer makes takes too, and every binding it sends.
 The implementer is the main agent, with nothing around it: its system prompt is
 prompts/implementer.md and `vfg prefix`, its brief is the brain's with the task's name, the saved
 places and the EXAMPLES block (brief.py), and the guard (guard.py) holds every tool call to its
@@ -17,7 +17,7 @@ prices each model request itself (usage.py).
 Its last message is its report, which goes to on_report with "failed" for an error, a crash or a
 stop at its limit, else the report's first word (Done, Failed, or Cancelled, which is "done"). The
 report's last line, DESCRIPTION: what the thing is now, is taken off and given on its own
-(split_description), with what the task made (guard.made_now).
+(split_description), with what the task made (guard.made_now: its classes, bindings and grants).
 
 A follow-up to a task whose run is live goes into that run as a MESSAGE (Run.send), read at its next
 safe point, and the run's one report covers it; one that comes after the run has ended resumes its
@@ -46,7 +46,7 @@ from . import prefix as implementer_prefix
 from . import putback
 from . import usage
 from .config import ImplementerConfig, js_num, log
-from .guard import MADE_KINDS, GuardContext, brief as short, made_now, running_copies
+from .guard import MADE_KINDS, GuardContext, brief as short, made_now
 from .harness.base import (ERROR, STOPPED, TURNS, Compacted, Done, Harness, Request, Run, Session, Text, ToolCall,
                            ToolResult)
 from .vfg import VfgRunner, vfg as vfg_runner, why
@@ -54,7 +54,7 @@ from .vfg import VfgRunner, vfg as vfg_runner, why
 __all__ = ["Implementers", "ImplementerConfig", "Report", "split_description"]
 
 # (task name, "done" or "failed", the report without its DESCRIPTION line, the description or "",
-#  what it made {"scripts", "actions", "presets", "copies"})
+#  what it made {"content", "bindings", "grants"})
 Report = Callable[[str, str, str, str, dict[str, list[str]]], Awaitable[None]]
 # (task name, the implementer's session id): the brain keeps it, so a follow-up after a restart resumes it
 OnSession = Callable[[str, str], None]
@@ -249,7 +249,6 @@ class Implementers:
         # the same bytes; tried again at the next start when it failed.
         self._prefix = ""
         self._prefix_lock = asyncio.Lock()
-        self._running_copies = running_copies(cfg.home, self.vfg)
         self._tasks: dict[str, _Task] = {}
         self._background: set[asyncio.Task] = set()
         self._closing = False
@@ -268,16 +267,18 @@ class Implementers:
         t.jobs.append(("start", brief))
         self._kick(t)
 
-    async def follow_up(self, name: str, text: str, session: str | None = None, brief: str = "") -> None:
+    async def follow_up(self, name: str, text: str, session: str | None = None, brief: str = "",
+                        made: dict | None = None) -> None:
         """To the task's implementer. While its run is live (or starting), the text goes into that
         run as a message, and the run's one report covers it; else its session is resumed with the
         text, ending in another on_report. A text that starts CANCELLED: is a cancel (CANCEL).
-        `session` and `brief` are for a task this process did not start (the brain keeps both in the
-        task's row): its session resumed; with no session at all, a new implementer starts on
-        `brief`, what the task is, and the text."""
+        `session`, `brief` and `made` are for a task this process did not start (the brain keeps
+        them in the task's row): its session resumed; with no session at all, a new implementer
+        starts on `brief`, what the task is, and the text; and its guard starts from what the task
+        made before (`made`), so its reports say all of it, as it is now."""
         t = self._tasks.get(name)
         if t is None:
-            t = self._tasks[name] = _Task(name, self._guard(name), brief=brief, session=session)
+            t = self._tasks[name] = _Task(name, self._guard(name, made), brief=brief, session=session)
         else:
             t.session = t.session or session
             t.brief = t.brief or brief
@@ -334,11 +335,14 @@ class Implementers:
 
     # ------------------------------------------------------------------ one task's jobs
 
-    def _guard(self, name: str) -> GuardContext:
-        """The task's guard, kept with it: what it made over every run, and its own script, the one
-        named as the task, its own to change from the start (GuardContext.own)."""
-        return GuardContext(repo=self.cfg.repo, server=self.cfg.server, task=name, running=self._running_copies,
-                            test_server=bool(self.cfg.test_box))
+    def _guard(self, name: str, made: dict | None = None) -> GuardContext:
+        """The task's guard, kept with it: what it made over every run, from what the task's row says
+        it made before this process (`made`)."""
+        g = GuardContext(repo=self.cfg.repo, server=self.cfg.server, task=name, test_server=bool(self.cfg.test_box))
+        for k in MADE_KINDS:
+            got = (made or {}).get(k)
+            g.made[k] = list(dict.fromkeys(str(x) for x in got)) if isinstance(got, list) else []
+        return g
 
     def _kick(self, t: _Task) -> None:
         if self._closing:
@@ -557,8 +561,7 @@ class Implementers:
     # ------------------------------------------------------------------ the snapshots
 
     def _new_snapshot(self, t: _Task) -> putback.Snapshot:
-        t.snapshot = putback.Snapshot(repo=self.cfg.repo, server=self.cfg.server, home=self.cfg.home, task=t.name,
-                                      vfg=self.vfg)
+        t.snapshot = putback.Snapshot(repo=self.cfg.repo, server=self.cfg.server, task=t.name, vfg=self.vfg)
         return t.snapshot
 
     def _snapshot_path(self, name: str) -> str:
@@ -789,8 +792,8 @@ class Implementers:
 
     async def _report(self, t: _Task, status: str, report: str, description: str = "") -> None:
         """The report to the brain, with the description and what the task made, cumulative over its
-        runs in this process and checked against the disk."""
-        made = made_now(t.guard)
+        runs in this process and checked against the disk and the engine."""
+        made = await made_now(t.guard, self.vfg)
         log("implementer", "%s %s: %s" % (t.name, status, re.sub(r"\s+", " ", report)[:300]))
         log("implementer", "%s made %s; description: %s" % (
             t.name, "; ".join("%s %s" % (k, ", ".join(made[k])) for k in MADE_KINDS if made[k]) or "nothing",

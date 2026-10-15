@@ -1,28 +1,27 @@
 """The action executor: runs one exact action through `vfg action run` and reports how it went.
 Code, no model.
 
-It runs `vfg action run <action> key=value … [as=<name> | --for <player>] [--task <name>]` (a
-list or a dict as JSON), which prints ONE JSON line (Contracts §8):
+It runs `vfg action run <action> key=value … [--task <name>]` (a list or a dict as JSON: a
+scenario's or a mark's args go as one `args={…}` word), which prints ONE JSON line (Contracts §8):
 
-    {"ok": bool, "copy": str, "action": str, "running": bool, "summary": str, "facts": {},
-     "notes": [], "error": str?}
+    {"ok": bool, "action": str, "running": bool, "summary": str, "facts": {}, "notes": [],
+     "error": str?}
 
 and says which of five things happened (`Ran.kind`):
-- "ok": it ran. A once action answers with its script's result(); one past its timeout with
-  what it said so far and "still running as <copy>", `running` true, and it is never run again; an until-stopped one
-  once it is ready. vfg's notes (a value clamped) are added to the summary.
-- "refused": it ran and Minecraft or the script said no: `ok` false. Its result goes back to
-  the brain's next step, with Minecraft's error and the reference of every command it used
-  (act.py). A script that found a player offline says so in its facts (`offline`).
-- "partial": `ok` false with `partial` in the facts: it may have acted (RCON dropped
-  mid-list, a script failed after it sent a command). Never retried; the summary names what
-  ran (`ran`).
-- "timeout": vfg itself did not answer in time (exit 124). It may still have happened, so it
-  is never retried.
+- "ok": the engine did it. A start answers with a one-off scenario's result, or "running as
+  <instance>" (`running` true) for one that goes on. vfg's notes (a value clamped) are added to the
+  summary.
+- "refused": it ran and the engine (or Minecraft, under a scenario) said no: `ok` false. Its result
+  goes back to the brain's next step, with Minecraft's error and the reference of every command it
+  used (act.py). One that found a player offline says so in its facts (`offline`).
+- "partial": `ok` false with `partial` in the facts: it may have acted (a command scenario that
+  failed after it sent a command). Never retried; the summary names what ran (`ran`).
+- "timeout": vfg, or the engine, did not answer in time (exit 124). It may still have happened, so
+  it is never retried.
 - "not_run": it could not be run at all, so nothing of it happened: exit 2 (a value or a key vfg
-  refused), 3 (the box's scripts are not deployed), 4 (SSH down), 5 (RCON down), or no JSON line,
-  or vfg itself missing. `code` keeps the exit, so the brain can tell a refused value (fix it) from
-  a box out of reach (try again).
+  refused), 3 (not configured), 4 (SSH down), 5 (RCON down), 6 (the game engine not running), or
+  no JSON line, or vfg itself missing. `code` keeps the exit, so the brain can tell a refused value
+  (fix it) from a box out of reach (try again).
 """
 
 from __future__ import annotations
@@ -36,11 +35,10 @@ from .actions import word
 from .config import log
 from .vfg import Vfg, VfgResult, why
 
-# Past the action's own timeout, which vfg keeps (the box counts it from the op's start, the
-# deploy inside it), so vfg's answer is the one seen: what is outside it is vfg's own start
-# (uv, pydantic, the actions), the pack and the SSH call, a new connection to EC2 included.
+# Past the action's own timeout, which vfg keeps, so vfg's answer is the one seen: what is outside it
+# is vfg's own start (uv, pydantic, the actions) and the SSH call, a new connection to EC2 included.
 GRACE_S = 10
-NOT_RUN = (2, 3, 4, 5, 127)
+NOT_RUN = (2, 3, 4, 5, 6, 127)
 
 
 Kind = Literal["ok", "refused", "timeout", "not_run", "partial"]
@@ -52,8 +50,7 @@ class Ran:
     summary: str
     facts: dict[str, Any] = field(default_factory=dict)
     kind: Kind = "ok"
-    copy: str = ""           # the copy's name on EC2
-    running: bool = False    # it keeps running after this answer
+    running: bool = False    # a scenario it started goes on after this answer
     code: int = 0            # vfg's exit
 
 
@@ -61,20 +58,16 @@ def timeout_for(cls, default: float) -> float:
     return float(getattr(cls, "timeout_s", None) or default)
 
 
-def argv(name: str, values: dict[str, Any], task: str = "", as_name: str | None = None,
-         for_player: str | None = None) -> list[str]:
-    """`action run <name> key=value … [as=<copy>] [--for <player>] [--task <name>]`. The brain's
-    own actions carry no task: their copy is named `<action>_<player>` on the box (--for)."""
-    return ["action", "run", name, *(f"{k}={word(v)}" for k, v in values.items()),
-            *([f"as={as_name}"] if as_name else []), *(["--for", for_player] if for_player else []),
-            *(["--task", task] if task else [])]
+def argv(name: str, values: dict[str, Any], task: str = "") -> list[str]:
+    """`action run <name> key=value … [--task <name>]`. The brain's own actions carry no task."""
+    return ["action", "run", name, *(f"{k}={word(v)}" for k, v in values.items()), *(["--task", task] if task else [])]
 
 
 async def execute(name: str, cls, values: dict[str, Any], task: str, vfg: Vfg, default_timeout: float, *,
-                  as_name: str | None = None, for_player: str | None = None, label: str = "") -> Ran:
+                  label: str = "") -> Ran:
     timeout = timeout_for(cls, default_timeout)
     t0 = time.perf_counter()
-    r = await vfg(*argv(name, values, task, as_name, for_player), timeout=timeout + GRACE_S)
+    r = await vfg(*argv(name, values, task), timeout=timeout + GRACE_S)
     ran = read(r, timeout=timeout)
     ms = int((time.perf_counter() - t0) * 1000)
     log("exec", f"{task or '-'}{label} {name} {ran.kind} (exit {r.code}) {ms} ms: {ran.summary[:300]}")
@@ -93,20 +86,20 @@ def read(r: VfgResult, *, timeout: float | None = None) -> Ran:
         said = str((line or {}).get("error") or (line or {}).get("summary") or "").strip() or why(r)
         return Ran(False, f"could not run it: {said}", kind="not_run", code=r.code)
     facts = line.get("facts") if isinstance(line.get("facts"), dict) else {}
-    copy, running = str(line.get("copy") or ""), bool(line.get("running"))
+    running = bool(line.get("running"))
     if line.get("ok"):
         notes = [str(n) for n in line.get("notes") or [] if str(n).strip()]
         summary = str(line.get("summary") or "").strip() or "done"
         if notes:
             summary += f" ({'; '.join(notes)})"
-        return Ran(True, summary, facts, "ok", copy, running)
+        return Ran(True, summary, facts, "ok", running)
     summary = str(line.get("summary") or line.get("error") or "").strip() or "failed, with no reason given"
     if facts.get("partial"):
         ran = [str(c) for c in facts.get("ran") or []]
         took = f"; these ran and took effect: {'; '.join(ran)}" if ran else ""
         return Ran(False, f"it may have partly happened ({summary}){took} — check before redoing it",
-                   facts, "partial", copy, running)
-    return Ran(False, summary, facts, "refused", copy, running)
+                   facts, "partial", running)
+    return Ran(False, summary, facts, "refused", running)
 
 
 def _json_line(stdout: str) -> dict[str, Any] | None:

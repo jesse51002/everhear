@@ -13,21 +13,22 @@ FAIL or INFO with its numbers as it goes, and a table at the end.
 
 - night: the night of 2026-10-12 replayed safely. On the LIVE server, Carpet's fake KrownJM and
   Styrkaeopteryx stand a few blocks apart (the night's victims; an infinite effect on each), a gold
-  block on the arena and one where the kit's sky stage is (x 3000, y 300, z 3000), forceloaded.
-  A made ice aura (iqd_blizzard: 10 s of freeze damage and slowness round the caster, sparing her,
-  then it ends), bound to Styrkaeopteryx's "freeze" on the live server as an implementer binds it,
-  and its test from the kit's templates (cast as Styrkaeopteryx on the test server: KrownJM beside
+  block on the arena and one at a far spot (x 3000, y 300, z 3000), forceloaded.
+  An ice storm (iqd_blizzard, an engine Scenario: 10 s of freeze damage and slowness round the
+  caster, sparing her, then it ends), deployed to the live engine (vfg engine reload) and bound to
+  Styrkaeopteryx's "freeze" there as an implementer binds it, and its livetest test (cast as
+  Styrkaeopteryx on the test server: KrownJM beside
   her hurt and slowed, she is not, the storm ends), run by vfg test 3 times. Every test passes
   there; the live KrownJM and Styrkaeopteryx keep their exact position, rotation, health, food,
   effects, items and xp; the live console has no new line; the live incantations.json, run/,
   server.properties, the vfg folder, both gold blocks, the forceloads, objectives, gamerules, time,
   weather and border are unchanged (the live entity count is INFO: the arena's animals live).
-- runaway: an aura that never ends (iqd_runaway, as the night's first blizzard: its loop starts a
-  new storm every pass; worse, it ignores SIGTERM and starts a detached copy of itself), and a test
-  that waits for its end. vfg test --timeout 20 stops it ("ran past its 20 s"), in bounded time;
-  afterwards no process of it is left (/proc, by VFG_RUN_DIR) and its unit is gone; the next test
-  starts on a fresh world with no marker, objective, block or slowness of it. Then the same in the
-  plain fallback (VFG_TEST_SANDBOX=none), as INFO: what survives without the sandbox.
+- runaway: a test that never ends (iqd_runaway, a livetest test file: it loops forever, ignores
+  SIGTERM and starts a detached copy of itself in a session of its own). vfg test --timeout 20
+  stops it ("ran past its 20 s", now exit 2: a test the implementer must shorten), in bounded time;
+  afterwards no process of it is left (/proc, by VFG_RUN_DIR and IQD_RUNAWAY=child) and its sandbox
+  unit is gone; the next test starts on a fresh world. Then the same in the plain fallback
+  (VFG_TEST_SANDBOX=none), as INFO: what survives without the sandbox.
 - fresh: a baseline test records the fresh world (objectives, bossbars, teams, border, forceloads,
   gamerules, time, difficulty, weather, players online, entities, a block outside the stage and one
   under it, and a fake player's saved effects, items and xp, which Carpet reloads when he rejoins a
@@ -43,9 +44,10 @@ FAIL or INFO with its numbers as it goes, and a table at the end.
   clears it (TimeoutStopSec 60, then SIGKILL) and the test passes. Each next test passes.
 - refuse: VFG_TEST_BOX naming the live folders, a folder without the marker, a link to the live
   folder: exit 3, at the PC or the box's shell guard. A test that reaches for the live server
-  (iqd_reach: its server.properties, .env, a write, mc with the live properties, a child with them,
-  mc switched to them by hand after its check passed): every reach refused in the sandbox; the
-  kit's NotTestServer again in the plain fallback, its only layer (INFO: what gets through there).
+  (iqd_reach: its server.properties, .env, a write, and an engine and livetest pointed at its
+  properties, which refuse it under VFG_TEST=1 with no marker): every reach refused in the sandbox;
+  the engine's and livetest's own refusal of a non-test server again in the plain fallback (INFO:
+  what gets through there).
   The escapes round the sandbox are integration/testserver_escape/'s test (/proc of the live
   processes, the live ports and the internet, the live RCON lock, sudo): INFO here, since the PC's
   user sandbox runs as the same uid as the live server (a known limitation; its sudo is realmc's
@@ -56,7 +58,7 @@ FAIL or INFO with its numbers as it goes, and a table at the end.
   live probes capped with a test server; and the prompt's exit-4/5 rule against the guard.
 
 Writes OUT/e2e.log (every vfg test's whole output), OUT/summary.json and OUT/summary.md; OUT is
-$VFG_IMPL_REPLAY/testserver-e2e-NAME. Writes its abilities and tests into made/NAME/ (moved aside
+$VFG_IMPL_REPLAY/testserver-e2e-NAME. Writes its content and tests into made/NAME/ (moved aside
 first when it holds anything, into $VFG_IMPL_REPLAY/made-aside/; removed at the end unless
 --keep-made). Spends nothing: no model is called. Never `down --all`, `--purge-key`, `--regen`,
 `key` or `carpet`; realmc's shared env file is never read. Names start with iq-d. The server and
@@ -81,14 +83,18 @@ sys.path.insert(0, REALMC)
 sys.path.insert(0, HERE)
 
 import realmc  # noqa: E402
-from impl_data import ROOT  # noqa: E402
-from incantations_e2e import vfg_env  # noqa: E402
+import engine_e2e  # noqa: E402  (the live engine on the stand-in, as the box runs it)
+from engine_e2e import vfg_env  # noqa: E402
+
+ROOT = os.path.abspath(os.path.expanduser(os.environ.get("VFG_IMPL_REPLAY") or "~/.vfg/impl-replay"))
 
 PREFIX = "iq-d"
 VICTIM, CASTER = "KrownJM", "Styrkaeopteryx"
-STAGE = (3000, 300, 3000)          # where the kit's sky stage is (x 3000, z 3000; floor y 295)
-JUNK_AT = (3070, 300, 3000)        # outside what the kit clears (97 x 97 round the stage, y 280 up)
-UNDER_STAGE = (3001, 275, 3001)    # inside the stage's x and z, under what the kit clears
+STAGE = (3000, 300, 3000)          # a far spot on the LIVE server, for the night's gold block
+# On the TEST server, where livetest's stage is (x 160, z 160; floor y 295, it clears 97 x 97 from
+# y 280 up): junk far outside that clear, and a block under the stage the clear does not reach.
+JUNK_AT = (400, 300, 160)          # outside what livetest clears
+UNDER_STAGE = (160, 275, 160)      # inside the stage's x and z, under what livetest clears (y 280 up)
 ARENA_GOLD = (5, 86, 5)            # a gold block on the live arena
 SERVER_LINE = re.compile(r"^SERVER\s+(\S+) \(RCON (\d+)\): (.*)$")
 CHECK_LINE = re.compile(r"^(PASS|FAIL|CAN'T TELL)\s+(.*?) — (.*)$")
@@ -96,141 +102,120 @@ IQD_LINE = re.compile(r"^IQD\s+(\S+(?: \S+)*?) (\S.*)$")
 
 # ------------------------------------------------------------------ what it writes into made/NAME/
 
-BLIZZARD_ACTION = '''from actions._types import Action, Field, Live, Players
+# What it writes into made/NAME/ for the test server's engine: one ability (content) and its
+# livetest test, and a runaway *test* (a test file that never ends, ignores SIGTERM and starts a
+# detached copy of itself — the misbehaviour is the test's own process, not engine content, since a
+# content class may not loop). vfg engine reload deploys the ability to the LIVE engine so the
+# night's "freeze" can be bound; vfg test deploys this server's content to the test server itself.
+
+BLIZZARD_CONTENT = '''"""Blizzard (integration/testserver_e2e.py): an ice storm round the caster for `seconds` s that hurts and slows everyone near him but him, then ends by itself: the one bound to "freeze"."""
+from vfg_engine import Args, Field, Player, Scenario, ScenarioConfig, State, UNTIL_STOPPED
+from vfg_engine.kit import targets
 
 
-class IqdBlizzard(Action):
-    """Blizzard: an ice storm round the caster for ten seconds that hurts and slows everyone near him but him, then ends: the one to bind to "freeze"."""
+class IqdBlizzard(Scenario):
+    class Config(ScenarioConfig):
+        summary = "An ice storm round the caster: everyone near him but him is hurt and slowed each second, for seconds s; then it ends."
+        duration_s = UNTIL_STOPPED
 
-    script = "iqd_blizzard"
-    runs = "once"
-    takes = ["player", "radius", "seconds", "damage"]
+    class Args(Args):
+        who: Player = Field("caster", description="whose storm it is: bound as caster, so whoever says it")
+        seconds: float = Field(10, ge=1, le=60, description="how long it lasts")
+        radius: float = Field(8, ge=1, le=32, description="how far round him it reaches")
+        damage: float = Field(1, ge=0, le=20, description="freeze damage a second to everyone in it but him")
 
-    player: Players = "@a"
-    """who casts it: the storm is round him, and spares him"""
-    radius: Live[float] = Field(8, ge=1, le=32)
-    """how far round him it reaches, in blocks"""
-    seconds: Live[float] = Field(10, ge=1, le=60)
-    """how long it lasts, in seconds; then it ends by itself"""
-    damage: Live[float] = Field(1, ge=0, le=20)
-    """freeze damage a second to everyone in it but the caster"""
+    every = 1
+
+    class State(State):
+        hits: int = 0
+        until: float = 0.0
+
+    def start(self, ctx):
+        self.state.until = ctx.now + self.args.seconds
+
+    def tick(self, ctx):
+        if ctx.now >= self.state.until:
+            self.result("the blizzard ended: %d hits" % self.state.hits, ended=True, hits=self.state.hits)
+            self.end()
+            return
+        who = self.args.who
+        body = ctx.world.player(who)
+        if body is None:
+            return
+        self.particle("minecraft:snowflake", body.pos, count=120, delta=(self.args.radius / 2, 1.0, self.args.radius / 2), speed=0.05)
+        for target in targets(self, ctx, body.pos, self.args.radius, "everything", spare=(who,)):
+            self.potion("slowness", 3, amplifier=1, who=target.key)
+            if self.args.damage:
+                self.damage(target.key, self.args.damage, "minecraft:freeze")
+                self.state.hits += 1
 '''
 
-BLIZZARD_SCRIPT = '''"""Blizzard: an ice storm round the caster for `seconds` s: everyone within `radius` of him but him (players and mobs) takes `damage` freeze damage and slowness every second; then it ends by itself."""
-ASKS = ["blizzard set to freeze", "an ice aura that freezes everyone near me but me, for ten seconds"]
-from kit import values, result, loop
-import time
-import mc
+BLIZZARD_TEST = '''"""The test of iqd_blizzard (integration/testserver_e2e.py): Styrkaeopteryx says "freeze", the
+incantation vfg test brings from the live server (bound there for her, by this task); the storm round
+her hurts and slows KrownJM beside her, never her, and ends by itself."""
 
-v = values()
-casters = loop.who(v["player"])
-hits = 0
-end = time.time() + float(v["seconds"])
-while time.time() < end and not mc.stopping():
-    for c in casters:
-        sel = "@e[distance=..%s,name=!%s,type=!item,type=!experience_orb,type=!marker]" % (v["radius"], c)
-        out = mc.rcon("execute at %s as %s run damage @s %s minecraft:freeze" % (c, sel, v["damage"]))
-        hits += out.count("Applied")
-        mc.rcon("execute at %s run effect give %s slowness 2 1 true" % (c, sel))
-        mc.rcon("execute at %s run particle snowflake ~ ~1 ~ 3 1 3 0.02 80 force" % c)
-    time.sleep(1.0)
-result("the blizzard ended after %s s: %d hits" % (v["seconds"], hits), ended=True, hits=hits)
+from vfg_engine.livetest import verdict
+
+
+def test(t):
+    t.player("Styrkaeopteryx", 0, 0, 2)                       # the night's two, on the test server's stage
+    t.player("KrownJM", 2, 0, 2)                              # beside her, in the storm
+    husk = t.mob("husk", 0, 0, 6, health=40)                 # in the storm too
+    t.check("the cast is taken", t.cast("freeze", who="Styrkaeopteryx"))   # the real trigger, brought
+    t.watch(12)                                               # the 10 s storm and 2 s after
+    t.check("KrownJM, beside her, is hurt", t.hurt("KrownJM"))
+    t.check("KrownJM is slowed", t.effect("slowness", "KrownJM"))
+    t.check("the husk in it is hurt", t.hurt(husk))
+    t.check("Styrkaeopteryx herself is not hurt", t.unhurt("Styrkaeopteryx"))
+    t.check("the storm has ended (no instance of it is left)",
+            verdict(not t.running("iqd_blizzard")[0], "no iqd_blizzard running after its seconds"))
+    t.check("no error in the engine's log", t.no_errors())
 '''
 
-BLIZZARD_TEST = '''"""The test of iqd_blizzard: Styrkaeopteryx says "freeze"; the storm round her hurts and slows KrownJM beside her, never her, and ends by itself."""
-from kit import test
-
-t = test.Test("Styrkaeopteryx", others=("KrownJM",))   # KrownJM stands 4 to her left
-husk = t.mob("husk", 0, 0, 5, health=40)                # in the storm, 5 ahead
-t.cast("freeze")                                         # the real trigger
-t.watch(12)                                              # the 10 s storm and 2 s after
-t.check("KrownJM, beside her, is hurt", t.hurt("KrownJM"))
-t.check("KrownJM is slowed", t.effect("slowness", "KrownJM"))
-t.check("the husk in it is hurt", t.hurt(husk))
-t.check("Styrkaeopteryx herself is not hurt", t.unhurt())
-t.check("the storm ends by itself", t.said("ended", within=3))
-t.check("no error in its log", t.no_errors())
-t.done()
-'''
-
-RUNAWAY_ACTION = '''from actions._types import Action, Players
-
-
-class IqdRunaway(Action):
-    """Blizzard, as the night's first one was: an ice storm round the caster that slows everyone near him but him, and never ends."""
-
-    script = "iqd_runaway"
-    runs = "once"
-    takes = ["player"]
-
-    player: Players = "@a"
-    """who casts it: the storm is round him"""
-'''
-
-RUNAWAY_SCRIPT = '''"""Blizzard with the night's bug, and worse: its outer loop starts a new storm every pass so it never ends, it ignores a stop (SIGTERM), and it starts a detached copy of itself that does the same."""
-ASKS = ["blizzard"]
-from kit import values, loop
+# The runaway test: a test file that never ends, ignores SIGTERM, and starts a detached copy of
+# itself (a session of its own, so vfg test's process-group kill never reaches it; it inherits
+# VFG_TEST_RUN, so the reap by token does). It casts nothing and needs no content: it checks that
+# vfg test --timeout stops it, the sandbox takes everything in it, and the next test is fresh.
+RUNAWAY_TEST = r'''"""The test of iqd_runaway (integration/testserver_e2e.py): it never ends, ignores a stop, and leaves a detached copy — vfg test --timeout must stop it, and the sandbox take it all."""
 import os
 import signal
 import subprocess
 import sys
 import time
-import mc
 
-UNDER = (%(under)s)
-CHILD = """
-import signal, sys, time
-import mc
-signal.signal(signal.SIGTERM, signal.SIG_IGN)
-c = sys.argv[1]
-while True:
-    try:
-        mc.rcon("execute at %%s run effect give @e[distance=..8,name=!%%s] slowness 3 1 true" %% (c, c))
-        mc.rcon("scoreboard objectives add iqd_runaway_child dummy")
-    except Exception:
-        mc._drop()
-    time.sleep(0.5)
-"""
+CHILD = "import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\nwhile True: time.sleep(1)\n"
 
-v = values()
-caster = (loop.who(v["player"]) or ["Styrkaeopteryx"])[0]
-signal.signal(signal.SIGTERM, signal.SIG_IGN)   # a stop does nothing
-subprocess.Popen([sys.executable, "-c", CHILD, caster], start_new_session=True, stdin=subprocess.DEVNULL,
-                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=dict(os.environ, IQD_RUNAWAY="child"))
-mc.rcon("scoreboard objectives add iqd_runaway dummy")
-while True:   # the outer loop starts a new storm every pass
-    mc.rcon("execute at %%s run effect give @e[distance=..8,name=!%%s] slowness 3 1 true" %% (caster, caster))
-    mc.rcon('execute at %%s run summon marker ~ ~ ~ {Tags:["iqd_runaway"]}' %% caster)
-    mc.rcon("setblock %%d %%d %%d blue_ice" %% UNDER)
-    time.sleep(0.5)
-''' % {"under": "%d, %d, %d" % UNDER_STAGE}
 
-RUNAWAY_TEST = '''"""The test of iqd_runaway: Styrkaeopteryx says "blizzard"; it slows KrownJM, and the test waits for the storm to end."""
-from kit import test
-
-t = test.Test("Styrkaeopteryx", others=("KrownJM",))
-t.cast("blizzard")
-t.watch(3)
-t.check("KrownJM is slowed", t.effect("slowness", "KrownJM"))
-while not t.result():          # waits for the storm's end, which never comes
-    t.wait(1)
-t.check("the storm ends", t.said("ended"))
-t.done()
+def test(t):
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)            # a stop does nothing to the test either
+    subprocess.Popen([sys.executable, "-c", CHILD], start_new_session=True, stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=dict(os.environ, IQD_RUNAWAY="child"))
+    t.check("it ran", True)
+    while True:                                              # never ends: vfg test --timeout stops it
+        time.sleep(1)
 '''
 
 # A test that checks the world it starts on against the fresh world's baseline (CFG["expect"]),
 # probe by probe, then leaves junk in every one of them (CFG["junk"]) for the next test to find.
 FRESH_TEST = r'''"""The test of __NAME__ (integration/testserver_e2e.py): the world it starts on is the fresh one, probe by probe, then it leaves junk in all of them for the next test, were the world kept."""
 import json
+import os
 import time
 
-STARTED = time.time()
-import mc  # noqa: E402
-from kit import test  # noqa: E402
+from vfg_engine.livetest import verdict
+from vfg_engine.mc.rcon import Rcon
 
 CFG = json.loads(r"""__CFG__""")
 JX, JY, JZ = CFG["junk_at"]
 UX, UY, UZ = CFG["under_stage"]
+STARTED = time.time()
+# Its own RCON to the test server (the one VFG_MC_PROPERTIES names), beside t's: the same lock,
+# held reentrantly within this process. The engine under VFG_TEST=1 answers no other server.
+_rc = Rcon(os.environ["VFG_MC_PROPERTIES"])
+
+
+def rcon(cmd):
+    return _rc.command(cmd)
 
 
 def say(key, value):
@@ -239,71 +224,70 @@ def say(key, value):
 
 def online(name, timeout=10):
     end = time.time() + timeout
-    while name not in mc.players() and time.time() < end:
+    while name not in rcon("list") and time.time() < end:
         time.sleep(0.1)
 
 
-say("started", STARTED)
-seen = dict((key, mc.rcon(cmd)) for key, cmd in sorted(CFG["probes"].items()))
-mc.rcon("forceload add %d %d" % (JX, JZ))       # to look there: a fresh world has it unloaded
-time.sleep(1.0)                                 # its entities load a tick or more after
-seen["junk block"] = mc.rcon("execute if block %d %d %d air" % (JX, JY, JZ))
-seen["junk mob"] = mc.rcon("execute if entity @e[x=%d,y=%d,z=%d,distance=..16]" % (JX, JY, JZ))
-seen["tagged junk"] = mc.rcon("execute if entity @e[tag=iqd_junk]")
-seen["runaway markers"] = mc.rcon("execute if entity @e[tag=iqd_runaway]")
-seen["under the stage"] = mc.rcon("execute if block %d %d %d air" % (UX, UY, UZ))
-# a fake player the last test left: Carpet reloads his saved effects, items and xp in a kept world
-mc.rcon("player Junker spawn at %d %d %d facing 0 0 in minecraft:overworld in survival" % (JX, JY + 1, JZ))
-online("Junker")
-for key, path in (("Junker's effects", "active_effects"), ("Junker's items", "Inventory"), ("Junker's xp", "XpLevel")):
-    seen[key] = mc.rcon("data get entity Junker %s" % path)
-mc.rcon("player Junker kill")
-say("seen", seen)
-
-t = test.Test(CFG["player"], others=tuple(CFG["others"]))
-t.check("every probe read", test.verdict(all(seen.values()), "%d probes" % len(seen)))
-for key, want in sorted((CFG.get("expect") or {}).items()):
-    got = " ".join(str(seen.get(key)).split())
-    want = " ".join(want.split())
-    t.check("fresh: " + key, test.verdict(got == want, got[:110] if got == want else "%s; fresh: %s" % (got[:90], want[:90])))
-if CFG.get("watch_slowness"):   # nothing left over keeps slowing the players
-    t.watch(4)
-    for who in [CFG["player"]] + CFG["others"]:
-        v = t.effect("slowness", who)
-        t.check("fresh: %s is never slowed" % who, test.verdict(not v[0], v[1]))
-say("checked", time.time())
-if CFG.get("junk"):
-    j = CFG["junk"]
-    for c in ("scoreboard objectives add iqd_junk_%s dummy" % j, 'bossbar add iqd:junk_%s "junk %s"' % (j, j),
-              "team add iqd_junk_%s" % j, "worldborder center %d %d" % (JX, JZ), "worldborder set 4321",
-              "gamerule keep_inventory true", "gamerule fall_damage false", "gamerule advance_time true",
-              "gamerule mob_griefing false", "setblock %d %d %d diamond_block" % (JX, JY, JZ),
-              "setblock %d %d %d emerald_block" % (UX, UY, UZ),
-              'summon zombie %d %d %d {NoAI:1b,PersistenceRequired:1b,Tags:["iqd_junk"]}' % (JX, JY + 1, JZ),
-              "difficulty peaceful", "time set 13000", "weather thunder",
-              "player Junker spawn at %d %d %d facing 0 0 in minecraft:overworld in survival" % (JX + 2, JY + 1, JZ)):
-        mc.rcon(c)
+def test(t):
+    say("started", STARTED)
+    seen = dict((key, rcon(cmd)) for key, cmd in sorted(CFG["probes"].items()))
+    rcon("forceload add %d %d" % (JX, JZ))      # to look there: a fresh world has it unloaded
+    time.sleep(1.0)                             # its entities load a tick or more after
+    seen["junk block"] = rcon("execute if block %d %d %d air" % (JX, JY, JZ))
+    seen["junk mob"] = rcon("execute if entity @e[x=%d,y=%d,z=%d,distance=..16]" % (JX, JY, JZ))
+    seen["tagged junk"] = rcon("execute if entity @e[tag=iqd_junk]")
+    seen["runaway markers"] = rcon("execute if entity @e[tag=iqd_runaway]")
+    seen["under the stage"] = rcon("execute if block %d %d %d air" % (UX, UY, UZ))
+    # a fake player the last test left: Carpet reloads his saved effects, items and xp in a kept world
+    rcon("player Junker spawn at %d %d %d facing 0 0 in minecraft:overworld in survival" % (JX, JY + 1, JZ))
     online("Junker")
-    for c in ("effect give Junker slowness infinite 2 true", "give Junker diamond 5", "xp add Junker 30 levels",
-              "scoreboard players set Junker iqd_junk_%s 7" % j):
-        mc.rcon(c)
-    for who in [CFG["player"]] + CFG["others"]:
-        mc.rcon("effect give %s slowness infinite 2 true" % who)
-    say("junk", j)
-t.done()
+    for key, path in (("Junker's effects", "active_effects"), ("Junker's items", "Inventory"), ("Junker's xp", "XpLevel")):
+        seen[key] = rcon("data get entity Junker %s" % path)
+    rcon("player Junker kill")
+    say("seen", seen)
+
+    t.check("every probe read", verdict(all(seen.values()), "%d probes" % len(seen)))
+    for key, want in sorted((CFG.get("expect") or {}).items()):
+        got = " ".join(str(seen.get(key)).split())
+        want = " ".join(want.split())
+        t.check("fresh: " + key, verdict(got == want, got[:110] if got == want else "%s; fresh: %s" % (got[:90], want[:90])))
+    if CFG.get("watch_slowness"):   # nothing left over keeps slowing the players
+        t.watch(4)
+        for who in [CFG["player"]] + CFG["others"]:
+            v = t.effect("slowness", who)
+            t.check("fresh: %s is never slowed" % who, verdict(not v[0], v[1]))
+    say("checked", time.time())
+    if CFG.get("junk"):
+        j = CFG["junk"]
+        for c in ("scoreboard objectives add iqd_junk_%s dummy" % j, 'bossbar add iqd:junk_%s "junk %s"' % (j, j),
+                  "team add iqd_junk_%s" % j, "worldborder center %d %d" % (JX, JZ), "worldborder set 4321",
+                  "gamerule keep_inventory true", "gamerule fall_damage false", "gamerule advance_time true",
+                  "gamerule mob_griefing false", "setblock %d %d %d diamond_block" % (JX, JY, JZ),
+                  "setblock %d %d %d emerald_block" % (UX, UY, UZ),
+                  'summon zombie %d %d %d {NoAI:1b,PersistenceRequired:1b,Tags:["iqd_junk"]}' % (JX, JY + 1, JZ),
+                  "difficulty peaceful", "time set 13000", "weather thunder",
+                  "player Junker spawn at %d %d %d facing 0 0 in minecraft:overworld in survival" % (JX + 2, JY + 1, JZ)):
+            rcon(c)
+        online("Junker")
+        for c in ("effect give Junker slowness infinite 2 true", "give Junker diamond 5", "xp add Junker 30 levels",
+                  "scoreboard players set Junker iqd_junk_%s 7" % j):
+            rcon(c)
+        for who in [CFG["player"]] + CFG["others"]:
+            rcon("effect give %s slowness infinite 2 true" % who)
+        say("junk", j)
 '''
 
 # A test that reaches for the live server from inside vfg test: each reach printed as a PROBE line,
-# REACHED or refused (the suite judges them for where it ran: REACHES); the kit's refusals are its
-# checks too. CFG: the live server's folders and RCON port.
+# REACHED or refused (the suite judges them for where it ran: REACHES). The engine's own refusal of
+# a non-test server (VFG_TEST=1, no marker) stands where the old kit's NotTestServer did; the file
+# reaches the sandbox refuses. CFG: the live server's folders and RCON port.
 REACH_TEST = r'''"""The test of iqd_reach (integration/testserver_e2e.py): reaches for the live server from inside a test, each of which should be refused."""
 import json
 import os
 import subprocess
 import sys
 
-import mc
-from kit import test
+from vfg_engine.livetest import verdict
 
 LIVE = json.loads(r"""__CFG__""")
 LIVE_PROPS = os.path.join(LIVE["mc"], "server.properties")
@@ -341,68 +325,56 @@ def write_live():
                                                else "no write access"))
 
 
-def answered(reply):
-    """A server's answer, or why not: mc.rcon gives "" when it failed (and logs why)."""
-    if not reply:
-        raise ConnectionError("no answer: mc.rcon gave nothing (its error is in the log)")
-    return reply
+def engine_on_live():
+    """An engine (python -m vfg_engine) pointed at the live server.properties under VFG_TEST=1, its
+    own paths set to a scratch folder: it must refuse the live server (no .vfg-test-server marker
+    there), exit 78, so it never talks to it. REACHED only if it did not refuse."""
+    import tempfile
+    scratch = tempfile.mkdtemp(prefix="iqd-reach-")
+    env = dict(os.environ, VFG_TEST="1", VFG_MC_PROPERTIES=LIVE_PROPS,
+               VFG_ENGINE_SOCKET=os.path.join(scratch, "engine.sock"), VFG_ENGINE_LOG=os.path.join(scratch, "engine.log"),
+               VFG_ENGINE_STATE=os.path.join(scratch, "state.json"), VFG_ENGINE_EXPORT=os.path.join(scratch, "export.json"),
+               VFG_ENGINE_CONTENT=scratch, VFG_PROTECTED=os.path.join(scratch, "protected.json"))
+    r = subprocess.run([sys.executable, "-m", "vfg_engine"], env=env, capture_output=True, text=True, timeout=60)
+    why = (r.stderr.strip().splitlines() or [""])[-1]
+    if r.returncode == 78:
+        raise PermissionError("the engine refused the live server: %s" % why[:120])
+    return "the engine did not refuse it (exit %d): %s" % (r.returncode, why[:80])
 
 
-def on_live(fn):
-    """fn() with mc pointed at the live server.properties, its cached settings and connection
-    dropped; mc put back on the test server after, whatever happened, so the test's own end (t.done:
-    its cleanup's RCON) still reaches the test server."""
-    keep = (mc.PROPERTIES, mc._settings)
-    mc.PROPERTIES, mc._settings = LIVE_PROPS, None
-    mc._drop()
-    try:
-        return fn()
-    finally:
-        mc._drop()
-        mc.PROPERTIES, mc._settings = keep
+def livetest_on_live():
+    """livetest aimed at the live server.properties: exit 3, not a test server. REACHED if not."""
+    r = subprocess.run([sys.executable, "-m", "vfg_engine.livetest", "--properties", LIVE_PROPS,
+                        "--state-dir", os.path.join(os.environ.get("TMPDIR", "/tmp"), "iqd-reach-state"),
+                        "--content", LIVE["vfg"], "--test", os.devnull], env=dict(os.environ, VFG_TEST="1"),
+                       capture_output=True, text=True, timeout=60)
+    if r.returncode == 3:
+        raise PermissionError("livetest refused the live server (exit 3)")
+    return "livetest did not refuse it (exit %d)" % r.returncode
 
 
-def kit_with_live_props():
-    return on_live(lambda: answered(mc.rcon("list")))
-
-
-def child_with_live_props():
-    env = dict(os.environ, VFG_MC_PROPERTIES=LIVE_PROPS)
-    r = subprocess.run([sys.executable, "-c", "import mc; print(mc.rcon('list'))"], env=env, capture_output=True,
-                       text=True, timeout=30)
-    if r.returncode != 0:
-        raise RuntimeError((r.stderr.strip().splitlines() or ["exit %d" % r.returncode])[-1])
-    return answered(r.stdout.strip())
-
-
-refused_kit = not probe("mc with the live server.properties", kit_with_live_props)
-refused_child = not probe("a child given the live server.properties", child_with_live_props)
+refused_engine = not probe("an engine (VFG_TEST=1) pointed at the live server.properties", engine_on_live)
+refused_livetest = not probe("livetest pointed at the live server.properties", livetest_on_live)
 probe("read the live server.properties", read_password)
 probe("list the live Minecraft folder", live_mc_listing)
 probe("read the live .env", env_file)
 probe("write into the live vfg folder", write_live)
 
-t = test.Test("Steve")
-t.check("the kit refuses mc with the live server.properties", test.verdict(refused_kit, "NotTestServer"))
-t.check("the kit refuses a child given the live server.properties", test.verdict(refused_child, "NotTestServer"))
 
-
-def cached_check_then_live():
-    """After a check passed on the test server, mc switched to the live properties by hand."""
-    return on_live(lambda: answered(mc.rcon("list")))
-
-
-probe("mc switched to the live properties after its check passed", cached_check_then_live)
-t.done()
+def test(t):
+    t.check("the engine refuses the live server.properties (VFG_TEST=1, no marker)",
+            verdict(refused_engine, "exit 78, not a test server"))
+    t.check("livetest refuses the live server.properties", verdict(refused_livetest, "exit 3"))
 '''
 
-# Each reach of REACH_TEST, and where it must be refused: "kit" everywhere (the kit's NotTestServer,
-# the only layer without a sandbox); "files" in any sandbox. The escapes around the sandbox (/proc,
-# the network, the RCON lock, sudo) are integration/testserver_escape/'s test (ESCAPE_TEST).
-REACHES = (("mc with the live server.properties", "kit"), ("a child given the live server.properties", "kit"),
+# Each reach of REACH_TEST, and where it must be refused: "engine" everywhere (the engine's and
+# livetest's own refusal of a non-test server, the layer that holds without a sandbox); "files" in
+# any sandbox. The escapes around the sandbox (/proc, the network, the RCON lock, sudo) are
+# integration/testserver_escape/'s test (ESCAPE_TEST).
+REACHES = (("an engine (VFG_TEST=1) pointed at the live server.properties", "engine"),
+           ("livetest pointed at the live server.properties", "engine"),
            ("read the live server.properties", "files"), ("list the live Minecraft folder", "files"),
-           ("read the live .env", "files"), ("write into the live vfg folder", "files"),
-           ("mc switched to the live properties after its check passed", "files"))
+           ("read the live .env", "files"), ("write into the live vfg folder", "files"))
 
 # The escape test (Builder C's, integration/testserver_escape/test.py): a vfg test file with __CFG__
 # for {"mc", "vfg", "rcon_port", "game_port", "api_port", "lock"}, the live server's, that prints
@@ -540,6 +512,16 @@ class TestRun:
 
 # ------------------------------------------------------------------ the suite
 
+def only_engine_objectives(said):
+    """A fresh world's `scoreboard objectives list`: none, or only the game engine's datapack's own
+    (`everhear.*`, which every fresh world has, since reset.sh copies the live datapacks in)."""
+    said = str(said or "")
+    if said == "There are no objectives":
+        return True
+    names = re.findall(r"\[([^\]]+)\]", said)
+    return bool(names) and said.startswith("There are ") and all(n.startswith("everhear.") for n in names)
+
+
 class Suite:
     def __init__(self, a, out):
         self.a, self.out = a, out
@@ -554,6 +536,7 @@ class Suite:
         self.tests = []          # every TestRun
         self.lock = threading.Lock()
         self.live_conns = 0      # this suite's RCON connections to the live server
+        self.engine = None       # the LIVE engine (engine_e2e.Engine), which vfg test's livetest runs from
 
     # -- plumbing
     def note(self, msg):
@@ -698,25 +681,56 @@ class Suite:
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             shutil.move(self.made, dest)
             self.note("made/%s set aside into %s" % (self.name, dest))
-        self.write("actions/iqd_blizzard.py", BLIZZARD_ACTION)
-        self.write("scripts/iqd_blizzard/main.py", BLIZZARD_SCRIPT)
-        self.write("tests/iqd_blizzard.py", BLIZZARD_TEST)
-        self.write("actions/iqd_runaway.py", RUNAWAY_ACTION)
-        self.write("scripts/iqd_runaway/main.py", RUNAWAY_SCRIPT)
-        self.write("tests/iqd_runaway.py", RUNAWAY_TEST)
-        r = self.vfg("action", "list", "--json", timeout=180)
-        if r.returncode != 0 or "iqd_blizzard" not in r.stdout or "iqd_runaway" not in r.stdout:
-            raise SystemExit("vfg action list does not have the made actions: %s" % (r.stderr or r.stdout)[-400:])
-        for player, phrase, action in ((CASTER, "freeze", "iqd_blizzard"), (CASTER, "blizzard", "iqd_runaway")):
-            r = self.vfg("action", "run", "incantation_create", "player=" + player, "phrase=" + phrase,
-                         "action=" + action, "--task", action, extra={"VFG_INCANT_ALIAS_MODEL": "off"}, timeout=180)
-            if r.returncode != 0:
-                raise SystemExit("binding %r failed: %s" % (phrase, (r.stderr or r.stdout)[-400:]))
-        self.note("made/%s: iqd_blizzard and iqd_runaway with their tests; %s's \"freeze\" and \"blizzard\" bound on "
-                  "the live server" % (self.name, CASTER))
+        self.write("content/iqd_blizzard.py", BLIZZARD_CONTENT)   # the engine ability (the scenario)
+        self.write("tests/iqd_blizzard.py", BLIZZARD_TEST)        # its livetest test
+        self.write("tests/iqd_runaway.py", RUNAWAY_TEST)          # a misbehaving test (no content, no binding)
+        self.start_live_engine()
+        # Deploy the ability to the LIVE engine (vfg engine reload) so "freeze" can be bound there,
+        # as an implementer's would be; vfg test deploys this server's content to the test server.
+        r = self.vfg("engine", "reload", timeout=180)
+        if r.returncode != 0 or "iqd_blizzard" not in r.stdout:
+            raise SystemExit("vfg engine reload did not load iqd_blizzard: %s" % (r.stderr or r.stdout)[-400:])
+        r = self.vfg("engine", "bind", CASTER, "freeze", "--scenario", "iqd_blizzard", "who=caster", "--by", "iqd_blizzard",
+                     extra={"VFG_INCANT_ALIAS_MODEL": "off"}, timeout=180)
+        if r.returncode != 0:
+            raise SystemExit("binding \"freeze\" failed: %s" % (r.stderr or r.stdout)[-400:])
+        self.note("made/%s: iqd_blizzard (the ability) with its test, and iqd_runaway (a misbehaving test); %s's "
+                  "\"freeze\" bound to it on the live server" % (self.name, CASTER))
         state = realmc.read_json(os.path.join(self.srv.mc_test, ".vfg-test-server"), {})
         self.note("test server %s, marker %s; the sandbox's unit %s" % (self.srv.mc_test, json.dumps(state),
                                                                        self.sandbox_unit()))
+
+    def start_live_engine(self):
+        """The live box's engine, which realmc's stand-in does not run by itself: installed as `deploy.sh
+        engine` installs it (its venv and the datapack in the live world), the library beside it, and
+        started as the vfg-engine unit starts it, its content the library then made/<name>/content/.
+        `vfg test` runs livetest from it (its venv, vfg_engine/ and library/) and reads the task's
+        bindings from it. The test server's world, made fresh before the datapack was in the live
+        world, gives up its token so the first test restarts it with the live datapacks in."""
+        t0 = time.monotonic()
+        r, _ = engine_e2e.install(self.srv)
+        if r.returncode != 0:
+            raise SystemExit("the live engine's install failed: %s" % (r.stdout + r.stderr)[-600:])
+        lib = os.path.join(self.srv.vfg, "engine", "library")
+        subprocess.run(["rsync", "--recursive", "--delete", "--exclude=__pycache__/",
+                        os.path.join(REPO, "engine", "library") + "/", lib + "/"], check=True)
+        content = os.path.join(self.srv.vfg, "made", self.name, "content")
+        os.makedirs(content, exist_ok=True)
+        sock = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "vfg-engine-%s.sock" % self.name)
+        link = os.path.join(self.srv.vfg, "engine", "engine.sock")
+        if os.path.lexists(link):
+            os.remove(link)
+        os.symlink(sock, link)        # a socket's address holds 107 bytes: vfg finds it through the link
+        engine_e2e.stray_engine(sock, os.path.join(self.srv.vfg, "engine"))
+        self.engine = engine_e2e.Engine(self.srv, sock, lib + os.pathsep + content,
+                                        os.path.join(self.out, "live-engine.log"))
+        up = self.engine.start()
+        try:
+            os.remove(os.path.join(self.srv.mc_test, "world", "vfg-fresh"))
+        except OSError:
+            pass
+        self.note("the live engine installed and running (socket in %.1f s, %.1f s in all), the library beside it"
+                  % (up, time.monotonic() - t0))
 
     def take_baseline(self):
         """The fresh world, as a test sees it before it changes anything: the probes of FRESH_TEST."""
@@ -724,7 +738,7 @@ class Suite:
         self.write("tests/%s.py" % name, self.fresh_cfg(name))
         run = self.vfg_test(name, tag="baseline")
         seen = run.iqd.get("seen") if isinstance(run.iqd.get("seen"), dict) else None
-        sane = bool(seen) and run.passed and seen.get("objectives") == "There are no objectives" and \
+        sane = bool(seen) and run.passed and only_engine_objectives(seen.get("objectives")) and \
             not any("iqd" in str(v).lower() for v in seen.values())
         self.board.row("fresh", "the baseline: the fresh world as a test sees it", sane,
                        "%d probes; %s" % (len(seen or {}), run.short()))
@@ -750,7 +764,8 @@ class Suite:
                  ("tagged vfg_test", "execute if entity @e[tag=vfg_test]")]
         got = dict(zip([k for k, _ in cmds], self.live(*[c for _, c in cmds])))
         files = {}
-        for path in (os.path.join(self.srv.vfg, "incantations.json"), self.srv.props):
+        # the live engine's export of its bindings (vfg/engine/incantations.json), and the properties
+        for path in (os.path.join(self.srv.vfg, "engine", "incantations.json"), self.srv.props):
             try:
                 with open(path, "rb") as f:
                     files[os.path.basename(path)] = hashlib.sha256(f.read()).hexdigest()[:16]
@@ -759,8 +774,12 @@ class Suite:
         run = os.path.join(self.srv.vfg, "run")
         files["run/"] = sorted("%s %d %d" % (n, os.path.getsize(os.path.join(run, n)), os.path.getmtime(os.path.join(run, n)))
                                for n in (os.listdir(run) if os.path.isdir(run) else []))
+        # the live vfg folder's entries, but engine/, which the live engine writes its state into every
+        # second whatever a test does (its export is hashed above), and vfg.db-shm, SQLite's shared
+        # index, which a read touches: vfg test reads the task's row there (its bindings); a write
+        # shows in vfg.db-wal
         files["vfg/"] = sorted("%s %d" % (n, os.path.getmtime(os.path.join(self.srv.vfg, n)))
-                               for n in os.listdir(self.srv.vfg))
+                               for n in os.listdir(self.srv.vfg) if n not in ("engine", "vfg.db-shm"))
         animals = self.live("execute if entity @e[type=!player]")[0]
         return got, files, animals
 
@@ -812,8 +831,10 @@ class Suite:
                        "changed: " + ", ".join("%s: %r -> %r" % (k, before[k][:60], after[k][:60]) for k in world)
                        if world else "%d values equal" % n_world)
         fchanged = sorted(k for k in files0 if files0[k] != files1[k])
+        detail = ["%s: %s" % (k, sorted(set(files1[k]) ^ set(files0[k])) if isinstance(files0[k], list) else
+                              "%s -> %s" % (files0[k], files1[k])) for k in fchanged]
         self.board.row("night", "the LIVE incantations.json, server.properties, run/ and vfg folder unchanged",
-                       not fchanged, "changed: %s" % fchanged if fchanged else "sha256 and listings equal")
+                       not fchanged, "changed: %s" % "; ".join(detail) if fchanged else "sha256 and listings equal")
         self.console_row("night", offset, conns)
         self.board.row("night", "the LIVE entity count (the arena's animals; INFO)", None,
                        "%s -> %s" % (animals0, animals1))
@@ -822,7 +843,7 @@ class Suite:
     def runaway(self):
         t0 = time.time()
         run = self.vfg_test("iqd_runaway", "--timeout", "20", tag="runaway sandboxed")
-        stopped = run.code == 1 and "ran past its 20 s" in run.err
+        stopped = run.code == 2 and "ran past its 20 s" in run.err   # a timeout is the test's to shorten: exit 2
         self.board.row("runaway", "the runaway's test is stopped at its timeout (--timeout 20)", stopped,
                        "%s" % run.short())
         self.board.row("runaway", "...in bounded time", run.wall < 20 + 5 + 120 + 60,
@@ -924,9 +945,19 @@ class Suite:
             self.write("tests/%s.py" % name, self.fresh_cfg(name, junk="h%d" % len(self.tests), expect=self.baseline))
             return self.vfg_test(name, extra=extra, tag=tag)
 
+        def steady_java():
+            """The test server's java once it is up and stays up: the last test's restart (--no-block)
+            may still be under way when the unit first answers."""
+            for _ in range(3):
+                self.wait_test_server()
+                time.sleep(2)
+                pid = self.unit.java_pid()
+                if pid:
+                    return pid
+            raise RuntimeError("the test server's java did not stay up after its restart")
+
         # a. java SIGKILLed while it waits for the next test
-        self.wait_test_server()
-        pid = self.unit.java_pid()
+        pid = steady_java()
         os.kill(pid, signal.SIGKILL)
         x = next_test("heal: java killed")
         self.board.row("heal", "the test server's java SIGKILLed: the next test brings it back and passes", x.passed,
@@ -941,9 +972,7 @@ class Suite:
         self.board.row("heal", "the unit stopped (systemctl stop minecraft-test): the next test restarts it and passes",
                        x.passed and state == "inactive", "stop exit %d, then %s; %s" % (r.returncode, state, x.short()))
         # c. wedged, with a short boot budget: exit 5 in bounded time, its message
-        self.wait_test_server()
-        time.sleep(2)
-        pid = self.unit.java_pid()
+        pid = steady_java()
         os.kill(pid, signal.SIGSTOP)
         try:
             x = next_test("heal: wedged, boot 20", extra={"VFG_TEST_BOOT_S": "20"})
@@ -961,9 +990,7 @@ class Suite:
                        "the unit active again %s s after; %s" % ("%.0f" % back if back is not None else "never", x.short()))
         # d. wedged, with the defaults: the restart clears it
         if self.a.wedge_default:
-            self.wait_test_server()
-            time.sleep(2)
-            pid = self.unit.java_pid()
+            pid = steady_java()
             os.kill(pid, signal.SIGSTOP)
             try:
                 x = next_test("heal: wedged, defaults")
@@ -1018,9 +1045,9 @@ class Suite:
         self.write("tests/iqd_reach.py", REACH_TEST.replace("__CFG__", json.dumps(
             {"mc": self.srv.mc, "vfg": self.srv.vfg, "rcon_port": port})))
         x = self.vfg_test("iqd_reach", tag="refuse: reach, sandboxed")
-        refused, reached, missing, probes = judge_reaches(x, ("kit", "files"))
-        self.board.row("refuse", "a test reaching for the live server, sandboxed: its files, its password, a write, mc "
-                       "and a child given its properties, the kit switched by hand: every reach refused",
+        refused, reached, missing, probes = judge_reaches(x, ("engine", "files"))
+        self.board.row("refuse", "a test reaching for the live server, sandboxed: its files, its password, a write, and "
+                       "an engine and livetest pointed at its properties: every reach refused",
                        x.passed and not reached and not missing, "%s; %d refused%s%s" % (
                            x.sandbox, len(refused), "; REACHED: %s" % reached if reached else "",
                            "; no line for %s" % missing if missing else ""))
@@ -1045,10 +1072,9 @@ class Suite:
                                "%s: %s" % (k, v[:30]) for k, v in through.items())[:700] or "none"))
             rcon_hits += sum(1 for k in through if re.search(r"live RCON (port|with)", k))
         x = self.vfg_test("iqd_reach", extra={"VFG_TEST_SANDBOX": "none"}, tag="refuse: reach, plain")
-        refused, reached, missing, probes = judge_reaches(x, ("kit",))
-        rcon_hits += sum(1 for k, v in probes.items() if k.startswith("mc switched") and v.startswith("REACHED"))
-        self.board.row("refuse", "...without the sandbox (VFG_TEST_SANDBOX=none): the kit still refuses mc and a "
-                       "child given the live server.properties (NotTestServer)",
+        refused, reached, missing, probes = judge_reaches(x, ("engine",))
+        self.board.row("refuse", "...without the sandbox (VFG_TEST_SANDBOX=none): the engine and livetest still refuse "
+                       "the live server.properties (VFG_TEST=1, no marker)",
                        x.passed and not reached and not missing and x.sandbox.startswith("NOT sandboxed"),
                        "%s; %s" % (x.sandbox[:40], "; ".join(c[0] + " " + c[1] for c in x.checks)))
         files = [k for k, kind in REACHES if kind == "files"]
@@ -1095,6 +1121,10 @@ class Suite:
                 pass
         if not self.a.keep_made and os.path.isdir(self.made):
             shutil.rmtree(self.made, ignore_errors=True)
+        if self.engine is not None and not self.a.keep_up:
+            code, secs = self.engine.stop()
+            self.engine = None
+            self.note("the live engine stopped: exit %s in %.2f s" % (code, secs))
         if not self.a.keep_up and self.env is not None:
             r = subprocess.run([os.path.join(REALMC, "down"), self.name], capture_output=True, text=True, timeout=300)
             self.note("realmc down %s: exit %d" % (self.name, r.returncode))
@@ -1113,7 +1143,11 @@ PROBES = {"objectives": "scoreboard objectives list", "bossbars": "bossbar list"
           "mob_griefing": "gamerule mob_griefing", "time": "time query day", "difficulty": "difficulty",
           "raining": 'execute if predicate {type:"minecraft:weather_check",raining:true}',
           "thundering": 'execute if predicate {type:"minecraft:weather_check",thundering:true}',
-          "players online": "list", "entities": "execute if entity @e"}
+          "players online": "list",
+          # every entity in the sky over the stage and the junk spot (y 200 up): the ground under the
+          # stage (livetest's, at 160 296 160, over the template's land) has animals that wander in and
+          # out of its forceloaded chunks, so a count of every entity is never the same twice
+          "entities": "execute if entity @e[x=-512,y=200,z=-512,dx=1024,dy=184,dz=1024]"}
 
 # The guard at unit level, run in brain/'s environment: prints one JSON list of [check, ok, numbers].
 GUARD_CHECK = r'''
@@ -1168,10 +1202,10 @@ print(json.dumps(out))
 
 
 def only_mine(made):
-    """Does made/NAME/ hold only what this suite writes there (iqd_* in actions/, scripts/, tests/)?"""
+    """Does made/NAME/ hold only what this suite writes there (iqd_* in content/ and tests/)?"""
     for kind in os.listdir(made):
         folder = os.path.join(made, kind)
-        if kind not in ("actions", "scripts", "tests") or not os.path.isdir(folder):
+        if kind not in ("content", "tests") or not os.path.isdir(folder):
             return False
         if any(not (n.startswith("iqd_") or n == "__pycache__") for n in os.listdir(folder)):
             return False
@@ -1246,9 +1280,9 @@ def box_mode(a, out):
                   x.short())
     if "iqd_reach" in runs:
         x = runs["iqd_reach"]
-        refused, reached, missing, probes = judge_reaches(x, ("kit", "files"))
-        board.row("box", "every reach for the live server refused: the kit's NotTestServer, its server.properties, "
-                  "its folder, its .env, a write", x.passed and not reached and not missing,
+        refused, reached, missing, probes = judge_reaches(x, ("engine", "files"))
+        board.row("box", "every reach for the live server refused: an engine and livetest pointed at it, its "
+                  "server.properties, its folder, its .env, a write", x.passed and not reached and not missing,
                   "%d refused%s%s" % (len(refused), "; REACHED: %s" % reached if reached else "",
                                       "; no line for %s" % missing if missing else ""))
         for k, _ in REACHES:

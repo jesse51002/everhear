@@ -124,12 +124,12 @@ async def test_the_hook_denies_in_the_sdks_shape_lets_the_rest_through_and_recor
     assert owner["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert noted == {"t1", "t2", ("Bash", '{"command":"curl https://example.com"}'),
                      ("Bash", '{"command":"vfg cmd \'op Steve\'"}')}
-    assert await hook(pre("Bash", command="vfg script new hot_fireball --from fireball"), "t3", None) == {}
-    assert g.made["scripts"] == ["hot_fireball"] and g.made["actions"] == ["hot_fireball"]
-    assert await hook(pre("Write", file_path="made/main/presets/big_boom.py", content="x"), "t4", None) == {}
-    assert g.made["presets"] == ["big_boom"]
-    assert (await hook(pre("Write", file_path="scripts/fireball/main.py", content="x"), "t5", None)
-            )["hookSpecificOutput"]["permissionDecisionReason"] == DENY.library("main")
+    assert await hook(pre("Bash", command="vfg engine grant Steve hot_fireball"), "t3", None) == {}
+    assert g.made["grants"] == ["Steve:hot_fireball"]
+    assert await hook(pre("Write", file_path="made/main/content/hot_fireball.py", content="x"), "t4", None) == {}
+    assert g.made["content"] == ["hot_fireball"]
+    assert (await hook(pre("Write", file_path="engine/library/fireball.py", content="x"), "t5", None)
+            )["hookSpecificOutput"]["permissionDecisionReason"] == DENY.made_only("main")
     assert await hook({"hook_event_name": "PostToolUse", "tool_name": "Bash"}, "t6", None) == {}
 
 

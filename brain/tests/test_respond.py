@@ -84,7 +84,7 @@ async def test_a_line_is_one_call_its_usage_row_respond_and_its_seq_its_prompt_t
     assert call["cached"] == ctx.cached(r.opening(), 5)     # the opening marked, then the conversation's blocks
     opening, marked = call["cached"][0]
     assert marked and "THE OWNER: KrownJM." in opening and "{owner}" not in opening
-    assert "WHAT THE AI CAN DO" in opening and "\n- teleport" in opening
+    assert "WHAT THE AI CAN DO" in opening and "\n- engine_start" in opening and "on what ENGINE lists" in opening
     assert opening.endswith("THE CONVERSATION SO FAR (oldest first; each row: its time in UTC, who, and for a "
                             "player's line Jev's class):\n")
     tail = call["prompt"]

@@ -21,7 +21,7 @@ from pathlib import Path
 
 from vfg_llm import _config as read_config_file  # the one KEY=value parser, shared with structured()
 
-# The repo this brain/ is in: actions/ and scripts/ live beside it.
+# The repo this brain/ is in: actions/, engine/ and made/ live beside it.
 REPO = Path(__file__).resolve().parents[2]
 SERVER = "main"
 # DeepSeek V4.1 Flash, and the hosts that serve it, in the order they are tried: every agent's.
@@ -52,7 +52,7 @@ class Config:
     home: Path                      # VFG_HOME, default ~/.vfg
     brain_dir: Path                 # VFG_BRAIN_DIR, default ~/.vfg/brain: brain.log, lock, refs/
     repo: Path                      # VFG_REPO, default this repo
-    server: str = SERVER            # VFG_SERVER: whose made/<server>/actions/ are on the menu too
+    server: str = SERVER            # VFG_SERVER: the server whose made/<server>/content/ its implementers write
     owner: str = ""                 # VFG_OWNER: the owner's Minecraft name, whose word wins
     # The brain's loops: every step on DeepSeek V4.1 Flash, reasoning low. The loop replay of the 2026-10-11
     # session chose low over off on every measure: $0.201 against $0.235, 16 answers sent back against 62, 2 lines
@@ -92,8 +92,7 @@ class Config:
     # thinks (low, the default), 60 s with no reasoning. On the 2026-10-12 night 5 of 33 Gemini steps timed out
     # at 45 s.
     timeout_s: float = BRAIN_TIMEOUT_THINKING_S
-    running_ttl_s: float = 30.0     # VFG_RUNNING_TTL_S: how often running.json is fetched again; 0: never
-    action_timeout_s: float = 20.0  # VFG_DISPATCH_ACTION_TIMEOUT_S: a once action's, unless its class says
+    action_timeout_s: float = 20.0  # VFG_DISPATCH_ACTION_TIMEOUT_S: an engine op's, unless its action says
     stop_grace_s: float = 10.0      # how long in-flight calls and actions may finish on SIGTERM
 
     @staticmethod
@@ -105,9 +104,6 @@ class Config:
     def lock_file(self) -> Path:
         return self.brain_dir / "lock"
 
-    @property
-    def running_file(self) -> Path:
-        return self.home / "running.json"
 
 
 def load(env: dict[str, str] | None = None) -> Config:
@@ -176,7 +172,6 @@ def load(env: dict[str, str] | None = None) -> Config:
         history_hours=number("VFG_BRAIN_HISTORY_HOURS", 6.0, float, 0),
         timeout_s=number("VFG_BRAIN_TIMEOUT_S", BRAIN_TIMEOUT_THINKING_S if thinks(reasoning)
                          else BRAIN_TIMEOUT_OFF_S, float, 1),
-        running_ttl_s=number("VFG_RUNNING_TTL_S", 30.0, float, 0),
         action_timeout_s=number("VFG_DISPATCH_ACTION_TIMEOUT_S", 20.0, float, 1),
     )
 

@@ -3,7 +3,7 @@
 On the EC2 box. It takes the players' speech lines over HTTP, tails the Minecraft console for chat
 and game events, keeps both in the transcript history, and writes the feed the brain watches.
 It also fires incantations: a player's bound phrase, heard by their mod, in a line's transcript, or by
-the Jev filter's cast check, starts its action on the box.
+the Jev filter's cast check, is cast in the game engine (`engine/README.md`).
 `deploy/` is everything that makes, provisions, updates and retires the box, run from the owner's PC.
 
 ## Run it
@@ -36,7 +36,8 @@ From the repo's root on the owner's PC:
 bridge/deploy/ec2.sh launch|start|stop|status|ssh-ip|retire   # the box itself (AWS CLI v2)
 bridge/deploy/deploy.sh provision [--restore]                 # Java, Python 3.12, Minecraft, the firewall, /opt/vfg/.env, the test server
 bridge/deploy/deploy.sh env                                   # the secrets in VFG_BOX_ENV into /opt/vfg/.env
-bridge/deploy/deploy.sh                                       # the bridge and the units, and Jev when it is there; restarts them; the test server kept current
+bridge/deploy/deploy.sh                                       # the bridge, the engine and the units, and Jev when it is there; restarts them; the test server kept current
+bridge/deploy/deploy.sh engine                                # the game engine alone (engine/README.md)
 bridge/deploy/deploy.sh testserver [--fresh]                  # the test server alone; --fresh makes its template world again
 bridge/deploy/set-secret.sh VFG_CLIENT_TOKEN                  # a value into /opt/vfg/.env, typed hidden
 bridge/deploy/client-token.sh                                 # prints the client token, to a terminal only
@@ -52,8 +53,8 @@ retire's history is also kept as `vfg-backup-<UTC time>.tgz`, never deleted, mod
 
 **Python on the box.** `provision` runs `deploy/python.sh`, which puts uv (a pinned release, checked
 by sha256) in `/opt/vfg/uv/` and CPython 3.12, installed by uv, behind the link `/opt/vfg/python`.
-`/opt/vfg/python/bin/python3` is what the scripts, `vfg`'s remote programs, `vfg-bridge` and
-`vfg-jev` run on, the PC's version; Amazon Linux's own `python3` (3.9) is left to the host. A box
+`/opt/vfg/python/bin/python3` is what `vfg`'s remote programs, `vfg-bridge` and `vfg-jev` run on, and
+the game engine's venv is made from, the PC's version; Amazon Linux's own `python3` (3.9) is left to the host. A box
 provisioned before this has no `/opt/vfg/python`: `deploy.sh provision` adds it, and `deploy.sh`
 refuses until it is there.
 
@@ -63,14 +64,15 @@ plays (`docs/CONTRACTS.md` §1, `toolkit/README.md`): `/opt/mc-test`, the live `
 (sha256-equal) with Fabric Loader and Carpet, fetched from their official URLs and checked against
 the pins in `testserver.py`; game `127.0.0.1:25566`, RCON `25576` with its own password, both
 dropped off loopback by the nftables table `inet vfg_test` (`/etc/nftables/vfg-test.nft`);
-`/opt/vfg-test`, with no `.env`, its store in `state/`; the system user `vfgtest`, which a sandboxed
+`/opt/vfg-test`, with no `.env`, the test engine's state in `state/engine` (the engine itself is the
+live box's, `/opt/vfg/engine/`, bound read-only into the test's sandbox); the system user `vfgtest`, which a sandboxed
 test runs as (not `ec2-user`, the live services' uid), writing only `/opt/vfg-test/run` and
 `state`, reading `server.properties` (`640`, its group) and reaching nothing but the test server's
 RCON on loopback (the table's output chain); the marker `/opt/mc-test/.vfg-test-server`, with
 `"test_user": "vfgtest"`; and the unit
 `minecraft-test` (`deploy/systemd/minecraft-test.service`), whose every start runs
-`/opt/mc-test/reset.sh` first: a fresh copy of `world.template/`, the live world's datapacks copied
-in, and the token `world/vfg-fresh`. The template (seed `20261009`, the kit's sky stage at x 3000, z
+`/opt/mc-test/reset.sh` first: a fresh copy of `world.template/`, the live world's datapacks (the
+engine's among them) copied in, and the token `world/vfg-fresh`. The template (seed `20261009`, livetest's sky stage at x 3000, z
 3000 generated and forceloaded) is made once by starting the server outside its unit, again with
 `--fresh` or when the live jar changes, and then a start is recorded as Java's AOT cache
 (`test-server.aot`, again when Java changes), which with `CPUQuota=200%`, two CPUs' threads and the
@@ -91,9 +93,13 @@ changes and `testserver.sh` never does.
 cd bridge && python3 -m unittest discover -s tests
 ```
 
-No network and no EC2, under a second: a temporary database, feed and console log, an injected
+No network and no EC2, in a few seconds: a temporary database, feed and console log, an injected
 clock and poll, and `tests/fixtures/console-26.3.log`, real 26.3 console shapes with placeholder
-names. One test runs the bridge as a process and stops it with SIGTERM.
+names. One test runs the bridge as a process and stops it with SIGTERM. Every cast path runs against
+a fake engine (`tests/fake_engine.py`: its export, and its socket answering as told): `test_casts.py`
+the spotter's, Layer 2's and the Jev filter's casts, the drop rule and the list; `test_engine.py` the
+engine's statuses, the engine down or late, and the round trip outside the cast lock;
+`test_sounds.py` the phoneme matching.
 
 ```sh
 python3 -m unittest discover -s bridge/deploy/tests      # from the repo's root; a second or two
@@ -106,48 +112,81 @@ on realmc (`integration/realmc/README.md`).
 
 ## Incantations
 
-The store is `/opt/vfg/incantations.json`, written by the incantation actions' box script; the
-bridge only reads it, through the kit's `incantations` module (`scripts/_lib/incantations.py`), and
-starts copies through its `instances`. Both are imported from `VFG_KIT`, and imported again when
-the kit's `.vfg-stamp` changes, so a deploy of the kit needs no restart. The store is parsed again,
-and the stamp read again, only when its file changes. Without them, casts and the list answer `503`
-and lines are stored as before. Every endpoint takes the client token.
+**Every incantation is the game engine's** (the game engine spec, *Incantations*): a phrase bound, per
+player, to one of its abilities (or to a scenario, with its args). The engine owns them and writes them
+to its export, `/opt/vfg/engine/incantations.json` (`VFG_ENGINE_EXPORT`), `{"version", "incantations":
+[{"id", "player", "phrase", "aliases", "everyday_aliases", "ability" | "scenario" and "args",
+"cooldown_s"}]}`, whole, on every change; the bridge only reads it (`vfg_bridge/engine.py`), parsed
+again only when the file changes. A missing or unreadable export has none: casts answer `404`, the list
+is version 0 and empty, and lines are stored as ever. An entry the bridge cannot use (no phrase, both an
+ability and a scenario, aliases that are not a list) is left out alone, with one warning per file. There
+are no `@a` bindings: a binding is one player's. Every endpoint takes the client token.
+
+The phoneme matching (Layer 2, the drop rule, the Jev cast check's placing of a phrase) is the bridge's
+own, `vfg_bridge/sounds.py`, with CMUdict (`cmudict.gz`, its licence beside it), read once as the bridge
+starts. It came from the old kit's incantations module (its store and running copies are gone), and is
+the one copy of it: vfg on the PC can import this file by path for its bind checks and the alias call's.
+
+**A cast** goes to the engine, on its control socket `/opt/vfg/engine/engine.sock`
+(`VFG_ENGINE_SOCKET`; one JSON line in, `{"op": "cast", "args": {"player", "phrase", "cast_id"},
+"timeout_s"}`, one out: `engine/README.md`), with the binding's own phrase (not the alias heard) and
+the cast's id. It waits at most `VFG_ENGINE_CAST_WAIT_S` (1 s), and never past `VFG_CAST_WAIT_S`
+since the request came; the engine is told that wait (`timeout_s`), and its socket takes a cast it
+has not begun off its queue when that passes, so a cast answered `failed` for it never fires late.
+**The engine's round trip is outside the bridge's one cast lock**, so no cast waits on another's:
+under the lock the cast is checked and its row stored with status `pending`; then the engine is
+asked, and the row takes its status. A `pending` row counts as deciding its saying, so the same
+saying heard again meanwhile (Vosk, Layer 2, Jev) is `duplicate`; a repeated `client_cast_id` waits
+for the first request and answers what it did (`503` only if that first request never finished).
+`pending` is never an answer, and lives only while the engine is asked: one a stopped bridge left is
+made `failed` when it starts again. **Cooldowns are the ability's, in the engine**: the bridge has none
+of its own and no gap between a player's casts; it keeps the duplicate check (one saying heard twice,
+by the spotter and Vosk or by Layer 2), the idempotency keys and `stale`. The engine's answer becomes
+one the mod knows:
+
+| The engine says | The cast is |
+|---|---|
+| `fired` | `fired`; announced `Steve cast "fire ball": fireball, fired in the engine` |
+| `charging` (the charge-up runs, and it fires when done) | `fired`; announced `…: fireball, charging in the engine` |
+| `cooldown` (`remaining_s`) | `cooldown`, error `2.3 s left of its cooldown`; not announced |
+| `not_granted`, `unknown`, `failed`, or `ok` false | `failed`, with the engine's words (`Steve has not been granted fireball`); announced |
+| nothing in time, `reason` `timeout` | `failed`, `the game engine did not answer the cast within 1.0 s` |
+| no socket, nobody listening, `reason` `stopping` | `failed`, `the game engine is not running, so 'fire ball' was not cast (…)` |
+
+The answer is `202 {"id", "status", "error"?}`; the record's `incantation_id` is `engine:<the
+binding's id>` (`engine:steve.fire_ball`) and its `action` the ability (or the scenario).
 
 - **`POST /v1/casts`** `{"client_cast_id", "player_uuid", "player_name", "phrase", "heard"?,
   "started_at", "ended_at"}`: the mod's keyword spotter heard `phrase`. `202 {"id", "status",
-  "copy"?, "error"?}`, the status `fired`, `cooldown`, `duplicate`, `failed` or `stale`; `404`
-  when the player has no such incantation (their own or `@a`). Under one lock with Layer 2's
-  casts: a repeated `client_cast_id` answers what the first did; a cast of an incantation whose
-  window, widened by `VFG_CAST_SLACK_S` on each side, overlaps an earlier cast of it by that
-  player, whatever its status, is `duplicate`; its `cooldown_s` since it last fired for the
-  player, then `VFG_CAST_GAP_S` since any of theirs fired, are `cooldown`. A cast the bridge has
-  held `VFG_CAST_WAIT_S` since its request came (on that lock, or on `run/copies.lock` while a
-  copy stops for an edit) is `stale`: stored, never started or announced. Otherwise its copy
-  starts (`instances.Box.start`, task `cast`, every `caster_fields` value the caster's name) and
-  the answer goes as soon as it is spawned; the copy is reaped on a thread. A fired or failed cast also writes an `events` row (kind `cast`) and a feed
-  line, whatever `watch.json` says: `GAME#n HH:MM:SS cast Steve | Steve cast "fire ball": command,
-  running as command_2`, or `... failed — <error>`. Also after the answer, a cast that came after
-  its line drops that line, by the drop rule, if Jev has not judged it yet.
+  "error"?}`, the status `fired`, `cooldown`, `duplicate`, `failed` or `stale`; `404` when the player
+  has no such incantation (by its phrase or an alias). A repeated `client_cast_id` answers what the
+  first did; a cast of an incantation whose window, widened by `VFG_CAST_SLACK_S` on each side,
+  overlaps an earlier cast of it by that player that fired or is `pending`, or one the spotter made
+  whatever became of it, is `duplicate`; a cast the bridge has held `VFG_CAST_WAIT_S` since its
+  request came is `stale`: stored, never sent or announced. Otherwise it is cast in the engine, as
+  above. A fired or failed cast also writes an `events` row (kind `cast`) and a feed line, whatever
+  `watch.json` says: `GAME#n HH:MM:SS cast Steve | Steve cast "fire ball": fireball, fired in the
+  engine`, or `... failed — <error>`. Also after the answer, a cast that came after its line drops
+  that line, by the drop rule, if Jev has not judged it yet.
 - **`GET /v1/incantations?player=Steve&after=<version>&wait=<s>`**: `200 {"version", "player",
   "incantations": [{"phrase", "aliases", "cooldown_s"}], "server_phrases": [phrase, …]}`. `incantations`
-  is the player's own then the `@a` ones. With
-  `after` the current version it is held until the store changes or `wait` s pass (default 25, at
-  most 30), then `304`. The version is the store's, which every write bumps whoever's entry it
-  changed, so a held request answers when any player's incantations change. `incantations` is what the
-  mod's keyword spotter listens for, so each incantation's
-  `aliases` leave out its `everyday_aliases` (`Casts.spotted`): those that are everyday talk of
-  their own, "ice cream" and "i scream" for "ice beam", which would cast on ordinary
-  conversation. Layer 2, the drop rule and the Jev cast check still use every alias; an entry
-  from before the marks has none. `server_phrases` is every incantation phrase on the server,
-  whoever's (the player's own, the `@a` ones and every other player's), normalised, once each,
-  sorted, with no aliases (`Casts.server_phrases`): the mod's speech-to-text boosts them as
-  hotwords, since players talk about each other's spells (Prototype_Addressing_The_AI). An older
-  bridge leaves it out, and the mod then boosts the player's own phrases.
-- **`POST /v1/lines`**, for a player with incantations: Layer 2 (`match_line` at
+  is the engine's bindings for the player (names
+  in any case), one per phrase, at the export's version; `cooldown_s` is the ability's (`0` while it is
+  not loaded). With `after` the current version it is held until the export's file changes or `wait` s
+  pass (default 25, at most 30), then `304`. The version is the export's, which every change bumps whoever's binding it changed, so a
+  held request answers when any player's incantations change. `incantations` is what the mod's
+  keyword spotter listens for, so each
+  incantation's `aliases` leave out its `everyday_aliases` (`Casts.spotted`): those that are everyday
+  talk of their own, "ice cream" and "i scream" for "ice beam", which would cast on ordinary
+  conversation. Layer 2, the drop rule and the Jev cast check still use every alias. `server_phrases` is every
+  incantation phrase on the server, whoever's (the player's own and every other player's), normalised,
+  once each, sorted, with no aliases (`Casts.server_phrases`): the mod's speech-to-text boosts them as
+  hotwords, since players talk about each other's spells. An older bridge leaves it out, and the mod
+  then boosts the player's own phrases.
+- **`POST /v1/lines`**, for a player with incantations: Layer 2 (`sounds.match_line` at
   `VFG_INCANT_ALLOWANCE`), on a line of at most `VFG_INCANT_LAYER2_MAX_WORDS` words (6,
   normalised, fillers counted; 0 any length), may fire `transcript` casts, with the line's
-  window: its matches best first, one per run of words, one per phrase (the player's own before
-  `@a`). A longer line is talk and casts nothing: on 10-08's 843 lines of talk, with each player
+  window: its matches best first, one per run of words, one per phrase. A longer line is talk and casts nothing: on 10-08's 843 lines of talk, with each player
   given that night's six incantations, the stored aliases cast falsely on 216 of them, at 6
   words on 7, and 10-11's false casts went from 28 to 2 with every cast found as before
   (`casts.LAYER2_MAX_WORDS`). A one-word phrase
@@ -170,7 +209,7 @@ and lines are stored as before. Every endpoint takes the client token.
   line is kept, for Jev to route as ever (`"line": "kept"`); it takes the cast's id as its `cast_id`
   when the cast fired and it has none. Jev routes a long line before it asks, so a kept cast is not
   refused for a line Jev judged. A long line comes only when the whole utterance ends, so a phrase
-  said at its start would fire seconds late: the kit's phoneme match (`match_line`, any length,
+  said at its start would fire seconds late: the phoneme match (`sounds.match_line`, any length,
   allowance 0.4) finds the last place the phrase or an alias is said, its time is placed by word
   between the line's `at` and `ended_at`, and more than 3 s before the line ended the cast is
   `stale` (`the phrase was said about 6.2 s before its line ended, past the 3 s a Jev cast may be`).
@@ -182,16 +221,16 @@ and lines are stored as before. Every endpoint takes the client token.
   a line of a player with an incantation (no other line can get a Jev cast), noted as Layer 2 runs,
   before the line is stored, for 30 minutes; a line received before the bridge last started has
   none, and its Jev cast is `stale` too.
-  `202 {"id", "status", "copy"?, "error"?, "line": "dropped"|"kept"}`; `200 {"line": "dropped",
+  `202 {"id", "status", "error"?, "line": "dropped"|"kept"}`; `200 {"line": "dropped",
   "cast_id"}` for a line dropped meanwhile, nothing cast; `404` no such line or incantation; `400` not
   a voice line; `409 {"line": "judged"}` when Jev judged it first. A fired or failed one is announced
   after the answer, as every cast is.
 
 `casts` in `vfg.db`: `(id, at, started_at, ended_at, player_name, phrase, heard, layer
-(spotter, transcript or jev), incantation_id, action, copy, status, error, line_id,
-client_cast_id UNIQUE)`, indexed on
-`(player_name, started_at)`. `at` is the bridge's clock, which the cooldowns use; the windows are the
-mod's audio clock, after the same clock guard as lines. The guard keeps the shift it found for a
+(spotter, transcript or jev), incantation_id, action, copy (the old system's running copy; NULL
+since), status (fired, cooldown, duplicate, failed, stale; pending while the engine is asked), error,
+line_id, client_cast_id UNIQUE)`, indexed on `(player_name, started_at)`. `at` is the bridge's clock;
+the windows are the mod's audio clock, after the same clock guard as lines. The guard keeps the shift it found for a
 player's clock and applies it to their later casts and lines while it brings them within bounds,
 so a cast and its line stay on one clock. `lines` has `dropped` and `cast_id`.
 
@@ -212,15 +251,15 @@ On the box, from `/opt/vfg/.env` (its names are in `deploy/env.example`):
 | `VFG_DB`, `VFG_FEED`, `VFG_WATCH` | `/opt/vfg/vfg.db`, `/opt/vfg/feed.log`, `/opt/vfg/watch.json` |
 | `VFG_STATE`, `VFG_CONSOLE_LOG` | `/opt/vfg/state`, `/opt/mc/console.log` |
 | `VFG_BRIDGE_BIND`, `VFG_BRIDGE_PORT` | `0.0.0.0`, `8787` |
-| `VFG_BASE`, `VFG_MC` | `/opt/vfg`, `/opt/mc`: the box a cast starts its copy on |
-| `VFG_KIT` | `$VFG_BASE/scripts/_lib` |
-| `VFG_INCANTATIONS` | `$VFG_BASE/incantations.json`; for tests only: the box script and vfg use that path |
-| `VFG_OWNER`, `VFG_LIVE_POLL_S` | none, `0.5`: passed to a cast's copy |
-| `VFG_CAST_GAP_S`, `VFG_CAST_SLACK_S` | `1.0` s between a player's casts, `0.3` s of overlap slack |
+| `VFG_BASE` | `/opt/vfg`: where the engine's socket and export are, unless set below |
+| `VFG_CAST_SLACK_S` | `0.3` s of overlap slack in the duplicate window |
 | `VFG_CAST_WAIT_S` | `1.5`: a cast held longer than this since its request is `stale` |
 | `VFG_JEV_CAST_MAX_AGE_S` | `2.0`: a Jev cast of a line received longer ago than this is `stale` |
 | `VFG_INCANT_ALLOWANCE`, `VFG_INCANT_LAYER2` | `0.25`, `on` (`off` turns Layer 2 off) |
 | `VFG_INCANT_LAYER2_MAX_WORDS` | `6`: Layer 2 only on a line of at most this many words; `0` any length |
+| `VFG_ENGINE_SOCKET` | `$VFG_BASE/engine/engine.sock`: the game engine's control socket, for its casts |
+| `VFG_ENGINE_EXPORT` | `$VFG_BASE/engine/incantations.json`: the engine's bindings, as the engine writes them |
+| `VFG_ENGINE_CAST_WAIT_S` | `1.0`: how long an engine binding's cast waits for the engine's answer |
 
 On the owner's PC, from `~/.vfg/config`: `VFG_SSH_HOST`, `VFG_SSH_USER`, `VFG_SSH_KEY`,
 `VFG_AWS_REGION`, `VFG_INSTANCE_TYPE`, `VFG_KEY_PAIR`, `VFG_BACKUP_DIR` and `VFG_ACCEPT_EULA`

@@ -1,0 +1,8 @@
+{
+  "criteria": {
+    "milk": {"trigger": "minecraft:consume_item", "conditions": {"item": {"items": "minecraft:milk_bucket"}}}
+  },
+  "requirements": [["milk"]],
+  "rewards": {"function": "everhear:ev/milk"},
+  "sends_telemetry_event": false
+}

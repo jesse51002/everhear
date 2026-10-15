@@ -18,7 +18,8 @@ from .fakes import (FakeHarness, FakeVfg, bad, bash, done, error, failed_turns, 
                     tool)
 
 BRIEF = "Give Steve an ice beam that freezes what it hits."
-EMPTY = {"scripts": [], "actions": [], "presets": [], "copies": []}
+EMPTY = {"content": [], "bindings": [], "grants": []}
+CASTLE = ok(json.dumps({"ok": True, "places": [{"name": "castle", "dim": "overworld", "pos": [1, 2, 3], "by": None}]}))
 
 
 @pytest.fixture
@@ -45,8 +46,7 @@ class Run:
 
     def __init__(self, cfg, vfg=None):
         self.harness = FakeHarness()
-        self.vfg = vfg or (FakeVfg().on("prefix", answer=ok("THE KIT\n"))
-                           .on("place", "list", answer=ok("castle 1 2 3\n")))
+        self.vfg = vfg or FakeVfg().on("prefix", answer=ok("THE KIT\n")).on("engine", "places", answer=CASTLE)
         self.reports: list[tuple[str, str, str]] = []
         self.described: list[tuple[str, str, dict]] = []  # (task, its description, what it made), by report
         self.running: list[list[str]] = []  # running() as each report arrives
@@ -86,15 +86,15 @@ async def test_a_start_returns_at_once_and_the_implementer_reports_when_it_ends(
     assert r.imps.running() == [] and r.imps.session("ice_beam_steve") == "s1"
     run = r.harness.runs[0]
     assert (run.kind, run.task, run.resumed) == ("start", "ice_beam_steve", None)
-    assert run.prompt == (BRIEF + "\n\nYOUR TASK: ice_beam_steve. Name what you make ice_beam_steve: vfg script new "
-                          "ice_beam_steve, its action ice_beam_steve, and run it as=ice_beam_steve. Every vfg action run "
-                          "you send takes --task ice_beam_steve, and a vfg place save --by ice_beam_steve.\n"
-                          "SAVED PLACES: castle 1 2 3\n\nEXAMPLES for ice_beam_steve.")
+    assert run.prompt == (BRIEF + "\n\nYOUR TASK: ice_beam_steve. Name what you make ice_beam_steve: your class "
+                          "made/main/content/ice_beam_steve.py (another it needs, ice_beam_steve_<what>), its test "
+                          "made/main/tests/ice_beam_steve.py. Every vfg engine bind you send takes --by ice_beam_steve.\n"
+                          "SAVED PLACES: castle 1 2 3 overworld\n\nEXAMPLES for ice_beam_steve.")
     assert run.closed and not run.stopped
     assert run.guard is r.imps._tasks["ice_beam_steve"].guard and run.guard.task == "ice_beam_steve"
     # its rules with this server filled in, then vfg prefix: read once, the same bytes for every implementer
     # (in a file of the brain's folder: with the kit, far longer than one argument may be)
-    assert system(run).startswith("You are an implementer") and "made/main/actions/" in system(run)
+    assert system(run).startswith("You are an implementer") and "made/main/content/" in system(run)
     assert "%SERVER%" not in system(run) and system(run).endswith("\n\nTHE KIT\n")
     assert str(run.system).startswith(cfg.brain_dir + "/")
     assert r.harness.runs[1].system == run.system
@@ -108,7 +108,7 @@ async def test_a_start_returns_at_once_and_the_implementer_reports_when_it_ends(
          "--ref", "ice_beam_steve"]]
 
 
-NOTHING_BACK = "\nCode put back: nothing; the run had changed no made file, copy or place."
+NOTHING_BACK = "\nCode put back: nothing; the run had changed no made file, binding or grant."
 
 
 async def test_how_a_run_ends_gives_its_status(cfg):
@@ -165,7 +165,7 @@ async def test_a_follow_up_resumes_the_ended_session_and_writes_only_its_own_usa
     assert [row[row.index("--in") + 1:row.index("--out") + 2] + row[row.index("--largest"):row.index("--largest") + 2]
             for row in r.vfg.made("usage")] == [["181000", "--out", "800", "--largest", "91000"],
                                                 ["93000", "--out", "200", "--largest", "93000"]]
-    assert len(r.vfg.made("place", "list")) == 1  # a follow-up's brief is its words alone
+    assert len(r.vfg.made("engine", "places")) == 1  # a follow-up's brief is its words alone
 
 
 async def test_a_follow_up_to_a_live_run_goes_into_it_and_one_after_it_resumes_the_session(cfg):
@@ -233,7 +233,8 @@ async def test_close_interrupts_what_runs_drops_what_waits_and_reports_nothing(c
 
 
 async def test_without_vfg_prefix_the_rules_alone_and_it_is_asked_again(cfg):
-    r = Run(cfg, FakeVfg().on("prefix", answer=bad("vfg: no such command")))
+    r = Run(cfg, FakeVfg().on("prefix", answer=bad("vfg: no such command"))
+            .on("engine", "places", answer=ok('{"ok": true, "places": []}')))
     await r.imps.start("castle_steve", BRIEF)
     await r.settle()
     await r.imps.start("zoo_steve", BRIEF)
@@ -309,80 +310,83 @@ def test_split_description():
     assert report == "Done." and description == "a" * 600
 
 
-def made_here(cfg, kind: str, name: str) -> None:
-    """A file a tool call made in made/main/, as vfg would."""
-    path = {"scripts": "made/main/scripts/%s/main.py", "actions": "made/main/actions/%s.py",
-            "presets": "made/main/presets/%s.py"}[kind] % name
-    os.makedirs(os.path.dirname(os.path.join(cfg.repo, path)), exist_ok=True)
-    with open(os.path.join(cfg.repo, path), "w") as f:
-        f.write('"""x"""\n')
+def made_here(cfg, rel: str, text: str = '"""x"""\n') -> None:
+    """A file a tool call made in the repository."""
+    os.makedirs(os.path.dirname(os.path.join(cfg.repo, rel)), exist_ok=True)
+    with open(os.path.join(cfg.repo, rel), "w") as f:
+        f.write(text)
 
 
 def effects(cfg):
-    """What the allowed calls do on disk: vfg script new writes the script and its action, a Write its file;
-    vfg preset save fails and writes nothing."""
+    """What the allowed calls do on disk: a Write writes its file; a Bash call changes nothing here."""
 
     def effect(name, inp):
-        if name == "Bash" and inp["command"].startswith("vfg script new "):
-            made_here(cfg, "scripts", inp["command"].split()[3])
-            made_here(cfg, "actions", inp["command"].split()[3])
-        elif name == "Write":
-            os.makedirs(os.path.dirname(os.path.join(cfg.repo, inp["file_path"])), exist_ok=True)
-            with open(os.path.join(cfg.repo, inp["file_path"]), "w") as f:
-                f.write(inp.get("content") or "")
+        if name == "Write":
+            made_here(cfg, inp["file_path"], inp.get("content") or "")
 
     return effect
 
 
-async def test_what_the_task_made_is_recorded_by_the_guard_checked_on_disk_and_kept_over_its_runs(cfg):
+class Engine:
+    """What the engine has, as the fake vfg answers `vfg engine incantations|instances --json`."""
+
+    def __init__(self, vfg, bindings=(), grants=()):
+        self.bindings, self.grants = list(bindings), list(grants)
+        vfg.on("engine", "incantations", answer=lambda argv: ok(json.dumps(
+            {"ok": True, "incantations": [{"id": b} for b in self.bindings]})))
+        vfg.on("engine", "instances", answer=lambda argv: ok(json.dumps({"ok": True, "instances": [
+            {"instance": "ability:%s#1" % a, "kind": "ability", "id": a, "user": u} for u, a in self.grants]})))
+
+
+async def test_what_the_task_made_is_recorded_by_the_guard_checked_on_disk_and_in_the_engine_and_kept_over_its_runs(cfg):
     name = "galick_gun_styrk"
-    os.makedirs(cfg.home)
-    with open(os.path.join(cfg.home, "running.json"), "w") as f:  # the brain's own copy of the task's action
-        json.dump({"copies": {"galick_gun_styrk_steve": {"action": name, "script": name, "task": None}}}, f)
     r = Run(cfg)
+    engine = Engine(r.vfg, bindings=["styrkaeopteryx.galick_gun"], grants=[("Styrkaeopteryx", name)])
     r.harness.add(
         session("s1"),
-        bash("vfg script new galick_gun_styrk --from galick_gun --preset crater"),
+        tool("Write", file_path="made/main/content/galick_gun_styrk.py", content='"""A Galick Gun."""\n'),
         bash("curl https://example.com"),  # denied: records nothing
-        tool("Write", file_path="made/main/presets/beam_clash.py", content='"""Two beams meet."""\n'),
-        bash("vfg preset save galick_gun_styrk charge charge_up"),  # it failed: not on disk, dropped
-        bash("vfg action check galick_gun_styrk && vfg action run galick_gun_styrk player=Styrkaeopteryx "
-             "as=galick_gun_styrk --task galick_gun_styrk"),
-        bash("vfg action run stop copy=old_beam --task galick_gun_styrk"),  # changes a copy, starts none
-        done("Done: Styrkaeopteryx has a Galick Gun.\nDESCRIPTION: A Galick Gun for Styrkaeopteryx: hold right-click."),
+        tool("Write", file_path="made/main/content/galick_gun_styrk_beam.py", content='"""Its beam."""\n'),
+        tool("Write", file_path="made/main/tests/galick_gun_styrk.py", content="def test(t):\n    pass\n"),  # a test
+        bash("vfg engine reload galick_gun_styrk galick_gun_styrk_beam && vfg engine grant Styrkaeopteryx "
+             "galick_gun_styrk && vfg engine bind Styrkaeopteryx 'galick gun' galick_gun_styrk --by galick_gun_styrk"),
+        bash("vfg engine grant Alex galick_gun_styrk"),  # it did not land: the engine does not have it
+        bash("vfg engine give Styrkaeopteryx fire_staff"),  # not of the record's kinds
+        done("Done: Styrkaeopteryx has a Galick Gun.\nDESCRIPTION: A Galick Gun for Styrkaeopteryx: say galick gun."),
         effect=effects(cfg))
     r.harness.add(
-        # the task's own script, while the brain's own copy of its action runs: its own to change
-        tool("Edit", file_path=os.path.join(cfg.repo, "made/main/scripts/galick_gun_styrk/main.py"),
+        tool("Edit", file_path=os.path.join(cfg.repo, "made/main/content/galick_gun_styrk.py"),
              old_string="x", new_string="y"),
-        tool("Edit", file_path="made/main/actions/galick_gun_styrk.py", old_string="x", new_string="y"),
-        bash("vfg script stop galick_gun_styrk; vfg action run galick_gun_styrk --task=galick_gun_styrk "
-             "as=galick_gun_styrk_2"),
+        bash("vfg engine reload galick_gun_styrk && vfg engine bind Styrkaeopteryx 'big bang' galick_gun_styrk "
+             "--by galick_gun_styrk"),
         done("Done: it pierces blocks now."),
         effect=effects(cfg))
     await r.imps.start(name, BRIEF)
     await r.settle()
-    await r.imps.follow_up(name, "make it pierce blocks")
+    engine.bindings.append("styrkaeopteryx.big_bang")
+    await r.imps.follow_up(name, "make it pierce blocks, and big bang fires it too")
     await r.settle()
     first, second = r.harness.runs
-    assert [v for _, _, v in first.verdicts] == [None, DENY.shape, None, None, None, None]
-    assert [v for _, _, v in second.verdicts] == [None, None, None]
+    assert [v for _, _, v in first.verdicts] == [None, DENY.shape, None, None, None, None, None]
+    assert [v for _, _, v in second.verdicts] == [None, None]
     assert r.reports == [(name, "done", "Done: Styrkaeopteryx has a Galick Gun."),
                          (name, "done", "Done: it pierces blocks now.")]
-    made = {"scripts": [name], "actions": [name], "presets": ["beam_clash"], "copies": [name]}
-    assert r.described == [(name, "A Galick Gun for Styrkaeopteryx: hold right-click.", made),
-                           (name, "", {**made, "copies": [name, name + "_2"]})]
-    assert r.imps._tasks[name].guard.own >= {name}
+    made = {"content": [name, name + "_beam"], "bindings": ["styrkaeopteryx.galick_gun"],
+            "grants": ["Styrkaeopteryx:galick_gun_styrk"]}
+    assert r.described == [(name, "A Galick Gun for Styrkaeopteryx: say galick gun.", made),
+                           (name, "", {**made, "bindings": ["styrkaeopteryx.galick_gun", "styrkaeopteryx.big_bang"]})]
+    assert r.imps._tasks[name].guard.made["grants"] == ["Styrkaeopteryx:galick_gun_styrk", "Alex:galick_gun_styrk"]
 
 
 async def test_a_crash_reports_what_was_made_so_far(cfg, monkeypatch):
     r = Run(cfg)
-    r.harness.add(session("s1"), bash("vfg script new ice_beam_steve --from ice_beam"),
-                  bash("vfg action run ice_beam_steve as=ice_beam_steve --task ice_beam_steve"),
+    Engine(r.vfg, grants=[("Steve", "ice_beam_steve")])
+    r.harness.add(session("s1"), tool("Write", file_path="made/main/content/ice_beam_steve.py", content="x"),
+                  bash("vfg engine reload ice_beam_steve && vfg engine grant Steve ice_beam_steve"),
                   breaks=RuntimeError("the CLI went away"), effect=effects(cfg))
     await r.imps.start("ice_beam_steve", BRIEF)
     await r.settle()
-    made = {"scripts": ["ice_beam_steve"], "actions": ["ice_beam_steve"], "presets": [], "copies": ["ice_beam_steve"]}
+    made = {"content": ["ice_beam_steve"], "bindings": [], "grants": ["Steve:ice_beam_steve"]}
     assert r.reports == [("ice_beam_steve", "failed", "Failed: it crashed: RuntimeError: the CLI went away.")]
     assert r.described == [("ice_beam_steve", "", made)]
     # a run that cannot even start reports what the task's earlier runs made
@@ -394,24 +398,30 @@ async def test_a_crash_reports_what_was_made_so_far(cfg, monkeypatch):
     assert r.described[-1] == ("ice_beam_steve", "", made)
 
 
-async def test_after_a_restart_a_follow_up_still_changes_its_own_script_while_copies_of_it_run(cfg):
-    made_here(cfg, "scripts", "galick_gun_styrk")
-    made_here(cfg, "scripts", "beam_alex")
-    os.makedirs(cfg.home)
-    with open(os.path.join(cfg.home, "running.json"), "w") as f:
-        json.dump({"copies": {"galick_gun_styrk_steve": {"action": "galick_gun_styrk", "script": "galick_gun_styrk",
-                                                         "task": None},
-                              "beam_alex": {"action": "beam_alex", "script": "beam_alex", "task": "beam_alex"}}}, f)
+async def test_after_a_restart_a_follow_up_records_the_class_it_edits(cfg):
+    made_here(cfg, "made/main/content/galick_gun_styrk.py")
     r = Run(cfg)  # a new process: nothing recorded, the session from the task's row
-    r.harness.add(tool("Edit", file_path="made/main/scripts/galick_gun_styrk/main.py", old_string="x", new_string="y"),
-                  tool("Edit", file_path="made/main/scripts/beam_alex/main.py", old_string="x", new_string="y"),
+    r.harness.add(tool("Edit", file_path="made/main/content/galick_gun_styrk.py", old_string="x", new_string="y"),
                   done("Done: it pierces blocks now."))
     await r.imps.follow_up("galick_gun_styrk", "make it pierce blocks", session="s1")
     await r.settle()
     [run] = r.harness.runs
-    assert [v for _, _, v in run.verdicts] == [None, DENY.running("beam_alex", {"copy": "beam_alex", "task": "beam_alex"},
-                                                                "main")]
-    assert r.imps._tasks["galick_gun_styrk"].guard.own == {"galick_gun_styrk"}
+    assert [v for _, _, v in run.verdicts] == [None]
+    assert r.described == [("galick_gun_styrk", "", {**EMPTY, "content": ["galick_gun_styrk"]})]
+
+
+async def test_after_a_restart_the_report_says_every_run_made_as_it_is_now(cfg):
+    """A follow-up of a task this process did not start begins from what its row says it made, so
+    its report is the whole of it, as the disk has it now: the row mirrors that."""
+    made_here(cfg, "made/main/content/galick_gun_styrk.py")
+    made_here(cfg, "made/main/content/galick_beam.py")
+    r = Run(cfg)
+    r.harness.add(tool("Edit", file_path="made/main/content/galick_beam.py", old_string="x", new_string="y"),
+                  done("Done: the beam is wider."))
+    before = {"content": ["galick_gun_styrk", "galick_old"], "bindings": [], "grants": []}   # galick_old is gone
+    await r.imps.follow_up("galick_gun_styrk", "a wider beam", session="s1", made=before)
+    await r.settle()
+    assert r.described == [("galick_gun_styrk", "", {**EMPTY, "content": ["galick_gun_styrk", "galick_beam"]})]
 
 
 def test_the_tasks_guard_knows_whether_there_is_a_test_server(tmp_path):

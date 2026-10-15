@@ -1,0 +1,757 @@
+"""What incantations sound like: the phoneme matching, and its one copy. The bridge runs Layer 2
+and the drop rule with it; vfg on the PC imports this file by path for the bind checks and the
+code aliases. What an incantation casts is the game engine's (the bridge's casts.py and engine.py);
+this file only says which incantation a line sounds like. Python 3.9+, standard library only.
+
+    sounds.match_line("uh come a hammer ha", entries)   # Layer 2: [Match], best first
+    sounds.drop("fire ball now", entry)                 # the drop rule: True
+    sounds.bind_warnings("fire ball", aliases, others)  # ['"fire ball" sounds like ...']
+
+An entry is a dict with "phrase", and "aliases" (the engine's export entries are).
+
+Words are normalised one way everywhere (normalize): lowercase, accents and apostrophes
+dropped (don't -> dont), every other mark, hyphen and underscore a space.
+
+Phonemes come from CMUdict (cmudict.gz beside this file, its licence in cmudict.LICENSE): the
+first pronunciation of each word, stress removed, keys normalised as above. A word it lacks goes
+through small English letter-to-sound rules (_rules), which only need to be consistent: a phrase
+and a transcript go through the same function. The dictionary is one sorted text kept in memory
+as it is (about 2.9 MB) and searched by bisection, read on first use or by warm().
+
+Layer 2 (match_line) aligns each target's phonemes whole against any run of the line's, with
+word boundaries ignored, so "come a hammer ha" lines up with "kamehameha". The cost of one edit
+(_sub_cost, _indel_cost) is 1, except:
+    0.3  a vowel for another vowel (ER counts as one), a voiced consonant for its unvoiced pair
+         (B/P D/T G/K V/F Z/S DH/TH ZH/SH JH/CH), ER for R, N for NG
+    0.6  a consonant for another of its kind (stops, fricatives, nasals, liquids, glides)
+    0.25 an HH put in or left out; 0.5 an AH (the unstressed "uh")
+and the distance is the cost over the target's phoneme count: 0 is exact, 0.25 the default
+allowance (one consonant wrong in "fire ball", or four vowels in "kamehameha").
+
+A one-word phrase (one_word) is held tighter, everywhere a target is found: its phrase's and
+aliases' runs start only where a word of the line starts, so "dash" is in "dashboard" but not
+in "haberdashery", and a target of fewer than SHORT_PHONES phonemes is found only as it is
+said, within SHORT_COST in all (an HH put in or left out), its mishearings left to its
+aliases. At 0.25 alone, "heal" matched 500 of the 2026-10-08 playtest's 843 lines ("build",
+"all", "really"); held so, none.
+
+An entry's `everyday_aliases` are those of its `aliases` that are everyday talk in their own
+right ("ice cream" and "i scream" for "ice beam"): the bridge's GET /v1/incantations leaves them
+out, so the mod's keyword spotter never listens for them, and Layer 2 and the Jev cast check use
+them as any other alias (everyday() keeps them a subset of the aliases).
+"""
+import gzip
+import os
+import re
+import unicodedata
+from collections import namedtuple
+from functools import lru_cache
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+DICT_PATH = os.environ.get("VFG_CMUDICT") or os.path.join(HERE, "cmudict.gz")
+
+FILLERS = frozenset("uh um er ah oh hmm mm".split())
+ALLOWANCE = 0.25          # match_line's default: Layer 2 on a line
+DROP_ALLOWANCE = 0.5      # the drop rule's: the spotter already heard it
+DROP_SPAN_RATIO = (0.6, 1.6)   # the drop rule's phoneme match: its run's phonemes over the target's
+DROP_SPAN_WORDS = 1       # ... and at most the target's words + 1, unless within ALLOWANCE
+# A line with one of these left beside the phrase is never dropped: it asks something of the spell.
+KEEP_WORDS = frozenset("stop remove cancel delete unbind dont not no never undo end".split())
+SOUNDS_LIKE = 0.34        # bind_warnings: a phrase or alias this close to another's
+SHORT_PHONES = 6          # bind_warnings: a phrase with fewer is short; a one-word phrase's
+SHORT_COST = 0.25         # ... target with fewer is found only within this, in all (_found)
+MIN_ALIAS_PHONES = 4      # merge_aliases drops a shorter alias
+ALIAS_CAP = 24            # the alias call's 20, beside the code's joined and split forms
+# checked_variants: the alias call's variants that are kept sound like the phrase, within this
+# sound_distance of it, and are less than this much longer, their speech sounds weighed as
+# sound_distance weighs one put in (_indel_cost: an HH 0.25, an AH 0.5, any other 1), so a
+# made-up word's respellings keep their H and "uh" sounds ("come a hammer ha" for kamehameha,
+# which CMUdict says in 8 sounds with no H). A backstop: on the
+# 2026-10-12 bench of the alias prompts (1,775 variants), they dropped 4 of the 59 from the old
+# prompt ("destroy everything right", "galactic gun"), 5 of 200 from Gemini 3.8 Flash's exactly
+# 20 at light thinking ("nice dean", "call me hammer ha"), and none from Sonnet, Haiku or Sol.
+ALIAS_MAX_DISTANCE = 0.35
+ALIAS_MAX_LONGER = 3
+MAX_PHRASE = 80           # characters, normalised
+MAX_LINE_WORDS = 200      # match_line reads the first 200 words of a line (about 1000 characters)
+SPAN_PHONES, SPAN_SLACK = 3, 0.1   # _best_end: a match's end may move this far for this much more
+EPS = 1e-9                # sums of 0.3s are not exact: a distance on the allowance is within it
+_INF = float("inf")
+
+
+# ------------------------------------------------------------------ words
+
+def normalize(text):
+    """The drop rule's normalisation: lowercase, accents and apostrophes dropped, every other
+    mark (hyphens and underscores too) a space, whitespace collapsed."""
+    s = unicodedata.normalize("NFKD", str(text or "")).lower()
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = re.sub(r"['\u2018\u2019]", "", s)
+    return " ".join(re.sub(r"[\W_]+", " ", s).split())
+
+
+def words(text):
+    return normalize(text).split()
+
+
+def check_phrase(phrase):
+    """The phrase normalised; ValueError unless it is a word at least."""
+    p = normalize(phrase)
+    if not p:
+        raise ValueError("%r is not an incantation: a phrase is a word at least" % (phrase,))
+    if len(p) > MAX_PHRASE:
+        raise ValueError("%r is too long for an incantation: %d characters at most" % (phrase, MAX_PHRASE))
+    return p
+
+
+
+
+
+
+
+
+
+
+
+
+def one_word(entry):
+    """Whether the entry's phrase is one word ("fireball"): Layer 2 and the drop rule hold its
+    targets tighter (_found)."""
+    return len(normalize(entry.get("phrase")).split()) == 1
+
+
+def targets(entry):
+    """The entry's phrase and aliases, normalised, each once."""
+    out = []
+    for t in [entry.get("phrase")] + list(entry.get("aliases") or []):
+        n = normalize(t)
+        if n and n not in out:
+            out.append(n)
+    return out
+
+
+# ------------------------------------------------------------------ phonemes
+
+PHONES = ("AA AE AH AO AW AY EH ER EY IH IY OW OY UH UW "
+          "B CH D DH F G HH JH K L M N NG P R S SH T TH V W Y Z ZH").split()
+PHONE_ID = dict((p, i) for i, p in enumerate(PHONES))
+VOWELS = frozenset(PHONES[:15])
+_KIND = {}
+for _k, _ps in (("stop", "P B T D K G"), ("affricate", "CH JH"), ("fricative", "F V TH DH S Z SH ZH"),
+                ("nasal", "M N NG"), ("liquid", "L R"), ("glide", "W Y"), ("aspirate", "HH")):
+    for _p in _ps.split():
+        _KIND[_p] = _k
+_PAIRS = set()
+for _a, _b in (("B", "P"), ("D", "T"), ("G", "K"), ("V", "F"), ("Z", "S"), ("DH", "TH"), ("ZH", "SH"),
+               ("JH", "CH"), ("ER", "R"), ("N", "NG")):
+    _PAIRS.update(((_a, _b), (_b, _a)))
+
+
+def _sub_cost(a, b):
+    if a == b:
+        return 0.0
+    if (a in VOWELS and b in VOWELS) or (a, b) in _PAIRS:
+        return 0.3
+    if a not in VOWELS and b not in VOWELS and _KIND[a] == _KIND[b]:
+        return 0.6
+    return 1.0
+
+
+def _indel_cost(p):
+    return {"HH": 0.25, "AH": 0.5}.get(p, 1.0)
+
+
+# _SUB[a][b] and _INDEL[a], by phone id.
+_SUB = [[_sub_cost(a, b) for b in PHONES] for a in PHONES]
+_INDEL = [_indel_cost(p) for p in PHONES]
+
+_dict = None              # the dictionary's text, bytes: "word PH ON ES\n", sorted by word
+
+
+def warm():
+    """Read the dictionary now (the bridge calls this as it starts), not on first use."""
+    _load()
+
+
+def _load():
+    global _dict
+    if _dict is None:
+        try:
+            with open(DICT_PATH, "rb") as f:
+                _dict = gzip.decompress(f.read())
+        except OSError:
+            _dict = b""   # no dictionary: every word goes through the rules
+    return _dict
+
+
+def build_dictionary(src, out=DICT_PATH):
+    """Make cmudict.gz from CMUdict's own cmudict.dict (the cmusphinx/cmudict repo, or PyPI's
+    cmudict package, data/cmudict.dict): each word's first pronunciation, stress removed, its key
+    normalised (apostrophes dropped, a word with any other mark left out, the spelling without
+    an apostrophe kept over one with), sorted. Returns how many words it holds.
+
+        python3 -c 'from vfg_bridge import sounds; sounds.build_dictionary("cmudict.dict")'
+    """
+    plain, apos = {}, {}
+    with open(src, encoding="utf-8") as f:
+        for line in f:
+            line = line.split("#", 1)[0].strip()
+            word, _, pron = line.partition(" ")
+            if not pron or re.search(r"\(\d+\)$", word):
+                continue      # a comment, or a second pronunciation
+            key = word.lower().replace("'", "")
+            if re.match(r"^[a-z0-9]+$", key):
+                (apos if "'" in word else plain).setdefault(key, " ".join(re.sub(r"\d", "", p) for p in pron.split()))
+    for k, v in apos.items():
+        plain.setdefault(k, v)
+    body = "".join("%s %s\n" % (k, plain[k]) for k in sorted(plain))
+    with open(out, "wb") as f, gzip.GzipFile("", "wb", 9, f, mtime=0) as z:
+        z.write(body.encode("ascii"))   # no name or time in the header: the same bytes every build
+    return len(plain)
+
+
+def _cmu(word):
+    """CMUdict's phonemes for one normalised word, as a space-joined string, or None."""
+    text = _load()
+    try:
+        key = word.encode("ascii")
+    except UnicodeEncodeError:
+        return None
+    lo, hi = 0, len(text)
+    while lo < hi:   # lo is always a line's start; every line before it sorts below key
+        mid = (lo + hi) // 2
+        s = text.rfind(b"\n", lo, mid) + 1 or lo
+        e = text.find(b" ", s)
+        k = text[s:e]
+        if k == key:
+            return text[e + 1:text.find(b"\n", e)].decode("ascii")
+        if k < key:
+            lo = text.find(b"\n", e) + 1
+        else:
+            hi = s
+    return None
+
+
+_DIGITS = "zero one two three four five six seven eight nine".split()
+
+
+@lru_cache(maxsize=8192)
+def _word_ids(word):
+    """One normalised word's phonemes, as a tuple of phone ids."""
+    found = _cmu(word)
+    if found is not None:
+        return tuple(PHONE_ID[p] for p in found.split())
+    out = []
+    for run in re.findall(r"[0-9]+|[^0-9]+", word):
+        if run.isdigit():
+            for d in run:
+                out.extend(_word_ids(_DIGITS[int(d)]))
+        else:
+            found = _cmu(run)
+            out.extend(PHONE_ID[p] for p in (found.split() if found is not None else _rules(run)))
+    return tuple(out)
+
+
+def phonemes(word):
+    """CMUdict's first pronunciation of a word, stress removed; else the letter-to-sound rules'.
+    A word that normalises to several ("fire-ball") gives them all, run together."""
+    return [PHONES[i] for w in words(word) for i in _word_ids(w)]
+
+
+def phones(text):
+    """Every word's phonemes, joined, with no word boundaries."""
+    return [PHONES[i] for w in words(text) for i in _word_ids(w)]
+
+
+def pronunciation(phrase):
+    """How each word of the phrase is said, for the alias call's prompt: [(word, its phonemes as
+    "AY S", whether CMUdict has it)], a word it lacks given by the letter-to-sound rules."""
+    out = []
+    for w in words(phrase):
+        found = _cmu(w)
+        out.append((w, found if found is not None else " ".join(phonemes(w)), found is not None))
+    return out
+
+
+@lru_cache(maxsize=4096)
+def _target_ids(text):
+    """A normalised target's phone ids, as a tuple."""
+    return tuple(i for w in text.split() for i in _word_ids(w))
+
+
+# ---- the letter-to-sound rules, for words CMUdict lacks
+
+_LV = frozenset("aeiouy")
+_START, _END, _CONS, _ANY = "start", "end", "cons", "any"
+# (letters, phonemes, where): tried longest first at each place; where is _START (only at the
+# word's start), _END (only at its end), _CONS (before a consonant or the end) or _ANY.
+_GRAPHEMES = [
+    ("tion", "SH AH N", _ANY), ("sion", "ZH AH N", _ANY), ("eigh", "EY", _ANY), ("ough", "AO", _ANY),
+    ("augh", "AO", _ANY), ("tch", "CH", _ANY), ("sch", "S K", _ANY), ("igh", "AY", _ANY),
+    ("ch", "CH", _ANY), ("sh", "SH", _ANY), ("th", "TH", _ANY), ("ph", "F", _ANY), ("wh", "W", _ANY),
+    ("ck", "K", _ANY), ("ng", "NG", _ANY), ("qu", "K W", _ANY), ("kn", "N", _START), ("wr", "R", _START),
+    ("gn", "N", _START), ("gn", "N", _END), ("mb", "M", _END), ("gh", "G", _START), ("gh", "", _ANY),
+    ("ee", "IY", _ANY), ("ea", "IY", _ANY), ("oo", "UW", _ANY), ("ou", "AW", _ANY), ("ow", "OW", _ANY),
+    ("oa", "OW", _ANY), ("ai", "EY", _ANY), ("ay", "EY", _ANY), ("ey", "IY", _END), ("ei", "EY", _ANY),
+    ("ey", "EY", _ANY), ("oi", "OY", _ANY), ("oy", "OY", _ANY), ("au", "AO", _ANY), ("aw", "AO", _ANY),
+    ("ew", "UW", _ANY), ("ue", "UW", _ANY), ("ui", "UW", _ANY), ("ie", "IY", _ANY),
+    ("ar", "AA R", _CONS), ("er", "ER", _CONS), ("ir", "ER", _CONS), ("ur", "ER", _CONS),
+    ("or", "AO R", _CONS), ("ah", "AA", _CONS), ("eh", "EH", _CONS), ("oh", "OW", _CONS),
+    ("uh", "AH", _CONS),
+]
+_LONG = {"a": "EY", "e": "IY", "i": "AY", "o": "OW", "u": "UW"}
+_SHORT = {"a": "AE", "e": "EH", "i": "IH", "o": "AA", "u": "AH"}
+_FINAL = {"a": "AH", "e": "IY", "i": "IY", "o": "OW", "u": "UW"}
+_PLAIN = {"b": "B", "d": "D", "f": "F", "j": "JH", "k": "K", "l": "L", "m": "M", "n": "N", "p": "P",
+          "q": "K", "r": "R", "t": "T", "v": "V", "w": "W", "z": "Z"}
+
+
+def _rules(w):
+    """English letter-to-sound, roughly: kamehameha -> K AE M EH HH AE M EH HH AH. Letters
+    other than a-z are skipped."""
+    w = re.sub(r"[^a-z]", "", w)
+    n = len(w)
+    out = []
+    i = 0
+    while i < n:
+        for letters, ph, where in _GRAPHEMES:
+            j = i + len(letters)
+            if w.startswith(letters, i) and (
+                    where == _ANY or (where == _START and i == 0) or (where == _END and j == n)
+                    or (where == _CONS and (j == n or w[j] not in _LV))):
+                out.extend(ph.split())
+                i = j
+                break
+        else:
+            out.extend(_letter(w, i, n))
+            i += 1
+    return out
+
+
+def _letter(w, i, n):
+    c = w[i]
+    prev = w[i - 1] if i else ""
+    nxt = w[i + 1] if i + 1 < n else ""
+    if c in "aeiou":
+        if c == "e" and i == n - 1 and i > 0:
+            # a final e: silent after another vowel's syllable (fire, game), else "ee" (ke)
+            return [] if any(ch in _LV for ch in w[:i]) else ["IY"]
+        if i + 3 == n and w[n - 1] == "e" and nxt not in _LV:
+            return [_LONG[c]]     # a magic e: game, bike
+        if i == n - 1:
+            return [_FINAL[c]]
+        return [_SHORT[c]]
+    if c == "y":
+        if i == 0 or (nxt and nxt in "aeiou"):
+            return ["Y"]
+        if i == n - 1:
+            return ["IY"] if any(ch in _LV for ch in w[:i]) else ["AY"]
+        return ["IH"]
+    if c == prev:
+        return []                 # a doubled consonant is said once
+    if c == "c":
+        return ["S"] if nxt in ("e", "i", "y") else ["K"]
+    if c == "g":
+        return ["JH"] if nxt in ("e", "i", "y") and i > 0 else ["G"]
+    if c == "h":
+        return ["HH"] if nxt in _LV or i == 0 else []
+    if c == "x":
+        return ["Z"] if i == 0 else ["K", "S"]
+    if c == "s":
+        return ["Z"] if i == n - 1 and n > 2 and prev in "bdglmnrvaeiouy" and prev != "s" else ["S"]
+    return [_PLAIN[c]]
+
+
+# ------------------------------------------------------------------ Layer 2
+
+class Match(namedtuple("Match", "entry target start end distance")):
+    """One entry found in a line: `target` the phrase or alias matched; `start`, `end` the
+    words of the line it covers (words(text), end exclusive); `distance` 0 (exact) to 1."""
+    __slots__ = ()
+
+
+def _line(text):
+    """The line's phone ids, and for each the index of its word in words(text); fillers left
+    out, and only the first MAX_LINE_WORDS words read."""
+    ids, word_of = [], []
+    for k, w in enumerate(words(text)[:MAX_LINE_WORDS]):
+        if w in FILLERS:
+            continue
+        for p in _word_ids(w):
+            ids.append(p)
+            word_of.append(k)
+    return ids, word_of
+
+
+def _starts(word_of):
+    """For each place in a run of phone ids (0 to its length), whether a word starts there:
+    where a one-word phrase's run may start (_best_end)."""
+    return [j == 0 or word_of[j] != word_of[j - 1] for j in range(len(word_of))] + [True]
+
+
+@lru_cache(maxsize=4096)
+def _target_starts(text):
+    """_starts for a normalised target's phone ids, by its words."""
+    word_of = [k for k, w in enumerate(text.split()) for _ in _word_ids(w)]
+    return tuple(_starts(word_of))
+
+
+@lru_cache(maxsize=1024)
+def _tables(t):
+    """A target's costs, by phone id: (each of its phones left out, [each phone of the line
+    against each of its phones])."""
+    return [_INDEL[a] for a in t], [[_SUB[a][b] for a in t] for b in range(len(PHONES))]
+
+
+def _best_end(t, line, starts=None):
+    """The cheapest cost of the target `t` (phone ids) aligned whole against any run of `line`,
+    and the index just past that run: (cost, end). Semi-global edit distance: the line is free
+    before and after the run. One column of costs at a time, no traceback. An end up to
+    SPAN_PHONES further on that costs at most SPAN_SLACK more is taken instead, so a last
+    phoneme is matched loosely rather than left out ("ha" in "come a hammer ha"). `starts`
+    (_starts): a run starts only where it is true; anywhere without it."""
+    m = len(t)
+    dels, cols = _tables(t)
+    prev = [0.0] * (m + 1)
+    for i in range(m):
+        prev[i + 1] = prev[i] + dels[i]
+    ends = [prev[m]]
+    cur = [0.0] * (m + 1)
+    rng = range(m)
+    for j, b in enumerate(line):
+        sub = cols[b]
+        ins = _INDEL[b]
+        if starts is None:
+            up = diag = 0.0
+        else:     # a run starting here (diag), or just after this phoneme (up)
+            diag = 0.0 if starts[j] else _INF
+            up = 0.0 if starts[j + 1] else _INF
+        for i in rng:
+            left = prev[i + 1]
+            v = diag + sub[i]
+            x = left + ins
+            if x < v:
+                v = x
+            x = up + dels[i]
+            if x < v:
+                v = x
+            cur[i + 1] = v
+            diag = left
+            up = v
+        ends.append(up)
+        prev, cur = cur, prev
+    best = min(ends)
+    end = ends.index(best)
+    for j in range(end + 1, min(end + SPAN_PHONES, len(line)) + 1):
+        if ends[j] <= best + SPAN_SLACK:
+            end = j
+    return ends[end], end
+
+
+def _span(t, line, end, starts=None):
+    """Where the cheapest run of `t` ending at `end` starts: the same alignment again over
+    line[:end], keeping each cell's start; with `starts`, as _best_end has it."""
+    m = len(t)
+    prev = [0.0] * (m + 1)
+    pstart = [0] * (m + 1)
+    for i in range(m):
+        prev[i + 1] = prev[i] + _INDEL[t[i]]
+    for j in range(1, end + 1):
+        b = line[j - 1]
+        cur = [0.0 if starts is None or starts[j] else _INF] + [0.0] * m
+        cstart = [j] * (m + 1)
+        for i in range(1, m + 1):
+            a = t[i - 1]
+            v, s = prev[i - 1] + _SUB[a][b], pstart[i - 1]
+            if prev[i] + _INDEL[b] < v:
+                v, s = prev[i] + _INDEL[b], pstart[i]
+            if cur[i - 1] + _INDEL[a] < v:
+                v, s = cur[i - 1] + _INDEL[a], cstart[i - 1]
+            cur[i], cstart[i] = v, s
+        prev, pstart = cur, cstart
+    return pstart[m]
+
+
+def _inside(a, b, one):
+    """How unlike the target `a` sounds to its best run in the target `b`, 0 to 1; with `one`
+    (a is a one-word phrase's), held as _found holds it: from a word of b, and a short one
+    within SHORT_COST or not at all."""
+    ta, tb = _target_ids(a), _target_ids(b)
+    cost = _best_end(ta, tb, _target_starts(b) if one else None)[0]
+    if one and len(ta) < SHORT_PHONES and cost > SHORT_COST + EPS:
+        return 1.0
+    return cost / len(ta)
+
+
+def _distance(a, b, a_one=False, b_one=False):
+    """How unlike two normalised targets sound, 0 to 1: the closer of a found in b and b in a,
+    each held as a one-word phrase's when it is one's (`a_one`, `b_one`)."""
+    if not _target_ids(a) or not _target_ids(b):
+        return 1.0
+    return min(_inside(a, b, a_one), _inside(b, a, b_one))
+
+
+def _found(ids, word_of, entry, allowance):
+    """Each of the entry's targets (once per sound) whose best run in the line's phone ids is
+    within `allowance`: [(distance, target, its ids, end, starts)], best first, `starts` what
+    _span takes for where its run starts. A one-word phrase's targets (one_word) run only from
+    where a word of the line starts, and one of fewer than SHORT_PHONES phonemes is found only
+    within SHORT_COST, in all."""
+    starts = _starts(word_of) if one_word(entry) else None
+    out, seen = [], set()
+    for target in targets(entry):
+        t = _target_ids(target)
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        cost, end = _best_end(t, ids, starts)
+        d = cost / len(t)
+        if starts is not None and len(t) < SHORT_PHONES and cost > SHORT_COST + EPS:
+            continue
+        if d <= allowance + EPS and end > 0:
+            out.append((d, target, t, end, starts))
+    out.sort(key=lambda f: f[0])
+    return out
+
+
+def match_line(text, entries, allowance=ALLOWANCE):
+    """Layer 2: each entry whose phrase or an alias sounds like a run of the line, within
+    `allowance`, across word boundaries (a one-word phrase's held tighter: _found); its best
+    match only, best first. Fillers are skipped, and only the first MAX_LINE_WORDS words read."""
+    ids, word_of = _line(text)
+    if not ids:
+        return []
+    out = []
+    for e in entries:
+        found = _found(ids, word_of, e, allowance)
+        if found:
+            d, target, t, end, starts = found[0]
+            start = _span(t, ids, end, starts)
+            out.append(Match(e, target, word_of[min(start, end - 1)], word_of[end - 1] + 1, round(d, 3)))
+    out.sort(key=lambda mt: (mt.distance, mt.start))
+    return out
+
+
+# ------------------------------------------------------------------ the drop rule
+
+def words_left(text, entry):
+    """The drop rule's count: the line's words, fillers never counted, less the phrase's.
+    The phrase is found by its exact words (the phrase or an alias, as a run of words: every
+    such run is taken out), else by Layer 2 at DROP_ALLOWANCE (the words it covers) when that
+    run is plausibly the phrase (_plausible). A line it is not found in has nothing taken out,
+    so every word of it is left: it goes on to Jev and the brain, which see the cast."""
+    return _left(text, entry)[0]
+
+
+def _left(text, entry):
+    """words_left's count, and the words left (every word of the line when the phrase is not
+    found in it)."""
+    ws = [w for w in words(text) if w not in FILLERS]
+    runs = []
+    for target in targets(entry):
+        r = [w for w in target.split() if w not in FILLERS] or target.split()
+        if r not in runs:
+            runs.append(r)
+    runs.sort(key=len, reverse=True)
+    left, i, found = [], 0, False
+    while i < len(ws):
+        for r in runs:
+            if ws[i:i + len(r)] == r:
+                i += len(r)
+                found = True
+                break
+        else:
+            left.append(ws[i])
+            i += 1
+    if found:
+        return len(left), left
+    ids, word_of = _line(" ".join(ws))
+    for d, target, t, end, starts in _found(ids, word_of, entry, DROP_ALLOWANCE):
+        start = min(_span(t, ids, end, starts), end - 1)
+        first, last = word_of[start], word_of[end - 1] + 1
+        if _plausible(d, target, t, end - start, last - first):
+            return len(ws) - (last - first), ws[:first] + ws[last:]
+    return len(ws), ws
+
+
+def _plausible(d, target, t, phones_run, covered):
+    """Whether a run the drop rule found by phonemes is plausibly the phrase, not a real ask
+    that a loose match swallowed whole: its phonemes are DROP_SPAN_RATIO of the target's, and
+    it covers at most the target's words + DROP_SPAN_WORDS, unless it is as close as Layer 2's
+    own ALLOWANCE (a split rendering: "come a hammer ha" for "kamehameha")."""
+    lo, hi = DROP_SPAN_RATIO
+    if not lo <= phones_run / float(len(t)) <= hi:
+        return False
+    return covered <= len(target.split()) + DROP_SPAN_WORDS or d <= ALLOWANCE + EPS
+
+
+def drop(text, entry):
+    """True when the line is only the incantation: at most one word left, and none of the
+    words left is one of KEEP_WORDS ("stop fire ball" goes on to the brain)."""
+    n, left = _left(text, entry)
+    return n <= 1 and not KEEP_WORDS.intersection(left)
+
+
+# ------------------------------------------------------------------ aliases and bind checks
+
+def _split(word):
+    """A compound word as two dictionary words of 3 letters at least, "fireball" -> "fire ball",
+    or None. A dictionary word splits only where its parts say it the same way."""
+    whole = _cmu(word)
+    best = None
+    for k in range(3, len(word) - 2):
+        a, b = word[:k], word[k:]
+        pa, pb = _cmu(a), _cmu(b)
+        if pa is None or pb is None:
+            continue
+        if whole is not None and (pa + " " + pb) != whole:
+            continue
+        if best is None or abs(len(a) - len(b)) < abs(len(best[0]) - len(best[1])):
+            best = (a, b)
+    return None if best is None else best[0] + " " + best[1]
+
+
+def code_aliases(phrase):
+    """The phrase joined ("fire ball" -> "fireball"; for three words or more, also any two
+    neighbours that join into a dictionary word), and the split forms of its compound words
+    ("fireball blast" -> "fire ball blast", each word alone and then all of them; "fireball"
+    -> "fire ball")."""
+    ws = words(phrase)
+    out = []
+    if len(ws) > 1:
+        out.append("".join(ws))
+    if len(ws) > 2:
+        for i in range(len(ws) - 1):
+            if _cmu(ws[i] + ws[i + 1]) is not None:
+                out.append(" ".join(ws[:i] + [ws[i] + ws[i + 1]] + ws[i + 2:]))
+    splits = [_split(w) for w in ws]
+    for i, s in enumerate(splits):
+        if s:
+            out.append(" ".join(ws[:i] + [s] + ws[i + 1:]))
+    if sum(1 for s in splits if s) > 1:
+        out.append(" ".join(s or w for s, w in zip(splits, ws)))
+    p = " ".join(ws)
+    return [a for k, a in enumerate(out) if a != p and a not in out[:k]]
+
+
+def sound_distance(phrase, alias):
+    """How unlike `alias` sounds to `phrase`, whole against whole: the weighted edit distance
+    between their phonemes (Layer 2's costs, _sub_cost and _indel_cost, word boundaries
+    ignored) over the phrase's phoneme count. 0 is the same sounds; "ice been" is 0.18 from "ice
+    beam" (IH for IY and N for M, 0.9 over 5), "ice beam now" 0.4 (N AW put in)."""
+    a, b = _target_ids(normalize(phrase)), _target_ids(normalize(alias))
+    prev = [0.0]
+    for q in b:
+        prev.append(prev[-1] + _INDEL[q])
+    for p in a:
+        cur = [prev[0] + _INDEL[p]]
+        sub, dp = _SUB[p], _INDEL[p]
+        for j, q in enumerate(b):
+            cur.append(min(prev[j + 1] + dp, cur[j] + _INDEL[q], prev[j] + sub[q]))
+        prev = cur
+    return prev[-1] / max(1, len(a))
+
+
+def _weight(text):
+    """A normalised text's speech sounds, each weighed as _indel_cost puts it in: an HH 0.25, an
+    AH 0.5, any other 1."""
+    return sum(_INDEL[i] for i in _target_ids(text))
+
+
+def checked_variants(phrase, variants):
+    """The alias call's variants as the code keeps them, before merge_aliases: (kept, normalised,
+    in order; dropped, [(variant, why)]). Dropped: the phrase itself, a repeat, one
+    ALIAS_MAX_LONGER speech sounds longer than the phrase or more, each weighed as _indel_cost
+    weighs it (an HH 0.25, an AH 0.5), and one more than ALIAS_MAX_DISTANCE from it
+    (sound_distance)."""
+    p = normalize(phrase)
+    n = _weight(p)
+    kept, dropped, seen = [], [], set()
+    for v in variants or ():
+        a = normalize(v)
+        if not a:
+            continue
+        if a == p:
+            why = "the phrase itself"
+        elif a in seen:
+            why = "a repeat"
+        elif _weight(a) - n >= ALIAS_MAX_LONGER - EPS:
+            why = "%g speech sounds longer" % (_weight(a) - n)
+        else:
+            d = sound_distance(p, a)
+            why = "sounds unlike it (%.2f)" % d if d > ALIAS_MAX_DISTANCE + EPS else None
+        seen.add(a)
+        if why:
+            dropped.append((a, why))
+        else:
+            kept.append(a)
+    return kept, dropped
+
+
+def merge_aliases(phrase, *lists, cap=ALIAS_CAP):
+    """Aliases from every list, in order: normalised, each once, never the phrase itself, none
+    of fewer than MIN_ALIAS_PHONES phonemes; `cap` at most."""
+    seen = {normalize(phrase)}
+    out = []
+    for lst in lists:
+        for a in lst or []:
+            n = normalize(a)
+            if not n or n in seen or len(_target_ids(n)) < MIN_ALIAS_PHONES:
+                continue
+            seen.add(n)
+            out.append(n)
+            if len(out) >= cap:
+                return out
+    return out
+
+
+def everyday(aliases, marks):
+    """Of `marks`, those among `aliases`, normalised, in the aliases' order, each once: an
+    entry's everyday_aliases, a subset of its aliases."""
+    marked = set(normalize(m) for m in marks or ())
+    out = []
+    for a in aliases or ():
+        n = normalize(a)
+        if n in marked and n not in out:
+            out.append(n)
+    return out
+
+
+def bind_warnings(phrase, aliases, others):
+    """Why a phrase may misfire, one plain sentence each: it is short (fewer than SHORT_PHONES
+    phonemes); it, or an alias, sounds like another entry's phrase or alias (distance at most
+    SOUNDS_LIKE, either inside the other, a one-word phrase's held as Layer 2 holds it); or it,
+    or an alias, starts with another entry's first word. `others`: the player's other entries
+    (the phrase's own entry is skipped)."""
+    p = normalize(phrase)
+    out = []
+    n = len(_target_ids(p))
+    if n < SHORT_PHONES:
+        more = {1: "a second word", 2: "a third word"}.get(len(p.split()), "another word")
+        out.append('"%s" is short (%d speech sounds), so it may fire by accident: %s helps.' % (p, n, more))
+    mine = [p] + [a for a in (normalize(x) for x in aliases or []) if a and a != p]
+    one = len(p.split()) == 1
+    for o in others or []:
+        op = normalize(o.get("phrase"))
+        if not op or op == p:
+            continue
+        theirs = targets(o)
+        hit = None
+        for a in mine:
+            for b in theirs:
+                d = _distance(a, b, one, one_word(o))
+                if d <= SOUNDS_LIKE + EPS and (hit is None or d < hit[0]):
+                    hit = (d, a, b)
+        if hit is not None:
+            _, a, b = hit
+            said = '"%s"' % a if a == p else 'Its alias "%s"' % a
+            like = '"%s"' % b if b == op else '"%s", an alias of "%s"' % (b, op)
+            out.append("%s sounds like %s, so one may fire for the other." % (said, like))
+            continue
+        first = op.split()[0]
+        for a in mine:
+            if a.split()[0] == first:
+                said = '"%s"' % a if a == p else 'Its alias "%s"' % a
+                out.append('%s starts with "%s", as "%s" does, so one may fire for the other.' % (said, first, op))
+                break
+    return out

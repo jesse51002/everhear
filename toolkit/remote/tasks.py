@@ -6,8 +6,8 @@
 #   {"vfg": "/opt/vfg", "op": "list", "open": false, "name": null|"galick_gun_styrk", "json": false}
 # vfg checked every key on the PC: the name, the status, the times (ISO with milliseconds and a Z),
 # made an object of lists and variables a list. set, in one BEGIN IMMEDIATE:
-#   - no row by that name: an INSERT, which needs a description, and never takes a library action's
-#     name (library_action, which the PC read from its actions/); status open, and created_at and
+#   - no row by that name: an INSERT, which needs a description, and never takes a library class's
+#     or an action's name (library_action, which the PC read from engine/library/ and actions/); status open, and created_at and
 #     updated_at now, when not given, and closed_at now for a row given done or failed without one.
 #     Prints `added <name>`.
 #   - a row: an UPDATE of the keys given; name and created_at never change. A given updated_at older
@@ -36,7 +36,7 @@ def insert(con, task):
     if not str(task.get("description") or "").strip():
         die(1, "a new task needs a description")
     if ARGS.get("library_action"):
-        die(1, "%s is a library action's name" % name)
+        die(1, "%s is a library class's or an action's name" % name)
     now = now_iso()
     row = dict(task)
     row["status"] = row.get("status") or "open"
