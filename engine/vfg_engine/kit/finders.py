@@ -244,7 +244,8 @@ def hitscan(self, ctx, length: float = 100.0, width: float = 1.5, what: str = "e
             through_walls: bool = False, spare=(), most: int = 0) -> Shot:
     """A shot from the user's eyes along where they look: up to `length` blocks, stopping at the
     first solid block unless `through_walls`, never at a being. Its `targets` are what
-    near_line finds within `width` of it, nearest first, each with `t` and `on_head`."""
+    near_line finds within `width` of it, nearest first, each with `t` and `on_head`; when it
+    stopped at a block, none beyond that block, however wide the shot."""
     user = ctx.user
     if user is None:
         raise ValueError("hitscan shoots from the user's eyes: a scenario has none (use near_line)")
@@ -260,7 +261,13 @@ def hitscan(self, ctx, length: float = 100.0, width: float = 1.5, what: str = "e
             length = float(look.distance)
             block = tuple(look.block) if look.block is not None else None
     end = add(start, mul(u, length))
-    return Shot(start, end, u, length, near_line(self, ctx, start, end, width, what, spare, most, d), block)
+    found = near_line(self, ctx, start, end, width, what, spare, 0 if block is not None else most, d)
+    if block is not None:
+        # stopped at a wall: nothing beyond it, however wide the shot (near_line's width reaches
+        # round the line's end, and so round the wall's edge)
+        found = [x for x in found if x.t <= length]
+        found = found[:most] if most else found
+    return Shot(start, end, u, length, found, block)
 
 
 # ---- hurting them ---------------------------------------------------------------------------

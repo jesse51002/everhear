@@ -172,6 +172,23 @@ def test_hitscan_through_walls_reaches_past_them(rig):
     assert {d.target for d in r.sent(Damage)} == {zombie, "Alex", behind}
 
 
+def test_a_wide_hitscan_never_reaches_round_the_wall_it_stopped_at(rig):
+    r = rig({"zap": ZAP.replace("hitscan(self, ctx, 50, 1.5,", "hitscan(self, ctx, 50, 2.5,")})
+    r.start()
+    io = r.io
+    io.join("Steve", pos=(0.0, 64.0, 0.0))                          # looking south (+z)
+    before = io.add_entity("minecraft:zombie", (0.0, 64.0, 3.0))
+    behind = io.add_entity("minecraft:zombie", (0.0, 64.0, 6.5))     # within 2.5 of the shot's end, past the wall
+    for x in (-2, -1, 0, 1, 2):
+        for y in (64, 65, 66):
+            io.set_block("minecraft:overworld", (x, y, 5), "minecraft:stone")
+    r.tick()
+    r.cast("Steve", "zap")
+    r.tick()
+    assert {d.target for d in r.sent(Damage)} == {before}
+    assert r.problems() == []
+
+
 def test_hit_dedupes_kills_and_stops_at_most():
     from vfg_engine.kit import Target, hit
 
