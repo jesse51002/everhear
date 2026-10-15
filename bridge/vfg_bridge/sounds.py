@@ -1,7 +1,7 @@
-"""What incantations sound like: the bridge's phoneme matching, from the kit's incantations module
-(scripts/_lib/incantations.py) when everything moved onto the game engine, without its store or its
-running copies. Python 3.9+, standard library only. The bridge runs Layer 2 and the drop rule with
-it; vfg on the PC imports this file by path for the bind checks and the code aliases.
+"""What incantations sound like: the phoneme matching, and its one copy. The bridge runs Layer 2
+and the drop rule with it; vfg on the PC imports this file by path for the bind checks and the
+code aliases. What an incantation casts is the game engine's (the bridge's casts.py and engine.py);
+this file only says which incantation a line sounds like. Python 3.9+, standard library only.
 
     sounds.match_line("uh come a hammer ha", entries)   # Layer 2: [Match], best first
     sounds.drop("fire ball now", entry)                 # the drop rule: True

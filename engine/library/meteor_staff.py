@@ -23,7 +23,7 @@ class MeteorStaff(Item):
         self.listen(Use, "on_use")
 
     def on_use(self, ctx, ev):
-        if ctx.user.cast("meteor_strike") == "cooldown":
-            # NEEDS: cast() to say how long its cooldown has left (railgun.py has the same note)
-            speak(self, ctx, "Meteor Staff: recharging", voice="", color="gray", to=[ctx.user.name],
+        got = ctx.user.cast("meteor_strike")
+        if got == "cooldown":
+            speak(self, ctx, "Meteor Staff: %.1f s" % got.remaining_s, voice="", color="gray", to=[ctx.user.name],
                   where="actionbar")

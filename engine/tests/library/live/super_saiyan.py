@@ -5,6 +5,7 @@ from vfg_engine.livetest import verdict
 
 
 def test(t):
+    t.grant("super_saiyan")
     t.sneak(times=3)
     t.watch(3)
     t.check("Steve has speed", t.effect("speed"))

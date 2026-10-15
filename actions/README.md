@@ -46,7 +46,7 @@ class EngineApply(Action):
 | `engine_unbind` | `unbind` | `player`, `phrase` |
 | `engine_config` | `config` | `class_id`, `config`: the class's whole new Config in Python, after the brain read it (`read_configs`) |
 
-The library's everyday scenarios (`command` for raw server commands, `teleport`, `save_place`, `summon_around`; TODO(library): their ids and args once `engine/library/` has them) are started with `engine_start`, as any scenario.
+The library's everyday scenarios (`engine/library/`: `command` for up to five raw server commands, `args.commands`; `teleport`, `args.players`, `to` and `target`; `save_place` and `forget_place`, `args.name`; `horde`, which took summon_around in) are started with `engine_start`, as any scenario. A one-off whose result's facts say `failed` (the command scenario's, at the command it stopped at) is `"ok": false`: it did not do what was asked.
 
 ## The value types
 
@@ -73,4 +73,4 @@ uv run --no-project --with pytest --with pydantic pytest actions/tests
 cd lib/py && uv run --group dev python -m pytest
 ```
 
-[`tests/test_engine_actions.py`](tests/test_engine_actions.py) holds the eleven to what the menu says and the engine would refuse. [`tests/test_places.py`](tests/test_places.py) tests the old kit's `scripts/_lib/places.py`, and goes with `scripts/` (the engine keeps the places now).
+[`tests/test_engine_actions.py`](tests/test_engine_actions.py) holds the eleven to what the menu says and the engine would refuse.

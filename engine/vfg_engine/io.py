@@ -214,6 +214,10 @@ class StopSound:
 class Spawnpoint:
     player: str; dim: str; pos: Vec
 @dataclass(frozen=True)
+class BlockData:
+    dim: str; pos: tuple[int, int, int]; path: str; snbt: str
+    how: str = "append"                    # data modify block x y z <path> <how> value <snbt>: "append"|"prepend"|"merge"|"set"
+@dataclass(frozen=True)
 class Ignite:
     target: str; seconds: float            # a player or an entity uuid set on fire for this long
 # Sound gains `to: tuple[str, ...] = ()` (players; () = everyone near); Particle gains `force: bool = False`
@@ -221,7 +225,8 @@ class Ignite:
 
 Op = (AddModifier | RemoveModifier | GiveEffect | GiveItem | TakeItem | Summon | Remove | Damage
       | Particle | Sound | Message | Teleport | Gamerule | Command
-      | Fill | SetBlock | Forceload | Motion | EntityData | Bossbar | StopSound | Spawnpoint | Ignite)
+      | Fill | SetBlock | Forceload | Motion | EntityData | Bossbar | StopSound | Spawnpoint | Ignite
+      | BlockData)
 
 
 @dataclass(frozen=True)

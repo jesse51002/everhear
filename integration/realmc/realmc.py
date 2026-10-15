@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """realmc: real Minecraft Java 26.3 servers on this PC, each with a stand-in for the box around
-it, so vfg, its remote programs and every script can be tried against the real thing, no EC2.
+it, so vfg, its remote programs, the game engine, the bridge and Jev can be tried against the
+real thing, no EC2.
 Several run side by side, one per name, each with its own world, ports and stand-in.
 
     integration/realmc/up [NAME] [--fresh | --regen] [--vanilla]   start NAME (default main)
-    integration/realmc/down [NAME | --all] [--purge-key]            stop it and the scripts it runs
-    eval "$(integration/realmc/env [NAME])"                         point vfg (and `import mc`) at it
+    integration/realmc/down [NAME | --all] [--purge-key]            stop it and what runs against it
+    eval "$(integration/realmc/env [NAME])"                         point vfg (and an engine) at it
     integration/realmc/realmc.py list                               every server, running or not
     integration/realmc/realmc.py status [NAME] [--json]             one server; exit 0 if it runs
     integration/realmc/realmc.py cmd [--name NAME] <command…>       one RCON command, straight to it
@@ -23,8 +24,10 @@ integration/realmc/.server/ (gitignored; REALMC_ROOT puts it elsewhere):
                           generated; each server's world starts as a copy of it
     <NAME>/mc/            one server's folder, standing in for /opt/mc: server.properties (its
                           own ports and password), world/, console.log; links to shared/
-    <NAME>/vfg/           standing in for /opt/vfg: lib/vfg_feed.py, vfg.db, scripts/, made/, run/,
-                          .env (a link to shared/env), python/bin/python3 (the box's Python 3.12)
+    <NAME>/vfg/           standing in for /opt/vfg: lib/vfg_feed.py, vfg.db, made/, state/, run/
+                          (the deploy lock), engine/ (once a test installs the game engine there, as
+                          deploy.sh engine does on the box), .env (a link to shared/env),
+                          python/bin/python3 (the box's Python 3.12)
     <NAME>/home/          HOME for vfg; home/.vfg is its VFG_HOME (config and a fake key)
     <NAME>/box/           the box's PATH (bin/python3 is Python 3.9, Amazon Linux's own) and
                           FAKE_UNITS (units/)
@@ -92,7 +95,7 @@ OVERRIDES = [
     ("management-server-enabled", "false"),
     ("log-ips", "false"),
     ("spawn-protection", "0"),
-    ("view-distance", "10"),               # the box's: a script reaching 160 blocks from a player finds them loaded
+    ("view-distance", "10"),               # the box's: an ability reaching 160 blocks from a player finds them loaded
     ("simulation-distance", "6"),          # below the box's 10: less ticking per server, several side by side
     ("max-tick-time", "60000"),            # the watchdog's default: a minute-long tick is a hang
     ("pause-when-empty-seconds", "0"),     # the box pauses after 60 s with nobody on; tests run with nobody
@@ -286,8 +289,8 @@ def backup_file(name):
 
 def rcon_lock_path(port):
     """The lock file every RCON client of the server on `port` holds from send to reply, as
-    scripts/_lib/mc.py and toolkit/remote/common.py do: VFG_RCON_LOCK, else
-    /tmp/vfg-rcon-<port>.lock (never $TMPDIR: the stand-in's scripts do not see this shell's)."""
+    toolkit/remote/common.py, bridge/deploy/rcon.py and the game engine's do: VFG_RCON_LOCK, else
+    /tmp/vfg-rcon-<port>.lock (never $TMPDIR: what runs on the stand-in does not see this shell's)."""
     return os.environ.get("VFG_RCON_LOCK") or "/tmp/vfg-rcon-%d.lock" % port
 
 
@@ -314,7 +317,7 @@ def open_lock(path):
 def held_locks():
     """This process's RCON locks, {path: [thread ident, depth, the fd that holds the flock]},
     shared through one entry in sys.modules with every other RCON client loaded in the process
-    (scripts/_lib/mc.py's is the same), so a thread that already holds the lock takes it again
+    (toolkit/remote/common.py's is the same), so a thread that already holds the lock takes it again
     without waiting on itself; other threads and processes still wait."""
     import threading
     h = sys.modules.get("_vfg_rcon_held")
@@ -371,7 +374,8 @@ class Rcon(object):
     """A vanilla RCON client, like toolkit/remote/common.py's: one packet per write (vanilla
     reads one packet per read), and a reply over 4096 characters read in parts. Vanilla answers
     every connection from one shared buffer, so each command holds rcon_lock_path(port) from
-    its send to its reply, as scripts and vfg do; otherwise replies get each other's output."""
+    its send to its reply, as the engine, the bridge and vfg do; otherwise replies get each
+    other's output."""
 
     def __init__(self, props, timeout=10.0):
         p = read_props(props)
@@ -699,8 +703,7 @@ class Server(object):
     # -- the stand-in
     def prepare(self):
         """The folders vfg reaches over the fake ssh, laid out as deploy.sh lays /opt/vfg out."""
-        for d in (self.mc, self.vfg, os.path.join(self.vfg, "lib"), os.path.join(self.vfg, "scripts"),
-                  os.path.join(self.vfg, "run"), os.path.join(self.vfg, "state"), os.path.join(self.vfg, "made"),
+        for d in (self.mc, self.vfg, os.path.join(self.vfg, "lib"), os.path.join(self.vfg, "run"), os.path.join(self.vfg, "state"), os.path.join(self.vfg, "made"),
                   self.home, os.path.join(self.box, "bin"), os.path.join(self.box, "units")):
             os.makedirs(d, exist_ok=True)
         os.makedirs(self.vhome, mode=0o700, exist_ok=True)
@@ -877,20 +880,55 @@ class Server(object):
         self.set_unit("active")
         return mode, time.monotonic() - t0
 
-    def stop_scripts(self):
-        """Every script its stand-in runs: SIGTERM the group (its cleanup still has RCON), SIGKILL after 5 s."""
-        n = 0
-        for path in glob.glob(os.path.join(self.vfg, "run", "*.pid")):
-            name = os.path.basename(path)[:-4]
-            pid = read_pid(path)
-            if pid and pid_has(pid, "VFG_SCRIPT=" + name):
-                end(pid, 5)
-                n += 1
+    def against_it(self):
+        """What runs against this server and its stand-in, as [(pid, what)], found as the stand-in's
+        systemctl finds it: a game engine (python -m vfg_engine, the livetest runner's included)
+        whose VFG_MC_PROPERTIES is this server's, a bridge (python -m vfg_bridge) or a Jev filter
+        (jev_filter.py) whose VFG_DB is this stand-in's vfg.db. Only this user's processes."""
+        props = os.path.realpath(self.props)
+        db = os.path.realpath(os.path.join(self.vfg, "vfg.db"))
+        kinds = ((b"vfg_engine", "engine", "VFG_MC_PROPERTIES", props), (b"vfg_bridge", "bridge", "VFG_DB", db),
+                 (b"jev_filter.py", "Jev filter", "VFG_DB", db))
+        found = []
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit() or int(pid) == os.getpid():
+                continue
             try:
-                os.remove(path)
+                if os.stat("/proc/" + pid).st_uid != os.getuid():
+                    continue
+                with open("/proc/%s/cmdline" % pid, "rb") as f:
+                    cmd = f.read().split(b"\0")
+                kind = next((k for k in kinds if any(k[0] in part for part in cmd)), None)
+                if not kind:
+                    continue
+                with open("/proc/%s/environ" % pid, "rb") as f:
+                    env = dict(item.split(b"=", 1) for item in f.read().split(b"\0") if b"=" in item)
             except OSError:
+                continue
+            value = env.get(kind[2].encode())
+            if value and os.path.realpath(os.fsdecode(value)) == kind[3]:
+                found.append((int(pid), kind[1]))
+        return found
+
+    def stop_against_it(self):
+        """SIGTERM what runs against it (its cleanup still has RCON), SIGKILL what is left after 10 s;
+        returns [what] stopped. The stand-in starts none of it: tests and people run it."""
+        found = self.against_it()
+        for pid, _ in found:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
                 pass
-        return n
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not all(gone(pid) for pid, _ in found):
+            time.sleep(0.1)
+        for pid, _ in found:
+            if not gone(pid):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+        return [what for _, what in found]
 
     def stop(self):
         pid = self.pid()
@@ -1102,7 +1140,7 @@ def cmd_up(a):
                 print_status(srv.status())
                 return 0
             say("%s: stopping it first" % srv.name)
-            srv.stop_scripts()
+            srv.stop_against_it()
             srv.stop()
         srv.write_props()
         if not eula_ok():
@@ -1157,9 +1195,11 @@ def cmd_down(a):
             say("%s: no such server" % srv.name)
             continue
         with srv.locked():
-            n = srv.stop_scripts()
-            if n:
-                say("%s: stopped %d script%s" % (srv.name, n, "" if n == 1 else "s"))
+            stopped = srv.stop_against_it()
+            if stopped:
+                say("%s: stopped what ran against it: %s" % (srv.name, ", ".join(
+                    "%d %s%s" % (stopped.count(w), w, "" if stopped.count(w) == 1 else "s")
+                    for w in sorted(set(stopped)))))
             say("%s: %s" % (srv.name, "stopped" if srv.stop() else "was not running"))
     if a.purge_key:
         purge_key()
@@ -1179,7 +1219,7 @@ def cmd_env(a):
     finally:
         sys.stdout = out
     q = lambda s: "'" + s.replace("'", "'\\''") + "'"  # noqa: E731
-    print("# realmc %s: vfg (and `import mc`) against a real %s test server in %s" % (srv.name, VERSION, srv.dir))
+    print("# realmc %s: vfg (and an engine run here) against a real %s test server in %s" % (srv.name, VERSION, srv.dir))
     print("unset VFG_SSH VFG_SSH_HOST VFG_SSH_USER VFG_SSH_KEY VFG_REMOTE_VFG VFG_REMOTE_MC VFG_REPO")
     print("export REALMC_NAME=%s" % q(srv.name))
     print("export REALMC_DIR=%s" % q(srv.dir))
@@ -1302,7 +1342,7 @@ def main(argv=None):
     g.add_argument("--fresh", action="store_true", help="its world copied from the template again first")
     g.add_argument("--regen", action="store_true", help="the template made again from the seed first")
     s.add_argument("--vanilla", action="store_true", help="without Fabric and Carpet, even when Carpet is here")
-    s = sub.add_parser("down", help="stop a server's scripts, then the server")
+    s = sub.add_parser("down", help="stop the engine, bridge and Jev running against a server, then the server")
     named(s)
     s.add_argument("--all", action="store_true", help="every server")
     s.add_argument("--purge-key", action="store_true", help="and empty shared/env (the TypeSafe key)")

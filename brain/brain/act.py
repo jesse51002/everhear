@@ -415,7 +415,8 @@ class Acts:
         row = self.tasks.get(name) or {}
         try:
             await self.implementers.follow_up(name, text, session=row.get("session") or None,
-                                              brief=str(row.get("description") or ""))
+                                              brief=str(row.get("description") or ""),
+                                              made=row.get("made") if isinstance(row.get("made"), dict) else None)
         except Exception as e:  # noqa: BLE001
             self.fail(name, f"{name} failed: the implementer could not start: {short(f'{type(e).__name__}: {e}', 160)}")
             return

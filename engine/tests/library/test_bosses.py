@@ -51,10 +51,14 @@ def test_horde_king_rises_fights_and_falls(rig):
     made = summons(r, "minecraft:zombie")
     assert len(made) == 1
     king = made[0]
-    assert king.pos == (0.0, 64.0, 0.0) and "CustomName:\"Horde King\"" in king.nbt
+    x, y, z = king.pos
+    dist = (x * x + z * z) ** 0.5
+    assert y == 64.0 and 1.5 <= dist <= 8.0           # a safe spot near Steve (near_spread), never on him
+    assert "CustomName:\"Horde King\"" in king.nbt
     assert "netherite_sword" in king.nbt and "drop_chances" in king.nbt
+    where = "at %d %d %d" % (round(x), round(y), round(z))
     got = r.result(iid)
-    assert got["summary"] == "Horde King rises at 0 64 0"           # no health claimed: the Actor's own, unread here
+    assert got["summary"] == "Horde King rises %s" % where      # no health claimed: the Actor's own, unread here
     r.run_for(1)
     bars = r.sent(Bossbar)
     assert bars and bars[-1].name == "Horde King" and bars[-1].color == "red" and bars[-1].value == 800
@@ -62,7 +66,7 @@ def test_horde_king_rises_fights_and_falls(rig):
     r.run_for(1)
     assert not r.running(iid)
     got = r.result(iid)
-    assert got["summary"] == "Horde King, who rose at 0 64 0, is dead" and got["facts"]["dead"] is True
+    assert got["summary"] == "Horde King, who rose %s, is dead" % where and got["facts"]["dead"] is True
     reward = summons(r, "minecraft:item")
     assert len(reward) == 1 and reward[0].nbt == '{Item:{id:"minecraft:diamond",count:8}}'
     assert reward[0].tags == ("everhear", "everhear.kept")           # it outlives the scenario
@@ -189,7 +193,9 @@ def test_dragon_head_three_bodies_one_bar_in_the_sky(rig):
     r.run_for(0.3)
     made = summons(r, "minecraft:ender_dragon")
     assert len(made) == 3 and all(s.pos[1] == 94.0 for s in made)         # 64 + 30
-    assert sorted(s.pos[0] for s in made) == [-6.0, 0.0, 6.0]             # spaced, not stacked
+    xs = sorted(s.pos[0] for s in made)
+    assert [round(xs[1] - xs[0], 1), round(xs[2] - xs[1], 1)] == [6.0, 6.0]   # spaced, not stacked
+    assert len({s.pos[2] for s in made}) == 1                             # one row, same z
     r.run_for(1)
     bars = r.sent(Bossbar)
     assert bars[-1].name == "Three-Headed Dragon" and bars[-1].max == 1800 and bars[-1].value == 1800

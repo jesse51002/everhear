@@ -241,9 +241,11 @@ class Thing(metaclass=ThingMeta):
         self._h.release(setting)
 
     def watch(self, area: str, center=None, radius: float | None = None, box=None,
-              dim: str = "minecraft:overworld"):
-        """Watch an area (a sphere or a box): Enter and Exit events for each player crossing it."""
-        self._h.watch(area, center, radius, box, dim)
+              dim: str = "minecraft:overworld", height: float | None = None):
+        """Watch an area: Enter and Exit events for each player crossing it. A sphere (center,
+        radius), a flat cylinder (center, radius, height: that many blocks tall round the center's
+        y, or math.inf for all of it), or a box (box=(corner, corner))."""
+        self._h.watch(area, center, radius, box, dim, height)
 
     def command(self, text: str):
         """A raw command, the escape hatch for what the methods above do not do."""

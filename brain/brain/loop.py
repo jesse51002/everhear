@@ -385,7 +385,7 @@ class Brain:
         hears a line written here. Its loop's clock is from `started`, the turn's start (else now)."""
         started = self.clock() if started is None else started
         self.keep_session(name)
-        self.tasks.merge_made(name, made)
+        self.tasks.mirror_made(name, made)
         if description.strip():
             self.tasks.describe(name, description)
         loop: Loop | None = None
@@ -623,7 +623,7 @@ class Brain:
         closes on its status, with a record written in code and no model call."""
         log("task", f"{name} reported {status} while the brain stops: {short(text, 200)}")
         self.keep_session(name)
-        self.tasks.merge_made(name, made)
+        self.tasks.mirror_made(name, made)
         if description.strip():
             self.tasks.describe(name, description)
         self.result(name, status, self.written(name, status), following)

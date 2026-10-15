@@ -260,7 +260,8 @@ class TestOps(Case):
         self.assertOneLine(self.vfg("engine", "start", "horde", "count"), 2, "is not key=value")
         self.assertOneLine(self.vfg("engine", "start", "horde", "mobs=[zombie"), 2, "reads as JSON but is not")
         r = self.vfg("engine", "start", "command", "commands=[\"say hi\"]", "--json")      # a one-off: its result
-        self.assertEqual(json.loads(r.stdout)["result"], {"summary": "ran say hi", "facts": {"replies": ["ran say hi"]}})
+        self.assertEqual(json.loads(r.stdout)["result"]["facts"], {"replies": ["ran say hi"], "failed": None,
+                                                                   "ran": ["say hi"], "partial": False})
         self.assertEqual(self.vfg("engine", "start", "command", "commands=[\"say hi\"]").stdout, "ran say hi\n")
         self.vfg("engine", "start", "command", "--wait", "0")
         self.assertNotIn("wait_s", self.engine.ops("start")[-1])                         # no wait: not sent
@@ -354,7 +355,7 @@ class TestConfig(Case):
         self.assertRegex(r.stderr, "^vfg: the box runs another version of this Config than made/main/content/fireball.py")
         self.assertOneLine(self.vfg("engine", "config", "get", "nope"), 1, "^vfg: no class nope$")
         self.assertOneLine(self.vfg("engine", "config", "get", "giant"), 1, "giant's Config is in "
-                           "/opt/vfg/engine/vfg_engine/examples/marks.py, not in made/main/content/")
+                           "/opt/vfg/engine/vfg_engine/examples/marks.py, neither the library's nor in made/main/content/")
 
     def test_set_splices_it_in_keeps_the_old_file_and_reloads(self):
         new = bigger(self.config)
@@ -478,6 +479,123 @@ class TestConfig(Case):
         self.assertEqual(len(self.history()), 1)
 
 
+LIBRARY_BLAST = '''"""Blast: the library's (a test's)."""
+from vfg_engine import Ability, AbilityConfig, Field
+
+
+class Blast(Ability):
+    class Config(AbilityConfig):
+        summary = "A blast round the caster."
+        radius: float = Field(4, ge=1, le=12)          # blocks round the caster
+        cooldown_s = 5
+
+        def damage(self, ctx):
+            return 6
+'''
+
+
+class TestLibraryConfig(Case):
+    """A library class's Config rewritten: its first rewrite copies the library's file into
+    made/main/content/, which then shadows the library's (the engine runs a made class in place of
+    the library's of the same id); undoing that first rewrite removes the copy, and the library's
+    runs again."""
+
+    def setUp(self):
+        super().setUp()
+        self.lib_pc = os.path.join(self.box.repo, "engine", "library", "blast.py")
+        self.lib_box = os.path.join(self.box.rvfg, "engine", "library", "blast.py")
+        write(self.lib_pc, LIBRARY_BLAST)
+        write(self.lib_box, LIBRARY_BLAST)
+        self.engine.classes.append({"id": "blast", "kind": "ability", "file": self.lib_box,
+                                    "summary": "A blast round the caster."})
+        self.assertOk(self.vfg("engine", "reload"))
+        start, end = self.rw.find_config(LIBRARY_BLAST, "Blast")
+        self.config = "".join(LIBRARY_BLAST.splitlines(True)[start - 1:end])
+        self.lines = (start, end)
+        self.made = os.path.join(self.content, "blast.py")
+
+    def runs(self):
+        return next(c["file"] for c in self.engine.classes if c["id"] == "blast")
+
+    def kept(self):
+        folder = os.path.join(self.content, ".history", "blast")
+        return sorted(n for n in os.listdir(folder) if n.endswith(".py")) if os.path.isdir(folder) else []
+
+    def test_get_set_and_undo_of_a_library_class(self):
+        r = self.vfg("engine", "config", "get", "blast")
+        self.assertOk(r)
+        self.assertEqual(r.stdout, "engine/library/blast.py (the library's), lines %d to %d: the Config of Blast, as "
+                                   "written\n%s" % (self.lines[0], self.lines[1], self.config))
+        self.assertEqual(r.stderr, "")
+        got = self.engine_json("config", "get", "blast")
+        self.assertEqual((got["file"], got["whose"], got["library"]), ("engine/library/blast.py", "library", True))
+        # the first rewrite: the library's file copied into made/main/content/, then spliced; it shadows the library's
+        r = self.vfg("engine", "config", "set", "blast", input=self.config.replace("Field(4,", "Field(6,"))
+        self.assertOk(r)
+        self.assertEqual(r.stdout, "blast's new Config is in (this server's own copy of the library's), and reloaded "
+                                   "for everyone; 2 running instances switched\n")
+        self.assertIn("blast was the library's: made/main/content/blast.py now holds this server's own version", r.stderr)
+        six = LIBRARY_BLAST.replace("Field(4,", "Field(6,")
+        with open(self.made) as f:
+            self.assertEqual(f.read(), six)
+        with open(os.path.join(self.boxed, "blast.py")) as f:
+            self.assertEqual(f.read(), six)
+        with open(self.lib_pc) as f:
+            self.assertEqual(f.read(), LIBRARY_BLAST)              # the library itself never changes
+        self.assertEqual(self.engine.ops("reload")[-1], {"paths": [os.path.join(self.boxed, "blast.py")]})
+        self.assertEqual(self.runs(), os.path.join(self.boxed, "blast.py"))
+        [first] = self.kept()
+        self.assertTrue(first.endswith("-Blast.library.py"), first)
+        r = self.vfg("engine", "config", "get", "blast")
+        self.assertTrue(r.stdout.startswith("made/main/content/blast.py (this server's, over the library's), lines "),
+                        r.stdout)
+        self.assertIn("Field(6,", r.stdout)
+        # a second rewrite: the server's copy, as any made class
+        self.assertOk(self.vfg("engine", "config", "set", "blast", input=self.config.replace("Field(4,", "Field(8,")))
+        self.assertEqual(len(self.kept()), 2)
+        # undo: back to the first rewrite, then the library's again
+        self.assertOk(self.vfg("engine", "config", "undo", "blast"))
+        with open(self.made) as f:
+            self.assertEqual(f.read(), six)
+        r = self.vfg("engine", "config", "undo", "blast")
+        self.assertOk(r)
+        self.assertEqual(r.stdout, "blast's Config is the library's again (made/main/content/blast.py removed), and "
+                                   "reloaded for everyone; 2 running instances switched\n")
+        self.assertFalse(os.path.exists(self.made))
+        self.assertFalse(os.path.exists(os.path.join(self.boxed, "blast.py")))
+        self.assertEqual(self.engine.ops("reload")[-1], {})                     # a full reload: the library's runs
+        self.assertEqual(self.runs(), self.lib_box)
+        self.assertTrue(self.vfg("engine", "config", "get", "blast").stdout.startswith("engine/library/blast.py "))
+        self.assertOneLine(self.vfg("engine", "config", "undo", "blast"), 1, "no kept version")
+        undone = os.listdir(os.path.join(self.content, ".history", "blast", "undone"))
+        self.assertEqual((len(undone), first in undone), (2, True))
+        rows = [json.loads(l) for l in open(os.path.join(self.content, ".history", "log.jsonl"))]
+        self.assertEqual([(x["op"], x.get("library", False)) for x in rows],
+                         [("set", True), ("set", False), ("undo", False), ("undo", True)])
+
+    def test_a_first_rewrite_the_engine_refuses_leaves_no_copy(self):
+        r = self.vfg("engine", "config", "set", "blast",
+                     input=self.config.replace("Field(4, ge=1, le=12)", "Field(9, ge=1, le=12)  # REFUSE in bounds: no"))
+        self.assertEqual(r.returncode, 1, r)
+        self.assertIn("made/main/content/blast.py is removed again on this PC", r.stderr)
+        self.assertFalse(os.path.exists(self.made))
+        self.assertFalse(os.path.exists(os.path.join(self.boxed, "blast.py")))
+        self.assertEqual((self.runs(), self.kept()), (self.lib_box, []))
+
+    def test_a_copy_not_deployed_yet_is_the_one_shown_and_rewritten(self):
+        write(self.made, LIBRARY_BLAST.replace("Field(4,", "Field(5,"))
+        r = self.vfg("engine", "config", "get", "blast")
+        self.assertIn("Field(5,", r.stdout)
+        self.assertTrue(r.stdout.startswith("made/main/content/blast.py (this server's, over the library's)"))
+        self.assertRegex(r.stderr, r"^vfg: the box runs the library's blast: this server's own, "
+                                   r"made/main/content/blast\.py, is not deployed yet")
+        self.assertOk(self.vfg("engine", "config", "set", "blast", input=self.config.replace("Field(4,", "Field(7,")))
+        with open(self.made) as f:
+            self.assertIn("Field(7,", f.read())
+        self.assertTrue(self.kept()[0].endswith("-Blast.py"))                   # the server's own, kept
+        self.assertEqual(self.runs(), os.path.join(self.boxed, "blast.py"))
+
+
 class TestClassIds(Case):
     def test_a_class_is_found_by_the_id_it_sets_or_its_name_in_snake_case(self):
         vfg = vfg_module()
@@ -598,6 +716,27 @@ class TestBindings(Case):
         self.assertEqual(line["facts"]["entry"], {"id": "steve.ice_beam", "player": "Steve", "phrase": "ice beam",
                                                   "aliases": [], "everyday_aliases": [], "ability": "fireball",
                                                   "cooldown_s": 5.0})
+
+    def test_aliases_given_are_its_aliases_as_they_are_with_no_alias_call(self):
+        self.box.write_config("VFG_SSH_HOST=fakebox\nVFG_SSH_KEY=%s\nVFG_INCANT_ALIAS_MODEL=test/m\n" % self.box.key)
+        llm = fake_llm(fail=RuntimeError("never called"))
+        with mock.patch.dict(sys.modules, {"vfg_llm": llm}):
+            r = self.vfg("engine", "bind", "Steve", "ice beam", "fireball", "--aliases", "Ice Been, ice cream,ice beam",
+                         "--everyday", "ice cream")
+        self.assertOk(r)
+        self.assertEqual(llm.calls, [])                                     # no alias call, no code aliases
+        bound = self.engine.ops("bind")[-1]
+        self.assertEqual((bound["aliases"], bound["everyday_aliases"]), (["ice been", "ice cream"], ["ice cream"]))
+        r = self.vfg("engine", "bind", "Steve", "ice beam", "fireball", "--aliases", '["frost ray"]')
+        self.assertEqual(self.engine.ops("bind")[-1]["aliases"], ["frost ray"])
+        self.assertOk(self.vfg("engine", "bind", "Steve", "ice beam", "fireball", "--aliases", ""))
+        self.assertEqual(self.engine.ops("bind")[-1]["aliases"], [])          # none at all
+        self.assertOneLine(self.vfg("engine", "bind", "Steve", "x y", "fireball", "--aliases", "a b",
+                                    "--everyday", "c d"), 2, "--everyday names c d, not among its aliases")
+        self.assertOneLine(self.vfg("engine", "bind", "Steve", "x y", "fireball", "--everyday", "c d"), 2,
+                           "--everyday goes with --aliases")
+        self.assertOneLine(self.vfg("engine", "bind", "Steve", "x y", "fireball", "--aliases", "[1]"), 2,
+                           "--aliases is words separated by commas, or a JSON list")
 
     def test_what_bind_refuses(self):
         before = len(self.box.programs())
@@ -785,7 +924,12 @@ class TestActions(Case):
         self.assertEqual(self.engine.ops("start")[-1], {"scenario": "horde", "args": {"count": "5"}, "wait_s": 15.0})
         r, line = self.action("engine_start", "scenario=command", 'args={"commands": ["say hi"]}')
         self.assertEqual((line["summary"], line["facts"], line["running"]),   # a one-off: its result
-                         ("ran say hi", {"replies": ["ran say hi"], "instance": "scenario:command#2"}, False))
+                         ("ran say hi", {"replies": ["ran say hi"], "failed": None, "ran": ["say hi"], "partial": False,
+                                         "instance": "scenario:command#2"}, False))
+        r, line = self.action("engine_start", "scenario=command", 'args={"commands": ["say hi", "bogus x", "say no"]}')
+        self.assertEqual((r.returncode, line["ok"], line["error"]),       # its result says it stopped short
+                         (1, False, "ran say hi; Unknown or incomplete command, see below for error"))
+        self.assertEqual((line["facts"]["failed"], line["facts"]["ran"]), ("bogus x", ["say hi"]))
         r, line = self.action("engine_apply", "player=Steve", "mark=giant", "args.factor=3", "seconds=30")
         self.assertEqual(self.engine.ops("apply")[-1], {"who": "Steve", "mark": "giant", "seconds": 30.0,
                                                         "args": {"factor": "3"}})
@@ -894,6 +1038,32 @@ class TestMigrate(Case):
         self.assertIn("places: 2 found, refused: this world's places were imported already", r.stdout)
         self.vfg("engine", "migrate", "--force")
         self.assertEqual(self.engine.ops("places_import")[-1]["force"], True)
+
+    def test_an_ability_is_granted_first_and_a_caster_in_a_players_arg_is_the_bindings_own_player(self):
+        self.engine.classes.append({"id": "teleport", "kind": "scenario", "file": "/opt/vfg/engine/library/teleport.py",
+                                    "summary": "Moves players.", "args": [
+                                        {"name": "players", "type": "players", "default": "@a", "bounds": {}},
+                                        {"name": "to", "type": "one of 'place', 'coords'", "default": "place",
+                                         "bounds": {}},
+                                        {"name": "target", "type": "text", "default": "", "bounds": {}}]})
+        store = {"version": 2, "incantations": [
+            dict(OLD_STORE["incantations"][1]),
+            {"id": "steve.home_now", "player": "Steve", "phrase": "home now", "action": "teleport",
+             "asked": {"to": "place", "target": "home"}, "caster_fields": ["player"], "aliases": [],
+             "everyday_aliases": [], "cooldown_s": 4.0}]}
+        write(os.path.join(self.box.rvfg, "incantations.json"), json.dumps(store))
+        got = json.loads(self.vfg("engine", "migrate", "--json").stdout)
+        self.assertEqual(self.engine.grants, [("KrownJM", "fireball")])        # the ability is KrownJM's now
+        self.assertEqual([(b["kind"], b.get("granted"), b["ok"]) for b in got["bindings"]],
+                         [("ability", True, True), ("scenario", None, True)])
+        self.assertEqual(self.engine.ops("bind")[-1], {
+            "player": "Steve", "phrase": "home now", "scenario": "teleport",
+            "args": {"to": "place", "target": "home", "players": "Steve"}, "aliases": [], "everyday_aliases": [],
+            "by": "", "cooldown_s": 4.0})
+        self.assertIn("its players was whoever said it: Steve now (players takes no caster)", got["bindings"][1]["notes"])
+        r = self.vfg("engine", "migrate", "--force")
+        self.assertIn('moved KrownJM "fireball" (fireball_cast): KrownJM "fireball" casts fireball, granted first',
+                      r.stdout)
 
     def test_an_everyones_binding_is_split_over_the_players_named(self):
         store = dict(OLD_STORE, incantations=[dict(OLD_STORE["incantations"][1], player="@a")])

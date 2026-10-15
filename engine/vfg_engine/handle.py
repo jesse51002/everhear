@@ -369,15 +369,23 @@ class Handle:
             owned = self._owned()
             owned.holds = [h for h in owned.holds if h != setting]
 
-    def watch(self, area, center, radius, box, dim):
+    def watch(self, area, center, radius, box, dim, height=None):
         with self.rt.guard.engine_code():
             if (center is None) == (box is None):
-                raise ValueError("watch takes center and radius (a sphere) or box=(corner, corner)")
+                raise ValueError("watch takes center and radius (a sphere, or with height a flat "
+                                 "cylinder) or box=(corner, corner)")
+            if height is not None and box is not None:
+                raise ValueError("height is a cylinder's: give it with center and radius, not a box")
             doc = {"dim": dim, "inside": []}
             if center is not None:
                 if radius is None or float(radius) <= 0:
-                    raise ValueError("a watched sphere needs a radius above 0")
+                    raise ValueError("a watched sphere or cylinder needs a radius above 0")
                 doc.update(center=[float(c) for c in _pos(center)], radius=float(radius))
+                if height is not None:
+                    height = float(height)
+                    if not height > 0:
+                        raise ValueError("a cylinder's height is above 0 (math.inf: all of it), not %r" % height)
+                    doc["height"] = None if math.isinf(height) else height    # saved as plain data
             else:
                 a, b = (_pos(c) for c in box)
                 doc["box"] = [[min(a[i], b[i]) for i in range(3)], [max(a[i], b[i]) for i in range(3)]]

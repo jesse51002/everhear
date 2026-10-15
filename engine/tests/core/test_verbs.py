@@ -417,3 +417,118 @@ def test_a_land_event_carries_what_it_hit(rig):
                                                "block": "minecraft:netherrack"}, 10))
     assert (ev.hit, ev.block, ev.dim, ev.pos) == ("block", "minecraft:netherrack", "minecraft:the_nether",
                                                   (1.5, 64.0, 2.5))
+
+
+RAGE = '''
+class Rage(Ability):
+    every = 1
+
+    class Config(AbilityConfig):
+        summary = "A boss's rage: speed while it lasts."
+        damage = 0
+        duration_s = UNTIL_STOPPED
+        charge_s = 0
+        cooldown_s = 0
+        scale_per_point = 0
+
+    def start(self, ctx):
+        self.keep_potion("speed", 1, seconds=5)
+
+
+class Ogre(Actor):
+    class Config(ActorConfig):
+        summary = "A boss body."
+        entity_type = "minecraft:stray"
+        health = 20
+        size = 1
+        damage = 1
+        abilities = ["rage"]
+
+
+class Zapper(Item):
+    class Config(ItemConfig):
+        summary = "Casts zap; says how long it has to wait."
+        base = "carrot_on_a_stick"
+        name = "Zapper"
+        active_in = "mainhand"
+
+    def start(self, ctx):
+        self.listen(Use, "on_use")
+
+    def on_use(self, ctx, ev):
+        got = ctx.user.cast("zap")
+        self.command("say %s %s %.1f %s" % (got, got == "cooldown", got.remaining_s, got.error))
+
+
+class Zap(Ability):
+    class Config(AbilityConfig):
+        summary = "Zap."
+        damage = 0
+        duration_s = 0.5
+        charge_s = 0
+        cooldown_s = 4
+        scale_per_point = 0
+
+    def on_cast(self, ctx, ev):
+        pass
+
+
+class Ring(Scenario):
+    class Config(ScenarioConfig):
+        summary = "Watches a flat ring, a short drum and a ball."
+        duration_s = UNTIL_STOPPED
+
+    def start(self, ctx):
+        import math
+        self.watch("ring", center=(0, 64, 0), radius=10, height=math.inf)
+        self.watch("drum", center=(0, 64, 0), radius=10, height=10)
+        self.watch("ball", center=(0, 64, 0), radius=10)
+        self.listen(Enter, "on_enter")
+
+    def on_enter(self, ctx, ev):
+        self.command("say entered %s" % ev.area)
+'''
+
+
+def test_keep_potion_on_an_actor_lands_on_the_mob(rig):
+    """(The library's enrage on a boss: the engine gives the mob its potion as it does a player.)"""
+    r = rig({"rage": RAGE})
+    r.start()
+    r.io.join("Steve")
+    r.tick()
+    uuid = r.op("spawn", actor="ogre", at=[0, 64, 4])["uuid"]
+    r.run_for(1)
+    assert "minecraft:speed" in r.io.by_uuid[uuid].effects
+    assert r.io.by_uuid[uuid].effects["minecraft:speed"].amplifier == 1
+
+
+def test_cast_says_how_long_the_cooldown_has_left(rig):
+    r = rig({"rage": RAGE})
+    r.start()
+    r.io.join("Steve")
+    r.io.hold("Steve", "zapper")
+    r.tick()
+    r.io.use("Steve")
+    r.tick()
+    r.clock.t += 1.0
+    r.io.use("Steve")
+    r.tick()
+    said = [op.text for op in r.io.ops_of(Command)]
+    assert said[0] == "say fired False 0.0 None"
+    assert said[1].startswith("say cooldown True 2.") or said[1].startswith("say cooldown True 3.")
+
+
+def test_a_flat_cylinder_watch_takes_every_height(rig):
+    r = rig({"rage": RAGE})
+    r.start()
+    r.io.join("Steve", pos=(0.0, 64.0, 30.0))
+    r.tick()
+    r.op("start", scenario="ring")
+    r.tick()
+    r.io.move("Steve", (3, 120, 3))                  # high above the middle: in the ring only
+    r.tick()
+    assert [op.text for op in r.io.ops_of(Command)] == ["say entered ring"]
+    r.io.move("Steve", (3, 66, 3))                   # near the middle: in the drum and the ball too
+    r.tick()
+    said = [op.text for op in r.io.ops_of(Command)]
+    assert said == ["say entered ring", "say entered drum", "say entered ball"]

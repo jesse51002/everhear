@@ -1,12 +1,18 @@
 """Ice beam: an instant freezing beam along the caster's look, through walls, slowing, weakening
-and blinding everything near it (players too), with no damage. Along the beam it carves an open
-lane and turns the ground round it to ice, lays an icy path under it, and a pad under the caster,
-to a chiming tune. Granted and bound, it is cast by voice; the Ice Beam Staff fires it on a
-right-click. (The old ice_beam script, merged with made/main's ice_beam_cast: engine/library/
-README.md's merge rule, "A merged script becomes Args or Config of the class it joins".
-ice_beam_cast's own carved cube was 10 wide, swallowing its 5-wide ice replace entirely so no ice
-ever showed [inv_G4, "ice_beam_cast"]; tunnel_r and ice_r below keep the library script's own
-promise instead, an open lane with a visible ice shell round it.)"""
+and blinding everything near it (players too), through the shared `frozen` mark; the beam itself
+deals no damage. A non-player bearer also gets frozen's vanilla frost look, which (frozen.py's own
+docstring) carries its own tiny vanilla frost tick every couple of seconds -- the same "cold's 1
+damage every 2 s, as in powder snow" the old freeze preset documented; it is not this beam's own
+damage (declared 0, never dealt through self.damage). Along the beam it carves an open lane and
+turns the ground round it to ice, lays an icy path under it, and a pad under the caster, to a
+chiming tune. Granted and bound, it is cast by voice; the Ice Beam Staff fires it on a right-click.
+(The old ice_beam script, merged with made/main's ice_beam_cast: engine/library/README.md's merge
+rule, "A merged script becomes Args or Config of the class it joins". ice_beam_cast's own carved
+cube was 10 wide, swallowing its 5-wide ice replace entirely so no ice ever showed [inv_G4,
+"ice_beam_cast"]; tunnel_r and ice_r below keep the library script's own promise instead, an open
+lane with a visible ice shell round it. Freezing now goes through library/frozen.py, the one
+shared mark (engine/library/README.md: "Name another class by its id instead: ... self.apply(uuid,
+"frozen")"), instead of re-doing its potions and its TicksFrozen by hand.)"""
 
 from typing import Literal
 
@@ -46,14 +52,7 @@ class IceBeam(Ability):
         c = self.config
         shot = hitscan(self, ctx, c.length, c.width, c.what, through_walls=c.through_walls)
         for t in shot.targets:
-            self.potion("minecraft:slowness", c.freeze_s, 9, who=t.key)
-            self.potion("minecraft:weakness", c.freeze_s, 9, who=t.key)
-            if c.blind:
-                self.potion("minecraft:blindness", c.freeze_s, 3, who=t.key)
-            if not t.is_player:
-                # NEEDS: a shared "frozen" mark usable on any mob (marks.py accepts only players
-                # and spawned actors today); TicksFrozen is written directly here meanwhile.
-                self.entity_data(t.key, "{TicksFrozen:%d}" % round(c.freeze_s * 20))
+            self.apply(t.key, "frozen", c.freeze_s, blind=c.blind)
         beam_line(self, ctx, shot.start, shot.end, c.particle)
         n = int(shot.length)
         points = [[s + d * k for s, d in zip(shot.start, shot.direction)] for k in range(0, n + 1, c.step)]

@@ -20,6 +20,6 @@ class WitherWand(Item):
         self.listen(Use, "on_use")
 
     def on_use(self, ctx, ev):
-        if ctx.user.cast("wither_wand_summon") == "cooldown":
-            # NEEDS: cast() to say how long its cooldown has left (railgun.py has the same note)
-            speak(self, ctx, "Wither Wand: recharging", voice="", color="gray", to=[ctx.user.name], where="actionbar")
+        got = ctx.user.cast("wither_wand_summon")
+        if got == "cooldown":
+            speak(self, ctx, "Wither Wand: %.1f s" % got.remaining_s, voice="", color="gray", to=[ctx.user.name], where="actionbar")

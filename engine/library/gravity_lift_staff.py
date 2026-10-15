@@ -19,6 +19,7 @@ class GravityLiftStaff(Item):
         self.listen(Use, "on_use")
 
     def on_use(self, ctx, ev):
-        if ctx.user.cast("gravity_lift") == "cooldown":
-            speak(self, ctx, "Gravity Lift Staff: recharging", voice="", color="gray",
+        got = ctx.user.cast("gravity_lift")
+        if got == "cooldown":
+            speak(self, ctx, "Gravity Lift Staff: %.1f s" % got.remaining_s, voice="", color="gray",
                   to=[ctx.user.name], where="actionbar")

@@ -20,6 +20,6 @@ class InfinityGauntlet(Item):
         self.listen(Use, "on_use")
 
     def on_use(self, ctx, ev):
-        if ctx.user.cast("infinity_gauntlet_shot") == "cooldown":
-            # NEEDS: cast() to say how long its cooldown has left
-            speak(self, ctx, "Infinity Gauntlet: recharging", voice="", color="gray", to=[ctx.user.name], where="actionbar")
+        got = ctx.user.cast("infinity_gauntlet_shot")
+        if got == "cooldown":
+            speak(self, ctx, "Infinity Gauntlet: %.1f s" % got.remaining_s, voice="", color="gray", to=[ctx.user.name], where="actionbar")

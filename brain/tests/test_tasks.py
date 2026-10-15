@@ -38,7 +38,7 @@ async def test_each_change_writes_the_whole_row_and_one_tasks_writes_go_out_in_o
     sent.hold["galick_gun_styrk"] = asyncio.Event()      # the first write is slow to land
     galick(tasks)
     tasks.set_session("galick_gun_styrk", "sess-1")
-    tasks.merge_made("galick_gun_styrk", {"content": ["galick_gun_styrk"], "grants": ["Styrkaeopteryx:galick_gun_styrk"]})
+    tasks.mirror_made("galick_gun_styrk", {"content": ["galick_gun_styrk"], "grants": ["Styrkaeopteryx:galick_gun_styrk"]})
     tasks.close("galick_gun_styrk", "done", "galick_gun_styrk done: a Galick Gun")
     tasks.open("castle_steve", "Steve", "a castle", "a castle at spawn", "A stone castle at spawn.")
     for _ in range(10):
@@ -75,18 +75,23 @@ async def test_a_change_is_written_only_when_it_changes_something_and_an_unknown
     tasks.describe("galick_gun_styrk", "")               # no DESCRIPTION line
     tasks.describe("galick_gun_styrk", "A Galick Gun for Styrkaeopteryx: charge and fire.")  # the same
     tasks.set_session("galick_gun_styrk", None)
-    tasks.merge_made("galick_gun_styrk", None)
+    tasks.mirror_made("galick_gun_styrk", None)
     tasks.close("nobody_here", "done", "x")
     tasks.follow_up("nobody_here", "x", "y")
     await tasks.drain(1.0)
     assert len(sent.rows) == 1 and tasks.names() == {"galick_gun_styrk"}
-    tasks.merge_made("galick_gun_styrk", {"content": ["galick_gun_styrk"], "bindings": ["styrkaeopteryx.galick"]})
-    tasks.merge_made("galick_gun_styrk", {"content": ["galick_gun_styrk", "galick_beam"], "bindings": []})
-    tasks.merge_made("galick_gun_styrk", {"content": ["galick_beam"]})      # nothing new: nothing written
-    await tasks.drain(1.0)
-    assert len(sent.rows) == 3
+    tasks.mirror_made("galick_gun_styrk", {"content": ["galick_gun_styrk"], "bindings": ["styrkaeopteryx.galick"]})
+    tasks.mirror_made("galick_gun_styrk", {"content": ["galick_gun_styrk", "galick_beam", "galick_beam"],
+                                           "bindings": ["styrkaeopteryx.galick"]})
+    tasks.mirror_made("galick_gun_styrk", {"content": ["galick_gun_styrk", "galick_beam"],
+                                           "bindings": ["styrkaeopteryx.galick"]})      # the same: nothing written
     assert tasks.get("galick_gun_styrk")["made"] == {"content": ["galick_gun_styrk", "galick_beam"],
                                                      "bindings": ["styrkaeopteryx.galick"], "grants": []}
+    # a class gone and a binding undone leave the row, as a deploy mirrors the folder
+    tasks.mirror_made("galick_gun_styrk", {"content": ["galick_beam"], "bindings": []})
+    await tasks.drain(1.0)
+    assert len(sent.rows) == 4
+    assert tasks.get("galick_gun_styrk")["made"] == {"content": ["galick_beam"], "bindings": [], "grants": []}
 
 
 async def test_open_refuses_a_taken_or_bad_name_and_a_follow_up_opens_the_task_again():

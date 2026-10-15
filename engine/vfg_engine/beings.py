@@ -84,7 +84,8 @@ class Being:
 
     def cast(self, ability: str) -> str:
         """Cast an ability by name: "fired", "charging", "cooldown", "not_granted" (only when the
-        caller is not an instance that can lend it), "unknown" or "failed". One this being has not
+        caller is not an instance that can lend it), "unknown" or "failed"; a str that also has
+        `.remaining_s` (a cooldown's time left) and `.error` (why it failed). One this being has not
         been granted is lent for as long as the calling instance lives (a held item's ability goes
         when the item is let go). The ability runs right after the calling code returns."""
         return self._rt.cast_from_content(self, ability)

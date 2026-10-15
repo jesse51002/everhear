@@ -33,21 +33,32 @@ _COMMANDS: list[frozenset] = []
 COMMANDS_PY = os.path.join("engine", "vfg_engine", "mc", "commands.py")
 
 
+def frozenset_in(path: str, name: str) -> frozenset:
+    """`name = frozenset(...)` (or a set) of literals at the top of the Python file `path`, read as
+    text, never imported (the engine's modules import the rest of it). RuntimeError when the file
+    has none."""
+    with open(path, encoding="utf-8") as f:
+        tree = ast.parse(f.read(), path)
+    for node in tree.body:
+        named = any(isinstance(t, ast.Name) and t.id == name for t in getattr(node, "targets", ()))
+        value = getattr(node, "value", None)
+        if named and isinstance(value, ast.Call) and len(value.args) == 1:
+            return frozenset(ast.literal_eval(value.args[0]))
+        if named and isinstance(value, ast.Set):
+            return frozenset(ast.literal_eval(value))
+    raise RuntimeError("%s has no %s = frozenset(...)" % (path, name))
+
+
 def refused() -> frozenset:
     """Server commands that are the owner's to run: REFUSED in engine/vfg_engine/mc/commands.py,
     the list the engine holds every command it sends to (`vfg cmd` goes through the library's
-    command scenario). Read as text, since that module imports the rest of the engine; on first
-    use. A file without the list is an error: the guard never runs without it."""
+    command scenario); on first use. A file without the list is an error: the guard never runs
+    without it."""
     if not _COMMANDS:
         path = os.path.join(ROOT, COMMANDS_PY)
-        with open(path, encoding="utf-8") as f:
-            tree = ast.parse(f.read(), path)
-        for node in tree.body:
-            named = any(isinstance(t, ast.Name) and t.id == "REFUSED" for t in getattr(node, "targets", ()))
-            if named and isinstance(node.value, ast.Call) and len(node.value.args) == 1:
-                _COMMANDS.append(frozenset(ast.literal_eval(node.value.args[0])))
-                break
-        else:
+        try:
+            _COMMANDS.append(frozenset_in(path, "REFUSED"))
+        except RuntimeError:
             raise RuntimeError("%s has no REFUSED = frozenset(...): the owner's commands are unknown" % path)
     return _COMMANDS[0]
 
@@ -68,6 +79,12 @@ class DENY:
         return ("Refused: you write only made/%s/content/<id>.py, one class a file, and made/%s/tests/<id>.py, its "
                 "test. engine/ is read-only: copy what you need from engine/library/ into your own class."
                 % (server, server))
+
+    @staticmethod
+    def library_name(cid: str) -> str:
+        return ("Refused: %s is a library class's id: a made class of that id runs in the library's place, for "
+                "everyone. Give yours its own id (your task's name), and copy what you need from "
+                "engine/library/%s.py." % (cid, cid))
 
     @staticmethod
     def content_name(server: str) -> str:
@@ -159,12 +176,18 @@ class DENY:
 
 
 # Every vfg command an implementer runs, and how each is sent (CONTRACT2).
-VFG_FORMS = ("vfg engine reload [<id> ...] | vfg engine classes|meta [<id>]|config get <id>|instances|log -n N|places|"
-             "incantations|status [--json] | vfg engine start <scenario> key=value ... | vfg engine stop <scenario> | "
+VFG_FORMS = ("vfg engine reload [<id> ...] | vfg engine classes|places|status [--json] | "
+             "vfg engine meta [<id>] [--json] | vfg engine config get <id> [--json] | "
+             "vfg engine instances [--kind K] [--user <player>] [--json] | vfg engine log -n N [--json] | "
+             "vfg engine incantations [--player <player>] [--json] | "
+             "vfg engine start <scenario> [key=value ...] [--wait S] | "
+             "vfg engine stop <scenario> | vfg engine stop --instance <instance> | "
              "vfg engine grant|revoke <player> <ability> | vfg engine give|take <player> <item> | "
-             "vfg engine apply <player> <mark> key=value ... [--seconds S] | vfg engine clear <player> <mark> | "
-             "vfg engine bind <player> '<phrase>' <ability> --by <your task> | vfg engine unbind <player> '<phrase>' | "
-             "vfg cmd '<command>' | vfg test <id> | vfg state | vfg history ...")
+             "vfg engine apply <player> <mark> [key=value ...] [--seconds S] | vfg engine clear <player> <mark> | "
+             "vfg engine bind <player> '<phrase>' <ability> --by <your task> | "
+             "vfg engine bind <player> '<phrase>' --scenario <scenario> [key=value ...] [--cooldown S] --by <your task> | "
+             "vfg engine unbind <player> '<phrase>' | vfg cmd '<command>' | vfg test <id> [-n N] [--timeout S] | "
+             "vfg state [--json] | vfg history ...")
 VFG_USAGE = {
     "engine reload": "vfg engine reload <id> ..., or vfg engine reload alone for every class",
     "engine classes": "vfg engine classes, with --json or nothing after it",
@@ -892,7 +915,10 @@ def decide(call: dict, g: GuardContext) -> str | None:
     # An implementer writes its classes and their tests, and nothing else: never in the engine.
     if name in ("Write", "Edit") and inp.get("file_path"):
         path = str(inp["file_path"])
-        if made_file(g.repo, g.server, path):
+        made = made_file(g.repo, g.server, path)
+        if made and made[0] == "content" and os.path.isfile(os.path.join(g.repo, "engine", "library", made[1] + ".py")):
+            return DENY.library_name(made[1])
+        if made:
             return None
         if any(within(os.path.join(g.repo, "made", g.server, kind), path, g.repo) for kind in ("content", "tests")):
             return DENY.content_name(g.server)

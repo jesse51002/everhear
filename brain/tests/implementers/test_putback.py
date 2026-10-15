@@ -119,15 +119,19 @@ async def test_a_binding_the_run_made_is_unbound_and_one_it_replaced_or_unbound_
                        entry("Steve", "freeze", "ice_staff_steve")]
     did, failed = await put_back(snap)
     assert failed == []
+    # each as it was: its aliases as listed (no alias call), a scenario's cooldown too
     assert vfg.made("engine", "bind") == [
-        ["engine", "bind", "Alex", "rain fire", "--scenario", "meteor", "at=caster", "count=3"],
-        ["engine", "bind", "Steve", "fire ball", "fireball"],
-        ["engine", "bind", "Steve", "freeze", "frost"]]
+        ["engine", "bind", "Alex", "rain fire", "--scenario", "meteor", "at=caster", "count=3", "--cooldown", "5",
+         "--aliases", "[]"],
+        ["engine", "bind", "Steve", "fire ball", "fireball", "--aliases", "[]"],
+        ["engine", "bind", "Steve", "freeze", "frost", "--aliases", '["froze","freez"]']]
     assert vfg.made("engine", "unbind") == [["engine", "unbind", "Steve", "ice ball"]]
     assert did == ["bound alex.rain_fire again as it was", "bound steve.fire_ball again as it was",
-                   "bound steve.freeze again, but for its aliases (froze, freez)", "unbound steve.ice_ball"]
+                   "bound steve.freeze again as it was", "unbound steve.ice_ball"]
     # bound by the brain with its task, the listing naming it: --by goes again too
     assert putback.bind_words(entry("Steve", "x", "y", by="castle_alex"))[-2:] == ["--by", "castle_alex"]
+    marked = entry("Steve", "ice beam", "y", aliases=["ice cream", "ice been"], everyday_aliases=["ice cream"])
+    assert putback.bind_words(marked)[5:] == ["--aliases", '["ice cream","ice been"]', "--everyday", '["ice cream"]']
 
 
 async def test_bindings_the_implementer_put_back_itself_are_left_alone_and_a_failed_read_is_said(tmp_path):

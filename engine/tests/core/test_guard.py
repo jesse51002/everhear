@@ -138,7 +138,9 @@ def test_a_slow_call_is_logged_and_one_that_keeps_going_slow_is_flagged(rig):
     assert [s["instance"] for s in status["slow"]] == [r.records(cid="slowpoke")[0].iid]
 
 
-def test_a_query_counts_against_the_call_and_is_cut_after_its_reply(rig):
+def test_waiting_on_minecraft_is_not_the_contents_time_and_is_never_cut(rig):
+    """A slow server must not cut content doing nothing wrong: a query that takes 120 ms, over the
+    50 ms cut, is waited for, and the call goes on."""
     q = FINE.replace("class Fine", "class Asker").replace(
         "self.state.n += 1", "self.state.n += 1\n        ctx.query('data get entity @s Pos')")
     r = rig({"asker": q}, cut_ms=50)
@@ -147,9 +149,48 @@ def test_a_query_counts_against_the_call_and_is_cut_after_its_reply(rig):
     r.tick()
     r.op("grant", who="Steve", ability="asker")
     r.io.query_delay_s = 0.12
+    r.tick(3)
+    (rec,) = r.records(cid="asker")
+    assert rec.state.n >= 2 and len(r.io.queries) >= 2
+    assert not any("cut" in m for m in r.lines())
+
+
+def test_a_call_that_waits_too_long_on_minecraft_is_refused_more_reads_in_words(rig):
+    """Waiting has its own budget per call (VFG_ENGINE_IO_MS, here 250 ms): past it, a read is
+    refused with an error that says why, so no call can stall the tick."""
+    greedy = FINE.replace("class Fine", "class Greedy").replace(
+        "        self.state.n += 1",
+        "        self.state.n += 1\n"
+        "        for i in range(6):\n"
+        "            try:\n"
+        "                ctx.query('data get entity @s Pos')\n"
+        "            except RuntimeError as exc:\n"
+        "                self.command('say refused after %d: %s' % (i, exc))\n"
+        "                break")
+    r = rig({"greedy": greedy}, cut_ms=50)
+    r.start()
+    r.io.join("Steve")
+    r.tick()
+    r.op("grant", who="Steve", ability="greedy")
+    r.io.query_delay_s = 0.1
+    r.tick()
+    said = [op.text for op in r.io.ops_of(Command) if op.text.startswith("say refused")]
+    assert said and said[0].startswith("say refused after 3:") and "budget (250 ms)" in said[0]
+    assert r.records(cid="greedy")                               # refused reads; the call itself went on
+
+
+def test_content_burning_cpu_is_still_cut_beside_its_reads(rig):
+    hog = FINE.replace("class Fine", "class Hog").replace(
+        "self.state.n += 1", "self.state.n += 1\n        ctx.query('x')\n"
+        "        import time as _t\n        _s = _t.perf_counter()\n        while _t.perf_counter() - _s < 30: pass")
+    r = rig({"hog": hog}, cut_ms=50)
+    r.start()
+    r.io.join("Steve")
+    r.tick()
+    r.op("grant", who="Steve", ability="hog")
+    r.io.query_delay_s = 0.1
     r.tick(2)
-    assert not r.records(cid="asker")
-    assert r.io.queries                                          # the reply was waited for, then cut
+    assert not r.records(cid="hog") and any("cut" in m for m in r.lines())
 
 
 def test_setting_an_attribute_on_self_is_an_error_that_says_use_state(rig):

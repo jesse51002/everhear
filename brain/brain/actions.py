@@ -17,8 +17,8 @@ from typing import Any
 
 from vfg_actions import Catalog, describe
 
-from .config import log
-from .implementers.guard import refused
+from .config import REPO, log
+from .implementers.guard import frozenset_in, refused
 
 
 def load(repo: Path) -> Catalog:
@@ -38,20 +38,24 @@ def refresh(catalog: Catalog) -> list[str]:
     return changed
 
 
-# Commands that place or remove blocks: building is a scenario's that builds, else an implementer's.
-# TODO(library): the command scenario's own list of them, once the library has one.
-BLOCK_COMMANDS = frozenset(["setblock", "fill", "clone", "place", "fillbiome"])
+# The library's command scenario, whose BLOCKED it refuses: commands that place or remove blocks
+# (building is a scenario's that builds, else an implementer's).
+COMMAND_PY = Path("engine") / "library" / "command.py"
 
 
 def hidden_commands() -> frozenset[str]:
-    """The commands the brain never sees in its command list: those that place or remove blocks
-    (BLOCK_COMMANDS), and the owner's, the engine's list (engine/vfg_engine/mc/commands.py's
-    REFUSED, which it refuses every command it sends against)."""
-    try:
-        return BLOCK_COMMANDS | refused()
-    except (OSError, SyntaxError, RuntimeError, ValueError) as e:
-        log("actions", f"the engine's REFUSED could not be read ({type(e).__name__}: {e})")
-        return BLOCK_COMMANDS
+    """The commands the brain never sees in its command list, as the engine refuses them: those
+    that place or remove blocks (the library's command scenario's BLOCKED), and the owner's (the
+    engine's REFUSED, engine/vfg_engine/mc/commands.py). A list that cannot be read is logged and
+    left out."""
+    out: frozenset[str] = frozenset()
+    for what, read in (("the command scenario's BLOCKED", lambda: frozenset_in(str(REPO / COMMAND_PY), "BLOCKED")),
+                       ("the engine's REFUSED", refused)):
+        try:
+            out |= read()
+        except (OSError, SyntaxError, RuntimeError, ValueError) as e:
+            log("actions", f"{what} could not be read ({type(e).__name__}: {e})")
+    return out
 
 
 def doc(cls) -> str:

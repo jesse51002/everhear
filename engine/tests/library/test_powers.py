@@ -5,7 +5,19 @@ of a bubble, launching a caught player up instead; place_barrier's args refused 
 projectile_shield merge (barrier's own `what` already offers "projectiles"). super_saiyan
 (ability), super_saiyan_form (mark) and super_saiyan_star (item) power a player up and back down."""
 
-from vfg_engine.io import AddModifier, Damage, GiveEffect, Message, Motion, Particle, RemoveModifier, Sound, Summon
+import re
+
+from vfg_engine.io import (
+    AddModifier,
+    Damage,
+    GiveEffect,
+    Message,
+    Motion,
+    Particle,
+    RemoveModifier,
+    Sound,
+    Summon,
+)
 
 GROUP = ("fireball", "rocket_launcher", "death_gaze", "barrier_shield", "place_barrier",
          "super_saiyan", "super_saiyan_form", "super_saiyan_star")
@@ -103,26 +115,32 @@ def test_within_the_cooldown_the_rocket_launcher_only_says_so(rig):
     assert health(r, mobs["near"]) == 958.0
     r.io.use("Steve")                                          # straight away: recharging
     r.tick(2)
-    assert any(m.where == "actionbar" and "Rocket Launcher: recharging" in m.text for m in r.sent(Message))
+    assert any(m.where == "actionbar" and re.search(r"Rocket Launcher: \d+\.\d s", m.text) for m in r.sent(Message))
     assert health(r, mobs["near"]) == 958.0                    # no second shot landed
     assert r.problems() == []
 
 
 # ---- death_gaze --------------------------------------------------------------------------
 
-def test_sneaking_kills_what_the_beam_touches_through_the_wall(rig):
+def test_sneaking_kills_what_the_beam_touches_up_to_the_first_wall(rig):
+    """death_gaze/main.py and inv_G2's own verdict: the beam reaches "up to the first wall" (a
+    wall stops it sooner); through_walls=False in on_sneaking is that. A mob before the wall dies,
+    one behind it is spared, and one off the beam's width is untouched either way."""
     r = rig("death_gaze")
     r.start()
     io = r.io
     io.join("Steve", pos=(0.0, 64.0, 0.0), yaw=180.0)
-    for y in (64, 65, 66):
-        io.set_block("minecraft:overworld", (0, y, -5), "minecraft:stone")
-    near = io.add_entity("minecraft:zombie", (0.0, 64.0, -10.0), health=1000)
-    aside = io.add_entity("minecraft:zombie", (6.0, 64.0, -10.0), health=1000)
+    for x in (-1, 0, 1):                                       # a wall wide enough to be solid, not a sliver
+        for y in (64, 65, 66):
+            io.set_block("minecraft:overworld", (x, y, -5), "minecraft:stone")
+    near = io.add_entity("minecraft:zombie", (0.0, 64.0, -3.0), health=1000)     # before the wall
+    behind = io.add_entity("minecraft:zombie", (0.0, 64.0, -10.0), health=1000)  # behind the wall
+    aside = io.add_entity("minecraft:zombie", (6.0, 64.0, -3.0), health=1000)
     assert r.op("grant", who="Steve", ability="death_gaze")["ok"]
     io.sneak("Steve", True)
     r.tick(2)
-    assert near not in io.by_uuid                              # killed outright, behind the wall
+    assert near not in io.by_uuid                              # killed outright, before the wall
+    assert health(r, behind) == 1000                           # the wall stops the beam sooner
     assert health(r, aside) == 1000                            # off the beam's width: untouched
     beam = [p for p in r.sent(Particle) if p.name == "minecraft:end_rod"]
     assert beam and all(p.force for p in beam)
@@ -205,10 +223,13 @@ def test_a_player_caught_inside_is_launched_up_when_what_includes_players(rig):
     io = r.io
     io.join("Steve", pos=(0.0, 64.0, 0.0))
     io.join("Alex", pos=(3.0, 64.0, 0.0))
+    for x in range(0, 7):                                         # solid ground under and round Alex's
+        for z in range(-3, 4):                                    # feet, for the wind launch's own probe
+            io.set_block("minecraft:overworld", (x, 63, z), "minecraft:stone")
     r.op("grant", who="Steve", ability="barrier_everything")
     r.tick(2)
-    launches = [op for op in r.sent(Motion) if op.target == "Alex"]
-    assert launches and launches[0].vec[1] > 0                   # pushed straight up, not sideways
+    charges = [s for s in r.sent(Summon) if s.entity_type == "minecraft:wind_charge"]
+    assert charges                                                 # Alex was launched by wind charges
     assert r.problems() == []
 
 

@@ -875,3 +875,33 @@ def test_mine_a_watched_block(fresh):
     finally:
         io.watch_mined([])
         io.flush([I.SetBlock(OW, (0, 85, 2), "minecraft:air")])
+
+
+def test_block_data(fresh):
+    """K's chest(): items into a chest, a sign's text, a barrel's name; and the refusals."""
+    io, _ = fresh
+    staff = '{Slot:1b,id:"minecraft:carrot_on_a_stick",count:1,components:{"minecraft:custom_data":{everhear:{item:"fire_staff"}}}}'
+    try:
+        io.flush([I.SetBlock(OW, (6, 85, 6), "minecraft:chest"), I.SetBlock(OW, (7, 85, 6), "minecraft:oak_sign"),
+                  I.SetBlock(OW, (8, 85, 6), "minecraft:barrel"), I.SetBlock(OW, (9, 85, 6), "minecraft:stone")])
+        r = io.flush([
+            I.BlockData(OW, (6, 85, 6), "Items", '{Slot:0b,id:"minecraft:diamond",count:3}'),
+            I.BlockData(OW, (6, 85, 6), "Items", staff),
+            I.BlockData(OW, (7, 85, 6), "front_text", '{messages:["Hello","","",""]}', "merge"),
+            I.BlockData(OW, (8, 85, 6), "CustomName", '"Loot"', "set"),
+            I.BlockData(OW, (9, 85, 6), "Items", '{Slot:0b,id:"minecraft:dirt",count:1}'),
+            I.BlockData(OW, (6, 85, 6), "Items[0].count", "1"),
+            I.BlockData(OW, (6, 85, 6), "Items", '{Slot:2b,id:"minecraft:written_book",count:1,components:{"minecraft:custom_name":"%s"}}' % ("x" * 1400)),
+        ])
+        assert [(x.ok, x.error) for x in r] == [
+            (True, None), (True, None), (True, None), (True, None),
+            (False, "no block entity there (a chest, a sign, a barrel… holds data)"),
+            (False, "the path holds no list (append and prepend need one)"),
+            (False, "the command is over 1446 bytes, RCON's limit")], r
+        assert r[0].reply == "Modified block data of 6, 85, 6"
+        items = io.query("data get block 6 85 6 Items")
+        assert 'id: "minecraft:diamond"' in items and 'everhear: {item: "fire_staff"}' in items
+        assert 'messages: ["Hello", "", "", ""]' in io.query("data get block 7 85 6 front_text")
+        assert io.query("data get block 8 85 6 CustomName").endswith('"Loot"')
+    finally:
+        io.flush([I.Fill(OW, (6, 85, 6), (9, 85, 6), "minecraft:air")])

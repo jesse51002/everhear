@@ -105,9 +105,10 @@ A step's prompt is laid out for the cache ([`call.py`](brain/call.py)):
 1. **the opening**, marked: the rules ([`prompts/brain.md`](prompts/brain.md), the owner named, its
    `# TODO` lines left out: `call.rules_text`), the menu, every action in full (its docstring and
    each field it fills with its type, limits, default and description) and Minecraft's command
-   list, less the commands that place or remove blocks (`actions.BLOCK_COMMANDS`: building is a
-   scenario's) and the owner's, which the engine refuses (`engine/vfg_engine/mc/commands.py`'s
-   `REFUSED`; both `actions.hidden_commands()`): the same on every step of every loop while the
+   list, less the commands that place or remove blocks (the library's command scenario's `BLOCKED`,
+   `engine/library/command.py`: building is a scenario's) and the owner's, which the engine refuses
+   (`engine/vfg_engine/mc/commands.py`'s `REFUSED`; both read as text by
+   `actions.hidden_commands()`): the same on every step of every loop while the
    actions and the references stay as they are;
 2. **the conversation**, a minute-block at a time (a run of rows sharing a minute, which never
    changes once the next minute starts), every `VFG_BRAIN_CHECKPOINT` (5) closed blocks marked, the
@@ -202,8 +203,8 @@ on the last step). A hand-off or a follow-up under `reply` or `silent` is carrie
    fails is refused (nothing read, try again), and so are Minecraft not answering and a player not
    online. A Config read is `vfg engine config get <class>`, never kept from before: its file and
    lines and the class as written, shown to the next step whole (at most 8000 characters), its
-   lines kept; the engine not running, a class it has not, and a class outside
-   `made/<server>/content/` are refused.
+   lines kept, and whose (the library's, or this server's version over it); the engine not running,
+   a class it has not, and a class neither the library's nor in `made/<server>/content/` are refused.
 
 **An action lands when it ran without an error**: vfg checked its values, the engine did it (and
 Minecraft did not refuse a command a scenario sent), and it did not say it changed nothing. Each tool
@@ -277,8 +278,9 @@ The brain reaches it through reads and its menu, and nothing else:
   and all. An `engine_config` of a class whose Config no earlier step of the loop read is refused at
   the tool, before it runs. vfg splices it into the class's file on this PC, checks it, deploys and
   reloads it; a refusal comes back with the check that failed, the old version still running, and
-  one already as written comes back `changed nothing`. vfg reads and rewrites only this server's
-  classes, in `made/<server>/content/`: a library class's Config read is refused.
+  one already as written comes back `changed nothing`. A library class's first rewrite copies its
+  file into `made/<server>/content/`, which then runs in the library's place, one version for
+  everyone (`toolkit/README.md`, `config set`).
 
 ## The ending
 
@@ -371,9 +373,11 @@ grants, `Steve:frost_staff_steve`; each name once, added at each report and neve
 `variables` (null on every task the brain opens: a class's numbers are its Config), `session`,
 `result`, `created_at`, `updated_at`, `closed_at`.
 
-- **A report** first adds what the implementer made to `made` (what its guard recorded, checked
-  against the disk and the engine: The implementers, below), and takes its `DESCRIPTION:` line as
-  the description (with none, the one the brain wrote stays).
+- **A report** sets `made` to what the implementer says the task has made now (what its guard
+  recorded over every run, checked against the disk and the engine: The implementers, below), in
+  place of what the row had, as a deploy mirrors the folder: a class removed, a binding undone or a
+  grant revoked leaves it (`tasks.mirror_made`; a report with nothing known, None, changes nothing).
+  It takes its `DESCRIPTION:` line as the description (with none, the one the brain wrote stays).
 - **TASKS** in the brain's tail ([`tasks.board()`](brain/tasks.py)): every task, oldest first, `-
   galick_gun_styrk, for Styrkaeopteryx, open, an implementer is on it, 21:40:02: <description>`, the
   time it was last written (with its date when not today), then `made: content galick_gun_styrk;
@@ -422,7 +426,8 @@ The brain never waits for it.
   whatever the harness, the harness's own permission checks off. An implementer reads and searches
   only `engine/` and `made/<server>/` (Read, Glob, Grep; `ls`, `cat`, `sed -n 'A,Bp'`, `grep`,
   `head`, `tail`); writes only `made/<server>/content/<id>.py` and `made/<server>/tests/<id>.py`,
-  with Write and Edit; and runs `vfg engine` (`reload`; the reads; `start`, `stop`, `grant`,
+  with Write and Edit, never a class of a library class's id (it would run in the library's place
+  for everyone); and runs `vfg engine` (`reload`; the reads; `start`, `stop`, `grant`,
   `revoke`, `give`, `take`, `apply`, `clear`, `bind`, `unbind`) in the forms its prompt gives, `vfg
   cmd`, `vfg test`, `vfg state`, `vfg history`, `python3 -m py_compile`, `sleep` and `echo`, joined
   with `&&` or `;` and piped only into `head`, `tail` or `grep`. Refused, each with one line saying
@@ -435,9 +440,10 @@ The brain never waits for it.
   (a `vfg cmd` of `data get`, `list`, `scoreboard players get`, or an `execute` with no `run`) at
   most three times a run when there is a test server, and never once the tests are spent.
 - **What it made**: the guard records each class file it writes, each binding it sends (the
-  engine's id, `steve.fire_ball`) and each grant (`Steve:fireball`), over the task's runs in this
-  process; at the report they are checked against the disk and the engine (`vfg engine
-  incantations`, `vfg engine instances --kind ability`), and what is there is what the task takes.
+  engine's id, `steve.fire_ball`) and each grant (`Steve:fireball`), over the task's runs; a task
+  this process did not start begins from its row's `made` (the follow-up passes it), so the record
+  covers every run. At the report they are checked against the disk and the engine (`vfg engine
+  incantations`, `vfg engine instances --kind ability`), and what is there is what the task has.
 - **Its test**: `made/<server>/tests/<task>.py`, a `test(t)` with one check per DONE WHEN item,
   which `vfg test <task>` writes a skeleton of when there is none, and runs on the test server
   (`VFG_TEST_BOX`): livetest's own engine with the library, this server's content and the bindings
@@ -465,7 +471,8 @@ The brain never waits for it.
   cancel, a stop at the limit, or a warned run that did not report done, code makes each what it
   was: each file written back or removed, one `vfg engine reload` when a class file was among them
   (a class that goes with its file takes its instances with it), each binding the run made unbound
-  and each it replaced or unbound bound again, each grant it made revoked and each it revoked
+  and each it replaced or unbound bound again as it was (its aliases, everyday aliases, cooldown
+  and `--by`, with `--aliases`: no alias call), each grant it made revoked and each it revoked
   granted again. Its line, `Code put back: …`, ends the report, and what it could not put back makes
   the report `failed`. A scenario the run started, an item it gave, a mark it applied and a place it
   saved are the implementer's own to undo. The snapshot is kept until the task's next run, in memory

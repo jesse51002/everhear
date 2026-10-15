@@ -51,7 +51,10 @@ class Rig:
             (self.dir / (name + ".py")).write_text(HEADER + textwrap.dedent(source))
         self.io = FakeIo()
         self.clock = Clock()
-        self.settings = Settings(content=(str(self.dir),), state=str(tmp_path / "state.json"), export=None)
+        # the call limits are real time, so a loaded PC could trip them: these tests run on the fake
+        # clock alone, with limits no load reaches (the kit's test_limits checks what calls cost)
+        self.settings = Settings(content=(str(self.dir),), state=str(tmp_path / "state.json"), export=None,
+                                 slow_ms=10_000.0, cut_ms=20_000.0)
         self.engine = None
 
     # ---- running it ----------------------------------------------------------------------
@@ -120,10 +123,10 @@ class Rig:
         return [line["msg"] for line in self.engine.log_lines]
 
     def problems(self):
-        """Log lines that say a content call failed, was slow or was cut, or that damage drifted
-        from what the class declares."""
+        """Log lines that say a content call failed or was cut, or that damage drifted from what the
+        class declares."""
         return [m for m in self.lines()
-                if "failed" in m or "slow call" in m or " cut" in m or "damage drift" in m]
+                if "failed" in m or "cut:" in m or "damage drift" in m]
 
 
 @pytest.fixture

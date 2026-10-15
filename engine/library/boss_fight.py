@@ -1,8 +1,10 @@
 """Boss fight: spawns a boss Actor (one body, or several on one health bar), rises near a player
-or at a place, music looped while it lives if asked, mob griefing held off if asked; it ends when
-every body is dead, giving a reward where the last one fell and showing VICTORY. Its abilities
-(minions, enraging as it weakens, an ice blast, frost servants...) are the Actor's own, granted
-when it is spawned: this scenario only rises it, bars it and ends the fight.
+(at a safe spot within `near_spread`, never on them: a melee boss risen at their own feet would be
+in its own attack range before the fight begins) or at a place, music looped while it lives if
+asked, mob griefing held off if asked; it ends when every body is dead, giving a reward where the
+last one fell and showing VICTORY. Its abilities (minions, enraging as it weakens, an ice blast,
+frost servants...) are the Actor's own, granted when it is spawned: this scenario only rises it,
+bars it and ends the fight.
 
 Three old scripts merged in, one scenario with three Actors, by `boss` (DESIGN2 §7):
 horde_boss (boss="horde_king", the defaults below), dragon_boss / three_headed_dragon
@@ -18,7 +20,7 @@ from typing import Literal
 
 from vfg_engine import Args, EntityType, Field, ItemId, Place, Players, Scenario, ScenarioConfig, Spot, State, \
     UNTIL_STOPPED, players
-from vfg_engine.kit import boss_bar, melody, speak
+from vfg_engine.kit import boss_bar, melody, safe_spots, speak
 
 
 class BossFight(Scenario):
@@ -30,6 +32,9 @@ class BossFight(Scenario):
         spacing: float = Field(6, ge=1, le=32)         # blocks between extra bodies, side by side
         # NEEDS: a boss's own size (ActorConfig.size) is not readable from here to space bodies by it (a class
         # never reads another's Config); `spacing` is a fixed guess instead of "3x its size" as the old preset did.
+        near_spread: float = Field(8, ge=2, le=32)     # how far from the player it may rise (the old boss()'s
+        # spawn(near=player, spread=8): "never on top of them" (kit/mobs.py, Boss.spawn); a melee boss risen at
+        # the player's own feet is in its own attack range before the fight even starts
         bar_colors: dict[str, str] = {"ice_queen": "blue"}     # by boss id; "red" for any other (not in takes)
 
     class Args(Args):
@@ -130,7 +135,9 @@ class BossFight(Scenario):
         for name in players(ctx, a.near):
             p = ctx.world.player(name)
             if p is not None:
-                return Spot(dim=p.dim, pos=tuple(p.pos))
+                spots = safe_spots(ctx, name, spread=self.config.near_spread)
+                pos = spots[0] if spots else tuple(p.pos)   # no room found: the old fallback, right at them
+                return Spot(dim=p.dim, pos=pos)
         raise ValueError("nobody is online" if a.near in ("@a", "@r") else a.near + " is not online")
 
     def _said(self, at, dim) -> str:

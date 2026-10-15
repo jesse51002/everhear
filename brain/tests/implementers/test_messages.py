@@ -285,7 +285,7 @@ async def test_bindings_and_grants_are_put_back_through_vfg_after_a_cancel(cfg):
     await r.imps.follow_up("beam_steve", CANCEL)
     gate.set()
     await r.settle()
-    assert r.vfg.made("engine", "bind") == [["engine", "bind", "Steve", "fire ball", "fireball"]]
+    assert r.vfg.made("engine", "bind") == [["engine", "bind", "Steve", "fire ball", "fireball", "--aliases", "[]"]]
     assert r.vfg.made("engine", "revoke") == [["engine", "revoke", "Steve", "beam_steve"]]
     assert r.reports[-1][2].endswith("Code put back: bound steve.fire_ball again as it was; revoked beam_steve from "
                                      "Steve.")

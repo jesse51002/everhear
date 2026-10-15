@@ -17,16 +17,20 @@ engine, clears the stage, and prints one JSON line, last:
 
     {"code": 0, "passed": 3, "failed": 0, "cant_tell": 0, "checks": [{"item", "ok", "why"}, ...],
      "engine": {"loaded": ["fire_staff", ...], "errors": [{"file", "check", "error"}], "boot_s": 1.4,
-                "exit": 0}, "seconds": 12.3}
+                "exit": 0}, "seconds": 4.6, "timing": {"boot": 1.4, "stage": 0.4, "test": 2.1,
+     "clear": 0.7}, "slow": false}
 
-with "error" (in words) when it did not run to the end, and "stopped": true after SIGTERM. Exit code
+with "error" (in words) when it did not run to the end, and "stopped": true after SIGTERM. Every
+live test is short and self-contained: under 20 s, its setup included. One over
+VFG_LIVETEST_BUDGET_S (20) prints a WARN line and has "slow": true; its code is unchanged. Exit code
 = "code": 0 every check passed; 1 one failed; 2 the test could not run as written (no test(t), an
 error in it, a refused op, no check made); 3 not a test server; 4 the engine did not start or load;
 5 stopped (SIGTERM, or --timeout). Its other output, before the JSON, is the report a person reads:
-ENGINE, AT, CAST, START, LOG, then PASS / FAIL / CAN'T TELL — item — why, and RESULT.
+ENGINE, AT, CAST, START, LOG, then PASS / FAIL / CAN'T TELL — item — why, RESULT, and TIME (the
+wall time and each phase's) with WARN when it is slow.
 
 THE TEST FILE defines test(t). t is ready when it is called: the engine running with the content,
-the stage set (a barrier floor high in the sky, night, clear, no mobs spawning), Steve (the caster,
+the stage set (a barrier floor high in the sky at 160 296 160, night, clear, no mobs spawning), Steve (the caster,
 facing north) and Alex (4 to his left), both Carpet fake players the engine sees.
 
     def test(t):
@@ -56,12 +60,15 @@ thing placed prints an AT line; t.at(r, u, f) is a spot as "x y z", t.xyz(r, u, 
 THE ENGINE (each a control op; a refusal stops the test, saying why): t.give(item, who=None,
 base=None), t.take, t.grant(ability, who=None), t.revoke, t.apply(mark, who=None, seconds=None,
 **args), t.clear(mark, who=None), t.start(scenario, wait=0, **args) (its instance; waited up to
-`wait` s for its result), t.stop(instance_or_scenario), t.spawn(actor, r, u, f) (its uuid),
+`wait` s for its result), t.result(within=0) (the last start's {"summary", "facts"}: its own
+answer, else the engine's result op on its instance, asked for up to `within` s; {} for none),
+t.stop(instance_or_scenario), t.spawn(actor, r, u, f) (its uuid),
 t.bind(phrase, ability=None, who=None, scenario=None, args=None, aliases=()), t.cast(phrase,
 who=None) (a heard cast, as the bridge sends it: a verdict, PASS when fired or charging),
 t.instances(kind=None, who=None), t.op(name, **args) any other (its whole reply).
 PRESSING, as a player does (Carpet): t.use(hold=0, draw=0, who=None) a click, held `hold` s, or a
-bow drawn `draw` s; t.sneak(times=3); t.look(pitch=0, turn=0); t.hotbar(slot); t.attack(); t.jump().
+bow drawn `draw` s; t.sneak(times=3) quick crouches, t.sneak(hold=s) one held s seconds (`times`
+of them with both); t.look(pitch=0, turn=0); t.hotbar(slot); t.attack(); t.jump().
 THE STAGE: t.mob(kind, r, u, f, health=None, still=True, nbt="", name=None, behind=False);
 t.blocks(block, r, u, f, size=3) a cube, its bottom at u; t.region(r, u, f, size=3) a cube left as
 it is; t.ground(r=0, f=10, size=9, depth=3) real ground in the floor; t.player(name, r, u, f);
@@ -73,9 +80,12 @@ Steve), t.others_unhurt(), t.burning(who), t.moved(at_least, way="any"|"up"|"for
 t.near(kind, r, u, f, radius=8, count=1), t.gone(cube, share=0.5), t.turned(cube, block, share=0.1),
 t.built(cube, share=0.02), t.block(r, u, f, block), t.fire_near(r, u, f, radius=4, count=1),
 t.effect(name, who=None), t.holds(item, who=None) (an EverHear id or a vanilla item),
-t.weather(kind), t.running(id, who=None), t.said(text) (the last scenario result), t.no_errors() (no
-error in the engine's log since the test began). verdict(ok, why) makes one: ok True, False or
-None (CAN'T TELL); a bare True/False works too.
+t.weather(kind), t.running(id, who=None), t.said(text, within=5) (t.result(within) holds text),
+t.no_errors() (no error in the engine's log since the test began). verdict(ok, why) makes one: ok
+True, False or None (CAN'T TELL); a bare True/False works too. t.unhurt and t.no_errors are CAN'T
+TELL when nothing fired since the last action: fired is a t.start (one that ended within its wait
+ran all the same), a new instance, more things on the stage, blocks placed or broken there (a
+masked /clone census of the stage), or anyone there moved, hurt, set alight or given an effect.
 
 The test talks to the test server only: its RCON (the box's lock held for each exchange) and the
 engine's control socket. It needs no network but loopback, nothing in /tmp but its own (the RCON
@@ -110,13 +120,22 @@ from .server import MAX_SOCKET_PATH, one_line
 MARKER = ".vfg-test-server"
 EXIT_PASS, EXIT_FAIL, EXIT_BAD_TEST, EXIT_REFUSED, EXIT_BOOT, EXIT_STOPPED = 0, 1, 2, 3, 4, 5
 
-X, Z = 3000, 3000         # the stage's middle: far from spawn
+# The stage's middle: inside the chunks a new world has generated round its spawn (realmc's template
+# has every chunk within 224 blocks), so a fresh world's first test does not wait for 49 chunks to be
+# made (measured: 3.9 s of setup at 3000 3000 on a fresh world, 1.1 s once they exist), and 200
+# blocks above anything built round spawn.
+X, Z = 160, 160
 FLOOR = 295               # its barrier floor; Steve's feet are at FLOOR + 1
 HALF = 40                 # the floor is 81 x 81
 CLEAR = 48                # what is cleared after: 97 x 97, from y 280 to the top
 TOP = 319
 SAMPLE_S = 0.25
-FILL_MAX = 32768          # blocks one /fill may change
+FILL_MAX = 32768          # blocks one /fill (or /clone) may change
+# The stage's census (_blocks): its non-air blocks, counted slab by slab by a masked /clone (which
+# says how many it copied) into the scratch layer under it, so a build or a crater counts as fired.
+CENSUS_Y = (285, TOP)           # the ground under the floor up to the build limit
+SCRATCH_Y = 280                  # 4 layers, under the census, inside what the clear wipes
+BUDGET_S = 20.0                  # a live test's wall time, setup included (VFG_LIVETEST_BUDGET_S)
 STAND_IN_HP = 1000
 SEE_PLAYER_S = 10.0       # how long a new fake player may take to be in the engine's snapshot
 OP_TIMEOUT_S = 15.0
@@ -128,7 +147,8 @@ _REFUSED = re.compile(r"Unknown or incomplete command|Incorrect argument|<--\[HE
 # What /player presses, which t.cmd lets through: a key, not a change to him.
 _KEYS = ("move", "jump", "sprint", "unsprint", "sneak", "unsneak", "look", "turn", "use", "attack", "stop", "hotbar",
          "swapHands")
-_QUIET = "nothing new on the stage, no instance started, and nobody moved, was hurt, set alight or given an effect"
+_QUIET = ("nothing new on the stage, no block placed or broken, no scenario or instance started, and nobody "
+          "moved, was hurt, set alight or given an effect")
 _HINTS = {"cast": ": t.cast(phrase, who=None); bind it first, t.bind(phrase, ability)",
           "check": ": a check is t.check(item, verdict)", "start": ": t.start(scenario, wait=0, **args)",
           "give": ": t.give(item, who=None, base=None)"}
@@ -275,7 +295,10 @@ class T:
         self._acted, self._what, self._base = time.time(), "the start of the test", {}
         self._things = None
         self._instances = None
+        self._census = None
+        self._ran = False             # a t.start since the last action's mark: a one-shot that ended still ran
         self._result = None
+        self._last_start = None
         self._items = None
         self._others = tuple(others)
 
@@ -371,7 +394,6 @@ class T:
                       % (name, _r(x), _r(y), _r(z)))
         else:
             self._say("AT", "%s: %s, x %s y %s z %s" % (name, self._rel(x, y, z), _r(x), _r(y), _r(z)))
-        time.sleep(0.3)
         self.start_at[name] = {"pos": (x, y, z), "health": self._health(name) or 20.0}
         return name
 
@@ -465,8 +487,10 @@ class T:
     def _mark(self, what):
         """A cast, use, sneak, start, apply, grant, give or spawn: what moved and fired count from."""
         self._acted, self._what, self._base = time.time(), what, {}
+        self._ran = False
         self._things = self._count_things()
         self._instances = self._instance_ids()
+        self._census = self._blocks()
         for who in self.players + list(self.mobs):
             sel = self.mobs.get(who, who)
             pos = self._data(sel, "Pos")
@@ -515,8 +539,9 @@ class T:
         if wait:
             req["wait_s"] = wait
         reply = self._need("start %s" % scenario, self._engine.ask("start", timeout=OP_TIMEOUT_S + wait, **req))
-        if "result" in reply:
-            self._result = reply.get("result") or {}
+        self._ran = True
+        self._last_start = reply.get("instance")
+        self._result = reply.get("result") or None
         state = ("ended (%s)" % reply["ended"] if reply.get("ended") else "still running" if reply.get("running")
                  else "started")
         self._say("START", "%s with %s: %s, %s" % (scenario, json.dumps(args)[:200] if args else "its defaults",
@@ -585,8 +610,19 @@ class T:
         except TestError:
             return None
 
-    def result(self):
-        """The last t.start's result, {"summary", ...}, or {} when it gave none (yet)."""
+    def result(self, within=0):
+        """The last t.start's result, {"summary", "facts"}, or {} when there is none (yet): the start's
+        own answer, else the engine's `result` op on its instance, asked again for up to `within` s
+        (a scenario that outlived the start's wait, at most 30 s, reports later)."""
+        end = time.time() + within
+        while not self._result and self._last_start:
+            reply = self.op("result", id=self._last_start)
+            if reply.get("ok") and reply.get("result"):
+                self._result = reply["result"]
+                break
+            if (reply.get("ok") and reply.get("ended")) or not reply.get("ok") or time.time() >= end:
+                break   # ended with none, or the engine has no result op: none will come
+            time.sleep(0.25)
         return dict(self._result or {})
 
     # ---- pressing
@@ -603,12 +639,15 @@ class T:
             time.sleep(hold)
             self._mc("player %s stop" % who)
 
-    def sneak(self, times=3, who=None):
+    def sneak(self, times=None, hold=None, who=None):
+        """Crouches: `times` taps (3), or with `hold` s each crouch held that long (once, unless `times`)."""
         who = who or self.caster
+        if times is None:
+            times = 3 if hold is None else 1
         self._mark("the crouch")
-        for _ in range(times):
+        for _ in range(int(times)):
             self._mc("player %s sneak" % who)
-            time.sleep(0.15)
+            time.sleep(0.15 if hold is None else float(hold))
             self._mc("player %s unsneak" % who)
             time.sleep(0.15)
 
@@ -708,14 +747,40 @@ class T:
                                                   % (X, FLOOR, Z, CLEAR)))
         return int(got.group(1)) if got else 0
 
+    def _blocks(self):
+        """The stage's non-air blocks, under and above the floor (CENSUS_Y): a masked /clone of each
+        slab into the scratch layer says how many it copied. None when it cannot be counted."""
+        x1, z1, x2, z2 = X - HALF, Z - HALF, X + HALF, Z + HALF
+        per = max(1, FILL_MAX // ((x2 - x1 + 1) * (z2 - z1 + 1)))
+        per = min(per, CENSUS_Y[0] - SCRATCH_Y)
+        total, y = 0, CENSUS_Y[0]
+        while y <= CENSUS_Y[1]:
+            top = min(CENSUS_Y[1], y + per - 1)
+            said = self._mc("clone %d %d %d %d %d %d %d %d %d masked force"
+                            % (x1, y, z1, x2, top, z2, x1, SCRATCH_Y, z1))
+            m = re.search(r"(\d+) block", said or "")
+            if m:
+                total += int(m.group(1))
+            elif "No blocks" not in (said or "") and "0 block" not in (said or ""):
+                return None
+            y = top + 1
+        return total
+
     def _fired(self):
-        """Did anything happen since the last action: a new instance, more things on the stage, or
-        anyone there moved, hurt, set alight or given an effect?"""
+        """Did anything happen since the last action: a scenario started (one that ended within its
+        wait ran all the same), a new instance, more things on the stage, blocks placed or broken,
+        or anyone there moved, hurt, set alight or given an effect?"""
+        if self._ran:
+            return True
         now = self._instance_ids()
         if now is not None and self._instances is not None and now - self._instances:
             return True
         if self._things is not None and self._count_things() > self._things:
             return True
+        if self._census is not None:
+            now_blocks = self._blocks()
+            if now_blocks is not None and now_blocks != self._census:
+                return True
         for who in self.players + list(self.mobs):
             p0, e0, burned = self._base.get(who) or (None, set(), False)
             h0 = (self.start_at.get(who) or {}).get("health")
@@ -886,10 +951,13 @@ class T:
         return verdict(bool(rows), "%s %s" % (id, "running: " + ", ".join(i["instance"] for i in rows) if rows
                                               else "not running" + (" for %s" % who if who else "")))
 
-    def said(self, text):
-        got = self.result()
+    def said(self, text, within=5):
+        """The last t.start's result holds `text` (its summary or a fact, in any case); asked of the
+        engine for up to `within` s when the start's answer came before it."""
+        got = self.result(within)
         if not got:
-            return verdict(False, "no result: t.start(scenario, wait=s) waits for one")
+            return verdict(False, "no result from %s: t.start(scenario, wait=s) waits for one, and the engine's "
+                                  "result op had none" % (self._last_start or "a t.start"))
         hay = json.dumps(got, ensure_ascii=False, default=str).lower()
         return verdict(str(text).lower() in hay, "the result: %s" % json.dumps(got, default=str)[:200])
 
@@ -1113,6 +1181,11 @@ def main(argv=None, out=None, rcon_factory=None, fake_io=False):
     began = time.monotonic()
     result = {"code": EXIT_BAD_TEST, "passed": 0, "failed": 0, "cant_tell": 0, "checks": [],
               "engine": {"loaded": [], "errors": [], "boot_s": None, "exit": None}}
+    timing = {}                      # each phase's seconds: boot, stage, test, clear
+
+    def lap(name, since):
+        timing[name] = round(time.monotonic() - since, 2)
+        return time.monotonic()
     proc, t = None, None
     previous = {}
 
@@ -1145,7 +1218,7 @@ def main(argv=None, out=None, rcon_factory=None, fake_io=False):
         fresh_state(state_dir)
         sock = socket_path(state_dir)
         client = EngineClient(sock)
-        t0 = time.monotonic()
+        t0 = mark = time.monotonic()
         proc = start_engine(args, state_dir, sock, fake_io)
         ok, why = wait_ready(proc, client, args.boot)
         if not ok:
@@ -1172,7 +1245,9 @@ def main(argv=None, out=None, rcon_factory=None, fake_io=False):
         others = tuple(n.strip() for n in (args.others or "").split(",") if n.strip())
         t = T(rcon, client, os.path.join(state_dir, "engine.log"), caster=args.caster, others=others, out=out,
               see_players=not fake_io)
+        mark = lap("boot", mark)
         t._setup()
+        mark = lap("stage", mark)
         try:
             test(t)
         except TestError as exc:
@@ -1184,6 +1259,7 @@ def main(argv=None, out=None, rcon_factory=None, fake_io=False):
             result["error"] = "%s: %s" % (type(exc).__name__, one_line(exc))
             out.write(traceback.format_exc())
             say("ERROR", "the test raised %s" % result["error"])
+        mark = lap("test", mark)
         passed, failed, cant = t._report()
         result.update(passed=passed, failed=failed, cant_tell=cant,
                       checks=[{"item": i, "ok": ok, "why": why} for i, ok, why in t.checks])
@@ -1214,17 +1290,39 @@ def main(argv=None, out=None, rcon_factory=None, fake_io=False):
             timer.cancel()
         for signum, handler in previous.items():
             signal.signal(signum, signal.SIG_IGN)   # the cleanup runs to its end
+        cleared = time.monotonic()
         try:
             result["engine"]["exit"] = stop_engine(proc)
         except Exception:
             pass
         if t is not None:
             t._clear()
+        if timing:
+            lap("clear", cleared)
         result["seconds"] = round(time.monotonic() - began, 1)
+        result["timing"] = timing
+        budget = budget_s()
+        result["slow"] = result["seconds"] > budget
+        say("TIME", "%.1f s in all%s" % (result["seconds"], " (%s)" % ", ".join(
+            "%s %.1f s" % (k, v) for k, v in timing.items()) if timing else ""))
+        if result["slow"]:
+            say("WARN", "this test took %.1f s, over the %g s a live test may take (VFG_LIVETEST_BUDGET_S): keep "
+                        "it short and self-contained, one thing tested, waits no longer than they must"
+                % (result["seconds"], budget))
         out.write(json.dumps(result, default=str) + "\n")
         out.flush()
         for signum, handler in previous.items():
             signal.signal(signum, handler)
+
+
+def budget_s():
+    """A live test's wall time budget: VFG_LIVETEST_BUDGET_S, else 20 s (Jesse's rule: every live test
+    short and self-contained, its setup included)."""
+    try:
+        value = float(os.environ.get("VFG_LIVETEST_BUDGET_S") or BUDGET_S)
+    except ValueError:
+        return BUDGET_S
+    return value if value > 0 else BUDGET_S
 
 
 RCON_TIMEOUT_S = 60.0      # the stage's first forceload generates its 49 chunks: seconds, on a new world

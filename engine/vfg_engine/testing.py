@@ -29,7 +29,7 @@ import uuid as uuidlib
 from dataclasses import dataclass, field, replace
 
 from . import registries
-from .io import (AddModifier, Bossbar, Command, Damage, Effect, EntityData, EntitySnap, Fill, Forceload,
+from .io import (AddModifier, BlockData, Bossbar, Command, Damage, Effect, EntityData, EntitySnap, Fill, Forceload,
                  GiveEffect, GiveItem, Gamerule, Ignite, Look, Message, Motion, OpResult, Particle,
                  PlayerSnap, RawEvent, Remove, RemoveModifier, SetBlock, Snapshot, Sound, Spawnpoint,
                  StopSound, Summon, TakeItem, Teleport)
@@ -78,6 +78,7 @@ class FakeEntity:
     motion: tuple | None = None
     owner: str | None = None
     in_ground: bool = False
+    effects: dict = field(default_factory=dict)        # effect id -> the top Effect, as a player's
 
 
 class FakeMirror:
@@ -178,6 +179,7 @@ class FakeIo:
         self.mspt_value = 20.0
         self.world = "fake-world-1"
         self.watched_mined: list[str] = []
+        self.block_data: dict[tuple, list] = {}      # (dim, x, y, z) -> [(path, how, snbt)] in order
         self.mirror_radius = 32
         self.watch_calls = 0
 
@@ -280,9 +282,9 @@ class FakeIo:
                 return OpResult(False, "", "no modifier %s (not present)" % op.id)
             return OpResult(True, "Removed modifier %s" % op.id)
         if isinstance(op, GiveEffect):
-            p = self._holder(op.target)
-            if p is None or not hasattr(p, "effects"):
-                return OpResult(False, "", "no player %s" % op.target)
+            p = self._holder(op.target)                 # a player or a mob, as on 26.3
+            if p is None:
+                return OpResult(False, "", "no entity found")
             new = Effect(op.effect, op.amplifier, _ticks(op.seconds))
             top, took = stack_effect(p.effects.get(op.effect), new)
             if not took:
@@ -340,6 +342,14 @@ class FakeIo:
             return self._fill(op)
         if isinstance(op, SetBlock):
             return self._fill(Fill(op.dim, op.pos, op.pos, op.block, None, op.strict, op.mode))
+        if isinstance(op, BlockData):
+            if not self._chunk_loaded(op.dim, op.pos[0], op.pos[2]):
+                return OpResult(False, "", "That position is not loaded")
+            text = "data modify block %d %d %d %s %s value %s" % (*op.pos, op.path, op.how, op.snbt)
+            if len(text.encode()) > 1446:
+                return OpResult(False, "", "the command is over 1446 bytes, RCON's limit")
+            self.block_data.setdefault((op.dim, *op.pos), []).append((op.path, op.how, op.snbt))
+            return OpResult(True, "Modified block data of %d, %d, %d" % tuple(op.pos))
         if isinstance(op, Forceload):
             chunks = {(op.dim, cx, cz) for cx in range(min(op.a[0], op.b[0]) >> 4, (max(op.a[0], op.b[0]) >> 4) + 1)
                       for cz in range(min(op.a[1], op.b[1]) >> 4, (max(op.a[1], op.b[1]) >> 4) + 1)}
@@ -670,7 +680,7 @@ class FakeIo:
         """Game time passes: effects count down (every layer)."""
         ticks = int(round(seconds * 20))
         self.game_tick += ticks
-        for p in self.players.values():
+        for p in list(self.players.values()) + list(self.by_uuid.values()):
             for k in list(p.effects):
                 e = _tick_down(p.effects[k], ticks)
                 if e is None:

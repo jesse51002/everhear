@@ -190,17 +190,20 @@ class Tasks:
         elif t is None:
             self._unknown(name, "describe")
 
-    def merge_made(self, name: str, made: dict | None) -> None:
-        """What the implementer made, added to what the row has: each kind's names once, in order."""
+    def mirror_made(self, name: str, made: dict | None) -> None:
+        """What the task has made now, as its implementer's report gives it (guard.made_now: every
+        run's records, the classes still on disk, the bindings and grants the engine still has), in
+        place of what the row had: a class removed, a binding undone or a grant revoked leaves it,
+        as a deploy mirrors the folder. None (nothing known: no implementer ran) changes nothing."""
         t = self.tasks.get(name)
         if t is None:
-            return self._unknown(name, "merge what it made into")
-        if not made:
+            return self._unknown(name, "record what it made in")
+        if made is None:
             return None
-        now, more = made_of(t.get("made")), made_of(made)
-        merged = {k: now[k] + [n for n in dict.fromkeys(more[k]) if n not in now[k]] for k in MADE_KINDS}
-        if merged != t.get("made"):
-            self._change(name, made=merged)
+        now = made_of(made)
+        mirrored = {k: list(dict.fromkeys(now[k])) for k in MADE_KINDS}
+        if mirrored != t.get("made"):
+            self._change(name, made=mirrored)
         return None
 
     def set_session(self, name: str, session: str | None) -> None:

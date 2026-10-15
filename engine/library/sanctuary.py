@@ -65,6 +65,9 @@ class Sanctuary(Scenario):
         speak(self, ctx, "FIND THE SANCTUARY", voice="", color="gold", where="title")
         speak(self, ctx, "MINIGAME: Reach my golden sanctuary at X %d, Z %d within %d seconds. Follow the glow. "
                         "Those outside... burn." % (at[0], at[2], t))
+        for name in names:
+            q = ctx.world.player(name)
+            self.sound("minecraft:entity.wither.spawn", q.pos, volume=0.6, pitch=0.7, to=[name], dim=q.dim)
         self.hold("weather", "thunder")
         self.after(max(0.0, t - c.warn_at_s), "warn")
 
@@ -87,7 +90,7 @@ class Sanctuary(Scenario):
                 lightning(self, ctx, p.pos, count=1, dim=p.dim)
                 self.potion("slowness", c.slow_s, 1, who=name)
                 self.potion("weakness", c.weak_s, 0, who=name)
-                summon_near(self, ctx, p, "minecraft:zombie", 2 + a.level // 3, 4, dim=p.dim)
+                summon_near(self, ctx, p, "minecraft:zombie", 2 + a.level // 3, 4, keep=True, dim=p.dim)
                 punished.append(name)
         self.result("the sanctuary spared %s; %s burned" % (", ".join(spared) or "nobody", ", ".join(punished) or
                     "nobody"), players=a.players, spared=spared, punished=punished)

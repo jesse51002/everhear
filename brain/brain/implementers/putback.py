@@ -166,14 +166,21 @@ def word(v: Any) -> str:
 
 
 def bind_words(e: dict) -> list[str]:
-    """`vfg engine bind`'s words that bind a listed entry again: its player and phrase, then its
-    ability, or its scenario and that scenario's fixed args; --by when the listing names it."""
+    """`vfg engine bind`'s words that bind a listed entry again, as it was: its player and phrase,
+    then its ability, or its scenario, that scenario's fixed args and its cooldown; its aliases and
+    everyday aliases as listed (--aliases: no alias call); --by when the listing names it."""
     out = ["engine", "bind", str(e.get("player")), str(e.get("phrase"))]
     if e.get("ability"):
         out.append(str(e["ability"]))
     else:
         out += ["--scenario", str(e.get("scenario"))]
         out += ["%s=%s" % (k, word(v)) for k, v in sorted((e.get("args") or {}).items())]
+        cd = e.get("cooldown_s")
+        if isinstance(cd, (int, float)) and not isinstance(cd, bool):
+            out += ["--cooldown", word(cd)]
+    out += ["--aliases", word([str(x) for x in e.get("aliases") or []])]
+    if e.get("everyday_aliases"):
+        out += ["--everyday", word([str(x) for x in e["everyday_aliases"]])]
     if e.get("by"):
         out += ["--by", str(e["by"])]
     return out
@@ -236,9 +243,6 @@ async def _bindings_back(s: Snapshot, did: Done, failed: Done) -> None:
             r = await s.vfg(*bind_words(before), timeout=VFG_TIMEOUT_S)
             if r.code != 0:
                 failed.append("could not bind %s again (%s)" % (bid, why(r)))
-            elif before.get("aliases"):
-                # CONTRACT: vfg engine bind takes no aliases, so a binding bound again has none.
-                did.append("bound %s again, but for its aliases (%s)" % (bid, ", ".join(map(str, before["aliases"]))))
             else:
                 did.append("bound %s again as it was" % bid)
 

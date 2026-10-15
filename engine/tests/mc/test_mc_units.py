@@ -15,7 +15,6 @@ from vfg_engine.mc import snbt
 
 STEVE = [-2040022415, -1202044924, -1353431686, -1758138665]
 STEVE_UUID = "8667ba71-b85a-4004-af54-457a9734eed7"
-REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 
 # ---- snbt ----------------------------------------------------------------------------------------
@@ -129,6 +128,10 @@ def test_numbers_without_exponents():
     (I.Spawnpoint("Steve", "minecraft:the_nether", (0.5, 70, -0.5)),
      ["execute in minecraft:the_nether run spawnpoint Steve 0 70 -1"]),
     (I.Ignite("Steve", 3), ['function everhear:ignite {t:"Steve",f:-0.8,k:60}']),
+    (I.BlockData("minecraft:overworld", (6, 85, 6), "Items", '{Slot:0b,id:"minecraft:diamond",count:3}'),
+     ['data modify block 6 85 6 Items append value {Slot:0b,id:"minecraft:diamond",count:3}']),
+    (I.BlockData("minecraft:the_nether", (7, 85, 6), "front_text", '{messages:["Hello","","",""]}', "merge"),
+     ['execute in minecraft:the_nether run data modify block 7 85 6 front_text merge value {messages:["Hello","","",""]}']),
     (I.Ignite("0000ee00-0000-4000-8000-000000000001", 10),
      ['function everhear:ignite {t:"0000ee00-0000-4000-8000-000000000001",f:-0.333333,k:200}']),
     (I.Sound("minecraft:entity.blaze.shoot", "minecraft:overworld", (0, 86, 0), to=("Steve", "Alex")),
@@ -166,6 +169,8 @@ def test_each_op_is_its_command(op, cmds):
     (I.Bossbar("queen", color="orange"), "color is one of"),
     (I.Bossbar("queen"), "changes nothing"),
     (I.Ignite("Steve", 0), "more than 0"),
+    (I.BlockData("minecraft:overworld", (0, 0, 0), "Items", "{}", "insert"), "how is one of"),
+    (I.BlockData("minecraft:overworld", (0, 0, 0), "", "{}"), "needs an NBT path"),
 ])
 def test_ops_that_cannot_be_commands_are_refused(op, why):
     with pytest.raises(C.OpRefused, match=why):
@@ -182,14 +187,15 @@ def test_summon_nbt_keys_are_read_at_the_top_only():
     assert C.top_level_keys('"Tags": [], x: 1') == {"Tags", "x"}
 
 
-def test_the_refused_list_is_the_kits():
-    """commands.REFUSED copies scripts/_lib/commands.py's, the one list."""
-    path = os.path.join(REPO, "scripts", "_lib", "commands.py")
-    if not os.path.exists(path):
-        pytest.skip("scripts/_lib/commands.py is not beside this engine")
-    ns = {}
-    exec(compile(open(path).read(), path, "exec"), ns)
-    assert set(ns["REFUSED"]) == set(C.REFUSED)
+def test_the_refused_list():
+    """REFUSED is the one list of the owner's commands; a command is refused as its first word or
+    after any `run`, with or without a slash, in any case."""
+    assert C.REFUSED == {"stop", "op", "deop", "ban", "ban-ip", "pardon", "pardon-ip", "whitelist", "kick",
+                         "save-off"}
+    for cmd, word in (("stop", "stop"), ("/OP Steve", "op"), ("execute as @a run ban Steve", "ban"),
+                      ("execute run /whitelist add x", "whitelist"), ("say stop", None), ("kill @e", None),
+                      ("save-all", None), ("", None)):
+        assert C.refused_word(cmd) == word, cmd
 
 
 # ---- replies into OpResults ----------------------------------------------------------------------
@@ -266,6 +272,17 @@ ADD = I.AddModifier("Steve", "scale", "everhear:mark/giant", 1, "add_multiplied_
     (I.Spawnpoint("Steve", "minecraft:overworld", (0, 85, 0)),
      "Set spawn point to 0, 85, 0 [0.0, 0.0] in minecraft:overworld for Steve", True, None),
     (I.Ignite("Steve", 3), "Running function everhear:igniteFunction everhear:ignite returned 1", True, None),
+    (I.BlockData("minecraft:overworld", (6, 85, 6), "Items", "{}"), "Modified block data of 6, 85, 6", True, None),
+    (I.BlockData("minecraft:overworld", (6, 85, 6), "Items[0]", "{count:7}", "merge"),
+     "Nothing changed. The specified properties already have these values", True, None),
+    (I.BlockData("minecraft:overworld", (9, 85, 6), "Items", "{}"), "The target block is not a block entity", False,
+     "no block entity there (a chest, a sign, a barrel… holds data)"),
+    (I.BlockData("minecraft:overworld", (6, 85, 6), "Items[0].count", "1"), "Expected a list: got 3", False,
+     "the path holds no list (append and prepend need one)"),
+    (I.BlockData("minecraft:overworld", (6, 85, 6), "Items", "{a:1}", "merge"), "Expected an object: got []", False,
+     "the path holds no compound (merge needs one)"),
+    (I.BlockData("minecraft:overworld", (6, 85, 6), "Items[", "1"), "Expected integer...5 6 Items[ append value 1<--[HERE]",
+     False, "Minecraft did not understand the command: Expected integer"),
     (I.Ignite("Steve", 3), "Running function everhear:igniteFunction everhear:ignite returned 0", False,
      "no such target, or no air at a player's feet or head to light them from"),
     (I.Sound("x", "minecraft:overworld", (0, 0, 0), to=("Steve", "Nobody")),

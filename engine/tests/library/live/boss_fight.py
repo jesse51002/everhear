@@ -1,6 +1,12 @@
-"""boss_fight, live: Horde King rises near Steve, with a red bar; killed, it reports dead and a
+"""boss_fight, live: Horde King rises near (never on) Steve, with a red bar; killed, it ends and a
 reward diamond lands where it fell. Then the same for a two-headed stand-in of the dragon fight
-(dragon_head, bodies=2, so the stage holds both heads), reported dead once both are gone."""
+(dragon_head, bodies=2, so the stage holds both heads), ending once both are gone.
+
+(Its "is dead" result, after the early "rises" one, is the class's own: `start` already reports
+once (`self.result("... rises ...")`), and `op_start`'s `wait_s` answers as soon as any result is
+posted (vfg_engine/engine.py, `_waits`), so `t.said()` here can only ever show that first result,
+never the later one `_victory` posts. horde's live test hits the same wall and does not try either
+-- it only checks `t.running` once the mobs are dead.)"""
 
 from vfg_engine.livetest import verdict
 
@@ -14,7 +20,6 @@ def test(t):
     t.wait(2)
     running = t.running("boss_fight")
     t.check("it ends once it is dead", verdict(not running[0], running[1]))
-    t.check("it says Horde King is dead", t.said("Horde King, who rose"))
     t.check("a diamond is left where it fell", t.near("item", 0, 0, 0, radius=12, count=1))
 
     t.start("boss_fight", wait=5, boss="dragon_head", bodies=2, height=10, near="Steve",

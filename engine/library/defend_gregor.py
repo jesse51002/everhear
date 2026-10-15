@@ -72,6 +72,9 @@ class DefendGregor(Scenario):
         speak(self, ctx, "DEFEND GREGOR", voice="", color="green", where="title")
         speak(self, ctx, "MINIGAME: Old Gregor shelters in that hut. My horde wants him dead. Keep him alive "
                         "for %d seconds. Patch the doors fast!" % int(t))
+        for name in names:
+            q = ctx.world.player(name)
+            self.sound("minecraft:entity.wither.spawn", q.pos, volume=0.6, pitch=0.7, to=[name], dim=q.dim)
         self.after(c.prep_s, "begin_horde")
 
     def build_hut(self, at, dim):
@@ -125,5 +128,7 @@ class DefendGregor(Scenario):
 
     def stop(self, ctx, reason):
         if self.state.at:
-            self.command("worldborder set 60000000")
+            # 59999968, not 60000000: Minecraft 26.3 refuses a border past 5.9999968E7 and silently
+            # keeps the old (still narrowed) one when asked for more, leaving it never truly widened.
+            self.command("worldborder set 59999968")
             self.command("worldborder center 0 0")

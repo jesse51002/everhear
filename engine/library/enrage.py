@@ -43,6 +43,14 @@ class Enrage(Ability):
             return
         self.state.phase += 1
         amp = self.state.phase - 1
+        # NEEDS: keep_potion never reaches an actor body live: granted to a player it lands fine
+        # (proven: the same two calls, same ability, same timing, give Steve speed and strength
+        # that `t.effect` sees), but granted to an Actor (this ability's one real use: a boss) the
+        # GiveEffect it queues never shows as an active effect on the body, in Minecraft or in the
+        # engine's own log (no "did not take" line either) -- most likely marks.py's step(), which
+        # only re-sends a kept potion `if rt.online(rec.user)`, treating an actor's uuid as if it
+        # answers False where a player's name answers True. Unit-tested fine on FakeIo; this only
+        # shows live. dragon_head's and this class's own live tests both hit it.
         self.keep_potion("speed", amp, seconds=5)
         self.keep_potion("strength", amp, seconds=5)
         self.sound("minecraft:entity.ravager.roar", volume=4, pitch=0.7)

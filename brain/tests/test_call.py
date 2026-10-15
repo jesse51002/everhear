@@ -174,10 +174,10 @@ def test_the_brief_is_rendered_from_its_parts_under_headings():
 
 
 def test_args_keys_are_gathered_into_the_args_a_start_or_a_bind_sets():
-    a = ActBase.model_validate(act("engine_bind", "Alex says meteor to drop one where Alex stands", {
-        "player": "Alex", "phrase": "meteor", "scenario": "meteor", "args.at": "caster", "args.count": 3}))
-    assert a.values() == {"player": "Alex", "phrase": "meteor", "scenario": "meteor",
-                          "args": {"at": "caster", "count": 3}}
+    a = ActBase.model_validate(act("engine_bind", "Alex says castle here to build one where Alex stands", {
+        "player": "Alex", "phrase": "castle here", "scenario": "castle", "args.at": "caster", "args.size": 31}))
+    assert a.values() == {"player": "Alex", "phrase": "castle here", "scenario": "castle",
+                          "args": {"at": "caster", "size": 31}}
 
 
 def test_args_given_as_json_text_are_read_as_the_object_never_sent_back():

@@ -82,6 +82,7 @@ class DemonLord(Scenario):
         arena_started: bool = False
         last_count: int = -1
         last_change: float = 0.0
+        spawn_due_at: float = 0.0    # a wave or boss round: not judged "cleared" until past this
         round_deaths: int = 0
         recalled: bool = False
 
@@ -148,7 +149,9 @@ class DemonLord(Scenario):
             if p.on_ground:
                 self.spawnpoint(n, p.pos)          # respawn near the event (the old RESPAWN_HERE)
             self.supply(ctx, n, int(self.state.level))
-        speak(self, ctx, "A supply chest has dropped beside you. Arm up - %d seconds." % int(self.config.arm_s))
+        # a plain tellraw in the old script, not its bracketed "[Demon Lord]" voice: voice="" suppresses it
+        speak(self, ctx, "A supply chest has dropped beside you. Arm up - %d seconds." % int(self.config.arm_s),
+             voice="", color="gold")
         self.state.phase = "arming"
         self.after(self.config.arm_s, "pick_event")
 
@@ -234,9 +237,11 @@ class DemonLord(Scenario):
 
     def run_wave(self, ctx, kind):
         names = [n for n in players(ctx, "@a") if (p := ctx.world.player(n)) is not None and p.alive]
-        speak(self, ctx, WAVE_LINES[kind] + " Round %d." % self.state.round, voice="", color="dark_red",
-             where="title")
+        speak(self, ctx, "ROUND %d" % self.state.round, voice="", color="dark_red", where="title")
         speak(self, ctx, WAVE_SUBS[kind], voice="", color="gray", where="subtitle")
+        speak(self, ctx, WAVE_LINES[kind] + " Round %d." % self.state.round)
+        self.voice_sound(ctx, names)
+        self.state.spawn_due_at = ctx.now + 5 + len(names) * self.config.wave_gap_s + 1
         self.after(5, "wave_spawn", kind, names)
 
     def wave_spawn(self, ctx, kind, names):
@@ -298,16 +303,16 @@ class DemonLord(Scenario):
         boss_id = self.config.boss_cycle[idx]
         self.state.boss_id, self.state.boss_name = boss_id, boss_id.replace("_", " ").title()
         self.state.is_boss = True
-        hp = self.config.boss_hp_base + self.config.boss_hp_per_level_player * self.state.level * max(1, len(names))
+        level = max(1, int(self.state.level))
+        hp = self.config.boss_hp_base + self.config.boss_hp_per_level_player * level * max(1, len(names))
         speak(self, ctx, "Prepare yourselves. Supplies have fallen... you will need them. %s awakens in 15 "
                         "seconds." % self.state.boss_name)
         speak(self, ctx, self.state.boss_name.upper(), voice="", color="dark_red", where="title")
         speak(self, ctx, "awakens in 15 seconds", voice="", color="gray", where="subtitle")
-        for name in names:
-            p = ctx.world.player(name)
-            self.sound("minecraft:entity.ender_dragon.growl", p.pos, volume=0.6, pitch=0.7, to=[name], dim=p.dim)
+        self.voice_sound(ctx, names, "minecraft:entity.ender_dragon.growl")
         for name in names:
             self.supply(ctx, name, int(self.state.level))
+        self.state.spawn_due_at = ctx.now + 15 + 1
         self.after(15, "boss_rise", hp, names)
 
     def boss_rise(self, ctx, hp, names):
@@ -340,19 +345,20 @@ class DemonLord(Scenario):
             # NEEDS: no way to remove just this bar mid-life (only "when this ends", WRITING.md);
             # between fights it is left showing the last fight's own end (0 health, 0 alive).
             boss_bar(self, ctx, [self.state.boss_uuid], self.state.boss_name)
+        if ctx.now < self.state.spawn_due_at:
+            return            # still arming or rising: too early to judge it cleared or stuck
         n = len(self.spawned)
-        if n > 0:
-            if self.state.last_count < 0 or n < self.state.last_count:
-                self.state.last_count, self.state.last_change = n, ctx.now
-            elif ctx.now - self.state.last_change > self.config.recall_after_s:
-                self.recall(ctx)
-        elif self.state.last_count > 0:
-            self.round_cleared(ctx)                            # it had mobs; now it has none: cleared
+        if n == 0:
+            self.round_cleared(ctx)          # every kill landed before this tick even looked: still cleared
+            return
+        if self.state.last_count < 0 or n < self.state.last_count:
+            self.state.last_count, self.state.last_change = n, ctx.now
         elif ctx.now - self.state.last_change > self.config.recall_after_s:
-            self.recall(ctx)                                    # never had any (no room, or all dead already)
+            self.recall(ctx)
 
     def recall(self, ctx):
         speak(self, ctx, "Cowards hide and my servants wander lost. I recall them... for now.")
+        self.voice_sound(ctx, players(ctx, "@a"))
         for uuid in list(self.spawned):
             self.remove(uuid)
         self.state.recalled = True
@@ -363,6 +369,7 @@ class DemonLord(Scenario):
             return      # a minigame's shadow timer firing after an early finish or recall already moved on
         if self.state.is_boss and not self.state.recalled:
             speak(self, ctx, "%s has fallen... impressive, mortals. Enjoy your break." % self.state.boss_name)
+            self.voice_sound(ctx, players(ctx, "@a"))
         self.state.recalled = False
         self.state.phase = "scoring"
         self.score_round(ctx)
@@ -377,6 +384,7 @@ class DemonLord(Scenario):
         if ratio >= 1.5:
             self.state.level = max(1.0, self.state.level - c.level_down_hard)
             speak(self, ctx, "%d deaths... you are too fragile. I will hold back. A little." % d)
+            self.voice_sound(ctx, names, "minecraft:entity.wither.ambient")
             for name in names:
                 if (p := ctx.world.player(name)) is not None and p.alive:
                     self.supply(ctx, name, int(self.state.level))
@@ -385,8 +393,20 @@ class DemonLord(Scenario):
         elif d == 0:
             self.state.level += c.level_up_clean
             speak(self, ctx, "Not a single death? Then I stop holding back.")
+            self.voice_sound(ctx, names, "minecraft:entity.ender_dragon.growl")
         else:
             self.state.level += c.level_up
         self.state.round += 1
         self.state.phase = "break"
         self.after(c.break_s, "await_players")
+
+    # ---- the voice's own sound, heard by each player at their own position ---------------------
+
+    def voice_sound(self, ctx, names, sound="minecraft:entity.wither.spawn"):
+        """The old local `speak()`'s own default sound, played with every announcement unless it
+        named a different one: `execute as @a at @s run playsound <sound> hostile @s ~ ~ ~ 0.6
+        0.7`, each player hearing it at their own position."""
+        for name in names:
+            p = ctx.world.player(name)
+            if p is not None and p.alive:
+                self.sound(sound, p.pos, volume=0.6, pitch=0.7, to=[name], dim=p.dim)

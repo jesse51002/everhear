@@ -10,7 +10,9 @@ of its own, its replies shaped as the engine's (engine/vfg_engine/ops.py). No py
     engine.stop()
 
 What it holds: a registry (`classes`, each {id, kind, file, summary} and a scenario's or a mark's
-`args`; a content class's file is in <vfg>/made/main/content/), grants, gives, scenarios started
+`args`; a content class's file is in <vfg>/made/main/content/, a library class's in
+<vfg>/engine/library/ until a made file of the same name, reloaded, shadows it, and again once that
+file is gone and a full reload runs), grants, gives, scenarios started
 (`command` a one-shot that ends at once with its result, the rest running until stopped),
 bindings to an ability or to a scenario with its args (the export written to
 <vfg>/engine/incantations.json on every change, as the engine writes it), and the places of one
@@ -32,6 +34,7 @@ class FakeEngine(object):
         self.vfg = vfg_dir
         self.path = os.path.join(vfg_dir, "engine", "engine.sock")
         self.content = os.path.join(vfg_dir, "made", server, "content")
+        self.library = os.path.join(vfg_dir, "engine", "library")     # shadowed by a made file of the same name
         self.export = os.path.join(vfg_dir, "engine", "incantations.json")
         self.rewrite = rewrite
         self.requests = []
@@ -207,9 +210,21 @@ class FakeEngine(object):
     def op_start(self, scenario, args=None, wait_s=0):
         self.find(scenario, "scenario")
         inst = "scenario:%s#%d" % (scenario, len(self.running) + 1)
-        if scenario == "command":          # a one-shot: it ends at once, with its result
-            said = ["ran %s" % c for c in (args or {}).get("commands") or []]
-            result = {"summary": "; ".join(said) or "ran nothing", "facts": {"replies": said}}
+        if scenario == "command":          # a one-shot, as the library's: it ends at once, with its result
+            replies, ran, failed = [], [], None
+            for c in (args or {}).get("commands") or []:
+                if c.split()[0] in ("fill", "setblock"):          # refused by the scenario, never sent
+                    failed = c
+                    break
+                replies.append("Unknown or incomplete command, see below for error" if c.startswith("bogus")
+                               else "ran %s" % c)
+                if c.startswith("bogus"):
+                    failed = c
+                    break
+                ran.append(c)
+            said = "; ".join(replies) or ("refused: %s is a scenario's to do, not a command: %s"
+                                          % (failed.split()[0], failed) if failed else "no commands given")
+            result = {"summary": said, "facts": {"replies": replies, "failed": failed, "ran": ran, "partial": False}}
             return {"instance": inst, "ended": "ended", "result": result} if wait_s else {"instance": inst}
         self.running.append({"instance": inst, "kind": "scenario", "id": scenario, "user": None,
                              "started": 1791830460.0, "ends": 1791830580.0, "args": args or {}})
@@ -314,7 +329,7 @@ class FakeEngine(object):
     def op_config_get(self, **args):
         wanted = args["class"]
         c = self.find(wanted)
-        if not c["file"].startswith(self.content):   # the engine's own examples: on the box, not made here
+        if not c["file"].startswith((self.content, self.library)):   # the engine's own examples: not here
             return {"file": c["file"], "start": 4, "end": 6, "source": "    class Config(MarkConfig):\n        ...\n"}
         if not os.path.isfile(c["file"]):
             raise Refused("%s's file %s is not there" % (wanted, c["file"]))
@@ -325,8 +340,20 @@ class FakeEngine(object):
                 "source": "".join(source.splitlines(True)[start - 1:end])}
 
     def op_reload(self, paths=None):
-        if paths is None:
+        full = paths is None
+        if full:
             paths = sorted(os.path.join(self.content, n) for n in os.listdir(self.content) if n.endswith(".py"))
+            # a made file gone: the library's version of its class runs again
+            for c in self.classes:
+                lib = os.path.join(self.library, os.path.basename(c["file"]))
+                if c["file"].startswith(self.content) and not os.path.exists(c["file"]) and os.path.exists(lib):
+                    c["file"] = lib
+        # a made file of a library class's name shadows it
+        for p in paths:
+            for c in self.classes:
+                if c["file"] == os.path.join(self.library, os.path.basename(p)) and os.path.exists(p) \
+                        and "# REFUSE " not in open(p).read():
+                    c["file"] = p
         loaded, errors = [], []
         for p in paths:
             try:

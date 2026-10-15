@@ -239,7 +239,6 @@ def step_type(catalog: Catalog, *, last: bool = False, report: bool = False,
                 raise ValueError(f"the {self.to} action has no instruction")
             if PLACEHOLDER.match(said):
                 raise ValueError(f"the instruction {self.instruction!r} does nothing: leave the action out")
-            # TODO(library): the teleport scenario's id, once the library has it.
             if self.to == "engine_start" and self.values(cls).get("scenario") == "teleport" and NO_MOVE.search(said):
                 raise ValueError(f"{self.instruction!r} moves nobody: leave it out")
             keys = [v.key.strip() for v in self.action]

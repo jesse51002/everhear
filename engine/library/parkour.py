@@ -86,6 +86,8 @@ class Parkour(Scenario):
         self.hold("fall_damage", False)
         self.hold("pvp", False)
         for name in names:
+            q = ctx.world.player(name)
+            self.sound("minecraft:entity.wither.spawn", q.pos, volume=0.6, pitch=0.7, to=[name], dim=q.dim)
             self.teleport(name, (x, y + 1, z), dim=dim, yaw=-90.0, pitch=0.0)
 
     def tick(self, ctx):

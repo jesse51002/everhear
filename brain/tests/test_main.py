@@ -121,11 +121,10 @@ async def test_with_no_implementers_a_new_task_reports_its_failure_with_five_arg
     none = NoImplementers(on_report, "No module named claude_agent_sdk")
     await none.start("galick_gun_styrk", "a Galick Gun")
     await none.follow_up("castle_steve", "a moat", session="sess-1", brief="a castle")
-    empty = {"content": [], "bindings": [], "grants": []}
     assert got == [("galick_gun_styrk", "failed", "Failed: no implementers here (No module named claude_agent_sdk).",
-                    "", empty),
+                    "", None),        # nothing known of what it made: the row keeps its own
                    ("castle_steve", "failed", "Failed: no implementers here (No module named claude_agent_sdk).",
-                    "", empty)]
+                    "", None)]
 
 
 def test_the_loops_settings_and_the_removed_ones_ignored(tmp_path):

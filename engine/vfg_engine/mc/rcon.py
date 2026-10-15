@@ -10,7 +10,7 @@ What it does that a plain client does not, each measured on 26.3 (engine/MINECRA
 
 - **The shared lock.** Vanilla answers every RCON connection from one shared buffer, so every client
   on the machine holds the flock /tmp/vfg-rcon-<port>.lock (VFG_RCON_LOCK overrides it) from a send
-  to the end of its reply, as scripts/_lib/mc.py does; the same re-entrancy marker
+  to the end of its reply; a re-entrancy marker shared by every RCON client loaded in one process
   (sys.modules["_vfg_rcon_held"]) lets a thread that already holds it take it again. A thread
   lock in front of it shares the one connection between the main thread and the mirror's.
 - **Never pipelined.** Vanilla reads each packet with a fresh 1460-byte read and drops the
@@ -72,8 +72,8 @@ class RconError(OSError):
 
 
 def _held_locks():
-    """The process's RCON locks, shared with every RCON client loaded in it (scripts/_lib/mc.py,
-    toolkit/remote/common.py, integration/realmc): {path: [thread ident, depth, fd]}."""
+    """The process's RCON locks, shared with every RCON client loaded in it (toolkit/remote/common.py,
+    integration/realmc): {path: [thread ident, depth, fd]}."""
     h = sys.modules.get("_vfg_rcon_held")
     if h is None:
         h = type(sys)("_vfg_rcon_held")
@@ -84,7 +84,7 @@ def _held_locks():
 
 def _open_lock(path: str) -> int:
     """A descriptor flock can hold on `path`, made if missing: read-only and without O_CREAT when it
-    exists (a sticky /tmp refuses O_CREAT on another user's file), as scripts/_lib/mc.py does."""
+    exists (a sticky /tmp refuses O_CREAT on another user's file)."""
     for _ in range(3):
         try:
             return os.open(path, os.O_RDONLY)

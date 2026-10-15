@@ -65,8 +65,8 @@ ITEMS = ("data get entity {p} Inventory",
          "execute if data entity {p} equipment run data get entity {p} equipment",
          "data get entity {p} SelectedItemSlot")
 
-# And its state. Player data on 26.3 (scripts/_test/mc_26_3.py has the replies, and says which
-# are recorded): Health a float (20.0f), foodLevel, XpLevel and playerGameType ints,
+# And its state. Player data on 26.3 (toolkit/tests/test_vfg.py's MC_26_3 has the replies, as
+# recorded): Health a float (20.0f), foodLevel, XpLevel and playerGameType ints,
 # active_effects a list of {id, amplifier (a byte, left out at 0), duration (ticks, -1 infinite),
 # ...}, absent with no effect on, so Minecraft answers "Found no elements matching
 # active_effects". Armor is no NBT: the armor attribute is what the armor worn adds up to.

@@ -172,7 +172,8 @@ def arg_line(x: dict) -> str:
     lo, hi = b.get("ge", b.get("gt")), b.get("le", b.get("lt"))
     if lo is not None or hi is not None:
         kind += f" {'' if lo is None else value(lo)}..{'' if hi is None else value(hi)}"
-    default = f", default {value(x['default'])}" if "default" in x and x["default"] is not None else ""
+    shown = '""' if x.get("default") == "" else value(x.get("default"))   # empty text: said, not left blank
+    default = f", default {shown}" if "default" in x and x["default"] is not None else ""
     said = short(x.get("description"), DESCRIPTION_MAX)
     return f"    args.{x['name']}: {kind}{default}" + (f": {said}" if said else "")
 

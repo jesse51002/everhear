@@ -135,7 +135,7 @@ def act(to: str, instruction: str, action: dict | None = None) -> dict:
 
 
 def cmd(*commands: str) -> dict:
-    """engine_start's values for the library's command scenario (TODO(library): its args' names)."""
+    """engine_start's values for the library's command scenario (engine/library/command.py)."""
     return {"scenario": "command", "args.commands": list(commands)}
 
 
@@ -189,10 +189,12 @@ def arg(name: str, type_: str, default: Any = None, description: str = "", **bou
 
 
 CLASSES = [
-    klass("command", "scenario", "Runs Minecraft commands, at once.",
-          [arg("commands", "list[Command]", [], "the commands, each one line")]),
-    klass("teleport", "scenario", "Takes players to a place.",
-          [arg("players", "Players", "@a", "who goes"), arg("at", "Place", None, "where to")]),
+    klass("command", "scenario", "Runs up to five vanilla commands in order; Minecraft's own replies are the result.",
+          [arg("commands", "list of command", [], "the server commands to run, in order; at most five")]),
+    klass("teleport", "scenario", "Moves a player, or everyone, to a saved place, coordinates or far away.",
+          [arg("players", "players", "@a", "who moves"), arg("to", "one of 'place', 'coords', 'far'", "place",
+                                                             "the kind of destination"),
+           arg("target", "text", "", "a saved place's name, or 'x y z'")]),
     klass("horde", "scenario", "A horde of mobs round each player until it is stopped.",
           [arg("count", "int", 10, "how many", ge=1, le=100)]),
     klass("fireball", "ability", "Burns for burn_s seconds, then explodes in a radius."),
@@ -257,6 +259,7 @@ class FakeImplementers:
     def __init__(self):
         self.started: list[tuple[str, str]] = []
         self.followed: list[tuple[str, str, str | None, str]] = []
+        self.made_given: list[tuple[str, dict | None]] = []      # what each follow-up was told the task made
         self.busy: list[str] = []
         self.closed = False
         self.on_start = None  # called with the name at each start, to look at the world then
@@ -267,8 +270,10 @@ class FakeImplementers:
         self.started.append((name, brief))
         self.busy.append(name)
 
-    async def follow_up(self, name: str, text: str, session: str | None = None, brief: str = "") -> None:
+    async def follow_up(self, name: str, text: str, session: str | None = None, brief: str = "",
+                        made: dict | None = None) -> None:
         self.followed.append((name, text, session, brief))
+        self.made_given.append((name, made))
 
     def running(self) -> list[str]:
         return list(self.busy)

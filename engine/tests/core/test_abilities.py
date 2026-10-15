@@ -239,3 +239,44 @@ class Calm(Ability):
     r.tick()
     assert ("minecraft:armor", "everhear:ability/calm") in r.mods("Steve")
     assert r.op("bind", player="Steve", phrase="calm", ability="calm")["ok"] is False
+
+
+SUMMON = '''
+class Summon(Ability):
+    class Config(AbilityConfig):
+        summary = "Summons two zombies, one kept."
+        scale_per_point = 0
+        charge_s = 0
+        cooldown_s = 0
+        duration_s = UNTIL_STOPPED
+        damage = 0
+
+    def on_cast(self, ctx, ev):
+        self.spawn("minecraft:zombie", (0, 64, 3))
+        self.spawn("minecraft:zombie", (1, 64, 3), keep=True)
+'''
+
+
+@pytest.mark.parametrize("how", ["died", "left"])
+def test_what_a_cast_spawned_goes_with_its_run_when_its_caster_dies_or_leaves(rig, how):
+    """The rule the library port met live (wither_wand's withers killing the Carpet Steve, whose
+    death disconnects him): a cast's run ends when its caster dies or leaves, and what it spawned
+    goes with it, except what it spawned with keep=True."""
+    r = rig({"summon": SUMMON})
+    r.start()
+    r.io.join("Steve")
+    r.tick()
+    r.op("grant", who="Steve", ability="summon")
+    r.op("bind", player="Steve", phrase="come", ability="summon")
+    r.op("cast", player="Steve", phrase="come")
+    r.tick()
+    assert len(r.io.by_uuid) == 2
+    if how == "died":
+        r.io.kill("Steve")
+    else:
+        r.io.leave("Steve")
+    r.tick(2)
+    (kept,) = r.io.by_uuid.values()
+    assert "everhear.kept" in kept.tags
+    r.run_for(6)                                   # and the sweep leaves the kept one
+    assert len(r.io.by_uuid) == 1

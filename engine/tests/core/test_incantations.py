@@ -1,19 +1,16 @@
 """Incantations: per-player bindings phrase -> ability, in the engine's state, exported atomically
 with a version bump; the `cast` op's answers (the game engine spec, "Incantations")."""
 
-import importlib.util
 import json
-import os
-
-import pytest
 
 from vfg_engine import incantations
 
-REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-KIT = os.path.join(REPO, "scripts", "_lib", "incantations.py")
-
-TEXTS = ["Hot fireball.", "  Fire-Ball!! ", "don't  cast", "Café au lait", "ice_beam", "ÉLAN vital",
-         "‘quoted’ word", "fire\tball\nnow", "", None, 42, "Ｆｕｌｌ ｗｉｄｔｈ", "ゆき", "it's... OK?"]
+# What a heard phrase normalises to (the answers the old kit gave, kept now that the engine's is the
+# only definition): lowercase, accents and apostrophes dropped, other marks a space.
+NORMALISED = [("Hot fireball.", "hot fireball"), ("  Fire-Ball!! ", "fire ball"), ("don't  cast", "dont cast"),
+              ("Café au lait", "cafe au lait"), ("ice_beam", "ice beam"), ("ÉLAN vital", "elan vital"),
+              ("‘quoted’ word", "quoted word"), ("fire\tball\nnow", "fire ball now"), ("", ""), (None, ""),
+              (42, "42"), ("Ｆｕｌｌ ｗｉｄｔｈ", "full width"), ("ゆき", "ゆき"), ("it's... OK?", "its ok")]
 
 ZAP = '''
 class Zap(Ability):
@@ -30,16 +27,12 @@ class Zap(Ability):
 '''
 
 
-@pytest.mark.skipif(not os.path.exists(KIT), reason="no scripts/_lib/incantations.py here")
-def test_normalize_is_the_kits():
-    spec = importlib.util.spec_from_file_location("kit_incantations", KIT)
-    kit = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(kit)
-    for text in TEXTS:
-        assert incantations.normalize(text) == kit.normalize(text), repr(text)
-    assert incantations.MAX_PHRASE == kit.MAX_PHRASE
-    for player, phrase in [("Steve", "Fire Ball!"), ("ALEX", "ice-beam")]:
-        assert incantations.entry_id(player, phrase) == kit.entry_id(player, phrase)
+def test_normalize_and_ids():
+    for text, want in NORMALISED:
+        assert incantations.normalize(text) == want, repr(text)
+    assert incantations.MAX_PHRASE == 80
+    assert incantations.entry_id("Steve", "Fire Ball!") == "steve.fire_ball"
+    assert incantations.entry_id("ALEX", "ice-beam") == "alex.ice_beam"
 
 
 def _zapper(rig):

@@ -11,9 +11,14 @@ class KitChest(Scenario):
 
     class Args(Args):
         at: Place = Field(None, description="the chest; the sign one block east")
+        big: bool = Field(False, description="six long relics and arrows instead")
 
     def start(self, ctx):
         x, y, z = self.args.at.pos
+        if self.args.big:
+            chest(self, ctx, (x, y, z), ["everhear:kit_relic"] * 6 + ["arrow 64"], facing="south")
+            self.after(1, "finish")
+            return
         chest(self, ctx, (x, y, z), ["diamond 4", "arrow 64", "everhear:kit_gun"], facing="south")
         sign(self, ctx, (x + 1, y, z), ["Kit Test", "Sniper Nest", "§cRed"], facing="south", wall=False)
         self.after(1, "finish")

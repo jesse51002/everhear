@@ -8,8 +8,10 @@ an ability binding's is the ability's. The engine owns the store, kept in its sa
 export the bridge reads (VFG_ENGINE_EXPORT, `{"version": n, "incantations": [...]}`) atomically
 whenever the list changes, the version going up by one each time.
 
-Phrases and aliases are normalised exactly as the kit's scripts/_lib/incantations.py does;
-`normalize` is a copy, held to the kit's answers by tests/core/test_incantations.py.
+Phrases and aliases are normalised by `normalize`, the one definition: lowercase, accents and
+apostrophes dropped, every other mark a space, whitespace collapsed (its answers are pinned by
+tests/core/test_incantations.py; the bridge and Jev read the export, never re-normalise their own
+way).
 """
 
 from __future__ import annotations

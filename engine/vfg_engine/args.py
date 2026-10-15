@@ -342,32 +342,41 @@ def players(ctx, arg: str = "@a") -> list[str]:
 
 # ---- the schema the brain and `vfg engine` read --------------------------------------------
 
-def _kind(info) -> str:
-    for m in info.metadata:
+def _kind_of_type(ann, metadata=()) -> str:
+    """The word for a type: an arg type's own (Kind), "one of ...", a list of something, or plain."""
+    import typing
+    for m in metadata:
         if isinstance(m, Kind):
             return m.name
-    return _type_kind(info.annotation)
-
-
-def _type_kind(ann) -> str:
-    """A type's kind in words. A list names what it holds, `list of command`, so a reader of the
-    schema (the brain's check of a scenario's commands) sees a list of commands for one."""
-    for m in getattr(ann, "__metadata__", ()):            # Annotated[..., Kind("command"), ...]
-        if isinstance(m, Kind):
-            return m.name
-    origin = getattr(ann, "__origin__", None)
-    if origin is not None and str(origin).endswith("Literal"):
-        return "one of " + ", ".join(repr(a) for a in ann.__args__)
-    if origin in (list, tuple, set, frozenset) and getattr(ann, "__args__", None):
-        return "list of %s" % _type_kind(ann.__args__[0])
+    origin = typing.get_origin(ann)
+    if origin is typing.Annotated:
+        base, *meta = typing.get_args(ann)
+        return _kind_of_type(base, meta)
+    if origin is typing.Literal:
+        return "one of " + ", ".join(repr(a) for a in typing.get_args(ann))
+    if origin in (list, tuple, set, frozenset):
+        inner = [a for a in typing.get_args(ann) if a is not Ellipsis]
+        return "list of " + (_kind_of_type(inner[0]) if inner else "anything")
+    if origin is dict:
+        k, v = (typing.get_args(ann) + (str, str))[:2]
+        return "dict of %s to %s" % (_kind_of_type(k), _kind_of_type(v))
+    if origin in (typing.Union, getattr(__import__("types"), "UnionType", None)):
+        parts = [a for a in typing.get_args(ann) if a is not type(None)]
+        word = " or ".join(_kind_of_type(a) for a in parts)
+        return word + (" or none" if len(parts) < len(typing.get_args(ann)) else "")
     names = {bool: "true or false", int: "whole number", float: "number", str: "text"}
     return names.get(ann, getattr(ann, "__name__", str(ann)))
 
 
+def _kind(info) -> str:
+    return _kind_of_type(info.annotation, info.metadata)
+
+
 def _bounds(info) -> dict:
+    """ge/gt/le/lt for a number; min_length/max_length for text or a list; pattern for text."""
     out = {}
     for m in info.metadata:
-        for key in ("ge", "gt", "le", "lt"):
+        for key in ("ge", "gt", "le", "lt", "min_length", "max_length", "pattern"):
             if getattr(m, key, None) is not None:
                 out[key] = getattr(m, key)
     return out

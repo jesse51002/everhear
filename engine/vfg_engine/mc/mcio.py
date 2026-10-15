@@ -488,7 +488,7 @@ class McIo:
         for c in cmds:
             too_long = commands.check_length(c)
             if too_long:
-                return OpResult(False, "", "refused: " + too_long)
+                return OpResult(False, "", too_long)        # in FakeIo's words
         replies = []
         for c in cmds:
             try:

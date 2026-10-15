@@ -24,10 +24,24 @@ from harness import (ISO_RE, PY, REPO, TOOLKIT, VFG, Box, BoxCase,  # noqa: E402
 from fake_engine import FakeEngine  # noqa: E402
 import standins  # noqa: E402
 
-# The old kit, while scripts/ is there: 26.3's recorded replies (_test), and mc.py, a third RCON
-# client for the lock tests (the engine's own client, engine/vfg_engine/mc/rcon.py, once it goes).
-SCRIPTS_TEST = os.path.join(REPO, "scripts", "_test")
-REAL_LIB = os.path.join(REPO, "scripts", "_lib")
+# The engine's RCON client, a third client for the lock tests beside vfg's and realmc's.
+ENGINE_RCON = os.path.join(REPO, "engine", "vfg_engine", "mc", "rcon.py")
+
+# Minecraft 26.3's replies a player's state is read from, as the server printed them (recorded on a
+# realmc 26.3 server for the old kit's tests).
+MC_26_3 = type(sys)("mc_26_3")
+MC_26_3.ENTITY_DATA = "%s has the following entity data: %s"
+MC_26_3.NO_ELEMENTS = "Found no elements matching %s"
+MC_26_3.NO_ENTITY = "No entity was found"
+MC_26_3.HEALTH_SNBT = "14.5f"
+MC_26_3.FOOD_SNBT = "18"
+MC_26_3.XP_LEVEL_SNBT = "5"
+MC_26_3.GAME_TYPE_SNBT = "0"            # 0 survival, 1 creative, 2 adventure, 3 spectator
+MC_26_3.EFFECTS_SNBT = ('[{duration: 600, show_icon: 1b, id: "minecraft:speed", amplifier: 1b, show_particles: 1b, '
+                        'hidden_effect: {duration: 9600, show_icon: 1b, id: "minecraft:speed", show_particles: 1b}}, '
+                        '{duration: -1, show_icon: 1b, id: "minecraft:night_vision", show_particles: 1b}]')
+MC_26_3.ATTRIBUTE_GOT = "The value of attribute %s for entity %s is %s"
+MC_26_3.ATTRIBUTE_NAMES = {"armor": "Armor", "max_health": "Max Health", "scale": "Scale"}
 
 RETIRED = "T%d" % 7   # a task as it was named before named tasks (Prototype_Named_Tasks): refused now
 
@@ -200,10 +214,10 @@ class TestOneRefusedList(unittest.TestCase):
             self.skipTest("no brain/brain/implementers/guard.py")
         with open(path, encoding="utf-8") as f:
             tree = ast.parse(f.read())
-        keep = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name == "refused")
+        keep = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name in ("refused", "frozenset_in"))
                 or (isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "COMMANDS_PY")
                 or (isinstance(n, ast.AnnAssign) and getattr(n.target, "id", "") == "_COMMANDS")]
-        self.assertEqual(len(keep), 3)
+        self.assertEqual(len(keep), 4)
         root = load_module("implementers_config", os.path.join(folder, "config.py")).ROOT
         self.assertEqual(os.path.realpath(root), os.path.realpath(REPO))
         ns = {"os": os, "ast": ast, "__file__": path, "ROOT": root}
@@ -243,10 +257,15 @@ class TestCmd(BoxCase):
     def test_the_command_as_written_and_its_reply(self):
         r = self.vfg("cmd", "/time", "set", "day")
         self.assertEqual((r.returncode, r.stdout), (0, "ran time set day\n"), r.stderr)
-        text = """bogus @a ~ ~10 ~ he said "hi" $x $(id) `id` 'q' \\n ;|&"""
+        text = """say @a ~ ~10 ~ he said "hi" $x $(id) `id` 'q' \\n ;|&"""
         self.assertOk(self.vfg("cmd", text))
         self.assertEqual([x["args"] for x in self.engine.ops("start")], [{"commands": ["time set day"]},
                                                                          {"commands": [text]}])
+        r = self.vfg("cmd", "bogus", "x")                         # Minecraft refused it: its reply, then exit 1
+        self.assertOneLine(r, 1, "^vfg: minecraft rejected the command$")
+        self.assertEqual(r.stdout, "Unknown or incomplete command, see below for error\n")
+        r = self.vfg("cmd", "fill", "0", "0", "0", "1", "1", "1", "stone")   # the scenario never sends it
+        self.assertOneLine(r, 1, "^vfg: refused: fill is a scenario's to do, not a command: fill 0 0 0 1 1 1 stone$")
         self.assertEqual({x["scenario"] for x in self.engine.ops("start")}, {"command"})
         self.engine.refuse["start"] = "op is the server owner's to run"
         self.assertOneLine(self.vfg("cmd", "op", "Steve"), 1, "^vfg: op is the server owner's to run$")
@@ -507,13 +526,16 @@ class TestUsage(BoxCase):
                                     "--out", "50", "--ref", "galick_gun_styrk"), 4, "cannot reach EC2")
         pending = os.path.join(self.box.vhome, "usage.pending.jsonl")
         with open(pending) as f:
-            self.assertEqual(len(f.read().splitlines()), 1)
+            [queued] = [json.loads(line) for line in f.read().splitlines()]
         self.box.down = False
         r = self.vfg("usage", "add", "--component", "implementer", "--model", "haiku", "--in", "7", "--out", "3")
         self.assertEqual(r.stdout, "2\n")
         rows = self.usage()
-        self.assertEqual([x[2] for x in rows], ["brain", "implementer"])
-        self.assertLess(rows[0][1], rows[1][1])
+        self.assertEqual([x[2] for x in rows], ["brain", "implementer"])     # the queued one inserted first
+        # with the time it was made, not the time it was sent: no later than the second's (the two can fall
+        # in one millisecond, so never "earlier")
+        self.assertEqual(rows[0][1], queued["at"])
+        self.assertLessEqual(rows[0][1], rows[1][1])
         self.assertFalse(os.path.exists(pending) and os.path.getsize(pending))
         self.assertEqual([n for n in os.listdir(self.box.vhome) if n.startswith("usage.sending")], [])
 
@@ -791,11 +813,11 @@ class TestState(BoxCase):
         r = self.vfg("state", "--items")
         self.assertIn("items     Steve: Steve has the following entity data: [{Slot: 4b", r.stdout)
 
-    @unittest.skipUnless(os.path.isfile(os.path.join(SCRIPTS_TEST, "mc_26_3.py")), "no scripts/_test/mc_26_3.py")
     def test_items_bring_each_players_health_food_armor_level_game_mode_and_effects(self):
-        """Read from 26.3's replies (mc_26_3.py): Steve's speed II hides a weaker speed, which is
-        not his; Alex has no effect on; Sam's server answered nothing it could read."""
-        R = load_module("scripts_test_mc_26_3", os.path.join(SCRIPTS_TEST, "mc_26_3.py"))
+        """Read from 26.3's replies (MC_26_3, recorded from the server): Steve's speed II hides a
+        weaker speed, which is not his; Alex has no effect on; Sam's server answered nothing it
+        could read."""
+        R = MC_26_3
         data = {"Steve": {"Health": R.HEALTH_SNBT, "foodLevel": R.FOOD_SNBT, "XpLevel": R.XP_LEVEL_SNBT,
                           "playerGameType": R.GAME_TYPE_SNBT, "active_effects": R.EFFECTS_SNBT},
                 "Alex": {"Health": "20.0f", "foodLevel": "20", "XpLevel": "0", "playerGameType": "1"}}
@@ -1237,7 +1259,6 @@ class TestRconLock(BoxCase):
             t.join(30)
         return wrong
 
-    @unittest.skipUnless(os.path.isfile(os.path.join(REAL_LIB, "mc.py")), "no scripts/_lib/mc.py")
     def test_without_the_lock_replies_mix_and_with_it_they_never_do(self):
         wrong = self.hammer([self.bare(), self.bare()])
         self.assertGreater(len(wrong), 3)
@@ -1251,26 +1272,25 @@ class TestRconLock(BoxCase):
             r = load_module("realmc_for_test", realmc_py).Rcon(os.path.join(self.box.rmc, "server.properties"))
             self.addCleanup(r.close)
             clients.append(r.command)
-        # A script's own mc.rcon in another process, with the same lock, at the same time.
-        script = subprocess.Popen([PY, "-c", "import mc\nprint(sum(mc.rcon('echo s%d' % i) != 's%d' % i "
-                                             "for i in range(15)))"],
+        # The engine's own client in another process, with the same lock, at the same time.
+        code = ("import importlib.util, sys\nspec = importlib.util.spec_from_file_location('engine_rcon', sys.argv[1])\n"
+                "rcon = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(rcon)\n"
+                "r = rcon.Rcon(sys.argv[2])\nprint(sum(r.command('echo e%d' % i) != 'e%d' % i for i in range(15)))\n")
+        engine = subprocess.Popen([PY, "-c", code, ENGINE_RCON, os.path.join(self.box.rmc, "server.properties")],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
-                                  env=dict(os.environ, PYTHONPATH=REAL_LIB, VFG_INSTANCE="locktest",
-                                           VFG_MC_PROPERTIES=os.path.join(self.box.rmc, "server.properties")))
+                                  env=dict(os.environ))
         self.assertEqual(self.hammer(clients), [])
-        o, e = script.communicate(timeout=30)
+        o, e = engine.communicate(timeout=30)
         self.assertEqual(o.strip(), "0", e)
 
-    @unittest.skipUnless(os.path.isfile(os.path.join(REAL_LIB, "mc.py")), "no scripts/_lib/mc.py")
     def test_a_thread_holding_the_lock_takes_it_again_others_wait(self):
-        """A thread that holds the lock re-enters through any client (vfg's, realmc's, mc's);
+        """A thread that holds the lock re-enters through any client (vfg's, realmc's, the engine's);
         another thread still waits."""
         realmc_py = os.path.join(REPO, "integration", "realmc", "realmc.py")
         if not os.path.isfile(realmc_py):
             self.skipTest("needs integration/realmc/realmc.py")
         code = """
 import importlib.util, os, signal, sys, threading, time
-import mc
 signal.signal(signal.SIGALRM, lambda *a: (print("deadlock"), os._exit(3)))
 signal.alarm(10)
 common = {"__name__": "common"}
@@ -1278,26 +1298,26 @@ exec(compile(open(sys.argv[1]).read(), "common.py", "exec"), common)
 spec = importlib.util.spec_from_file_location("realmc", sys.argv[2])
 realmc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(realmc)
+spec = importlib.util.spec_from_file_location("engine_rcon", sys.argv[3])
+engine = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(engine)
 props = os.environ["VFG_MC_PROPERTIES"]
-vfg, real = common["Rcon"](os.path.dirname(props)), realmc.Rcon(props)
-outer = mc._Flock()
-outer.acquire()
+vfg, real, eng = common["Rcon"](os.path.dirname(props)), realmc.Rcon(props), engine.Rcon(props)
 got = []
 other = threading.Thread(target=lambda: got.append(common["Rcon"](os.path.dirname(props)).command("echo other")))
-other.start()
-inner = [vfg.command("echo vfg"), real.command("echo realmc"), mc.rcon("echo mc")]
-time.sleep(0.05)
-waited = list(got)
-outer.release()
+with eng.held():
+    other.start()
+    inner = [vfg.command("echo vfg"), real.command("echo realmc"), eng.command("echo engine")]
+    time.sleep(0.05)
+    waited = list(got)
 other.join(5)
 print(inner, waited, got)
 """
-        r = subprocess.run([PY, "-c", code, os.path.join(TOOLKIT, "remote", "common.py"), realmc_py],
+        r = subprocess.run([PY, "-c", code, os.path.join(TOOLKIT, "remote", "common.py"), realmc_py, ENGINE_RCON],
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=30,
-                           env=dict(os.environ, PYTHONPATH=REAL_LIB, VFG_INSTANCE="reentry",
-                                    VFG_MC_PROPERTIES=os.path.join(self.box.rmc, "server.properties")))
+                           env=dict(os.environ, VFG_MC_PROPERTIES=os.path.join(self.box.rmc, "server.properties")))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(r.stdout.strip(), "['vfg', 'realmc', 'mc'] [] ['other']")
+        self.assertEqual(r.stdout.strip(), "['vfg', 'realmc', 'engine'] [] ['other']")
 
     def test_the_default_lock_path(self):
         os.environ.pop("VFG_RCON_LOCK")

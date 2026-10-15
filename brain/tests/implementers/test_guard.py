@@ -2,6 +2,7 @@
 what a task made, as the guard records it and made_now checks it against the disk and the engine,
 and the snapshot gate() gives each call it lets through."""
 import json
+import re
 
 from brain.implementers import guard
 from brain.implementers.guard import (DENY, VFG_FORMS, VFG_USAGE, GuardContext, Redirect, check_bash, decide,
@@ -212,7 +213,7 @@ TABLE = [
     (bash("cat engine/WRITING.md engine/KIT.md made/main/content/x.py"), None),
     (bash("cat -n engine/vfg_engine/ctx.py | head -n 80"), None),
     (bash("cat docs/CONTRACTS.md"), SCOPE),
-    (bash("cat scripts/README.md"), SCOPE),
+    (bash("cat toolkit/README.md"), SCOPE),
     (bash("cat"), DENY.cat),
     (bash("vfg state | cat"), DENY.pipe),
     (bash("sed -n '1,80p' engine/library/fireball.py"), None),
@@ -252,7 +253,7 @@ TABLE = [
     (call("Write", file_path=REPO + "/engine/library/fireball.py"), DENY.made_only("main")),
     (call("Edit", file_path="engine/vfg_engine/ctx.py"), DENY.made_only("main")),
     (call("Write", file_path=REPO + "/made/main/../../engine/library/x.py"), DENY.made_only("main")),
-    (call("Write", file_path="made/main/scripts/x/main.py"), DENY.made_only("main")),
+    (call("Write", file_path="made/main/notes/x/main.py"), DENY.made_only("main")),
     (call("Write", file_path="made/main/actions/x.py"), DENY.made_only("main")),
     (call("Write", file_path=REPO + "/made/other/content/x.py"), DENY.made_only("main")),
     (call("Write", file_path=REPO + "/made/x.py"), DENY.made_only("main")),
@@ -271,7 +272,7 @@ TABLE = [
     (call("Read", file_path=REPO + "/engine/library/fireball.py"), None),
     (call("Read", file_path="made/main/content/x.py"), None),
     (call("Read", file_path="made/main/tests/fire_staff_steve.py"), None),  # a task's test
-    (call("Read", file_path="scripts/README.md"), SCOPE),
+    (call("Read", file_path="toolkit/README.md"), SCOPE),
     (call("Read", file_path="actions/_types.py"), SCOPE),
     (call("Read", file_path="integration/replay/tasks.jsonl"), SCOPE),
     (call("Read", file_path="made/other/content/x.py"), SCOPE),
@@ -286,6 +287,16 @@ def test_the_guard():
     wrong = [(c["tool_input"], want, got) for c, want in TABLE if (got := decide(c, g)) != want]
     assert wrong == []
     assert not [want for _, want in TABLE if want and "\n" in want]  # each refusal is one line
+
+
+def test_the_list_of_allowed_forms_names_every_op_and_flag_the_guard_lets_through():
+    from brain.implementers.guard import ENGINE_FORMS
+    for op, form in ENGINE_FORMS.items():
+        assert re.search(r"vfg engine (\S+\|)*%s\b" % op, VFG_FORMS), op
+        for flag in form.flags:
+            assert flag in VFG_FORMS, (op, flag)
+    for word in ("vfg cmd", "vfg test <id> [-n N] [--timeout S]", "vfg state [--json]", "vfg history"):
+        assert word in VFG_FORMS
 
 
 def test_a_binding_with_no_task_known_takes_any_tasks_name():
@@ -418,6 +429,18 @@ def test_no_web_on_any_harness():
     assert decide(call("WebFetch", url="https://example.com"), g) == DENY.web
     assert decide(call("WebSearch", query="minecraft fireball"), g) == DENY.web
     assert decide(call("TodoWrite", todos=[]), g) is None
+
+
+def test_a_class_file_never_takes_a_library_classs_id(tmp_path):
+    """A made class of a library class's id runs in the library's place, for everyone: refused."""
+    (tmp_path / "engine" / "library").mkdir(parents=True)
+    (tmp_path / "engine" / "library" / "fireball.py").write_text("class Fireball: ...\n")
+    g = GuardContext(repo=str(tmp_path), task=TASK)
+    for tool in ("Write", "Edit"):
+        assert decide(call(tool, file_path="made/main/content/fireball.py"), g) == DENY.library_name("fireball")
+        assert decide(call(tool, file_path=str(tmp_path / "made/main/content/fireball_steve.py")), g) is None
+    assert decide(call("Write", file_path="made/main/tests/fireball.py"), g) is None     # a test may take any id
+    assert "engine/library/fireball.py" in DENY.library_name("fireball")
 
 
 def test_a_glob_in_a_read_is_allowed_when_every_match_stays_readable(tmp_path):

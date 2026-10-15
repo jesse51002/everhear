@@ -263,3 +263,96 @@ def test_the_mirror_reach_is_public(rig):
 
 def _volume(a, b):
     return (abs(b[0] - a[0]) + 1) * (abs(b[1] - a[1]) + 1) * (abs(b[2] - a[2]) + 1)
+
+
+ORDERED = '''
+class Hut(Scenario):
+    class Config(ScenarioConfig):
+        summary = "Clears a space, then builds a wall in it."
+        duration_s = UNTIL_STOPPED
+
+    def start(self, ctx):
+        self.blocks.forceload((0, 64, 0), (15, 64, 15))
+        self.blocks.fill((0, 64, 0), (31, 64, 15), "air")        # its first chunk waits to load
+        self.blocks.fill((20, 64, 0), (20, 64, 15), "glass")     # the wall, in the second
+'''
+
+
+def test_one_owners_jobs_go_in_order(rig):
+    r = rig({"hut": ORDERED})
+    r.start()
+    r.io.join("Steve")
+    r.io.unloaded.add(("minecraft:overworld", 0, 0))              # loaded once forceloaded
+    for x in range(32):
+        for z in range(16):
+            r.io.set_block("minecraft:overworld", (x, 64, z), "minecraft:dirt")
+    r.tick()
+    r.op("start", scenario="hut")
+    r.run_for(1)
+    assert r.io.block_at("minecraft:overworld", 20, 64, 5) == "minecraft:glass"   # not wiped by the clearing
+    assert r.io.block_at("minecraft:overworld", 5, 64, 5) == "minecraft:air"
+
+
+CHEST = '''
+class Stash(Scenario):
+    class Config(ScenarioConfig):
+        summary = "A chest in a far chunk, and more stacks in it."
+        duration_s = UNTIL_STOPPED
+
+    def start(self, ctx):
+        self.blocks.forceload((100, 64, 100), (100, 64, 100))
+        self.blocks.setblock((100, 64, 100), "minecraft:chest[facing=north]")
+        for i in range(3):
+            self.blocks.data((100, 64, 100), "Items", '{Slot:%db,id:"minecraft:diamond",count:1}' % i)
+
+    def done(self, ctx):
+        self.result("stocked")
+        self.end()
+'''
+
+
+def _stash(rig):
+    r = rig({"stash": CHEST})
+    r.start()
+    r.io.join("Steve")
+    r.io.unloaded.add(("minecraft:overworld", 6, 6))       # the chest's chunk: loaded once forceloaded
+    r.tick()
+    return r
+
+
+def test_block_data_goes_after_its_block_across_an_unloaded_chunk_then_done(rig):
+    from vfg_engine.io import BlockData, SetBlock
+    r = _stash(rig)
+    fut = r.engine.submit("start", {"scenario": "stash", "wait_s": 10})
+    r.tick()                                                 # the chunk is not loaded yet: all wait
+    assert not [op for op in r.io.sent if isinstance(op, (SetBlock, BlockData))] and not fut.done()
+    r.run_for(1)
+    kinds = [type(op).__name__ for op in r.io.sent if isinstance(op, (SetBlock, BlockData))]
+    assert kinds == ["SetBlock", "BlockData", "BlockData", "BlockData"]       # in the order asked
+    assert [d[2] for d in r.io.block_data[("minecraft:overworld", 100, 64, 100)]] == [
+        '{Slot:%db,id:"minecraft:diamond",count:1}' % i for i in range(3)]
+    assert fut.result(timeout=0)["result"]["summary"] == "stocked"           # done after the data
+
+
+def test_block_data_jobs_are_counted_and_saved(rig):
+    import json
+    r = _stash(rig)
+    iid = r.op("start", scenario="stash")["instance"]
+    assert r.rt.block_queue.pending(iid) == 4                # the block and its three data jobs
+    jobs = json.loads(json.dumps(r.engine.state()["blocks"]))
+    assert [j["kind"] for j in jobs] == ["box", "data", "data", "data"]
+    r.rt.block_queue.load(jobs, {iid})
+    assert r.rt.block_queue.pending(iid) == 4
+    r.op("stop", instance=iid)
+    assert r.rt.block_queue.pending(iid) == 0                # dropped with its owner
+
+
+def test_block_data_is_refused_in_words(rig):
+    import pytest
+    r = rig({"hut": ORDERED})
+    r.start()
+    obj = r.rt.objects[r.op("start", scenario="hut")["instance"]]
+    with pytest.raises(ValueError, match="how is append, prepend, merge, set"):
+        obj.blocks.data((0, 64, 0), "Items", "{}", how="insert")
+    with pytest.raises(ValueError, match="needs a path"):
+        obj.blocks.data((0, 64, 0), "", "{}")

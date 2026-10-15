@@ -16,5 +16,11 @@ def test(t):
     t.check("the EverHear gun in it, by its id", verdict('item: "kit_gun"' in items, items[:400]))
     text = t.cmd("data get block %d %d %d front_text.messages" % (x + 1, y, z))
     t.check("the sign says its lines", verdict("Kit Test" in text and "Sniper Nest" in text, text[:200]))
+    t.start("kit_chest", wait=5, at=t.at(-3, 0, 6), big=True)
+    x2 = int(t.xyz(-3, 0, 6)[0] // 1)
+    items = t.cmd("data get block %d %d %d Items" % (x2, y, z))
+    n = items.count('item: "kit_relic"')
+    t.check("a big chest (six long relics, over one command's bytes) holds all six",
+            verdict(n == 6 and "count: 64" in items, "%d relics; %s" % (n, items[-200:])))
     quiet = t.no_errors()                     # it watches beings; here only blocks change
     t.check("no error in the engine's log", verdict(quiet[0] is not False, quiet[1]))

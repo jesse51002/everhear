@@ -70,7 +70,7 @@ The reference classes, by what each shows:
 - **Never** use `while True`, sleep, `/attribute`, `effect clear`, or a raw `self.command` where
   a `self.*` verb or the kit does the job.
 - **What the engine lacks.** Do the closest honest thing, mark it `# NEEDS: <what>` on that line,
-  and report it. `railgun.py` says "recharging" because `cast()` does not say how long is left.
+  and report it (`lightning_strike.py` marks how far its raycast reaches).
 
 ## A one-shot scenario ends with a result
 
@@ -144,8 +144,8 @@ cd engine && uv run --group dev python -m pytest tests/library -q
 ## Live tests: `engine/tests/library/live/<id>.py`
 
 There is one file per class, named for its id, defining `test(t)`. Its full API is the docstring
-of `vfg_engine/livetest.py`. The stage is a barrier floor 81 × 81 at x 3000, y 295, z 3000, at
-night. Steve is the caster, facing north (forward is -z); Alex stands 4 to his left. Mind that:
+of `vfg_engine/livetest.py`. The stage is a barrier floor 81 × 81 at x 160, y 295, z 160, at
+night; take positions from `t.xyz`, never hard-coded ones. Steve is the caster, facing north (forward is -z); Alex stands 4 to his left. Mind that:
 - a live test proves the class works in Minecraft: what the player sees and what happens to
   mobs and blocks, with `t.hurt`, `t.near`, `t.block`, `t.said`. Leave edge cases to the unit
   test;

@@ -47,10 +47,8 @@ from .vfg import VfgRunner, engine_read, why
 # the state and the engine.
 STEP_SLACK_S = 1.0
 
-# The library, the server's base content; until it is there, the engine's examples are what
-# implementers read.
+# The library, the server's base content and the examples implementers read.
 LIBRARY = "engine/library"
-EXAMPLES = "engine/examples"
 
 
 # ------------------------------------------------------------------ the classes, from their files
@@ -66,8 +64,8 @@ class ContentClass:
 
 
 def library_dir(repo: str) -> str:
-    """engine/library/, or engine/examples/ while there is no library."""
-    return LIBRARY if os.path.isdir(os.path.join(repo, LIBRARY)) else EXAMPLES
+    """engine/library/, from the repository."""
+    return LIBRARY
 
 
 def read_class(repo: str, rel: str, source: str) -> ContentClass:

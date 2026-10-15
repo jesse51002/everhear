@@ -14,7 +14,7 @@ from conftest import CLASSES, REPO_COPY, STATE, act, cmd, follow_up, hand_off, r
 
 SEEN = Seen(places="SAVED PLACES: home 1 64 2 overworld (home_steve)", known={"home"}, classes=CLASSES)
 STAFF = act("engine_give", "a fire staff for Alex", {"player": "Alex", "item": "fire_staff"})
-HOME = act("engine_start", "teleport Steve home", start("teleport", players="Steve", at="home"))
+HOME = act("engine_start", "teleport Steve home", start("teleport", players="Steve", to="place", target="home"))
 
 
 def decided(k, answer: dict, **moment):
@@ -66,7 +66,7 @@ async def test_in_turn_runs_one_after_another_and_stops_at_the_first_that_does_n
     assert shown.startswith("THE LOOP SO FAR (")
     assert ('STEP 1, in turn:\n- engine_start: give Steve bread scenario=command args={"commands":["give Steve '
             'bread"]}\n  LANDED: done\n'
-            '- engine_start: teleport Steve home scenario=teleport args={"players":"Steve","at":"home"}\n'
+            '- engine_start: teleport Steve home scenario=teleport args={"players":"Steve","to":"place","target":"home"}\n'
             "  REFUSED: no saved place called home\n"
             '- engine_start: make it day scenario=command args={"commands":["time set day"]}\n'
             "  NOT RUN: an earlier one did not land\n"

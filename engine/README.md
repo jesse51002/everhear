@@ -237,22 +237,28 @@ python -m vfg_engine.livetest --properties /opt/mc-test/server.properties --stat
    must answer within `--boot` s (60), else exit 4 with its last words; then a `reload` gives the
    classes loaded and the load errors, printed as `ENGINE` lines; `--bindings` (a JSON list of `bind`
    args: `player`, `phrase`, `ability` or `scenario` and `args`, `aliases`) are bound.
-4. **The stage**: a barrier floor 81 x 81 high in the sky at 3000 296 3000, forceloaded, night,
+4. **The stage**: a barrier floor 81 x 81 high in the sky at 160 296 160 (inside the chunks a new
+   world generates round its spawn, so a fresh world's first test does not wait for chunks to be
+   made: 0.4 s of setup, 1.1 s on a fresh world, against 3.9 s at 3000 3000), forceloaded, night,
    clear, no mobs spawning; Steve (the caster, facing north) and Alex, 4 to his left, Carpet fake
    players the engine sees before `test(t)` is called.
 5. **The test runs**, then the engine is stopped (SIGTERM: its state saved; its exit code reported),
    the stage cleared (its players, its mobs, every block round it, the forceload).
 
 Its stdout is the report (`ENGINE`, `AT`, `CAST`, `START`, then `PASS` / `FAIL` / `CAN'T TELL — item
-— why`, `RESULT: n passed, n failed, n can't tell`), then, last, one JSON line:
+— why`, `RESULT: n passed, n failed, n can't tell`, `TIME` with the wall time and each phase's), then,
+last, one JSON line:
 
 ```json
 {"code": 0, "passed": 6, "failed": 0, "cant_tell": 0, "checks": [{"item": "...", "ok": true, "why": "..."}],
- "engine": {"loaded": ["test_zap"], "errors": [], "boot_s": 0.6, "exit": 0}, "seconds": 6.1}
+ "engine": {"loaded": ["test_zap"], "errors": [], "boot_s": 0.6, "exit": 0}, "seconds": 4.6,
+ "timing": {"boot": 1.4, "stage": 0.4, "test": 2.1, "clear": 0.7}, "slow": false}
 ```
 
 with `"error"` in words when it did not run to the end, and `"stopped": true` after SIGTERM (or
-`--timeout`). The exit code is `"code"`:
+`--timeout`). **Every live test is short and self-contained: under 20 s, its setup included.** One
+over `VFG_LIVETEST_BUDGET_S` (20) gets a `WARN` line and `"slow": true`; its code is unchanged. The
+exit code is `"code"`:
 
 | Code | Means |
 |---|---|
@@ -266,14 +272,19 @@ with `"error"` in words when it did not run to the end, and `"stopped": true` af
 **`t`, the test's API** (the module docstring has it in full, with examples): the engine's ops
 (`t.give`, `t.take`, `t.grant`, `t.revoke`, `t.apply`, `t.clear`, `t.start(scenario, wait=0,
 **args)`, `t.stop`, `t.spawn`, `t.bind`, `t.cast(phrase)` as the bridge sends a heard cast,
-`t.instances`, `t.op(name, **args)`); Carpet's presses (`t.use(hold=0, draw=0)`, `t.sneak`, `t.look`,
+`t.instances`, `t.result(within=0)`, `t.op(name, **args)`); Carpet's presses (`t.use(hold=0, draw=0)`,
+`t.sneak(times=3)` or `t.sneak(hold=s)` for one crouch held s seconds, `t.look`,
 `t.hotbar`, `t.attack`, `t.jump`); the stage (`t.mob`, `t.blocks`, `t.region`, `t.ground`,
 `t.player`, `t.stand_in`, `t.cmd`, `t.wait`, `t.watch`, `t.at`, `t.xyz`); and checks for
 `t.check(item, verdict)`: `t.hurt`, `t.killed`, `t.unhurt`, `t.others_unhurt`, `t.burning`,
 `t.moved`, `t.near`, `t.gone`, `t.turned`, `t.built`, `t.block`, `t.fire_near`, `t.effect`, `t.holds`,
-`t.weather`, `t.running`, `t.said`, `t.no_errors` (no error in the engine's log since the test began),
-and `verdict(ok, why)`. A call made wrong says how it is called, in one line. It replaces the old
-kit's test helpers (`scripts/_lib/kit/test.py`).
+`t.weather`, `t.running`, `t.said(text, within=5)` (the last start's result: its own answer, else the
+engine's `result` op on its instance, asked for up to `within` s), `t.no_errors` (no error in the
+engine's log since the test began), and `verdict(ok, why)`. A call made wrong says how it is called,
+in one line. `t.unhurt` and `t.no_errors` say CAN'T TELL when nothing fired since the last action;
+fired is a `t.start` (a one-shot that ended within its wait ran all the same), a new instance, more
+things on the stage, blocks placed or broken there (a census: a masked `/clone` of the stage, a few
+ms), or anyone there moved, hurt, set alight or given an effect.
 
 **On a realmc server**: the server's folder needs the marker (a realmc test server has one; for a
 plain realmc server, write `{"rcon_port": <its port>}` to `<NAME>/mc/.vfg-test-server` yourself, and
@@ -295,7 +306,9 @@ one engine at a time, SIGTERM and SIGINT with the state saved, the JSON log, and
 then the real core as a process on FakeIo with `examples/`, through `ctl`, across a restart; and the
 livetest runner: its refusals (no marker, the engine under `VFG_TEST=1` too), a test file it cannot
 run, an engine that does not start, and whole runs (the real engine on FakeIo, a fake RCON) to PASS,
-FAIL, a raising test and `--timeout`, the stage cleared after.
+FAIL, a raising test and `--timeout`, the stage cleared after, the wall time against the budget; and `t`
+on a fake engine: what counts as fired, the `result` op, a held crouch. With `LIVETEST_PROPERTIES`
+naming a marked realmc server, two live tests too (`tests/box/livetest_case/`).
 
 **On a realmc server** (`integration/realmc/README.md`), the engine runs as on the box, from the
 stand-in's `vfg/engine/`: send the files there as `deploy.sh` does, run `install.sh` with the

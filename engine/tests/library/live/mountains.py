@@ -4,7 +4,7 @@ so this only proves it runs cleanly and makes a start within the wait, not that 
 
 
 def test(t):
-    instance = t.start("mountains", wait=60, players="Steve", away=20, seed=3, trees=5)
+    t.start("mountains", wait=30, players="Steve", away=20, seed=3, trees=5)
     t.check("no error in the engine's log", t.no_errors())
     t.check("it is still building the range, or it already finished",
-            t.running(instance) or t.said("mountain range built over x"))
+            t.running("mountains") or t.said("mountain range built over x"))

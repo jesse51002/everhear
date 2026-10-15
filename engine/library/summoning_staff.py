@@ -21,6 +21,7 @@ class SummoningStaff(Item):
         self.listen(Use, "on_use")
 
     def on_use(self, ctx, ev):
-        if ctx.user.cast("summoning_staff_summon") == "cooldown":
-            speak(self, ctx, "Summoning Staff: recharging", voice="", color="gray", to=[ctx.user.name],
+        got = ctx.user.cast("summoning_staff_summon")
+        if got == "cooldown":
+            speak(self, ctx, "Summoning Staff: %.1f s" % got.remaining_s, voice="", color="gray", to=[ctx.user.name],
                   where="actionbar")

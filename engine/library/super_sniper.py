@@ -1,7 +1,7 @@
 """Super Sniper: right-click to fire a long hitscan shot (the sniper_shot ability), stopping at the
 first solid block, double damage on the head; crouch while holding it to zoom the scope in (slowed,
 as a scope narrows the view), standing or putting it away takes the zoom off. Within its cooldown a
-click only says it is recharging. (The old sniper_rifle script's item, with its zoom.)"""
+click says how long is left. (The old sniper_rifle script's item, with its zoom.)"""
 
 from vfg_engine import Field, Item, ItemConfig, Sneak, Unsneak, Use
 from vfg_engine.kit import speak
@@ -26,9 +26,9 @@ class SuperSniper(Item):
         self.listen(Unsneak, "on_unsneak")
 
     def on_use(self, ctx, ev):
-        if ctx.user.cast("sniper_shot") == "cooldown":
-            # NEEDS: cast() to say how long its cooldown has left (the old item showed "Super Sniper: 0.4 s")
-            speak(self, ctx, "Super Sniper: recharging", voice="", color="gray", to=[ctx.user.name], where="actionbar")
+        got = ctx.user.cast("sniper_shot")
+        if got == "cooldown":
+            speak(self, ctx, "Super Sniper: %.1f s" % got.remaining_s, voice="", color="gray", to=[ctx.user.name], where="actionbar")
 
     def on_sneak(self, ctx, ev):
         if self.config.zoom:

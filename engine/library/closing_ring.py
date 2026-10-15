@@ -54,8 +54,8 @@ class ClosingRing(Scenario):
         self.state.final = max(6, 16 - a.level // 2)
         speak(self, ctx, "THE RING CLOSES", voice="", color="dark_red", where="title")
         speak(self, ctx, "there is nowhere to run", voice="", color="gray", where="subtitle")
-        self.sound("minecraft:block.end_portal.spawn", self.state.center, volume=4, dim=self.state.dim)
         speak(self, ctx, "THE RING CLOSES. Stay inside the border or wither away. Level %d." % a.level)
+        self.voice_sound(ctx, names, "minecraft:block.end_portal.spawn")
         c = self.state.center
         self.command("worldborder center %.0f %.0f" % (c[0], c[2]))
         self.command("worldborder damage amount %g" % self.config.damage_amount)
@@ -92,15 +92,15 @@ class ClosingRing(Scenario):
 
     def holding(self, ctx):
         speak(self, ctx, "The ring holds you... survive %d more seconds." % int(self.config.hold_s))
-        self.sound("minecraft:entity.warden.roar", self.state.center, volume=3, dim=self.state.dim)
+        self.voice_sound(ctx, players(ctx, self.args.players), "minecraft:entity.warden.roar")
         self.after(self.config.hold_s, "release_ring")
 
     def release_ring(self, ctx):
         # self.end() below calls stop(ctx, reason), which opens the border back up: no need to do it twice.
         speak(self, ctx, "RELEASED", voice="", color="gold", where="title")
         speak(self, ctx, "for now", voice="", color="gray", where="subtitle")
-        self.sound("minecraft:block.beacon.deactivate", self.state.center, volume=3, dim=self.state.dim)
         speak(self, ctx, "The border breaks. You live... for now.")
+        self.voice_sound(ctx, players(ctx, self.args.players), "minecraft:block.beacon.deactivate")
         count = len(self.spawned)
         self.result("the ring closed to %d blocks and broke: %d mob%s round %s"
                     % (self.state.final, count, "" if count == 1 else "s", self.args.players),
@@ -112,5 +112,15 @@ class ClosingRing(Scenario):
             self._open_border()
 
     def _open_border(self):
-        self.command("worldborder set 60000000")
+        # 59999968, not 60000000: Minecraft 26.3 refuses a border past 5.9999968E7 and silently
+        # keeps the old (still shrunk) one when asked for more, leaving it never truly reopened.
+        self.command("worldborder set 59999968")
         self.command("worldborder center 0 0")
+
+    def voice_sound(self, ctx, names, sound):
+        """The old local `speak()`'s own sound, heard by each player at their own position
+        (`execute as @a at @s run playsound <sound> hostile @s ~ ~ ~ 0.6 0.7`)."""
+        for name in names:
+            p = ctx.world.player(name)
+            if p is not None and p.alive:
+                self.sound(sound, p.pos, volume=0.6, pitch=0.7, to=[name], dim=p.dim)

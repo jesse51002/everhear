@@ -6,6 +6,7 @@ each player into the Nether: water to lava, leaves gone, trunks to basalt, grass
 the ground to netherrack, sand to soul sand, gravel and clay to soul soil, snow gone, ice to lava,
 and patches of magma and blackstone in the netherrack."""
 
+import math
 import re
 from typing import Literal
 
@@ -107,6 +108,7 @@ class WorldReplace(Scenario):
     def done(self, ctx):                                  # the block queue placed the last of it
         if self.state.left:                               # more is still to be queued
             return
+        self._free_stuck(ctx)
         a = self.args
         who = ", ".join(self.state.done)
         if a.rules == "hellscape":
@@ -116,3 +118,17 @@ class WorldReplace(Scenario):
         self.result(summary, players=self.state.done, radius=a.radius, dims=a.dims,
                    rules="hellscape" if a.rules == "hellscape" else list(a.rules.split("; ")))
         self.end()
+
+    def _free_stuck(self, ctx):
+        """Lift a player the change left inside a solid block, one block up.
+        # NEEDS: a block probe can only say where each player stands right now, not whether a
+        # change buried them where they stood when it ran, and this tries once, not the old
+        # kit's up to eight; good enough to get someone out, not to land them exactly right."""
+        for name in self.state.done:
+            p = ctx.world.player(name)
+            if p is None:
+                continue
+            feet = [math.floor(c) for c in p.pos]
+            stuck = ctx.world.probe([tuple(feet), (feet[0], feet[1] + 1, feet[2])], "solid", dim=p.dim)
+            if any(stuck):
+                self.teleport(name, (feet[0] + 0.5, feet[1] + 1, feet[2] + 0.5), dim=p.dim)

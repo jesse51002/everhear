@@ -245,9 +245,8 @@ def test_a_class_is_read_from_its_file_and_the_examples_stand_in_for_a_missing_l
         ("broken_alex", "?", "made", ""), ("frost_ring_alex", "mark", "made",
                                            "Frost Ring: ice round a player's feet for a while.")]
     no_library = Repo(tmp_path / "b", files={"engine/examples/giant.py": '"""Giant: twice the size."""\n'})
-    assert [(c.name, c.rel) for c in examples.content_classes(no_library.dir, "main")] == [
-        ("giant", "engine/examples/giant.py")]
-    assert examples.library_dir(no_library.dir) == "engine/examples"
+    assert examples.content_classes(no_library.dir, "main") == []          # the engine's own examples: never read
+    assert examples.library_dir(no_library.dir) == "engine/library"
 
 
 async def test_route_run_refuses_what_is_not_its_json():

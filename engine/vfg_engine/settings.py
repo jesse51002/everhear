@@ -2,7 +2,8 @@
 
 VFG_ENGINE_TICK_HZ      ticks a second (10; DESIGN, Decided 2)
 VFG_ENGINE_SLOW_MS      a content call over this is logged as slow (5; Decided 3)
-VFG_ENGINE_CUT_MS       a content call over this is cut (50; Decided 3)
+VFG_ENGINE_CUT_MS       a content call over this is cut (50; Decided 3): its own time, not waiting on Minecraft
+VFG_ENGINE_IO_MS        how long one content call may wait on Minecraft's live reads (250)
 VFG_ENGINE_CONTENT      content folders, colon-separated (/opt/vfg/made/main/content)
 VFG_ENGINE_STATE        the saved state (/opt/vfg/engine/state.json)
 VFG_ENGINE_EXPORT       the incantation export the bridge reads (/opt/vfg/engine/incantations.json)
@@ -26,6 +27,7 @@ class Settings:
     tick_hz: float = 10.0
     slow_ms: float = 5.0
     cut_ms: float = 50.0
+    io_ms: float = 250.0              # one call's live reads (ctx.query, ctx.world.probe...): its budget
     content: tuple[str, ...] = ()
     state: str | None = None          # None: nothing is saved (tests)
     export: str | None = None         # None: no export file
@@ -55,6 +57,7 @@ class Settings:
         return cls(tick_hz=number("VFG_ENGINE_TICK_HZ", 10.0),
                    slow_ms=number("VFG_ENGINE_SLOW_MS", 5.0),
                    cut_ms=number("VFG_ENGINE_CUT_MS", 50.0),
+                   io_ms=number("VFG_ENGINE_IO_MS", 250.0),
                    content=content,
                    stale_s=number("VFG_ENGINE_STALE_S", 5.0),
                    protected=env.get("VFG_PROTECTED") or BOX_PROTECTED,

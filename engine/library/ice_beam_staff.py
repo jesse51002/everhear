@@ -20,5 +20,6 @@ class IceBeamStaff(Item):
         self.listen(Use, "on_use")
 
     def on_use(self, ctx, ev):
-        if ctx.user.cast("ice_beam") == "cooldown":
-            speak(self, ctx, "Ice Beam Staff: recharging", voice="", color="gray", to=[ctx.user.name], where="actionbar")
+        got = ctx.user.cast("ice_beam")
+        if got == "cooldown":
+            speak(self, ctx, "Ice Beam Staff: %.1f s" % got.remaining_s, voice="", color="gray", to=[ctx.user.name], where="actionbar")

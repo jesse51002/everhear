@@ -236,3 +236,38 @@ def test_mix_and_rules_are_read_as_written():
     assert rules[0].froms == ("minecraft:snow",) and rules[0].to == (("minecraft:air", 1.0),)
     assert rules[1].froms == argtypes.SOLID and rules[1].to == (("minecraft:lava", 70.0), ("keep", 30.0))
     assert argtypes.pick(rules[1].to, "a 1 2 3") == argtypes.pick(rules[1].to, "a 1 2 3")
+
+
+SHAPES = '''
+class Herd(Scenario):
+    class Config(ScenarioConfig):
+        summary = "Spawns a herd."
+        duration_s = UNTIL_STOPPED
+
+    class Args(Args):
+        mobs: list[EntityType] = Field(["cow"], min_length=1, max_length=20, description="what to spawn")
+        name: str = Field("herd", max_length=32, pattern="^[a-z_]+$", description="its name")
+'''
+
+
+def test_the_schema_shows_list_items_lengths_and_patterns(rig):
+    r = rig({"herd": SHAPES})
+    r.start()
+    (row,) = [c for c in r.op("classes")["classes"] if c["id"] == "herd"]
+    mobs, name = row["args"]
+    assert mobs["type"] == "list of entity type" and mobs["bounds"] == {"min_length": 1, "max_length": 20}
+    assert name["type"] == "text" and name["bounds"] == {"max_length": 32, "pattern": "^[a-z_]+$"}
+    assert r.op("meta", id="herd")["rows"][0]["args"] == row["args"]
+    assert "mobs" in r.op("start", scenario="herd", args={"mobs": []})["error"]
+
+
+def test_the_result_op_reads_a_result_after_its_wait(rig):
+    r = _rig(rig)
+    iid = r.op("start", scenario="meteor", args={"at": "0 64 0", "after": 1})["instance"]
+    assert r.op("result", instance=iid) == {"ok": True, "instance": iid, "running": True, "result": None}
+    r.run_for(1.2)
+    got = r.op("result", instance=iid)
+    assert got["ended"] == "ended" and got["result"] == {"summary": "landed", "facts": {"count": 3, "at": [0.0, 64.0, 0.0]}}
+    assert r.op("result", instance="scenario:nope#9")["ok"] is False
+    r.clock.t += 601
+    assert "no result kept" in r.op("result", instance=iid)["error"]

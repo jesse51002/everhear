@@ -16,6 +16,7 @@ import json
 import math
 from dataclasses import dataclass
 
+from ..mc.rcon import MAX_COMMAND
 from ._base import floor3, where
 
 KINDS = ("box", "cylinder", "dome", "pyramid", "staircase", "staircase_down", "wall")
@@ -24,6 +25,7 @@ WAYS = {"south": (0, 1), "west": (-1, 0), "north": (0, -1), "east": (1, 0)}     
 BACK = {"south": "north", "north": "south", "east": "west", "west": "east"}
 MAX_FORCELOAD = 256
 CHEST_SLOTS = 27
+SETBLOCK_ROOM = 96                  # a setblock command besides its block: "execute in … run setblock x y z … strict"
 MOST_ROUND = 64                     # a cylinder, dome or pyramid is at most this many blocks across,
 MOST_PARTS = 2000                   # and at most this many boxes (a hollow dome 48 x 24 x 48 is 1685: ~20 ms)
 SIGN_LINE = 40                      # characters a sign line keeps
@@ -41,6 +43,11 @@ class Built:
     @property
     def middle(self) -> tuple[float, float, float]:
         return ((self.a[0] + self.b[0]) / 2 + 0.5, float(self.a[1]), (self.a[2] + self.b[2]) / 2 + 0.5)
+
+
+def _in_dim(dim: str, cmd: str) -> str:
+    """A raw command run in a dimension (bare in the overworld, where RCON's own commands run)."""
+    return cmd if dim == "minecraft:overworld" else "execute in %s run %s" % (dim, cmd)
 
 
 def compass(yaw: float) -> str:
@@ -194,10 +201,16 @@ def sign(self, ctx, at, lines, facing: str = "south", wood: str = "oak", wall: b
     self.blocks.setblock(floor3(pos), "%s{front_text:{messages:[%s]}}" % (block, ",".join(texts)), dim=d)
 
 
-def chest(self, ctx, at, items, facing: str = "north", dim: str | None = None):
+def chest(self, ctx, at, items, facing: str = "north", dim: str | None = None) -> int:
     """A chest at `at`, facing `facing`, holding `items` in order (27 at most): "diamond 4"
     (a vanilla item and how many, 1 when left out) or "everhear:railgun" (an EverHear item, as
-    the engine gives it: its base, its name and look, its id; self.item_stack)."""
+    the engine gives it: its base, its name and look, its id; self.item_stack).
+
+    One command carries at most 1446 bytes (RCON's), and EverHear stacks are long, so the chest is
+    queued with as many stacks as fit one command, and each other stack after it as a block-data
+    job (`self.blocks.data`, Items append): the queue places them in that order, under its rules,
+    and `done(ctx)` comes once the chest is full. A stack too long for any command is refused here,
+    in words. Returns how many stacks go in after the chest."""
     if facing not in WAYS:
         raise ValueError("facing is north, east, south or west, not %r" % (facing,))
     pos, d = where(ctx, at, dim)
@@ -213,4 +226,20 @@ def chest(self, ctx, at, items, facing: str = "north", dim: str | None = None):
             stacks.append("{Slot:%db,%s" % (slot, stack.lstrip("{")))
         else:
             stacks.append('{Slot:%db,id:"%s",count:%d}' % (slot, name if ":" in name else "minecraft:" + name, count))
-    self.blocks.setblock(floor3(pos), "minecraft:chest[facing=%s]{Items:[%s]}" % (facing, ",".join(stacks)), dim=d)
+    x, y, z = floor3(pos)
+    append = _in_dim(d, "data modify block %d %d %d Items append value " % (x, y, z))
+    for text, stack in zip(items, stacks):
+        size = len((append + stack).encode("utf-8"))
+        if size > MAX_COMMAND:
+            raise ValueError("%s in a chest is a stack of %d bytes; one command holds %d: give it fewer or "
+                             "shorter components" % (text, size - len(append.encode("utf-8")), MAX_COMMAND))
+    block = "minecraft:chest[facing=%s]" % facing
+    room = MAX_COMMAND - SETBLOCK_ROOM - len(block.encode("utf-8")) - len("{Items:[]}")
+    first = []
+    while len(first) < len(stacks) and len(",".join(first + [stacks[len(first)]]).encode("utf-8")) <= room:
+        first.append(stacks[len(first)])
+    q = self.blocks
+    q.setblock((x, y, z), "%s{Items:[%s]}" % (block, ",".join(first)) if first else block, dim=d)
+    for stack in stacks[len(first):]:
+        q.data((x, y, z), "Items", stack, "append", dim=d)
+    return len(stacks) - len(first)

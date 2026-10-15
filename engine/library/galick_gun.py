@@ -22,5 +22,6 @@ class GalickGun(Item):
     def on_use(self, ctx, ev):
         # The old script fired on the first press and let go never cancelled it; cast()'s own
         # charge_s already charges and fires the same way, so one press is all this needs.
-        if ctx.user.cast("galick_gun_beam") == "cooldown":
-            speak(self, ctx, "Galick Gun: recharging", voice="", color="gray", to=[ctx.user.name], where="actionbar")
+        got = ctx.user.cast("galick_gun_beam")
+        if got == "cooldown":
+            speak(self, ctx, "Galick Gun: %.1f s" % got.remaining_s, voice="", color="gray", to=[ctx.user.name], where="actionbar")

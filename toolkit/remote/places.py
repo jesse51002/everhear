@@ -1,8 +1,8 @@
 # places.py: a read of the saved places the old system kept in Minecraft's command storage
 # `everhear:places`, one entry per name: {pos: [x, y, z], dim: "minecraft:overworld",
 # by: "castle_steve"}, for `vfg engine migrate` (places are the engine's own now: its places op).
-# A trimmed copy of the old kit's scripts/_lib/places.py, its reads only, kept here so the
-# migration outlives scripts/.
+# A trimmed copy of the old kit's places.py (scripts/_lib/, removed with the old system), its
+# reads only.
 #
 # Python 3.9+, standard library only, and pure: all() takes `rcon`, a callable that runs one
 # server command and returns Minecraft's reply as text (migrate.py passes common.py's client).

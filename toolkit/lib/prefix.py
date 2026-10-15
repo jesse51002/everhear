@@ -24,7 +24,7 @@ HEAD_KIT = "THE KIT: the helpers every class may import"
 HEAD_LIBRARY = ("THE LIBRARY — every library class, by id: its kind and first line, then its Config and Args as "
                 "written. A class is engine/library/<id>.py; the ones picked for your job are in your first "
                 "message, in full, and any other you can read.")
-NO_LIBRARY = "THE LIBRARY: none yet. engine/examples/ holds four working classes to read."
+NO_LIBRARY = "THE LIBRARY: none here (engine/library/ is missing or empty)."
 
 
 def _text(path):

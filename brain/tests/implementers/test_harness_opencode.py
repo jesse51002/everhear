@@ -133,11 +133,11 @@ def test_opencodes_tools_map_to_the_guards_names_and_keys():
     assert oc.guard_calls("grep", {"pattern": "def", "include": "*.py"}, r) == [
         {"tool_name": "Grep", "tool_input": {"pattern": "def", "glob": "*.py"}}]
     assert oc.guard_calls("list", {"path": "/"}, r) == [{"tool_name": "Glob", "tool_input": {"path": "/"}}]
-    patch = ("*** Begin Patch\n*** Add File: made/main/actions/x.py\n+a\n*** Update File: /repo/scripts/y.py\n"
+    patch = ("*** Begin Patch\n*** Add File: made/main/actions/x.py\n+a\n*** Update File: /repo/toolkit/y.py\n"
              "@@\n*** Delete File: z.py\n*** End Patch")
     assert oc.guard_calls("apply_patch", {"patchText": patch}, r) == [
         {"tool_name": "Write", "tool_input": {"file_path": "/repo/made/main/actions/x.py"}},
-        {"tool_name": "Edit", "tool_input": {"file_path": "/repo/scripts/y.py"}},
+        {"tool_name": "Edit", "tool_input": {"file_path": "/repo/toolkit/y.py"}},
         {"tool_name": "Edit", "tool_input": {"file_path": "/repo/z.py"}}]
     assert oc.guard_calls("multiedit", {"filePath": "q.py", "edits": []}, r) == [
         {"tool_name": "Edit", "tool_input": {"file_path": "/repo/q.py"}}]

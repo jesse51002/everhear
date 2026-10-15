@@ -6,11 +6,13 @@ import re
 
 from vfg_engine.livetest import verdict
 
-DISPLAYS = "@e[type=block_display,x=3000,y=296,z=3000,distance=..60]"
+def _displays(t, more=""):
+    x, y, z = t.xyz(0, 0, 0)
+    return "@e[type=block_display,x=%s,y=%s,z=%s,distance=..60%s]" % (x, y, z, more)
 
 
 def _count(t):
-    got = re.search(r"Count: (\d+)", t.cmd("execute if entity %s" % DISPLAYS))
+    got = re.search(r"Count: (\d+)", t.cmd("execute if entity %s" % _displays(t)))
     return int(got.group(1)) if got else 0
 
 
@@ -20,11 +22,11 @@ def test(t):
     t.start("kit_fly", at=t.at(0, 0, 20), look="block", speed=8)
     t.wait(0.4)
     t.check("one block display flies", verdict(_count(t) == 1, "%d displays" % _count(t)))
-    state = t.cmd("data get entity %s block_state" % DISPLAYS.replace("]", ",limit=1]"))
+    state = t.cmd("data get entity %s block_state" % _displays(t, ",limit=1"))
     t.check("it shows magma or obsidian (the mix)", verdict(re.search(r"magma_block|obsidian", state), state[:200]))
-    z0 = t.cmd("data get entity %s Pos[2]" % DISPLAYS.replace("]", ",limit=1]"))
+    z0 = t.cmd("data get entity %s Pos[2]" % _displays(t, ",limit=1"))
     t.wait(0.6)
-    z1 = t.cmd("data get entity %s Pos[2]" % DISPLAYS.replace("]", ",limit=1]"))
+    z1 = t.cmd("data get entity %s Pos[2]" % _displays(t, ",limit=1"))
     t.check("it moves along", verdict(z0 != z1, "%s -> %s" % (z0[-30:], z1[-30:])))
     t.wait(3)
     t.check("it is taken away when it lands", verdict(_count(t) == 0, "%d displays left" % _count(t)))
@@ -32,7 +34,7 @@ def test(t):
     t.wait(0.4)
     n = _count(t)
     t.check("the meteor is 19 displays", verdict(n == 19, "%d displays" % n))
-    shown = t.cmd("data get entity %s block_state" % DISPLAYS.replace("]", ",limit=1,sort=random]"))
+    shown = t.cmd("data get entity %s block_state" % _displays(t, ",limit=1,sort=random"))
     t.check("of the mix's blocks", verdict(re.search(r"magma_block|obsidian", shown), shown[:200]))
     t.wait(3.5)
     t.check("all taken away when it lands", verdict(_count(t) == 0, "%d displays left" % _count(t)))

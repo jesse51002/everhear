@@ -244,6 +244,7 @@ async def test_a_refused_follow_up_comes_back_as_a_result_and_the_next_step_name
     assert "- follow up fireball_krown\n  REFUSED: there is no task fireball_krown under TASKS" in back
     assert k.impl.followed == [("hot_fireball_krown", "make the blast twice as big", None,
                                 "A Hot Fireball for KrownJM, twice the blast.")]
+    assert k.impl.made_given == [("hot_fireball_krown", {"content": [], "bindings": [], "grants": []})]  # the row's
     assert k.vfg.said() == [["making it bigger", "--task", "hot_fireball_krown"]]
 
 
@@ -522,7 +523,7 @@ async def test_an_unexpected_error_never_leaves_a_task_open_and_the_player_hears
 async def test_the_brains_tasks_and_running_now_are_in_full(kit):
     k = kit(Step=GIVE)
     name = gun(k)
-    k.tasks.merge_made(name, MADE)
+    k.tasks.mirror_made(name, MADE)
     k.running({"instance": "ability:galick_gun_styrk#4", "kind": "ability", "id": "galick_gun_styrk",
                "user": "Styrkaeopteryx"},
               {"instance": "scenario:horde#2", "kind": "scenario", "id": "horde", "user": None})

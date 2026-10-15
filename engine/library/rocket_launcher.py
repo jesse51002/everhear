@@ -1,6 +1,6 @@
 """Rocket Launcher: right-click fires the fireball ability (a ball of flame to the first mob on
-your look, or where you look, then a blast that breaks blocks). Within its cooldown, a click only
-says it is recharging.
+your look, or where you look, then a blast that breaks blocks). Within its cooldown, a click says
+how long is left.
 
 (made/main's rocket_launcher_contact, merged into fireball per its own verdict: "a projectile to
 the first hit, then a blast. The launcher becomes an Item that casts it." Its old firework-particle
@@ -25,7 +25,7 @@ class RocketLauncher(Item):
         self.listen(Use, "on_use")
 
     def on_use(self, ctx, ev):
-        if ctx.user.cast("fireball") == "cooldown":
-            # NEEDS: cast() to say how long its cooldown has left (railgun.py notes the same)
-            speak(self, ctx, "Rocket Launcher: recharging", voice="", color="gray", to=[ctx.user.name],
+        got = ctx.user.cast("fireball")
+        if got == "cooldown":
+            speak(self, ctx, "Rocket Launcher: %.1f s" % got.remaining_s, voice="", color="gray", to=[ctx.user.name],
                   where="actionbar")

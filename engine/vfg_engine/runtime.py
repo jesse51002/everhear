@@ -65,7 +65,7 @@ class Runtime:
         self.settings = settings
         self.clock = clock
         self.now = clock()
-        self.guard = Guard(settings.slow_ms, settings.cut_ms)
+        self.guard = Guard(settings.slow_ms, settings.cut_ms, getattr(settings, "io_ms", 250.0))
         self.snapshot: Snapshot = EMPTY
         self._mirror = None
 
@@ -326,7 +326,8 @@ class Runtime:
 
     def _after_call(self, rec, method, out, run):
         if out.ms > self.settings.slow_ms:
-            log.info("slow call: %s.%s took %.1f ms", rec.iid, method, out.ms)
+            log.info("slow call: %s.%s took %.1f ms%s", rec.iid, method, out.ms,
+                     " (and %.1f ms waiting on Minecraft)" % out.io_ms if out.io_ms >= 1 else "")
             if self.guard.note_slow(rec.iid, self.now):
                 log.warning("flagged: %s keeps going slow (%s)", rec.iid, self.guard.flagged[rec.iid])
         if not out.ok:
@@ -383,8 +384,8 @@ class Runtime:
             if other.owner == rec.iid:
                 self.end_record(other, ("stopped: its owner %s was stopped" if stopped
                                         else "its owner %s ended") % rec.iid)
-        if rec.kind == "scenario":
-            self.results[rec.iid] = dict(rec.notes.get("result") or {}, reason=reason)
+        if rec.kind == "scenario" or rec.notes.get("result") is not None:
+            self.results[rec.iid] = dict(rec.notes.get("result") or {}, reason=reason, at=self.now)
             while len(self.results) > RUN_ENDS_KEPT:
                 self.results.popitem(last=False)
         self.records.pop(rec.iid, None)
@@ -538,11 +539,12 @@ class Runtime:
         return self.read("query", lambda io: io.query(str(command)))
 
     def read(self, kind: str, fn):
-        """A live read for content (ctx.query, ctx.world.probe...): the cut waits for its reply,
-        its time counts against the call, and what each kind costs is kept for `status`."""
+        """A live read for content (ctx.query, ctx.world.probe...): the call's cut pauses while it
+        waits (the read has the call's own I/O budget instead: Guard.io_wait), and what each kind
+        costs is kept for `status`."""
         import time
         start = time.perf_counter()
-        with self.guard.engine_code():
+        with self.guard.io_wait(kind):
             try:
                 return fn(self.io)
             finally:
@@ -695,10 +697,30 @@ class Runtime:
             log.error("could not write the incantation export %s: %s", self.bindings.export_path, exc)
 
     def cast_from_content(self, being, ability) -> str:
-        """ctx.user.cast(name): the calling instance lends the ability when the user lacks it."""
+        """ctx.user.cast(name): the calling instance lends the ability when the user lacks it. A
+        CastResult: the status (a str), with .remaining_s and .error."""
         with self.guard.engine_code():
-            status, _extra = abilities.cast(self, being, ability, by="content", lend_owner=self.current)
-            return status
+            status, extra = abilities.cast(self, being, ability, by="content", lend_owner=self.current)
+            return CastResult(status, extra)
+
+
+class CastResult(str):
+    """What ctx.user.cast() answers: the status itself ("fired", "cooldown"...), so `== "fired"`
+    works, with what goes with it: `.remaining_s` (the cooldown left, else 0.0), `.error` (why it
+    failed, else None), `.instance` and `.run` (the cast's, when it fired or is charging)."""
+
+    def __new__(cls, status: str, extra: dict | None = None):
+        self = super().__new__(cls, status)
+        extra = extra or {}
+        self.remaining_s = float(extra.get("remaining_s") or 0.0)
+        self.error = extra.get("error")
+        self.instance = extra.get("instance")
+        self.run = extra.get("run")
+        return self
+
+    @property
+    def status(self) -> str:
+        return str(self)
 
 
 def _one_line(x) -> str:

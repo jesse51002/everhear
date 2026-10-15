@@ -193,3 +193,34 @@ def test_the_director_counts_only_time_online(rig):
     r.io.join("Steve")
     r.run_for(6)
     assert len(r.rt.records[iid].state.events) == 3
+
+
+def test_a_short_held_crouch_counts_at_once(rig):
+    r = rig({"watch": WATCH})
+    r.start()
+    r.io.join("Steve")
+    r.tick()
+    r.start_scenario("watch", mode="held")
+    r.io.sneak("Steve", True)
+    r.tick()                                       # one tick down: the Sneak event
+    r.io.sneak("Steve", False)
+    r.tick()                                       # up the next: the Unsneak
+    r.run_for(1)
+    said = texts(r)
+    assert said.count("gesture") == 1 and said.count("sneaking") == 1
+
+
+def test_a_held_crouch_under_late_ticks_still_calls_and_ends(rig):
+    r = rig({"watch": WATCH})
+    r.start()
+    r.io.join("Steve")
+    r.tick()
+    r.start_scenario("watch", mode="held")
+    r.io.sneak("Steve", True)
+    r.tick(dt=0.3)                                 # a slow host: one late tick sees him down
+    r.tick(dt=0.3)
+    r.io.sneak("Steve", False)
+    r.tick(dt=0.3)
+    r.run_for(1)
+    n = texts(r).count("sneaking")
+    assert n == 2                                  # at the Sneak, and once on the late tick: no burst

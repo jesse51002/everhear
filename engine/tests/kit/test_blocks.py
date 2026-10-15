@@ -99,3 +99,99 @@ def test_sign_and_chest_are_one_block_each_with_their_snbt(rig):
                for b in blocks), blocks
     assert any(b.startswith("minecraft:chest[facing=north]{Items:[{Slot:0b,id:\"minecraft:diamond\",count:4}")
                for b in blocks), blocks
+
+
+LONG_ITEM = '''
+class {cls}(Item):
+    class Config(ItemConfig):
+        summary = "An item with a long look."
+        base = "carrot_on_a_stick"
+        name = "{name}"
+        active_in = "mainhand"
+        color = "gold"
+        glint = True
+        lore = {lore}
+'''
+
+BIG_CHEST = '''
+class BigChest(Scenario):
+    class Config(ScenarioConfig):
+        summary = "A chest of six long EverHear items and arrows."
+        duration_s = UNTIL_STOPPED
+
+    class Args(Args):
+        huge: bool = Field(False, description="one item too long for any command")
+
+    class State(State):
+        later: int = -1
+
+    def start(self, ctx):
+        items = ["everhear:huge"] if self.args.huge else ["everhear:power%d" % i for i in range(6)] + ["arrow 64"]
+        self.state.later = chest(self, ctx, (3, 64, 3), items)
+'''
+
+
+def _big_chest_rig(rig):
+    files = {"big_chest": BIG_CHEST}
+    for i in range(6):
+        files["power_%d" % i] = LONG_ITEM.format(cls="Power%d" % i, name="Power of the %dth Kind" % i,
+                                                 lore=repr(["A line of lore, long enough to weigh: %d" % k
+                                                            for k in range(5)]))
+    files["huge"] = LONG_ITEM.format(cls="Huge", name="Huge", lore=repr(["x" * 300] * 6))
+    r = rig(files)
+    r.start()
+    r.io.join("Steve")
+    r.tick()
+    return r
+
+
+def test_a_big_chest_is_queued_then_filled_under_the_command_cap(rig):
+    from vfg_engine.io import BlockData
+    from vfg_engine.mc.rcon import MAX_COMMAND
+    r = _big_chest_rig(rig)
+    iid = r.start_scenario("big_chest")
+    waiting = r.rt.records[iid].state.later
+    r.run_for(0.5)
+    (placed,) = [op for op in r.sent(SetBlock) if op.block.startswith("minecraft:chest")]
+    fills = r.sent(BlockData)
+    assert waiting == len(fills) > 0                                  # more than one command's worth
+    assert len(("setblock 3 64 3 %s strict" % placed.block).encode()) <= MAX_COMMAND
+    assert all(f.pos == (3, 64, 3) and f.path == "Items" and f.how == "append" for f in fills)
+    assert all(len(("data modify block 3 64 3 Items append value %s" % f.snbt).encode()) <= MAX_COMMAND
+               for f in fills)
+    sent = r.io.sent
+    assert sent.index(placed) < min(sent.index(f) for f in fills)    # the chest first, then its stacks
+    every = placed.block + "".join(f.snbt for f in fills)
+    assert all('item:"power%d"' % i in every for i in range(6)) and 'id:"minecraft:arrow",count:64' in every
+    assert r.problems() == []
+
+
+def test_a_one_off_that_ends_at_done_still_gets_every_stack(rig):
+    from vfg_engine.io import BlockData
+    files = {"power%d" % i: LONG_ITEM.format(cls="Power%d" % i, name="Power of the %dth Kind" % i,
+                                             lore=repr(["A line of lore, long enough to weigh: %d" % k
+                                                        for k in range(5)])) for i in range(6)}
+    files["chest_once"] = BIG_CHEST.replace("class BigChest", "class ChestOnce") + """
+    def done(self, ctx):
+        self.result("filled")
+        self.end()
+"""
+    r = rig(files)
+    r.start()
+    r.io.join("Steve")
+    r.tick()
+    iid = r.start_scenario("chest_once")
+    r.run_for(1)
+    assert iid not in r.rt.records                                    # it ended at done(ctx)
+    stacks = r.io.block_data.get(("minecraft:overworld", 3, 64, 3), [])
+    placed = [op for op in r.sent(SetBlock) if op.block.startswith("minecraft:chest")][0].block
+    assert len(stacks) == len(r.sent(BlockData)) > 0
+    every = placed + "".join(snbt for _, _, snbt in stacks)
+    assert all('item:"power%d"' % i in every for i in range(6))      # none lost to the end at done
+
+
+def test_a_stack_too_long_for_any_command_is_refused_in_words(rig):
+    r = _big_chest_rig(rig)
+    r.op("start", scenario="big_chest", args={"huge": True})
+    assert any("everhear:huge in a chest is a stack of" in m and "one command holds 1446" in m for m in r.lines())
+    assert [op for op in r.sent(SetBlock) if op.block.startswith("minecraft:chest")] == []

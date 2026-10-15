@@ -45,7 +45,7 @@ from .config import Config, log
 from .context import Context, parse
 from .loop import Brain, jev_menu
 from .respond import Respond
-from .tasks import Tasks, no_made
+from .tasks import Tasks
 from .vfg import Later, follow, why
 from .vfg import vfg as run_vfg
 from .world import World
@@ -81,9 +81,10 @@ class NoImplementers:
         self.on_report, self.why = on_report, why
 
     async def start(self, name: str, brief: str) -> None:
-        await self.on_report(name, "failed", f"Failed: no implementers here ({self.why}).", "", no_made())
+        await self.on_report(name, "failed", f"Failed: no implementers here ({self.why}).", "", None)
 
-    async def follow_up(self, name: str, text: str, session: str | None = None, brief: str = "") -> None:
+    async def follow_up(self, name: str, text: str, session: str | None = None, brief: str = "",
+                        made: dict | None = None) -> None:
         await self.start(name, text)
 
     def running(self) -> list[str]:

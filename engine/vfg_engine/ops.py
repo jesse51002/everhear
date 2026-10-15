@@ -20,6 +20,7 @@ log = logging.getLogger("vfg_engine")
 
 CASTS_KEPT = 1000          # cast_ids remembered, so a repeated one answers as the first did
 MAX_WAIT_S = 30.0          # how long a start may wait for its scenario's result
+RESULT_KEPT_S = 600        # how long an ended instance's result is kept for the `result` op
 
 
 class OpError(Exception):
@@ -239,6 +240,21 @@ class Ops:
             return {"instance": iid}
         self.engine.wait_for(iid, wait_s, reply, self.current)
         return None
+
+    def op_result(self, args, reply):
+        """An instance's result: `running` and what it reported so far, or `ended` (why) and its
+        result, for one that ended in the last RESULT_KEPT_S (the last few hundred)."""
+        iid = str(_need(args, "instance"))
+        rt = self.rt
+        rec = rt.records.get(iid)
+        if rec is not None and not rec.ending:
+            return {"instance": iid, "running": True, "result": rec.notes.get("result")}
+        got = rt.results.get(iid)
+        if got is None or rt.now - got.get("at", rt.now) > RESULT_KEPT_S:
+            raise OpError("no result kept for %s: it is not running, and did not end in the last %d "
+                          "minutes" % (iid, RESULT_KEPT_S // 60))
+        result = {k: got[k] for k in ("summary", "facts") if k in got} or None
+        return {"instance": iid, "ended": got.get("reason"), "at": got.get("at"), "result": result}
 
     def op_places(self, args, reply):
         p = self.rt.places

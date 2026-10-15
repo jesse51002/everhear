@@ -9,7 +9,7 @@ It answers `list`, `No player was found` to a tellraw for Nobody, `Unknown or in
 command…` to bogus, and 9000 characters in 4096-byte packets to big. Like vanilla, it closes
 the connection when one read holds more than one packet. A `responder` (a callable taking the
 command and returning its reply, or None to fall back to these answers) makes it any server a
-test needs: ../../scripts/_test/fake_places_world.FakeWorld.respond is one.
+test needs (test_vfg's state test, test_engine's migrate test).
 
 With shared=True it answers like vanilla's RconConsoleSource: one output buffer for every
 connection, cleared when a command arrives, written while the command runs (one at a time, as

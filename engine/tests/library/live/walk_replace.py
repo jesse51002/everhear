@@ -15,6 +15,7 @@ def test(t):
     t.start("walk_replace", wait=2, players="Steve", rules="gold_block > ice", radius=1, below=1, above=0,
            every_s=2)
     t.check("it says so", t.said("ice walk on for Steve"))
+    t.watch(0.5)                                      # its first tick (every=0.1), and the queue, need a beat
     t.check("the gold under him turned to ice the moment it started", t.block(0, -1, 0, "ice"))
     t.cmd("player Steve move forward")
     t.watch(3.5)

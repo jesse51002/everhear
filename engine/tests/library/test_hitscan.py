@@ -3,6 +3,8 @@ stops at the first solid block, double damage on the head, and never hits a play
 infinity_gauntlet (item) fires infinity_gauntlet_shot (ability), which kills only the nearest thing
 in its beam, with a flash and a thunderclap only when it hit something."""
 
+import re
+
 import pytest
 
 from vfg_engine.io import AddModifier, Damage, Message, Particle, RemoveModifier, Sound
@@ -101,7 +103,7 @@ def test_within_the_cooldown_a_click_only_says_so(rig):
     r.io.use("Steve")                                     # 0.2 s later: within the 0.5 s cooldown
     r.tick(2)
     assert health(r, mobs["near"]) == before
-    assert any(m.where == "actionbar" and "Super Sniper: recharging" in m.text for m in r.sent(Message))
+    assert any(m.where == "actionbar" and re.search(r"Super Sniper: \d+\.\d s", m.text) for m in r.sent(Message))
     r.run_for(1)
     r.io.use("Steve")                                      # a second on: it fires again
     r.tick(2)
@@ -203,7 +205,7 @@ def test_gauntlet_has_no_cooldown_by_default(rig):
     r.io.use("Steve")                                       # right away: no cooldown
     r.tick(1)
     assert mobs["second"] not in r.io.by_uuid               # the next nearest is gone too
-    assert not any("recharging" in m.text for m in r.sent(Message))
+    assert not any(re.search(r": \d+\.\d s$", m.text) for m in r.sent(Message))
     assert r.problems() == []
 
 

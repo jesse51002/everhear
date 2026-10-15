@@ -53,6 +53,11 @@ def step(rt):
 def inside(area: dict, dim: str, pos) -> bool:
     if dim != area["dim"]:
         return False
+    if "height" in area:                     # a flat cylinder; its height None is all of it
+        c = area["center"]
+        if math.hypot(pos[0] - c[0], pos[2] - c[2]) > area["radius"]:
+            return False
+        return area["height"] is None or abs(pos[1] - c[1]) <= area["height"] / 2
     if "radius" in area:
         return math.dist(pos, area["center"]) <= area["radius"]
     lo, hi = area["box"]

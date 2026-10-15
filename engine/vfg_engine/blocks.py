@@ -5,6 +5,7 @@
     self.blocks.setblock(pos, "oak_door[half=lower]")
     self.blocks.replace((a, b), "snow > air; solid > 70% lava 30% keep")
     self.blocks.sphere(center, 6, "glass", hollow=True)
+    self.blocks.data(pos, "Items", '{Slot:0b,id:"diamond",count:1}')   # a block entity's data, after
     self.blocks.forceload(a, b)                           # load those chunks while this lives
     self.blocks.done                                      # nothing of this instance's left to place
 
@@ -19,6 +20,8 @@ Content asks; the engine places, in its write step, a little each tick:
 - `strict=True` (the default) places without block updates: water stays, sand does not fall;
 - `undo=True` keeps a note of each piece, and when the instance ends puts air back wherever its
   blocks still stand (meant for blocks placed into air: an ice shell, a hut);
+- one instance's jobs are placed in the order it asked for them: a later one waits while an earlier
+  one is not done (a wall never goes up before the clearing it was meant to stand in);
 - when the instance's last job is placed, its `done(ctx)` method is called, if it has one.
 
 What is queued and not yet placed is saved with the engine's state; an instance that ends drops
@@ -34,7 +37,7 @@ import math
 import os
 
 from . import args as argtypes
-from .io import Fill, SetBlock
+from .io import BlockData, Fill, SetBlock
 
 log = logging.getLogger("vfg_engine")
 
@@ -43,6 +46,7 @@ CMDS_PER_TICK = 64          # fills a tick, when the server is fine
 COLUMNS_PER_TICK = 64       # chunk columns planned a tick that ask whether they are loaded
 VISITS_PER_TICK = 4096      # columns looked at a tick at most (one outside a ball costs nothing)
 MAX_RADIUS = 1024           # a sphere's; a nuke's crater is about 1000
+DATA_HOW = ("append", "prepend", "merge", "set")
 BLOCKS_PER_TICK = 4 * MAX_PIECE
 SLOW_MSPT, BUSY_MSPT = 35.0, 45.0
 FORCELOAD_WAIT_S = 30.0
@@ -238,6 +242,21 @@ class Blocks:
                        "hollow": bool(hollow), "mix": choices, "replace": filters, "strict": True, "mode": "replace",
                        "undo": bool(undo), "cell": 1, "seed": str(block)})
 
+    def data(self, pos, path: str, value: str, how: str = "append", dim=None):
+        """Change a block entity's data (a chest's Items, a sign's text) at `pos`:
+        `data modify block <pos> <path> <how> value <value>`, `how` one of append, prepend, merge,
+        set. Queued after the blocks queued before it (so after the chest it fills), with the same
+        rules: loaded chunks only, never in a protected box."""
+        with self._rt.guard.engine_code():
+            if how not in DATA_HOW:
+                raise ValueError("how is %s, not %r" % (", ".join(DATA_HOW), how))
+            path, value = str(path).strip(), str(value).strip()
+            if not path or not value:
+                raise ValueError("data needs a path (Items) and a value (SNBT)")
+            p = _cell(pos)
+            self._add({"kind": "data", "dim": self._dim(pos, dim), "lo": list(p), "hi": list(p),
+                       "path": path, "snbt": value, "how": how, "mix": [], "seed": ""})
+
     def forceload(self, a, b, dim=None):
         """Keep the chunks under a..b loaded while this instance lives."""
         from .io import Forceload
@@ -319,7 +338,11 @@ class BlockQueue:
         cmds, blocks = int(CMDS_PER_TICK * share), int(BLOCKS_PER_TICK * share)
         columns, visits = COLUMNS_PER_TICK, VISITS_PER_TICK
         self._loaded = {}
+        waiting: set = set()                        # owners with an earlier job not done yet
         for job in self.jobs:
+            owner = job.get("owner")                # one owner's jobs go in order (None: the undoing)
+            if owner in waiting:
+                continue
             while cmds > 0 and blocks > 0 and columns > 0 and visits > 0 and not job.get("finished"):
                 if job["next"] >= job["columns"]:
                     self._finish(job)
@@ -336,6 +359,10 @@ class BlockQueue:
                     cmds -= 1
                     blocks -= _volume(lo, hi)
                 job["next"] += 1
+            if not job.get("finished") and job["next"] >= job["columns"]:
+                self._finish(job)                    # planned to its end: the next one may go on
+            if not job.get("finished"):
+                waiting.add(owner)
             if cmds <= 0 or blocks <= 0 or columns <= 0 or visits <= 0:
                 break
         if any(j.get("finished") for j in self.jobs):
@@ -360,7 +387,9 @@ class BlockQueue:
 
     def _send(self, job, lo, hi, block, filt):
         dim, owner = job["dim"], job.get("owner")
-        if lo == hi and filt is None and job.get("mode", "replace") == "replace":
+        if job["kind"] == "data":
+            op = BlockData(dim, tuple(lo), job["path"], job["snbt"], job["how"])
+        elif lo == hi and filt is None and job.get("mode", "replace") == "replace":
             op = SetBlock(dim, tuple(lo), block, job.get("strict", True))
         else:
             op = Fill(dim, tuple(lo), tuple(hi), block, filt, job.get("strict", True), job.get("mode", "replace"))
@@ -441,6 +470,8 @@ class BlockQueue:
         for p_lo, p_hi in self.protected.get(dim):
             boxes = [part for b in boxes for part in subtract(b[0], b[1], p_lo, p_hi)]
         out = []
+        if job["kind"] == "data":                # one block entity: there, unless it was spared
+            return [(list(lo), list(lo), None, None)] if boxes else []
         for b_lo, b_hi in boxes:
             if job["kind"] == "sphere":
                 out.extend(self._sphere_runs(job, b_lo, b_hi))

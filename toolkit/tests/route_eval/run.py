@@ -1,29 +1,33 @@
 #!/usr/bin/env python3
-"""The router's evaluation: the run's 116 implementer briefs against the library.
+"""The router's evaluation: the run's 116 implementer briefs against the engine's library.
 
     python3 toolkit/tests/route_eval/run.py              live: `vfg route` on each brief, Jev on the box
     python3 toolkit/tests/route_eval/run.py --words      the fallback alone, no network: a baseline
-    ... --briefs toolkit/tests/route_eval/value_asks.jsonl   20 short asks an example does with its values
+    ... --briefs toolkit/tests/route_eval/value_asks.jsonl   20 short asks a class does with its args
     ... [--only E001,E007] [--limit N] [--misses] [--out results.jsonl]
 
-briefs.jsonl holds each brief as the orchestrator wrote it on 2026-10-08, its
-task (its id of that day, a label here) and the task's text and context, and its labels: every example
-script and preset that is part of the job, from what the implementer actually did, with
-players' names replaced (Steve, Alex, Sam); `values_only` marks the 19 jobs the
-examples now do by their values alone, where the labelled script should come
-back runs_it rather than close. It runs against whatever is in the
-library now (VFG_REPO, default this repo), never this server's made/ folder.
+briefs.jsonl holds each brief as the orchestrator wrote it on 2026-10-08, its task (its id of that
+day, a label here) and the task's text and context, and its labels: the example scripts and presets
+of the old library that were part of the job, from what the implementer actually did, with
+players' names replaced (Steve, Alex, Sam); `values_only` marks the 19 jobs an example did by its
+values alone, where the labelled class should come back runs_it rather than close.
 
---words gives route.route, in process, the brief with its task's text and context. Live, since named
-tasks (Prototype_Named_Tasks), `vfg route` reads a task from the box's tasks table, which only the
-brain writes, so the eval runs `vfg route --ref <ref>` with no --task: Jev gets the brief alone.
-The live figures since then are not comparable with the earlier runs', which gave Jev the task's
-text and the player's line too.
+The old library is gone (the game engine spec, part 2): every script that was kept is a class in
+engine/library/, and `vfg route` picks classes. A script's label is read as the class that took it
+over: the library's class of the same name, else the one SCRIPT_CLASS names (a script that was no
+action's), else the one lib/migrate_map.py's row for its action names (zoo and summon_around are
+horde, meteor_shower is meteor, ...); a script none knows is counted "absent". Preset labels are
+dropped: a preset is a kit helper now, in every implementer's prefix (engine/KIT.md), never routed.
+It runs against whatever is in the library now (VFG_REPO, default this repo), never this server's
+made/ folder.
 
-A brief passes when every labelled script is among the loaded scripts and
-every labelled preset is among the loaded presets or held by a loaded script.
-The bars (spec, "Test"): 9 in 10 briefs pass, and 90% of calls answer within a
-second, end to end. Live, each call writes a jev usage row with ref route-eval.
+--words gives route.route, in process, the brief with its task's text and context. Live, `vfg
+route` reads a task from the box's tasks table, which only the brain writes, so the eval runs `vfg
+route --ref <ref>` with no --task: Jev gets the brief alone.
+
+A brief passes when every labelled class is among the loaded classes (at most 3: Jesse's cap). The
+bars (spec, "Test"): 9 in 10 briefs pass, and 90% of calls answer within a second, end to end.
+Live, each call writes a jev usage row with ref route-eval.
 """
 import argparse
 import json
@@ -38,9 +42,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLKIT = os.path.dirname(os.path.dirname(HERE))
 VFG = os.path.join(TOOLKIT, "vfg")
 sys.path.insert(0, os.path.join(TOOLKIT, "lib"))
+import migrate_map  # noqa: E402
 import route  # noqa: E402
 
 NO_SERVER = "route-eval-none"   # a made/ folder that does not exist: the library only
+# Old scripts whose name was no action's (a script under several actions, or one a boss ran): the
+# class that took each over, by the library's own module docstrings.
+SCRIPT_CLASS = {"dragon_boss": "boss_fight", "gravity_staff": "gravity_lift_staff", "keep_effects": "potion_effect",
+                "mountain_trees": "mountains", "sniper_rifle": "super_sniper"}
 
 
 def load(path):
@@ -55,6 +64,23 @@ def pct(xs, p):
         return 0
     k = max(0, min(len(xs) - 1, int(round(p / 100.0 * len(xs) + 0.5)) - 1))
     return xs[k]
+
+
+def class_of(script, have):
+    """The class an old script's label is now: the library's of the same name, else SCRIPT_CLASS's,
+    else the one its action's migration row names; the script's own name when none knows it
+    (absent)."""
+    if script in have:
+        return script
+    if script in SCRIPT_CLASS:
+        return SCRIPT_CLASS[script]
+    row = migrate_map.MAP.get(script) or {}
+    return row.get("scenario") or row.get("ability") or script
+
+
+def labels(b, have):
+    """A brief's labelled classes, each once, in order."""
+    return list(dict.fromkeys(class_of(s, have) for s in b.get("scripts") or []))
 
 
 def call_live(b, repo, home, ref):
@@ -80,16 +106,6 @@ def call_words(b, cards):
     return got, int((time.monotonic() - t0) * 1000)
 
 
-def judge(b, got, holds):
-    """(missed scripts, missed presets) for one brief."""
-    scripts = [s["name"] for s in got["scripts"]]
-    presets = set(p["name"] for p in got["presets"])
-    for s in scripts:
-        presets.update(holds.get(s, ()))
-    return ([s for s in b["scripts"] if s not in scripts],
-            [p for p in b["presets"] if p not in presets])
-
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--words", action="store_true", help="the fallback alone, in process, no network")
@@ -110,10 +126,8 @@ def main():
     if a.limit:
         briefs = briefs[:a.limit]
     cards = route.load_cards(a.repo, NO_SERVER)
-    have = {(c["kind"], c["name"]) for c in cards}
-    holds = {c["name"]: c["presets"] for c in cards if c["kind"] == "script"}
-    n_scripts = sum(1 for c in cards if c["kind"] == "script")
-    print("library: %d example scripts, %d presets in %s" % (n_scripts, len(cards) - n_scripts, a.repo))
+    have = {c["name"] for c in cards}
+    print("library: %d classes in %s" % (len(cards), a.repo))
 
     # A VFG_HOME of its own, with this PC's config and known hosts and no brain/ folder: live, each
     # brief goes to vfg route alone.
@@ -126,17 +140,15 @@ def main():
     rows, out = [], open(a.out, "w", encoding="utf-8") if a.out else None
     for i, b in enumerate(briefs, 1):
         got, wall = call_words(b, cards) if a.words else call_live(b, a.repo, home, a.ref)
-        ms, mp = judge(b, got, holds)
-        absent = [s for s in b["scripts"] if ("script", s) not in have] + \
-                 [p for p in b["presets"] if ("preset", p) not in have]
-        verdicts = {s["name"]: s["verdict"] for s in got["scripts"]}
-        row = {"id": b["id"], "task": b["task"], "pass": not ms and not mp, "missed_scripts": ms,
-               "verdicts": {s: verdicts[s] for s in b["scripts"] if s in verdicts},
-               "values_only": bool(b.get("values_only")),
-               "missed_presets": mp, "absent": absent, "labelled": bool(b["scripts"] or b["presets"]),
-               "loaded": len(got["scripts"]) + len(got["presets"]), "wall_ms": wall, "ms": got["ms"],
-               "tokens": got["tokens"], "fallback": got["fallback"], "why": got.get("why"),
-               "scripts": [s["name"] for s in got["scripts"]], "presets": [p["name"] for p in got["presets"]]}
+        want = labels(b, have)
+        picked = [c["name"] for c in got["classes"]]
+        verdicts = {c["name"]: c["verdict"] for c in got["classes"]}
+        missed = [c for c in want if c not in picked]
+        row = {"id": b["id"], "task": b["task"], "pass": not missed, "labels": want, "missed": missed,
+               "absent": [c for c in want if c not in have], "verdicts": {c: verdicts[c] for c in want if c in verdicts},
+               "values_only": bool(b.get("values_only")), "labelled": bool(want), "loaded": len(picked),
+               "wall_ms": wall, "ms": got["ms"], "tokens": got["tokens"], "fallback": got["fallback"],
+               "why": got.get("why"), "classes": picked}
         rows.append(row)
         if out:
             out.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -150,42 +162,35 @@ def main():
     if a.misses:
         for r in rows:
             if not r["pass"]:
-                print("MISS %s %s: scripts %s presets %s%s — loaded %s | %s" % (
-                    r["id"], r["task"], ",".join(r["missed_scripts"]) or "-", ",".join(r["missed_presets"]) or "-",
+                print("MISS %s %s: %s%s — loaded %s" % (
+                    r["id"], r["task"], ",".join(r["missed"]),
                     " (not in the library: %s)" % ",".join(r["absent"]) if r["absent"] else "",
-                    ",".join(r["scripts"]) or "-", ",".join(r["presets"]) or "-"))
+                    ",".join(r["classes"]) or "-"))
 
     n = len(rows)
     ok = sum(r["pass"] for r in rows)
     labelled = [r for r in rows if r["labelled"]]
     present = [r for r in labelled if not r["absent"]]
-    items = sum(len(b["scripts"]) + len(b["presets"]) for b in briefs)
-    missed = sum(len(r["missed_scripts"]) + len(r["missed_presets"]) for r in rows)
+    items = sum(len(r["labels"]) for r in rows)
+    missed = sum(len(r["missed"]) for r in rows)
     absent = sorted(set(x for r in rows for x in r["absent"]))
     walls = [r["wall_ms"] for r in rows]
     loaded = [r["loaded"] for r in rows]
     print("briefs: %d, %d with labels, %d whose labels are all in the library" % (n, len(labelled), len(present)))
+    print("preset labels dropped (a kit helper now, never routed): %d" % sum(len(b.get("presets") or [])
+                                                                           for b in briefs))
     if absent:
-        print("labelled but not in the library yet (%d): %s" % (len(absent), ", ".join(absent)))
-    print("every labelled item loaded: %d/%d briefs (%.0f%%); %d/%d with labels (%.0f%%); "
+        print("labelled but not in the library (%d): %s" % (len(absent), ", ".join(absent)))
+    print("every labelled class loaded: %d/%d briefs (%.0f%%); %d/%d with labels (%.0f%%); "
           "%d/%d whose labels are all in the library (%.0f%%)" % (
               ok, n, 100.0 * ok / max(1, n),
               sum(r["pass"] for r in labelled), len(labelled), 100.0 * sum(r["pass"] for r in labelled) / max(1, len(labelled)),
               sum(r["pass"] for r in present), len(present), 100.0 * sum(r["pass"] for r in present) / max(1, len(present))))
-    print("labelled items loaded: %d/%d (%.0f%%)" % (items - missed, items, 100.0 * (items - missed) / max(1, items)))
-    for kind, key, miss in (("script", "scripts", "missed_scripts"), ("preset", "presets", "missed_presets")):
-        # each kind alone, over the labels the library has: what a partial library can show
-        want = [(b, r) for b, r in zip(briefs, rows) if any((kind, x) in have for x in b[key])]
-        n_items = sum(sum(1 for x in b[key] if (kind, x) in have) for b, _ in want)
-        n_miss = sum(sum(1 for x in r[miss] if (kind, x) in have) for _, r in want)
-        n_ok = sum(1 for b, r in want if not [x for x in r[miss] if (kind, x) in have])
-        print("%ss alone, labels in the library: every one loaded for %d/%d briefs (%.0f%%); %d/%d items (%.0f%%)" % (
-            kind, n_ok, len(want), 100.0 * n_ok / max(1, len(want)), n_items - n_miss, n_items,
-            100.0 * (n_items - n_miss) / max(1, n_items)))
-    for title, group in (("all briefs", rows), ("jobs its values alone do", [r for r in rows if r["values_only"]])):
+    print("labelled classes loaded: %d/%d (%.0f%%)" % (items - missed, items, 100.0 * (items - missed) / max(1, items)))
+    for title, group in (("all briefs", rows), ("jobs its args alone do", [r for r in rows if r["values_only"]])):
         vs = [v for r in group for v in r["verdicts"].values()]
         if vs and not a.words:
-            print("labelled scripts loaded, %s: %d runs_it (%.0f%%), %d close" % (
+            print("labelled classes loaded, %s: %d runs_it (%.0f%%), %d close" % (
                 title, vs.count("runs_it"), 100.0 * vs.count("runs_it") / len(vs), vs.count("close")))
     print("loaded per brief: median %s, mean %.1f, max %d, of %d in the library" % (
         statistics.median(loaded) if loaded else 0, statistics.mean(loaded) if loaded else 0,
@@ -202,7 +207,7 @@ def main():
         tokens, tokens // max(1, n), tokens * 42e-9))
     bar1 = ok >= 0.9 * n
     bar2 = sum(w < 1000 for w in walls) >= 0.9 * n
-    print("BAR every labelled item loaded for 9 in 10 briefs: %s" % ("PASS" if bar1 else "FAIL"))
+    print("BAR every labelled class loaded for 9 in 10 briefs: %s" % ("PASS" if bar1 else "FAIL"))
     print("BAR 90%% of calls within a second: %s%s" % ("PASS" if bar2 else "FAIL",
                                                      " (words only: not a Jev call)" if a.words else ""))
     return 0 if bar1 and bar2 else 1

@@ -44,8 +44,10 @@ class BloodMoon(Scenario):
         self.hold("weather", "thunder")
         speak(self, ctx, "BLOOD MOON", voice="", color="dark_red", where="title")
         speak(self, ctx, "the dark is hungry", voice="", color="gray", where="subtitle")
-        self.sound("minecraft:entity.warden.emerge", volume=4, pitch=0.7)
         speak(self, ctx, "BLOOD MOON. You cannot see me, but I see you. Level %d." % a.level)
+        for name in names:
+            p = ctx.world.player(name)
+            self.sound("minecraft:entity.warden.emerge", p.pos, volume=4, pitch=0.7, to=[name], dim=p.dim)
         self.state.rounds = len(names)
         for i, name in enumerate(names):
             self.after(i * self.config.gap_s, "spawn_round", name)
@@ -65,7 +67,10 @@ class BloodMoon(Scenario):
 
     def heartbeat(self, ctx):
         self.state.beat += 1
-        self.sound("minecraft:entity.warden.heartbeat", volume=1, pitch=0.5)
+        for name in players(ctx, self.args.players):
+            p = ctx.world.player(name)
+            if p is not None and p.alive:
+                self.sound("minecraft:entity.warden.heartbeat", p.pos, volume=1, pitch=0.5, to=[name], dim=p.dim)
         if self.state.beat < self.config.beats:
             self.after(self.config.beat_s, "heartbeat")
         else:

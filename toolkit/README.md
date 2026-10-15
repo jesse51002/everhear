@@ -185,10 +185,12 @@ the brain's whole menu.
   `/` dropped, through the library's `command` scenario: `engine_start` with `scenario=command` and
   `args={"commands": [<the command>]}`, waited for. It prints Minecraft's replies, the result's
   `facts.replies`, one a line, else its summary; exit 1 with `minecraft rejected the command` when
-  the result says `failed`, or with the engine's refusal (a command that is the owner's among
-  them). A command over 1400 bytes is exit 1 (`put it in a class`), and a word your shell expanded
-  from `~` is exit 2: single-quote `~` and JSON. TODO(library): `engine/library/` has no `command`
-  scenario yet (`CMD_SCENARIO` in `vfg`); until it has, the engine refuses `vfg cmd`.
+  Minecraft refused it (the result's `failed`, with its reply), with the scenario's own words for a
+  block command (`setblock`, `fill`, `clone`, `place`, `fillbiome`: it never sends one), or with the
+  engine's refusal (a command that is the owner's among them). A command over 1400 bytes is exit 1
+  (`put it in a class`), and a word your shell expanded from `~` is exit 2: single-quote `~` and
+  JSON. Any one-off's result whose facts say `failed` (the command scenario's: the command it
+  stopped at) makes `vfg action run engine_start` `"ok": false`, exit 1, its summary the error.
 - **`vfg action list [--json]`** prints `name — its line` per action, or `none`, and warns for each
   file that did not load; `--json` prints the actions cache, `$VFG_HOME/actions.json`: `{"built_at",
   "files", "actions": {name: {"line", "engine", "takes", "timeout_s", "file", "fields": {field:
@@ -268,10 +270,13 @@ vfg engine migrate [--players a,b] [--dry-run] [--force]   # below
   **`stop`** takes a scenario's name, stopping every run of it, or one `--instance`.
 - **`config get <class>`** prints the class's Config exactly as written on this PC, `made/main/
   content/fireball.py, lines 10 to 33: the Config of Fireball, as written`, then its lines; the
-  engine says which file and class (its `config_get`), a class whose file is not in
-  `made/<VFG_SERVER>/content/` is refused (exit 1: only this server's content is rewritten here),
-  and a box that runs another version than this PC holds is a warning. `--json` is `{"ok", "class",
-  "class_name", "file", "start", "end", "source"}`. **`config set <class>`** takes the whole new
+  engine says which file and class (its `config_get`). A library class is read where it runs: this
+  server's own version, `made/main/content/fireball.py (this server's, over the library's)`, when
+  there is one (the engine runs a made class in place of the library's of the same id), else
+  `engine/library/fireball.py (the library's)`; one the box runs from anywhere else is refused
+  (exit 1). A box that runs another version than this PC holds is a warning, and so is a server
+  version not deployed yet. `--json` is `{"ok", "class", "class_name", "file", "whose" ("library"
+  or "server"), "library" (the library has one), "start", "end", "source"}`. **`config set <class>`** takes the whole new
   Config class on stdin, at any indentation: the engine's `engine/vfg_engine/rewrite.py` (standard
   library, loaded by its path) splices it into exactly the old one's lines and runs the static
   checks (it parses, the same fields and formulas, nothing outside the Config changed, and only
@@ -281,31 +286,39 @@ vfg engine migrate [--players a,b] [--dry-run] [--force]   # below
   under `$VFG_HOME/engine.lock`; when the engine refuses it (a reload check: in bounds, damage at
   three powers, imports), or is down, or does not answer, this PC's file is put back and deployed
   again, and the error is the answer, saying so. A Config already as written changes nothing
-  (`"changed": []`). **`config undo <class>`** splices the Config of that class's last kept version
-  back into the file as it is now, checked, deployed and reloaded the same way, and moves the
-  version to `undone/`, so the next undo goes one further back. The kept versions are
+  (`"changed": []`). A library class's first rewrite copies its file into `made/<server>/content/`
+  first and splices there: that copy then runs in the library's place (`copied_from` in the facts;
+  the library's file never changes); refused, the copy is removed again. **`config undo <class>`**
+  splices the Config of that class's last kept version back into the file as it is now, checked,
+  deployed and reloaded the same way, and moves the version to `undone/`, so the next undo goes one
+  further back; undoing a library class's first rewrite removes the copy, deploys and runs a full
+  reload, and the library's version runs again. The kept versions are
   `made/<server>/content/.history/<file>/<YYYYmmdd-HHMMSS-ffffff>-<Class>.py`, the whole file before
-  each change, and `.history/log.jsonl` one line a change or a refusal (`at`, `op`, `class`,
-  `class_name`, `file`, `ok`, `kept` or `error`, `by`); a deploy skips dot folders, so none reaches
-  the box.
+  each change (`<Class>.library.py` for the library's, before a first rewrite), and
+  `.history/log.jsonl` one line a change or a refusal (`at`, `op`, `class`, `class_name`, `file`,
+  `ok`, `kept` or `error`, `by`, `library`); a deploy skips dot folders, so none reaches the box.
 - **`migrate`** moves what the old system kept into the engine, once: one SSH call reads the
   places in Minecraft's command storage `everhear:places` over RCON and the old incantation store,
   `/opt/vfg/incantations.json` (`remote/migrate.py`, with `remote/places.py`; it writes nothing),
   then one `places_import`, which the engine takes once per world (`--force`: again; a name already
-  saved is kept and reported), and one `bind` a binding, with its old aliases, everyday aliases and
-  `by`, and no alias call. A binding goes onto the class that took its action over, by `MIGRATE_MAP`
-  in `vfg`: an ability it casts (its old values stay behind, a note: the Config is one version for
-  everyone), or a scenario it starts with its old values as args (a caster field as `caster`) and
-  its cooldown. An `@a` binding is split over `--players`, else over every player another binding
-  names; an action with no row is left behind and said, never guessed. It prints `places: 2 found,
+  saved is kept and reported), the classes read once, and one `bind` a binding, with its old
+  aliases, everyday aliases and `by`, and no alias call. A binding goes onto the class that took its
+  action over, by `lib/migrate_map.py`'s table (a row for every action of the old library and of
+  made/main; `tests/test_migrate_map.py` holds each to its class's kind and Args): an ability it
+  casts, granted to its player first (its old values stay behind, a note: the Config is one version
+  for everyone), or a scenario it starts with its old values translated into args (renamed, a value
+  mapped through the row's table, a merged script's recipe as fixed args; one with no arg stays
+  behind, a note) and its cooldown. A caster field becomes `caster` in a `Player` or `Place` arg,
+  else the binding's own player (a binding is one player's). A row can refuse an action in words
+  (a weapon that was given, not cast: give the item instead). An `@a` binding is split over
+  `--players`, else over every player another binding names; an action with no row is left behind
+  and said, never guessed. It prints `places: 2 found,
   imported`, a `moved KrownJM "freeze" (blizzard_freeze): KrownJM "freeze" casts blizzard` line a
   binding and a `left …: why` line for the rest; `--json` is `{"ok", "dry_run", "places": {"found",
   "imported", "skipped", "refused", "version", "world", "ok"}, "bindings": [{"from", "player",
-  "phrase", "kind", "id", "args", "notes", "ok"?, "error"?}], "left": [{"from", "why"}]}`. Exit 1
-  when anything was left behind or refused; the rest still moves. `--dry-run` reads and says, and
-  sends nothing to the engine. TODO(library): `MIGRATE_MAP` holds made/main's three rows
-  (`blizzard_freeze` → `blizzard`, `fire_aura_krown` → `flame`, `fireball_cast` → `fireball`); a
-  row for each library action an incantation may have bound comes as its class is ported.
+  "phrase", "kind", "id", "args", "notes", "granted"?, "ok"?, "error"?}], "left": [{"from", "why"}]}`.
+  Exit 1 when anything was left behind or refused; the rest still moves. `--dry-run` reads and
+  says, and sends nothing to the engine but a read of its classes.
 
 ## Incantations
 
@@ -331,7 +344,10 @@ path).
   one-word phrase found as Layer 2 finds it: `bind_warnings`), the everyday note (below), `Steve
   does not have fireball yet: saying it casts nothing until it is granted (engine_grant)`, and
   `replaces Steve's "fire ball", which cast fireball`. The engine's `bind` follows in a second SSH
-  call, with the aliases, the everyday aliases and `--by`, the task that bound it: `"fire ball"
+  call, with the aliases, the everyday aliases and `--by`, the task that bound it. **`--aliases
+  a,b`** (or a JSON list; `''` for none) are its aliases as given, with **`--everyday a,b`** those of
+  them the spotter leaves out: no alias call and no code aliases (put-back binds a replaced binding
+  again so, as it was). Then `"fire ball"
   for Steve now casts fireball; aliases fireball`, its `facts` the binding's `id`
   (`steve.fire_ball`), its `entry` as the engine stored it (its aliases as kept and its cooldown)
   and `alias_call`.
@@ -504,15 +520,19 @@ passes in.
   `tests/bin/`'s fake `systemctl`, `sudo` and `journalctl` for `vfg up`; the owner's commands kept
   in one list (`engine/vfg_engine/mc/commands.py`); `TestRealFeedWriter` runs the bridge's
   `vfg_feed.py` in place of the fake. The player-state test of `vfg state --items` reads 26.3's
-  recorded replies from `scripts/_test/mc_26_3.py`, and two RCON lock tests run
-  `scripts/_lib/mc.py` beside vfg's client: each skips, saying why, where its file is missing.
+  recorded replies (`MC_26_3`), and two RCON lock tests run the engine's client
+  (`engine/vfg_engine/mc/rcon.py`) and realmc's beside vfg's, the three holding one lock.
 - `test_engine.py`: every `vfg engine` op against `fake_engine.py`, the engine's control socket
   served in this process, its replies shaped as `engine/vfg_engine/ops.py`'s: the reads, the ops,
-  the content's deploy and reload, a Config set, refused and put back, undone, binds and the alias
-  call (`TestAliases`: its prompt, the code's checks, the everyday aliases), the menu's engine
-  actions through `vfg action run`, and `migrate`; a Config is held to the engine's own
+  the content's deploy and reload, a Config set, refused and put back, undone (a library class's
+  too: `TestLibraryConfig`, its copy shadowing the library's and taken away), binds, `--aliases`
+  and the alias call (`TestAliases`: its prompt, the code's checks, the everyday aliases), the
+  menu's engine actions through `vfg action run`, and `migrate` (its grants, a caster in a players
+  arg); a Config is held to the engine's own
   `engine/vfg_engine/rewrite.py`. `TestRealEngine` runs the same against the engine itself,
   `python -m vfg_engine --fake-io` (no Minecraft), and skips, saying why, when it cannot start.
+- `test_migrate_map.py`: `lib/migrate_map.py`'s table: a row for every old action, each naming a
+  class of its kind whose Args take every arg it sets, and `translate()`.
 - `test_task.py`: `vfg task set` and `list` on the box's `tasks` table, `vfg context --json`'s
   tasks, and a box without the table.
 - `test_test.py`: `vfg test` against a second box whose engine's Python is `fake_livetest.py`
@@ -527,7 +547,9 @@ passes in.
   command here with bash: a command and its SSH options, closed descriptors, and watches
   following the feed.
 
-`tests/route_eval/` is an eval, not a test: it calls Jev for real.
+`tests/route_eval/` is an eval, not a test: it calls Jev for real (`--words`: the fallback alone,
+no network). Its labels are the old library's scripts from the 2026-10-08 run, read as the classes
+that took them over (`run.py`'s `class_of`).
 
 ## Settings
 

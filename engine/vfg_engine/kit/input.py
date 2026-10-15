@@ -24,6 +24,7 @@ from ._base import call_back, later, limits, memory, step
 RELEASE_S = 0.4                     # a right-click held down repeats a Use about every 0.2 s: none for
                                     # this long is a let-go
 WATCH_S = 0.1                       # how often a held button is looked at
+NEXT_S = 0.05                       # a held crouch's step: under a tick, so it comes at the next one
 FILL = 10                           # squares in the action bar's fill
 FELL_FROM = 3.0                     # a landing after a fall this high is a step with `fell`
 CHUNKS_KEPT = 20000                 # chunks chunks_entered remembers, at most (the oldest go)
@@ -90,7 +91,13 @@ def _held_watch(self, ctx, who, hold_s, repeat_s, fill):
 def sneak_gesture(self, ctx, ev, mode: str = "three_taps", within: float = 1.5, every: float = 0.1) -> bool:
     """Feed it each Sneak and Unsneak (listen to both). True when the gesture is made: "tap" each
     time they crouch; "three_taps" when they crouch three times within `within` seconds; "held"
-    when they crouch, and then `on_sneaking(ctx)` is called every `every` s until they stand up."""
+    when they crouch, and then `on_sneaking(ctx)` is called at once and every `every` s until they
+    stand up.
+
+    "held" goes by the events and the snapshot, never by one timer landing in time: the Sneak
+    event is a tick whose snapshot has them down, so it counts there and then, however short the
+    crouch; after it a step each tick calls again on the clock while they are still down (no
+    Unsneak yet, and the snapshot says sneaking), and the first tick they are up ends it."""
     if mode not in GESTURES:
         raise ValueError("mode is one of %s, not %r" % (", ".join(GESTURES), mode))
     mem = memory(self, "sneak")
@@ -103,7 +110,11 @@ def sneak_gesture(self, ctx, ev, mode: str = "three_taps", within: float = 1.5, 
     if mode == "tap":
         return True
     if mode == "held":
-        later(self, float(every), "sneak_held", who, float(every))
+        m["next"] = ctx.now + float(every)
+        if not m.get("watching"):
+            m["watching"] = True
+            later(self, NEXT_S, "sneak_held", who, float(every))
+        _optional(self, ctx, "on_sneaking")
         return True
     taps = [t for t in m["taps"] if ctx.now - t <= within] + [ctx.now]
     m["taps"] = [] if len(taps) >= 3 else taps
@@ -116,10 +127,13 @@ def _sneak_held(self, ctx, who, every):
     p = ctx.world.player(who)
     if not m or not m.get("down") or p is None or not p.sneaking:
         if m:
-            m["down"] = False
+            m["down"] = m["watching"] = False
         return
-    _optional(self, ctx, "on_sneaking")
-    later(self, every, "sneak_held", who, every)
+    if ctx.now >= m.get("next", 0.0):
+        due = m.get("next", 0.0) + every
+        m["next"] = due if due > ctx.now else ctx.now + every     # a late tick: no burst to catch up
+        _optional(self, ctx, "on_sneaking")
+    later(self, NEXT_S, "sneak_held", who, every)
 
 
 # ---- walking ---------------------------------------------------------------------------------

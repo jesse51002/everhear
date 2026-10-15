@@ -1,19 +1,20 @@
 # realmc — real 26.3 servers on this PC, for testing everything end to end
 
 A real Minecraft Java 26.3 server (the box's own `server.jar`), with a stand-in for the box's
-`/opt/vfg` and `/opt/mc` around it, so `vfg cmd`, `vfg script …`, `vfg state`, every remote
-program and every script run here, the remote side on the box's Python 3.12 at the box's path
-(`<vfg>/python/bin/python3`, as `/opt/vfg/python/bin/python3` there), against the real server's RCON. No EC2. Several servers run side by side, one per name, each with its own
+`/opt/vfg` and `/opt/mc` around it, so `vfg`, its remote programs, the game engine (with the
+datapack it installs), the bridge and Jev run here, the remote side on the box's Python 3.12 at
+the box's path (`<vfg>/python/bin/python3`, as `/opt/vfg/python/bin/python3` there), against the
+real server's RCON. No EC2. Several servers run side by side, one per name, each with its own
 world, ports and stand-in, so builders testing at the same time never share one.
 
 ## Start one, point vfg at it, stop it
 
 ```sh
 integration/realmc/up                    # the server "main"; prepares everything on first use
-eval "$(integration/realmc/env)"         # this shell's vfg (and `import mc`) now reach it
-vfg cmd 'time query day'                 # → Timeline minecraft:day is at 6000 tick(s)
-vfg action run tnt_rain                  # its script deployed to the stand-in, run there on Python 3.12
-integration/realmc/down                  # stops its scripts (their cleanup runs), then the server
+eval "$(integration/realmc/env)"         # this shell's vfg (and an engine run in it) now reach it
+integration/realmc/realmc.py cmd 'time query day'   # → Timeline minecraft:day is at 6000 tick(s)
+vfg state                                # who is online and where, through the stand-in's fake ssh
+integration/realmc/down                  # stops the engine, bridge and Jev run against it, then the server
 ```
 
 `up` does nothing if the server already runs; `up --fresh` stops it and gives it a fresh copy of
@@ -24,7 +25,7 @@ template again from the seed first. `--vanilla` starts it without Fabric and Car
 repo's `toolkit/vfg` with `HOME` and `VFG_HOME` in the stand-in and the keys that choose the box
 (`VFG_SSH*`, `VFG_REMOTE_*`, `VFG_REPO`) pinned, so nothing reads `~/.vfg` or `~/.ssh`. `HOME`
 itself is not exported, so `uv`, `git` and the rest of the shell keep yours. It also exports
-`VFG_MC_PROPERTIES`, so `PYTHONPATH=scripts/_lib python3 …` scripts reach the same server,
+`VFG_MC_PROPERTIES`, so a game engine (`python -m vfg_engine`) run in that shell reaches the same server,
 `REALMC_NAME`, the default for every command below, and `VFG_MADE_ARCHIVE`, `<NAME>/made-archive`,
 so `vfg made save` and `restore` use the stand-in's own archive, never the PC's (`bin/vfg` sets it
 too when it is not set).
@@ -72,7 +73,7 @@ A name is `a-z 0-9 _ -`, at most 24. Take one per builder or per test run (`p1`,
 `smoke` is the smoke test's) and keep to it in that shell: after `eval "$(…/env p1)"`, `up`,
 `down`, `status`, `cmd` and `players.py` without a name all mean `p1`. Each server has its own
 game and RCON ports (free ones, on 127.0.0.1, picked when it is first made and checked at each
-start), its own RCON password, its own world, `run/`, `vfg.db` and scripts. They share the jar,
+start), its own RCON password, its own world, `vfg.db` and engine. They share the jar,
 its libraries, Carpet and the template world. Each takes up to 2 GB of heap (`REALMC_HEAP`) and
 about 0.8 GB when idle, with view distance 10 and simulation distance 6; six ran side by side on
 this PC (12 cores, 38 GB) with room to spare.
@@ -100,7 +101,7 @@ One normal world, made once from the fixed seed `20261009` and kept as `.server/
   blocks around the arena, and has every chunk within 224 blocks of the origin already
   generated, so view distance 10 around the arena only reads from disk.
 - **Held still.** Noon and clear weather, held (`advance_time` and `advance_weather` false), and
-  `respawn_radius 0`. A test that needs night sets it: `vfg cmd 'time set midnight'`.
+  `respawn_radius 0`. A test that needs night sets it: `realmc.py cmd 'time set midnight'`.
 
 `up --fresh` puts a server's world back to the template, and is how to undo what a test did.
 
@@ -158,7 +159,7 @@ What Carpet 26.3 does that a test must allow for, all seen on this server:
   5. `players.hold` is `use interval 4`, the person's rate (1 s → +5 on `vfg_click`); a single
   `use` or `stop` ends either.
 - A use with a carrot_on_a_stick adds exactly 1 to `minecraft.used:minecraft.carrot_on_a_stick`,
-  so the kit's `vfg_click` path works as for a person: one use → 1, a 1 s hold → 5, and a click
+  so a right-click counted that way works as for a person: one use → 1, a 1 s hold → 5, and a click
   with a different carrot_on_a_stick in hand is not counted for the item.
 - `sneak`/`unsneak`, `move forward` (about 4.7 blocks a second) and `move` to stop, `jump`,
   `drop` (the selected slot's item, onto the ground), `hotbar N`, `attack`, `sprint` all work;
@@ -228,13 +229,16 @@ survival, allow-flight), with its password and secrets left out. The console goe
 integration/realmc/smoke.sh [NAME] [--keep]    # NAME defaults to smoke
 ```
 
-Up with a fresh world, `vfg cmd 'time query day'` (26.3 has no `time query daytime`), a gold box
+Up with a fresh world, `time query day` over RCON (26.3 has no `time query daytime`), a gold box
 filled and compared with its twin by `execute if blocks` (then one block changed, and the test
-fails as it should). With Carpet, Steve: spawned in survival, seen by `vfg state`, turned and
-aimed at a point, given a carrot_on_a_stick with custom_data, one use counted exactly once on
-`vfg_click`, `use continuous` stopped by a `use`, a hold at a person's rate, sneak and unsneak,
-walking and stopping, a jump, a drop. Then `tnt_rain` run on him, checked and stopped (its
-cleanup takes its TNT away), Steve taken off, down. PASS or FAIL per check; 35 pass on Carpet.
+fails as it should). With Carpet, Steve: spawned in survival, seen by `vfg state`, turned and aimed
+at a point, given a carrot_on_a_stick with custom_data, one use counted exactly once on `vfg_click`,
+`use continuous` stopped by a `use`, a hold at a person's rate, sneak and unsneak, walking and
+stopping, a jump, a drop; Steve taken off. Then the game engine: its venv and datapack installed
+into the stand-in by `engine/deploy/install.sh`, as on the box, and one live test
+(`engine/tests/box/livetest_case/zap_case.py`, a tiny ability cast at a husk) run by
+`python -m vfg_engine.livetest`, with the server marked a test server for the run only. Down.
+PASS or FAIL per check; exit 1 if any failed.
 
 ## Settings
 
@@ -264,7 +268,8 @@ integration/realmc/
     template/world/      the world every server's starts from; template.json says where the arena is
     <NAME>/mc/           the server: server.properties (600), world/, console.log, logs/
     <NAME>/vfg/          /opt/vfg: lib/vfg_feed.py, vfg.db (the lines, the feed, the brain's tasks),
-                         scripts/, made/, run/, .env, python/bin/python3 (the box's Python 3.12),
+                         engine/ (once installed), made/, state/, run/ (the deploy lock), .env,
+                         python/bin/python3 (the box's Python 3.12),
                          set-aside-<time>/ (an earlier vfg.db and feed.log, brain_live's clean slate)
     <NAME>/home/.vfg/    the VFG_HOME vfg uses for it
     <NAME>/box/          the box's PATH (python3 is 3.9, Amazon Linux's own; systemctl, the stand-in's)

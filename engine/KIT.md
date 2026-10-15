@@ -156,9 +156,13 @@ A sign at `at` showing up to four lines (each cut at 40 characters), its text fa
 sign(self, ctx, (x, y + 4, z), ["Sniper Nest", name], facing="north")
 ```
 
-### `chest(self, ctx, at, items, facing="north", dim=None)`
+### `chest(self, ctx, at, items, facing="north", dim=None) -> int`
 A chest holding `items` in order (27 at most): `"diamond 4"` (a vanilla item and how many) or
-`"everhear:railgun"` (an EverHear item as the engine gives it, through `self.item_stack`).
+`"everhear:railgun"` (an EverHear item as the engine gives it, through `self.item_stack`). Any
+number of items of any size: one command holds 1446 bytes (RCON's), so the chest is queued with as
+many stacks as fit one command and each other stack after it as a block-data job
+(`self.blocks.data`); the queue places them in order, and your `done(ctx)` comes once it is full. A
+stack too long for any command is refused, in words. Returns how many stacks go in after the chest.
 ```python
 chest(self, ctx, ahead(ctx, p, 2), ["everhear:hellfire_longbow", "arrow 64", "everhear:stormcaller"])
 ```
@@ -330,8 +334,10 @@ def on_hold(self, ctx): ctx.user.cast("gatling_gun")
 
 ### `sneak_gesture(self, ctx, ev, mode="three_taps", within=1.5, every=0.1) -> bool`
 Crouching, from the Sneak and Unsneak events you feed it (listen to both): True on each crouch
-(`"tap"`), on three within `within` seconds (`"three_taps"`), or on a crouch that then calls your
-`on_sneaking(ctx)` every `every` s until they stand (`"held"`).
+(`"tap"`), on three within `within` seconds (`"three_taps"`), or on a crouch that calls your
+`on_sneaking(ctx)` at once and then every `every` s until they stand (`"held"`: decided by the
+events and the snapshot, so a crouch seen for a single tick counts, and a late tick neither misses
+it nor bursts).
 ```python
 def on_sneak(self, ctx, ev):
     if sneak_gesture(self, ctx, ev, "three_taps"):

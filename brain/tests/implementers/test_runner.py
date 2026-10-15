@@ -409,6 +409,20 @@ async def test_after_a_restart_a_follow_up_records_the_class_it_edits(cfg):
     assert r.described == [("galick_gun_styrk", "", {**EMPTY, "content": ["galick_gun_styrk"]})]
 
 
+async def test_after_a_restart_the_report_says_every_run_made_as_it_is_now(cfg):
+    """A follow-up of a task this process did not start begins from what its row says it made, so
+    its report is the whole of it, as the disk has it now: the row mirrors that."""
+    made_here(cfg, "made/main/content/galick_gun_styrk.py")
+    made_here(cfg, "made/main/content/galick_beam.py")
+    r = Run(cfg)
+    r.harness.add(tool("Edit", file_path="made/main/content/galick_beam.py", old_string="x", new_string="y"),
+                  done("Done: the beam is wider."))
+    before = {"content": ["galick_gun_styrk", "galick_old"], "bindings": [], "grants": []}   # galick_old is gone
+    await r.imps.follow_up("galick_gun_styrk", "a wider beam", session="s1", made=before)
+    await r.settle()
+    assert r.described == [("galick_gun_styrk", "", {**EMPTY, "content": ["galick_gun_styrk", "galick_beam"]})]
+
+
 def test_the_tasks_guard_knows_whether_there_is_a_test_server(tmp_path):
     cfg = ImplementerConfig.load({"VFG_REPO": str(tmp_path), "VFG_HOME": str(tmp_path / "h"), "VFG_TEST_BOX": "x"})
     imps = Implementers(cfg, None, harness=FakeHarness(), vfg=FakeVfg())

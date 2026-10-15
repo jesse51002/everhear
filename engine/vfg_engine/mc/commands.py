@@ -19,14 +19,14 @@ import math
 import re
 import uuid as _uuid
 
-from ..io import (AddModifier, Bossbar, Command, Damage, EntityData, Fill, Forceload, GiveEffect, GiveItem,
+from ..io import (AddModifier, BlockData, Bossbar, Command, Damage, EntityData, Fill, Forceload, GiveEffect, GiveItem,
                   Gamerule, Ignite, Message, Motion, OpResult, Particle, Remove, RemoveModifier, SetBlock,
                   Sound, Spawnpoint, StopSound, Summon, TakeItem, Teleport)
 from .rcon import MAX_COMMAND
 
-# Server commands that are the owner's to run, never the engine's or content's. The one list is
-# scripts/_lib/commands.py (REFUSED); this is a copy because the engine's package stands alone on the
-# box, and engine/tests/mc/test_commands.py checks the two are the same.
+# Server commands that are the server owner's to run, never the engine's, content's, the brain's or
+# an implementer's: THE list. Everything that sends commands reads it from here (the toolkit's and the
+# brain's guards import vfg_engine.mc.commands.REFUSED).
 REFUSED = frozenset({"stop", "op", "deop", "ban", "ban-ip", "pardon", "pardon-ip", "whitelist", "kick",
                      "save-off"})
 
@@ -39,6 +39,8 @@ FILL_MOST = 32768            # blocks one fill changes at most (Minecraft's limi
 FORCELOAD_MOST = 256         # chunks one forceload names at most
 FILL_MODES = ("replace", "keep", "destroy", "hollow", "outline")
 BOSSBAR_COLORS = ("blue", "green", "pink", "purple", "red", "white", "yellow")
+BLOCK_DATA_HOW = ("append", "prepend", "merge", "set")
+TOO_LONG = "the command is over %d bytes, RCON's limit" % MAX_COMMAND     # FakeIo's words too
 LAVA_SECONDS = 15.0          # how long lava sets a player alight; the burning_time modifier scales it
 _BLOCK = re.compile(r"^#?[a-z0-9_.-]+(:[a-z0-9_./-]+)?(\[[a-z0-9_=,]*\])?(\{.*\})?$")
 _BB_TAG = "everhear.bb"      # players a bossbar is shown to, tagged for the one command that names them
@@ -373,6 +375,15 @@ def command_for(op) -> list[str]:
         if not _NAME.match(op.player or ""):
             raise OpRefused("%r is not a player's name" % (op.player,))
         return [_in_dim(op.dim, "spawnpoint %s %d %d %d" % ((op.player,) + block_pos(op.pos)))]
+    if isinstance(op, BlockData):
+        if op.how not in BLOCK_DATA_HOW:
+            raise OpRefused("how is one of %s, not %r" % (", ".join(BLOCK_DATA_HOW), op.how))
+        path, snbt = (op.path or "").strip(), (op.snbt or "").strip()
+        if not path or "\n" in path:
+            raise OpRefused("a block data op needs an NBT path (Items, front_text, …)")
+        if not snbt:
+            raise OpRefused("a block data op needs a value")
+        return [_in_dim(op.dim, "data modify block %d %d %d %s %s value %s" % (block_pos(op.pos) + (path, op.how, snbt)))]
     if isinstance(op, Ignite):
         seconds = float(op.seconds)
         if not 0 < seconds <= 1638:
@@ -438,6 +449,9 @@ _ERRORS = [
     ("Unknown block type", "no such block"),
     ("Unable to modify player data", "a player's data cannot be written"),
     ("No bossbar exists with the ID", "no such bossbar (give it a name to make it)"),
+    ("The target block is not a block entity", "no block entity there (a chest, a sign, a barrel… holds data)"),
+    ("Expected a list:", "the path holds no list (append and prepend need one)"),
+    ("Expected an object:", "the path holds no compound (merge needs one)"),
     ("Invalid position", "the position is outside the world"),
 ]
 _MODIFIER_PRESENT = re.compile(r"^Modifier \S+ is already present on attribute")
@@ -502,7 +516,6 @@ def result_for(op, reply: str) -> OpResult:
 
 def check_length(cmd: str) -> str | None:
     """Why a command cannot go over RCON (too long), or None."""
-    size = len(cmd.encode("utf-8"))
-    if size > MAX_COMMAND:
-        return "the command is %d bytes, over the %d RCON takes" % (size, MAX_COMMAND)
+    if len(cmd.encode("utf-8")) > MAX_COMMAND:
+        return TOO_LONG
     return None

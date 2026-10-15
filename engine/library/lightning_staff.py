@@ -18,6 +18,7 @@ class LightningStaff(Item):
         self.listen(Use, "on_use")
 
     def on_use(self, ctx, ev):
-        if ctx.user.cast("lightning_strike") == "cooldown":
-            speak(self, ctx, "Lightning Staff: recharging", voice="", color="gray",
+        got = ctx.user.cast("lightning_strike")
+        if got == "cooldown":
+            speak(self, ctx, "Lightning Staff: %.1f s" % got.remaining_s, voice="", color="gray",
                   to=[ctx.user.name], where="actionbar")

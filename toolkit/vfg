@@ -509,10 +509,10 @@ def cmd_up(cfg, a):
     return finish(rc, o, e)
 
 
-# The library's scenario a raw server command runs through, and its arg; its result's facts carry
-# Minecraft's replies (`replies`, a list) and `failed` when Minecraft rejected one. TODO(library):
-# the `command` scenario's port names them; until it is there, vfg cmd says the engine has no such
-# scenario.
+# The library's scenario a raw server command runs through (engine/library/command.py), and its
+# arg. Its result's facts: `replies`, Minecraft's reply to each command it sent, in order; `ran`, the
+# commands that went through; `failed`, the command it stopped at (Minecraft refused it, or it was
+# a block command, which it never sends), else null; `partial`, true when Minecraft did not answer.
 CMD_SCENARIO, CMD_ARG = "command", "commands"
 
 
@@ -532,13 +532,19 @@ def cmd_cmd(cfg, a):
     if n > RCON_MAX:
         raise Fail(1, "command is %d bytes; RCON takes at most %d — put it in a class" % (n, RCON_MAX))
     line = run_named(cfg, a, "engine_start", {"scenario": CMD_SCENARIO, "args": {CMD_ARG: [command]}})
-    replies = line["facts"].get("replies")
-    if isinstance(replies, list):
-        out("\n".join(r for r in replies if isinstance(r, str) and r))
-    else:
+    facts = line["facts"]
+    replies = [r for r in facts.get("replies") or [] if isinstance(r, str)] if isinstance(facts.get("replies"),
+                                                                                          list) else []
+    sent = len(replies) > len(facts.get("ran") or [])     # Minecraft answered the one it stopped at
+    if replies:
+        out("\n".join(r for r in replies if r))
+    elif line["ok"]:
         out(line["summary"])
     if not line["ok"]:
-        raise Fail(1, "minecraft rejected the command" if line["facts"].get("failed") else line.get("error"))
+        if facts.get("partial"):
+            raise Fail(1, "%s" % (line.get("error") or line["summary"]))
+        raise Fail(1, "minecraft rejected the command" if facts.get("failed") and sent else
+                   line.get("error") or line["summary"] or "failed")
     return 0
 
 
@@ -1993,7 +1999,7 @@ def engine_arg_text(x):
 
 def engine_incant_line(e):
     """`Steve: "fire ball" → casts fireball cooldown 5s; aliases fireball, fire bowl`, or for one
-    bound to a scenario `Steve: "meteor" → starts meteor {"at":"caster"}; …`."""
+    bound to a scenario `Steve: "castle here" → starts castle {"at":"caster"}; …`."""
     if e.get("scenario"):
         text = '%s: "%s" → starts %s %s' % (e.get("player"), e.get("phrase"), e["scenario"],
                                            json.dumps(e.get("args") or {}, ensure_ascii=False, separators=(",", ":")))
@@ -2099,6 +2105,22 @@ def engine_player(x):
     return x
 
 
+def alias_words(text, flag):
+    """--aliases or --everyday: words separated by commas, or a JSON list; None when not given."""
+    if text is None:
+        return None
+    s = text.strip()
+    if s.startswith("["):
+        try:
+            got = json.loads(s)
+        except ValueError:
+            got = None
+        if not isinstance(got, list) or not all(isinstance(x, str) for x in got):
+            raise Fail(2, "%s is words separated by commas, or a JSON list of them" % flag)
+        return got
+    return [w.strip() for w in s.split(",") if w.strip()]
+
+
 def engine_words(words):
     """`key=value` words as a scenario's or a mark's args (arg_word: JSON when a value starts with [
     or {, else its text)."""
@@ -2140,7 +2162,9 @@ def cmd_engine(cfg, a):
             raise Fail(2, "--cooldown is a scenario's incantation's: an ability's cooldown is its Config's "
                           "cooldown_s (vfg engine config get <ability>)")
         reply, said, notes, _ = engine_bind(cfg, a, a.player, a.phrase, ability=a.ability, scenario=a.scenario,
-                                            args=engine_words(a.args), by=a.by or "", cooldown_s=a.cooldown)
+                                            args=engine_words(a.args), by=a.by or "", cooldown_s=a.cooldown,
+                                            aliases=alias_words(a.aliases, "--aliases"),
+                                            everyday_given=alias_words(a.everyday, "--everyday"))
         for n in notes if reply.get("ok") else ():   # a failure is one line on stderr
             warn(n)
         return engine_show(a, reply, said)
@@ -2269,15 +2293,18 @@ def engine_args(op, a, cfg):
 
 # ---- incantations
 
-def engine_bind(cfg, a, player, phrase, ability="", scenario="", args=None, by="", cooldown_s=None):
+def engine_bind(cfg, a, player, phrase, ability="", scenario="", args=None, by="", cooldown_s=None, aliases=None,
+                everyday_given=None):
     """A binding: `phrase`, for one player, casts `ability`, or starts `scenario` with `args` set
     once (an arg left as "caster" filled with whoever casts it): the spec's Incantations, per player,
     never @a. The phrase is checked and normalised as the kit does; the alias call runs in a thread
     while one SSH call reads the engine's classes, the player's bindings and the player's abilities;
     then the code's aliases and checks, the bind warnings against the player's other phrases, the
     everyday note, and one when the player has not been granted the ability; then the engine's bind
-    op. (the reply, its words, the notes, the facts: its id, the binding as the engine stored it,
-    and the alias call's)."""
+    op. With `aliases` given (a list, [] for none), those are its aliases as they are, and
+    `everyday_given` those of them the spotter leaves out: no alias call, no code aliases (a binding put
+    back as it was). (the reply, its words, the notes, the facts: its id, the binding as the engine
+    stored it, and the alias call's)."""
     inc = incantations_module()
     if not player:
         raise Fail(2, "whose incantation? player=<the player who asked>: one player, never @a")
@@ -2293,9 +2320,20 @@ def engine_bind(cfg, a, player, phrase, ability="", scenario="", args=None, by="
     engine_id(target, kind)
     if ability and args:
         raise Fail(2, "an ability takes no args: its numbers are its Config, the same for everyone")
+    given = None
+    if aliases is not None:
+        given = [x for x in dict.fromkeys(inc.normalize(str(x)) for x in aliases) if x and x != phrase]
+        marks = [x for x in dict.fromkeys(inc.normalize(str(x)) for x in everyday_given or []) if x]
+        stray = [x for x in marks if x not in given]
+        if stray:
+            raise Fail(2, "--everyday names %s, not among its aliases: the everyday ones are some of its aliases"
+                       % ", ".join(stray))
+    elif everyday_given:
+        raise Fail(2, "--everyday goes with --aliases: with the alias call, it marks the everyday ones itself")
     import threading
     answer = []
-    caller = threading.Thread(target=lambda: answer.append(incant_alias_call(cfg, phrase)), daemon=True)
+    caller = threading.Thread(target=lambda: answer.append(
+        incant_alias_call(cfg, phrase) if given is None else ([], [], False, None, None)), daemon=True)
     caller.start()
     got = engine_ask(cfg, a, [("classes", {}), ("incantations", {"player": player}),
                               ("instances", {"kind": "ability", "user": player})])
@@ -2311,9 +2349,12 @@ def engine_bind(cfg, a, player, phrase, ability="", scenario="", args=None, by="
     variants, marked, everyday, why, call = answer[0] if answer else (
         [], [], False, "aliases from code only: the alias call failed", None)
     notes = [why] if why else []
-    aliases, marks, dropped = incant_aliases(inc, phrase, variants, marked)
-    if call is not None:
-        call["dropped"] = dropped
+    if given is None:
+        aliases, marks, dropped = incant_aliases(inc, phrase, variants, marked)
+        if call is not None:
+            call["dropped"] = dropped
+    else:
+        aliases = given
     bound = [e for e in (mine.get("incantations") or []) if isinstance(e, dict)] if mine.get("ok") else []
     notes += incant_warnings(inc, phrase, aliases, player, bound)
     if everyday:
@@ -2409,6 +2450,10 @@ def run_engine_action(cfg, a, name, va, cls, given, task=None):
             more = []
             if op == "start" and reply.get("ok"):
                 said, facts, running = engine_result(reply, args.get("scenario") or "")
+                if not running and facts.get("failed"):
+                    # a one-off whose result says it stopped short (the command scenario's `failed`):
+                    # it did not do what was asked, whatever the engine took
+                    reply = dict(reply, ok=False, error=said or "it stopped at %s" % facts["failed"])
             else:
                 said = engine_said(op, args, reply) if reply.get("ok") else ""
                 facts = dict((k, x) for k, x in reply.items() if k not in ("ok", "error"))
@@ -2756,8 +2801,8 @@ def engine_change(cfg, a, t, new_source, how, by=None, kept=None):
                 pass
         history_log(cfg, {"op": how, "class": t.wanted, "class_name": t.name, "file": content_rel(cfg, t.path),
                           "ok": False, "error": why, "by": by})
-        said = "%s; %s is %s on this PC" % (why, content_rel(cfg, t.path),
-                                            "removed again" if t.from_library else "put back as it was")
+        said = "%s; %s is %s" % (why, content_rel(cfg, t.path), "removed again on this PC" if t.from_library
+                                  else "put back on this PC as it was")
         try:
             again = engine_deploy(cfg, a, reload_old if reload_old_too else None, ENGINE_CONFIG_S)
             if reload_old_too:
@@ -2962,8 +3007,9 @@ def migrate_plan(store, players):
 def cmd_engine_migrate(cfg, a):
     """vfg engine migrate [--players a,b] [--dry-run] [--json]: the old places and incantations
     moved into the engine, once (lib/migrate_map.py). One SSH call reads them (remote/migrate.py), then
-    one `places_import` and one bind a binding; with --dry-run, only what it would do. Exit 1 when
-    anything was left behind or refused; the rest still moves."""
+    one `places_import`, the classes read once (their args' types), and one bind a binding, an
+    ability granted to its player first; with --dry-run, only what it would do. Exit 1 when anything
+    was left behind or refused; the rest still moves."""
     players = []
     if a.players:
         players = [p.strip() for p in a.players.split(",") if p.strip()]
@@ -2984,11 +3030,37 @@ def cmd_engine_migrate(cfg, a):
                          "why": old[key]})
     report = {"ok": True, "dry_run": bool(a.dry_run), "places": {"found": len(places)}, "bindings": [],
               "left": left}
+    # The scenarios' arg types (the engine's classes op): "caster" fills only a player or a place arg,
+    # so an old caster field that is a players arg now takes the binding's own player (a binding is
+    # one player's). Unread (the engine down, on a dry run), "caster" is left as the table gives it.
+    kinds = {}
+    try:
+        got = engine_one(cfg, a, "classes", {})
+        for c in got.get("classes") or [] if got.get("ok") else []:
+            if isinstance(c, dict) and c.get("kind") == "scenario":
+                kinds[c.get("id")] = dict((x["name"], str(x.get("type") or "")) for x in engine_args_of(c))
+    except Fail:
+        if not a.dry_run:
+            raise
+    for b in plan:
+        for k, v in list(b["args"].items()):
+            kind = (kinds.get(b["id"]) or {}).get(k)
+            if b["kind"] == "scenario" and v == "caster" and kind is not None and kind not in ("player", "place"):
+                b["args"][k] = b["player"]
+                b["notes"] = b["notes"] + ["its %s was whoever said it: %s now (%s takes no caster)" % (k, b["player"], k)]
     if not a.dry_run and places:
         reply = engine_one(cfg, a, "places_import", dict({"places": places}, **({"force": True} if a.force else {})))
         report["places"].update(dict((k, v) for k, v in reply.items() if k != "ok"), ok=reply.get("ok"))
     for b in plan:
         row = dict((k, b[k]) for k in ("from", "player", "phrase", "kind", "id", "args", "notes"))
+        if not a.dry_run and b["kind"] == "ability":
+            # the old phrase fired its action for that player: the ability is theirs, or saying it casts nothing
+            reply = engine_one(cfg, a, "grant", {"who": b["player"], "ability": b["id"]})
+            row["granted"] = bool(reply.get("ok"))
+            if not reply.get("ok"):
+                row.update(ok=False, error="the grant of %s was refused: %s" % (b["id"], engine_error(reply)))
+                report["bindings"].append(row)
+                continue
         if not a.dry_run:
             sent = {"player": b["player"], "phrase": b["phrase"], b["kind"]: b["id"], "aliases": b["aliases"],
                     "everyday_aliases": b["everyday_aliases"], "by": b["by"]}
@@ -3016,6 +3088,7 @@ def cmd_engine_migrate(cfg, a):
                                 " %s" % json.dumps(b["args"], ensure_ascii=False, separators=(",", ":"))
                                 if b["args"] else "")
             state = "" if a.dry_run or b.get("ok") else " — refused: %s" % b.get("error")
+            state += ", granted first" if b.get("granted") and b.get("ok") else ""
             lines.append('%s %s: %s "%s" %s%s' % (verb, b["from"], b["player"], b["phrase"], what, state))
             lines += ["  note: %s" % n for n in b["notes"]]
         lines += ["left %s: %s" % (x["from"], x["why"]) for x in left]
@@ -4168,6 +4241,10 @@ def build_parser():
     w.add_argument("--by", metavar="NAME", help="the task that bound it")
     w.add_argument("--cooldown", type=float, metavar="S", help="with --scenario: seconds before it can be cast "
                    "again (the engine's 3 by default)")
+    w.add_argument("--aliases", metavar="A,B", help="its aliases as given, words separated by commas or a JSON list "
+                   "('' for none), in place of the alias call's and the code's: a binding put back as it was")
+    w.add_argument("--everyday", metavar="A,B", help="with --aliases: those of them that are everyday talk, which "
+                   "the spotter leaves out")
     w = op("unbind", "remove a player's engine incantation")
     w.add_argument("player")
     w.add_argument("phrase")
@@ -4183,10 +4260,14 @@ def build_parser():
            js=False)
     cs = w.add_subparsers(dest="config_op", metavar="get|set|undo")
     cs.required = True
-    for name, text in (("get", "print the class's Config exactly as written, with its file and lines"),
+    for name, text in (("get", "print the class's Config exactly as written, with its file and lines, and whose: "
+                               "this server's (made/<server>/content/), else the library's"),
                        ("set", "the whole new Config class on stdin: spliced in, checked, the old file kept, "
-                               "deployed and reloaded; when the box refuses, the old file goes back"),
-                       ("undo", "put the class's last kept Config back, deployed and reloaded")):
+                               "deployed and reloaded; when the box refuses, the old file goes back. A library "
+                               "class's first rewrite copies its file into made/<server>/content/, which then runs "
+                               "in the library's place"),
+                       ("undo", "put the class's last kept Config back, deployed and reloaded; undoing a library "
+                                "class's first rewrite removes the copy, and the library's runs again")):
         c = cs.add_parser(name, help=text)
         c.add_argument("cls", metavar="class", help="its id, like fireball")
         c.add_argument("--json", action="store_true", help="as one JSON object")

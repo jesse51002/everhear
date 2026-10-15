@@ -34,6 +34,9 @@ class LightningStorm(Scenario):
             return
         self.hold("weather", "thunder")
         speak(self, ctx, "The sky answers to ME. Keep moving or be struck. Level %d." % a.level)
+        for name in names:
+            p = ctx.world.player(name)
+            self.sound("minecraft:entity.wither.spawn", p.pos, volume=0.6, pitch=0.7, to=[name], dim=p.dim)
         self.after(0.1, "strike")
 
     def strike(self, ctx):

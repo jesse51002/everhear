@@ -4,9 +4,14 @@ A call over VFG_ENGINE_SLOW_MS (5) is logged as slow; one over VFG_ENGINE_CUT_MS
 timer signal (signal.setitimer, ITIMER_REAL) raises CallCut inside it, so only that instance ends
 and the loop goes on. CallCut is a BaseException, so content's own `except Exception` cannot keep
 a stuck call alive, and it comes again every 10 ms after the first, so neither can a bare
-`except:`; a call that caught it and returned anyway still counts as cut. The cut waits while the engine's own code runs inside the call (a `self.*`
-method, ctx.query talking to Minecraft): it lands the moment that returns, so the engine's books
-and the RCON connection are never left half-done.
+`except:`; a call that caught it and returned anyway still counts as cut. The cut waits while the
+engine's own code runs inside the call (a `self.*` method): it lands the moment that returns, so the
+engine's books are never left half-done.
+
+The cut measures the content's own time. While a call waits on Minecraft (ctx.query and the live
+reads of ctx.world: `io_wait`), its timer is paused: a slow server must not cut content that is
+doing nothing wrong. That waiting has its own budget per call instead, VFG_ENGINE_IO_MS (250): a read
+asked for once the call has spent it is refused in words (IoBudget), so no call can stall the tick.
 
 A signal can only be handled on the main thread; a call made on any other thread is timed but
 cannot be cut (Engine.run runs the loop on the main thread).
@@ -27,14 +32,19 @@ class CallCut(BaseException):
     """Raised inside a content call that ran past the cut."""
 
 
+class IoBudget(RuntimeError):
+    """A live read refused: this call has spent its time waiting on Minecraft."""
+
+
 @dataclass
 class Outcome:
     ok: bool
     value: object = None
     error: str | None = None     # in words, for the log and the instance's end reason
-    ms: float = 0.0
+    ms: float = 0.0              # the content's own time (waiting on Minecraft left out)
     cut: bool = False
     detail: str | None = None    # the traceback's last lines
+    io_ms: float = 0.0           # the time it spent waiting on Minecraft
 
 
 RECUT_S = 0.01         # after the first cut, another this often until the call returns
@@ -43,9 +53,12 @@ SLOW_FLAG_AT = 3
 
 
 class Guard:
-    def __init__(self, slow_ms: float, cut_ms: float):
+    def __init__(self, slow_ms: float, cut_ms: float, io_ms: float = 250.0):
         self.slow_ms = slow_ms
         self.cut_ms = cut_ms
+        self.io_ms = io_ms
+        self.io_spent = 0.0                # ms the current call has waited on Minecraft
+        self._armed = False                # the current call's timer is set
         self.active: str | None = None
         self.limit = cut_ms
         self.fired = False
@@ -94,6 +107,36 @@ class Guard:
                 self.pending_cut = False
                 raise CallCut("over %g ms" % self.limit)
 
+    @contextlib.contextmanager
+    def io_wait(self, what: str = "a live read"):
+        """The engine waiting on Minecraft inside a content call: the call's timer is paused (its
+        cut counts the content's own time), and the waiting has its own budget per call, past which
+        a read is refused in words. Outside a content call it does nothing."""
+        if self.active is None:
+            yield
+            return
+        if self.io_spent >= self.io_ms:
+            raise IoBudget("%s refused: this call has already waited %.0f ms on Minecraft, its whole "
+                           "budget (%g ms); read less in one call, or ask with self.ask"
+                           % (what, self.io_spent, self.io_ms))
+        remaining = None
+        if self._armed:
+            remaining = signal.getitimer(signal.ITIMER_REAL)[0]
+            signal.setitimer(signal.ITIMER_REAL, 0)
+        start = time.perf_counter()
+        self.critical += 1
+        try:
+            yield
+        finally:
+            self.critical -= 1
+            self.io_spent += (time.perf_counter() - start) * 1000.0
+            if self._armed and self._live:
+                # the content's own time goes on where it stopped (a cut that was due fires now)
+                signal.setitimer(signal.ITIMER_REAL, max(remaining or 0.0, 0.0005), RECUT_S)
+            if self.critical == 0 and self.pending_cut and self._live:
+                self.pending_cut = False
+                raise CallCut("over %g ms" % self.limit)
+
     # ---- one call ------------------------------------------------------------------------
 
     def call(self, label: str, fn, *args, cut_ms: float | None = None) -> Outcome:
@@ -105,6 +148,7 @@ class Guard:
             raise RuntimeError("content call %s inside %s" % (label, self.active))
         cut = limit > 0 and self._can_cut()
         self.active, self.pending_cut, self.limit, self.fired = label, False, limit, False
+        self.io_spent, self._armed = 0.0, cut
         start = time.perf_counter()
         self._live = True
         if cut:
@@ -135,8 +179,9 @@ class Guard:
             else:
                 out = Outcome(False, error=words, detail=_short_trace(exc))
         finally:
-            self.active, self.pending_cut, self.critical = None, False, 0
-        out.ms = (time.perf_counter() - start) * 1000.0
+            self.active, self.pending_cut, self.critical, self._armed = None, False, 0, False
+        out.io_ms = self.io_spent
+        out.ms = max(0.0, (time.perf_counter() - start) * 1000.0 - self.io_spent)
         return out
 
     def _run(self, fn, args):

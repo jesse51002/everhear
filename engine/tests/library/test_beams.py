@@ -1,15 +1,28 @@
 """The beams group on FakeIo: galick_gun (with hollow_purple merged in as its own beam class),
 spirit_bomb, and ice_beam (with made/main's ice_beam_cast merged in). A beam hits what it passes,
 through walls, by what each declares; galick_gun and hollow_purple carve a tunnel to a crater at
-their end; ice_beam freezes (no damage) and ices the ground instead; spirit_bomb arms on a hold,
-charges, then an orb flies to land and burst. Off the line, past range, and the caster himself are
-left alone; r.problems() stays empty throughout."""
+their end; ice_beam deals no damage of its own and ices the ground instead, applying the shared
+`frozen` mark (another group's, ice_staff's: a minimal stub mark is loaded alongside it here, the
+way the library's own tests stand in for a dependency they do not own, conftest.py's `extra=`);
+spirit_bomb arms on a hold, charges, then an orb flies to land and burst. Off the line, past range,
+and the caster himself are left alone; r.problems() stays empty throughout."""
 
-from vfg_engine.io import Damage, EntityData, Particle, Sound
+from vfg_engine.io import Damage, Particle, Sound
 
 GROUP = ("galick_gun", "galick_gun_beam", "hollow_purple", "hollow_purple_beam",
          "ice_beam_staff", "ice_beam", "spirit_bomb", "spirit_bomb_cast")
 OW = "minecraft:overworld"
+
+FROZEN_STUB = """
+class Frozen(Mark):
+    class Config(MarkConfig):
+        summary = "Stub for testing ice_beam in isolation; the real one is ice_staff's group."
+        duration_s = 4
+        damage = 0
+
+    class Args(Args):
+        blind: bool = Field(False, description="also blinds the bearer while frozen")
+"""
 
 
 def facing_north(r, name="Steve", pos=(0.0, 64.0, 0.0)):
@@ -125,7 +138,7 @@ def test_hollow_purple_never_kills_its_own_caster(rig):
 
 
 def test_ice_beam_freezes_the_line_players_too_and_ices_the_ground(rig):
-    r = rig(*GROUP)
+    r = rig(*GROUP, extra={"frozen": FROZEN_STUB})
     r.start()
     facing_north(r)
     r.io.join("Alex", pos=(0.0, 64.0, -20.0), yaw=0.0)     # a player standing right on the beam
@@ -141,14 +154,13 @@ def test_ice_beam_freezes_the_line_players_too_and_ices_the_ground(rig):
     r.io.use("Steve")                                       # ice_beam has no charge: it fires at once
     r.tick(2)
     assert health(r, caught) == 1000 and health(r, aside) == 1000 and health(r, beyond) == 1000   # no damage, ever
-    alex = r.io.players["Alex"].effects
-    assert "minecraft:slowness" in alex and alex["minecraft:slowness"].amplifier == 9
-    assert "minecraft:weakness" in alex and alex["minecraft:weakness"].amplifier == 9
-    assert "minecraft:blindness" in alex and alex["minecraft:blindness"].amplifier == 3
-    assert "minecraft:slowness" not in r.io.players["Steve"].effects       # never the caster
-    froze = [op for op in r.sent(EntityData) if op.target == caught]
-    assert froze and "TicksFrozen:200" in froze[0].snbt
-    assert not [op for op in r.sent(EntityData) if op.target in (aside, beyond)]
+    # Freezing goes through the shared `frozen` mark (self.apply): check it was put on the right
+    # targets, with the right args, not what the (stubbed-out, another group's) mark itself does.
+    frozen = {rec.user: rec for rec in r.records("mark", "frozen")}
+    assert set(frozen) == {"Alex", caught}                              # on the line: never off it or past range
+    assert all(rec.args.get("blind") for rec in frozen.values())
+    assert all(rec.notes.get("seconds") == 10 for rec in frozen.values())   # freeze_s's default
+    assert "Steve" not in frozen                                        # never the caster
     assert any("snowflake" in p.name for p in r.sent(Particle))
     r.run_for(2)                                            # the icing queue drains
     assert block(r, 0, 66, -10) == "minecraft:air"           # the open lane itself (beam height: eye y 65.62)
@@ -158,13 +170,13 @@ def test_ice_beam_freezes_the_line_players_too_and_ices_the_ground(rig):
 
 
 def test_ice_beam_cast_by_voice_is_one_shot(rig):
-    r = rig(*GROUP)
+    r = rig(*GROUP, extra={"frozen": FROZEN_STUB})
     r.start()
     facing_north(r)
     caught = r.io.add_entity("minecraft:zombie", (0.0, 64.0, -10.0), health=1000)
     assert r.cast("Steve", "ice_beam")["status"] == "fired"
     r.tick(2)
-    assert any(op.target == caught for op in r.sent(EntityData))
+    assert any(rec.user == caught for rec in r.records("mark", "frozen"))
     assert bugs(r) == []
 
 

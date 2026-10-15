@@ -260,16 +260,18 @@ class Implementers:
         t.jobs.append(("start", brief))
         self._kick(t)
 
-    async def follow_up(self, name: str, text: str, session: str | None = None, brief: str = "") -> None:
+    async def follow_up(self, name: str, text: str, session: str | None = None, brief: str = "",
+                        made: dict | None = None) -> None:
         """To the task's implementer. While its run is live (or starting), the text goes into that
         run as a message, and the run's one report covers it; else its session is resumed with the
         text, ending in another on_report. A text that starts CANCELLED: is a cancel (CANCEL).
-        `session` and `brief` are for a task this process did not start (the brain keeps both in the
-        task's row): its session resumed; with no session at all, a new implementer starts on
-        `brief`, what the task is, and the text."""
+        `session`, `brief` and `made` are for a task this process did not start (the brain keeps
+        them in the task's row): its session resumed; with no session at all, a new implementer
+        starts on `brief`, what the task is, and the text; and its guard starts from what the task
+        made before (`made`), so its reports say all of it, as it is now."""
         t = self._tasks.get(name)
         if t is None:
-            t = self._tasks[name] = _Task(name, self._guard(name), brief=brief, session=session)
+            t = self._tasks[name] = _Task(name, self._guard(name, made), brief=brief, session=session)
         else:
             t.session = t.session or session
             t.brief = t.brief or brief
@@ -326,9 +328,14 @@ class Implementers:
 
     # ------------------------------------------------------------------ one task's jobs
 
-    def _guard(self, name: str) -> GuardContext:
-        """The task's guard, kept with it: what it made over every run."""
-        return GuardContext(repo=self.cfg.repo, server=self.cfg.server, task=name, test_server=bool(self.cfg.test_box))
+    def _guard(self, name: str, made: dict | None = None) -> GuardContext:
+        """The task's guard, kept with it: what it made over every run, from what the task's row says
+        it made before this process (`made`)."""
+        g = GuardContext(repo=self.cfg.repo, server=self.cfg.server, task=name, test_server=bool(self.cfg.test_box))
+        for k in MADE_KINDS:
+            got = (made or {}).get(k)
+            g.made[k] = list(dict.fromkeys(str(x) for x in got)) if isinstance(got, list) else []
+        return g
 
     def _kick(self, t: _Task) -> None:
         if self._closing:

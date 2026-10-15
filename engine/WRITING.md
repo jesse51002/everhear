@@ -140,8 +140,15 @@ All optional. Each gets `ctx` first.
 
 **No loops and no waiting.** A `while True`, or `sleep`, is refused at reload. Repeat with
 `every`/`self.every`, wait with `self.after`. A call over 5 ms is logged; over 50 ms it is cut,
-that instance ends and its cleanup runs. An error ends only that instance (in an ability, only that
+that instance ends and its cleanup runs. Those are your code's own milliseconds: time spent waiting on
+Minecraft (`ctx.query`, the live reads of `ctx.world`) is not counted, but one call may wait at most
+250 ms in all, and a read asked for past that is refused with an error that says so (catch it, or read
+less in one call, or use `self.ask`). An error ends only that instance (in an ability, only that
 cast's run).
+
+**A cast's run ends** at its duration, at `self.end()`, when its grant goes, or when its caster dies
+or leaves; what the run spawned goes with it, except what it spawned with `keep=True` (a summon meant
+to outlive its summoner).
 
 ## `ctx`: what you read
 
@@ -153,7 +160,7 @@ cast's run).
 | `ctx.now` | the engine's time, seconds |
 | `ctx.running` | in an ability's cast: its other runs still going; each has `.end()` |
 | `ctx.places` | the saved places of this world: `.get(name)` → `{dim, pos, yaw, by, at}` or None, `.all()` |
-| `ctx.query(command)` | one command now, and Minecraft's reply; its time counts against your 50 ms |
+| `ctx.query(command)` | one command now, and Minecraft's reply; its wait counts against the call's 250 ms of reads |
 
 `ctx.world` also reads Minecraft live, each read counted against your 50 ms:
 `probe(points, test)` (many blocks in one read: a block id, `"#tag"`, `"solid"`, or `"open"`: it
@@ -166,7 +173,9 @@ player `entities_near` sees; past it, read live with `entities`. A player also h
 entity snapshot `.owner` (a pet's or a projectile's) and `.in_ground`.
 
 `ctx.user.cast(name)` returns `"fired"`, `"charging"`, `"cooldown"`, `"not_granted"`, `"unknown"`
-or `"failed"`. From an item, an ability the holder lacks is lent to them while the item is held.
+or `"failed"`, which also has `.remaining_s` (a cooldown's seconds left) and `.error` (why it
+failed): `got = ctx.user.cast("railgun")`, then `if got == "cooldown": ... got.remaining_s`. From an
+item, an ability the holder lacks is lent to them while the item is held.
 
 ## `self`: what you do
 
@@ -187,14 +196,14 @@ or `"failed"`. From an item, an ability the holder lacks is lent to them while t
 | `self.result(summary, **facts)` | a scenario's result (what `start` answers once it ends) | |
 | `self.save_place(name, at, by=None)` / `self.forget_place(name)` | name a place in this world (the engine's own) | no |
 | `self.teleport(who, at, dim=None, yaw=None, pitch=None)`, `self.motion(who, vec)`, `self.entity_data(who, snbt)`, `self.ignite(who, seconds)` | move, push, change and set on fire a player or an entity | |
-| `self.blocks.fill(a, b, block_or_mix, replace=None, mode="replace", undo=False)`, `.setblock(pos, block)`, `.replace((a, b), rules)`, `.sphere(center, r, block, hollow=False)`, `.forceload(a, b)`; `.done` | the block queue: queuing a fill costs a few microseconds, so thousands fit in one call; a sphere may have a radius up to 1024, planned ring by ring from its middle; placed a little each tick, in loaded chunks only, never in a protected box or the bedrock floor, slower when the server is; `undo=True` puts air back where your blocks still stand when you end; your `done(ctx)` is called when it empties | jobs not placed yet are dropped; forceloads released |
+| `self.blocks.fill(a, b, block_or_mix, replace=None, mode="replace", undo=False)`, `.setblock(pos, block)`, `.replace((a, b), rules)`, `.sphere(center, r, block, hollow=False)`, `.data(pos, path, value, how="append")` (a block entity's data: a chest's Items), `.forceload(a, b)`; `.done` | the block queue, placed in the order you asked: queuing a fill costs a few microseconds, so thousands fit in one call; a sphere may have a radius up to 1024, planned ring by ring from its middle; placed a little each tick, in loaded chunks only, never in a protected box or the bedrock floor, slower when the server is; `undo=True` puts air back where your blocks still stand when you end; your `done(ctx)` is called when it empties | jobs not placed yet are dropped; forceloads released |
 | `self.ask(command, "method")` | a slow command (locate, spreadplayers, place feature) after the tick, outside the 50 ms; `method(ctx, reply)` next tick | |
 | `self.bossbar(id, name=, color=, value=, max=, players=)` | a boss bar | yes |
 | `self.stop_sound(name=None, to=None)`, `self.spawnpoint(player, at)` | | |
 | `self.item_stack(item, count=1)` | an EverHear item's stack as SNBT (for a chest, a mob's hand) | |
 | `self.grant(who, ability)` | grant an ability while you last | yes |
 | `self.hold(setting, value, priority=0)` / `self.release(setting)` | hold a gamerule, `"time"` or `"weather"` | yes |
-| `self.watch(area, center=, radius=)` or `box=(a, b)` | `Enter` / `Exit` events for that area | yes |
+| `self.watch(area, center=, radius=)`, with `height=` a flat cylinder (`math.inf`: every height), or `box=(a, b)` | `Enter` / `Exit` events for that area | yes |
 | `self.command(text)`, `self.particle(name, at, force=False, to=None)`, `self.sound(name, at, to=None)`, `self.message(text, to=None)` | output (`to`: only these players; `force`: seen from far); a raw command is the escape hatch | |
 
 Also `self.config`, `self.state`, `self.instance` (its id), a mark's `self.stack`, a scenario's

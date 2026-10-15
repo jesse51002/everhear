@@ -1,7 +1,9 @@
 """The railgun group on FakeIo: railgun (item) fires railgun_shot (ability); gatling_gun (item)
 fires gatling_shot (ability) while held. A beam through walls hurts what it passes, once a shot,
 by what the ability declares; off the line and past its range nothing is hurt; a click within
-the cooldown only says it is recharging."""
+the cooldown only says how long is left ("Railgun: 1.8 s")."""
+
+import re
 
 from vfg_engine.io import Damage, Message, Particle, Sound
 
@@ -60,10 +62,10 @@ def test_within_the_cooldown_a_click_only_says_so(rig):
     r.tick()
     r.io.use("Steve")
     r.tick(2)
-    r.io.use("Steve")                                   # 0.2 s later: recharging
+    r.io.use("Steve")                                   # 0.2 s later: "Railgun: 1.8 s"
     r.tick(2)
     assert health(r, mobs["near"]) == 970
-    assert any(m.where == "actionbar" and "Railgun: recharging" in m.text for m in r.sent(Message))
+    assert any(m.where == "actionbar" and re.search(r"Railgun: \d+\.\d s", m.text) for m in r.sent(Message))
     r.run_for(2)
     r.io.use("Steve")                                   # 2 s on: it fires again
     r.tick(2)

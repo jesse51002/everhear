@@ -3,8 +3,13 @@ stage floor is well within its range), holding mob_griefing off while they live.
 
 
 def test(t):
+    # the stage floor is barrier, which the ray sees through (#everhear:ray_through); a real
+    # block flush with it, where the steep look lands, gives the ray something to hit
+    t.blocks("stone", 0, -3, 1, size=3)
     t.give("wither_wand")
     t.check("Steve holds the wither wand", t.holds("wither_wand"))
+    for who in ("Steve", "Alex"):        # the withers fight whoever is near: Resistance V keeps them up,
+        t.apply("potion_effect", who=who, effect="resistance", amplifier=4)   # so the test sees the summons
     t.look(pitch=75)
     t.wait(1)
     t.use()
