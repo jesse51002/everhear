@@ -216,6 +216,35 @@ def test_a_released_weather_hold_puts_the_weather_back(rig):
     assert r.io.weather == "rain" and r.op("world")["settings"] == []
 
 
+
+def test_an_error_reply_to_the_weather_check_is_no_reading_and_is_tried_again(rig):
+    """A reply without "passed" was taken for not raining, so an error recorded the original
+    weather as clear, and releasing the hold cleared the rain. Now it is read again next tick."""
+    storm = HOLDERS.replace("class Siege", "class Storm").replace(
+        'self.hold("mob_griefing", self.args.value, priority=self.args.priority)', 'self.hold("weather", "thunder")')
+    r = rig({"storm": storm})
+    r.start()
+    r.io.weather = "rain"
+    real = r.io.query
+    broken = {"n": 2}
+
+    def query(command):
+        if "weather_check" in command and broken["n"] > 0:
+            broken["n"] -= 1
+            real(command)
+            return "Unknown or incomplete command, see below for error"
+        return real(command)
+    r.io.query = query
+    iid = r.op("start", scenario="storm")["instance"]
+    assert r.io.weather == "rain"                                   # not read: not held yet
+    assert any("could not read the weather" in m and "neither 'Test passed'" in m for m in r.lines())
+    r.tick(2)
+    assert r.io.weather == "thunder"
+    assert r.op("world")["settings"][0]["original"] == "rain"
+    r.op("stop", instance=iid)
+    assert r.io.weather == "rain" and r.op("world")["settings"] == []
+
+
 WATCHER = '''
 class Gate(Scenario):
     class Config(ScenarioConfig):

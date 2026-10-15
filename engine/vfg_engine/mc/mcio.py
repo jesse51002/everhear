@@ -33,6 +33,7 @@ Standard library only, besides vfg_engine.io.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import os
@@ -40,10 +41,10 @@ import re
 import time
 from typing import Iterable, Sequence
 
-from ..io import Look, OpResult, Snapshot
+from ..io import IoDeadline, Look, OpResult, Snapshot
 from . import commands, datapack, reading, snbt
 from .mirror import McMirror
-from .rcon import PROPERTIES, Rcon, RconError
+from .rcon import PROPERTIES, Rcon, RconDeadline, RconError
 
 log = logging.getLogger("vfg_engine.mc")
 
@@ -263,6 +264,18 @@ class McIo:
 
     def mirror(self) -> McMirror:
         return self._mirror
+
+    @contextlib.contextmanager
+    def deadline(self, seconds: float):
+        """The reads this thread makes inside answer within `seconds` in all, waiting for the RCON
+        lock included, else io.IoDeadline is raised (from rcon's RconDeadline) and the connection
+        is dropped, as after a timeout. The engine bounds each content read by what is left of its
+        call's I/O budget this way."""
+        with self.rcon.deadline(seconds):
+            try:
+                yield self
+            except RconDeadline as exc:
+                raise IoDeadline(str(exc)) from exc
 
     def query(self, command: str) -> str:
         """One command now, and its whole reply (content's ctx.query). RconError when RCON is down;

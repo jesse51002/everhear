@@ -271,3 +271,38 @@ def test_the_result_op_reads_a_result_after_its_wait(rig):
     assert r.op("result", instance="scenario:nope#9")["ok"] is False
     r.clock.t += 601
     assert "no result kept" in r.op("result", instance=iid)["error"]
+
+
+STORM = '''
+class Storm(Scenario):
+    class Config(ScenarioConfig):
+        summary = "A storm round its caster."
+        duration_s = 1
+
+    class Args(Args):
+        who: Player = Field("caster", description="whose storm it is: bound as caster, so whoever says it")
+        near: Place = Field("0 64 0", description="where it gathers")
+        size: int = Field(4, ge=1, le=10, description="how far it reaches")
+
+    def start(self, ctx):
+        self.command("say storm %s %s %d" % (self.args.who, list(self.args.near.pos), self.args.size))
+'''
+
+
+def test_a_caster_arg_whose_default_is_caster_binds_and_fills_at_the_cast(rig):
+    # A Player or Place arg given "caster" in a binding is not checked against who is online when it
+    # is bound, its default "caster" included: it is filled with whoever speaks, at each cast.
+    r = rig({"storm": STORM})
+    assert r.start()["errors"] == []
+    r.io.join("Steve", pos=(1.0, 64.0, 2.0))
+    r.tick()
+    reply = r.op("bind", player="Steve", phrase="storm", scenario="storm", args={"who": "caster", "near": "caster"})
+    assert reply["ok"], reply
+    cast = r.op("cast", player="Steve", phrase="storm", cast_id="s1")
+    assert cast["status"] == "fired", cast
+    assert "say storm Steve [1.0, 64.0, 2.0] 4" in says(r)[-1]
+    # one that leaves the Player arg out gets its default, "caster", filled the same way
+    assert r.op("bind", player="Steve", phrase="small storm", scenario="storm", args={"size": 2})["ok"]
+    r.tick(40)
+    assert r.op("cast", player="Steve", phrase="small storm", cast_id="s2")["status"] == "fired"
+    assert "say storm Steve [0.0, 64.0, 0.0] 2" in says(r)[-1]

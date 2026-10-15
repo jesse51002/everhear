@@ -72,6 +72,12 @@ class RconError(OSError):
     """RCON could not be used for this command; the message says why in words."""
 
 
+class RconDeadline(RconError):
+    """The command did not answer within its caller's deadline (Rcon.deadline); the connection was
+    dropped, as after any timeout, and the next command reconnects. (McIo.deadline hands it on as
+    vfg_engine.io.IoDeadline; this file stays importable on its own, the toolkit loads it by path.)"""
+
+
 def _held_locks():
     """The process's RCON locks, shared with every RCON client loaded in it (toolkit/remote/common.py,
     integration/realmc): {path: [thread ident, depth, fd]}."""
@@ -271,6 +277,8 @@ class Rcon:
         self._backoff = 0.0
         self._retry_at = 0.0
         self._closed = False
+        self._local = threading.local()     # a thread's deadline (deadline())
+        self._call_deadline = None          # the exchange in progress's (monotonic), under the lock
 
     # ---- settings
     @property
@@ -282,20 +290,60 @@ class Rcon:
     def lock_path(self) -> str:
         return lock_path_for(self.port)
 
+    # ---- a caller's deadline
+    @contextlib.contextmanager
+    def deadline(self, seconds: float):
+        """The commands this thread sends inside answer within `seconds` in all, the lock's wait
+        included; past it RconDeadline is raised (the connection then dropped, as after a timeout).
+        Nested, the nearer deadline wins."""
+        end = time.monotonic() + max(0.0, float(seconds))
+        before = getattr(self._local, "deadline", None)
+        self._local.deadline = end if before is None else min(before, end)
+        try:
+            yield self
+        finally:
+            self._local.deadline = before
+
+    def _left(self) -> float | None:
+        end = getattr(self._local, "deadline", None)
+        return None if end is None else end - time.monotonic()
+
+    def _late(self) -> bool:
+        return self._call_deadline is not None and time.monotonic() >= self._call_deadline
+
     # ---- the lock
     @contextlib.contextmanager
     def held(self):
         """Holds the connection and the RCON lock: one command, or a batch of them (flush)."""
-        with self._lock:
+        left = self._left()
+        if left is None:
+            self._lock.acquire()
+        elif left <= 0 or not self._lock.acquire(timeout=left):
+            raise RconDeadline("another thread held the RCON connection past the caller's deadline")
+        try:
             if self._flock is None:
                 self._flock = _Flock(self.lock_path())
-            waited = self._flock.acquire()
+            left = self._left()
+            if left is None:
+                waited = self._flock.acquire()
+            elif left <= 0:
+                raise RconDeadline("no time left to wait for the RCON lock")
+            else:
+                try:
+                    waited = self._flock.acquire(min(LOCK_WAIT, left))
+                except RconError as e:
+                    if left < LOCK_WAIT:
+                        raise RconDeadline("another RCON client held %s past the caller's deadline"
+                                           % self.lock_path()) from e
+                    raise
             try:
                 self.stats.lock_wait_s += waited
                 self.stats.lock_wait_max_s = max(self.stats.lock_wait_max_s, waited)
                 yield self
             finally:
                 self._flock.release()
+        finally:
+            self._lock.release()
 
     # ---- the connection
     def connected(self) -> bool:
@@ -315,7 +363,10 @@ class Rcon:
         try:
             if self._password is None or self._port is None:
                 self._password, self._port = read_properties(self.properties)
-            s = socket.create_connection((self.host, self._port), timeout=CONNECT_TIMEOUT)
+            wait = CONNECT_TIMEOUT
+            if self._call_deadline is not None:
+                wait = max(0.001, min(wait, self._call_deadline - now))
+            s = socket.create_connection((self.host, self._port), timeout=wait)
             try:
                 s.settimeout(self.timeout)
                 s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -331,6 +382,9 @@ class Rcon:
                 s.close()
                 raise
         except (OSError, ValueError) as e:
+            if self._late():
+                # not the server being down: the caller ran out of time (no backoff)
+                raise RconDeadline("connecting to RCON took past the caller's deadline") from e
             self._backoff = min(BACKOFF_MAX, max(BACKOFF_FIRST, self._backoff * 2))
             self._retry_at = time.monotonic() + self._backoff
             self.stats.last_error = "connect to %s:%s: %s" % (self.host, self._port, _words(e))
@@ -358,7 +412,13 @@ class Rcon:
         self.stats.sent += len(data) + 14
 
     def _recv(self, s: socket.socket):
-        """More bytes into the buffer (what a recv returned is kept the moment it returns)."""
+        """More bytes into the buffer (what a recv returned is kept the moment it returns). In an
+        exchange with a caller's deadline, each wait is no longer than what is left of it."""
+        if self._call_deadline is not None:
+            left = self._call_deadline - time.monotonic()
+            if left <= 0:
+                raise socket.timeout("past the caller's deadline")
+            s.settimeout(min(self.timeout, left))
         c = s.recv(65536)
         if self.quickack:
             s.setsockopt(socket.IPPROTO_TCP, QUICKACK, 1)
@@ -398,19 +458,34 @@ class Rcon:
             raise RconError("the command is %d bytes, over the %d RCON takes (vanilla drops the "
                             "connection): %s..." % (size, MAX_COMMAND, cmd[:60]))
         with self.held():
-            s = self._sock or self._connect()
-            start = time.perf_counter()
-            self._rid, self._marker, self._done = None, None, False
-            self._sent = self._started = False
+            left = self._left()
+            if left is not None and left <= 0:
+                raise RconDeadline("no time left for %r" % cmd[:60])
+            # the deadline bounds the connect and every read of this exchange (_recv), not _recover
+            self._call_deadline = None if left is None else time.monotonic() + left
             try:
-                reply = self._exchange(s, cmd)
-            except (OSError, ValueError, struct.error) as e:
-                self._done = True
-                self._break("%s: %s" % (cmd[:60], _words(e)))
-                raise RconError("RCON failed on %r: %s" % (cmd[:60], _words(e))) from e
-            except BaseException as e:
-                self._recover(s, e)
-                raise
+                s = self._sock or self._connect()
+                start = time.perf_counter()
+                self._rid, self._marker, self._done = None, None, False
+                self._sent = self._started = False
+                try:
+                    reply = self._exchange(s, cmd)
+                except (OSError, ValueError, struct.error) as e:
+                    late = self._late()
+                    self._call_deadline = None
+                    self._done = True
+                    # as after any timeout: the connection goes and the next command reconnects
+                    self._break("%s: %s" % (cmd[:60], "past its caller's deadline" if late else _words(e)))
+                    if late:
+                        raise RconDeadline("%r did not answer within its caller's deadline"
+                                           % cmd[:60]) from e
+                    raise RconError("RCON failed on %r: %s" % (cmd[:60], _words(e))) from e
+                except BaseException as e:
+                    self._call_deadline = None
+                    self._recover(s, e)
+                    raise
+            finally:
+                self._call_deadline = None
             self.stats.exchanges += 1
             self.stats.recent.append(time.perf_counter() - start)
             return reply

@@ -443,6 +443,42 @@ def test_a_class_file_never_takes_a_library_classs_id(tmp_path):
     assert "engine/library/fireball.py" in DENY.library_name("fireball")
 
 
+LIBRARY_FIREBALL = "from vfg_engine import Ability\n\n\nclass Fireball(Ability):\n    pass\n"
+
+
+def test_a_class_never_takes_a_library_id_by_its_class_name_whatever_its_files_name(tmp_path):
+    """my_ball.py holding `class Fireball(Ability)` is fireball: it would shadow the library's for everyone."""
+    lib = tmp_path / "engine" / "library"
+    lib.mkdir(parents=True)
+    (lib / "fireball.py").write_text(LIBRARY_FIREBALL)
+    (lib / "gravity.py").write_text("from vfg_engine import Ability\n\n\nclass Lift(Ability):\n    id = 'up_lift'\n")
+    g = GuardContext(repo=str(tmp_path), task=TASK)
+    ball = "made/main/content/my_ball.py"
+    for content, refused in (("from vfg_engine import Ability\n\n\nclass Fireball(Ability):\n    pass\n", "fireball"),
+                             ("import vfg_engine\n\n\nclass Fireball(vfg_engine.Ability):\n    pass\n", "fireball"),
+                             ("from vfg_engine import Ability\n\n\nclass MyBall(Ability):\n    id = 'fireball'\n",
+                              "fireball"),
+                             ("from vfg_engine import Item\n\n\nclass UpLift(Item):\n    pass\n", "up_lift"),
+                             ("from vfg_engine import Ability\n\n\nclass MyBall(Ability):\n    pass\n", None),
+                             ("class Fireball:\n    pass\n", None),             # no engine kind: no class of the engine
+                             ("class Fireball(Ability:\n", None)):              # no parse: the engine loads nothing
+        got = decide(call("Write", file_path=ball, content=content), g)
+        assert got == (DENY.library_name(refused, "gravity" if refused == "up_lift" else "fireball") if refused
+                       else None), content
+    assert "engine/library/gravity.py" in DENY.library_name("up_lift", "gravity")
+    # an Edit: the file it would leave is what counts
+    (tmp_path / "made" / "main" / "content").mkdir(parents=True)
+    (tmp_path / ball).write_text("from vfg_engine import Ability\n\n\nclass MyBall(Ability):\n    pass\n")
+    rename = call("Edit", file_path=ball, old_string="class MyBall(", new_string="class Fireball(")
+    assert decide(rename, g) == DENY.library_name("fireball", "fireball")
+    tweak = call("Edit", file_path=str(tmp_path / ball), old_string="pass", new_string="every = 0.5")
+    assert decide(tweak, g) is None
+    assert decide(call("Edit", file_path=ball, old_string="not there", new_string="class Fireball("), g) is None
+    both = call("Edit", file_path=ball, old_string="MyBall", new_string="Fireball", replace_all=True)
+    assert decide(both, g) == DENY.library_name("fireball", "fireball")
+    assert decide(call("Write", file_path="made/main/tests/my_ball.py", content=LIBRARY_FIREBALL), g) is None  # a test
+
+
 def test_a_glob_in_a_read_is_allowed_when_every_match_stays_readable(tmp_path):
     repo = str(tmp_path)
     for rel in ("engine/library/fireball.py", "engine/library/README.md", "made/main/content/x.py",

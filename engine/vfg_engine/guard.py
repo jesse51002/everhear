@@ -1,6 +1,7 @@
 """Every content call is wrapped (the game engine spec, "One loop, in order", its rules).
 
-A call over VFG_ENGINE_SLOW_MS (5) is logged as slow; one over VFG_ENGINE_CUT_MS (50) is cut: a
+A call over VFG_ENGINE_SLOW_MS (5) of its own time, or one that waited over SLOW_IO_MS (50, a
+tick) on Minecraft, is logged as slow; one over VFG_ENGINE_CUT_MS (50) of its own time is cut: a
 timer signal (signal.setitimer, ITIMER_REAL) raises CallCut inside it, so only that instance ends
 and the loop goes on. CallCut is a BaseException, so content's own `except Exception` cannot keep
 a stuck call alive, and it comes again every 10 ms after the first, so neither can a bare
@@ -10,8 +11,10 @@ engine's books are never left half-done.
 
 The cut measures the content's own time. While a call waits on Minecraft (ctx.query and the live
 reads of ctx.world: `io_wait`), its timer is paused: a slow server must not cut content that is
-doing nothing wrong. That waiting has its own budget per call instead, VFG_ENGINE_IO_MS (250): a read
-asked for once the call has spent it is refused in words (IoBudget), so no call can stall the tick.
+doing nothing wrong. That waiting has its own budget per call instead, VFG_ENGINE_IO_MS (250): each
+read is given what is left of it as a deadline (Runtime.read, Io.deadline), one that does not answer
+in time is given up in words (IoBudget, the connection put right as after a timeout), and a read
+asked for once the call has spent it is refused in words too, so no call can stall the tick.
 
 A signal can only be handled on the main thread; a call made on any other thread is timed but
 cannot be cut (Engine.run runs the loop on the main thread).
@@ -27,13 +30,15 @@ import time
 import traceback
 from dataclasses import dataclass
 
+from .io import IoDeadline
+
 
 class CallCut(BaseException):
     """Raised inside a content call that ran past the cut."""
 
 
 class IoBudget(RuntimeError):
-    """A live read refused: this call has spent its time waiting on Minecraft."""
+    """A live read refused, or given up: this call has spent its time waiting on Minecraft."""
 
 
 @dataclass
@@ -50,6 +55,7 @@ class Outcome:
 RECUT_S = 0.01         # after the first cut, another this often until the call returns
 SLOW_WINDOW_S = 60.0   # an instance slow this many times within this window is flagged
 SLOW_FLAG_AT = 3
+SLOW_IO_MS = 50.0      # a call that waited longer than this on Minecraft (a whole tick) is slow too
 
 
 class Guard:
@@ -111,9 +117,11 @@ class Guard:
     def io_wait(self, what: str = "a live read"):
         """The engine waiting on Minecraft inside a content call: the call's timer is paused (its
         cut counts the content's own time), and the waiting has its own budget per call, past which
-        a read is refused in words. Outside a content call it does nothing."""
+        a read is refused in words. It gives the ms left of that budget, the read's deadline (None
+        outside a content call, where it does nothing else); a read that ran past it (IoDeadline,
+        from the Io) is given up as IoBudget in words, and the budget is then spent."""
         if self.active is None:
-            yield
+            yield None
             return
         if self.io_spent >= self.io_ms:
             raise IoBudget("%s refused: this call has already waited %.0f ms on Minecraft, its whole "
@@ -124,12 +132,21 @@ class Guard:
             remaining = signal.getitimer(signal.ITIMER_REAL)[0]
             signal.setitimer(signal.ITIMER_REAL, 0)
         start = time.perf_counter()
+        left = self.io_ms - self.io_spent
         self.critical += 1
+        given_up = False
         try:
-            yield
+            yield left
+        except IoDeadline as exc:
+            given_up = True
+            raise IoBudget("%s given up: Minecraft did not answer within the %.0f ms left of this "
+                           "call's budget for waiting on it (%g ms in all); read less in one call, or "
+                           "ask with self.ask (%s)" % (what, left, self.io_ms, exc)) from None
         finally:
             self.critical -= 1
             self.io_spent += (time.perf_counter() - start) * 1000.0
+            if given_up:                    # the rest of the call's reads are refused
+                self.io_spent = max(self.io_spent, self.io_ms)
             if self._armed and self._live:
                 # the content's own time goes on where it stopped (a cut that was due fires now)
                 signal.setitimer(signal.ITIMER_REAL, max(remaining or 0.0, 0.0005), RECUT_S)
@@ -194,14 +211,16 @@ class Guard:
 
     # ---- slow calls ----------------------------------------------------------------------
 
-    def note_slow(self, instance: str, now: float) -> bool:
-        """Count one slow call; True the first time the instance has been slow SLOW_FLAG_AT times
-        within SLOW_WINDOW_S (it is then flagged)."""
+    def note_slow(self, instance: str, now: float, why: str = "") -> bool:
+        """Count one slow call (its own time, or its waiting on Minecraft: `why` says which); True
+        the first time the instance has been slow SLOW_FLAG_AT times within SLOW_WINDOW_S (it is
+        then flagged, with the last call's why)."""
         times = self._slow.setdefault(instance, collections.deque(maxlen=SLOW_FLAG_AT))
         times.append(now)
         if (len(times) == SLOW_FLAG_AT and now - times[0] <= SLOW_WINDOW_S
                 and instance not in self.flagged):
-            self.flagged[instance] = "slow %d times in %g s" % (SLOW_FLAG_AT, SLOW_WINDOW_S)
+            self.flagged[instance] = "slow %d times in %g s%s" % (
+                SLOW_FLAG_AT, SLOW_WINDOW_S, " (the last %s)" % why if why else "")
             return True
         return False
 

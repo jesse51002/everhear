@@ -12,7 +12,10 @@
    instance restarts with the new values (stop, then start again), keeping its state and its end.
    A cast already running is not restarted: it goes on under the new numbers.
 
-A full reload (no paths) also unloads classes whose files are gone, ending their instances.
+A full reload (no paths) also unloads classes whose files are gone, ending their instances. A
+reload of some paths loads only content files: a path is refused in words unless, its symlinks and
+`..` resolved, it is a *.py directly in one of the content folders (a file anywhere else would
+otherwise rank above every folder and shadow the library's and the server's version of its id).
 
 **A server's version shadows the library's.** The content folders are ordered (VFG_ENGINE_CONTENT:
 the library first, then made/<server>/content): a class in a later folder with the id of one in
@@ -48,8 +51,17 @@ def reload(rt, paths=None) -> dict:
         for folder in rt.settings.content:
             if not os.path.isdir(folder):
                 log.warning("content folder %s does not exist; nothing is loaded from it", folder)
-    files = content_files(rt.settings.content) if full else [os.path.abspath(p) for p in paths]
     errors, touched, notes = [], [], []
+    if full:
+        files = content_files(rt.settings.content)
+    else:
+        files = []
+        for p in paths:
+            path, why = content_path(rt, p)
+            if path is None:
+                errors.append({"file": str(p), "check": "path", "error": why})
+            elif path not in files:
+                files.append(path)
     for path in files:
         res = load_file(path, rt.guard, rt.now)
         errors.extend(res.errors)
@@ -111,13 +123,33 @@ def _a(kind: str) -> str:
     return ("an " if kind[0] in "aeiou" else "a ") + kind
 
 
+def content_path(rt, path) -> tuple[str | None, str]:
+    """A path asked to be reloaded, as the content file a full reload would name it, or None and
+    why not in words: its folder (symlinks and `..` resolved) must be one of the content folders,
+    and it a *.py not starting with _ or . (vfg_engine.loader.content_files)."""
+    if not isinstance(path, str) or not path.strip():
+        return None, "%r is not a path" % (path,)
+    here = os.path.realpath(os.path.dirname(os.path.abspath(path)))
+    name = os.path.basename(path)
+    for folder in rt.settings.content:
+        if os.path.realpath(folder) == here:
+            if not name.endswith(".py") or name.startswith(("_", ".")):
+                return None, ("%s is not a content file (content is the *.py not starting with _ or . "
+                              "in a content folder); nothing was loaded from it" % path)
+            return os.path.abspath(os.path.join(folder, name)), ""
+    return None, ("%s is not in a content folder (%s); only files directly in one of them are "
+                  "content, so nothing was loaded from it"
+                  % (path, ", ".join(rt.settings.content) or "none set"))
+
+
 def folder_rank(rt, path: str) -> int:
-    """Which content folder a file is in (0 the first, the library); a later one shadows an earlier."""
-    here = os.path.dirname(os.path.abspath(path))
+    """Which content folder a file is in (0 the first, the library); a later one shadows an earlier.
+    -1 for a file in none of them (reload refuses those): it never shadows anything."""
+    here = os.path.realpath(os.path.dirname(os.path.abspath(path)))
     for i, folder in enumerate(rt.settings.content):
-        if os.path.abspath(folder) == here:
+        if os.path.realpath(folder) == here:
             return i
-    return len(rt.settings.content)
+    return -1
 
 
 def effective(rt, cid):

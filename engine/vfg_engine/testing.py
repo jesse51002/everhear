@@ -23,13 +23,14 @@ engine sent in `sent`.
 
 from __future__ import annotations
 
+import contextlib
 import math
 import time
 import uuid as uuidlib
 from dataclasses import dataclass, field, replace
 
 from . import registries
-from .io import (AddModifier, BlockData, Bossbar, Command, Damage, Effect, EntityData, EntitySnap, Fill, Forceload,
+from .io import (IoDeadline, AddModifier, BlockData, Bossbar, Command, Damage, Effect, EntityData, EntitySnap, Fill, Forceload,
                  GiveEffect, GiveItem, Gamerule, Ignite, Look, Message, Motion, OpResult, Particle,
                  PlayerSnap, RawEvent, Remove, RemoveModifier, SetBlock, Snapshot, Sound, Spawnpoint,
                  StopSound, Summon, TakeItem, Teleport)
@@ -159,6 +160,9 @@ class FakeIo:
         self.queries: list[str] = []
         self.query_reply = lambda command: ""
         self.query_delay_s = 0.0
+        self.read_delay_s = 0.0              # each probe/ground_y/ray/entities/loaded waits this long
+        self.deadlines: list[float] = []     # every deadline() given, in seconds
+        self._deadline_end: float | None = None
         self._events: list[RawEvent] = []
         self._n = 0
         self.last_n: int | None = 0          # the last event handed over; None: no dedupe at all
@@ -212,10 +216,32 @@ class FakeIo:
     def mirror(self):
         return FakeMirror(self)
 
+    @contextlib.contextmanager
+    def deadline(self, seconds):
+        """As McIo's: the reads inside answer within `seconds`, else IoDeadline. Kept in
+        `deadlines`; a read slower than what is left (query_delay_s, read_delay_s) waits it out and
+        raises, as a socket timeout would."""
+        self.deadlines.append(seconds)
+        before = self._deadline_end
+        end = time.monotonic() + seconds
+        self._deadline_end = end if before is None else min(before, end)
+        try:
+            yield self
+        finally:
+            self._deadline_end = before
+
+    def _wait(self, delay, what):
+        if not delay:
+            return
+        left = None if self._deadline_end is None else self._deadline_end - time.monotonic()
+        if left is not None and delay > left:
+            time.sleep(max(left, 0.0))
+            raise IoDeadline("%s did not answer within its caller's deadline" % what)
+        time.sleep(delay)
+
     def query(self, command):
         self.queries.append(command)
-        if self.query_delay_s:
-            time.sleep(self.query_delay_s)
+        self._wait(self.query_delay_s, repr(command[:60]))
         if command.startswith("execute if predicate") and "weather_check" in command:
             now = {"raining": self.weather in ("rain", "thunder"), "thundering": self.weather == "thunder"}
             asked = "thundering" if "thundering" in command else "raining"
@@ -463,6 +489,7 @@ class FakeIo:
     # ---- reads (part 2) ------------------------------------------------------------------
 
     def probe(self, dim, points, test):
+        self._wait(self.read_delay_s, "probe")
         out = []
         for x, y, z in points:
             block = self.block_at(dim, x, y, z)
@@ -477,6 +504,7 @@ class FakeIo:
     def ground_y(self, dim, x, z):
         """Where feet stand on column x, z, as 26.3's motion_blocking_no_leaves heightmap gives it:
         one above the highest block that blocks movement (fluids count, leaves and plants do not)."""
+        self._wait(self.read_delay_s, "ground_y")
         if not self._chunk_loaded(dim, x, z):
             return None
         for y in range(319, -65, -1):
@@ -486,6 +514,7 @@ class FakeIo:
         return None
 
     def ray(self, dim, origin, direction, length, through_blocks=False):
+        self._wait(self.read_delay_s, "ray")
         n = math.sqrt(sum(c * c for c in direction)) or 1.0
         d = tuple(c / n for c in direction)
         steps = int(length / 0.1)
@@ -499,6 +528,7 @@ class FakeIo:
         return Look("none", end, float(length))
 
     def entities(self, dim, center, radius, types=None):
+        self._wait(self.read_delay_s, "entities")
         return [self._esnap(e) for e in self.entities_by_type(types)
                 if e.dim == dim and math.dist(e.pos, center) <= radius and self._chunk_loaded(dim, e.pos[0], e.pos[2])]
 
@@ -506,6 +536,7 @@ class FakeIo:
         return [e for e in self.by_uuid.values() if not types or e.type in types]
 
     def loaded(self, dim, x, z):
+        self._wait(self.read_delay_s, "loaded")
         return self._chunk_loaded(dim, x, z)
 
     def mspt(self):

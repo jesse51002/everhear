@@ -112,36 +112,59 @@ def subtract(lo, hi, cut_lo, cut_hi) -> list[tuple[list, list]]:
 
 
 class Protected:
-    """The protected boxes, read again whenever the file changes."""
+    """The protected boxes, read again whenever the file changes. It fails safe: a file that cannot
+    be read or parsed (half written, a typo) keeps the boxes last read from it, with an error in the
+    log; only a file that is really gone protects nothing."""
 
     def __init__(self, path: str | None):
         self.path = path
-        self._stamp = None
+        self._stamp = None                                 # (mtime ns, size) last read
         self.boxes: list[tuple[str, list, list]] = []      # (dim, lo, hi)
 
     def get(self, dim: str) -> list[tuple[list, list]]:
         if not self.path:
             return []
         try:
-            stamp = os.stat(self.path).st_mtime_ns
-        except OSError:
+            st = os.stat(self.path)
+        except FileNotFoundError:
+            if self.boxes:
+                log.warning("protected file %s is gone: nothing is protected now", self.path)
             self._stamp, self.boxes = None, []
             return []
+        except OSError as exc:
+            self._unreadable(("stat", str(exc)), exc)
+            return self._of(dim)
+        stamp = (st.st_mtime_ns, st.st_size)
         if stamp != self._stamp:
-            boxes = []
             try:
-                with open(self.path, encoding="utf-8") as f:
-                    for e in json.load(f):
-                        b = [int(v) for v in e["box"]]
-                        d = e.get("dim") or "minecraft:overworld"
-                        d = d if ":" in d else "minecraft:" + d
-                        boxes.append((d, [min(b[0], b[3]), min(b[1], b[4]), min(b[2], b[5])],
-                                      [max(b[0], b[3]), max(b[1], b[4]), max(b[2], b[5])]))
+                self.boxes, self._stamp = self._read(), stamp
+            except FileNotFoundError:
+                self._stamp, self.boxes = None, []
             except (OSError, ValueError, KeyError, TypeError, IndexError) as exc:
-                log.error("protected file %s unreadable (%s): nothing is protected", self.path, exc)
-                boxes = []
-            self._stamp, self.boxes = stamp, boxes
+                self._unreadable(stamp, exc)
+        return self._of(dim)
+
+    def _of(self, dim):
         return [(lo, hi) for d, lo, hi in self.boxes if d == dim]
+
+    def _read(self):
+        boxes = []
+        with open(self.path, encoding="utf-8") as f:
+            for e in json.load(f):
+                b = [int(v) for v in e["box"]]
+                d = e.get("dim") or "minecraft:overworld"
+                d = d if ":" in d else "minecraft:" + d
+                boxes.append((d, [min(b[0], b[3]), min(b[1], b[4]), min(b[2], b[5])],
+                              [max(b[0], b[3]), max(b[1], b[4]), max(b[2], b[5])]))
+        return boxes
+
+    def _unreadable(self, stamp, exc):
+        # once per version of the file: it is not read again until it changes
+        if stamp != self._stamp:
+            log.error("protected file %s unreadable (%s): %s", self.path, exc,
+                      "keeping the %d boxes last read from it" % len(self.boxes) if self.boxes
+                      else "nothing was protected before it, so nothing is")
+        self._stamp = stamp
 
     def covers(self, dim: str, pos) -> bool:
         x, y, z = _cell(pos)

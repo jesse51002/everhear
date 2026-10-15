@@ -2055,6 +2055,19 @@ def engine_result(reply, scenario=""):
     return summary, facts, running
 
 
+def failed_words(reply, failed):
+    """Why a one-off that reports `failed` did not do what was asked, in words: the scenario's own
+    summary, else `failed` when it is text (the command the command scenario stopped at), else
+    "it did nothing it was asked to" (a bare true says nothing more)."""
+    res = reply.get("result") if isinstance(reply.get("result"), dict) else {}
+    own = str(res.get("summary") or "").strip()
+    if own:
+        return own
+    if isinstance(failed, str) and failed.strip():
+        return failed.strip()
+    return "it did nothing it was asked to"
+
+
 def engine_said(op, args, reply):
     """What a done op did, in words: `granted fireball to Steve`."""
     who = args.get("who") or args.get("player") or ""
@@ -2456,8 +2469,9 @@ def run_engine_action(cfg, a, name, va, cls, given, task=None):
                 said, facts, running = engine_result(reply, args.get("scenario") or "")
                 if not running and facts.get("failed"):
                     # a one-off whose result says it stopped short (the command scenario's `failed`):
-                    # it did not do what was asked, whatever the engine took
-                    reply = dict(reply, ok=False, error=said or "it stopped at %s" % facts["failed"])
+                    # it did not do what was asked, whatever the engine took. Its words: the
+                    # scenario's own summary, else `failed` when it is text, never `True`
+                    reply = dict(reply, ok=False, error=failed_words(reply, facts["failed"]))
             else:
                 said = engine_said(op, args, reply) if reply.get("ok") else ""
                 facts = dict((k, x) for k, x in reply.items() if k not in ("ok", "error"))
@@ -2485,13 +2499,307 @@ def content_rel(cfg, path):
 def engine_deploy(cfg, a, reload_, timeout=ENGINE_RELOAD_S):
     """made/<server>/content/ deployed whole to the box, then, with `reload_` (its files, by their
     paths in the folder, or "all"), reloaded there: remote/engine.py's object, its "deployed" and
-    its "replies" (the reload's), with "down" or "timeout" when the engine did not answer."""
+    its "replies" (the reload's), with "down" or "timeout" when the engine did not answer. First
+    this server's copies of library classes are brought up to the library's code (rebase_copies,
+    each in words on stderr), and a made class that would run in a library class's place, not
+    being this server's own copy of it, refuses the deploy (shadowing): nothing is sent."""
     folder = content_dir(cfg)
     if not os.path.isdir(folder):
         raise Fail(1, "no made/%s/content/ in %s: nothing to deploy" % (server_name(cfg), tilde(cfg.repo)))
+    for note in rebase_copies(cfg):
+        warn(note)
+    problems = shadowing(cfg)
+    if problems:
+        raise Fail(1, "nothing deployed: %s" % problems_text(problems, 600))
     tar, _ = pack(["content"], os.path.dirname(folder))
     return engine_remote(cfg, a, {"op": "deploy", "server": server_name(cfg), "tar": tar, "reload": reload_,
                                   "timeout": timeout}, timeout)
+
+
+# ---- this server's classes and the library's
+#
+# A made class of a library class's id runs in the library's place, for everyone (the engine runs
+# a made class over the library's of the same id; the id is the class's name in snake case unless
+# it sets `id`). The one made file allowed to do it is this server's own copy of that library
+# class, made by `config set`, which keeps the library's version in .history/<file>/ as
+# <time>-<Class>.library.py: anything else shadowing a library id refuses the deploy.
+#
+# Such a copy differs from the library's file only in its Configs' values. So that a library fix
+# still reaches it, its first `config set` records what it was made from, in .history/<file>/:
+# library.json (the library file's hash) and library-base.py (that file as copied). Every deploy
+# then compares: when the library's file has changed and the copy is still that base with only
+# Config values set (each Config through the static checks against it, the rest the same code),
+# the copy is rebuilt as the library's file now, each value this server set put into its Config
+# (a three-way merge of the values: the formulas and every value this server left alone are the
+# library's new ones), each class through the static checks, the old copy kept as
+# <time>-<Class>.before-rebase.py, logged as op "rebase". A copy whose code was changed by hand is
+# never touched: every deploy, and `config get` of it, says in words that the library moved on.
+
+ENGINE_BASES = ("Item", "Ability", "Mark", "Actor", "Scenario")   # a content class's base: the engine's kinds
+LIBRARY_RECORD = "library.json"   # .history/<file>/: the library file's hash when its copy was made
+LIBRARY_BASE = "library-base.py"  # .history/<file>/: that library file, as the copy was made from it
+
+
+def defined_classes(source):
+    """[(id, class name)] of each top-level class of `source` on one of the engine's kinds (Ability,
+    or vfg_engine.Ability), its id as the engine gives it (class_id); [] when it does not parse."""
+    import ast
+    try:
+        tree_ = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return []
+    return [(class_id(n), n.name) for n in tree_.body if isinstance(n, ast.ClassDef) and any(
+        (isinstance(b, ast.Name) and b.id in ENGINE_BASES) or (isinstance(b, ast.Attribute) and b.attr in ENGINE_BASES)
+        for b in n.bases)]
+
+
+def py_files(folder):
+    """The content files of a folder, as the engine loads them: *.py not starting with _ or ., sorted."""
+    try:
+        return sorted(n for n in os.listdir(folder) if n.endswith(".py") and not n.startswith(("_", ".")))
+    except OSError:
+        return []
+
+
+def library_classes(cfg):
+    """{id: (its library file's name, its class's name)} for every class engine/library/ defines."""
+    got = {}
+    for n in py_files(library_dir(cfg)):
+        try:
+            source = read_text(os.path.join(library_dir(cfg), n))
+        except (OSError, UnicodeDecodeError):
+            continue
+        for cid, name in defined_classes(source):
+            got.setdefault(cid, (n, name))
+    return got
+
+
+def copy_history(cfg, n):
+    """.history/<file>/ for the content file `n` (fireball.py)."""
+    return os.path.join(history_dir(cfg), os.path.splitext(n)[0])
+
+
+def library_kept_of(cfg, n, name=None):
+    """The newest version of the library's file `config set` kept when it made this server's copy
+    `n` (.history/<file>/<time>-<Class>.library.py, not undone), of the class `name` (any with
+    None); None when there is none: `n` is no copy of the library's made by `config set`."""
+    folder = copy_history(cfg, n)
+    try:
+        names = sorted(x for x in os.listdir(folder) if x.endswith(LIBRARY_KEPT)
+                       and (name is None or x.endswith("-%s%s" % (name, LIBRARY_KEPT))))
+    except OSError:
+        return None
+    return os.path.join(folder, names[-1]) if names else None
+
+
+def shadowing(cfg):
+    """Each made class that would run in a library class's place, for everyone, in words: a class of
+    made/<server>/content/ whose id is a library class's, unless it is this server's own copy of
+    that very class, made by `config set` (its file the library's file's name, its class the
+    library's, and the library's version kept in .history)."""
+    lib = library_classes(cfg)
+    if not lib:
+        return []
+    problems = []
+    for n in py_files(content_dir(cfg)):
+        path = os.path.join(content_dir(cfg), n)
+        try:
+            source = read_text(path)
+        except (OSError, UnicodeDecodeError):
+            continue
+        for cid, name in defined_classes(source):
+            if cid not in lib:
+                continue
+            lib_file, lib_name = lib[cid]
+            if n == lib_file and name == lib_name and library_kept_of(cfg, n, name):
+                continue
+            problems.append("%s's class %s is %s, the id of the library's engine/library/%s: it would run in the "
+                            "library's place, for everyone — give it its own id (its task's name), or change the "
+                            "library's numbers with vfg engine config set %s" % (
+                                content_rel(cfg, path), name, cid, lib_file, cid))
+    return problems
+
+
+def sha_text(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def config_classes(source):
+    """The names of the top-level classes of `source` that hold a Config, in order."""
+    import ast
+    tree_ = ast.parse(source)
+    return [n.name for n in tree_.body if isinstance(n, ast.ClassDef)
+            and any(isinstance(b, ast.ClassDef) and b.name == "Config" for b in n.body)]
+
+
+def config_fields(source, name):
+    """{field: its value's node} of `name`'s Config in `source`: each field written with a value."""
+    import ast
+    tree_ = ast.parse(source)
+    for n in tree_.body:
+        if isinstance(n, ast.ClassDef) and n.name == name:
+            for c in n.body:
+                if isinstance(c, ast.ClassDef) and c.name == "Config":
+                    got = {}
+                    for b in c.body:
+                        if isinstance(b, ast.AnnAssign) and isinstance(b.target, ast.Name) and b.value is not None:
+                            got[b.target.id] = b.value
+                        elif isinstance(b, ast.Assign) and len(b.targets) == 1 and isinstance(b.targets[0], ast.Name):
+                            got[b.targets[0].id] = b.value
+                    return got
+    raise LookupError("there is no class %s with a Config" % name)
+
+
+def library_base(cfg, n):
+    """The library's file this server's copy `n` was made from (or last rebuilt on): .history/<file>/
+    library-base.py; for a copy made before that was kept, the library's version `config set` kept
+    then (<time>-<Class>.library.py). None for a file that is no copy of the library's."""
+    for path in (os.path.join(copy_history(cfg, n), LIBRARY_BASE), library_kept_of(cfg, n)):
+        if path:
+            try:
+                return read_text(path)
+            except (OSError, UnicodeDecodeError):
+                continue
+    return None
+
+
+def keep_library_base(cfg, n, name, library_source):
+    """What the copy `n` is made from, recorded: the library file's hash and the file itself."""
+    os.makedirs(copy_history(cfg, n), exist_ok=True)
+    atomic_write(os.path.join(copy_history(cfg, n), LIBRARY_BASE), library_source, 0o644)
+    atomic_write(os.path.join(copy_history(cfg, n), LIBRARY_RECORD), json.dumps({
+        "class_name": name, "library": "engine/library/%s" % n, "library_sha": sha_text(library_source),
+        "at": now_iso()}, ensure_ascii=False) + "\n", 0o644)
+
+
+def set_values(base, copy_source):
+    """{class: {field: its value as the copy writes it}}: each value the copy's Configs set otherwise
+    than the library's file it was made from (`base`); None when the copy is not that file with only
+    Config values set (its code, a formula or a field changed by hand)."""
+    import ast
+    rw = rewrite_module()
+    try:
+        names = config_classes(copy_source)
+        if sorted(names) != sorted(config_classes(base)):
+            return None
+        cur = base
+        for name in names:      # each Config of the copy put into the base, as a config set would
+            s, e = rw.find_config(copy_source, name)
+            at, _ = rw.find_config(cur, name)
+            nxt = rw.splice(cur, name, fit_config(config_lines(copy_source, s, e), cur, at))
+            if rw.static_checks(cur, nxt, name):
+                return None
+            cur = nxt
+        if ast.dump(ast.parse(cur)) != ast.dump(ast.parse(copy_source)):
+            return None         # something outside the Configs differs
+        values = {}
+        for name in names:
+            was, now = config_fields(base, name), config_fields(copy_source, name)
+            changed = dict((k, ast.get_source_segment(copy_source, v)) for k, v in now.items()
+                           if k not in was or ast.dump(v) != ast.dump(was[k]))
+            if changed:
+                values[name] = changed
+        return values
+    except (SyntaxError, ValueError, LookupError):
+        return None
+
+
+def with_values(source, name, values):
+    """`source` with each of `values` ({field: value source}) put in place of that field's value in
+    `name`'s Config, nothing else touched."""
+    fields = config_fields(source, name)
+    missing = sorted(k for k in values if k not in fields)
+    if missing:
+        raise LookupError("its Config no longer has %s" % ", ".join(missing))
+    lines = source.splitlines(True)
+    spans = sorted(((fields[k].lineno, fields[k].col_offset, fields[k].end_lineno, fields[k].end_col_offset, v)
+                    for k, v in values.items()), reverse=True)
+    for l1, c1, l2, c2, text in spans:      # ast's columns count bytes
+        head = lines[l1 - 1].encode("utf-8")[:c1].decode("utf-8")
+        tail = lines[l2 - 1].encode("utf-8")[c2:].decode("utf-8")
+        lines[l1 - 1:l2] = [head + text + tail]
+    return "".join(lines)
+
+
+def kept_values(kept, source, name):
+    """{field: value source} of each field `name`'s Config in `kept` writes otherwise than `source`."""
+    import ast
+    was, now = config_fields(kept, name), config_fields(source, name)
+    return dict((k, ast.get_source_segment(kept, v)) for k, v in was.items()
+                if k in now and ast.dump(v) != ast.dump(now[k]))
+
+
+def rebased(library_source, values):
+    """The library's file as it is now with each value this server set put in its Config, each
+    class through the static checks against the library's: (the new source, []) or (None, what does
+    not fit, in words)."""
+    rw = rewrite_module()
+    new = library_source
+    for name, fields in values.items():
+        try:
+            nxt = with_values(new, name, fields)
+        except (SyntaxError, ValueError, LookupError) as err:
+            return None, ["%s: %s" % (name, err)]
+        problems = rw.static_checks(new, nxt, name)
+        if problems:
+            return None, problems
+        new = nxt
+    return new, []
+
+
+def rebase_copies(cfg, only=None, rebuild=True):
+    """Each copy of a library class in made/<server>/content/ (library_base), with the library's
+    file changed since: rebuilt on the library's file as it is now, this server's values in it, when
+    the copy is still only its base with Config values set (rebased; with `rebuild` false, only
+    said); else left as it is. What was done, or why not, in words, one line each. `only`: that file
+    alone (fireball.py)."""
+    notes = []
+    for n in py_files(content_dir(cfg)):
+        if only is not None and n != only:
+            continue
+        base = library_base(cfg, n)
+        lib = os.path.join(library_dir(cfg), n)
+        if base is None or not os.path.isfile(lib):
+            continue
+        path = os.path.join(content_dir(cfg), n)
+        try:
+            library_source, copy_source = read_text(lib), read_text(path)
+        except (OSError, UnicodeDecodeError):
+            continue
+        if library_source == base:
+            continue
+        cid, rel = os.path.splitext(n)[0], content_rel(cfg, path)
+        values = set_values(base, copy_source)
+        if values is None:
+            notes.append("%s is this server's copy of the library's %s, and its code was changed by hand: the "
+                         "library's version has moved on since (engine/library/%s), and its fixes do not reach "
+                         "this server — bring them over by hand, or vfg engine config undo %s until the library's "
+                         "own runs again" % (rel, cid, n, cid))
+            continue
+        if not rebuild:
+            notes.append("the library's %s has changed since %s, this server's copy, was made: the next deploy "
+                         "(vfg engine reload %s) rebuilds the copy on it, this server's Config values kept"
+                         % (cid, rel, cid))
+            continue
+        new, problems = rebased(library_source, values)
+        if problems:
+            history_log(cfg, {"op": "rebase", "class": cid, "file": rel, "ok": False, "error": problems_text(problems)})
+            notes.append("the library's %s has changed, and this server's Config no longer fits it (%s): %s keeps "
+                         "the old code — vfg engine config undo %s puts the library's own back" % (
+                             cid, problems_text(problems), rel, cid))
+            continue
+        names = config_classes(copy_source)
+        d = datetime.now(timezone.utc)
+        kept = os.path.join(copy_history(cfg, n), "%s-%06d-%s.before-rebase.py" % (
+            d.strftime("%Y%m%d-%H%M%S"), d.microsecond, names[0] if names else cid))
+        atomic_write(kept, copy_source, 0o644)
+        atomic_write(path, new, 0o644)
+        keep_library_base(cfg, n, names[0] if names else cid, library_source)
+        history_log(cfg, {"op": "rebase", "class": cid, "file": rel, "ok": True,
+                          "kept": os.path.relpath(kept, content_dir(cfg)), "library": "engine/library/%s" % n})
+        notes.append("the library's %s has changed since this server's copy was made: %s is rebuilt on it, this "
+                     "server's Config values kept (the copy as it was is in %s)" % (cid, rel, content_rel(cfg, kept)))
+    return notes
 
 
 def deployed_text(d):
@@ -2886,6 +3194,11 @@ def engine_config_set(cfg, a, wanted, new_config, by=None):
     facts.update(changed=[wanted], file=content_rel(cfg, t.path), kept=os.path.relpath(kept, content_dir(cfg)))
     if t.from_library:
         facts["copied_from"] = os.path.relpath(t.lib, cfg.repo)
+        try:   # what the copy was made from, so a library fix still reaches it (rebase_copies)
+            keep_library_base(cfg, os.path.basename(t.rel), t.name, t.source)
+        except OSError as e:
+            warn("what %s was copied from is not recorded (%s): a library fix to it will not reach this server's "
+                 "copy" % (wanted, e.strerror or e))
     return reply, config_said(t, reply, "%s's new Config is in%s, " % (
         wanted, " (this server's own copy of the library's)" if t.from_library else "") + "and reloaded"), notes, facts
 
@@ -2914,6 +3227,11 @@ def engine_config_undo(cfg, a, wanted, by=None):
                 undone = os.path.join(os.path.dirname(last), "undone")
                 os.makedirs(undone, exist_ok=True)
                 os.replace(last, os.path.join(undone, os.path.basename(last)))
+                for record in (LIBRARY_RECORD, LIBRARY_BASE):   # no copy any more: nothing to keep up with
+                    try:
+                        os.remove(os.path.join(os.path.dirname(last), record))
+                    except OSError:
+                        pass
             return reply, said
         rw = rewrite_module()
         old = read_text(last)
@@ -2924,6 +3242,17 @@ def engine_config_undo(cfg, a, wanted, by=None):
             return {"ok": False, "error": "%s's kept Config (%s) could not be put back: %s" % (
                 wanted, os.path.relpath(last, history_dir(cfg)), one_line(err, 600))}, ""
         problems = rw.static_checks(t.source, new_source, t.name)
+        if problems:
+            # kept before a rebuild on a newer library (rebase_copies), its formulas may be the old
+            # library's: its values alone are put back into the Config as it is now
+            try:
+                values = kept_values(old, t.source, t.name)
+                if values:
+                    again = with_values(t.source, t.name, values)
+                    if not rw.static_checks(t.source, again, t.name):
+                        new_source, problems = again, []
+            except (ValueError, SyntaxError, LookupError):
+                pass
         if problems:
             return {"ok": False, "error": "%s's kept Config (%s) no longer fits its class as it is now: %s; nothing "
                     "changed" % (wanted, os.path.relpath(last, history_dir(cfg)), problems_text(problems))}, ""
@@ -2946,6 +3275,9 @@ def cmd_engine_config(cfg, a):
         t, refused = config_target(cfg, a, a.cls)
         if refused is not None:
             return engine_show(a, refused, "")
+        if not t.from_library and t.lib and "/" not in t.rel:
+            for note in rebase_copies(cfg, only=t.rel, rebuild=False):   # this server's copy, behind the library
+                warn(note)
         box = t.box
         if isinstance(box.get("source"), str) and box["source"] != t.config and not (
                 t.lib and not t.from_library and str(box.get("file") or "").startswith(cfg.rvfg + "/engine/")):

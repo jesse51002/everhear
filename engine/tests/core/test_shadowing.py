@@ -129,3 +129,44 @@ def test_a_shadowing_class_of_another_kind_is_refused(rig, tmp_path):
         '''))
     reply = r.op("reload")
     assert reply["ok"] is False and "is an ability" in reply["errors"][0]["error"]
+
+
+def test_a_reload_of_a_file_outside_the_content_folders_is_refused_in_words(rig, tmp_path):
+    """A file in no content folder ranked above them all, so a partial reload of it shadowed the
+    library's and the server's version of its id. It is refused, and nothing changes."""
+    r, lib, made = _rig(rig, tmp_path)
+    away = tmp_path / "elsewhere"
+    away.mkdir()
+    (away / "bolt.py").write_text(bolt("elsewhere"))
+    reply = r.op("reload", paths=[str(away / "bolt.py")])
+    assert not reply["ok"] and reply["loaded"] == [] and reply["switched"] == 0
+    (err,) = reply["errors"]
+    assert err["check"] == "path" and "not in a content folder" in err["error"]
+    assert str(lib) in err["error"] and str(made) in err["error"]
+    r.run_for(0.6)
+    assert last_say(r).startswith("say library")
+    assert all(str(away) not in p for p in r.rt.candidates["bolt"])
+
+
+def test_dot_dots_and_symlinks_are_resolved_before_the_folder_is_judged(rig, tmp_path):
+    r, lib, made = _rig(rig, tmp_path)
+    away = tmp_path / "elsewhere"
+    away.mkdir()
+    (away / "bolt.py").write_text(bolt("elsewhere"))
+    (made / "link").symlink_to(away, target_is_directory=True)
+    for p in [made / "link" / "bolt.py", str(made) + "/../elsewhere/bolt.py"]:
+        reply = r.op("reload", paths=[str(p)])
+        assert not reply["ok"] and "not in a content folder" in reply["errors"][0]["error"], p
+    (lib / "_helper.py").write_text("X = 1\n")
+    reply = r.op("reload", paths=[str(lib / "_helper.py")])
+    assert not reply["ok"] and "not a content file" in reply["errors"][0]["error"]
+    r.run_for(0.6)
+    assert last_say(r).startswith("say library")
+    # a path into a content folder by way of `..` is that folder's file, under its own name
+    (made / "bolt.py").write_text(bolt("server"))
+    reply = r.op("reload", paths=[str(lib) + "/../made/bolt.py"])
+    assert reply["ok"] and reply["loaded"] == ["bolt"]
+    assert set(r.rt.candidates["bolt"]) == {str(lib / "bolt.py"), str(made / "bolt.py")}
+    assert r.op("reload")["errors"] == []                       # no twin of itself on a full reload
+    r.run_for(0.6)
+    assert last_say(r).startswith("say server")

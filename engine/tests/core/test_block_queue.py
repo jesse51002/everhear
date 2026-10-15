@@ -111,6 +111,40 @@ def test_the_bedrock_floor_and_protected_boxes_are_spared(rig, tmp_path):
     assert r.io.block_at("minecraft:overworld", 21, 66, 21) == "minecraft:glass"
 
 
+def test_a_half_written_protected_file_keeps_the_last_good_boxes(rig, tmp_path):
+    """An unparseable protected.json gave no boxes, so nothing was protected until the file changed
+    again. Now it keeps the boxes last read, with an error in the log."""
+    prot = tmp_path / "protected.json"
+    prot.write_text(json.dumps([{"name": "castle", "dim": "minecraft:overworld", "box": [10, 60, 10, 20, 80, 20]}]))
+    r = _rig(rig, protected=str(prot))
+    r.op("start", scenario="build", args={"what": "floor"})
+    r.run_for(1)                                                    # the file is read: the castle
+    prot.write_text('[{"name": "castle", "dim": "minecraft:overw')  # being rewritten
+    r.op("start", scenario="build", args={"what": "box"})
+    r.run_for(3)
+    assert r.io.block_at("minecraft:overworld", 15, 66, 15) == "minecraft:air"    # still spared
+    assert r.io.block_at("minecraft:overworld", 9, 66, 9) == "minecraft:glass"
+    bad = [m for m in r.lines() if "protected file" in m and "unreadable" in m]
+    assert len(bad) == 1 and "keeping the 1 boxes last read" in bad[0]          # once, not every tick
+
+
+def test_protected_boxes_go_only_when_the_file_is_really_gone(tmp_path):
+    from vfg_engine.blocks import Protected
+    prot = tmp_path / "protected.json"
+    prot.write_text(json.dumps([{"dim": "overworld", "box": [0, 0, 0, 1, 1, 1]}]))
+    p = Protected(str(prot))
+    assert p.get("minecraft:overworld") == [([0, 0, 0], [1, 1, 1])]
+    for typo in ['[{"dim": "overworld", "box": [0, 0, 0, 1, 1]}]', "{not json", "null", '[{"box": "x"}]']:
+        prot.write_text(typo)
+        assert p.get("minecraft:overworld") == [([0, 0, 0], [1, 1, 1])], typo
+    prot.write_text(json.dumps([{"dim": "overworld", "box": [5, 5, 5, 2, 2, 2]}]))
+    assert p.get("minecraft:overworld") == [([2, 2, 2], [5, 5, 5])]                # a good one is read
+    prot.unlink()
+    assert p.get("minecraft:overworld") == []
+    prot.write_text("{half")
+    assert p.get("minecraft:overworld") == []        # unreadable, with nothing before it: nothing
+
+
 def test_it_slows_down_with_the_server(rig):
     r = _rig(rig)
     r.io.mspt_value = 48.0

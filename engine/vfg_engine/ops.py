@@ -206,7 +206,7 @@ class Ops:
         answer = self._after_flush(reply, {"item": item, "base": op.base})
 
         def took(op, result):
-            if result.ok:                 # the holder's instance starts now, not next tick
+            if result.ok:                 # the holder's instance starts now, if it lands where it counts
                 items.given(self.rt, op.player, op.item_id)
             answer(op, result)
         self.rt.queue(op, took)
@@ -361,7 +361,8 @@ class Ops:
                                   % (name, name, kind or "not an arg of %s" % scenario))
             else:
                 rest[name] = value
-        argtypes.validate(info.cls.Args, rest, rt)
+        # the rest checked as a start would be; a Player arg's default "caster" is each cast's too
+        argtypes.validate(info.cls.Args, rest, rt, binding=True)
         return dict(fixed)
 
     def op_unbind(self, args, reply):
@@ -422,6 +423,9 @@ class Ops:
         if until > rt.now:
             return {**out, "status": "cooldown", "remaining_s": round(until - rt.now, 2)}
         given = {k: (being.key if v == argtypes.CASTER else v) for k, v in (entry.get("args") or {}).items()}
+        info = rt.classes.get(entry["scenario"])
+        for name in argtypes.caster_defaults(getattr(info.cls, "Args", None) if info is not None else None):
+            given.setdefault(name, being.key)    # a Player arg whose default is "caster": whoever spoke
         try:
             iid = scenarios.start(rt, entry["scenario"], given, source=being.key)
         except ValueError as exc:

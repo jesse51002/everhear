@@ -25,9 +25,17 @@ WEATHER_CHECK = 'execute if predicate {type:"minecraft:weather_check",%s:true}'
 
 
 def read_weather(query) -> str | None:
-    """"thunder", "rain" or "clear", from two weather checks (`query` runs one command)."""
+    """"thunder", "rain" or "clear", from two weather checks (`query` runs one command). A reply
+    that is neither "Test passed" nor "Test failed" (an error, a refusal) is no reading: ValueError,
+    in words, so the caller tries again rather than take the weather for clear."""
     def passed(what):
-        return "passed" in str(query(WEATHER_CHECK % what)).lower()
+        reply = str(query(WEATHER_CHECK % what)).strip()
+        if reply.lower().startswith("test passed"):
+            return True
+        if reply.lower().startswith("test failed"):
+            return False
+        raise ValueError("the weather check (%s) answered %r, neither 'Test passed' nor 'Test failed'"
+                         % (what, reply[:120]))
     if passed("thundering"):
         return "thunder"
     return "rain" if passed("raining") else "clear"
@@ -86,7 +94,8 @@ class WorldSettings:
                         else:
                             s["original"] = read_gamerule(name)
                     except Exception as exc:   # tried again next tick
-                        log.warning("could not read gamerule %s before holding it: %s", name, exc)
+                        log.warning("could not read %s before holding it (tried again next tick): %s",
+                                    "the weather" if name == "weather" else "gamerule " + name, exc)
                         continue
                     if s["original"] is None:
                         log.warning("gamerule %s has no value to read (unknown name?); it is held "

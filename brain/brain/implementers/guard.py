@@ -81,10 +81,11 @@ class DENY:
                 % (server, server))
 
     @staticmethod
-    def library_name(cid: str) -> str:
+    def library_name(cid: str, stem: str | None = None) -> str:
         return ("Refused: %s is a library class's id: a made class of that id runs in the library's place, for "
-                "everyone. Give yours its own id (your task's name), and copy what you need from "
-                "engine/library/%s.py." % (cid, cid))
+                "everyone (a class's id is its name in snake case, Fireball -> fireball, unless it sets id). Give "
+                "yours its own id (your task's name), and copy what you need from engine/library/%s.py."
+                % (cid, stem or cid))
 
     @staticmethod
     def content_name(server: str) -> str:
@@ -700,6 +701,100 @@ def readable(repo: str | None, server: str, p: str) -> bool:
     return any(within(os.path.join(repo, d), p, repo) for d in ("engine", os.path.join("made", server)))
 
 
+# The engine's kinds of class: a content class's base (vfg_engine/content.py, KINDS).
+ENGINE_KINDS = frozenset({"Item", "Ability", "Mark", "Actor", "Scenario"})
+
+
+def snake(name: str) -> str:
+    """FireStaff -> fire_staff, Fireball -> fireball: a class's id when it sets none, as the engine
+    makes it (vfg_engine/content.py's snake)."""
+    s = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", name)
+    return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s).lower()
+
+
+def class_ids(source: str) -> list[str]:
+    """The ids a content file defines, as the engine gives them: each top-level class whose base is
+    one of the engine's kinds (Ability, or vfg_engine.Ability), its `id = "…"` when its body sets
+    one, else its name in snake case. [] for text that does not parse (the engine loads nothing
+    from it either)."""
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return []
+    ids = []
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        if not any((isinstance(b, ast.Name) and b.id in ENGINE_KINDS)
+                   or (isinstance(b, ast.Attribute) and b.attr in ENGINE_KINDS) for b in node.bases):
+            continue
+        cid = snake(node.name)
+        for b in node.body:
+            targets = b.targets if isinstance(b, ast.Assign) else [b.target] if isinstance(b, ast.AnnAssign) else []
+            if any(isinstance(t, ast.Name) and t.id == "id" for t in targets) \
+                    and isinstance(b.value, ast.Constant) and isinstance(b.value.value, str):
+                cid = b.value.value
+        ids.append(cid)
+    return ids
+
+
+_LIBRARY: dict[str, tuple[tuple, dict[str, str]]] = {}
+
+
+def library_ids(repo: str) -> dict[str, str]:
+    """Every id engine/library/ defines, each with its file's stem: a file's stem, and the id of
+    every class in it (class_ids). Read again only when a file there changed."""
+    folder = os.path.join(repo, "engine", "library")
+    try:
+        names = sorted(n for n in os.listdir(folder) if n.endswith(".py") and not n.startswith(("_", ".")))
+        key = tuple((n, os.stat(os.path.join(folder, n)).st_mtime_ns) for n in names)
+    except OSError:
+        return {}
+    cached = _LIBRARY.get(folder)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    ids: dict[str, str] = {}
+    for n in names:
+        stem = n[:-3]
+        ids.setdefault(stem, stem)
+        try:
+            with open(os.path.join(folder, n), encoding="utf-8") as f:
+                text = f.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        for cid in class_ids(text):
+            ids.setdefault(cid, stem)
+    _LIBRARY[folder] = (key, ids)
+    return ids
+
+
+def after_edit(repo: str, path: str, inp: dict) -> str | None:
+    """The file an Edit would leave: its old_string replaced by its new_string (every one with
+    replace_all), or None when that cannot be known (no such file, nothing to replace: the edit
+    fails anyway)."""
+    old, new = inp.get("old_string"), inp.get("new_string")
+    if not isinstance(old, str) or not old or not isinstance(new, str):
+        return None
+    try:
+        with open(realish(os.path.abspath(os.path.join(repo, _expand_home(path)))), encoding="utf-8") as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if old not in text:
+        return None
+    return text.replace(old, new) if inp.get("replace_all") is True else text.replace(old, new, 1)
+
+
+def library_taken(repo: str, name: str, path: str, inp: dict) -> tuple[str, str] | None:
+    """(the id, its library file's stem) when the class file a Write writes, or an Edit leaves,
+    defines a library class's id, which would run in the library's place for everyone; else None."""
+    text = inp.get("content") if name == "Write" else after_edit(repo, path, inp)
+    if not isinstance(text, str):
+        return None
+    lib = library_ids(repo)
+    return next(((cid, lib[cid]) for cid in class_ids(text) if cid in lib), None)
+
+
 def made_file(repo: str, server: str, p: str) -> tuple[str, str] | None:
     """("content", id) when `p` (relative to the repository) is made/<server>/content/<id>.py,
     ("tests", id) when it is made/<server>/tests/<id>.py; else None. The only files an implementer
@@ -919,8 +1014,12 @@ def decide(call: dict, g: GuardContext) -> str | None:
     if name in ("Write", "Edit") and inp.get("file_path"):
         path = str(inp["file_path"])
         made = made_file(g.repo, g.server, path)
-        if made and made[0] == "content" and os.path.isfile(os.path.join(g.repo, "engine", "library", made[1] + ".py")):
-            return DENY.library_name(made[1])
+        if made and made[0] == "content":
+            if os.path.isfile(os.path.join(g.repo, "engine", "library", made[1] + ".py")):
+                return DENY.library_name(made[1])
+            taken = library_taken(g.repo, name, path, inp)   # the ids its classes define, not its file's name
+            if taken:
+                return DENY.library_name(*taken)
         if made:
             return None
         if any(within(os.path.join(g.repo, "made", g.server, kind), path, g.repo) for kind in ("content", "tests")):

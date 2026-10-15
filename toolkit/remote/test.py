@@ -407,7 +407,7 @@ def empty_run():
 def find_engine(mark):
     """The live box's engine a test runs on: (its folder, its venv's python). The marker's live_vfg
     first (the test server's setup wrote it), then the live folder vfg named, then /opt/vfg; each
-    + /engine, with .venv/bin/python, vfg_engine/livetest.py and library/. None of them: exit 3."""
+    + /engine, with .venv/bin/python, vfg_engine/livetest.py and library/. None of them: exit 4."""
     homes = []
     for vfg in (mark.get("live_vfg"), (ARGS.get("live") or {}).get("vfg"), "/opt/vfg"):
         if vfg and os.path.join(vfg, "engine") not in homes:

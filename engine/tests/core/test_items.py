@@ -305,13 +305,60 @@ def test_a_give_starts_the_holders_instance_at_once(rig):
     assert "say click" in [op.text for op in r.io.ops_of(Command)]
 
 
-def test_a_given_item_that_did_not_land_in_hand_ends_after_its_grace(rig):
-    r = rig({"clicker": CLICKER})
+STARTER = CLICKER.replace("class Clicker", "class Starter").replace('name = "Clicker"', 'name = "Starter"').replace(
+    '        self.listen(Use, "on_use")',
+    '        self.listen(Use, "on_use")\n        self.command("say started")\n'
+    '        self.modifier("movement_speed", 0.1, "add_value")')
+
+
+def test_a_give_that_cannot_land_where_the_item_counts_starts_nothing(rig):
+    """A give into a full main hand went to the inventory, yet the instance started at once: for
+    up to a second its start ran and its modifiers were on someone not holding it."""
+    from vfg_engine.io import AddModifier, Command
+    r = rig({"starter": STARTER})
     r.start()
     r.io.join("Steve")
     r.io.hold("Steve", "fire_staff_stand_in")         # the main hand is full: the give goes elsewhere
     r.tick()
-    r.op("give", player="Steve", item="clicker")
-    assert r.records("item", "clicker")
+    assert r.op("give", player="Steve", item="starter")["ok"]
+    assert not r.records("item", "starter")
     r.run_for(1.5)
-    assert not r.records("item", "clicker")
+    assert not r.records("item", "starter")
+    assert "say started" not in [op.text for op in r.io.ops_of(Command)]
+    assert not r.io.ops_of(AddModifier)
+    r.io.hold("Steve", "starter")                     # moved into the hand: now it counts
+    r.tick()
+    assert [rec.user for rec in r.records("item", "starter")] == ["Steve"]
+    assert "say started" in [op.text for op in r.io.ops_of(Command)]
+
+
+def test_a_given_armour_piece_waits_until_it_is_worn(rig):
+    worn = """
+class Helm(Item):
+    class Config(ItemConfig):
+        summary = "Says when it is on."
+        base = "iron_helmet"
+        name = "Helm"
+        active_in = "worn"
+
+    def start(self, ctx):
+        self.command("say started")
+"""
+    r = rig({"helm": worn})
+    r.start()
+    r.io.join("Steve")
+    r.tick()
+    assert r.op("give", player="Steve", item="helm")["ok"]            # a give never puts it on
+    assert not r.records("item", "helm")
+
+
+def test_an_inventory_item_given_into_a_full_hand_starts_at_once(rig):
+    anywhere = STARTER.replace("class Starter", "class Pouch").replace(
+        'active_in = "mainhand"', 'active_in = "inventory"').replace('name = "Starter"', 'name = "Pouch"')
+    r = rig({"pouch": anywhere})
+    r.start()
+    r.io.join("Steve")
+    r.io.hold("Steve", "fire_staff_stand_in")
+    r.tick()
+    assert r.op("give", player="Steve", item="pouch")["ok"]
+    assert [rec.user for rec in r.records("item", "pouch")] == ["Steve"]

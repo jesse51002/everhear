@@ -93,6 +93,12 @@ def _rt(info: ValidationInfo):
     return (info.context or {}).get("rt") if info is not None else None
 
 
+def _binding(info: ValidationInfo) -> bool:
+    """Checked for a binding (ops' bind): a Player arg's default "caster" is filled at each cast, so it
+    is not looked up now (a "caster" the binding gives is left out of its check: ops)."""
+    return bool((info.context or {}).get("binding")) if info is not None else False
+
+
 def _player(v: Any, info: ValidationInfo) -> Any:
     if not isinstance(v, str):
         return v
@@ -101,6 +107,8 @@ def _player(v: Any, info: ValidationInfo) -> Any:
         return ""
     if not PLAYER_RE.match(s):
         raise ValueError("%r is not a player's name" % s)
+    if s == CASTER and _binding(info):
+        return s
     rt = _rt(info)
     if rt is not None:
         p = next((p for name, p in rt.snapshot.players.items() if name.lower() == s.lower()), None)
@@ -311,11 +319,15 @@ class Args(BaseModel):
                               use_attribute_docstrings=True)
 
 
-def validate(cls, given: dict | None, rt=None) -> Args:
-    """`given` checked against `cls` (an Args class); ValueError listing what is wrong, in words."""
+def validate(cls, given: dict | None, rt=None, binding: bool = False) -> Args:
+    """`given` checked against `cls` (an Args class); ValueError listing what is wrong, in words.
+    `binding`: checked for a binding, where a Player arg's default "caster" is filled at each cast."""
     from pydantic import ValidationError
+    context = {"rt": rt} if rt is not None else {}
+    if binding:
+        context["binding"] = True
     try:
-        return cls.model_validate(dict(given or {}), context={"rt": rt} if rt is not None else None)
+        return cls.model_validate(dict(given or {}), context=context or None)
     except ValidationError as exc:
         parts = []
         for e in exc.errors():
@@ -392,6 +404,15 @@ def schema(cls) -> list[dict]:
         out.append({"name": name, "type": _kind(info), "default": default, "bounds": _bounds(info),
                     "description": info.description or ""})
     return out
+
+
+def caster_defaults(cls) -> list[str]:
+    """The Player args of `cls` (an Args class, or None) whose default is "caster": a binding that
+    leaves one out fills it with whoever spoke, as one that gives "caster" does."""
+    if cls is None:
+        return []
+    return [name for name, info in cls.model_fields.items()
+            if info.default == CASTER and _kind(info) == "player"]
 
 
 def kind_of_field(cls, name: str) -> str | None:

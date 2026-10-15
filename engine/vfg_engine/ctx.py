@@ -8,10 +8,13 @@
     ctx.now       the engine's time, in seconds
     ctx.running   in an ability's cast: the other runs of it still going (each can .end())
     ctx.places    the engine's saved places: get(name), all()
-    ctx.query(c)  one command now, and its reply; counted against the call's time limit
+    ctx.query(c)  one command now, and its reply; its wait is the call's I/O budget's, not its cut's
 
 Everything but `query` and the live reads of ctx.world (probe, ground_y, ray, entities, loaded,
-mspt) is already in memory; those ask Minecraft now, and their time counts against the call.
+mspt) is already in memory; those ask Minecraft now. Their wait does not count against the call's
+50 ms cut (Guard.io_wait pauses it) but against its own budget for waiting, VFG_ENGINE_IO_MS (250):
+each read is given what is left of it, and one that does not answer in time, or is asked for once it
+is spent, raises IoBudget in words.
 """
 
 from __future__ import annotations
@@ -74,7 +77,7 @@ class World:
                 found[e.uuid] = e
         return list(found.values())
 
-    # ---- live reads: each asks Minecraft now, counted against the call's 50 ms -------------
+    # ---- live reads: each asks Minecraft now, within the call's I/O budget (Guard.io_wait) ---
 
     def probe(self, points, test: str, dim: str | None = None) -> list[bool]:
         """Many blocks in one read: for each (x, y, z), whether it is `test`: a block id, a #tag,
@@ -188,7 +191,10 @@ class Ctx:
         self.world = World(rt, dim, exclude=user.key if user is not None else None)
 
     def query(self, command: str) -> str:
-        """One command sent now, and Minecraft's reply. It counts against this call's limit."""
+        """One command sent now, and Minecraft's reply. The wait does not count against this call's
+        cut (Guard.io_wait pauses it) but against its I/O budget, VFG_ENGINE_IO_MS (250 ms a call):
+        the read is given what is left of it, and past it, or once it is spent, it raises IoBudget
+        in words."""
         return self._rt.query(command)
 
 

@@ -325,10 +325,18 @@ class Runtime:
         return out.value
 
     def _after_call(self, rec, method, out, run):
+        # Slow is its own time over slow_ms, or its waiting on Minecraft over a tick (SLOW_IO_MS):
+        # out.ms leaves the waiting out, so a call that waits 200 ms every tick is caught here.
+        from .guard import SLOW_IO_MS
+        why = None
         if out.ms > self.settings.slow_ms:
-            log.info("slow call: %s.%s took %.1f ms%s", rec.iid, method, out.ms,
-                     " (and %.1f ms waiting on Minecraft)" % out.io_ms if out.io_ms >= 1 else "")
-            if self.guard.note_slow(rec.iid, self.now):
+            why = "took %.1f ms%s" % (out.ms, " (and %.1f ms waiting on Minecraft)" % out.io_ms
+                                       if out.io_ms >= 1 else "")
+        elif out.io_ms > SLOW_IO_MS:
+            why = "waited %.0f ms on Minecraft (its own time %.1f ms)" % (out.io_ms, out.ms)
+        if why:
+            log.info("slow call: %s.%s %s", rec.iid, method, why)
+            if self.guard.note_slow(rec.iid, self.now, why):
                 log.warning("flagged: %s keeps going slow (%s)", rec.iid, self.guard.flagged[rec.iid])
         if not out.ok:
             log.error("%s.%s failed: %s%s", rec.iid, method, out.error,
@@ -534,19 +542,27 @@ class Runtime:
         self.ops.append((op, callback))
 
     def query(self, command: str) -> str:
-        """ctx.query: one command now. The cut waits for the reply (Guard.engine_code), and the
-        time counts against the call."""
+        """ctx.query: one command now. Its wait is a live read (read, Guard.io_wait): the call's
+        cut is paused for it and it has the call's I/O budget instead, past which it raises
+        IoBudget in words."""
         return self.read("query", lambda io: io.query(str(command)))
 
     def read(self, kind: str, fn):
         """A live read for content (ctx.query, ctx.world.probe...): the call's cut pauses while it
-        waits (the read has the call's own I/O budget instead: Guard.io_wait), and what each kind
-        costs is kept for `status`."""
+        waits (the read has the call's own I/O budget instead: Guard.io_wait), the read is given
+        what is left of that budget as its deadline (Io.deadline; past it, IoBudget in words), and
+        what each kind costs is kept for `status`."""
         import time
         start = time.perf_counter()
-        with self.guard.io_wait(kind):
+        with self.guard.io_wait(kind) as left_ms:
             try:
-                return fn(self.io)
+                bound = getattr(self.io, "deadline", None)
+                if left_ms is None or bound is None:
+                    return fn(self.io)
+                # the read itself is bounded by what is left of the call's I/O budget, not only by
+                # RCON's own timeout: past it the Io raises IoDeadline, which io_wait words as IoBudget
+                with bound(max(left_ms, 0.0) / 1000.0):
+                    return fn(self.io)
             finally:
                 n, total = self.read_costs.get(kind, (0, 0.0))
                 self.read_costs[kind] = (n + 1, total + (time.perf_counter() - start) * 1000.0)

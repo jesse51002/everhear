@@ -68,6 +68,7 @@ class FakeEngine(object):
         self.gives = []         # [(player, item)]
         self.marks = []         # [(who, mark, seconds)]
         self.running = []       # scenario instances
+        self.one_offs = {}      # {scenario: its result}: a one-off of a test's own, ended at once with it
         self.bindings = []
         self.version = 0
         self.places = {}        # {name: {dim, pos, yaw, by, at}}
@@ -210,6 +211,8 @@ class FakeEngine(object):
     def op_start(self, scenario, args=None, wait_s=0):
         self.find(scenario, "scenario")
         inst = "scenario:%s#%d" % (scenario, len(self.running) + 1)
+        if scenario in self.one_offs:
+            return {"instance": inst, "ended": "ended", "result": self.one_offs[scenario]} if wait_s else {"instance": inst}
         if scenario == "command":          # a one-shot, as the library's: it ends at once, with its result
             replies, ran, failed = [], [], None
             for c in (args or {}).get("commands") or []:

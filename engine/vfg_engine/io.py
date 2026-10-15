@@ -229,6 +229,11 @@ Op = (AddModifier | RemoveModifier | GiveEffect | GiveItem | TakeItem | Summon |
       | BlockData)
 
 
+class IoDeadline(Exception):
+    """A live read did not answer within the deadline its caller gave (Io.deadline). The Io has
+    put its connection right (as after any timeout); the reader says what was refused."""
+
+
 @dataclass(frozen=True)
 class OpResult:
     ok: bool
@@ -256,7 +261,8 @@ class Io(Protocol):
     def read_modifiers(self, target: str) -> dict[tuple[str, str], float]: ...
         # every everhear:* modifier on the target: (attribute, id) -> amount
     def read_gamerule(self, name: str) -> str | None: ...
-    # part 2 (DESIGN2 §6): reads on demand, each counted against the calling content's 50 ms
+    # part 2 (DESIGN2 §6): reads on demand, each against the calling content's I/O budget
+    # (Guard.io_wait), not its 50 ms cut
     def probe(self, dim: str, points: Sequence[tuple[int, int, int]], test: str) -> list[bool]: ...
     def ground_y(self, dim: str, x: int, z: int) -> int | None: ...
     def ray(self, dim: str, origin: Vec, direction: Vec, length: float, through_blocks: bool = False) -> Look: ...
@@ -267,3 +273,7 @@ class Io(Protocol):
     def watch_mined(self, blocks: Iterable[str]) -> list[str]: ...
         # the block kinds whose breaking is a `mine` event, all of them (replaces the last list);
         # returns the ids that are no 26.3 block
+    def deadline(self, seconds: float): ...
+        # a context manager: the live reads this thread makes inside it answer within `seconds` in
+        # all (waiting for the RCON lock included), else IoDeadline is raised and the connection is
+        # put right as after a timeout (Runtime.read gives each content read its call's I/O budget left)

@@ -519,7 +519,8 @@ class TestLibraryConfig(Case):
 
     def kept(self):
         folder = os.path.join(self.content, ".history", "blast")
-        return sorted(n for n in os.listdir(folder) if n.endswith(".py")) if os.path.isdir(folder) else []
+        return sorted(n for n in os.listdir(folder) if n.endswith(".py") and n != "library-base.py"
+                      and not n.endswith(".before-rebase.py")) if os.path.isdir(folder) else []  # versions kept
 
     def test_get_set_and_undo_of_a_library_class(self):
         r = self.vfg("engine", "config", "get", "blast")
@@ -583,7 +584,9 @@ class TestLibraryConfig(Case):
         self.assertEqual((self.runs(), self.kept()), (self.lib_box, []))
 
     def test_a_copy_not_deployed_yet_is_the_one_shown_and_rewritten(self):
-        write(self.made, LIBRARY_BLAST.replace("Field(4,", "Field(5,"))
+        write(self.made, LIBRARY_BLAST.replace("Field(4,", "Field(5,"))   # config set's copy, its library's kept
+        write(os.path.join(self.content, ".history", "blast", "20261014-120000-000000-Blast.library.py"),
+              LIBRARY_BLAST)
         r = self.vfg("engine", "config", "get", "blast")
         self.assertIn("Field(5,", r.stdout)
         self.assertTrue(r.stdout.startswith("made/main/content/blast.py (this server's, over the library's)"))
@@ -592,8 +595,104 @@ class TestLibraryConfig(Case):
         self.assertOk(self.vfg("engine", "config", "set", "blast", input=self.config.replace("Field(4,", "Field(7,")))
         with open(self.made) as f:
             self.assertIn("Field(7,", f.read())
-        self.assertTrue(self.kept()[0].endswith("-Blast.py"))                   # the server's own, kept
+        self.assertTrue([k for k in self.kept() if k.endswith("-Blast.py")])     # the server's own, kept
         self.assertEqual(self.runs(), os.path.join(self.boxed, "blast.py"))
+
+    def test_a_made_class_of_a_library_id_that_is_no_copy_of_it_is_never_deployed(self):
+        """made/main/content/my_blast.py holding `class Blast(Ability)` is blast: it would run in the
+        library's place, for everyone, whatever its file's name."""
+        mine = os.path.join(self.content, "my_blast.py")
+        write(mine, LIBRARY_BLAST.replace("Field(4,", "Field(12,"))
+        deployed = len(self.engine.ops("reload"))
+        r = self.vfg("engine", "reload", "my_blast")
+        self.assertOneLine(r, 1, r"^vfg: nothing deployed: made/main/content/my_blast\.py's class Blast is blast, the "
+                                 r"id of the library's engine/library/blast\.py: it would run in the library's place")
+        self.assertEqual(len(self.engine.ops("reload")), deployed)
+        self.assertFalse(os.path.exists(os.path.join(self.boxed, "my_blast.py")))
+        write(mine, LIBRARY_BLAST.replace("class Blast(Ability):", "class MyBlast(Ability):\n    id = 'blast'"))
+        self.assertOneLine(self.vfg("engine", "reload"), 1, "class MyBlast is blast")       # by the id it sets
+        os.remove(mine)
+        write(self.made, LIBRARY_BLAST)                                    # blast.py itself, by hand: no copy of it
+        self.assertOneLine(self.vfg("engine", "reload"), 1, "blast.py's class Blast is blast")
+        write(os.path.join(self.content, ".history", "blast", "20261014-120000-000000-Blast.library.py"), LIBRARY_BLAST)
+        self.assertOk(self.vfg("engine", "reload"))                        # config set's copy: it may
+
+    def set_copy(self, radius="6"):
+        """The first rewrite of blast: this server's copy, made by config set."""
+        self.assertOk(self.vfg("engine", "config", "set", "blast",
+                               input=self.config.replace("Field(4,", "Field(%s," % radius)))
+
+    def fix_library(self, old="return 6", new="return 7"):
+        """A library fix, as a pull brings it: the PC's file and the box's."""
+        fixed = LIBRARY_BLAST.replace(old, new)
+        write(self.lib_pc, fixed)
+        write(self.lib_box, fixed)
+        return fixed
+
+    def test_a_library_fix_reaches_this_servers_copy_its_config_kept(self):
+        self.set_copy("6")
+        record = json.load(open(os.path.join(self.content, ".history", "blast", "library.json")))
+        self.assertEqual((record["class_name"], record["library"]), ("Blast", "engine/library/blast.py"))
+        fixed = self.fix_library()
+        r = self.vfg("engine", "config", "get", "blast")                   # said, not done: no deploy in a get
+        self.assertIn("the library's blast has changed since made/main/content/blast.py, this server's copy, was "
+                      "made: the next deploy (vfg engine reload blast) rebuilds the copy on it, this server's Config values kept",
+                      r.stderr)
+        self.assertIn("return 6", self.pc("blast.py"))
+        r = self.vfg("engine", "reload", "blast")
+        self.assertOk(r)
+        self.assertIn("vfg: the library's blast has changed since this server's copy was made: "
+                      "made/main/content/blast.py is rebuilt on it, this server's Config values kept", r.stderr)
+        rebuilt = fixed.replace("Field(4,", "Field(6,")
+        self.assertEqual((self.pc("blast.py"), self.deployed("blast.py")), (rebuilt, rebuilt))
+        before = [n for n in os.listdir(os.path.join(self.content, ".history", "blast")) if n.endswith("before-rebase.py")]
+        self.assertEqual(len(before), 1)
+        rows = [json.loads(x) for x in open(os.path.join(self.content, ".history", "log.jsonl"))]
+        self.assertEqual((rows[-1]["op"], rows[-1]["ok"]), ("rebase", True))
+        r = self.vfg("engine", "reload", "blast")                          # once: the record moved with it
+        self.assertOk(r)
+        self.assertNotIn("library", r.stderr)
+        self.assertEqual(self.pc("blast.py"), rebuilt)
+
+    def test_a_library_config_field_added_is_taken_and_one_this_server_set_gone_leaves_the_copy_and_says_why(self):
+        self.set_copy("6")
+        fixed = self.fix_library("cooldown_s = 5", "cooldown_s = 5\n        knockback = 2")   # a new field: the library's
+        self.assertOk(self.vfg("engine", "reload", "blast"))
+        self.assertEqual(self.pc("blast.py"), fixed.replace("Field(4,", "Field(6,"))
+        self.fix_library("radius: float = Field(4, ge=1, le=12)          # blocks round the caster",
+                         "reach: float = Field(4, ge=1, le=12)")                       # the field this server set: gone
+        r = self.vfg("engine", "reload", "blast")
+        self.assertOk(r)
+        self.assertIn("the library's blast has changed, and this server's Config no longer fits it (Blast: its Config "
+                      "no longer has radius): made/main/content/blast.py keeps the old code", r.stderr)
+        self.assertEqual(self.pc("blast.py"), fixed.replace("Field(4,", "Field(6,"))       # left as it was
+        rows = [json.loads(x) for x in open(os.path.join(self.content, ".history", "log.jsonl"))]
+        self.assertEqual([(x["op"], x["ok"]) for x in rows if x["op"] == "rebase"], [("rebase", True), ("rebase", False)])
+
+    def test_a_config_only_copy_is_rebased_on_every_deploy_path(self):
+        self.set_copy("6")
+        self.set_copy("8")
+        fixed = self.fix_library()
+        r = self.vfg("engine", "config", "set", "blast", input=self.config.replace("Field(4,", "Field(9,"))
+        self.assertOk(r)                                                   # a set deploys too: rebased under it
+        self.assertIn("is rebuilt on it, this server's Config values kept", r.stderr)
+        self.assertEqual(self.pc("blast.py"), fixed.replace("Field(4,", "Field(9,"))
+        self.assertEqual(self.deployed("blast.py"), fixed.replace("Field(4,", "Field(9,"))
+        self.assertOk(self.vfg("engine", "config", "undo", "blast"))      # the set's undo: the Config before it
+        self.assertEqual(self.pc("blast.py"), fixed.replace("Field(4,", "Field(8,"))
+
+    def test_a_hand_edited_copy_is_never_touched_and_says_the_library_moved_on(self):
+        self.set_copy("6")
+        hand = self.pc("blast.py").replace("return 6", "return 6 + 1  # by hand")
+        write(self.made, hand)
+        self.fix_library()
+        warning = ("made/main/content/blast.py is this server's copy of the library's blast, and its code was changed "
+                   "by hand: the library's version has moved on since (engine/library/blast.py)")
+        r = self.vfg("engine", "reload", "blast")
+        self.assertOk(r)
+        self.assertIn(warning, r.stderr)
+        self.assertEqual((self.pc("blast.py"), self.deployed("blast.py")), (hand, hand))
+        self.assertIn(warning, self.vfg("engine", "config", "get", "blast").stderr)
 
 
 class TestClassIds(Case):
@@ -930,6 +1029,16 @@ class TestActions(Case):
         self.assertEqual((r.returncode, line["ok"], line["error"]),       # its result says it stopped short
                          (1, False, "ran say hi; Unknown or incomplete command, see below for error"))
         self.assertEqual((line["facts"]["failed"], line["facts"]["ran"]), ("bogus x", ["say hi"]))
+        # a one-off whose `failed` is a bare true and whose summary is empty: never "it stopped at True"
+        self.engine.classes.append({"id": "lucky_blocks", "kind": "scenario", "file": "x", "summary": "x"})
+        for result, words in (({"summary": "", "facts": {"failed": True}}, "it did nothing it was asked to"),
+                              ({"summary": " ", "facts": {"failed": "no block to swap near Steve"}},
+                               "no block to swap near Steve"),
+                              ({"summary": "nothing to swap", "facts": {"failed": True}}, "nothing to swap")):
+            self.engine.one_offs["lucky_blocks"] = result
+            r, line = self.action("engine_start", "scenario=lucky_blocks")
+            self.assertEqual((r.returncode, line["ok"], line["error"]), (1, False, words))
+            self.assertNotIn("True", r.stdout + r.stderr)
         r, line = self.action("engine_apply", "player=Steve", "mark=giant", "args.factor=3", "seconds=30")
         self.assertEqual(self.engine.ops("apply")[-1], {"who": "Steve", "mark": "giant", "seconds": 30.0,
                                                         "args": {"factor": "3"}})

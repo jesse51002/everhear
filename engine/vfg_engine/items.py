@@ -18,8 +18,11 @@ modifiers are `everhear:item/<id>` on the holder while held.
 A give is built from the class: its base, its name, a stack of one, and the id. A give naming
 another base is refused, naming the class's base. Our items never carry vanilla's
 `attribute_modifiers`, so the item's code is the one way it changes an attribute. A give that took
-starts its holder's instance at once, so a click right after it is heard; if the stack did not
-land where the item counts, the next snapshots end it after GIVE_GRACE_S.
+starts its holder's instance at once, so a click right after it is heard, when the stack lands
+where the item counts as far as the snapshot shows (`lands_where_it_counts`: a give fills an empty
+main hand, else the inventory; it never fills the off hand or an armour slot); otherwise the
+snapshots start it when they show it held. If a started one is not in the end, they end it after
+GIVE_GRACE_S.
 """
 
 from __future__ import annotations
@@ -105,13 +108,28 @@ def reconcile(rt):
         rt.start(rec)
 
 
+def lands_where_it_counts(snap, active_in: str) -> bool:
+    """Whether a give's stack lands, as far as the snapshot shows, in a slot the item counts in. A
+    give fills the main hand when it is empty, else a slot of the inventory (any stack of the
+    same item it would join means its instance already exists); never the off hand nor an armour
+    slot. The snapshot shows only our stacks, so a main hand full of a vanilla stack looks empty."""
+    if active_in == "inventory":
+        return True
+    if active_in in ("mainhand", "hands"):
+        return "mainhand" not in snap.held
+    return False
+
+
 def given(rt, player: str, item: str):
     """A give took: start the holder's instance at once, so a click right after the give finds
-    it. If the stack did not land where the item counts (a full main hand), the next snapshots
-    end it after GIVE_GRACE_S, as any item let go."""
+    it, when the stack lands where the item counts (lands_where_it_counts). Otherwise nothing yet:
+    its on_start and modifiers wait for the snapshots to show it held (reconcile). If one started
+    here is not held after all, the next snapshots end it after GIVE_GRACE_S, as any item let go."""
     info = rt.classes.get(item)
     p = rt.snapshot.players.get(player)
     if info is None or info.kind != "item" or p is None or not p.alive:
+        return
+    if not lands_where_it_counts(p, info.config.active_in):
         return
     if "%s|%s" % (item, player) in rt.broken:
         return

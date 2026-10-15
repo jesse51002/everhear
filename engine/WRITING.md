@@ -18,7 +18,8 @@ when it runs, who has it, how long it lasts, and removes what it made when it en
   changed.
 - **Nothing runs until `engine reload`.** It checks the class first; if a check fails, the old
   version keeps running and you get the error. If it passes, every running instance switches to
-  the new code at once.
+  the new code at once. A reload of named files takes only files directly in a content folder
+  (a path elsewhere is refused, in words).
 
 Working examples: [examples/](examples/) (`fire_staff.py`, `fireball.py`, `giant.py`, `shrunk.py`).
 
@@ -142,9 +143,10 @@ All optional. Each gets `ctx` first.
 `every`/`self.every`, wait with `self.after`. A call over 5 ms is logged; over 50 ms it is cut,
 that instance ends and its cleanup runs. Those are your code's own milliseconds: time spent waiting on
 Minecraft (`ctx.query`, the live reads of `ctx.world`) is not counted, but one call may wait at most
-250 ms in all, and a read asked for past that is refused with an error that says so (catch it, or read
-less in one call, or use `self.ask`). An error ends only that instance (in an ability, only that
-cast's run).
+250 ms in all: each read gets what is left of that, a read that does not answer in time is given up,
+and one asked for once it is spent is refused, both with an error that says so (catch it, or read
+less in one call, or use `self.ask`). A call that waits over 50 ms on Minecraft is logged slow too.
+An error ends only that instance (in an ability, only that cast's run).
 
 **A cast's run ends** at its duration, at `self.end()`, when its grant goes, or when its caster dies
 or leaves; what the run spawned goes with it, except what it spawned with `keep=True` (a summon meant
@@ -160,7 +162,7 @@ to outlive its summoner).
 | `ctx.now` | the engine's time, seconds |
 | `ctx.running` | in an ability's cast: its other runs still going; each has `.end()` |
 | `ctx.places` | the saved places of this world: `.get(name)` → `{dim, pos, yaw, by, at}` or None, `.all()` |
-| `ctx.query(command)` | one command now, and Minecraft's reply; its wait counts against the call's 250 ms of reads |
+| `ctx.query(command)` | one command now, and Minecraft's reply; its wait counts against the call's 250 ms of reads, not its 50 ms (past them: an error in words) |
 
 `ctx.world` also reads Minecraft live, each read counted against your 50 ms:
 `probe(points, test)` (many blocks in one read: a block id, `"#tag"`, `"solid"`, or `"open"`: it
