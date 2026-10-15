@@ -90,7 +90,7 @@ VFG_LOOP_STEPS=
 VFG_LOOP_CAP=
 VFG_LOOP_TAKE_UP_S=
 # The conversation agent, which answers every line to the AI at once and hands off a line that
-# needs something done: its model, reasoning and providers, tried first in that order.
+# needs something done or looked up: its model, reasoning and providers, tried first in that order.
 # Defaults: deepseek/deepseek-v4.1-flash, off, together,coreweave,parasail
 VFG_RESPOND_MODEL=
 VFG_RESPOND_REASONING=
@@ -98,8 +98,9 @@ VFG_RESPOND_PROVIDERS=
 # Seconds one conversation agent call may take, its retries included, before the line is
 # handed off with no reply. Default: 20
 VFG_RESPOND_TIMEOUT_S=
-# The router, which picks who does the work a hand-off asks for. While its reasoning is off, the
-# conversation agent's line to a hand-off is held until the router has answered: one line per ask.
+# The router, which picks who does the work a hand-off asks for. Its reasoning no longer changes
+# what is said: the agent's line always goes out at once, and the router's own line, when it has
+# one, after it (reasoning only changes VFG_ROUTER_TIMEOUT_S's default, below).
 # Defaults: deepseek/deepseek-v4.1-flash, off, together,coreweave,parasail
 VFG_ROUTER_MODEL=
 VFG_ROUTER_REASONING=

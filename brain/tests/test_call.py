@@ -319,7 +319,10 @@ def test_with_nothing_landed_a_step_that_runs_nothing_may_not_claim_it_done_or_e
     ("next", "next is an ending: it goes in `end`"),
     ("follow_up", "follow_up is a field of the step, not an action"),
     ("hand_offs", "hand_offs is a field of the step, not an action"),
-    ("action", "action is a field of the step, not an action"),
+    ("action", '`to` holds the action\'s own name as THE MENU lists it (engine_start, engine_bind, engine_stop…), never '
+                'the word "action"'),
+    ("actions", '`to` holds the action\'s own name as THE MENU lists it (engine_start, engine_bind, engine_stop…), never '
+                'the word "actions"'),
     ("scenario", "scenario is a field of engine_bind, engine_start, engine_stop: name the action in `to`, and the "
                  "field as a `key`"),
     ("KrownJM", "KrownJM looks like a player: players go in the action's values, as `player`"),

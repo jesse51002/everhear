@@ -2,7 +2,7 @@
 agents wired with their own settings, the history it never acts on, the tasks it loads from the
 box, the old tasks file set aside, the feed followed, and a stop that fails what it interrupts;
 and the settings: DeepSeek V4.1 Flash for every agent, the step timeout by the reasoning, the
-loop's budget, the hold, and VFG_LOOP_SECONDS gone."""
+loop's budget, no hold whatever the router's reasoning, and VFG_LOOP_SECONDS gone."""
 
 import asyncio
 import json
@@ -214,8 +214,8 @@ async def test_each_agent_is_wired_with_its_own_settings_and_the_start_line_says
                     ("deepseek/deepseek-v4.1-flash", "off", 20.0, hosts),    # the conversation agent
                     ("deepseek/deepseek-v4.1-flash", "off", 30.0, hosts)]    # the router
     out = capsys.readouterr().out
-    assert ("respond deepseek/deepseek-v4.1-flash off 20 s; router deepseek/deepseek-v4.1-flash off 30 s, the hold "
-            "on; brain deepseek/deepseek-v4.1-flash low 120 s a step, 10 steps a line up to 20, taken up within "
+    assert ("respond deepseek/deepseek-v4.1-flash off 20 s; router deepseek/deepseek-v4.1-flash off 30 s; "
+            "brain deepseek/deepseek-v4.1-flash low 120 s a step, 10 steps a line up to 20, taken up within "
             "120 s;") in out
 
 
@@ -236,12 +236,16 @@ def test_every_agent_runs_deepseek_v41_flash_and_a_steps_timeout_follows_its_rea
     assert config.load({"VFG_BRAIN_PROVIDERS": "none"}).providers == ()        # OpenRouter's choice
     # the gate bench's model and hosts are still exported, though the agent no longer defaults to them
     assert config.CHEAP == "~deepseek/deepseek-v4-flash-latest" and config.FAST[0] == "parasail"
-
-
-def test_the_hold_is_on_while_the_router_does_not_reason():
-    assert config.load({}).hold and config.load({"VFG_ROUTER_REASONING": "off"}).hold
-    assert not config.load({"VFG_ROUTER_REASONING": "low"}).hold
     assert config.Config.effort_of("off") is False and config.Config.effort_of("low") == "low"
+
+
+def test_there_is_no_hold_whatever_the_routers_reasoning():
+    """VFG_ROUTER_REASONING stays, and keeps its timeout rule (above), but no longer changes what
+    is said: there is no hold, at off or at low."""
+    for reasoning in ("off", "low"):
+        cfg = config.load({"VFG_ROUTER_REASONING": reasoning})
+        assert not hasattr(cfg, "hold")
+    assert not hasattr(config.load({}), "hold")
 
 
 def test_the_loops_budget_and_the_turns_settings_and_the_removed_ones_ignored(tmp_path, capsys):

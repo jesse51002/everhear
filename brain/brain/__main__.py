@@ -286,7 +286,7 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
                   implementers=impl, later=later, catalog=catalog, refs=None if refs is LOAD else refs, clock=clock,
                   start=start, load=lambda: load_context(vfg, cfg.history_hours),
                   menu=lambda text: later("jev", "menu", "set", text), steps=cfg.loop_steps, cap=cfg.loop_cap,
-                  take_up_s=cfg.loop_take_up_s, hold=cfg.hold, waiting=cfg.turn_waiting, settle_s=cfg.turn_settle_s)
+                  take_up_s=cfg.loop_take_up_s, waiting=cfg.turn_waiting, settle_s=cfg.turn_settle_s)
 
     for t in tasks.open_ones():  # their implementers went with the last run
         record = f"{t['name']} failed: interrupted, the brain restarted while it ran"
@@ -304,8 +304,7 @@ async def serve(cfg: Config, stop: asyncio.Event, *, vfg=run_vfg, watch=follow, 
     log("start", f"pid {os.getpid()}; {len(ctx.rows)} rows of context, following from #{brain.position()} "
                  f"({len(history)} history marked read); {len(rows)} tasks; {len(catalog.names())} actions; "
                  f"respond {cfg.respond_model} {cfg.respond_reasoning} {cfg.respond_timeout_s:g} s; "
-                 f"router {cfg.router_model} {cfg.router_reasoning} {cfg.router_timeout_s:g} s, "
-                 f"{'the hold on' if cfg.hold else 'no hold'}; "
+                 f"router {cfg.router_model} {cfg.router_reasoning} {cfg.router_timeout_s:g} s; "
                  f"brain {cfg.model} {cfg.reasoning} {cfg.timeout_s:g} s a step, {cfg.loop_steps} steps a line up to "
                  f"{cfg.loop_cap}, taken up within {cfg.loop_take_up_s:g} s; "
                  f"turns: {cfg.turn_waiting} waiting, {cfg.turn_settle_s:g} s settle; "

@@ -1,6 +1,7 @@
 """The brain: every line to the AI through its player's front turn (the conversation agent, then the
-router), a context line no model is shown, history, the hold and its one line per ask, the work
-placed (a new loop, a loop already on it, a new implementer, an implementer followed up or
+router), a context line no model is shown, history, no hold — the agent's line at once, hand-off or
+not, the router's own line after it — and the agent's choice (look or do) passed to the router, the
+work placed (a new loop, a loop already on it, a new implementer, an implementer followed up or
 cancelled, nowhere), loops side by side and holding no turn, a line added to a loop read in its
 next step (one more after an ending), an ended loop taken up again within its window, the budget
 and the cap; and the loop itself: one step when every action lands, a refusal read and fixed in
@@ -84,7 +85,7 @@ class Held:
 # ------------------------------------------------------------------ the front turn
 
 async def test_every_line_to_the_ai_goes_to_the_conversation_agent_whatever_its_live_class(kit):
-    k = kit(Response=answer("haha, anytime!", hand_off=False, reason="thanks"))
+    k = kit(Response=answer("haha, anytime!", choice="reply", reason="thanks"))
     for seq, cls in enumerate(LIVE, 5):
         k.brain.feed(line(seq, "Steve", "haha thanks AI", cls=cls))
         await k.settle()
@@ -96,7 +97,7 @@ async def test_every_line_to_the_ai_goes_to_the_conversation_agent_whatever_its_
 
 async def test_each_row_goes_where_its_class_says_and_a_read_marks_what_it_took(kit):
     k = kit(rows("GAME#1 18:29:40 join Alex | Alex joined the game", "AI#2 18:29:41 say - | hi"),
-            Step=GIVE, Response=[answer(), answer("anytime!", hand_off=False, reason="thanks")])
+            Step=GIVE, Response=[answer(), answer("anytime!", choice="reply", reason="thanks")])
     for text in ("GAME#3 18:29:50 death Alex | Alex tried to swim in lava", "SYS#0 18:29:51 | vfg watch: reconnected",
                  "LINE#4 18:29:52 Alex voice context 0.7 - | ouch, I'm by the lava", ASK,
                  line(6, text="haha thanks AI")):
@@ -121,7 +122,7 @@ async def test_each_row_goes_where_its_class_says_and_a_read_marks_what_it_took(
 
 
 async def test_the_agent_replies_says_nothing_or_hands_off_and_only_a_hand_off_calls_the_router(kit, capsys):
-    k = kit(Response=[answer("haha, anytime!", hand_off=False, reason="thanks"), answer("", hand_off=False),
+    k = kit(Response=[answer("haha, anytime!", choice="reply", reason="thanks"), answer("", choice="quiet"),
                       answer("On it!")], Step=GIVE)
     for seq, words in ((5, "haha thanks AI"), (6, "ok cool"), (7, "give me a diamond pickaxe")):
         k.brain.feed(line(seq, text=words))
@@ -138,36 +139,40 @@ async def test_the_agent_replies_says_nothing_or_hands_off_and_only_a_hand_off_c
                          "(the router: what it is about)\n")
 
 
-async def test_the_hold_one_line_per_ask_the_agents_when_placed_the_routers_in_its_place_when_nowhere(kit):
+async def test_the_agents_line_goes_out_at_once_even_with_a_hand_off_the_routers_line_after(kit):
+    """There is no hold now (VFG_ROUTER_REASONING no longer changes what is said, config.py): the
+    agent's line goes out the moment it answers, hand-off or not, and the router's own line, when
+    it has one, goes out after it — never in its place, so it is never said twice."""
     seen_at_route: list = []
 
     async def routed(prompt):
-        seen_at_route.append(list(k.vfg.said()))                 # the agent's line is held while the router runs
+        seen_at_route.append(list(k.vfg.said()))                 # the agent's line already went out
         return answers.pop(0)
 
     answers = [route(), route("nowhere", reply="Still building your aura.")]
     k = kit(Response=[answer("On it!"), answer("Still on it.")], Route=routed, Step=step(PICKAXE, end="silent"))
     k.brain.feed(line(5))
     await k.settle()
+    assert seen_at_route == [[["On it!"]]]                       # out before the router was even asked
     k.brain.feed(line(6, text="is my aura done yet, hurry up"))
     await k.settle()
-    assert seen_at_route == [[], [["On it!"]]]                   # held: nothing said before the router answered
-    assert k.vfg.said() == [["On it!"], ["Still building your aura."]]  # the router's line in place of "Still on it."
+    assert seen_at_route == [[["On it!"]], [["On it!"], ["Still on it."]]]
+    assert k.vfg.said() == [["On it!"], ["Still on it."], ["Still building your aura."]]  # the router's line after
     assert calls(k, "Step") == ["Step #5 s1"]                    # nowhere starts nothing
 
 
-async def test_a_router_that_reasons_holds_nothing_both_lines_go_out_the_agents_at_once(kit):
-    seen_at_route: list = []
-
-    async def routed(prompt):
-        seen_at_route.append(list(k.vfg.said()))
-        return route("nowhere", reply="Still building your aura.")
-
-    k = kit(hold=False, Response=answer("Still on it."), Route=routed)
-    k.brain.feed(line(6, text="is my aura done yet, hurry up"))
+async def test_the_agents_choice_look_or_do_is_passed_to_the_router(kit):
+    k = kit(Response=answer("Checking what you've got bound.", choice="look", reason="only a look tells"),
+            Route=route())
+    k.brain.feed(line(5, text="is my railgun still running"))
     await k.settle()
-    assert seen_at_route == [[["Still on it."]]]                 # out before the router was asked
-    assert k.vfg.said() == [["Still on it."], ["Still building your aura."]]
+    assert ("(the conversation agent passed it on to be looked up: only a look tells)" in
+            k.ask.of("Route")[0]["prompt"])
+
+    k = kit(Response=answer("On it!", choice="do", reason="something to build"), Route=route())
+    k.brain.feed(line(6, text="build me a castle"))
+    await k.settle()
+    assert "(the conversation agent passed it on to be done: something to build)" in k.ask.of("Route")[0]["prompt"]
 
 
 async def test_the_router_failing_starts_a_new_loop_and_the_agent_failing_hands_off(kit, capsys):
@@ -185,7 +190,7 @@ async def test_the_router_failing_starts_a_new_loop_and_the_agent_failing_hands_
 async def test_the_turn_ends_once_the_router_placed_the_line_so_the_next_is_answered_while_the_loop_thinks(kit):
     held = Held(step(TELEPORT, reply="Teleporting you to Styrka!"))
     k = kit(Step=held, Response=[answer("On it!"), answer("Stirka's on her way to you? No, you to her, hang on.",
-                                                          hand_off=False, reason="a question about work under way")])
+                                                          choice="reply", reason="a question about work under way")])
     k.brain.feed(line(5, "KrownJM", "can you teleport me to Stirka"))
     await until(lambda: held.gates)
     assert not k.brain.turns.busy("KrownJM")                     # the loop thinks; the turn is free
@@ -320,7 +325,7 @@ async def test_ten_steps_a_line_up_to_twenty_and_at_twenty_the_loop_ends_and_is_
 
 # ------------------------------------------------------------------ the router's other choices
 
-async def test_a_new_implementer_starts_on_the_routers_brief_and_the_agents_line_goes_with_its_task(kit, capsys):
+async def test_a_new_implementer_starts_on_the_routers_brief_the_agents_line_already_went_out(kit, capsys):
     hook = hand_off("grappling_hook_alex", "A grappling hook for Alex: right-click to be pulled.",
                     words="“can I get a grappling hook?”")
     k = kit(Response=answer("On it!"), Route=route("new_implementer", hand_offs=(hook,)))
@@ -332,17 +337,22 @@ async def test_a_new_implementer_starts_on_the_routers_brief_and_the_agents_line
     assert (t["player"], t["line"], t["status"], t["brief"]) == ("Alex", "can I get a grappling hook?", "open", brief)
     assert k.vfg.rows("task") == [("task grappling_hook_alex", "new: A grappling hook for Alex: right-click to be "
                                                                "pulled.")]
-    assert k.vfg.said() == [["On it!", "--task", "grappling_hook_alex"]] and calls(k, "Step") == []
+    # said at once, before the task is even opened: never tagged with a task it did not yet know
+    assert k.vfg.said() == [["On it!"]] and calls(k, "Step") == []
     assert "router 7 ms: new_implementer grappling_hook_alex; said agent" in capsys.readouterr().out
 
 
-async def test_a_task_that_would_not_open_is_never_promised_a_line_says_so_in_place_of_the_agents(kit):
+async def test_a_task_that_would_not_open_gets_codes_apology_after_the_agents_line(kit):
+    """The agent's "On it!" goes out at once, before the router even runs; a task that then does
+    not open is never promised either — code's apology follows it, correcting rather than
+    replacing it (there is no hold to hold it back for)."""
     k = kit(Response=answer("On it!"), Route=route("new_implementer", hand_offs=(hand_off(),)))
     k.acts.open_task = lambda h, **kw: None
     k.brain.feed(line(5, "KrownJM", "a hot fireball incantation"))
     await k.settle()
     assert k.impl.started == []
-    assert k.vfg.said() == [["sorry, I couldn't start “Can you make an incantation? That fires a fireball "
+    assert k.vfg.said() == [["On it!"],
+                            ["sorry, I couldn't start “Can you make an incantation? That fires a fireball "
                              "whenever…” — say it again?"]]
 
 
@@ -364,8 +374,7 @@ async def test_the_router_follows_an_implementer_up_and_cancels_it(kit, capsys):
     assert k.tasks.get("galick_gun_styrk")["status"] == "open" and calls(k, "Step") == []
     assert [text for _, text in k.vfg.rows("task")] == ["follow-up: make the beam pierce blocks",
                                                         "follow-up: never mind — put back what its last run built"]
-    assert k.vfg.said() == [["On it!", "--task", "galick_gun_styrk"],
-                            ["Okay, putting it back.", "--task", "galick_gun_styrk"]]
+    assert k.vfg.said() == [["On it!"], ["Okay, putting it back."]]  # said at once, before either follow-up is sent
     assert "#6 -> galick_gun_styrk's implementer, a cancel" in capsys.readouterr().out
 
 
@@ -391,7 +400,7 @@ async def test_a_line_about_two_tasks_things_follows_each_up_and_a_gone_one_is_d
     assert [(task, text) for task, text in k.vfg.rows("task")] == [
         ("task grappling_hook_alex", "follow-up: pull twice as fast"),
         ("task rocket_boots_alex", "follow-up: launch twice as fast")]
-    assert k.vfg.said() == [["On it!", "--task", "grappling_hook_alex"]]  # one line, its row naming the first
+    assert k.vfg.said() == [["On it!"]]  # said once, at once, before either follow-up is sent
     out = capsys.readouterr().out
     assert "router 7 ms: implementer grappling_hook_alex, rocket_boots_alex; said agent" in out
     assert calls(k, "Step") == []
@@ -1040,7 +1049,7 @@ async def test_there_is_no_batch_whatever_waits_unread_waits_for_the_next_call(k
 
 
 async def test_the_agent_sees_each_players_place_and_state_but_no_items(kit):
-    k = kit(Response=answer("anytime!", hand_off=False, reason="thanks"))
+    k = kit(Response=answer("anytime!", choice="reply", reason="thanks"))
     await k.world.fresh_state()                           # the agent never waits: the last state there is
     k.brain.feed(line(1, text="haha thanks AI"))
     await k.settle()
@@ -1082,7 +1091,7 @@ async def test_a_burst_of_calls_sends_the_usage_queue_once_more_never_two_flushe
 # ------------------------------------------------------------------ one turn per player
 
 async def test_a_players_lines_take_turns_while_another_players_run_at_once(kit):
-    held = Held(answer("haha", hand_off=False))
+    held = Held(answer("haha", choice="reply"))
     k = kit(Response=held)
     assert k.brain.feed(line(5)) == "started"
     assert k.brain.feed(line(6, text="and a shield")) == "waiting"
@@ -1098,7 +1107,7 @@ async def test_a_players_lines_take_turns_while_another_players_run_at_once(kit)
 
 
 async def test_three_lines_wait_and_a_fourth_is_turned_away_by_a_private_message_naming_them(kit):
-    held = Held(answer("haha", hand_off=False))
+    held = Held(answer("haha", choice="reply"))
     k = kit(Response=held)
     k.brain.feed(line(5, text="build me a castle"))
     for seq, words in ((6, "a meteor staff"), (7, "and a shield"), (8, "and a bow")):
@@ -1148,7 +1157,7 @@ async def test_a_say_or_a_row_that_failed_keeps_no_turn_waiting_for_it(kit):
 
 
 async def test_a_line_or_its_wait_for_its_turn_is_logged(kit, capsys):
-    held = Held(answer("haha", hand_off=False))
+    held = Held(answer("haha", choice="reply"))
     k = kit(Response=held)
     k.brain.feed(line(5, "Styrkaeopteryx", "build me a castle"))
     k.brain.feed(line(6, "Styrkaeopteryx", "and a moat"))
@@ -1165,7 +1174,7 @@ async def test_a_line_or_its_wait_for_its_turn_is_logged(kit, capsys):
 # ------------------------------------------------------------------ the stop
 
 async def test_a_stop_drops_what_waits_forgets_the_saved_loops_and_a_report_meanwhile_closes_in_code(kit, capsys):
-    held = Held(answer("haha", hand_off=False))
+    held = Held(answer("haha", choice="reply"))
     k = kit(Response=[answer(), held], Step=GIVE)
     k.brain.feed(line(5))                                   # a loop that ends and is saved
     await k.settle()
@@ -1241,3 +1250,47 @@ async def test_the_agents_promise_never_goes_out_behind_a_nowhere_that_says_noth
     await held.go(0)
     await k.settle()
     assert k.vfg.said() == [["On it, chef!"], ["Still on it."], ["steak's yours"]]
+
+
+async def test_the_routers_nowhere_line_is_dropped_when_the_agent_already_said_it(kit, capsys):
+    """The live run's #93: the agent said "Still on it, Steve: your boomerang axe, throw-and-return with
+    fire on the hit." while its implementer built it, and the router, sending the line nowhere, said its
+    own "Still building your boomerang axe — fire and all.": the same thing twice. Now: a status for a
+    player with work under way (respond.promises(), `busy` read as front() already reads it) is never a
+    promise, so the router's own line is said only when the agent said nothing, or its line promised work
+    the router is not placing; otherwise it only repeats the agent's, and is dropped, logged."""
+    held = Held(step(PICKAXE, reply="there you go"))
+    k = kit(Response=[answer("On it!"), answer("Still on it, Steve: your boomerang axe, throw-and-return with "
+                                               "fire on the hit.")],
+            Step=held, Route=[route(), route("nowhere", reply="Still building your boomerang axe — fire and all.")])
+    k.brain.feed(line(5, text="make me a boomerang axe"))
+    await until(lambda: held.gates)                       # its loop thinks: Steve has work under way
+    assert k.brain.loops.busy() == {"Steve"}
+    k.brain.feed(line(6, text="hey can you make me that boomerang axe"))
+    await until(lambda: len(k.ask.of("Route")) == 1)       # the router answered; let the rest of the turn run
+    await turns()
+    assert k.vfg.said() == [["On it!"], ["Still on it, Steve: your boomerang axe, throw-and-return with fire on "
+                                         "the hit."]]      # the router's duplicate dropped, never said
+    out = capsys.readouterr().out
+    assert ("router #6 nowhere: its line dropped, the agent's already said it: 'Still on it, Steve: your "
+            "boomerang axe, throw-and-return with fire on the hit.'") in out
+    await held.go(0)
+    await k.settle()
+    assert k.vfg.said()[-1] == ["there you go"]
+
+
+async def test_the_routers_nowhere_line_is_kept_when_it_is_the_only_one_or_a_promise(kit):
+    """The router's own line to nowhere is kept whole, unmoved, when the agent said nothing (its reply
+    was dropped or empty) or its line promised work while the player had none under way: dropping it
+    there would leave the router's correction unsaid, or the player's "still on it" unanswered."""
+    k = kit(Response=answer("", choice="do", reason="said to Steve, not the AI"),
+            Route=route("nowhere", reply="Ha, that one's for Steve!"))
+    k.brain.feed(line(5, text="haha nice one Steve"))
+    await k.settle()
+    assert k.vfg.said() == [["Ha, that one's for Steve!"]]      # the agent said nothing: its own line stands
+    # "Still on it." with nobody busy reads as a promise (respond_bench.md): the router's own line, correcting
+    # it, is kept beside it.
+    k = kit(Response=answer("Still on it."), Route=route("nowhere", reply="Nothing's building — say it again?"))
+    k.brain.feed(line(6, text="hows my thing coming along"))
+    await k.settle()
+    assert k.vfg.said() == [["Still on it."], ["Nothing's building — say it again?"]]

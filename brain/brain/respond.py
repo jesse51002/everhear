@@ -1,45 +1,50 @@
 """The conversation agent (the class is still Respond, its usage rows `respond`): every line said
 to the AI comes to it first, whatever Jev made of it, and it answers at once, in one structured()
 call on a cheap model with no reasoning (DeepSeek V4.1 Flash: config.py) over the shared context. It
-keeps up the personality and the banter. It ends a line in one of three ways: a reply; a reply and
-a hand-off, or a hand-off alone; or silence (Prototype_Conversation_And_Router, _The conversation
-agent answers first_). It has no actions and picks nothing: when it hands a line off, the router
-(router.py) picks who does the work, a brain loop or an implementer, new or already on it, and a
-loop does it behind the player's turn. An implementer's report comes to it too, at once, never
-queued: it tells the player what they have, writes the task's record and status, and hands what is
-left to the router (report()).
+keeps up the personality and the banter. It ends a line in one of four ways: `reply`, nothing to do;
+`look`, a question about the live game passed on to be looked up; `do`, something to be done or
+changed in the game, passed on; or `quiet`, nothing to say and nothing to do (Prototype_Conversation_
+And_Router, _The conversation agent answers first_, and its four-choices follow-up). It has no
+actions and picks nothing: when it answers `look` or `do`, the router (router.py), told which, picks
+who does the work, a brain loop or an implementer, new or already on it, and a loop does it behind
+the player's turn. An implementer's report comes to it too, at once, never queued: it tells the
+player what they have, writes the task's record and status, and hands what is left to the router
+(report()).
 
 What changed, and why. Until this spec Jev's class picked the agent: an action-oriented line went
 straight to the brain's loop, and only a conversational one came here, to be answered or handed UP
 to a loop that then ran in the player's turn, so a player waited behind every loop, up to its time
 limit (on the night of 2026-10-12, 19 lines and 3 reports waited 366 s in all). Now the turn is two
 quick calls, this one and the router's, and a hand-off may carry a reply: a short acknowledgement
-("On it!", "Still on it."), said at once, or held until the router has answered while the router
-does not reason (the core's choice, loop.py). The agent sees what is running (WORK UNDER WAY: every
+("On it!", "Still on it."), said at once, every time; the router's own line, when it has one,
+follows (no hold: loop.py). The agent sees what is running (WORK UNDER WAY: every
 brain loop, every player's; TASKS: the builds), so "is it done yet?" is answered from it, and a
 repeat of an ask under way is handed off with "Still on it." for the router to judge.
 
-It decides first: its answer is {reason, hand_off, reply}, in that order, and handing off is the
-default. A model with no reasoning writes the fields in order, and with the reply first it
-committed to answering before it weighed handing up: on the 2026-10-08 lines it handed up 31% of
-the asks, and 77.5% deciding first (integration/replay/gate_bench.md). `reason` is required: left
-optional, the model sometimes wrote the flag first and decided with no reason at all (16 of 88
-answers in two runs of one prompt; none of 540 once required: respond_bench.md). A wrong hand-off
-costs about a second and a fraction of a cent, a missed ask the player's ask.
+It decides first: its answer is {reason, choice, reply}, in that order, `choice` one of reply, look,
+do or quiet, and `do` the default. A model with no reasoning writes the fields in order, and with
+the reply first it committed to answering before it weighed handing up: on the 2026-10-08 lines it
+handed up 31% of the asks, and 77.5% deciding first (integration/replay/gate_bench.md). `reason` is
+required: left optional, the model sometimes wrote the flag first and decided with no reason at all
+(16 of 88 answers in two runs of one prompt; none of 540 once required: respond_bench.md). A wrong
+`look` or `do` costs about a second and a fraction of a cent, a missed ask the player's ask.
 
-Three checks in code, after the call, none sent back (one call must be fast):
-- the guard (promises()): a reply with no hand-off that offers or promises something in the game is
-  handed off, since nothing would come of it otherwise (respond_bench.md, _The guard_). A promise is
-  kept whole as the hand-off's acknowledgement ("Sure, I'll make it rain!" is one, once the work is
-  handed off), unless it says the thing is done; an offer is dropped, since a question that
-  waits for a yes is wrong beside work already started. A status of work under way passes for a
-  player who has some (`busy`, or an open task);
-- the checks beside a hand-off: a reply that says the thing is done, ready, gone or there
+Checks in code, after the call, none sent back (one call must be fast):
+- the guard (promises()): a `reply` or `quiet` answer whose line offers or promises something in the
+  game is moved to `do`, since nothing would come of it otherwise (respond_bench.md, _The guard_). A
+  promise is kept whole as `do`'s line ("Sure, I'll make it rain!" is one, once the work is handed
+  off), unless it says the thing is done; an offer is dropped, since a question that waits for a yes
+  is wrong beside work already started. A status of work under way passes for a player who has some
+  (`busy`, or an open task);
+- `quiet` with a line said anyway becomes `reply` (logged, since the model named the wrong one);
+  `reply` with nothing said becomes `quiet`;
+- the checks beside `look` or `do`: a line that says the thing is done, ready, gone or there
   (claims_done()) is dropped, since nothing has happened yet, and so is one that offers (promises()),
   since the work is already handed off ("I can make it bigger" went out once on the night's bench);
   "On it", "Coming up" and "Still on it" go out;
 - Jev unnamed (unnamed()): a sentence that names Jev or the filter is dropped, a report's reply's too;
-- the cut: a reply past REPLY_MAX characters is cut at a word to REPLY_CUT, as one chat line.
+- the cut: a reply past REPLY_MAX characters is cut at a word to REPLY_CUT, as one chat line; no
+  sentence cap in code, the prompt's guidance alone (respond.md, _Replies in depth_).
 
 Its prompt is laid out as the brain's: the opening (its rules, the owner, the menu's lines, marked),
 the conversation in the same minute-blocks (never a context line: context.py), then the world as
@@ -229,20 +234,29 @@ class Response(BaseModel):  # decide first: a model writes the fields in this or
     @classmethod
     def model_json_schema(cls, *args, **kwargs) -> dict:
         """What structured() sends: every property required, its default kept (call.all_required). A
-        field left out is its default, and with a reply allowed beside a hand-off an answer that left
-        `hand_off` out would hand off its talk."""
+        field left out is its default, and with `choice` left out an answer would default to `do`,
+        the safer guess between the two costs in the module's docstring: a wrong `do` a second and a
+        fraction of a cent, a missed one the player's ask."""
         return all_required(super().model_json_schema(*args, **kwargs))
 
-    reason: str = Field(description="first, a few words: what the line wants, now or for later; whether anything "
-                                    "must be done; whether it is already under way (WORK UNDER WAY, TASKS)")
-    hand_off: bool = Field(True, description="true when the line needs anything done or changed in the game, "
-                                             "answers the AI's question, sets a rule the game must keep, asks what "
-                                             "only a look at the game can tell, or you are unsure; false for talk, a "
-                                             "rule or a preference about the future only, or a question about work "
-                                             "under way")
-    reply: str = Field("", description="one chat line, said at once: the answer; with a hand-off a short "
-                                       "acknowledgement (\"On it!\", \"Still on it.\") that never says it is done; "
-                                       "empty to say nothing")
+    reason: str = Field(description="first, a few words: what the line wants, now or for later; whether the "
+                                    "answer is in front of you, in the conversation, THE WORLD NOW, WORK UNDER "
+                                    "WAY or TASKS; when not, say so")
+    choice: Literal["reply", "look", "do", "quiet"] = Field(
+        "do", description="reply: talk, a rule for later, a Minecraft question from what you know, or work under "
+                          "way answered from WORK UNDER WAY or TASKS; look: a question about the live game you "
+                          "cannot answer for sure from what is shown, passed on to be looked up; do: something to "
+                          "be done or changed in the game, a correction, an answer to the AI's own question, or "
+                          "you are unsure; quiet: nothing to say and nothing to do")
+    reply: str = Field("", description="one chat line, said at once: with look or do, say back specifically what "
+                                       "was heard (the thing, for whom, how many, where), never that it is done; "
+                                       "with reply, the answer; empty with quiet")
+
+    @property
+    def hand_off(self) -> bool:
+        """True for `look` or `do`: loop.py's front() and report_front(), and the benches, still read
+        one flag. The router is told `choice` itself, to tell a look from a do."""
+        return self.choice in ("look", "do")
 
 
 class ReportAnswer(BaseModel):  # decide first, as Response
@@ -334,26 +348,32 @@ class Respond:
 
     async def answer(self, row: Row, ctx: Context, seen: Seen, tasks: str, under_way: str, new: list[Row], *,
                      busy: Collection[str] = ()):
-        """An Answer whose value is a Response: a reply, a hand-off with or without a reply, or
-        silence; raises LlmError. After the call, in code: a reply with no hand-off that offers or
-        promises (promises(), `busy` the players with work under way) is handed off: a promise kept
-        whole as its acknowledgement, an offer dropped; a hand-off's reply that offers, or says it
-        is done (claims_done()), is dropped; a reply past REPLY_MAX is cut to REPLY_CUT. Its usage
-        row is structured()'s: component respond, `#<seq>`."""
+        """An Answer whose value is a Response: reply, look, do or quiet; raises LlmError. After the
+        call, in code: a `reply` or `quiet` line that offers or promises (promises(), `busy` the
+        players with work under way) becomes `do`: a promise kept whole as its line, an offer
+        dropped; a `quiet` answer with a line said anyway becomes `reply` (logged); a `reply` with
+        nothing said becomes `quiet`; a `look` or `do` line that offers, or says it is done
+        (claims_done()), is dropped; a reply past REPLY_MAX is cut to REPLY_CUT. Its usage row is
+        structured()'s: component respond, `#<seq>`."""
         answer = await self.ask(self.tail(row, seen, tasks, new, under_way), Response,
                                 cached=ctx.cached(self.opening(), self.checkpoint),
                                 component="respond", call_id=f"#{row.seq}")
         said, ref = answer.value, f"#{row.seq}"
         said.reply = unnamed(said.reply, ref)
-        if not said.hand_off and (kind := promises(said.reply, tasks, row.who, busy=busy)):
-            said.hand_off, said.reason = True, f"{said.reason} · handed off in code: {kind}"
+        if said.choice in ("reply", "quiet") and (kind := promises(said.reply, tasks, row.who, busy=busy)):
+            said.choice, said.reason = "do", f"{said.reason} · moved to do in code: {kind}"
             why = ("dropped: an offer" if kind == "an offer" else
-                   "dropped: it says it is done" if claims_done(said.reply) else "kept as the acknowledgement")
-            log("respond", f"guard {ref} {kind}, handed off, {why}: {json.dumps(said.reply, ensure_ascii=False)}")
+                   "dropped: it says it is done" if claims_done(said.reply) else "kept as the line")
+            log("respond", f"guard {ref} {kind} -> do, {why}: {json.dumps(said.reply, ensure_ascii=False)}")
             said.reply = said.reply if why.startswith("kept") else ""
+        elif said.choice == "quiet" and said.reply:
+            log("respond", f"guard {ref} quiet -> reply: {json.dumps(said.reply, ensure_ascii=False)}")
+            said.choice = "reply"
+        elif said.choice == "reply" and not said.reply:
+            said.choice = "quiet"
         if said.hand_off and said.reply and (why := "an offer" if promises(said.reply) == "an offer" else
                                              "it says it is done" if claims_done(said.reply) else ""):
-            log("respond", f"guard {ref} beside a hand-off, dropped: {why}: "
+            log("respond", f"guard {ref} beside {said.choice}, dropped: {why}: "
                            f"{json.dumps(said.reply, ensure_ascii=False)}")
             said.reply = ""
         said.reply = self.one_line(said.reply, ref)

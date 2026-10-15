@@ -198,14 +198,27 @@ def test_the_schema_is_the_same_for_every_catalog_loops_tasks_and_event_and_ever
 
 def test_a_lines_event_shows_the_line_and_the_conversation_agents_answer():
     row = parse(LINE, now=NOW)
-    event = RouterEvent("LINE", row, said="On it!", reason="a new item: a grappling hook")
+    event = RouterEvent("LINE", row, said="On it!", reason="a new item: a grappling hook", choice="do")
     assert event.ref() == "#58"
     assert event.show() == ("THE LINE #58, 18:29:40: Alex said: can I get a grappling hook that pulls me up\n"
                             "(the conversation agent already answered the player: “On it!”)\n"
-                            "(the conversation agent handed it off: a new item: a grappling hook)")
+                            "(the conversation agent passed it on to be done: a new item: a grappling hook)")
     silent = RouterEvent("LINE", parse(TYPED, now=NOW))
     assert silent.show() == ("THE LINE #60, 18:29:50: Sam typed: never mind the moat\n"
                              "(the conversation agent said nothing)")
+
+
+def test_a_lines_event_shows_whether_the_agent_passed_it_on_to_be_looked_up_or_done():
+    row = parse(LINE, now=NOW)
+    look = RouterEvent("LINE", row, said="Checking what you've got bound.",
+                       reason="only a look at the game tells", choice="look")
+    assert look.show().endswith("(the conversation agent passed it on to be looked up: only a look at the game "
+                                "tells)")
+    do = RouterEvent("LINE", row, said="On it!", reason="something to build", choice="do")
+    assert do.show().endswith("(the conversation agent passed it on to be done: something to build)")
+    # an empty choice (never set: the module's default) reads as `do`, the safer guess
+    unset = RouterEvent("LINE", row, said="On it!", reason="something to build")
+    assert unset.show().endswith("(the conversation agent passed it on to be done: something to build)")
 
 
 def test_a_reports_event_shows_the_task_its_report_and_what_is_left():
@@ -313,7 +326,7 @@ async def test_a_line_is_routed_with_its_prompt_laid_out_for_the_cache():
              "WORK UNDER WAY: no brain loops", "THE LINE #58, 18:29:40: Alex said: can I get a grappling hook"]
     at = [prompt.index(part) for part in order]
     assert at == sorted(at), at
-    assert prompt.endswith("(the conversation agent handed it off: a new item)\n")
+    assert prompt.endswith("(the conversation agent passed it on to be done: a new item)\n")
     assert "THE CONVERSATION SO FAR" not in prompt and "You are the router" not in prompt  # all in the cached part
 
 
