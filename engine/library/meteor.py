@@ -54,7 +54,7 @@ class Meteor(Scenario):
         feet = [p for p in (ctx.world.player(n) for n in names) if p is not None]
         if not feet:
             self.result("no meteor fell: %s" % ("nobody is online" if a.players in ("@a", "@r")
-                                                else a.players + " is not online"), players=[], meteors=0)
+                                                else a.players + " is not online"), players=[], meteors=0, failed=True)
             self.end()
             return
         self.state.names = [p.name for p in feet]
@@ -62,7 +62,7 @@ class Meteor(Scenario):
                 for at in sky_spots(ctx, p, a.count, a.radius, c.scan_height, c.scan_band, True, dim=p.dim)]
         if not spots:
             self.result("no meteor fell: no open sky over %s" % ", ".join(self.state.names),
-                        players=self.state.names, meteors=0)
+                        players=self.state.names, meteors=0, failed=True)
             self.end()
             return
         self.state.left = len(spots)
@@ -103,7 +103,7 @@ class Meteor(Scenario):
     def finish(self, ctx):
         names, landed = self.state.names, self.state.landed
         if not landed:
-            self.result("no meteor fell: no open sky over %s" % ", ".join(names), players=names, meteors=0)
+            self.result("no meteor fell: no open sky over %s" % ", ".join(names), players=names, meteors=0, failed=True)
             self.end()
             return
         at = ["%d %d %d" % tuple(p) for p in landed]

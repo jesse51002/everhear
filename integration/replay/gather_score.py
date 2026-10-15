@@ -10,7 +10,7 @@
 Standard library only.
 
 WHERE A LINE GOES. Without the gather call, its class: `action_oriented` to the brain,
-`conversational` to Respond, `context` kept, `not_relevant` dropped (a blank line is dropped, a line
+`conversational` and `to_ai` (since 2026-10-13) to Respond, `context` kept, `not_relevant` dropped (a blank line is dropped, a line
 Jev failed on five times is context, as the filter fails open). Each line to the brain or Respond is
 one EVENT. With the gather call, the event is the ask and its group (the yes lines fed with it, after
 fit_group), and a gathered line goes where its ask went: to the brain or Respond, inside the ask's
@@ -66,7 +66,10 @@ OUTS = ("brain", "respond", "context", "dropped")
 OUT_NAMES = {"brain": "brain", "respond": "Respond", "context": "context", "dropped": "dropped"}
 WANT = {"request": "brain", "answer_to_ai": "brain", "talk_to_ai": "respond", "context": "context",
         "noise": "dropped"}
-PLACE = {"action_oriented": "brain", "conversational": "respond", "context": "context", "not_relevant": "dropped"}
+# `to_ai` (Prototype_Addressing_The_AI, 2026-10-13) goes to Respond first, as every line to the AI does now; rows
+# recorded before it keep their two classes and places.
+PLACE = {"action_oriented": "brain", "conversational": "respond", "to_ai": "respond", "context": "context",
+         "not_relevant": "dropped"}
 BRAIN_USD = 0.0085
 RESPOND_USD = 0.0015
 JEV_USD = 0.000000042

@@ -20,8 +20,30 @@ public record VoiceStatus(
 	float livePeak,
 	String lastHeard,
 	TurnModel turnModel,
-	String turnError
+	String turnError,
+	Stt stt
 ) {
+	/**
+	 * The speech model in use ({@code null} before one is loaded) and a note about it for Voice
+	 * settings: the bigger model downloading while the smaller one listens, or the smaller one
+	 * standing in because the bigger one would not load.
+	 */
+	public record Stt(String model, Note note, int percent, String detail) {
+		public enum Note {
+			NONE,
+			/** The chosen model downloads in the background ({@code percent}); {@code model} listens meanwhile. */
+			UPGRADING,
+			/** Its download failed ({@code detail}); tried again in the background. */
+			UPGRADE_RETRYING,
+			/** It would not load ({@code detail}); {@code model} stands in until the next setup. */
+			FALLBACK,
+			/** Its last two loads did not finish (the game closed or crashed): {@code model} is chosen now. */
+			CRASHED
+		}
+
+		public static final Stt NONE = new Stt(null, Note.NONE, 0, null);
+	}
+
 	public enum Setup {
 		RUNNING,
 		READY,
@@ -51,7 +73,7 @@ public record VoiceStatus(
 	public enum Icon { HIDDEN, SETUP, ERROR, MUTED, NO_TOKEN, DELIVERY_PROBLEM, HEARING, LISTENING }
 
 	public static final VoiceStatus INITIAL = new VoiceStatus(Setup.RUNNING, 0, null, null, false, false, false,
-		false, false, false, false, false, 0f, "", TurnModel.LOADING, null);
+		false, false, false, false, false, 0f, "", TurnModel.LOADING, null, Stt.NONE);
 
 	public boolean setupFailed() {
 		return setup == Setup.SETUP_FAILED || setup == Setup.ENGINE_FAILED || setup == Setup.UNSUPPORTED;

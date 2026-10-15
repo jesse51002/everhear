@@ -101,23 +101,25 @@ def test_radius_sends_back_to_where_it_started(rig):
     assert r.problems() == []
 
 
-def test_box_sends_back_to_where_it_last_stood_inside(rig):
+def test_box_sends_back_to_the_nearest_spot_inside(rig):
     r = rig("arena")
     r.start()
     r.io.join("Steve", pos=(0.0, 64.0, 0.0))
     r.tick()
     iid = r.start_scenario("arena", shape="box", box=[-5, 60, -5, 5, 70, 5])
     assert r.result(iid)["summary"] == "@a kept in the box -5 60 -5 5 70 5"
-    r.io.move("Steve", (3.0, 64.0, 3.0))                 # still inside: remembered as "last inside"
+    r.io.move("Steve", (3.0, 64.0, 3.0))                 # still inside
     r.run_for(0.6)
-    r.io.move("Steve", (50.0, 64.0, 3.0))                # well outside
+    r.io.move("Steve", (50.0, 64.0, 3.0))                # well outside, east
     r.run_for(1.0)
     tps = r.sent(Teleport)
-    assert len(tps) == 1 and tps[0].pos == (3.0, 64.0, 3.0)
+    assert len(tps) == 1 and tps[0].pos == (5.5, 64.0, 3.0)   # half a block in from its east side
+    r.run_for(1.0)
+    assert len(r.sent(Teleport)) == 1                    # inside again: no second send
     assert r.problems() == []
 
 
-def test_box_with_nobody_inside_yet_goes_to_the_middle(rig):
+def test_box_with_nobody_inside_yet_sends_them_in(rig):
     r = rig("arena")
     r.start()
     r.io.join("Steve", pos=(50.0, 64.0, 0.0))            # starts outside the box
@@ -125,7 +127,26 @@ def test_box_with_nobody_inside_yet_goes_to_the_middle(rig):
     r.start_scenario("arena", shape="box", box=[-5, 60, -5, 5, 70, 5])
     r.run_for(1.0)
     tps = r.sent(Teleport)
-    assert len(tps) == 1 and tps[0].pos == (0.5, 60.0, 0.5)   # the box's middle, its floor
+    assert len(tps) == 1 and tps[0].pos == (5.5, 64.0, 0.0)   # the nearest spot inside
+    assert r.problems() == []
+
+
+def test_radius_pulls_in_who_joins_or_respawns_outside(rig):
+    r = rig("arena")
+    r.start()
+    r.io.join("Steve", pos=(0.0, 64.0, 0.0))
+    r.tick()
+    r.start_scenario("arena", radius=10)
+    r.run_for(0.5)
+    r.io.join("Alex", pos=(40.0, 64.0, 0.0))             # joins outside
+    r.run_for(0.5)
+    assert [t.target for t in r.sent(Teleport)] == ["Alex"]
+    r.io.kill("Steve")                                   # dies inside: no send while dead
+    r.run_for(0.5)
+    r.io.move("Steve", (60.0, 64.0, 0.0))
+    r.io.respawn("Steve")                                # respawns outside
+    r.run_for(0.5)
+    assert [t.target for t in r.sent(Teleport)] == ["Alex", "Steve"]
     assert r.problems() == []
 
 

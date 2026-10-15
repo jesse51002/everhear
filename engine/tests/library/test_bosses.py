@@ -8,6 +8,8 @@ ice_blast applies the shared `frozen` mark by id alone (another group's, ice_sta
 ice_beam's): a minimal stub mark is loaded alongside it here, the way the library's own tests
 stand in for a dependency they do not own (conftest.py's `extra=`)."""
 
+import pytest
+
 from vfg_engine.io import Bossbar, Damage, Gamerule, GiveEffect, Message, Sound, Summon
 
 FROZEN_STUB = """
@@ -174,11 +176,12 @@ def test_enrage_buffs_and_warns_as_it_weakens(rig):
     assert len(warn) == 1
     r.run_for(2.5)
     effects = r.sent(GiveEffect)
-    assert any(e.effect == "minecraft:speed" and e.amplifier == 0 for e in effects)
+    assert r.io.attribute_value(uuid, "minecraft:movement_speed") == pytest.approx(1.25)   # faster: a modifier
     assert any(e.effect == "minecraft:strength" and e.amplifier == 0 for e in effects)
     r.io.by_uuid[uuid].health = 150.0                              # under 0.25 of 800
     r.run_for(1.1)
     assert len([s for s in r.sent(Sound) if "ravager.roar" in s.name]) == 2
+    assert r.io.attribute_value(uuid, "minecraft:movement_speed") == pytest.approx(1.5)    # faster again
     assert r.problems() == []
 
 

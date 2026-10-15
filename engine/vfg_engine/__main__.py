@@ -24,7 +24,12 @@ the control socket on a PC with no server.
 
 Under VFG_TEST=1 (the per-test engine vfg_engine.livetest starts) it refuses, exit 78, a server
 whose folder (the one holding VFG_MC_PROPERTIES) has no `.vfg-test-server` marker, or whose marker
-names another RCON port: a test's engine never talks to the live server.
+names another RCON port: a test's engine never talks to the live server. Nor does it fall back to
+any of the live server's paths: each of TEST_PATHS must be set (else exit 78, naming those that are
+not), so no default (/opt/mc/server.properties, /opt/vfg/engine's socket, log, state and export,
+/opt/vfg/made/main/content, /opt/vfg/protected.json) is ever opened. Its lock, beside the socket,
+is opened only when it is a plain file, never through a link: under a test it is in a folder the
+test writes.
 """
 
 from __future__ import annotations
@@ -37,12 +42,16 @@ import logging
 import logging.handlers
 import os
 import signal
+import stat
 import sys
 import threading
 
 from .server import DEFAULT_SOCKET, ControlServer, SetupError, one_line
 
 EX_CONFIG = 78
+# Under VFG_TEST=1, each must be set: their defaults are the live server's.
+TEST_PATHS = ("VFG_MC_PROPERTIES", "VFG_ENGINE_SOCKET", "VFG_ENGINE_LOG", "VFG_ENGINE_STATE", "VFG_ENGINE_EXPORT",
+              "VFG_ENGINE_CONTENT", "VFG_PROTECTED")
 EXIT_CRASH = 1
 DEFAULT_LOG = "/opt/vfg/engine/engine.log"
 LOG_MAX_BYTES = 20 * 1024 * 1024
@@ -63,8 +72,15 @@ class Held(Exception):
 # -- paths -------------------------------------------------------------------------
 
 def paths(environ=None) -> dict:
-    """The process's own files: the control socket, the log, and the lock beside the socket."""
+    """The process's own files: the control socket, the log, and the lock beside the socket. Under
+    VFG_TEST=1, ConfigError unless every one of TEST_PATHS is set: a test never falls back to the
+    live server's."""
     env = os.environ if environ is None else environ
+    if env.get("VFG_TEST") == "1":
+        unset = [name for name in TEST_PATHS if not (env.get(name) or "").strip()]
+        if unset:
+            raise ConfigError("VFG_TEST=1: %s %s not set: a test's engine never falls back to the live server's "
+                              "paths (/opt/mc, /opt/vfg)" % (", ".join(unset), "is" if len(unset) == 1 else "are"))
     sock = env.get("VFG_ENGINE_SOCKET") or DEFAULT_SOCKET
     logfile = env.get("VFG_ENGINE_LOG") or DEFAULT_LOG
     for name, value in (("VFG_ENGINE_SOCKET", sock), ("VFG_ENGINE_LOG", logfile)):
@@ -120,13 +136,17 @@ def setup_logging(path: str, stream=None) -> list[logging.Handler]:
 
 def claim(path: str) -> int:
     """Hold the engine's lock for the life of the process: two engines on one world would both
-    write to it. Answers the lock's fd; Held when another engine has it."""
+    write to it. Answers the lock's fd; Held when another engine has it. Never opened through a
+    link, and only when it is a plain file: ConfigError otherwise."""
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     except OSError as exc:
         raise ConfigError("the engine's lock %s cannot be made: %s (beside VFG_ENGINE_SOCKET)"
                           % (path, one_line(exc))) from None
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise ConfigError("the engine's lock %s is not a plain file: not used as a lock" % path)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:

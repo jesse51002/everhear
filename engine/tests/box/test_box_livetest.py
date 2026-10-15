@@ -106,9 +106,46 @@ def test_a_marker_for_another_port_is_refused(sub_env, short_tmp):
     assert code == 3 and "names RCON port 25575, but server.properties has 25576" in result["error"]
 
 
+def engine_test_env(sub_env, short_tmp, **more):
+    """The environment a test's engine is given: every path set, none the live server's."""
+    return dict(sub_env, VFG_TEST="1", VFG_ENGINE_STATE=os.path.join(short_tmp, "s.json"),
+                VFG_ENGINE_EXPORT=os.path.join(short_tmp, "e.json"), VFG_ENGINE_CONTENT=os.path.join(ENGINE_DIR, "examples"),
+                VFG_PROTECTED=os.path.join(short_tmp, "p.json"), **more)
+
+
+def test_the_engine_under_vfg_test_falls_back_to_no_live_path(sub_env, short_tmp):
+    """Each path unset in turn: refused, 78, naming it; nothing made at the live defaults."""
+    props = server_dir(short_tmp)
+    full = engine_test_env(sub_env, short_tmp, VFG_MC_PROPERTIES=props)
+    for name in ("VFG_MC_PROPERTIES", "VFG_ENGINE_SOCKET", "VFG_ENGINE_LOG", "VFG_ENGINE_STATE", "VFG_ENGINE_EXPORT",
+                 "VFG_ENGINE_CONTENT", "VFG_PROTECTED"):
+        env = dict(full)
+        if name == "VFG_ENGINE_CONTENT":
+            env[name] = " "                      # set, but to nothing: as good as unset
+        else:
+            del env[name]
+        proc = subprocess.run([sys.executable, "-m", "vfg_engine"], env=env, capture_output=True, text=True,
+                              timeout=60)
+        assert proc.returncode == 78, (name, proc.stderr)
+        assert "VFG_TEST=1: %s is not set: a test's engine never falls back to the live server's paths" % name \
+            in proc.stderr, proc.stderr
+    assert not os.path.exists(os.path.join(short_tmp, "s.json"))
+
+
+def test_the_engines_lock_is_never_a_link(sub_env, short_tmp):
+    props = server_dir(short_tmp)
+    env = engine_test_env(sub_env, short_tmp, VFG_MC_PROPERTIES=props)
+    target = os.path.join(short_tmp, "not-the-lock")
+    os.symlink(target, env["VFG_ENGINE_SOCKET"] + ".lock")
+    proc = subprocess.run([sys.executable, "-m", "vfg_engine", "--fake-io"], env=env, capture_output=True, text=True,
+                          timeout=60)
+    assert proc.returncode == 78 and "the engine's lock" in proc.stderr and "cannot be made" in proc.stderr
+    assert not os.path.lexists(target)                  # nothing made through the link
+
+
 def test_the_engine_under_vfg_test_refuses_a_server_without_the_marker(sub_env, short_tmp):
     props = server_dir(short_tmp, marker=False)
-    env = dict(sub_env, VFG_TEST="1", VFG_MC_PROPERTIES=props, VFG_ENGINE_STATE=os.path.join(short_tmp, "s.json"))
+    env = engine_test_env(sub_env, short_tmp, VFG_MC_PROPERTIES=props)
     proc = subprocess.run([sys.executable, "-m", "vfg_engine"], env=env, capture_output=True, text=True, timeout=60)
     assert proc.returncode == 78
     assert "VFG_TEST=1: " in proc.stderr and "it is not a test server" in proc.stderr
@@ -403,3 +440,42 @@ def test_sneak_taps_or_holds(monkeypatch):
     assert [c for c in rcon.sent if "sneak" in c] == ["player Alex sneak", "player Alex unsneak"] * 2
     assert slept == [0.5, 0.15] * 2
     assert t._what == "the crouch"
+
+
+# ---------------------------------------------------------------- no live fallback, the log's tail
+
+def test_no_content_is_2_and_starts_nothing(short_tmp, monkeypatch):
+    monkeypatch.setenv("PYTHONPATH", ENGINE_DIR)
+    props = server_dir(short_tmp)
+    test = write(os.path.join(short_tmp, "t.py"), "def test(t):\n    t.check('a', True)\n")
+    out = io.StringIO()
+    code = livetest.main(["--properties", props, "--state-dir", os.path.join(short_tmp, "state"), "--test", test],
+                         out=out, rcon_factory=FakeRcon, fake_io=True)
+    result = json.loads(out.getvalue().strip().splitlines()[-1])
+    assert (code, result["code"]) == (2, 2) and "no --content" in result["error"]
+    assert result["engine"]["exit"] is None
+
+
+def test_the_engine_gets_an_empty_protected_list_unless_one_is_given(short_tmp, monkeypatch):
+    monkeypatch.delenv("VFG_PROTECTED", raising=False)
+    env = livetest.engine_env(livetest.parse_args(["--properties", "/x/server.properties", "--state-dir", short_tmp,
+                                                   "--content", short_tmp, "--test", "t.py"]), short_tmp, "s")
+    assert env["VFG_PROTECTED"] == os.path.join(short_tmp, "protected.json")
+    with open(env["VFG_PROTECTED"]) as f:
+        assert json.load(f) == []
+    monkeypatch.setenv("VFG_PROTECTED", "/opt/vfg-test/protected.json")
+    env = livetest.engine_env(livetest.parse_args(["--properties", "/x/server.properties", "--state-dir", short_tmp,
+                                                   "--content", short_tmp, "--test", "t.py"]), short_tmp, "s")
+    assert env["VFG_PROTECTED"] == "/opt/vfg-test/protected.json"
+    assert all(env[k] for k in ("VFG_MC_PROPERTIES", "VFG_ENGINE_CONTENT", "VFG_ENGINE_STATE", "VFG_ENGINE_EXPORT",
+                                "VFG_ENGINE_SOCKET", "VFG_ENGINE_LOG"))
+
+
+def test_tail_shows_the_engines_log_when_it_did_not_pass(short_tmp, monkeypatch):
+    monkeypatch.setenv("PYTHONPATH", ENGINE_DIR)
+    code, result, out = run_inproc(short_tmp, "def test(t):\n    t.check('a', False)\n", "--tail", "4")
+    logs = [ln for ln in out.splitlines() if ln.startswith("LOG")]
+    assert code == 1 and 1 <= len(logs) <= 4
+    assert out.index("LOG") < out.index("TIME") < out.rindex("{")
+    code, result, out = run_inproc(short_tmp, "def test(t):\n    t.check('a', True)\n", "--tail", "4")
+    assert code == 0 and "LOG" not in out

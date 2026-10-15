@@ -37,6 +37,7 @@ class IncantationClientTest {
 	private final List<String> authorizations = Collections.synchronizedList(new ArrayList<>());
 	private final ConcurrentLinkedQueue<Answer> script = new ConcurrentLinkedQueue<>();
 	private final List<List<Incantation>> updates = Collections.synchronizedList(new ArrayList<>());
+	private final List<List<String>> phraseUpdates = Collections.synchronizedList(new ArrayList<>());
 	private final List<Long> sleeps = Collections.synchronizedList(new ArrayList<>());
 	private final AtomicBoolean rejected = new AtomicBoolean();
 
@@ -69,8 +70,9 @@ class IncantationClientTest {
 		return new IncantationClient(() -> new IncantationClient.Target(url, TOKEN), 25, sleeps::add,
 			new IncantationClient.Listener() {
 				@Override
-				public void updated(long version, List<Incantation> incantations) {
+				public void updated(long version, List<Incantation> incantations, List<String> serverPhrases) {
 					updates.add(incantations);
+					phraseUpdates.add(serverPhrases);
 				}
 
 				@Override
@@ -160,5 +162,36 @@ class IncantationClientTest {
 		assertEquals(List.of(1000L, 2000L), sleeps.subList(0, 2), "1 s, then 2 s after the errors; none after an answer");
 		assertEquals("player=Steve&after=7&wait=25", queries.get(3));
 		assertEquals(1, updates.size());
+	}
+
+	@Test
+	void serverPhrasesComeWithTheList() throws Exception {
+		script.add(new Answer(200, """
+			{"version": 9, "player": "Steve", "incantations": [{"phrase": "fire ball", "aliases": [], "cooldown_s": 3}],
+			 "server_phrases": ["fire ball", " frost nova ", "", "fire ball", 7, "ice wall"]}"""));
+		IncantationClient c = client();
+		assertEquals(IncantationClient.Poll.UPDATED, c.poll("Steve"));
+		assertEquals(List.of("fire ball", "frost nova", "ice wall"), phraseUpdates.getFirst(),
+			"trimmed, blank, repeated and non-text ones left out");
+	}
+
+	@Test
+	void aBridgeWithoutServerPhrasesGivesNull() throws Exception {
+		script.add(new Answer(200, LIST));
+		script.add(new Answer(200, LIST.replace("}]}", "}], \"server_phrases\": \"fire ball\"}")));
+		IncantationClient c = client();
+		c.poll("Steve");
+		c.poll("Steve");
+		assertEquals(2, phraseUpdates.size());
+		assertEquals(null, phraseUpdates.get(0), "no field: an older bridge");
+		assertEquals(null, phraseUpdates.get(1), "not a list: the same");
+		assertEquals(2, updates.get(1).size(), "the player's own list still parses");
+	}
+
+	@Test
+	void anEmptyServerPhrasesListIsNotNull() {
+		assertEquals(List.of(), IncantationClient.phrases(com.google.gson.JsonParser.parseString("[]")));
+		assertEquals(null, IncantationClient.phrases(null));
+		assertEquals(null, IncantationClient.phrases(com.google.gson.JsonNull.INSTANCE));
 	}
 }

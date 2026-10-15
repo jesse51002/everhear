@@ -202,8 +202,8 @@ item, an ability the holder lacks is lent to them while the item is held.
 | `self.stop_sound(name=None, to=None)`, `self.spawnpoint(player, at)` | | |
 | `self.item_stack(item, count=1)` | an EverHear item's stack as SNBT (for a chest, a mob's hand) | |
 | `self.grant(who, ability)` | grant an ability while you last | yes |
-| `self.hold(setting, value, priority=0)` / `self.release(setting)` | hold a gamerule, `"time"` or `"weather"` | yes |
-| `self.watch(area, center=, radius=)`, with `height=` a flat cylinder (`math.inf`: every height), or `box=(a, b)` | `Enter` / `Exit` events for that area | yes |
+| `self.hold(setting, value, priority=0)` / `self.release(setting)` | hold a gamerule, `"weather"` (`"clear"`, `"rain"`, `"thunder"`) or `"time"`; when the last hold goes, the setting is put back as it was (the time cannot be read, so it carries on) | yes |
+| `self.watch(area, center=, radius=)`, with `height=` a flat cylinder (`math.inf`: every height), or `box=(a, b)` | `Enter` / `Exit` events for that area; those inside when it is made get their `Enter` right after the call | yes |
 | `self.command(text)`, `self.particle(name, at, force=False, to=None)`, `self.sound(name, at, to=None)`, `self.message(text, to=None)` | output (`to`: only these players; `force`: seen from far); a raw command is the escape hatch | |
 
 Also `self.config`, `self.state`, `self.instance` (its id), a mark's `self.stack`, a scenario's

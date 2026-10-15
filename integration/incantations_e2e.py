@@ -185,6 +185,8 @@ def run_checks(br, p, vfg, home, wall):
     version = (doc or {}).get("version")
     code, doc = br.call("GET", "/v1/incantations?player=Alex")
     check("Alex's list is empty", code == 200 and doc["incantations"] == [], "%s %s" % (code, doc))
+    check("and its server_phrases are every player's phrases, Steve's two (his mod's speech-to-text hotwords)",
+          code == 200 and doc.get("server_phrases") == ["fire ball", "ice wall"], "%s %s" % (code, doc))
     t0 = time.time()
     code, _ = br.call("GET", "/v1/incantations?player=Steve&after=%d&wait=1" % version)
     check("an unchanged list is 304 after its wait", code == 304, "%s in %.2f s" % (code, time.time() - t0))

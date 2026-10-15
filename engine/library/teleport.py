@@ -82,7 +82,7 @@ class Teleport(Scenario):
             full = self._full_id((a.target or "").strip())
             if full is None:
                 self.result("%r is not %s id" % (a.target, "a biome" if a.to == "biome" else "a structure"),
-                           players=[])
+                           players=[], failed=True)
                 self.end()
                 return
             self._locate(ctx, names[0], a.to, full, DIMS[a.dimension], "on_located")
@@ -90,13 +90,13 @@ class Teleport(Scenario):
         try:
             at, dim, exact, label, phrase, show_xz = self._resolve(ctx, a, names[0])
         except ValueError as exc:
-            self.result(str(exc), players=[])
+            self.result(str(exc), players=[], failed=True)
             self.end()
             return
         self._land(ctx, names, at, dim, exact, label, phrase, show_xz)
 
     def _nobody(self, a):
-        self.result("nobody is online" if a.players in ("@a", "@r") else "%s is not online" % a.players, players=[])
+        self.result("nobody is online" if a.players in ("@a", "@r") else "%s is not online" % a.players, players=[], failed=True)
         self.end()
 
     # ---- biome and structure: a slow command, off the tick ---------------------------------
@@ -153,17 +153,17 @@ class Teleport(Scenario):
             self._land(ctx, names, (x, 0.0, z), dim, False, label, "to %s at" % label, True)
             return
         if reply.startswith("Could not find"):
-            self.result("no %s within reach of %s" % (describe(full), names[0]), players=[])
+            self.result("no %s within reach of %s" % (describe(full), names[0]), players=[], failed=True)
             self.end()
             return
         if a.to == "structure" and retry and reply.startswith("There is no structure") and not full.startswith("#"):
             self._locate(ctx, names[0], "structure", "#" + full, dim, "on_located_again")
             return
         if reply.startswith("There is no") or reply.startswith("Can't find") or "<--[HERE]" in reply:
-            self.result("Minecraft has no %s called %s" % (a.to, full), players=[])
+            self.result("Minecraft has no %s called %s" % (a.to, full), players=[], failed=True)
             self.end()
             return
-        self.result("locate %s %s failed: %s" % (a.to, full, reply or "no answer from Minecraft"), players=[])
+        self.result("locate %s %s failed: %s" % (a.to, full, reply or "no answer from Minecraft"), players=[], failed=True)
         self.end()
 
     # ---- place, coords, far, spawn_point, last_death: resolved within the call -------------
@@ -265,7 +265,7 @@ class Teleport(Scenario):
         spot = land_safely(self, ctx, first, at, exact=exact, cushion_s=c.cushion_s, dim=dim)
         if spot is None:
             at_txt = " near %d %d" % (int(at[0]), int(at[2])) if show_xz else ""
-            self.result("no safe ground was found %s%s; nobody moved" % (label, at_txt), players=[])
+            self.result("no safe ground was found %s%s; nobody moved" % (label, at_txt), players=[], failed=True)
             self.end()
             return
         moved = [first]

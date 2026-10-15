@@ -8,24 +8,35 @@
 #                                     VFG_ACCEPT_EULA=true: you accept Minecraft's EULA
 #                                     (https://aka.ms/MinecraftEULA) by setting it.
 #                                     Then it sends the box's secrets, as env does.
+#   deploy.sh testserver [--fresh]    the test server beside the live one, for implementers' tests:
+#                                     /opt/mc-test (RCON 127.0.0.1:25576), /opt/vfg-test, the unit
+#                                     minecraft-test (testserver.sh, as provision does on a new box);
+#                                     --fresh makes its template world again. Plain deploy.sh keeps
+#                                     it current too. It never restarts the live server.
 #   deploy.sh env                     the box's secrets: the names env.example lists, from the file
 #                                     VFG_BOX_ENV names (default ~/.vfg/box.env), into /opt/vfg/.env;
 #                                     a client token made on the box if there is still none; restarts
 #                                     the vfg units that are installed.
 #   deploy.sh                         the bridge: vfg_feed.py, vfg_bridge/, tests/, the three vfg units;
 #                                     the game engine, as `engine` does; applies the schema and
-#                                     restarts vfg-engine, vfg-bridge (and vfg-jev if deployed).
+#                                     restarts vfg-engine and vfg-bridge. When Jev is on the box, it
+#                                     is stopped before the schema and deployed from this checkout
+#                                     after (jev/deploy.sh): the CHECK on Jev's classes is the
+#                                     bridge's, so the two never run apart. Then the test server is
+#                                     kept current, as `testserver` does.
 #   deploy.sh engine                  the game engine alone: engine/vfg_engine/, engine/library/ (the
 #                                     server's base content) and engine/examples/ to
 #                                     /opt/vfg/engine/, its venv (/opt/vfg/engine/.venv, pydantic
 #                                     pinned by hash) and its datapack (into /opt/mc/world/datapacks/,
 #                                     loaded over RCON when it changed) by engine/deploy/install.sh,
 #                                     and vfg-engine.service; restarts vfg-engine, which saves its
-#                                     state as it stops.
+#                                     state as it stops. A test server whose world lacks that
+#                                     datapack gets a fresh world with it before its next test.
 #
 # Only provision and env touch /opt/vfg/.env; none touches the database (beyond the schema), the
 # feed, watch.json, lookout.md, menu.md, the engine's state or /opt/mc (beyond what provision.sh
-# does and the engine's datapack). The Jev filter's program has its own jev/deploy.sh.
+# does and the engine's datapack). The Jev filter's program has its own jev/deploy.sh, which this
+# one runs when Jev is on the box.
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -36,7 +47,7 @@ ENGINE=$(dirname "$BRIDGE")/engine
 . "$HERE/lib.sh"
 
 usage() {
-  printf 'usage: %s [provision [--restore] | env | engine]\n' "${0##*/}" >&2
+  printf 'usage: %s [provision [--restore] | env | engine | testserver [--fresh]]\n' "${0##*/}" >&2
   exit 2
 }
 
@@ -123,6 +134,26 @@ send_env() {
     | remote "python3 -c $(printf '%q' "$MERGE_ENV") $names"
 }
 
+# send_testserver [--fresh] -- testserver.sh, testserver.py and minecraft-test.service to
+# /tmp/vfg-testserver/ on the box, then testserver.sh there as root.
+send_testserver() {
+  remote 'rm -rf /tmp/vfg-testserver && mkdir -m 700 /tmp/vfg-testserver' \
+    && push --chmod=F644 "$HERE/testserver.sh" "$HERE/testserver.py" "$HERE/systemd/minecraft-test.service" \
+      "$SSH_USER@$SSH_HOST:/tmp/vfg-testserver/" \
+    && remote "sudo bash /tmp/vfg-testserver/testserver.sh $*; rc=\$?; rm -rf /tmp/vfg-testserver; exit \$rc"
+}
+
+cmd_testserver() {
+  case "${1-}" in
+    --fresh|"") ;;
+    *) usage ;;
+  esac
+  [[ $# -le 1 ]] || usage
+  ssh_setup
+  log "the test server: sending testserver.sh, testserver.py, minecraft-test.service"
+  send_testserver "$@" || die "the test server is not set up (above)"
+}
+
 cmd_provision() {
   local restore=0
   case "${1-}" in
@@ -148,7 +179,8 @@ cmd_provision() {
   log "sending provision.sh, python.sh, minecraft.service, rcon.py, env.example"
   remote 'rm -rf /tmp/vfg-provision && mkdir -m 700 /tmp/vfg-provision'
   push --chmod=F644 "$HERE/provision.sh" "$HERE/python.sh" "$HERE/systemd/minecraft.service" "$HERE/rcon.py" \
-    "$HERE/env.example" "$SSH_USER@$SSH_HOST:/tmp/vfg-provision/" \
+    "$HERE/env.example" "$HERE/testserver.sh" "$HERE/testserver.py" "$HERE/systemd/minecraft-test.service" \
+    "$SSH_USER@$SSH_HOST:/tmp/vfg-provision/" \
     || die "could not send the provisioning files"
   local args=""
   if (( restore )); then args+=" --restore"; fi
@@ -199,6 +231,18 @@ send_engine() {
     "$SSH_USER@$SSH_HOST:/opt/vfg/engine/deploy/" || die "could not send the engine's install pieces"
   log "the engine's venv and datapack"
   remote 'bash /opt/vfg/engine/deploy/install.sh' || die "the engine's install failed (above)"
+  # A test server's world copies the live world's datapacks when it is made (its reset.sh, at
+  # every start): one made before this install lacks the datapack, or has the last one. Its
+  # freshness token taken away, the next vfg test restarts it for a fresh world first (under the
+  # test server's lock, so never in the middle of a test).
+  remote 'bash -s' <<'REMOTE' || log "the test server's world was not checked against the datapack (above)"
+set -euo pipefail
+if [ -d /opt/mc-test/world ] && ! diff -rq /opt/mc/world/datapacks/everhear /opt/mc-test/world/datapacks/everhear \
+    > /dev/null 2>&1; then
+  rm -f /opt/mc-test/world/vfg-fresh
+  echo "engine: the test server's world has another datapack: its next test gets a fresh world with this one"
+fi
+REMOTE
 }
 
 cmd_engine() {
@@ -242,29 +286,44 @@ cmd_deploy() {
     "$ENGINE/deploy/vfg-engine.service" "$SSH_USER@$SSH_HOST:/tmp/vfg-units/" \
     || die "could not send the units"
 
+  # Jev's classes are the CHECK the bridge's schema sets: a Jev on the box is stopped before the
+  # schema changes and deployed from this checkout after it, never left running against it.
+  local jev=0 rc=0
+  remote 'test -f /opt/vfg/jev/jev_filter.py' || rc=$?
+  case $rc in 0) jev=1 ;; 1) ;; *) die "could not reach the box to look for Jev" ;; esac
+
   log "installing the units, applying the schema, restarting"
-  remote 'bash -s' <<'REMOTE'
+  remote "JEV=$jev bash -s" <<'REMOTE'
 set -euo pipefail
 sudo install -m 644 -o root -g root /tmp/vfg-units/vfg-bridge.service /tmp/vfg-units/vfg-jev.service \
   /tmp/vfg-units/vfg-engine.service /etc/systemd/system/
 rm -rf /tmp/vfg-units
 sudo systemctl daemon-reload
 sudo systemctl enable vfg-engine vfg-bridge vfg-jev
+if [ "$JEV" = 1 ]; then
+  sudo systemctl stop vfg-jev
+fi
 cd /opt/vfg
 PYTHONPATH=/opt/vfg/lib:/opt/vfg/bridge /opt/vfg/python/bin/python3 -m vfg_bridge --init-db
 sudo systemctl restart vfg-engine
 sudo systemctl restart vfg-bridge
-if [ -f /opt/vfg/jev/jev_filter.py ]; then
-  sudo systemctl restart vfg-jev
-fi
 sleep 2
-for unit in minecraft vfg-engine vfg-bridge vfg-jev; do
+for unit in minecraft vfg-engine vfg-bridge; do
   printf '%-11s %s\n' "$unit" "$(systemctl is-active "$unit" || true)"
 done
 REMOTE
+  if (( jev )); then
+    log "deploying Jev from this checkout with the bridge (jev/deploy.sh)"
+    VFG_SSH_HOST=$SSH_HOST VFG_SSH_USER=$SSH_USER VFG_SSH_KEY=$SSH_KEY "$BRIDGE/../jev/deploy.sh" \
+      || die "Jev did not deploy, and vfg-jev is stopped: run jev/deploy.sh"
+  fi
+  # The test server stays current (testserver.sh changes only what changed, and makes it if missing).
+  log "the test server: keeping it current"
+  send_testserver || log "the test server is not current (above); the live side is deployed: deploy.sh testserver"
 }
 
 case "${1-}" in
+  testserver) shift; cmd_testserver "$@" ;;
   provision) shift; cmd_provision "$@" ;;
   env) shift; [[ $# -eq 0 ]] || usage; cmd_env ;;
   engine) shift; [[ $# -eq 0 ]] || usage; cmd_engine ;;

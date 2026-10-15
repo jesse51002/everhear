@@ -115,7 +115,7 @@ def test_a_class_name_to_read_follows_the_engines_id_rule():
         assert not CLASS_NAME.match(x), x
 
 
-def test_read_configs_go_with_end_next_and_never_on_the_last_step():
+def test_read_configs_go_with_end_next_and_the_last_step_drops_them():
     Step = step_type(engine_catalog())
     said = step(end="next")
     said["read_configs"] = ["fireball"]
@@ -128,12 +128,9 @@ def test_read_configs_go_with_end_next_and_never_on_the_last_step():
         assert "a class's name as ENGINE shows it" in str(e)
     replied = dict(step(reply="hi"), read_configs=["fireball"])
     assert Step.model_validate_json(json.dumps(replied)).read_configs == []           # dropped: it would come to nothing
-    last = step_type(engine_catalog(), last=True)
-    try:
-        last.model_validate_json(json.dumps(dict(step(reply="hi"), read_configs=["fireball"])))
-        raise AssertionError("the last step read")
-    except ValueError as e:
-        assert "this is the last step" in str(e)
+    last = step_type(engine_catalog(), last=True)                                   # the last step reads nothing:
+    read = last.model_validate_json(json.dumps(dict(step(reply="hi"), read_configs=["fireball"])))
+    assert (read.read_configs, read.reply) == ([], "hi")                                # dropped, its ending kept
 
 
 async def test_a_rewrite_runs_only_after_its_config_was_read_in_an_earlier_step(kit):

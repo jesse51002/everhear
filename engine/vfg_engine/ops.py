@@ -203,7 +203,13 @@ class Ops:
     def op_give(self, args, reply):
         player, item = str(_need(args, "player")), str(_need(args, "item"))
         op = items.give_op(self.rt, self.rt.target_of(player), item, args.get("base"))
-        self.rt.queue(op, self._after_flush(reply, {"item": item, "base": op.base}))
+        answer = self._after_flush(reply, {"item": item, "base": op.base})
+
+        def took(op, result):
+            if result.ok:                 # the holder's instance starts now, not next tick
+                items.given(self.rt, op.player, op.item_id)
+            answer(op, result)
+        self.rt.queue(op, took)
         return None
 
     def op_take(self, args, reply):

@@ -166,7 +166,7 @@ class BossFight(Scenario):
 
     def _refuse(self, why: str):
         a = self.args
-        self.result("no %s: %s" % (a.boss, why), boss=a.boss, bodies=0)
+        self.result("no %s: %s" % (a.boss, why), boss=a.boss, bodies=0, failed=True)
         self.end()
 
     def _victory(self, ctx, name: str):

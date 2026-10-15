@@ -10,7 +10,7 @@ from support import T0, FakeClock, Lines, load_fake_feed, make_db, tempdir
 
 from filter import GATHER_MAX, MAX_STATE_TOKENS, SYS_BACK, SYS_OPEN, Config, Filter
 from jev_api import JevDown, JevRefused, Result
-from prompt import EXAMPLES, GATHER_HEADING, GATHER_RULES, estimate, gather_questions, state_json
+from prompt import EXAMPLES, GATHER_EXAMPLES, GATHER_HEADING, GATHER_RULES, estimate, gather_questions, state_json
 from store import Store
 
 
@@ -26,7 +26,7 @@ class FakeJev:
         self.probes = 0
         self.down = None      # a reason: every call and probe raises JevDown
         self.raises = []      # what the next calls raise, in turn; None answers
-        self.verdicts = {}    # text -> (class, confidence), answered as D's two questions
+        self.verdicts = {}    # text -> (class, confidence), answered as the routing call's two questions
         self.answers = {}     # text -> {question name: (label, confidence)}, a question left out unanswered
 
     def ask(self, state, questions, required="line_1"):
@@ -158,19 +158,19 @@ class TestBatching(Base):
         self.assertIsNotNone(self.row(a)["fed_at"])
         self.assertIsNotNone(self.row(b)["fed_at"])
 
-    def test_a_line_for_the_ai_flushes_the_waiting_context_at_once_in_at_order(self):
+    def test_a_line_to_the_ai_by_name_or_answering_it_flushes_the_waiting_context_at_once_in_at_order(self):
         self.lines.add(T0, "Alex", "chat", "that cave by spawn")
         self.step()
-        self.lines.add(T0 + 1, "Steve", "chat", "thanks AI")
+        self.lines.add(T0 + 1, "Steve", "chat", "thanks AI")       # answers it, in the stand-in
         self.step(1)
         self.lines.add(T0 + 2, "Alex", "chat", "our base is north")
         self.step(1)
         self.lines.add(T0 + 3, "Steve", "voice", "build me a castle", peak=-8.2)
         self.step(1)
         self.assertEqual([[e[1].split()[2] for e in batch] for batch in self.batches()],
-                         [["context", "conversational"], ["context", "action_oriented"]])
+                         [["context", "to_ai"], ["context", "to_ai"]])
 
-    def test_action_oriented_flushes_the_waiting_context_at_once_in_at_order(self):
+    def test_to_ai_flushes_the_waiting_context_at_once_in_at_order(self):
         self.lines.add(T0, "Alex", "chat", "that cave by spawn")
         self.step()
         self.lines.add(T0 + 1, "Steve", "voice", "build me a castle", peak=-8.2)
@@ -179,7 +179,7 @@ class TestBatching(Base):
         self.assertEqual([e[2] for e in self.batches()[0]], ["that cave by spawn", "build me a castle"])
         self.assertEqual(self.feed.lines(), [
             "LINE#1 18:22:31 Alex chat context 0.70 - | that cave by spawn",
-            "LINE#2 18:22:32 Steve voice action_oriented 0.90 -8dB | build me a castle",
+            "LINE#2 18:22:32 Steve voice to_ai 0.90 -8dB | build me a castle",
         ])
 
     def test_not_relevant_is_never_fed(self):
@@ -194,7 +194,7 @@ class TestBatching(Base):
         with self.assertLogs("vfg-jev", "INFO") as logs:
             self.step()
             self.step(10)
-        self.assertEqual(self.row(a)["jev_class"], "action_oriented")
+        self.assertEqual(self.row(a)["jev_class"], "to_ai")
         self.assertIsNone(self.row(a)["fed_at"])
         self.assertEqual(self.batches(), [])
         self.assertEqual(sum("not feeding %s" % a in l for l in logs.output), 1)
@@ -203,12 +203,12 @@ class TestBatching(Base):
         a = self.lines.add(T0, "Steve", "chat", "build me a castle")
         self.feed.broken = True
         self.step()
-        self.assertEqual(self.row(a)["jev_class"], "action_oriented")
+        self.assertEqual(self.row(a)["jev_class"], "to_ai")
         self.assertIsNone(self.row(a)["fed_at"])
         self.feed.broken = False
         self.step(0.2)
         self.assertIsNotNone(self.row(a)["fed_at"])
-        self.assertEqual(self.feed.lines(), ["LINE#1 18:22:31 Steve chat action_oriented 0.90 - | build me a castle"])
+        self.assertEqual(self.feed.lines(), ["LINE#1 18:22:31 Steve chat to_ai 0.90 - | build me a castle"])
 
     def test_restart_loses_no_kept_line(self):
         a = self.lines.add(T0, "Alex", "chat", "that cave by spawn")
@@ -236,7 +236,7 @@ class TestBatching(Base):
 
 class TestFields(Base):
     def test_the_three_examples(self):
-        self.jev.verdicts = {"build me a castle": ("action_oriented", 0.93), "that cave by spawn": ("context", 0.71)}
+        self.jev.verdicts = {"build me a castle": ("to_ai", 0.93), "that cave by spawn": ("context", 0.71)}
         s = self.lines.add(T0, "Steve", "voice", "build me a castle", peak=-8.2)
         a = self.lines.add(T0 + 1, "Alex", "chat", "that cave by spawn")
         self.step()
@@ -246,7 +246,7 @@ class TestFields(Base):
         self.step(10)
         self.step(5)
         fields = [e[1] for e in self.fed()]
-        self.assertEqual(fields, ["Steve voice action_oriented 0.93 -8dB", "Alex chat context 0.71 -",
+        self.assertEqual(fields, ["Steve voice to_ai 0.93 -8dB", "Alex chat context 0.71 -",
                                   "Alex voice context - -21dB"])
         self.assertEqual(self.row(s)["jev_confidence"], 0.93)
         self.assertEqual(self.row(a)["jev_class"], "context")
@@ -254,14 +254,14 @@ class TestFields(Base):
         # every LINE carries the time the line was said
         for line in self.feed.lines():
             if line.startswith("LINE#"):
-                self.assertRegex(line, r"^LINE#\d+ \d\d:\d\d:\d\d \S+ (voice|chat) (action_oriented|context) "
+                self.assertRegex(line, r"^LINE#\d+ \d\d:\d\d:\d\d \S+ (voice|chat) (to_ai|context) "
                                        r"(\d\.\d\d|-) (-?\d+dB|-) \| ")
-        self.assertIn("LINE#1 18:22:31 Steve voice action_oriented 0.93 -8dB | build me a castle", self.feed.lines())
+        self.assertIn("LINE#1 18:22:31 Steve voice to_ai 0.93 -8dB | build me a castle", self.feed.lines())
         self.assertIn("18:22:32 Alex chat context 0.71 - | that cave by spawn", "\n".join(self.feed.lines()))
         self.assertIn("18:22:40 Alex voice context - -21dB | anyone got iron", "\n".join(self.feed.lines()))
 
     def test_db_rounding_and_voice_without_peak(self):
-        self.jev.verdicts = {"x build": ("action_oriented", 0.5)}
+        self.jev.verdicts = {"x build": ("to_ai", 0.5)}
         for peak, want in ((-8.5, "-8dB"), (-0.4, "0dB"), (None, "-"), (-21.6, "-22dB")):
             row = {"player_name": "Steve", "source": "voice", "jev_class": "context", "jev_confidence": None,
                    "peak_dbfs": peak, "id": "x"}
@@ -286,19 +286,19 @@ class TestJudging(Base):
             self.assertEqual(u["input_tokens"], len(state_json(state)) // 4)
             self.assertEqual(list(state), ["rules", "look_out_for", "examples", "history"])
             self.assertEqual(state["examples"], EXAMPLES)
-            self.assertEqual(list(qs), ["d_what", "d_feel"])
+            self.assertEqual(list(qs), ["to_the_ai", "keep"])
             self.assertEqual(u["output_tokens"], 0)
             self.assertEqual(u["cost_usd"], u["input_tokens"] * 0.000000042)
             self.assertLessEqual(estimate(state), self.cfg.state_tokens)
         r = self.row(ids[0])
         self.assertEqual((r["jev_class"], r["jev_confidence"], r["jev_judged_at"]),
-                         ("action_oriented", 0.9, "2026-10-07T18:22:31.000Z"))
-        self.assertIn("judge %s Steve voice action_oriented 0.90 · act 0.90, let down 0.60 · 12ms %dtok"
+                         ("to_ai", 0.9, "2026-10-07T18:22:31.000Z"))
+        self.assertIn("judge %s Steve voice to_ai 0.90 · by name 0.90, ignore 0.60 · 12ms %dtok"
                       % (ids[0], usage[0]["input_tokens"]), "\n".join(logs.output))
 
-    def test_an_answer_without_d_what_is_jev_down(self):
+    def test_an_answer_without_to_the_ai_is_jev_down(self):
         a = self.lines.add(T0, "Steve", "voice", "build me a castle")
-        self.jev.answers["build me a castle"] = {"d_feel": ("let_down_wanted_something_done", 0.9)}
+        self.jev.answers["build me a castle"] = {"keep": ("ignore_it", 0.9)}
         with self.assertLogs("vfg-jev", "WARNING"):
             self.assertEqual(self.step(), 1.0)
         self.assertIsNone(self.row(a)["jev_class"])
@@ -325,7 +325,7 @@ class TestJudging(Base):
         (first, q1), (second, q2) = self.jev.calls
         self.assertEqual(q1, q2)
         self.assertLess(len(second["history"]), len(first["history"]))
-        self.assertEqual(self.row(a)["jev_class"], "action_oriented")
+        self.assertEqual(self.row(a)["jev_class"], "to_ai")
         self.assertEqual(len(self.lines.usage()), 1)
         self.assertIsNone(self.f.failing_since)
 
@@ -366,12 +366,61 @@ class TestJudging(Base):
         self.assertEqual(len(self.lines.usage()), 2)   # the call was made and paid for
 
 
+class TestToTheAiOrAFriend(Base):
+    """Prototype_Addressing_The_AI: the AI by name, by a misheard name or answering it is to_ai, fed at
+    once and gathered; neither is context or not_relevant by `keep`, whatever it asks; typed chat the same."""
+
+    def test_each_way_to_the_ai_is_to_ai_and_goes_at_once(self):
+        self.jev.answers = {
+            "Steve, spawn me a horse, I": {"to_the_ai": ("says_its_name_misheard", 0.91), "keep": ("ignore_it", 0.3)},
+            "stone, definitely": {"to_the_ai": ("answers_its_question", 0.97)},
+            "brain, make it night": {"to_the_ai": ("says_its_name", 0.99), "keep": ("remember_it", 0.6)},
+        }
+        lines = [self.lines.add(T0, "Alex", "voice", "Steve, spawn me a horse, I", peak=-12),
+                 self.lines.add(T0 + 1, "Steve", "chat", "stone, definitely"),
+                 self.lines.add(T0 + 2, "Alex", "chat", "brain, make it night")]
+        self.step()
+        self.assertEqual([(self.row(i)["jev_class"], self.row(i)["jev_confidence"]) for i in lines],
+                         [("to_ai", 0.91), ("to_ai", 0.97), ("to_ai", 0.99)])
+        self.assertEqual(self.feed.lines(), [
+            "LINE#1 18:22:31 Alex voice to_ai 0.91 -12dB | Steve, spawn me a horse, I",
+            "LINE#2 18:22:32 Steve chat to_ai 0.97 - | stone, definitely",
+            "LINE#3 18:22:33 Alex chat to_ai 0.99 - | brain, make it night"])
+
+    def test_an_ask_to_a_friend_is_kept_from_the_ai_however_much_it_asks(self):
+        self.jev.answers = {
+            "can you pass me some arrows": {"to_the_ai": ("neither", 0.93), "keep": ("ignore_it", 0.8)},
+            "can you build us a castle by the lake": {"to_the_ai": ("neither", 0.7), "keep": ("remember_it", 0.55)},
+            "make it bigger": {"to_the_ai": ("neither", 0.66)},   # keep unanswered: kept as context
+        }
+        a = self.lines.add(T0, "Alex", "voice", "can you pass me some arrows")
+        b = self.lines.add(T0 + 1, "Steve", "chat", "can you build us a castle by the lake")
+        c = self.lines.add(T0 + 2, "Steve", "voice", "make it bigger")
+        self.step()
+        self.assertEqual([(self.row(i)["jev_class"], self.row(i)["jev_confidence"]) for i in (a, b, c)],
+                         [("not_relevant", 0.93), ("context", 0.7), ("context", 0.66)])
+        self.assertEqual(self.batches(), [])          # no line to the AI: the batch waits its 5 s
+        self.step(5)
+        self.assertEqual([e[1] for e in self.fed()], ["Steve chat context 0.70 -", "Steve voice context 0.66 -"])
+        self.assertEqual([r for r in self.lines.usage() if (r["ref"] or "").startswith("gather:")], [])
+
+    def test_a_line_to_the_ai_gathers_the_speakers_pieces_said_to_no_one(self):
+        self.jev.verdicts = {"the big one by the river": ("context", 0.8), "AI, make it bigger": ("to_ai", 0.98)}
+        a = self.lines.add(T0, "Steve", "voice", "the big one by the river")
+        self.step()
+        self.lines.add(T0 + 4, "Steve", "voice", "AI, make it bigger")
+        self.step(1)
+        self.assertEqual(self.row(a)["jev_class"], "context")
+        self.assertEqual(self.feed.lines()[-1],
+                         "LINE#2 18:22:35 Steve voice to_ai 0.98 - | the big one by the river … AI, make it bigger")
+
+
 class TestGather(Base):
     """A line to the AI gets one more call, over its speaker's unsent lines; the yes lines go with it."""
 
     def test_an_ask_is_fed_as_one_line_with_the_speakers_lines_that_belong_to_it(self):
         add = self.lines.add
-        self.jev.answers["the big one, honestly"] = {"d_what": ("ignore_it", 0.8)}   # left unanswered when gathering
+        self.jev.answers["the big one, honestly"] = {"to_the_ai": ("neither", 0.8), "keep": ("ignore_it", 0.6)}   # left unanswered when gathering
         add(T0 - 181, "Steve", "chat", "the big one, long ago")       # over 3 minutes before the ask
         a = add(T0 - 40, "Steve", "chat", "the big one by our base")  # context, and part of it
         add(T0 - 30, "Alex", "chat", "the big one is mine")           # another player's: never asked about
@@ -387,6 +436,7 @@ class TestGather(Base):
                          ["the big one by our base", "lol", "the big one, honestly", "yeah the big one"])
         self.assertTrue(qs["line_1"]["instructions"].startswith("Steve's line [ask] at 18:22:31, “make it bigger”"))
         self.assertEqual(state["rules"], GATHER_RULES)
+        self.assertEqual(state["examples"], GATHER_EXAMPLES)     # the gather call keeps its benched examples
         hist = state["history"].split("\n")
         self.assertEqual(hist[0], GATHER_HEADING)
         self.assertEqual([h.split(" ")[0] for h in hist if h.startswith("[")], ["[1]", "[2]", "[3]", "[4]", "[ask]"])
@@ -394,7 +444,7 @@ class TestGather(Base):
         # the context line is fed on its own, as ever, and the ask as one line holding the yes lines
         self.assertEqual(self.batches(), [[
             ("LINE", "Steve chat context 0.70 -", "the big one by our base", self.row(a)["at"]),
-            ("LINE", "Steve chat action_oriented 0.90 -", "the big one by our base … yeah the big one … make it bigger",
+            ("LINE", "Steve chat to_ai 0.90 -", "the big one by our base … yeah the big one … make it bigger",
              self.row(ask)["at"])]])
         self.assertEqual([self.row(i)["jev_class"] for i in (b, c, d)], ["not_relevant"] * 3)
         self.assertEqual(self.f.groups, {})
@@ -454,7 +504,7 @@ class TestGather(Base):
                     self.step(10)
                 self.assertEqual(len(self.jev.calls), 3 * (n + 1))   # and is not asked again
                 self.assertEqual(self.fed()[-1][2], "make it bigger")
-                self.assertEqual(self.row(ask)["jev_class"], "action_oriented")
+                self.assertEqual(self.row(ask)["jev_class"], "to_ai")
                 self.assertIsNone(self.f.failing_since)
                 self.assertNotIn("gather:" + ask, [u["ref"] for u in self.lines.usage()])
                 self.assertIn("gather %s failed: %s — the ask goes alone" % (ask, err), "\n".join(logs.output))
@@ -487,7 +537,7 @@ class TestGather(Base):
                 "peak_dbfs": None}
         self.assertLess(MAX_STATE_TOKENS + estimate(gather_questions(line, [line] * GATHER_MAX)), 32000)
         self.assertEqual(Config(state_tokens=10 ** 6).state_tokens, MAX_STATE_TOKENS)
-        self.assertEqual(Config().state_tokens, 8000)
+        self.assertEqual(Config().state_tokens, 8280)
 
 
 class TestState(Base):
@@ -501,9 +551,9 @@ class TestState(Base):
                          (T0 - 8, "AI#4 18:22:23 task frost_bow_alex | new: A Frost Bow for Alex"),
                          (T0 - 7, "AI#5 18:22:24 result frost_bow_alex | frost_bow_alex done: the bow is in Alex's hand"),
                          (T0 - 5, "AI#6 18:22:26 note - | Steve likes ice"),
-                         (T0 - 3, "LINE#7 18:22:28 Steve voice action_oriented 0.90 - | a pickaxe")):
+                         (T0 - 3, "LINE#7 18:22:28 Steve voice to_ai 0.90 - | a pickaxe")):
             self.conn.execute("INSERT INTO feed (at, line) VALUES (?, ?)", (_iso(at), line))
-        self.lines.add(T0 - 25, "Steve", "voice", "thanks", jev_class="conversational", jev_confidence=0.85,
+        self.lines.add(T0 - 25, "Steve", "voice", "thanks", jev_class="to_ai", jev_confidence=0.85,
                        jev_judged_at=_iso(T0 - 25), fed_at=_iso(T0 - 25))
         self.lines.add(T0, "Steve", "voice", "make it longer")
         self.step()
@@ -526,8 +576,8 @@ class TestAiLines(Base):
         self.assertEqual(len(self.jev.calls), 1)
         state, qs = self.jev.calls[0]
         self.assertIn("18:22:31 AI (ai): Which colour should the tower be?", state["history"])
-        self.assertEqual(list(qs), ["d_what", "d_feel"])
-        self.assertNotIn("colour", qs["d_what"]["instructions"])
+        self.assertEqual(list(qs), ["to_the_ai", "keep"])
+        self.assertNotIn("colour", qs["to_the_ai"]["instructions"])
         self.assertIsNone(self.row(ai)["jev_class"])
         self.assertEqual(self.row(b)["jev_class"], "not_relevant")
         # failing open does not pass it either
@@ -575,7 +625,7 @@ class TestFailingOpen(Base):
         self.assertEqual(self.lines.usage()[-1]["ref"], "probe")
         c = self.lines.add(T0 + 31, "Steve", "voice", "make it taller")
         self.step(1)
-        self.assertEqual(self.row(c)["jev_class"], "action_oriented")
+        self.assertEqual(self.row(c)["jev_class"], "to_ai")
         self.assertEqual(self.row(c)["jev_confidence"], 0.9)
         self.step(30)
         self.assertEqual(len(self.sys_lines()), 2)       # two SYS lines in all
@@ -664,7 +714,7 @@ class TestMalformedTimes(Base):
             good = self.lines.add(T0 + 1, "Alex", "chat", "build me a castle")
             self.step(1)
             self.step(5)
-        self.assertEqual(self.row(bad)["jev_class"], "action_oriented")
+        self.assertEqual(self.row(bad)["jev_class"], "to_ai")
         self.assertIsNone(self.row(bad)["fed_at"])
         self.assertIsNotNone(self.row(good)["fed_at"])
         self.assertEqual(sum("not feeding %s" % bad in l for l in logs.output), 1)
@@ -687,13 +737,13 @@ class TestStandInFeed(unittest.TestCase):
     def test_grammar_seq_and_cleaning(self):
         self.assertEqual(self.mod.append("SYS", "", "jev back — filtering again", "2026-10-07T18:27:12.000Z"), 1)
         self.assertEqual(self.mod.append_batch([
-            ("LINE", "Steve voice action_oriented 0.93 -8dB", "build\nme a\ncastle", "2026-10-07T18:22:31.412Z"),
+            ("LINE", "Steve voice to_ai 0.93 -8dB", "build\nme a\ncastle", "2026-10-07T18:22:31.412Z"),
             ("LINE", "Alex chat context 0.71 - was=not_relevant", "x" * 600, "2026-10-07T18:22:10.000Z"),
         ]), [2, 3])
         with open(self.log, encoding="utf-8") as f:
             lines = f.read().splitlines()
         self.assertEqual(lines[0], "SYS#1 18:27:12 | jev back — filtering again")
-        self.assertEqual(lines[1], "LINE#2 18:22:31 Steve voice action_oriented 0.93 -8dB | build me a castle")
+        self.assertEqual(lines[1], "LINE#2 18:22:31 Steve voice to_ai 0.93 -8dB | build me a castle")
         self.assertEqual(lines[2], "LINE#3 18:22:10 Alex chat context 0.71 - was=not_relevant | " + "x" * 499 + "…")
 
     def test_refuses_what_the_contract_does_not_allow(self):
@@ -756,7 +806,7 @@ class TestKilledBetweenFeedAndMark(Base):
         self.die_after_the_next_batch()
         with self.assertRaises(Killed):
             self.step()
-        self.assertEqual(self.feed.lines(), ["LINE#1 18:22:32 Steve chat action_oriented 0.90 - | "
+        self.assertEqual(self.feed.lines(), ["LINE#1 18:22:32 Steve chat to_ai 0.90 - | "
                                              "yeah the big one … make it bigger"])
         self.clock.advance(2)
         self.f = self.new_filter()                       # the service restarts, the group forgotten

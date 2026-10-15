@@ -26,7 +26,7 @@ what lies beside the toolkit: `lib/py/vfg_actions.py` and `vfg_llm.py`, the brid
 ## One example per command
 
 ```sh
-vfg up                                         # minecraft, vfg-bridge, vfg-jev, vfg-engine started if down; RCON answering
+vfg up                                         # minecraft, vfg-bridge, vfg-jev, vfg-engine started if down, minecraft-test too where installed; RCON answering
 vfg watch                                      # the feed from the cursor, then follow; --tail N for a person, --after SEQ for code
 vfg say 'on it — castle at spawn'              # tellraw @a with the aqua [AI] prefix, stored as an ai line, fed as AI say; --to P --task NAME
 vfg cmd 'time set day'                         # the library's command scenario, through engine_start; prints Minecraft's reply
@@ -48,7 +48,7 @@ vfg action refs                                # {"version", "commands"}: the da
 vfg state --json --items                       # who is online and where, time, weather; and each player's items and state
 vfg route --task fire_staff_alex < brief.txt   # the example classes for that brief, at most 3, picked by Jev; JSON
 vfg prefix                                     # the implementer's static system prompt, the same bytes each time
-vfg test fire_staff_alex                       # its test on the test server's own engine: a line per check; -n N, --timeout S
+vfg test fire_staff_alex                       # its test on the box's test server, by livetest: a line per check; -n N, --timeout S
 vfg made save                                  # made/<VFG_SERVER>/content/ and tests/ into a new $VFG_MADE_ARCHIVE/2026-10-13-142301/
 vfg made restore 2026-10-13                    # and back: that day's latest, or one save by its full name
 vfg usage add --component implementer --model deepseek-flash --in 4000 --out 900 --cache-read 310000 --largest 104322
@@ -431,10 +431,12 @@ save with neither (scripts and actions only) restores nothing, exit 1.
   written to the prompt cache, in two columns of `usage` that the bridge adds on start; until it
   has, the row goes in without them and one line on stderr says so. **`--largest N`** is a run's
   largest request in tokens (an implementer's), in the column `largest_tokens`, the same way.
-  `--component` is one of `jev`, `brain`, `respond`, `implementer`, `planner`, `alias`,
+  `--component` is one of `jev`, `brain`, `respond`, `router`, `implementer`, `planner`, `alias`,
   `conversation` and `orchestrator`; `--ref` is at most 64 characters.
-- **`vfg usage flush`** sends `usage.pending.jsonl` and writes no row of its own. Every
-  `structured()` call appends its row there under `usage.pending.lock`, in the format `vfg usage
+- **`vfg usage flush`** sends `usage.pending.jsonl` and writes no row of its own. Each row goes in
+  on its own: one the box's `usage` table refuses (a component its CHECK does not know yet, such as
+  `router` before the bridge is deployed again) is skipped, counted by component on stderr and not
+  kept, and the rest are stored. Every `structured()` call appends its row there under `usage.pending.lock`, in the format `vfg usage
   add` queues its own, plus `ok`, `error` and `ms`, the bridge's added columns (a box without them
   gets the rest, and one line on stderr says so); `cost_usd` is null for a call cut off with an
   attempt in flight. A call claims the queue by moving it to `usage.sending.<pid>.jsonl`, so two
@@ -452,32 +454,90 @@ save with neither (scripts and actions only) restores nothing, exit 1.
   `engine/README.md`, "Tests of content: livetest"; its docstring has every verb of `t`). A name
   with no test gets the skeleton, written there, one `t.check` per DONE WHEN item to fill in, exit
   1. It reads the task's bindings from the live engine (those whose `by` is the task, or whose id
-  its row's `made.bindings` holds; none, with a warning, when the live engine cannot be read), then
-  in one SSH call to the test server (`remote/engine.py`'s `test` op) deploys
-  `made/<VFG_SERVER>/content/` and `tests/` there, as a reload deploys content, and runs livetest
-  with the test server's `server.properties`, its state fresh in `<vfg>/state/engine`, the content
-  folders the library (`<vfg>/engine/library/`, as deployed there) and this server's, the bindings
-  bound first, a 60 s boot and the timeout. Its engine is the test server's own
-  `<vfg>/engine/.venv/bin/python`, else the live server's on the same host; with neither, exit 3.
-  It prints livetest's report (`ENGINE`, `AT`, `CAST`, `START` lines, one line per check, `PASS`,
-  `FAIL` or `CAN'T TELL` with what decided it, and `RESULT: …`), and after a failure the test
-  engine's last `-n` (15) log lines as `LOG` lines. Exit 0 when no check failed; 1 when one did
-  (`the test failed: 1 of 2 checks: it zaps`), when the test could not run as written, when its
-  engine did not start or load the content (each load error said), and when it ran past
-  `--timeout` (`VFG_TEST_TIMEOUT_S`, 60; 5 to 600) and was stopped; 3 when the server is not a test
-  server (no `.vfg-test-server` marker beside its `server.properties`).
+  its row's `made.bindings` holds; none, with a warning, when the live engine cannot be read, unless
+  the test casts one: then exit 5, never a failing check), then makes one SSH call to the test
+  server, `remote/test.py`, with the test, those bindings and `made/<VFG_SERVER>/content/` packed in
+  it, in this order:
+  1. it refuses (exit 3) a server without the marker, one whose marker names another RCON port, a
+     vfg folder with a `.env`, and one that is, holds or lies inside a live server's folders or
+     shares its RCON port;
+  2. it waits its turn first-come (`<vfg>/tests/tests.lock` and a `<vfg>/tests/queue/` ticket, the
+     oldest live ticket first), at most `VFG_TEST_QUEUE_S` (300), the queue cut so the whole call
+     ends inside 590 s once `--timeout`, `VFG_TEST_WARM_GRACE` (30), one `VFG_TEST_BOOT_S` (120)
+     and overhead are counted, always keeping at least 30 s (a `--timeout` too large for even that
+     is exit 2);
+  3. it stops what an earlier test left running;
+  4. it makes the server answer RCON on a fresh world with at most one restart and one
+     `VFG_TEST_BOOT_S` wait: a short `VFG_TEST_WARM_GRACE` wait for the last test's restart if one
+     is in flight, else `sudo -n systemctl restart minecraft-test` once when Minecraft does not
+     answer or the world has no `world/vfg-fresh` (a test used it), waited for up to
+     `VFG_TEST_BOOT_S` (still down: exit 5), and takes the token;
+  5. it writes the test, its bindings and this server's content into `<vfg>/tests/`;
+  6. it runs `<live_vfg>/engine/.venv/bin/python -u -m vfg_engine.livetest`, the live box's
+     engine (the marker's `live_vfg`; its `.venv`, `vfg_engine/` and `library/` bound read-only,
+     never its state, socket or log; none there: exit 4), sandboxed (below), under `VFG_TEST=1`:
+     `--properties <mc-test>/server.properties`, `--state-dir <vfg-test>/state/engine`, `--content
+     <engine>/library` and `--content <vfg-test>/tests/content`, `--test
+     <vfg-test>/tests/<task>.py` and `--bindings` when there are any, a 60 s boot and the
+     timeout;
+  7. it restarts `minecraft-test` with `--no-block`, so the next test's world warms up.
+
+  The box answers with the `SERVER` line, livetest's lines, livetest's JSON, then `remote/test.py`'s
+  JSON last. vfg prints the `SERVER` line (`SERVER     /opt/mc-test (RCON 25576): no wait in the
+  queue; a fresh world; sandboxed: systemd-run as vfgtest`), then livetest's report (`ENGINE`, `AT`,
+  `CAST`, `START` lines, one line per check, `PASS`, `FAIL` or `CAN'T TELL` with what decided it,
+  and `RESULT: …`), and after a failure the test engine's last `-n` (15) log lines as `LOG` lines.
+  It maps livetest's own codes (0 pass, 1 fail, 2 bad test, 3 not a test server, 4 engine did not
+  start, 5 stopped) onto one table, `TEST_EXITS` in `vfg`, which `vfg test --help` prints:
+  - **0** every check passed;
+  - **1** a check failed (its `FAIL` lines say which), or there was no test yet (its skeleton
+    written);
+  - **2** the test or the content is to fix: bad arguments, a test that cannot run as written (no
+    `test(t)`, an error in it, an op the engine refused, a call made wrong, no check made),
+    content that does not load (the engine's words), or a test past its `--timeout`
+    (`VFG_TEST_TIMEOUT_S`, 60; 5 to 600: shorten it);
+  - **3** no test server: none configured, the live server itself, a server without the test
+    server's marker or with another port's, or a marker whose `test_user` cannot be run as;
+  - **4** out of reach, so the items are reported untested: the box over SSH (tried once more, 3 s
+    later, within the first 60 s), no engine on the live box (`deploy.sh engine` installs it), or
+    the test's engine not starting for a reason outside the content;
+  - **5** the test server down, stalled or busy: a restart refused or no RCON after one, the queue
+    past `VFG_TEST_QUEUE_S`, a sandbox that fails its probe, or the live engine's bindings
+    unreadable when the test casts.
 - **What changed since its last run** prints first, as `CHANGED` lines: a check removed, added or
   renamed, a bar lowered or raised (a number in a check's verdict smaller or larger), a check
   changed otherwise, a target moved, changed or removed, the trigger changed; comments and layout
   are no change. The last run's file is kept in `$VFG_HOME/tests/<server>/<name>.py`.
-- **The test server is a second box**: `VFG_TEST_BOX` names a file of its settings, `KEY=value`
+- **The sandbox** (`VFG_TEST_SANDBOX`, `auto`): a transient systemd unit. On the box, `system`:
+  `sudo -n systemd-run --uid=<test_user>` as the marker's `test_user` (`vfgtest`), never the box's
+  own user, the live services'; a marker with no `test_user`, or one that does not exist, is
+  exit 3 (re-run `deploy.sh testserver`). On the PC, `user`: `systemd-run --user`, as this user,
+  weaker (it shares the user, so the live server's processes stay visible), which the `SERVER`
+  line says. `auto` takes system where a system manager answers, else user, else a plain process
+  (`none`, `NOT sandboxed (<why>): a plain process`); each is taken only when its probe, run in it
+  before the test, finds the live server out of reach: the live `server.properties` unread, the
+  live vfg folder unwritten, and in system mode the live services' processes unseen — else, in
+  system mode, exit 5 (no test runs outside it). In it the live Minecraft folder is inaccessible,
+  the live vfg folder an empty read-only one with the box's Python and the engine's three folders
+  bound back in, nothing writable but the test's `run/` and `state/` and a private `/tmp`
+  (`ProtectSystem=strict`, `PrivateTmp`), no new privileges (`NoNewPrivileges`), `Nice=10`,
+  `CPUWeight=20`, `IOWeight=20` and `MemoryMax=1G`, with no setting in its environment whose name
+  holds `TOKEN`, `SECRET`, `PASSWORD` or `API_KEY`; and, in system mode, the live services'
+  processes hidden (`ProtectProc=invisible`) and no network but loopback (`IPAddressDeny=any`).
+  Past its time the unit is stopped with every process the test started. `system`, `user` or
+  `none` takes that one alone (exit 5 when it is not usable).
+- **The test server is the box's own** by default (`VFG_TEST_BOX` unset, empty or `box`): the
+  live `VFG_REMOTE_VFG` and `VFG_REMOTE_MC` and `-test`, `/opt/vfg-test` and `/opt/mc-test`, unit
+  `minecraft-test`, which `bridge/deploy/deploy.sh testserver` makes (`bridge/README.md`). `none`
+  is no test server (exit 3). Anything else names a file of a test box's settings, `KEY=value`
   lines as `~/.vfg/config` has them, of which `VFG_SSH`, `VFG_SSH_HOST`, `VFG_SSH_USER`,
-  `VFG_SSH_KEY`, `VFG_REMOTE_VFG` and `VFG_REMOTE_MC` are read over the live box's. On realmc it is
-  a server's own config, `$REALMC_ROOT/<name>/home/.vfg/config` (`integration/realmc/up <name>`),
-  its `mc/` folder holding the marker. A second instance on the EC2 box needs only
-  `VFG_REMOTE_VFG` and `VFG_REMOTE_MC`. None set, the file unreadable, or the live server itself
-  (the same host and the same vfg or Minecraft folder; on the same host the box also checks the
-  folders after links, and the RCON port): exit 3, nothing run.
+  `VFG_SSH_KEY`, `VFG_REMOTE_VFG` and `VFG_REMOTE_MC` are read over the live box's (one it leaves
+  out is the live box's). Every program vfg sends there, the deploy's too, runs only where the
+  test vfg folder's `python/bin/python3` and the marker `<mc>/.vfg-test-server` are, else exits 3
+  (`TestBox.remote_cmd`). The live box itself (the same host and the same vfg or Minecraft folder):
+  exit 3. On realmc, `integration/realmc/up NAME --test-server` lays out the same test server
+  beside a server, and after `eval "$(integration/realmc/env NAME)"` `vfg test` finds it as on the
+  box (`integration/realmc/README.md`).
 
 ## Files on this PC
 
@@ -535,11 +595,13 @@ passes in.
   class of its kind whose Args take every arg it sets, and `translate()`.
 - `test_task.py`: `vfg task set` and `list` on the box's `tasks` table, `vfg context --json`'s
   tasks, and a box without the table.
-- `test_test.py`: `vfg test` against a second box whose engine's Python is `fake_livetest.py`
-  (livetest's command line, noted, and the report the test file asks for; the real runner is
-  tested in `engine/tests/box/`): the content, the test and the task's bindings sent there, a
-  changed test shown first, a failure, one that cannot run and one past its time, its skeleton,
-  and a test server that is the live one.
+- `test_test.py`: `vfg test` against a test server (a second box, and the live box's own), the live
+  box's engine's Python `fake_livetest.py` (livetest's command line, noted, and the report the test
+  file asks for; the real runner is tested in `engine/tests/box/`): the content, the test and the
+  task's bindings sent there, a changed test shown first, a failure, one that cannot run and one
+  past its time; `remote/test.py`'s refusals, fresh worlds and restarts (`tests/bin/systemctl`'s
+  `minecraft-test`), its queue and, where `systemd-run --user` works here, its sandbox; the
+  skeleton, and a test server that is the live one.
 - `test_route.py`: the router over the engine's classes, `remote/jev.py` against
   `fake_jev_route.py`, `vfg prefix`, `vfg action show`, `vfg usage add`'s added columns and
   `structured()`'s queued rows.
@@ -572,8 +634,10 @@ its range is exit 3. `config.example` lists the PC's settings.
 | `VFG_INCANT_ALIAS_MODEL` | `google/gemini-3.8-flash` | the alias call's model; `off` for none |
 | `VFG_ROUTE_TIMEOUT_S` | `3`, 0.1 to 60 | `vfg route`'s budget |
 | `VFG_ROUTE_LOAD` | `0.3`, 0 to 1 | what loads a class for an implementer: `runs_it` and `close` together |
-| `VFG_TEST_BOX` | none: `vfg test` exits 3 | the file of the test server's settings |
+| `VFG_TEST_BOX` | unset: the box's own test server | `box` or empty the same; `none`, no test server (`vfg test` exits 3); else the file of a test box's settings |
 | `VFG_TEST_TIMEOUT_S` | `60`, 5 to 600 | how long a test may run |
+| `VFG_TEST_QUEUE_S`, `VFG_TEST_BOOT_S` | `300`, `120` | how long a test waits its turn on the test server, and for it to come up after a restart |
+| `VFG_TEST_SANDBOX` | `auto` | `system`, `user` or `none`: the test's sandbox (above) |
 | `VFG_MADE_ARCHIVE` | `/var/home/jm/Documents/EverHear/Internal/made` | where `vfg made` keeps its saves |
 | `VFG_USAGE_QUEUE` | `$VFG_HOME` | the usage queue's folder; from the environment only |
 | `VFG_WATCH_SILENCE_S`, `VFG_WATCH_UNREACHABLE_S` | `35`, `60` | for the tests: the silence after which a watch reconnects, and when it says EC2 is unreachable; from the environment only |

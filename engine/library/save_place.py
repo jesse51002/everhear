@@ -27,12 +27,12 @@ class SavePlace(Scenario):
     def start(self, ctx):
         a = self.args
         if not a.name:
-            self.result("which name? a place is saved under a short name: castle, home, zoo_entrance", name="")
+            self.result("which name? a place is saved under a short name: castle, home, zoo_entrance", name="", failed=True)
             self.end()
             return
         if bool(a.player) == (a.at is not None):
             self.result("give the player or the coordinates, not both" if a.player else
-                       "give the player or the coordinates", name=a.name)
+                       "give the player or the coordinates", name=a.name, failed=True)
             self.end()
             return
         if a.player:
@@ -43,7 +43,7 @@ class SavePlace(Scenario):
         try:
             key = self.save_place(a.name, spot)
         except ValueError as exc:
-            self.result(str(exc), name=a.name)
+            self.result(str(exc), name=a.name, failed=True)
             self.end()
             return
         doc = ctx.places.get(key)

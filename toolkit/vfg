@@ -46,11 +46,12 @@ REMOTE = os.path.join(HERE, "remote")
 KINDS = ["join", "leave", "death", "advancement", "server"]
 TYPES = ["LINE", "GAME", "AI", "SYS"]
 AI_KINDS = ["say", "action", "task", "result", "note"]
-CLASSES = ["action_oriented", "conversational", "context", "not_relevant", "unjudged"]
+CLASSES = ["to_ai", "context", "not_relevant", "unjudged"]  # Jev's classes (Contracts §5), or none yet
 # lib/py/vfg_llm.py's Component, and the usage table's CHECK (bridge/vfg_bridge/db.py): brain,
-# respond, planner and orchestrator are the brain's, alias the incantation alias call's;
+# respond, router, planner and orchestrator are the brain's, alias the incantation alias call's;
 # conversation stays valid for the rows that have it.
-COMPONENTS = ["jev", "brain", "respond", "implementer", "planner", "alias", "conversation", "orchestrator"]
+COMPONENTS = ["jev", "brain", "respond", "router", "implementer", "planner", "alias", "conversation",
+              "orchestrator"]
 PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,16}\Z")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 # A task's name (Prototype_Named_Tasks): the brain's tasks table's key, and the --task, --by and AI
@@ -369,7 +370,7 @@ class Ssh(object):
         self.sockdir = os.path.join(cfg.home, "ssh")
         # The box's Python 3.12, which uv put in /opt/vfg/python (bridge/deploy/python.sh), reading
         # the program from stdin.
-        self.remote_cmd = shlex.quote(box_python(cfg)) + " -u -"
+        self.remote_cmd = getattr(cfg, "remote_cmd", None) or shlex.quote(box_python(cfg)) + " -u -"
 
     def base(self):
         return [self.cfg.get("VFG_SSH"), "-T", "-i", self.cfg.get("VFG_SSH_KEY"),
@@ -812,7 +813,10 @@ def send_usage(cfg, a, rows):
     """The queue, usage.pending.jsonl (structured()'s own rows among them, VFG_USAGE_QUEUE's
     folder: Pending), then `rows`, to the box in one SSH call; queued again when they do not get
     there. Nothing queued and no row: nothing sent, exit 0. A row's cost_usd may be null: a call
-    cut off with an attempt in flight, whose cost nobody told."""
+    cut off with an attempt in flight, whose cost nobody told. A row the box's table refuses (a
+    component its bridge does not know yet) is skipped there and named on stderr, the rest
+    stored, exit 0: it is dropped from the queue with that warning, never requeued, since it
+    would block every row behind it."""
     cfg.ensure_home()
     pending = Pending(cfg.home)
     rows = pending.claim() + rows
@@ -3388,16 +3392,62 @@ def cmd_prefix(cfg, a):
 # and checks it item by item. A task's test is made/<server>/tests/<task>.py, defining test(t);
 # engine/vfg_engine/livetest.py runs it there on an engine of its own (its docstring has every verb
 # of t), with this server's content and the library, and the bindings the task made on the live
-# server bound first.
+# server bound first. It goes there by the test server's own remote program (remote/test.py): one
+# test at a time, a fresh world, a sandbox, livetest on the live box's engine, read-only.
 #
-# The test server is a second box: VFG_TEST_BOX names a file of its settings, KEY=value lines as
-# ~/.vfg/config has them, and the keys that choose a box (TEST_BOX_KEYS) are read from it over
-# the live box's; any other line is ignored. A realmc server's is its own config
-# (<realmc>/.server/<name>/home/.vfg/config); a second instance on the EC2 box needs only
-# VFG_REMOTE_VFG and VFG_REMOTE_MC. Set nowhere, vfg test says so and exits 3.
+# The test server (Prototype_Implementer_Quality) is a second Minecraft server on the live box, its
+# own folders beside the live ones, /opt/vfg-test and /opt/mc-test (the live VFG_REMOTE_VFG and
+# VFG_REMOTE_MC + "-test"; under realmc, <root>/<name>/vfg-test and mc-test), its own RCON port and
+# its unit minecraft-test: VFG_TEST_BOX unset, empty or "box". "none" is no test server: vfg test
+# says so and exits 3. Anything else names a file of a test box's settings, KEY=value lines as
+# ~/.vfg/config has them, of which the keys that choose a box (TEST_BOX_KEYS) are read over the
+# live box's (one it leaves out is the live box's, its SSH host too); any other line is ignored.
+# Every program vfg sends there runs only where the test server's Python and its marker
+# (<mc>/.vfg-test-server, which only its setup writes) are, else exits 3 (TestBox.remote_cmd).
 TEST_BOX_KEYS = ("VFG_SSH", "VFG_SSH_HOST", "VFG_SSH_USER", "VFG_SSH_KEY", "VFG_REMOTE_VFG", "VFG_REMOTE_MC")
+TEST_MARKER = ".vfg-test-server"
 TEST_TIMEOUT = 60.0
-TEST_BOOT_S = 60.0   # what the test's own engine may take to start and load its content (livetest's --boot)
+TEST_QUEUE = 300.0   # VFG_TEST_QUEUE_S: how long a test waits for the one before it on the test server
+TEST_BOOT = 120.0    # VFG_TEST_BOOT_S: how long the test server may take to come up after a restart
+# A whole vfg test must finish inside the 600 s an implementer's Bash call allows (Claude Code's
+# default), so the box side is bounded: TEST_WALL_MAX is the most the SSH call waits. The box's
+# readiness costs at most TEST_WARM_GRACE (a short wait for the last test's restart) + one boot
+# (its own restart); `warm` is sent to the box so its WARM_GRACE and this one cannot drift. The
+# queue always keeps TEST_MIN_QUEUE, so contention does not instantly fail; a --timeout so large
+# that even that will not fit is refused (test_budget).
+TEST_WALL_MAX = 590.0
+TEST_WARM_GRACE = 30.0
+TEST_MIN_QUEUE = 30.0
+TEST_OVERHEAD = 30.0   # the box's work around the test: the restart for the next test, setup, slack
+TEST_SANDBOXES = ("auto", "system", "user", "none")
+# vfg test's exit codes, the one table (the help text is made from it; remote/test.py's own exits
+# are 3, 4 and 5 of it). An implementer reports "untested" on 4 or 5 only: those are never theirs to fix.
+TEST_EXITS = (
+    (0, "every check passed"),
+    (1, "a check failed (its FAIL lines say which), or there was no test yet (its skeleton written)"),
+    (2, "the test or the content is to fix: bad arguments, a test that cannot run as written (no test(t), an "
+        "error in it, an op the engine refused, a call made wrong, no check made), content that does not load "
+        "(the engine's words), or a test past its --timeout (shorten it)"),
+    (3, "no test server: none configured, the live server itself, or a server without the test server's marker"),
+    (4, "out of reach: the box (SSH), or the engine missing on the live box or not starting for a reason not in "
+        "the content"),
+    (5, "the test server down, stalled or busy"),
+)
+TEST_RETRY_S = 60.0  # the box out of reach this soon after vfg test began is tried once more
+
+
+def test_budget(timeout, boot, queue):
+    """How the whole vfg test fits in TEST_WALL_MAX: (the queue it really gets, the SSH wall). The
+    box's own worst case (the test, its readiness and overhead, no queue) is `need`; the queue gets
+    what is left, at least TEST_MIN_QUEUE. A --timeout too large for even that is Fail(2)."""
+    need = timeout + TEST_WARM_GRACE + boot + TEST_OVERHEAD
+    if need + TEST_MIN_QUEUE > TEST_WALL_MAX:
+        most = int(TEST_WALL_MAX - TEST_MIN_QUEUE - TEST_WARM_GRACE - boot - TEST_OVERHEAD)
+        raise Fail(2, "--timeout is at most %d s with VFG_TEST_BOOT_S=%g: a test and the test server's restarts "
+                      "must finish inside the %g s an implementer's shell allows; lower --timeout or VFG_TEST_BOOT_S"
+                   % (most, boot, TEST_WALL_MAX))
+    queue_eff = min(queue, TEST_WALL_MAX - need)
+    return queue_eff, need + queue_eff
 TEST_SKELETON = '''"""The test of {name}: one check per DONE WHEN item of its brief. Run it with vfg test {name}."""
 
 
@@ -3430,12 +3480,16 @@ def read_settings(path):
 
 
 class TestBox(Config):
-    """The live config, with the test box's keys (TEST_BOX_KEYS) from VFG_TEST_BOX's file over it."""
+    """The live config, with the test box's keys (TEST_BOX_KEYS) over it: from VFG_TEST_BOX's file,
+    or (path None) the live box's own test server, its folders the live ones + "-test"."""
 
-    def __init__(self, path):
+    def __init__(self, path=None, live=None):
         Config.__init__(self)
         self.box_file = path
-        self.box = dict((k, v) for k, v in read_settings(path).items() if k in TEST_BOX_KEYS and v)
+        if path is None:
+            self.box = {"VFG_REMOTE_VFG": live.rvfg + "-test", "VFG_REMOTE_MC": live.rmc + "-test"}
+        else:
+            self.box = dict((k, v) for k, v in read_settings(path).items() if k in TEST_BOX_KEYS and v)
 
     def get(self, key):
         if key in self.box:
@@ -3443,17 +3497,33 @@ class TestBox(Config):
             return os.path.expanduser(value) if key in self.PATHS and value.startswith("~") else value
         return Config.get(self, key)
 
+    @property
+    def remote_cmd(self):
+        """What Ssh runs there: the test server's Python only where it and the marker are, so not
+        even a deploy reaches a folder that is not a test server's; else exit 3, saying so."""
+        py, mark = box_python(self), self.rmc + "/" + TEST_MARKER
+        return ("if [ ! -x %s ]; then echo %s >&2; exit 3; fi; if [ ! -f %s ]; then echo %s >&2; exit 3; fi; "
+                "exec %s -u -" % (shlex.quote(py), shlex.quote(
+                    "vfg: no test server on the box: %s is missing; deploy.sh testserver makes it" % py),
+                    shlex.quote(mark), shlex.quote(
+                    "vfg: no test server at %s: it has no %s, which only the test server's setup writes; "
+                    "deploy.sh testserver makes it" % (self.rmc, TEST_MARKER)), shlex.quote(py)))
+
 
 def test_box(cfg):
-    """The test server's config; Fail 3 when there is none, or when it is the live box itself."""
-    path = os.path.expanduser(cfg.get("VFG_TEST_BOX"))
-    if not path:
-        raise Fail(3, "no test server: VFG_TEST_BOX names none (a file of its box's settings); "
-                      "check it on the live server with one vfg engine start, grant, give or apply instead")
-    try:
-        box = TestBox(path)
-    except OSError as e:
-        raise Fail(3, "not configured: VFG_TEST_BOX's file cannot be read (%s)" % (e.strerror or e))
+    """The test server's config: the live box's own (VFG_TEST_BOX unset, empty or "box"), or a test
+    box's file's; Fail 3 when there is none ("none"), or when it is the live server itself."""
+    name = cfg.get("VFG_TEST_BOX").strip()
+    if name.lower() == "none":
+        raise Fail(3, "no test server: VFG_TEST_BOX is none; check it on the live server with one vfg engine start, "
+                      "grant, give or apply instead")
+    if name.lower() in ("", "box"):
+        box = TestBox(None, cfg)
+    else:
+        try:
+            box = TestBox(os.path.expanduser(name))
+        except OSError as e:
+            raise Fail(3, "not configured: VFG_TEST_BOX's file cannot be read (%s)" % (e.strerror or e))
     if box.get("VFG_SSH_HOST") == cfg.get("VFG_SSH_HOST") and (box.rvfg == cfg.rvfg or box.rmc == cfg.rmc):
         raise Fail(3, "not configured: VFG_TEST_BOX names the live server itself (%s on %s); a test never "
                       "runs there" % (box.rvfg if box.rvfg == cfg.rvfg else box.rmc, box.get("VFG_SSH_HOST")))
@@ -3562,14 +3632,20 @@ def test_changes(old, new):
     return lines
 
 
-def test_bindings(cfg, a, name):
+def test_bindings(cfg, a, name, text="", began=None):
     """The bindings the task made on the live server, as livetest's --bindings takes them: [{player,
     phrase, ability | scenario and args, aliases, everyday_aliases}]. Its bindings are those its row
-    records (made.bindings, the engine's ids) and any the engine says it made (`by`); [] with a
-    note when the live engine cannot be read."""
+    records (made.bindings, the engine's ids) and any the engine says it made (`by`). The live engine
+    out of reach (tried once more, test_once_more): [] with a note, unless the test casts one, which
+    would find none: then an infra code (4 or 5, never 1, a failing check's), so the implementer
+    reports the ability untested rather than "fixing" one that works."""
+    began = time.monotonic() if began is None else began
     try:
-        reply = engine_one(cfg, a, "incantations", {})
+        reply = test_once_more(lambda: engine_one(cfg, a, "incantations", {}), began)
     except Fail as f:
+        if re.search(r"\.cast\(", text):
+            raise Fail(f.code if f.code in (4, 5) else 5, "the live engine's bindings were not read (%s), and the "
+                       "test casts one: it would find none on the test server; report the ability untested" % f.msg)
         warn("the live engine's bindings were not read (%s): the test's engine has only its own" % f.msg)
         return []
     ids = set()
@@ -3585,10 +3661,29 @@ def test_bindings(cfg, a, name):
             if isinstance(e, dict) and (e.get("by") == name or e.get("id") in ids)]
 
 
+def test_once_more(fn, began):
+    """fn(), and once more 3 s later when it could not reach the box (exit 4, never its timeout)
+    within TEST_RETRY_S of the start: a test repeated is safe, since each starts from a clean slate
+    on the test server (its unit and world fresh, its store and run/ rewritten)."""
+    try:
+        return fn()
+    except TimedOut:
+        raise
+    except Fail as f:
+        if f.code != 4 or time.monotonic() - began > TEST_RETRY_S:
+            raise
+        warn("%s: trying once more" % f.msg)
+        time.sleep(3)
+        return fn()
+
+
 def cmd_test(cfg, a):
     """vfg test <name>: the test of a task's content, made/<server>/tests/<name>.py, on the test
-    server's own engine (livetest), its report printed; exit 0 when no check failed. With no test
-    yet, it gets the skeleton."""
+    server's own engine (livetest, through the test server's remote program and its sandbox), its
+    report printed; exit 0 when no check failed. With no test yet, it gets the skeleton. The box out
+    of reach is tried once more (test_once_more): an implementer reports a test it could not run as
+    untested, and never reruns it by hand."""
+    began = time.monotonic()
     name = a.name
     if not TASK_RE.match(name or "") and not ENGINE_ID_RE.match(name or ""):
         raise Fail(2, "%s is not a task's or a class's name" % name)
@@ -3605,8 +3700,23 @@ def cmd_test(cfg, a):
         raise Fail(1, "no test for %s yet: wrote the skeleton %s; fill in one check per DONE WHEN item, then vfg "
                       "test %s" % (name, os.path.relpath(path, cfg.repo), name))
     box = test_box(cfg)
+    queue = setting(cfg, "VFG_TEST_QUEUE_S", TEST_QUEUE, 0, 3600)
+    boot = setting(cfg, "VFG_TEST_BOOT_S", TEST_BOOT, 5, 600)
+    sandbox = (cfg.get("VFG_TEST_SANDBOX") or "auto").strip().lower()
+    if sandbox not in TEST_SANDBOXES:
+        raise Fail(3, "not configured: VFG_TEST_SANDBOX is one of %s" % ", ".join(TEST_SANDBOXES))
+    queue, wall = test_budget(timeout, boot, queue)   # before any deploy: a too-large --timeout fails fast
     text = read_text(path)
-    bindings = test_bindings(cfg, a, name)
+    bindings = test_bindings(cfg, a, name, text, began)
+    args = {"task": name, "server": server_name(cfg), "file": os.path.relpath(path, cfg.repo), "test": text,
+            "engine": {"bindings": bindings,
+                       "content": pack(["content"], made)[0] if os.path.isdir(os.path.join(made, "content")) else None},
+            "timeout": timeout, "tail": 15 if a.n is None else a.n, "queue": queue, "boot": boot,
+            "warm": TEST_WARM_GRACE, "sandbox": sandbox}
+    if box.get("VFG_SSH_HOST") == cfg.get("VFG_SSH_HOST"):
+        # the same machine: the box checks itself that its server is not the live one under another
+        # path or on its RCON port, and keeps the live folders out of the test's reach
+        args["live"] = {"vfg": cfg.rvfg, "mc": cfg.rmc}
     memory = test_memory(cfg, name)
     try:
         last = read_text(memory)
@@ -3616,56 +3726,62 @@ def cmd_test(cfg, a):
         changed = test_changes(last, text)
         if changed:
             out("\n".join("CHANGED    %s" % ln for ln in ["since the last run of this test:"] + changed))
-    args = {"op": "test", "server": server_name(cfg), "name": name, "bindings": bindings, "timeout": timeout,
-            "boot": TEST_BOOT_S, "tail": 15 if a.n is None else a.n,
-            "tests": pack(["tests"], made)[0],
-            "content": pack(["content"], made)[0] if os.path.isdir(os.path.join(made, "content")) else None}
-    if box.get("VFG_SSH_HOST") == cfg.get("VFG_SSH_HOST"):
-        # the same machine: the box checks itself that its server is not the live one under another path
-        args["live"] = {"vfg": cfg.rvfg, "mc": cfg.rmc}
-    rc, o, e = Ssh(box).call(program("engine.py", dict(args, vfg=box.rvfg, mc=box.rmc)),
-                             timeout + TEST_BOOT_S + 60, keep_master=True)
+    def call():
+        # a fresh SSH timeout each try: the box waits the queue, then its restarts and the test,
+        # all within the wall; the PC time before the call does not eat into it
+        return Ssh(box).call(program("test.py", dict(args, vfg=box.rvfg, mc=box.rmc)), wall + 5, keep_master=True)
+    rc, o, e = test_once_more(call, began)
     if rc != 0:
         finish(rc, o, e)
+    # the test server's lines, livetest's, its JSON, then the test server's own JSON, last
+    lines = o.decode("utf-8", "replace").rstrip("\n").split("\n")
     try:
-        got = json.loads(o.decode("utf-8", "replace").strip().splitlines()[-1])
-        ran = got["test"]
-    except (ValueError, IndexError, KeyError, TypeError):
+        end = json.loads(lines[-1])
+        if not isinstance(end, dict) or "code" not in end:
+            raise ValueError
+    except ValueError:
         raise Fail(1, "the test server answered something that is not the test's end")
+    lines = lines[:-1]
+    try:
+        result = json.loads(lines[-1]) if lines else {}
+        if not isinstance(result, dict) or "checks" not in result:
+            raise ValueError
+        lines = lines[:-1]
+    except ValueError:
+        result = {}
     try:   # it ran: what it was is the next run's to compare with
         os.makedirs(os.path.dirname(memory), mode=0o700, exist_ok=True)
         atomic_write(memory, text)
     except OSError as x:
         warn("this test's last run was not kept (%s): the next run shows no changes" % (x.strerror or x))
-    lines = str(ran.get("out") or "").rstrip("\n").split("\n")
-    try:
-        end = json.loads(lines[-1])
-        lines = lines[:-1]
-    except (ValueError, IndexError):
-        end = {}
     if any(x.strip() for x in lines):
         out("\n".join(lines))
-    code = ran.get("code")
-    if code != 0 and ran.get("log"):
-        out("\n".join("LOG        %s" % ln for ln in ran["log"]))
-    why = str(end.get("error") or "").strip() or (str(ran.get("err") or "").strip().splitlines() or [""])[-1]
+    code = end.get("code")
+    last = [ln.strip() for ln in lines if ln.strip()]
+    why = str(result.get("error") or "").strip() or (last[-1][:300] if last else "")
+    errors = ["%s: %s: %s" % (x.get("file"), x.get("check"), x.get("error"))
+              for x in (result.get("engine") or {}).get("errors") or [] if isinstance(x, dict)]
+    loaded = "; the content that did not load: %s" % "; ".join(errors) if errors else ""
+    if end.get("timed_out") or code == 5:
+        raise Fail(2, "the test ran past its %g s and was stopped: shorten it (a live test is short, its waits no "
+                      "longer than they must), or give it --timeout%s" % (timeout, loaded))
     if code == 0:
         return 0
     if code == 1:
-        failed = [c.get("item") for c in end.get("checks") or [] if isinstance(c, dict) and c.get("ok") is False]
-        raise Fail(1, "the test failed: %d of %d checks%s" % (len(failed), len(end.get("checks") or []),
-                                                             ": " + "; ".join(map(str, failed)) if failed else ""))
+        failed = [c.get("item") for c in result.get("checks") or [] if isinstance(c, dict) and c.get("ok") is False]
+        raise Fail(1, "the test failed: %d of %d checks%s%s" % (len(failed), len(result.get("checks") or []),
+                                                               ": " + "; ".join(map(str, failed)) if failed else "",
+                                                               loaded))
     if code == 2:
-        raise Fail(1, "the test could not run as written: %s" % (why or "see its lines above"))
+        raise Fail(2, "the test could not run as written: %s%s" % (why or "see its lines above", loaded))
     if code == 3:
         raise Fail(3, "not a test server: %s" % (why or "the test box's server has no .vfg-test-server marker"))
+    if code == 4 and errors:   # its content did not load: the implementer's to fix
+        raise Fail(2, "the test's engine did not load the content: %s" % "; ".join(errors))
     if code == 4:
-        errors = ["%s: %s: %s" % (x.get("file"), x.get("check"), x.get("error"))
-                  for x in (end.get("engine") or {}).get("errors") or [] if isinstance(x, dict)]
-        raise Fail(1, "the test's engine did not start or load the content: %s" % ("; ".join(errors) or why))
-    if code == 5:
-        raise Fail(1, "the test ran past its %g s and was stopped: shorten its waits, or --timeout" % timeout)
-    raise Fail(1, "the test did not finish (exit %s): %s" % (code, why or "no output"))
+        raise Fail(4, "the test's engine did not start (%s); report the ability untested and why"
+                   % (why or "no reason given"))
+    raise Fail(2, "the test did not finish (exit %s): %s" % (code, why or "no output"))
 
 
 # ------------------------------------------------------------------ watch
@@ -4027,7 +4143,7 @@ def build_parser():
     s.add_argument("--until", metavar="T", help="ISO-8601, or -90s, -10m, -2h, -1d")
     s.add_argument("--player", metavar="NAME", help="one player, any case")
     s.add_argument("--class", dest="cls", metavar="C,…",
-                   help="action_oriented, conversational, context, not_relevant, unjudged")
+                   help="to_ai, context, not_relevant, unjudged")
     s.add_argument("--source", choices=["voice", "chat", "ai"])
     g = s.add_mutually_exclusive_group()
     g.add_argument("--events", action="store_true", help="game events instead of lines")
@@ -4120,9 +4236,12 @@ def build_parser():
                    "player's words come from the box's tasks table")
     s.add_argument("--ref", metavar="REF", help="the usage row's ref (default: the task's name)")
 
-    s = sub.add_parser("test", help="run a task's test (made/<VFG_SERVER>/tests/<name>.py) on the test server, "
-                       "VFG_TEST_BOX, never the live one: its own engine with this server's content and the task's "
-                       "bindings, then one line per check; exit 0 when none failed",
+    s = sub.add_parser("test", help="run a task's test (made/<VFG_SERVER>/tests/<name>.py) on the test server "
+                       "(VFG_TEST_BOX: the box's own, /opt/mc-test), never the live one: its own engine with this "
+                       "server's content and the task's bindings, on a fresh world and sandboxed, then one line "
+                       "per check; exit " + "; ".join("%d %s" % (c, w.split(":")[0].split(" (")[0])
+                                                      for c, w in TEST_EXITS),
+                       description="Exit codes: " + " ".join("%d: %s." % c_w for c_w in TEST_EXITS),
                        usage="vfg test <name> [-n N] [--timeout S]")
     s.add_argument("name")
     s.add_argument("-n", type=int, metavar="N", help="on a failure, the last N lines of the test engine's log (15)")

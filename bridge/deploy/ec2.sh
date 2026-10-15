@@ -3,7 +3,7 @@
 #
 #   ec2.sh launch    a new instance with a public IP, and its security group (if missing); prints the IP
 #   ec2.sh start     starts the instance, waits until SSH answers, prints the IP
-#   ec2.sh stop      stops the three units over SSH so the world saves, then the instance
+#   ec2.sh stop      stops the three units (and the test server) over SSH so the world saves, then the instance
 #   ec2.sh status    state, instance type and current public IP
 #   ec2.sh ssh-ip    replaces the security group's port-22 rule with this PC's current IP; prints
 #                    the instance's current public IP
@@ -204,6 +204,10 @@ cmd_start() {
 }
 
 stop_units() {
+  # The test server (testserver.sh), if the box has one: its world is thrown away anyway.
+  if remote 'sudo systemctl stop minecraft-test 2> /dev/null'; then
+    log "stopped minecraft-test"
+  fi
   # The engine first, so it saves its state while Minecraft still answers.
   if remote 'sudo systemctl stop vfg-engine vfg-jev vfg-bridge minecraft'; then
     log "stopped vfg-engine, vfg-jev, vfg-bridge and minecraft"

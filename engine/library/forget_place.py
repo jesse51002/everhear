@@ -18,10 +18,10 @@ class ForgetPlace(Scenario):
     def start(self, ctx):
         name = self.args.name
         if not name:
-            self.result("which name? give the saved place's name to forget", name="", forgotten=False)
+            self.result("which name? give the saved place's name to forget", name="", forgotten=False, failed=True)
             self.end()
             return
         forgotten = self.forget_place(name)
         summary = ("forgot %s" % name) if forgotten else ("there is no saved place called %s" % name)
-        self.result(summary, name=name, forgotten=forgotten)
+        self.result(summary, name=name, forgotten=forgotten, failed=not forgotten)
         self.end()

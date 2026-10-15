@@ -400,15 +400,19 @@ class TestHistory(BoxCase):
     def test_lines_oldest_first_and_their_filters(self):
         out = self.lines()
         self.assertEqual(len(out), 6)
-        self.assertIn(" Bob voice conversational 0.88 | thanks AI", out[0])
-        self.assertRegex(out[2], r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d Steve voice action_oriented 0\.93 \| build me a castle$")
+        self.assertIn(" Bob voice to_ai 0.88 | thanks AI", out[0])
+        self.assertRegex(out[2], r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d Steve voice to_ai 0\.93 \| build me a castle$")
         self.assertTrue(out[4].endswith(" Alex chat - | lol"))
         self.assertTrue(out[5].endswith(" AI ai - | on it — castle at spawn"))
         self.assertEqual(self.texts("--player", "steve"), ["hmm", "build me a castle"])
         self.assertEqual(self.texts("--class", "unjudged"), ["lol"])
-        self.assertEqual(self.texts("--class", "action_oriented,context", "--since", "-10m"),
+        self.assertEqual(self.texts("--class", "to_ai,context", "--since", "-10m"),
                          ["build me a castle", "that cave by spawn"])
-        self.assertEqual(self.texts("--class", "not_relevant,conversational"), ["thanks AI", "hmm"])
+        self.assertEqual(self.texts("--class", "not_relevant,to_ai"), ["thanks AI", "hmm", "build me a castle"])
+        for retired in ("action_oriented", "conversational"):  # Jev's two classes for the AI before to_ai
+            r = self.vfg("history", "--class", retired)
+            self.assertEqual(r.returncode, 2, retired)
+            self.assertIn("--class takes to_ai, context, not_relevant, unjudged", r.stderr)
         self.assertEqual(self.texts("--source", "ai"), ["on it — castle at spawn"])
         self.assertEqual(len(self.lines("--source", "voice")), 3)
         self.assertEqual(self.texts("--limit", "2"), ["lol", "on it — castle at spawn"])
@@ -514,10 +518,10 @@ class TestUsage(BoxCase):
         self.assertEqual(rows[0][2:], ("brain", "openai/gpt-6.1-sol", 10, 5, 0.0012, "#812"))
         self.assertRegex(rows[0][1], ISO_RE)
         self.assertGreaterEqual(rows[0][1], before[:19])
-        for c in ("respond", "jev", "implementer", "planner", "alias", "conversation", "orchestrator"):
+        for c in ("respond", "router", "jev", "implementer", "planner", "alias", "conversation", "orchestrator"):
             self.assertOk(self.vfg("usage", "add", "--component", c, "--model", "m", "--in", "1", "--out", "0"))
-        self.assertEqual([r[2] for r in self.usage()], ["brain", "respond", "jev", "implementer", "planner", "alias",
-                                                       "conversation", "orchestrator"])
+        self.assertEqual([r[2] for r in self.usage()], ["brain", "respond", "router", "jev", "implementer", "planner",
+                                                       "alias", "conversation", "orchestrator"])
         self.assertIsNone(self.usage()[1][6])
 
     def test_queued_when_down_then_inserted_first(self):
@@ -1036,6 +1040,24 @@ class TestUp(BoxCase):
         r = self.vfg("up")
         self.assertOneLine(r, 1, r"^vfg: not up: vfg-jev failed \(KeyError: TYPESAFE_API_KEY\)$")
         self.assertIn("vfg-jev     failed  start failed  KeyError: TYPESAFE_API_KEY", r.stdout)
+
+    def test_the_test_server_is_reported_and_started_never_waited_for_or_failed_on(self):
+        self.unit("minecraft-test", "active")
+        r = self.vfg("up")
+        self.assertOk(r)
+        self.assertIn("minecraft-test active\n", r.stdout)
+        self.unit("minecraft-test", "inactive")         # restarting after a test, or stopped
+        r = self.vfg("up")
+        self.assertOk(r)
+        self.assertIn("minecraft-test inactive  starting (not waited for)\n", r.stdout)
+        self.unit("minecraft-test", "failed")           # it gave up: reset, started, and vfg up still 0
+        write(os.path.join(self.box.units, "minecraft-test.fail"), "")
+        write(os.path.join(self.box.units, "minecraft-test.journal"), "Error: no world.template\n")
+        began = datetime.now()
+        r = self.vfg("up")
+        self.assertOk(r)
+        self.assertIn("minecraft-test failed  start failed  Error: no world.template\n", r.stdout)
+        self.assertLess((datetime.now() - began).total_seconds(), 10)
 
 
 # ===================================================================== watch

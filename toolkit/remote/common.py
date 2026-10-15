@@ -181,14 +181,23 @@ def rcon_lock_path(port):
 def open_lock(path):
     """A descriptor flock can hold on `path`, made if missing. Read-only and without O_CREAT
     when it exists: flock needs neither write access nor ownership, and a sticky /tmp
-    refuses O_CREAT on another user's file (fs.protected_regular)."""
+    refuses O_CREAT on another user's file (fs.protected_regular). Never through a link, and only
+    when it is a plain file (OSError otherwise): /tmp is everyone's to write."""
+    import stat
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+
+    def plain(fd):
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            raise OSError("%s is not a plain file: not used as a lock" % path)
+        return fd
     for _ in range(3):
         try:
-            return os.open(path, os.O_RDONLY)
+            return plain(os.open(path, flags))
         except FileNotFoundError:
             pass
         try:
-            fd = os.open(path, os.O_RDONLY | os.O_CREAT | os.O_EXCL, 0o666)
+            fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o666)
         except FileExistsError:
             continue
         try:
@@ -196,7 +205,7 @@ def open_lock(path):
         except OSError:
             pass
         return fd
-    return os.open(path, os.O_RDONLY)
+    return plain(os.open(path, flags))
 
 
 def held_locks():

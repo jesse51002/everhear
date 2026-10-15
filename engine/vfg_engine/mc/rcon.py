@@ -47,6 +47,7 @@ import contextlib
 import fcntl
 import os
 import socket
+import stat
 import struct
 import sys
 import threading
@@ -84,14 +85,25 @@ def _held_locks():
 
 def _open_lock(path: str) -> int:
     """A descriptor flock can hold on `path`, made if missing: read-only and without O_CREAT when it
-    exists (a sticky /tmp refuses O_CREAT on another user's file)."""
+    exists (a sticky /tmp refuses O_CREAT on another user's file). Never through a link, and only
+    when it is a plain file (RconError otherwise): /tmp, and a test's folders, are others' to write."""
+    try:
+        return _open_lock_file(path)
+    except RconError:
+        raise
+    except OSError as exc:   # a link (ELOOP), or no access
+        raise RconError("the RCON lock %s cannot be used: %s" % (path, exc)) from None
+
+
+def _open_lock_file(path: str) -> int:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
     for _ in range(3):
         try:
-            return os.open(path, os.O_RDONLY)
+            return _plain(os.open(path, flags), path)
         except FileNotFoundError:
             pass
         try:
-            fd = os.open(path, os.O_RDONLY | os.O_CREAT | os.O_EXCL, 0o666)
+            fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o666)
         except FileExistsError:
             continue
         try:
@@ -99,7 +111,15 @@ def _open_lock(path: str) -> int:
         except OSError:
             pass
         return fd
-    return os.open(path, os.O_RDONLY)
+    return _plain(os.open(path, flags), path)
+
+
+def _plain(fd: int, path: str) -> int:
+    """`fd`, when it is a plain file's; else closed, and RconError."""
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise RconError("%s is not a plain file: not used as a lock" % path)
+    return fd
 
 
 class _Flock:

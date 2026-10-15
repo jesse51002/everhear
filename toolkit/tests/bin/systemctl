@@ -1,24 +1,72 @@
 #!/usr/bin/env bash
-# Fake systemctl for the tests: unit states live in files under $FAKE_UNITS.
-#   $FAKE_UNITS/<unit>        the state (active, inactive, failed); no file = no such unit
-#   $FAKE_UNITS/<unit>.fail   present: `start` fails and leaves the unit failed
+# Fake systemctl for the tests and realmc: unit states live in files under $FAKE_UNITS.
+#   $FAKE_UNITS/<unit>        the state (active, inactive, failed, activating); no file = no such unit
+#   $FAKE_UNITS/<unit>.fail   present: `start` and `restart` fail and leave the unit failed
+#   $FAKE_UNITS/<unit>.exec   present and executable: a unit backed by a real program (realmc's
+#                             minecraft-test): every verb is passed on as `<unit>.exec VERB
+#                             [--no-block]`, which runs it and keeps the state file true
+# Verbs: is-active [--quiet], show -p LoadState|ActiveState --value, start, stop,
+# restart [--no-block], reset-failed; enable, disable and daemon-reload do nothing.
 set -u
 dir="${FAKE_UNITS:?FAKE_UNITS not set}"
-case "${1:-}" in
+verb="" quiet=0 noblock=0 prop=LoadState
+units=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -q|--quiet) quiet=1 ;;
+    --no-block) noblock=1 ;;
+    -p|--property) prop="${2:-}"; shift ;;
+    --property=*) prop="${1#*=}" ;;
+    -*) ;;
+    *) if [ -z "$verb" ]; then verb="$1"; else units+=("${1%.service}"); fi ;;
+  esac
+  shift
+done
+
+state() {  # state UNIT -- what is-active would print
+  if [ -x "$dir/$1.exec" ]; then "$dir/$1.exec" is-active
+  elif [ -f "$dir/$1" ]; then cat "$dir/$1"
+  else echo inactive; fi
+}
+
+backed() {  # backed UNIT VERB -- run VERB on a unit backed by a real program
+  if [ "$noblock" = 1 ]; then "$dir/$1.exec" "$2" --no-block; else "$dir/$1.exec" "$2"; fi
+}
+
+rc=0
+case "$verb" in
   is-active)
-    u="$2"
-    if [ -f "$dir/$u" ]; then s=$(cat "$dir/$u"); else s=inactive; fi
-    echo "$s"
-    [ "$s" = active ] ;;
+    for u in "${units[@]}"; do
+      s=$(state "$u")
+      [ "$quiet" = 1 ] || echo "$s"
+      [ "$s" = active ] || rc=3
+    done ;;
   show)
-    # systemctl show -p LoadState --value <unit>
-    u="${!#}"
-    if [ -f "$dir/$u" ]; then echo loaded; else echo not-found; fi ;;
-  start)
-    u="$2"
-    if [ ! -f "$dir/$u" ]; then echo "Failed to start $u.service: Unit $u.service not found." >&2; exit 5; fi
-    if [ -f "$dir/$u.fail" ]; then echo failed > "$dir/$u"; echo "Job for $u.service failed." >&2; exit 1; fi
-    echo active > "$dir/$u" ;;
+    for u in "${units[@]}"; do
+      if [ "$prop" = ActiveState ]; then state "$u"
+      elif [ -f "$dir/$u" ] || [ -x "$dir/$u.exec" ]; then echo loaded
+      else echo not-found; fi
+    done ;;
+  start|restart)
+    for u in "${units[@]}"; do
+      if [ -x "$dir/$u.exec" ]; then backed "$u" "$verb" || rc=1; continue; fi
+      if [ ! -f "$dir/$u" ]; then echo "Failed to $verb $u.service: Unit $u.service not found." >&2; rc=5; continue; fi
+      if [ -f "$dir/$u.fail" ]; then echo failed > "$dir/$u"; echo "Job for $u.service failed." >&2; rc=1; continue; fi
+      echo active > "$dir/$u"
+    done ;;
+  stop)
+    for u in "${units[@]}"; do
+      if [ -x "$dir/$u.exec" ]; then backed "$u" stop || rc=1
+      elif [ -f "$dir/$u" ]; then echo inactive > "$dir/$u"
+      else echo "Failed to stop $u.service: Unit $u.service not loaded." >&2; rc=5; fi
+    done ;;
+  reset-failed)
+    for u in "${units[@]}"; do
+      if [ -x "$dir/$u.exec" ]; then "$dir/$u.exec" reset-failed || rc=1
+      elif [ -f "$dir/$u" ] && [ "$(cat "$dir/$u")" = failed ]; then echo inactive > "$dir/$u"; fi
+    done ;;
+  enable|disable|daemon-reload) ;;
   *)
-    echo "fake systemctl: unsupported: $*" >&2; exit 1 ;;
+    echo "fake systemctl: unsupported: $verb" >&2; rc=1 ;;
 esac
+exit "$rc"

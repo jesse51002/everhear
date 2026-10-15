@@ -18,25 +18,33 @@ the name a task's (`galick_gun_styrk`, `[a-z][a-z0-9_]{1,31}`). Older `T<n>` row
 
 **An older history is brought up to date** whenever the schema is applied: the columns added since
 §4's DDL (`db.COLUMNS`), and `lines` and `usage` rebuilt once, in one transaction, when their CHECK
-lists are older (`db.CHECKS`: Jev's four classes, `direct_ask` becoming `action_oriented` and
-`not_useful` becoming `not_relevant`; the brain's `brain`, `respond` and `planner` usage, and the
-incantation alias call's `alias`). `usage`'s added columns are the cache counts and a model call's
-`ok`, `error` and `ms`, which `structured()` records for every call. Every other column
-on those tables is kept. Deploy the bridge and `jev/` together: once the history has the four
-classes, an older Jev filter's verdicts fail the CHECK until it is replaced.
+lists are older (`db.CHECKS`: Jev's three classes `to_ai`, `context` and `not_relevant`, the two
+classes for the AI before them, `action_oriented` and `conversational`, and the older `direct_ask`
+all becoming `to_ai`, and `not_useful` becoming `not_relevant`; the brain's `brain`, `respond`,
+`router` and `planner` usage, and the incantation alias call's `alias`). `usage`'s added columns
+are the cache counts and a model call's `ok`, `error` and `ms`, which `structured()` records for
+every call. Every other column on those tables is kept. The feed's rows are never rewritten: a `LINE` row fed
+before keeps its old class, which its readers take as `to_ai`. The bridge and `jev/` are deployed
+together, since an older Jev's verdicts fail the new CHECK and a newer Jev's `to_ai` an older
+bridge's: when Jev is on the box, `deploy.sh` stops it before the schema and deploys `jev/` from
+the same checkout after (`jev/deploy.sh`), and `jev/deploy.sh` alone refuses a box whose bridge
+predates `to_ai`.
 
 From the repo's root on the owner's PC:
 
 ```sh
 bridge/deploy/ec2.sh launch|start|stop|status|ssh-ip|retire   # the box itself (AWS CLI v2)
-bridge/deploy/deploy.sh provision [--restore]                 # Java, Python 3.12, Minecraft, the firewall, /opt/vfg/.env
+bridge/deploy/deploy.sh provision [--restore]                 # Java, Python 3.12, Minecraft, the firewall, /opt/vfg/.env, the test server
 bridge/deploy/deploy.sh env                                   # the secrets in VFG_BOX_ENV into /opt/vfg/.env
-bridge/deploy/deploy.sh                                       # the bridge, the engine and the units; restarts them
+bridge/deploy/deploy.sh                                       # the bridge, the engine and the units, and Jev when it is there; restarts them; the test server kept current
 bridge/deploy/deploy.sh engine                                # the game engine alone (engine/README.md)
+bridge/deploy/deploy.sh testserver [--fresh]                  # the test server alone; --fresh makes its template world again
 bridge/deploy/set-secret.sh VFG_CLIENT_TOKEN                  # a value into /opt/vfg/.env, typed hidden
 bridge/deploy/client-token.sh                                 # prints the client token, to a terminal only
 ```
 
+`ec2.sh stop` stops `minecraft-test`, then `vfg-jev`, `vfg-bridge` and `minecraft`, so the world
+saves, then the instance.
 `ec2.sh retire` backs up `/opt/mc` and the history into `VFG_BACKUP_DIR`, checks both copies by
 sha256, then terminates the instance. `provision --restore` puts them back on a new box. The last
 two retires are kept as `mc-backup.tgz` and `vfg-backup.tgz` with their `.prev.tgz`; each
@@ -49,6 +57,35 @@ by sha256) in `/opt/vfg/uv/` and CPython 3.12, installed by uv, behind the link 
 the game engine's venv is made from, the PC's version; Amazon Linux's own `python3` (3.9) is left to the host. A box
 provisioned before this has no `/opt/vfg/python`: `deploy.sh provision` adds it, and `deploy.sh`
 refuses until it is there.
+
+**The test server** (`deploy/testserver.sh`, which runs `deploy/testserver.py` as `ec2-user`) is a
+second Minecraft server beside the live one, where `vfg test` runs implementers' tests and nobody
+plays (`docs/CONTRACTS.md` §1, `toolkit/README.md`): `/opt/mc-test`, the live `server.jar` copied
+(sha256-equal) with Fabric Loader and Carpet, fetched from their official URLs and checked against
+the pins in `testserver.py`; game `127.0.0.1:25566`, RCON `25576` with its own password, both
+dropped off loopback by the nftables table `inet vfg_test` (`/etc/nftables/vfg-test.nft`);
+`/opt/vfg-test`, with no `.env`, the test engine's state in `state/engine` (the engine itself is the
+live box's, `/opt/vfg/engine/`, bound read-only into the test's sandbox); the system user `vfgtest`, which a sandboxed
+test runs as (not `ec2-user`, the live services' uid), writing only `/opt/vfg-test/run` and
+`state`, reading `server.properties` (`640`, its group) and reaching nothing but the test server's
+RCON on loopback (the table's output chain); the marker `/opt/mc-test/.vfg-test-server`, with
+`"test_user": "vfgtest"`; and the unit
+`minecraft-test` (`deploy/systemd/minecraft-test.service`), whose every start runs
+`/opt/mc-test/reset.sh` first: a fresh copy of `world.template/`, the live world's datapacks (the
+engine's among them) copied in, and the token `world/vfg-fresh`. The template (seed `20261009`, livetest's sky stage at x 3000, z
+3000 generated and forceloaded) is made once by starting the server outside its unit, again with
+`--fresh` or when the live jar changes, and then a start is recorded as Java's AOT cache
+(`test-server.aot`, again when Java changes), which with `CPUQuota=200%`, two CPUs' threads and the
+C1 compiler keeps a restart near 13 CPU-seconds; while the unit runs it is stopped for that. It reads the
+live folders and never writes them, and never starts, stops or restarts the live server. It is
+step 11 of `provision`, before the live heap and unit, where a failure only says so; `deploy.sh testserver` runs it alone, and a
+plain `deploy.sh` runs it after the bridge, changing only what changed, making the test server
+where it is missing, and restarting `minecraft-test` only when something it reads changed or it
+is not running. It also sets the live heap, `minecraft.service.d/heap.conf`: memory in whole GiB,
+rounded up, less 4, less `minecraft-test`'s `MemoryMax` rounded up (3), 9G on an `m7i.xlarge`, as
+`provision`'s step 12 does where the test server is installed (its marker and its unit; without
+them, 12G); it applies at the live server's next restart, which `provision` makes when the heap
+changes and `testserver.sh` never does.
 
 ## Test it
 
@@ -63,6 +100,15 @@ a fake engine (`tests/fake_engine.py`: its export, and its socket answering as t
 the spotter's, Layer 2's and the Jev filter's casts, the drop rule and the list; `test_engine.py` the
 engine's statuses, the engine down or late, and the round trip outside the cast lock;
 `test_sounds.py` the phoneme matching.
+
+```sh
+python3 -m unittest discover -s bridge/deploy/tests      # from the repo's root; a second or two
+```
+
+The test server's setup: `testserver.py`'s layout, refusals and pins, the unit file and
+`reset.sh`, the toolkit's fake `systemctl` that realmc's `minecraft-test` uses, and the pins realmc
+takes from `testserver.py`. No Minecraft runs there: the template and the real server are tried
+on realmc (`integration/realmc/README.md`).
 
 ## Incantations
 
@@ -123,13 +169,20 @@ binding's id>` (`engine:steve.fire_ball`) and its `action` the ability (or the s
   engine`, or `... failed — <error>`. Also after the answer, a cast that came after its line drops
   that line, by the drop rule, if Jev has not judged it yet.
 - **`GET /v1/incantations?player=Steve&after=<version>&wait=<s>`**: `200 {"version", "player",
-  "incantations": [{"phrase", "aliases", "cooldown_s"}]}`: the engine's bindings for the player (names
+  "incantations": [{"phrase", "aliases", "cooldown_s"}], "server_phrases": [phrase, …]}`. `incantations`
+  is the engine's bindings for the player (names
   in any case), one per phrase, at the export's version; `cooldown_s` is the ability's (`0` while it is
   not loaded). With `after` the current version it is held until the export's file changes or `wait` s
-  pass (default 25, at most 30), then `304`. It is what the mod's keyword spotter listens for, so each
+  pass (default 25, at most 30), then `304`. The version is the export's, which every change bumps whoever's binding it changed, so a
+  held request answers when any player's incantations change. `incantations` is what the mod's
+  keyword spotter listens for, so each
   incantation's `aliases` leave out its `everyday_aliases` (`Casts.spotted`): those that are everyday
   talk of their own, "ice cream" and "i scream" for "ice beam", which would cast on ordinary
-  conversation. Layer 2, the drop rule and the Jev cast check still use every alias.
+  conversation. Layer 2, the drop rule and the Jev cast check still use every alias. `server_phrases` is every
+  incantation phrase on the server, whoever's (the player's own and every other player's), normalised,
+  once each, sorted, with no aliases (`Casts.server_phrases`): the mod's speech-to-text boosts them as
+  hotwords, since players talk about each other's spells. An older bridge leaves it out, and the mod
+  then boosts the player's own phrases.
 - **`POST /v1/lines`**, for a player with incantations: Layer 2 (`sounds.match_line` at
   `VFG_INCANT_ALLOWANCE`), on a line of at most `VFG_INCANT_LAYER2_MAX_WORDS` words (6,
   normalised, fillers counted; 0 any length), may fire `transcript` casts, with the line's

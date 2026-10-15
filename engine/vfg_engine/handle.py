@@ -389,7 +389,19 @@ class Handle:
             else:
                 a, b = (_pos(c) for c in box)
                 doc["box"] = [[min(a[i], b[i]) for i in range(3)], [max(a[i], b[i]) for i in range(3)]]
-            self._owned().areas[str(area)] = doc
+            # who is inside now, from this tick's snapshot: their Enter comes right after this call,
+            # and someone who leaves before the next tick still gets an Exit
+            from .events import make
+            from .scenarios import inside
+            name = str(area)
+            was = set((self._owned().areas.get(name) or {}).get("inside") or [])
+            now = sorted(p.name for p in self.rt.snapshot.players.values() if p.alive and inside(doc, p.dim, p.pos))
+            doc["inside"] = now
+            self._owned().areas[name] = doc
+            rt, iid = self.rt, self.record.iid
+            for kind, who in [("exit", w) for w in sorted(was - set(now))] + [("enter", w) for w in now if w not in was]:
+                ev = make(kind, who, {"area": name}, area=name, instance=iid)
+                rt.later(lambda ev=ev: rt.deliver(ev))
 
     # ---- output --------------------------------------------------------------------------
 

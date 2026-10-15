@@ -201,3 +201,49 @@ def test_the_sweep_leaves_the_engines_own_spawns(rig):
     r.op("start", scenario="arena")
     r.run_for(3)
     assert len(r.io.by_uuid) == 4 and not r.io.ops_of(Remove)
+
+
+def test_a_released_weather_hold_puts_the_weather_back(rig):
+    storm = HOLDERS.replace("class Siege", "class Storm").replace(
+        'self.hold("mob_griefing", self.args.value, priority=self.args.priority)', 'self.hold("weather", "thunder")')
+    r = rig({"storm": storm})
+    r.start()
+    r.io.weather = "rain"
+    iid = r.op("start", scenario="storm")["instance"]
+    assert r.io.weather == "thunder"
+    assert r.op("world")["settings"][0]["original"] == "rain"
+    r.op("stop", instance=iid)
+    assert r.io.weather == "rain" and r.op("world")["settings"] == []
+
+
+WATCHER = '''
+class Gate(Scenario):
+    class Config(ScenarioConfig):
+        summary = "Says who crosses its ring."
+        duration_s = UNTIL_STOPPED
+
+    def start(self, ctx):
+        self.watch("ring", center=(0, 64, 0), radius=5)
+        self.listen(Enter, "on_enter")
+        self.listen(Exit, "on_exit")
+
+    def on_enter(self, ctx, ev):
+        self.command("say in " + ev.who)
+
+    def on_exit(self, ctx, ev):
+        self.command("say out " + ev.who)
+'''
+
+
+def test_a_watch_knows_who_is_inside_from_the_start(rig):
+    from vfg_engine.io import Command
+    r = rig({"gate": WATCHER})
+    r.start()
+    r.io.join("Steve", pos=(1.0, 64.0, 1.0))        # inside when the watch is made
+    r.io.join("Alex", pos=(30.0, 64.0, 0.0))
+    r.tick()
+    r.op("start", scenario="gate")
+    assert [op.text for op in r.io.ops_of(Command)] == ["say in Steve"]       # at once, in that tick
+    r.io.move("Steve", (30, 64, 30))                 # he leaves before the next tick
+    r.tick()
+    assert [op.text for op in r.io.ops_of(Command)] == ["say in Steve", "say out Steve"]

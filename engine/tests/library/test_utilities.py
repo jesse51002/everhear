@@ -295,7 +295,7 @@ def test_save_place_then_forget_it(rig):
     iid = r.start_scenario("forget_place", name="camp")
     result = r.result(iid)
     assert result["summary"] == "forgot camp"
-    assert result["facts"] == {"name": "camp", "forgotten": True}
+    assert result["facts"] == {"name": "camp", "forgotten": True, "failed": False}
     assert r.rt.places.get("camp") is None
 
 

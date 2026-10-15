@@ -76,7 +76,7 @@ class Castle(Scenario):
                      for p in (ctx.world.player(n) for n in names) if p is not None]
         if not sites:
             self.result("no %s: %s" % (a.plan, "nobody is online" if a.players in ("@a", "@r")
-                                       else a.players + " is not online"), players=[], built=0)
+                                       else a.players + " is not online"), players=[], built=0, failed=True)
             self.end()
             return
         self.state.sites = sites
@@ -133,7 +133,7 @@ class Castle(Scenario):
             summary += "; saved as %s" % ", ".join(self.state.saved)
         size = a.size | 1 if a.plan == "castle" else [self.config.mansion_width, self.config.mansion_depth]
         self.result(summary, players=[w for w, _ in self.state.built], at=[at for _, at in self.state.built],
-                    plan=a.plan, size=size, built=n, places=self.state.saved)
+                    plan=a.plan, size=size, built=n, places=self.state.saved, failed=not self.state.built)
         self.end()
 
     # ---- the plans: each part is a kit shape, placed by [right, up, forward] from the spot -----

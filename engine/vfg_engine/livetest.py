@@ -5,10 +5,13 @@ server).
     python -m vfg_engine.livetest --properties /opt/mc-test/server.properties \\
         --state-dir /opt/vfg-test/state/engine \\
         --content /opt/vfg/engine/library --content /opt/vfg-test/made/main/content \\
-        --test /opt/vfg-test/tests/fire_staff_steve.py [--bindings FILE] [--boot 60] [--timeout S]
+        --test /opt/vfg-test/tests/fire_staff_steve.py [--bindings FILE] [--boot 60] [--timeout S] [--tail N]
 
 It refuses any server whose folder (the one holding server.properties) has no `.vfg-test-server`
-marker, or one whose marker names another RCON port: exit 3. It loads the test file, starts
+marker, or one whose marker names another RCON port: exit 3; and a run with no --content, exit 2
+(its engine never falls back to the live server's content, or any of its paths: every one is set,
+VFG_PROTECTED to the test server's when vfg test gives it, else an empty list in --state-dir). It
+loads the test file, starts
 `python -m vfg_engine` with VFG_TEST=1 (which refuses the same way) on the test server, its state,
 export, socket and log in --state-dir (fresh: what an earlier test left there is removed), and
 waits until its socket answers and its content has loaded (a reload, whose load errors are printed
@@ -26,8 +29,9 @@ VFG_LIVETEST_BUDGET_S (20) prints a WARN line and has "slow": true; its code is 
 = "code": 0 every check passed; 1 one failed; 2 the test could not run as written (no test(t), an
 error in it, a refused op, no check made); 3 not a test server; 4 the engine did not start or load;
 5 stopped (SIGTERM, or --timeout). Its other output, before the JSON, is the report a person reads:
-ENGINE, AT, CAST, START, LOG, then PASS / FAIL / CAN'T TELL — item — why, RESULT, and TIME (the
-wall time and each phase's) with WARN when it is slow.
+ENGINE, AT, CAST, START, then PASS / FAIL / CAN'T TELL — item — why, RESULT, LOG (with --tail N,
+when it did not pass: the engine log's last N lines), and TIME (the wall time and each phase's) with
+WARN when it is slow.
 
 THE TEST FILE defines test(t). t is ready when it is called: the engine running with the content,
 the stage set (a barrier floor high in the sky at 160 296 160, night, clear, no mobs spawning), Steve (the caster,
@@ -1071,7 +1075,8 @@ def socket_path(state_dir):
 def fresh_state(state_dir):
     """What an earlier test's engine left in the state folder, removed: this one starts empty."""
     os.makedirs(state_dir, exist_ok=True)
-    for name in ("state.json", "incantations.json", "engine.log", "engine.out", "engine.sock", "engine.sock.lock"):
+    for name in ("state.json", "incantations.json", "engine.log", "engine.out", "engine.sock", "engine.sock.lock",
+                 "protected.json"):
         try:
             os.remove(os.path.join(state_dir, name))
         except FileNotFoundError:
@@ -1091,11 +1096,29 @@ def engine_env(args, state_dir, sock):
         "VFG_ENGINE_EXPORT": os.path.join(state_dir, "incantations.json"),
         "VFG_ENGINE_SOCKET": sock,
         "VFG_ENGINE_LOG": os.path.join(state_dir, "engine.log"),
+        # the test server's protected boxes (vfg test sets it), else none: the test's own empty list
+        "VFG_PROTECTED": env.get("VFG_PROTECTED") or protected_none(state_dir),
         "PYTHONPATH": os.pathsep.join([pkg_parent] + [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p]),
         "PYTHONUNBUFFERED": "1",
         "PYTHONDONTWRITEBYTECODE": "1",   # nothing written beside the package or the content
     })
     return env
+
+
+def protected_none(state_dir):
+    """An empty list of protected boxes in the state folder: a test engine's when none is given,
+    never the live server's /opt/vfg/protected.json."""
+    path = os.path.join(state_dir, "protected.json")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("[]\n")
+    return path
+
+
+def _log_tail(path, n):
+    """The engine log's last n lines, as one short line each: its time, level and message."""
+    lines = _log_lines(path, max(0, _size(path) - 256 * 1024))[-n:] if n > 0 else []
+    return ["%s %s %s" % (str(ln.get("at") or "")[11:23], str(ln.get("level") or "?").upper(),
+                          one_line(ln.get("msg") or ""))[:400] for ln in lines]
 
 
 def _die_with_parent():
@@ -1167,6 +1190,8 @@ def parse_args(argv):
                                       "scenario and args, aliases?, everyday_aliases?}")
     p.add_argument("--boot", type=float, default=60.0, help="seconds the engine may take to answer (60)")
     p.add_argument("--timeout", type=float, help="seconds the whole test may take; then it is stopped as by SIGTERM")
+    p.add_argument("--tail", type=int, default=0, help="when it did not pass, the engine log's last N lines, as LOG "
+                                                      "lines before the JSON (0)")
     p.add_argument("--caster", default="Steve")
     p.add_argument("--others", default="Alex", help="other fake players, comma-separated ('' for none)")
     return p.parse_args(argv)
@@ -1214,6 +1239,9 @@ def main(argv=None, out=None, rcon_factory=None, fake_io=False):
             say("ERROR", refused)
             return EXIT_REFUSED
         test = load_test(args.test)
+        if not args.content:
+            raise TestError("no --content: a test's engine is given its content folders (the library first), "
+                            "never the live server's")
         state_dir = os.path.abspath(args.state_dir)
         fresh_state(state_dir)
         sock = socket_path(state_dir)
@@ -1299,6 +1327,9 @@ def main(argv=None, out=None, rcon_factory=None, fake_io=False):
             t._clear()
         if timing:
             lap("clear", cleared)
+        if result["code"] != EXIT_PASS and args.tail > 0 and proc is not None:
+            for ln in _log_tail(os.path.join(os.path.abspath(args.state_dir), "engine.log"), args.tail):
+                say("LOG", ln)
         result["seconds"] = round(time.monotonic() - began, 1)
         result["timing"] = timing
         budget = budget_s()

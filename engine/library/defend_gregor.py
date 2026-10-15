@@ -48,7 +48,7 @@ class DefendGregor(Scenario):
         if not names:
             who = a.players
             self.result("no defend Gregor: %s" % ("nobody is online" if who in ("@a", "@r")
-                                                   else who + " is not online"), players=[], survived=None)
+                                                   else who + " is not online"), players=[], survived=None, failed=True)
             self.end()
             return
         p0 = ctx.world.player(names[0])

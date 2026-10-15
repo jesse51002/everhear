@@ -122,8 +122,8 @@ class Store:
         `since`, that Jev classed `context` or `not_relevant` with a confidence
         (so never a blank line, nor one passed as context while Jev failed open
         or after it refused twice), judged after that speaker's last line classed
-        `action_oriented` or `conversational` was judged (by `jev_judged_at`, then
-        `id`). The newest `limit` of them, oldest first.
+        `to_ai` was judged (by `jev_judged_at`, then `id`). The newest `limit`
+        of them, oldest first.
 
         Judge order, not the order said, because a voice line is stored when its
         speech is turned into text, after a line typed later may have been judged:
@@ -138,7 +138,7 @@ class Store:
         bound, bound_params = ("", []) if sent_since is None else (" AND at >= ?", [sent_since])
         last = self.conn.execute(
             "SELECT jev_judged_at, id FROM lines WHERE player_name = ? AND source != 'ai' AND id != ?%s "
-            "AND jev_class IN ('action_oriented', 'conversational') ORDER BY jev_judged_at DESC, id DESC LIMIT 1"
+            "AND jev_class = 'to_ai' ORDER BY jev_judged_at DESC, id DESC LIMIT 1"
             % bound, [ask["player_name"], ask["id"]] + bound_params).fetchone()
         params = [ask["player_name"], ask["at"], ask["at"], ask["id"], since]
         after = ""
@@ -209,7 +209,7 @@ class Store:
     def kept_unfed(self, since):
         """Kept lines not yet fed, said since `since`, oldest first; never a dropped one."""
         return self.conn.execute(
-            "SELECT %s FROM lines WHERE jev_class IN ('action_oriented', 'conversational', 'context') "
+            "SELECT %s FROM lines WHERE jev_class IN ('to_ai', 'context') "
             "AND fed_at IS NULL AND at >= ?%s ORDER BY at, id" % (COLUMNS, self._live()), (since,)).fetchall()
 
     def feed_lines_at(self, ats):

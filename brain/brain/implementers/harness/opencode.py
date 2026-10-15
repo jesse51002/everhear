@@ -13,8 +13,13 @@ through its HTTP API from Python, on DeepSeek V4.1 Flash through the provider th
   blanked.
 - **Our system prompt** is the agent's prompt (`{file:<the system file>}`), which takes the place of
   OpenCode's own. OpenCode adds its environment block and its skills list after it.
-- **Thinking is off on every request**: the agent's options put OpenRouter's `reasoning: {"enabled":
-  false}`, or DeepSeek's `thinking: {"type": "disabled"}`, on each request's body.
+- **The effort is on every request** (VFG_IMPL_EFFORT, config.EFFORTS): the agent's options put it
+  on each request's body, as OpenRouter's `reasoning: {"effort": <it>}` or DeepSeek's own
+  `thinking: {"type": "enabled"}` and `reasoning_effort: <it>`; at off, thinking off, as
+  OpenRouter's `reasoning: {"enabled": false}` or DeepSeek's `thinking: {"type": "disabled"}`.
+- **A command may run 10 minutes** when the model sets no timeout
+  (OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS, config.bash_timeouts_ms), not OpenCode's 2, so a
+  `vfg test` waiting its turn is not cut short.
 - **Every tool is allowed in OpenCode's own permissions**, so nothing of OpenCode's refuses or asks,
   and the guard is the only gate: the plugin's `tool.execute.before` hook (opencode_plugin/guard.js)
   asks it, at an endpoint this adapter serves on 127.0.0.1 with a secret per process, and throws its
@@ -27,8 +32,8 @@ through its HTTP API from Python, on DeepSeek V4.1 Flash through the provider th
   run ends only when the session is idle and its last prompt has its answer. A prompt that lands
   as the session goes idle, unanswered, is given to it again (same message, same part).
 - **Each request's tokens** are its step-finish part's: input not cached, read from the cache,
-  written to it, and output (thinking included). A subagent's requests (OpenCode's `task` tool) are
-  the run's too.
+  written to it, and output (thinking included), its reasoning the thinking OpenCode counts apart.
+  A subagent's requests (OpenCode's `task` tool) are the run's too.
 - **The title request is never made**: a session is made with its title, `vfg <task>`."""
 import asyncio
 import hmac
@@ -45,7 +50,7 @@ from typing import Any, Awaitable, Callable, Mapping, Protocol
 import httpx
 
 from .. import guard as guards
-from ..config import BASE_URLS, ImplementerConfig, log, model_price, provider_routing
+from ..config import BASE_URLS, ImplementerConfig, bash_timeouts_ms, log, model_price, provider_routing
 from ..guard import GuardContext, brief
 from .base import ERROR, OK, STOPPED, TURNS, Compacted, Done, Request, Session, Text, ToolCall, ToolResult
 
@@ -55,12 +60,10 @@ AGENT = "vfg"
 USER = "opencode"
 
 # The providers OpenCode reaches the model at, by cfg.provider: OpenCode's id for it, the AI SDK
-# package that speaks to it, its OpenAI-style address by default, and what turns thinking off.
+# package that speaks to it, and its OpenAI-style address by default (effort_options: the effort).
 PROVIDERS = {
-    "openrouter": ("openrouter", "@openrouter/ai-sdk-provider", "https://openrouter.ai/api/v1",
-                   {"reasoning": {"enabled": False}}),
-    "deepseek": ("deepseek", "@ai-sdk/openai-compatible", "https://api.deepseek.com",
-                 {"thinking": {"type": "disabled"}}),
+    "openrouter": ("openrouter", "@openrouter/ai-sdk-provider", "https://openrouter.ai/api/v1"),
+    "deepseek": ("deepseek", "@ai-sdk/openai-compatible", "https://api.deepseek.com"),
 }
 # The most a request may write (OpenCode caps it at 32K itself).
 OUTPUT_MAX = 32_000
@@ -139,21 +142,34 @@ def model_ref(cfg: ImplementerConfig) -> dict:
     return {"providerID": provider_id(cfg), "modelID": cfg.model}
 
 
-def agent_options(cfg: ImplementerConfig, thinking_off: dict) -> dict:
-    """The agent's model options, which the AI SDK provider puts in every request's body: thinking off,
-    and on OpenRouter its `provider` routing (our order of the providers that cache well, those that
-    do not left out, fallbacks allowed)."""
+def effort_options(cfg: ImplementerConfig) -> dict:
+    """The effort as the provider's API takes it: OpenRouter's `reasoning` (its `effort`, which it
+    turns into the host's own, config.EFFORTS; at off, `enabled: false`), or DeepSeek's own fields
+    (`thinking`, and `reasoning_effort`, low, high or max, which the AI SDK's openai-compatible
+    package sends from its `reasoningEffort` option and drops when given as it is). Read off what
+    OpenCode 1.18.30 sent, 2026-10-13."""
+    off = cfg.effort == "off"
+    if cfg.provider == "deepseek":
+        return {"thinking": {"type": "disabled"}} if off else {"thinking": {"type": "enabled"},
+                                                                 "reasoningEffort": cfg.effort}
+    return {"reasoning": {"enabled": False} if off else {"effort": cfg.effort}}
+
+
+def agent_options(cfg: ImplementerConfig) -> dict:
+    """The agent's model options, which the AI SDK provider puts in every request's body: the effort,
+    and on OpenRouter its `provider` routing (our order of the providers, those that cache badly
+    left out, fallbacks allowed)."""
     routing = provider_routing(cfg)
-    return {**thinking_off, **({"provider": routing} if routing else {})}
+    return {**effort_options(cfg), **({"provider": routing} if routing else {})}
 
 
 def server_config(cfg: ImplementerConfig, system: str, plugin: str = PLUGIN) -> dict:
-    """OpenCode's whole config: one provider with the one model, our agent (our system prompt, thinking
-    off, every tool allowed but those a person answers), our plugin, and nothing else of OpenCode's
-    own around it. It holds no key: the key is `{env:VFG_OPENCODE_KEY}`, read from the server's
-    environment."""
+    """OpenCode's whole config: one provider with the one model, our agent (our system prompt, the
+    effort, every tool allowed but those a person answers), our plugin, and nothing else of
+    OpenCode's own around it. It holds no key: the key is `{env:VFG_OPENCODE_KEY}`, read from the
+    server's environment."""
     pid = provider_id(cfg)
-    _, npm, _, thinking_off = PROVIDERS[cfg.provider]
+    _, npm, _ = PROVIDERS[cfg.provider]
     m = model_price(cfg.model)
     permission = {"*": "allow", **NO_PERSON}
     return {
@@ -175,7 +191,7 @@ def server_config(cfg: ImplementerConfig, system: str, plugin: str = PLUGIN) -> 
         }},
         "agent": {AGENT: {"mode": "primary", "description": "An EverHear implementer.",
                           "prompt": "{file:%s}" % system, "permission": permission,
-                          "options": agent_options(cfg, thinking_off)}},
+                          "options": agent_options(cfg)}},
         "permission": permission,
         "compaction": {"auto": False, "prune": False},
         "lsp": False,
@@ -206,9 +222,11 @@ class Dirs:
 def server_env(cfg: ImplementerConfig, dirs: Dirs, guard_url: str, guard_secret: str, password: str,
                source: Mapping[str, str] | None = None) -> dict[str, str]:
     """The server's environment: this process's, with nothing of another OpenCode in it, its XDG
-    folders and config under the brain's folder, OpenCode's switches, the provider's key, the guard's
-    address and secret, and the server's password; and VFG_SHELL_ENV, what a tool's shell gets
-    back (the XDG folders as they were, the secrets blanked)."""
+    folders and config under the brain's folder, OpenCode's switches, its shell tool's default
+    timeout (OpenCode 1.18.30 reads OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS; it has no setting
+    for the most), the provider's key, the guard's address and secret, and the server's password;
+    and VFG_SHELL_ENV, what a tool's shell gets back (the XDG folders as they were, the secrets
+    blanked)."""
     source = os.environ if source is None else source
     home = source.get("HOME") or os.path.expanduser("~")
     env = {k: v for k, v in source.items() if not k.startswith("OPENCODE") and k not in XDG
@@ -224,6 +242,7 @@ def server_env(cfg: ImplementerConfig, dirs: Dirs, guard_url: str, guard_secret:
         # its own folder. Only OpenCode's own reading moves; HOME, and every tool's, stay.
         "OPENCODE_TEST_HOME": dirs.root,
         "OPENCODE_SERVER_PASSWORD": password,
+        "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS": str(bash_timeouts_ms(cfg)[0]),
         "VFG_OPENCODE_KEY": cfg.key,
         "VFG_GUARD_URL": guard_url,
         "VFG_GUARD_SECRET": guard_secret,
@@ -615,12 +634,13 @@ class OpenCodeRun:
             t = part.get("tokens") or {}
             cache = t.get("cache") or {}
             reasoning = _n(t.get("reasoning"))
-            if reasoning and not self._thought:
+            if reasoning and not self._thought and self.h.cfg.effort == "off":
                 self._thought = True
                 log("opencode", "%s: a request thought (%d reasoning tokens): thinking is not off" % (self.task, reasoning))
             self.put(Request(model=self.h.cfg.model, input=_n(t.get("input")), cache_read=_n(cache.get("read")),
                              cache_write=_n(cache.get("write")), output=_n(t.get("output")) + reasoning,
-                             at=self._step_at.pop(part.get("messageID") or "", time.time()), id=pid))
+                             at=self._step_at.pop(part.get("messageID") or "", time.time()), id=pid,
+                             reasoning=reasoning))
             self.turns += 1
             if part.get("reason") == "tool-calls" and self.turns >= self.h.cfg.max_turns and not self._stopping:
                 log("opencode", "%s: its turn cap, %d turns: aborted" % (self.task, self.h.cfg.max_turns))

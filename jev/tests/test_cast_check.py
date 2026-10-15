@@ -63,7 +63,7 @@ class CastJev(FakeJev):
 
     def kinds(self):
         """Each call so far: `cast` for a cast check, `route` for a routing call, `gather` else."""
-        return ["cast" if casting.QUESTION in q else "route" if "d_what" in q else "gather" for _, q in self.calls]
+        return ["cast" if casting.QUESTION in q else "route" if "to_the_ai" in q else "gather" for _, q in self.calls]
 
 
 class FakeBridge:
@@ -168,7 +168,7 @@ class TestCasting(CastBase):
             self.step()
         self.assertEqual(self.jev.kinds(), ["cast", "route"])
         self.assertEqual(self.bridge.asked, [])
-        self.assertEqual(self.row(line)["jev_class"], "action_oriented")
+        self.assertEqual(self.row(line)["jev_class"], "to_ai")
         self.assertEqual([u["ref"] for u in self.lines.usage()], ["cast:" + line, line])
         self.assertIn("cast-check %s Steve · no p 0.95 → routing · " % line, "\n".join(logs.output))
         self.assertEqual([e[2] for e in self.fed()], ["make hot fireball stronger"])
@@ -269,7 +269,7 @@ class TestCasting(CastBase):
         # a routed, Steve's short cast next, then a's own check, then b routed and checked
         self.assertEqual(self.jev.kinds(), ["route", "cast", "cast", "route", "cast"])
         self.assertEqual(self.bridge.asked, [(added[0], "hot fireball")])
-        self.assertEqual((self.row(a)["jev_class"], self.row(b)["jev_class"]), ("action_oriented", "not_relevant"))
+        self.assertEqual((self.row(a)["jev_class"], self.row(b)["jev_class"]), ("to_ai", "not_relevant"))
 
     def test_no_call_for_a_line_too_old_to_cast(self):
         said_long_ago = self.lines.add(T0 - 20, "Steve", "voice", "Hot variable.")   # 20 s: over 2 + 10

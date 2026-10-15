@@ -52,7 +52,7 @@ class Parkour(Scenario):
         if not names:
             who = a.players
             self.result("no parkour: %s" % ("nobody is online" if who in ("@a", "@r") else who + " is not online"),
-                        players=[], winners=[])
+                        players=[], winners=[], failed=True)
             self.end()
             return
         p0 = ctx.world.player(names[0])

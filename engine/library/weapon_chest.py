@@ -135,7 +135,7 @@ class WeaponChest(Scenario):
         a = self.args
         names = players(ctx, a.players)
         if not names:
-            self.result("no gun chest: nobody of %s is online" % a.players, players=[], chests=0, at=[])
+            self.result("no gun chest: nobody of %s is online" % a.players, players=[], chests=0, at=[], failed=True)
             self.end()
             return
         self.state.todo = [n for n in names for _ in range(a.chests_per_player)]
@@ -191,5 +191,5 @@ class WeaponChest(Scenario):
                        ", ".join(who)), players=who, chests=n,
                        at=["%d %d" % (row[1], row[2]) for row in self.state.placed_at])
         else:
-            self.result("no gun chest: nobody stayed online long enough", players=[], chests=0, at=[])
+            self.result("no gun chest: nobody stayed online long enough", players=[], chests=0, at=[], failed=True)
         self.end()

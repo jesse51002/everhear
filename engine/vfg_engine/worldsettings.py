@@ -6,9 +6,10 @@ recent. When a holder lets go, the next one's value takes over; when none is lef
 goes back to what it was before the first hold, read with `Io.read_gamerule` just before that
 hold first reaches Minecraft. A value that failed to apply is sent again next tick.
 
-`time` and `weather` are held the same way (`time set <value>`, `weather <value>`), but 26.3 has
-no way to read either back, so when the last hold on one goes, nothing is put back: the day and
-the weather carry on from where they are.
+`weather` is held the same way (`weather <value>`: clear, rain or thunder), and read before its first
+hold with two `execute if predicate` weather checks (raining, thundering), so it is put back too.
+`time` (`time set <value>`) cannot be read on 26.3 in a form `time set` takes back, so when the last
+hold on it goes, nothing is put back: the day carries on from where it is.
 """
 
 from __future__ import annotations
@@ -19,7 +20,17 @@ from .io import Command, Gamerule
 
 log = logging.getLogger("vfg_engine")
 
-UNREADABLE = ("time", "weather")
+UNREADABLE = ("time",)
+WEATHER_CHECK = 'execute if predicate {type:"minecraft:weather_check",%s:true}'
+
+
+def read_weather(query) -> str | None:
+    """"thunder", "rain" or "clear", from two weather checks (`query` runs one command)."""
+    def passed(what):
+        return "passed" in str(query(WEATHER_CHECK % what)).lower()
+    if passed("thundering"):
+        return "thunder"
+    return "rain" if passed("raining") else "clear"
 
 
 def text(value) -> str:
@@ -59,8 +70,9 @@ class WorldSettings:
         holds = self.settings.get(name, {}).get("holds") or []
         return max(holds, key=lambda h: (h["priority"], h["seq"])) if holds else None
 
-    def plan(self, read_gamerule) -> list:
-        """The ops that put every setting at its winner's value (or back to its original)."""
+    def plan(self, read_gamerule, query=None) -> list:
+        """The ops that put every setting at its winner's value (or back to its original).
+        `query` runs one command (to read the weather before its first hold)."""
         ops = []
         for name, s in list(self.settings.items()):
             if not s["read"]:
@@ -69,7 +81,10 @@ class WorldSettings:
                     continue
                 if name not in UNREADABLE:
                     try:
-                        s["original"] = read_gamerule(name)
+                        if name == "weather":
+                            s["original"] = read_weather(query) if query is not None else None
+                        else:
+                            s["original"] = read_gamerule(name)
                     except Exception as exc:   # tried again next tick
                         log.warning("could not read gamerule %s before holding it: %s", name, exc)
                         continue

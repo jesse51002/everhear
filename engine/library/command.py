@@ -100,7 +100,7 @@ class Command(Scenario):
     def start(self, ctx):
         given = self.args.commands
         if not given:
-            self.result("no commands given", replies=[], failed=None, ran=[], partial=False)
+            self.result("no commands given", replies=[], failed=True, ran=[], partial=False)
             self.end()
             return
         said, replies, ran, failed, partial = [], [], [], None, False

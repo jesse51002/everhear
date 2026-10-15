@@ -82,7 +82,7 @@ class WorldReplace(Scenario):
         if not sites:
             self.result("nothing changed: %s" % (
                 "nobody is online" if a.players in ("@a", "@r") else a.players + " is not online"),
-                players=[])
+                players=[], failed=True)
             self.end()
             return
         self.state.left = len(sites)
@@ -116,7 +116,7 @@ class WorldReplace(Scenario):
         else:
             summary = "round %s, %d each way: %s" % (who, a.radius, a.rules)
         self.result(summary, players=self.state.done, radius=a.radius, dims=a.dims,
-                   rules="hellscape" if a.rules == "hellscape" else list(a.rules.split("; ")))
+                   rules="hellscape" if a.rules == "hellscape" else list(a.rules.split("; ")), failed=not self.state.done)
         self.end()
 
     def _free_stuck(self, ctx):

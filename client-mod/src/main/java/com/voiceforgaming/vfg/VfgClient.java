@@ -4,6 +4,8 @@ import com.mojang.blaze3d.platform.InputConstants;
 import com.voiceforgaming.vfg.config.SettingsScreen;
 import com.voiceforgaming.vfg.hud.ListeningIcon;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
@@ -22,6 +24,8 @@ import net.minecraft.client.User;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.multiplayer.JoinMultiplayerScreen;
+import net.minecraft.client.multiplayer.ClientPacketListener;
+import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
@@ -31,13 +35,18 @@ import org.slf4j.LoggerFactory;
 /**
  * The entrypoint: wires {@link VoiceService} to Fabric's events — lifecycle, join and
  * leave, the M and K keys, the HUD icon and the Multiplayer screen's {@code Voice…}
- * button. Nothing here waits on audio, speech or the network.
+ * button; once a second, the names in the tab list, for the hotwords. Nothing here waits on
+ * audio, speech or the network.
  */
 public final class VfgClient implements ClientModInitializer {
 	public static final String MOD_ID = "vfg";
 	private static final Logger LOG = LoggerFactory.getLogger("vfg");
 
+	/** How often the tab list is read for the hotwords: every 20 ticks, a second. */
+	private static final int PLAYERS_EVERY_TICKS = 20;
+
 	private static volatile VoiceService service;
+	private static int ticks;
 	private static KeyMapping muteKey;
 	private static KeyMapping settingsKey;
 
@@ -75,7 +84,7 @@ public final class VfgClient implements ClientModInitializer {
 		ClientPlayConnectionEvents.DISCONNECT.register((listener, mc) -> {
 			VoiceService s = service;
 			if (s != null) {
-				s.onLeave();
+				s.onLeave(); // forgets the players too
 			}
 		});
 
@@ -128,6 +137,21 @@ public final class VfgClient implements ClientModInitializer {
 				openSettings(mc, null);
 			}
 		}
+		if (s != null && ++ticks % PLAYERS_EVERY_TICKS == 0) {
+			ClientPacketListener connection = mc.getConnection();
+			if (connection != null) {
+				s.onPlayers(tabList(connection));
+			}
+		}
+	}
+
+	/** The names in the tab list: the players online, as the server lists them. */
+	private static List<String> tabList(ClientPacketListener connection) {
+		List<String> names = new ArrayList<>();
+		for (PlayerInfo info : connection.getListedOnlinePlayers()) {
+			names.add(info.getProfile().name());
+		}
+		return names;
 	}
 
 	private static void openSettings(Minecraft mc, Screen parent) {

@@ -5,8 +5,10 @@ his path turns to ice, both right where he started and further along once he is 
 
 
 def test(t):
+    # around_chunks=1: the chunks round his too, so the gold is under him wherever he walks next (the
+    # stage can sit on a chunk's edge: one step north and he is in the next chunk)
     t.start("walk_replace", wait=2, players="Steve", per="chunk", rules="barrier > gold_block",
-           around_chunks=0, below=1, above=0)
+           around_chunks=1, below=1, above=0)
     t.check("it says so", t.said("chunk changer on for Steve"))
     t.watch(1.5)
     t.check("his whole starting chunk's floor changed, with no walking", t.block(0, -1, 0, "gold_block"))

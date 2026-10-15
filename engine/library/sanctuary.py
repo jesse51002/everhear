@@ -43,7 +43,7 @@ class Sanctuary(Scenario):
         if not names:
             who = a.players
             self.result("no sanctuary: %s" % ("nobody is online" if who in ("@a", "@r") else who + " is not online"),
-                        players=[], spared=[])
+                        players=[], spared=[], failed=True)
             self.end()
             return
         p0 = ctx.world.player(names[0])

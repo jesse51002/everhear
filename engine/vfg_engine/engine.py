@@ -416,7 +416,7 @@ class Engine:
         first where due, and for everyone when `check`), removes before adds."""
         rt = self.rt
         ops, callbacks = [], []
-        for name, value, op in rt.world_settings.plan(rt.io.read_gamerule):
+        for name, value, op in rt.world_settings.plan(rt.io.read_gamerule, rt.io.query):
             ops.append(op)
             callbacks.append(lambda op, res, name=name, value=value:
                              rt.world_settings.took(name, value, res.ok, res.error))

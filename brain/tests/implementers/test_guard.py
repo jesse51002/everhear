@@ -498,6 +498,8 @@ async def test_a_test_rerun_with_nothing_changed_is_refused_and_four_runs_is_the
     assert await test_run() is None
     assert await gate(bash("vfg engine log -n 40"), g) is None
     assert "-n 60" in DENY.test_again  # the test's log is the test server's
+    # a rerun after vfg test could not run (exit 3, 4 or 5) is refused too: the refusal says to report it untested
+    assert "exited 3, 4 or 5" in DENY.test_again and "never test on the live server" in DENY.test_again
 
 
 async def test_once_the_test_runs_are_spent_a_hand_probe_of_the_live_world_is_refused(tmp_path):

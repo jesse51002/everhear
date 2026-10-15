@@ -37,7 +37,7 @@ class SkyPlatform(Scenario):
         names = players(ctx, a.players)
         if not names:
             self.result("no platform: %s" % ("nobody is online" if a.players in ("@a", "@r")
-                                              else a.players + " is not online"), players=[])
+                                              else a.players + " is not online"), players=[], failed=True)
             self.end()
             return
         if a.at is not None:
@@ -45,7 +45,7 @@ class SkyPlatform(Scenario):
         else:
             feet = [(p.name, p.dim, p.pos) for p in (ctx.world.player(n) for n in names) if p is not None]
         if not feet:
-            self.result("no platform: %s is not online" % a.players, players=[])
+            self.result("no platform: %s is not online" % a.players, players=[], failed=True)
             self.end()
             return
         sites, floor = [], None
@@ -89,5 +89,5 @@ class SkyPlatform(Scenario):
         summary = "; ".join("%s %s at %s" % (p, how, at) for p, at in self.state.built) + (
             ", spawn set there" if a.spawn else "")
         self.result(summary, players=[p for p, _ in self.state.built], at=[at for _, at in self.state.built],
-                   spawn=a.spawn)
+                   spawn=a.spawn, failed=not self.state.built)
         self.end()

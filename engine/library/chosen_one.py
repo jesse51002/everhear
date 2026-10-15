@@ -44,7 +44,7 @@ class ChosenOne(Scenario):
     def start(self, ctx):
         names = players(ctx, self.args.player)
         if not names:
-            self.result("nobody was chosen: %s is not online" % self.args.player, player=None)
+            self.result("nobody was chosen: %s is not online" % self.args.player, player=None, failed=True)
             self.end()
             return
         p = names[0]
@@ -60,7 +60,7 @@ class ChosenOne(Scenario):
         p = self.state.player
         pl = ctx.world.player(p)
         if pl is None:
-            self.result("nobody was chosen: %s left" % p, player=None)
+            self.result("nobody was chosen: %s left" % p, player=None, failed=True)
             self.end()
             return
         at = ahead(ctx, p, self.config.ahead, up=self.config.up)

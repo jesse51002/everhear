@@ -55,7 +55,7 @@ class TestAppend(FeedCase):
         self.assertEqual(marks, [(1, 0), (2, 1)])
 
     def test_contract_examples(self):
-        vfg_feed.append("LINE", "Steve voice action_oriented 0.93 -8dB", "build me a castle",
+        vfg_feed.append("LINE", "Steve voice to_ai 0.93 -8dB", "build me a castle",
                         "2026-10-07T18:22:31.412Z")
         vfg_feed.append("LINE", "Alex chat context 0.71 - was=not_relevant", "that cave by spawn",
                         "2026-10-07T18:22:33Z")
@@ -63,7 +63,7 @@ class TestAppend(FeedCase):
         vfg_feed.append("AI", "action -", "command: give Steve diamond_pickaxe \u2014 ok",
                         "2026-10-07T18:30:03Z")
         self.assertEqual(self.feed_lines(), [
-            "LINE#1 18:22:31 Steve voice action_oriented 0.93 -8dB | build me a castle",
+            "LINE#1 18:22:31 Steve voice to_ai 0.93 -8dB | build me a castle",
             "LINE#2 18:22:33 Alex chat context 0.71 - was=not_relevant | that cave by spawn",
             "GAME#3 18:30:02 server - | server stopping",
             "AI#4 18:30:03 action - | command: give Steve diamond_pickaxe \u2014 ok",
@@ -179,16 +179,17 @@ class TestFieldRules(FeedCase):
         with mock.patch.object(sys, "stderr", err):
             vfg_feed.append("LINE", "Steve shouted loudly", "first")
             vfg_feed.append("LINE", "Steve voice direct_ask 0.93 -8dB", "second")
-        self.assertEqual(len(self.feed_lines()), 2)
+            vfg_feed.append("LINE", "Steve voice action_oriented 0.93 -8dB", "third")  # retired: to_ai now
+        self.assertEqual(len(self.feed_lines()), 3)
         self.assertEqual(len(err.getvalue().strip().splitlines()), 1)
         self.assertIn("warning", err.getvalue())
 
     def test_well_formed_line_does_not_warn(self):
         err = io.StringIO()
         with mock.patch.object(sys, "stderr", err):
-            vfg_feed.append("LINE", "Steve voice action_oriented 0.93 -8dB", "a")
+            vfg_feed.append("LINE", "Steve voice to_ai 0.93 -8dB", "a")
             vfg_feed.append("LINE", "Alex chat context - - was=not_relevant", "b")
-            vfg_feed.append("LINE", "Alex chat conversational 0.80 -", "c")
+            vfg_feed.append("LINE", "Alex chat to_ai 0.80 -", "c")
         self.assertEqual(err.getvalue(), "")
 
 
@@ -206,7 +207,7 @@ class TestBatch(FeedCase):
             seqs = vfg_feed.append_batch([
                 ("LINE", "Steve voice context 0.70 -12dB", "one", "2026-10-07T18:00:01Z"),
                 ("LINE", "Alex chat context 0.61 -", "two", "2026-10-07T18:00:02Z"),
-                ("LINE", "Steve voice action_oriented 0.95 -6dB", "three", "2026-10-07T18:00:03Z"),
+                ("LINE", "Steve voice to_ai 0.95 -6dB", "three", "2026-10-07T18:00:03Z"),
             ])
         self.assertEqual(seqs, [2, 3, 4])
         self.assertEqual(len(calls), 1)

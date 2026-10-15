@@ -1,0 +1,44 @@
+[Unit]
+Description=EverHear test server: Minecraft 26.3 + Fabric + Carpet for implementers' tests, a fresh world every start
+Documentation=file:///opt/mc-test/reset.sh
+After=network-online.target minecraft.service
+Wants=network-online.target
+# Restart=always, but a server that keeps failing is given up after 30 starts in 5 minutes (it
+# would only burn CPU beside the live server). vfg test restarts it after every test, about one
+# start in 20 s at most, so it never gets near that; reset-failed, then restart, tries again.
+StartLimitIntervalSec=300
+StartLimitBurst=30
+
+[Service]
+User=ec2-user
+WorkingDirectory=/opt/mc-test
+# MC_TEST_HEAP is its -Xmx; testserver.sh reads it here, and MemoryMax, to size the live heap.
+Environment=TZ=UTC MC_TEST_HEAP=1536M
+# Every start (and restart) gets a fresh copy of world.template, the live datapacks and the
+# world/vfg-fresh token (reset.sh, written by testserver.py).
+ExecStartPre=/opt/mc-test/reset.sh
+ExecStart=/usr/bin/java -Xms256M -Xmx${MC_TEST_HEAP} @launch.args
+# 26.3 logs nothing when SIGTERM stops it; this line in console.log is "server stopped", as the live unit writes.
+ExecStopPost=/usr/bin/date -u "+[%%H:%%M:%%S] [vfg/INFO]: Server stopped"
+StandardInput=null
+StandardOutput=append:/opt/mc-test/console.log
+StandardError=append:/opt/mc-test/console.log
+SuccessExitStatus=143
+TimeoutStopSec=60
+Restart=always
+RestartSec=5
+# Second to the live server for CPU, disk and memory: the kernel kills it first. CPUQuota keeps two
+# of the box's four vCPUs the live server's whatever it does (a start after every test is the most:
+# launch.args gives it two CPUs' threads, C1 and an AOT cache; about 13 CPU-seconds, measured).
+Nice=10
+CPUWeight=20
+CPUQuota=200%
+IOWeight=20
+MemoryMax=2560M
+OOMScoreAdjust=800
+# It reads the live folders (the live datapacks) and never writes them.
+ReadOnlyPaths=-/opt/mc -/opt/vfg
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -134,7 +134,7 @@ def test_a_request_is_answered_even_when_the_write_fails(rig, monkeypatch):
     r.io.join("Steve")
     r.tick()
 
-    def broken(read):
+    def broken(*reads):
         raise RuntimeError("an engine bug in the write")
     monkeypatch.setattr(r.rt.world_settings, "plan", broken)
     give = r.engine.submit("give", {"player": "Steve", "item": "fire_staff"})

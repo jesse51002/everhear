@@ -72,29 +72,41 @@ VFG_MADE_ARCHIVE=
 # it, and the implementers on openrouter. OPEN_ROUTER_API in the environment wins over the file.
 # Default: ~/.vfg/openrouter.key
 VFG_OPENROUTER_KEY=
-# The OpenRouter model of every step of the brain's loop (a loop per event: an action-oriented
-# line, a line Respond hands up, an implementer's report), and its reasoning effort.
-# Defaults: google/gemini-3.8-flash, low
+# The OpenRouter model of every step of the brain's loops, and its reasoning effort: off, or an
+# effort (low). Defaults: deepseek/deepseek-v4.1-flash, low
 VFG_BRAIN_MODEL=
 VFG_BRAIN_REASONING=
-# OpenRouter providers to try first for the brain's steps, comma-separated; none lets
-# OpenRouter choose. Default: none
+# OpenRouter providers to try first for the brain's steps, in that order, fallbacks allowed, so a
+# loop's steps keep one host's cache; none lets OpenRouter choose.
+# Default: together,coreweave,parasail
 VFG_BRAIN_PROVIDERS=
-# Seconds one step's call may take, its resend and retries included. Default: 45
+# Seconds one step's call may take, its resend and retries included.
+# Default: 120, or 60 with VFG_BRAIN_REASONING off
 VFG_BRAIN_TIMEOUT_S=
-# A loop's limits: its steps, and the seconds from when the player's turn began; the step that
-# starts at either is the last, and ends with a reply or a hand-off. Defaults: 10, 120
+# A loop's budget: its steps for its first line, and as many more for each line added; never
+# past the cap, where its last step replies or hands off and it is deleted; and the seconds from
+# its creation in which a line added takes an ended loop up again (0: never). Defaults: 10, 20, 120
 VFG_LOOP_STEPS=
-VFG_LOOP_SECONDS=
-# Respond, the brain's cheap mode, which answers a conversational line or hands it up.
-# DeepSeek V4 Flash with reasoning off: at low it thinks ~900 tokens, about 7.7 s a call.
-VFG_RESPOND_MODEL=~deepseek/deepseek-v4-flash-latest
-VFG_RESPOND_REASONING=off
-# OpenRouter providers to try first, fastest first; none lets OpenRouter choose.
-VFG_RESPOND_PROVIDERS=parasail,wafer,phala,together,venice
-# Seconds one Respond call may take, its retries included, before the line goes up to the
-# brain. Default: 20
+VFG_LOOP_CAP=
+VFG_LOOP_TAKE_UP_S=
+# The conversation agent, which answers every line to the AI at once and hands off a line that
+# needs something done: its model, reasoning and providers, tried first in that order.
+# Defaults: deepseek/deepseek-v4.1-flash, off, together,coreweave,parasail
+VFG_RESPOND_MODEL=
+VFG_RESPOND_REASONING=
+VFG_RESPOND_PROVIDERS=
+# Seconds one conversation agent call may take, its retries included, before the line is
+# handed off with no reply. Default: 20
 VFG_RESPOND_TIMEOUT_S=
+# The router, which picks who does the work a hand-off asks for. While its reasoning is off, the
+# conversation agent's line to a hand-off is held until the router has answered: one line per ask.
+# Defaults: deepseek/deepseek-v4.1-flash, off, together,coreweave,parasail
+VFG_ROUTER_MODEL=
+VFG_ROUTER_REASONING=
+VFG_ROUTER_PROVIDERS=
+# Seconds one router call may take, its retries included, before the line goes to a new loop.
+# Default: 30, or 60 with VFG_ROUTER_REASONING not off
+VFG_ROUTER_TIMEOUT_S=
 # One turn per player: the lines that may wait for it (one more is turned away, told so
 # privately), and the seconds a turn waits for the rows it wrote to come back before the
 # next starts (0: no wait). Defaults: 3, 3
@@ -103,7 +115,7 @@ VFG_TURN_SETTLE_S=
 # Hours of the feed the brain reads as its context; vfg context's default. Default: 6
 VFG_BRAIN_HISTORY_HOURS=6
 # Every how many minute-blocks of the conversation a call marks for the prompt cache
-# (a brain step: at most two marks; Respond: three). Default: 5
+# (a brain step and the router: at most two marks; the conversation agent: three). Default: 5
 VFG_BRAIN_CHECKPOINT=
 # The brain's folder: brain.log, brain.pid, lock and the command references. The tasks are
 # in the box's vfg.db, written only by the brain.
@@ -126,13 +138,16 @@ VFG_IMPL_MODEL=
 VFG_IMPL_BASE_URL=
 # On openrouter: the providers every request tries first, in order, and those it never uses,
 # comma-separated, fallbacks allowed. Each keeps its own prompt cache, so a run that moves
-# between them misses it; none empties a list.
-# Defaults: digitalocean,ionstream,together and venice,morph,relace
+# between them misses it; none empties a list. Together first, the fastest.
+# Defaults: together,digitalocean,ionstream and venice,morph,relace
 VFG_IMPL_OR_ORDER=
 VFG_IMPL_OR_IGNORE=
-# The effort (the anthropic provider's only), the model requests a run may make (warned 5
+# How hard the model thinks, on every provider and harness: off, low, high or max (medium is
+# read as high; anything else stops the brain with an error). DeepSeek's own scale puts low,
+# high and max at 50, 75 and 100 of 100, as DigitalOcean and Ionstream do through OpenRouter;
+# Together puts them at 25, 50 and 100. Then the model requests a run may make (warned 5
 # before the cap) and the minutes it may run (warned 1 before), past which it is stopped and its
-# task failed. Defaults: low, 100, 10
+# task failed. Defaults: high, 100, 20
 VFG_IMPL_EFFORT=
 VFG_IMPL_MAX_TURNS=
 VFG_IMPLEMENTER_MINUTES=
@@ -158,12 +173,27 @@ VFG_ROUTE_LOAD=
 VFG_IMPL_CACHE_TTL=
 
 # --- The test server (vfg test) ---
-# A file of the test server's settings, KEY=value lines as this file has them, of which VFG_SSH,
-# VFG_SSH_HOST, VFG_SSH_USER, VFG_SSH_KEY, VFG_REMOTE_VFG and VFG_REMOTE_MC are read over the live
-# box's: a second Minecraft server with Carpet's fake players, where an implementer's test runs,
-# never the live one; its folder holds the .vfg-test-server marker livetest asks for. A
-# second instance on the EC2 box needs only VFG_REMOTE_VFG and VFG_REMOTE_MC.
-# Default: none (vfg test exits 3)
+# Where vfg test runs an implementer's test: a second Minecraft server with Carpet's fake players,
+# never the live one; livetest runs it there on an engine of its own. Empty or box: the live box's own, beside the live server, /opt/vfg-test and
+# /opt/mc-test (VFG_REMOTE_VFG and VFG_REMOTE_MC + "-test"; on realmc, <name>/vfg-test and
+# <name>/mc-test), which deploy.sh testserver makes (provision and deploy.sh too). none: no test
+# server (vfg test exits 3). Anything else: a file of a test box's settings, KEY=value lines as
+# this file has them, of which VFG_SSH, VFG_SSH_HOST, VFG_SSH_USER, VFG_SSH_KEY, VFG_REMOTE_VFG
+# and VFG_REMOTE_MC are read over these (a key it leaves out is the live box's: leave out the
+# host, whose IP changes with each relaunch, for a test server on the live box). Default: box
 VFG_TEST_BOX=
 # Seconds a test may run before it is stopped, 5 to 600. Default: 60
 VFG_TEST_TIMEOUT_S=
+# Seconds a test waits for the tests before it on the test server (one runs at a time) before
+# vfg test gives up with exit 5, 0 to 3600; at most what a vfg test's 590 s leave once its own
+# --timeout, VFG_TEST_WARM_GRACE (30 s), one VFG_TEST_BOOT_S and overhead are counted, always
+# leaving at least 30 s here; a --timeout too large for even that is refused.
+# Default: 300
+VFG_TEST_QUEUE_S=
+# Seconds the test server may take to answer RCON after vfg test restarts it (for a fresh world,
+# or because it was down) before vfg test gives up with exit 5, 5 to 600. Default: 120
+VFG_TEST_BOOT_S=
+# How a test is kept from the live server: auto (a transient systemd unit, sudo -n systemd-run,
+# else systemd-run --user, else a plain process, said in its output), system, user or none.
+# Default: auto
+VFG_TEST_SANDBOX=

@@ -107,7 +107,7 @@ class Mountains(Scenario):
             at = next((p for p in (ctx.world.player(n) for n in names) if p is not None), None)
             if at is None:
                 self.result("no mountains: %s" % ("nobody is online" if a.players in ("@a", "@r")
-                                                  else a.players + " is not online"), players=[])
+                                                  else a.players + " is not online"), players=[], failed=True)
                 self.end()
                 return
             x0, z0 = math.floor(at.pos[0]) + a.away, math.floor(at.pos[2]) - c.depth // 2

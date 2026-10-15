@@ -82,7 +82,7 @@ class Nuke(Scenario):
             spot = Spot(dim=p.dim, pos=tuple(p.pos), yaw=p.yaw) if p is not None else None
         if spot is None:
             self.result("no nuke: %s" % ("nobody is online" if a.players in ("@a", "@r")
-                                        else a.players + " is not online"), players=names, radius=a.radius)
+                                        else a.players + " is not online"), players=names, radius=a.radius, failed=True)
             self.end()
             return
         self.state.middle = list(spot.pos)

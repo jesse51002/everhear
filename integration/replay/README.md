@@ -25,7 +25,7 @@ written for the brain.
 | `gather_bench.py`, `gather_score.py` | the Jev routing as it ships: Jev's production filter line by line on all 843 lines, D's two questions and the gather call, with the gather call's windows from production's own query; D with and without the gather call on the clean labels, and the gather call's wordings; results and the commands in `gather_bench.md` |
 | `respond_bench.py`, `respond_score.py`, `respond_prompts/` | Respond's prompt before and after its rewrite, and its code guard against promises and offers, on the whole-ask inputs D sends Respond and an invented set (its world the game engine's: what it runs, as `vfg engine overview` gives it, and named tasks); results and the commands in `respond_bench.md` |
 | `tasks.jsonl` | the playtest's 172 implementer tasks as the conversation wrote them, each with what it was and the run's figures for it: below, _tasks.jsonl_ |
-| `loop/`, `../loop_replay.py` | the 2026-10-11 session through the brain's loop, live on realmc (Prototype_Brain_Loop's _Test_): below, _The loop replay_ |
+| `loop/`, `../loop_replay.py` | the 2026-10-11 session through the brain's loop, live on realmc (Prototype_Brain_Loop's _Test_, then Prototype_Conversation_And_Router's brain on DeepSeek): below, _The loop replay_ |
 
 ## The data
 
@@ -34,7 +34,10 @@ Read, never written:
 - **The playtest's database**, the box's `vfg.db` taken after it: `tar xzf
   ~/Documents/MinecraftServers/aws-backup/vfg-backup-2026-10-08-playtest.tgz -C DIR vfg/vfg.db`
   (extract that file alone: the archive holds the box's `.env` too). Its classes are the old
-  names: `direct_ask` is `action_oriented` now, `not_useful` is `not_relevant`.
+  names: `direct_ask` is `action_oriented` now, `not_useful` is `not_relevant`. Since
+  Prototype_Addressing_The_AI, `action_oriented` and `conversational` are one class, `to_ai`, and
+  `brain/context.py` reads a feed row of either as `to_ai`; the benches here keep the classes they
+  measured (`playtest.py` puts each line's own class back on its row, and `LIVE` is theirs).
 - **The tasks the conversation wrote**: `~/.vfg/orch/inbox.jsonl`, those before 2026-10-09; each
   task's context names the LINE numbers it came from (`#812`).
 - **The route labels**: `~/.vfg/dispatch/eval/selector-actions-2026-10-10.jsonl`, on the brain's
@@ -121,22 +124,67 @@ order, in one process, on a realmc server of its own.
   the engine's) is the old system's, which the engine does not run: each change is recorded as not
   done at its time, so the reports and follow-ups about those things meet a world without them. Its
   usage rows stay in OUT.
+- **Under Prototype_Conversation_And_Router** the night's 69 lines each run as a new loop, as if the
+  router had chosen `new_loop`, with no line of the conversation agent's before it (the event says
+  it said nothing), so the loop's reply is the only line, as the night's call's was; the 41
+  reports go the new way: the conversation agent reads each (`Respond.report`) and, when it hands
+  something off, the real router places it (a follow-up the stand-in implementers record, a new
+  loop run to its end, or nowhere; `--no-route` only counts it). The brain's clock follows the
+  night's, so WORK UNDER WAY shows the loops of the two minutes before. `--fake-model` runs it all
+  on the server with canned answers, at no cost, to check the wiring. The report sets each line
+  beside Gemini's round 5, row by row from `loop/report.md` (kept as Gemini's), and each report's
+  answer beside Gemini's report loop.
 
 ```sh
 R=…/integration/realmc/.server     # a REALMC_ROOT with the jar, the template and Carpet
 brain/.venv/bin/python integration/loop_replay.py --dry                       # no model, no server
+REALMC_ROOT=$R brain/.venv/bin/python integration/loop_replay.py --name cr-loop --fake-model   # no model
 REALMC_ROOT=$R brain/.venv/bin/python integration/loop_replay.py --only 1-12 --budget 0.3   # a pilot
-REALMC_ROOT=$R brain/.venv/bin/python integration/loop_replay.py              # all 110, budget $3
+REALMC_ROOT=$R brain/.venv/bin/python integration/loop_replay.py [--reasoning off]   # all 110, budget $3
 python3 integration/loop_replay.py --report OUT                               # the report again
 ```
 
 OUT (default the temp folder, `vfg-loop-replay-<time>`) gets `results.jsonl` (per event: each
 step's cost, tokens, cached share and ms, the time to the reply, how it ended, what ran, each brief
 and follow-up, any answer the Step's checks sent back, with its errors), `usage.pending.jsonl`,
-`brain.log`, `meta.json` and `report.md`: the cost beside the $1.18, the p90 time to the reply of
-the asks that do not hand off (bar 30 s), the cached share of the steps after the first (bar 85%),
-one step against two or more, each brief's parts, and the five misread asks' done-when lists. A
-whole run also writes `loop/report.md`.
+`brain.log`, `meta.json` and `report.md`: the cost (the brain's steps, the agent's and the router's
+calls) beside Gemini's round 5 and the night's $1.18, the p90 time to the reply of the lines that
+do not hand off (the proposed bar 30 s), the cached share of the steps after the first (bar 85%),
+one step against two or more, the lines ask by ask against round 5, the reports' answers, each
+brief's parts, and the five misread asks' done-when lists. A whole run also writes
+`loop/report-<model>-<reasoning>.md`; `loop/report.md` stays Gemini's round 5.
+
+**Measured on 2026-10-13** (the Conversation_And_Router build, uncommitted on 94e517e; realmc
+cr-loop), the brain on DeepSeek V4.1 Flash, against Gemini 3.8 Flash low's round 5 ($0.86, p90
+18.1 s over the same 36 lines):
+
+| | Reasoning off (60 s a step) | Reasoning low (120 s a step) | Low, after the review's fix round | Low, final (`fields`) |
+|---|---|---|---|---|
+| Cost, all 110 events: steps / agent / router | **$0.235**: $0.152 / $0.035 / $0.049 | **$0.201**: $0.142 / $0.030 / $0.029 | **$0.251**: $0.174 / $0.037 / $0.039 | **$0.267**: $0.178 / $0.027 / $0.062 |
+| Time to the reply, lines that do not hand off, p90 (median) | 13.5 s over 36 (4.5 s) | 12.2 s over 39 (3.9 s) | 13.0 s over 35 (3.2 s) | 15.1 s over 38 (3.3 s) |
+| Cached share: steps after a loop's first; every call | 98.5%; 93.7% | 98.3%; 93.9% | 99.0%; 92.1% | 98.6%; 90.3% |
+| Answers sent back by their checks | 62 Step, in 47 events | 12 Step and 4 Route, in 14 events | 19 Step, in 15 events | 6 Step and 2 Route, in 7 events |
+| Lines that failed for good ("tangled up", one 60 s timeout) | 10 of 69 | 2 of 69 | 3 of 69 | 1 of 69 |
+| Of the 54 lines round 5 acted on or handed off, done the same | 38 | 42 | 40 | 44 |
+| Reports the conversation agent handed something off on (router: implementer / new_loop / nowhere) | 20 of 41 (16 / 3 / 1) | 17 of 41 (10 / 3 / 4) | 22 of 41 (16 / 4 / 2) | 27 of 41 (22 / 4 / 1) |
+
+Reasoning off falls short on the Step's schema: the model writes a player, "code", "together" or
+"follow_up" as an action's `to`, or the whole call under one wrong key; reasoning low mostly does
+not, and with fewer answers sent back costs less, so low became the brain's default. After the code
+review's fix round (13:07–13:19 UTC; brain.md 232113d83bc7, respond.md f3034d3e74ab, router.md
+3e85e3d292b4) the run at low is much the same: no line now claims a thing done with nothing run
+(#461 says the spell is the player's to cast), but 10 of its 19 answers sent back still keyed a value
+with the action's own name (`command` for `commands`, `incantation_create`), and 3 lines failed for
+good on it. With the Step's values slot renamed `fields` (13:31–13:44 UTC; brain.md 2538001ce692,
+respond.md f3034d3e74ab, router.md 7c327c4770d4), no
+answer keyed a value with the action's name any more: 6 Step answers were sent back, all an action's
+`to` ("tool", "self", "action", "actions"), and one line failed for good (#204); 44 of the 54 lines
+were done the same as round 5. The conversation agent handed off more reports (27 of 41), so the
+router cost more. The reports in full are
+[`loop/report-deepseek-v4.1-flash-off.md`](loop/report-deepseek-v4.1-flash-off.md),
+[`loop/report-deepseek-v4.1-flash-low.md`](loop/report-deepseek-v4.1-flash-low.md) and
+[`loop/report-deepseek-v4.1-flash-low-review.md`](loop/report-deepseek-v4.1-flash-low-review.md) and
+[`loop/report-deepseek-v4.1-flash-low-final.md`](loop/report-deepseek-v4.1-flash-low-final.md).
 
 ## tasks.jsonl
 

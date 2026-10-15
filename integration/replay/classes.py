@@ -55,13 +55,14 @@ import httpx  # noqa: E402
 import vfg_llm  # noqa: E402
 from brain import actions, config  # noqa: E402
 from brain.__main__ import asker  # noqa: E402
-from brain.context import LIVE  # noqa: E402
 from brain.loop import jev_menu  # noqa: E402
 from brain.respond import PROMPT as RESPOND_PROMPT  # noqa: E402
 from brain.respond import Respond  # noqa: E402
 from jev_api import ENDPOINT, MODEL, Jev, JevDown, JevRefused  # noqa: E402
 from prompt import estimate, read_lookout, read_menu  # noqa: E402
 from state_v1 import KEPT, LOOKOUT, build_state, questions  # noqa: E402  (the old state, as benched)
+
+LIVE = ("action_oriented", "conversational")  # Jev's two classes for the AI when this was benched (to_ai now)
 
 ENV_FILES = [playtest.REPO / "integration" / "realmc" / ".server" / "shared" / "env",
              playtest.REPO.parent / "script-library" / "integration" / "realmc" / ".server" / "shared" / "env"]

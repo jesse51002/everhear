@@ -92,11 +92,71 @@ PROVIDERS = ("deepseek", "openrouter", "anthropic")
 # not say. The anthropic provider has no address: the CLI's own, on the owner's subscription login.
 MODELS = {"deepseek": "deepseek-flash", "openrouter": "deepseek/deepseek-v4.1-flash", "anthropic": "claude-haiku-5-5"}
 BASE_URLS = {"deepseek": "https://api.deepseek.com/anthropic", "openrouter": "https://openrouter.ai/api", "anthropic": ""}
-# OpenRouter's providers for DeepSeek V4.1 Flash, by slug: each keeps its own prompt cache, so a run
-# that moves between them misses it. Measured on six4: DigitalOcean 99.1% of input from the cache,
-# Ionstream 98.7%, Together 98.4%; Morph 78%, Relace 80%, Venice 55.7% (the system prompt only).
-OR_ORDER = ("digitalocean", "ionstream", "together")
+# OpenRouter's providers for DeepSeek V4.1 Flash, by slug, tried in this order, fallbacks allowed:
+# Together first, for speed (Jesse, 2026-10-13). Together turns high into DeepSeek's 50, DigitalOcean
+# and Ionstream into 75 (EFFORTS). The scenario eval of 2026-10-13 (the same 6 scenarios, 2 rounds
+# each, on Together): high did 46 of 54 items against off's 44, within run-to-run noise, with about
+# half the requests and fewer failed tests of its own. A run at 75 on DigitalOcean was about 50%
+# slower, and with no run of off on DigitalOcean nothing is owed to 75 over 50. Each keeps its own
+# prompt cache, so a run that moves between them misses it. Measured on six4: DigitalOcean 99.1% of
+# input from the cache, Ionstream 98.7%, Together 98.4%; Morph 78%, Relace 80%, Venice 55.7%.
+OR_ORDER = ("together", "digitalocean", "ionstream")
 OR_IGNORE = ("venice", "morph", "relace")
+
+# VFG_IMPL_EFFORT, how hard the model thinks, one setting for every provider and harness: off sends
+# thinking disabled, as before 2026-10-13; low, high and max are sent as the effort (relay.py,
+# opencode.py; on anthropic, the CLI's own --effort). DeepSeek V4.1 Flash takes low, high and max,
+# 50, 75 and 100 on its 1–100 effort scale, high when none is set (its encoding/encoding.py); a
+# medium is taken here as high, as DeepSeek reads one, and sent as high, since through OpenRouter a
+# medium reached Together as 25. Which number a word reaches depends on the host, measured on
+# 2026-10-13 through OpenRouter's Claude-compatible API (the model reading the number off its own
+# prompt, "Reasoning Effort: N"): DigitalOcean and Ionstream take DeepSeek's own scale, low, high and
+# max at 50, 75 and 100, none set at 75; Together takes the open-weights encoder's (vLLM's), low,
+# high and max at 25, 50 and 100, none set at 50, and an xhigh reached it as high, 50, so no word
+# reaches 75 there. OpenRouter passes no number through.
+EFFORTS = ("off", "low", "high", "max")
+EFFORT_DEFAULT = "high"
+EFFORT_ALIASES = {"medium": "high"}
+
+
+def read_effort(v: str) -> str:
+    """VFG_IMPL_EFFORT as the implementers take it: off, low, high or max; "" for high; medium is
+    high. Anything else is a ValueError that says so: a mistyped effort never runs as another."""
+    word = (v or "").strip().lower()
+    if not word:
+        return EFFORT_DEFAULT
+    word = EFFORT_ALIASES.get(word, word)
+    if word not in EFFORTS:
+        raise ValueError("VFG_IMPL_EFFORT=%s is none of %s (medium is read as high)" % (v.strip(), ", ".join(EFFORTS)))
+    return word
+
+
+# How long a harness's shell tool lets one command run when the model sets no timeout: 10 minutes,
+# what a `vfg test` may take in all (its wait behind other implementers' tests, VFG_TEST_QUEUE_S,
+# 300 s; up to two waits for the test server to come back, VFG_TEST_BOOT_S, 120 s each; the test,
+# VFG_TEST_TIMEOUT_S, 60 s by default), never more than the run's own limit; and the most the model
+# may set, the run's limit, which stops the run anyway. The harnesses' own default is 2 minutes,
+# which would cut a test short.
+BASH_DEFAULT_S = 600.0
+
+
+def bash_timeouts_ms(cfg: "ImplementerConfig") -> tuple[int, int]:
+    """(the shell tool's default, its most), in milliseconds, for this run's limit."""
+    return int(min(BASH_DEFAULT_S, cfg.time_limit_s) * 1000), int(cfg.time_limit_s * 1000)
+
+
+# VFG_TEST_BOX's word for the live box's own test server, its default (vfg test lays it beside the
+# live server: the live folders + "-test", its own RCON port); "none" says there is no test server.
+TEST_BOX_DEFAULT = "box"
+
+
+def read_test_box(v: str) -> str:
+    """VFG_TEST_BOX as the implementers take it: unset or empty, "box" (the live box's own test
+    server); "none", "" (no test server); anything else as given (a test server's settings file)."""
+    word = (v or "").strip()
+    if not word:
+        return TEST_BOX_DEFAULT
+    return "" if word.lower() == "none" else word
 
 
 def slugs(v: str, default: tuple[str, ...]) -> list[str]:
@@ -110,7 +170,7 @@ def slugs(v: str, default: tuple[str, ...]) -> list[str]:
 
 def provider_routing(cfg: "ImplementerConfig") -> dict | None:
     """OpenRouter's `provider` object for every request on the openrouter provider: our order of the
-    providers that cache well, those that do not left out, and fallbacks allowed, so an outage of
+    providers (OR_ORDER), those that cache badly left out, and fallbacks allowed, so an outage of
     the ordered ones does not fail a run. None on any other provider."""
     if cfg.provider != "openrouter":
         return None
@@ -153,20 +213,23 @@ class ImplementerConfig:
     # The harness (VFG_IMPL_HARNESS), the provider it reaches the model at (VFG_IMPL_PROVIDER:
     # deepseek, openrouter or anthropic; unset, deepseek when DEEPSEEK_API_KEY is set, else
     # openrouter), the model (VFG_IMPL_MODEL, before it VFG_IMPLEMENTER_MODEL; the provider's own
-    # by default) and the provider's Claude-compatible address (VFG_IMPL_BASE_URL). Effort
-    # (VFG_IMPL_EFFORT) is asked of the anthropic provider only.
+    # by default) and the provider's Claude-compatible address (VFG_IMPL_BASE_URL). The effort
+    # (VFG_IMPL_EFFORT: off, low, high or max; high by default) is the model's thinking on every
+    # provider and harness (EFFORTS, above).
     harness: str = "claude-code"
     provider: str = "openrouter"
     model: str = MODELS["openrouter"]
     base_url: str = BASE_URLS["openrouter"]
-    effort: str = "low"
+    effort: str = EFFORT_DEFAULT
     # The provider's key: DEEPSEEK_API_KEY for deepseek; for openrouter, OPEN_ROUTER_API or the key
     # file (openrouter_key); none for anthropic, the owner's login. Never printed, logged or written.
     key: str = field(default="", repr=False)
     # Turns before the CLI stops it (VFG_IMPL_MAX_TURNS), and how long one may run before it is
-    # stopped and reported failed (VFG_IMPLEMENTER_MINUTES).
+    # stopped and reported failed (VFG_IMPLEMENTER_MINUTES, 20: thinking on took 3.5 times as long
+    # as off on 2026-10-11, and 3.5 times the longest run of the night of 2026-10-12, 277 s with it
+    # off, is 16 minutes).
     max_turns: int = 100
-    time_limit_s: float = 600.0
+    time_limit_s: float = 1200.0
     # vfg's settings, read as vfg reads them (vfg_setting): the server whose made/<server>/content/
     # implementers write in, how long vfg route may take, and the prompt cache's life on the
     # anthropic provider (VFG_IMPL_CACHE_TTL, before it VFG_SUBAGENT_CACHE_TTL).
@@ -177,9 +240,10 @@ class ImplementerConfig:
     # VFG_IMPL_OR_IGNORE: comma-separated slugs; "none" for none), for the prompt cache.
     or_order: list = field(default_factory=lambda: list(OR_ORDER))
     or_ignore: list = field(default_factory=lambda: list(OR_IGNORE))
-    # The test server vfg test plays on (VFG_TEST_BOX), "" when there is none: with one, a run's
-    # look at the live world is budgeted (guard.probe_reason).
-    test_box: str = ""
+    # The test server vfg test plays on (VFG_TEST_BOX, read_test_box): "box", the live box's own,
+    # by default; a settings file; "" when there is none ("none"). With one, a run's look at the live
+    # world is budgeted (guard.probe_reason).
+    test_box: str = TEST_BOX_DEFAULT
 
     @classmethod
     def load(cls, env: Mapping[str, str] | None = None) -> "ImplementerConfig":
@@ -207,17 +271,17 @@ class ImplementerConfig:
             model=(vfg_setting(env, file, "VFG_IMPL_MODEL") or vfg_setting(env, file, "VFG_IMPLEMENTER_MODEL")
                    or MODELS[provider]),
             base_url=(vfg_setting(env, file, "VFG_IMPL_BASE_URL") or BASE_URLS[provider]).rstrip("/"),
-            effort=vfg_setting(env, file, "VFG_IMPL_EFFORT") or "low",
+            effort=read_effort(vfg_setting(env, file, "VFG_IMPL_EFFORT")),
             key=key,
             max_turns=_int(vfg_setting(env, file, "VFG_IMPL_MAX_TURNS"), 100),
-            time_limit_s=60.0 * _int(vfg_setting(env, file, "VFG_IMPLEMENTER_MINUTES"), 10),
+            time_limit_s=60.0 * _int(vfg_setting(env, file, "VFG_IMPLEMENTER_MINUTES"), 20),
             # A name vfg would refuse is never joined into a path here; vfg itself says what is wrong.
             server=server if _SERVER_RE.match(server) else "main",
             route_timeout_s=_seconds_setting(vfg_setting(env, file, "VFG_ROUTE_TIMEOUT_S"), 3.0, 0.1, 60),
             cache_ttl=ttl if ttl in CACHE_TTLS else "5m",
             or_order=slugs(vfg_setting(env, file, "VFG_IMPL_OR_ORDER"), OR_ORDER),
             or_ignore=slugs(vfg_setting(env, file, "VFG_IMPL_OR_IGNORE"), OR_IGNORE),
-            test_box=vfg_setting(env, file, "VFG_TEST_BOX"),
+            test_box=read_test_box(vfg_setting(env, file, "VFG_TEST_BOX")),
         )
 
 

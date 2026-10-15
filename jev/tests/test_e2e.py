@@ -82,12 +82,12 @@ class TestTheProcess(WithJev):
         # the ask went at once, with the line before it that belongs to it; the context line waited its
         # batch and went on the way out
         self.assertEqual([l.split(" ", 2)[2] for l in fed()], [
-            "Steve voice action_oriented 0.90 -8dB | the big one, by the river … build me a castle",
+            "Steve voice to_ai 0.90 -8dB | the big one, by the river … build me a castle",
             "Alex chat context 0.70 - | that cave by spawn"])
         rows = {r[0]: r[1:] for r in conn.execute(
             "SELECT text, jev_class, jev_confidence, fed_at IS NOT NULL FROM lines")}
         self.assertEqual(rows, {"the big one, by the river": ("not_relevant", 0.8, 0),
-                                "build me a castle": ("action_oriented", 0.9, 1), "lol": ("not_relevant", 0.8, 0),
+                                "build me a castle": ("to_ai", 0.9, 1), "lol": ("not_relevant", 0.8, 0),
                                 "Where should it go?": (None, None, 0), "that cave by spawn": ("context", 0.7, 1)})
         usage = conn.execute("SELECT component, output_tokens, input_tokens, cost_usd, ref FROM usage").fetchall()
         self.assertEqual(len(usage), 5)
@@ -214,7 +214,7 @@ class TestByHand(WithJev):
     def test_judge_prints_the_verdict_and_writes_nothing(self):
         code, out, _ = self.judge("AI, build me a small tower here")
         self.assertEqual(code, 0)
-        self.assertRegex(out, r"^action_oriented 0\.90 · act 0\.90, let down 0\.60 · \d+ms · \d+tok\n$")
+        self.assertRegex(out, r"^to_ai 0\.90 · by name 0\.90, ignore 0\.60 · \d+ms · \d+tok\n$")
         code, out, _ = self.judge("lol nice", raw=True)
         self.assertIn('"choice": "ignore_it"', out)
         self.assertNotIn(KEY, out)

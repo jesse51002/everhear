@@ -248,7 +248,7 @@ def run_batches(args) -> None:
     judged it then (Jev today: when it judged or flipped it now); every action_oriented or
     conversational line is a live read, and the batch timer (playtest.Clock, the brain's
     batch_s) makes a brain call of what no read took in. Into OUT/batches-V.json."""
-    from brain.context import LIVE
+    LIVE = ("action_oriented", "conversational")  # Jev's two classes for the AI then (to_ai now)
     from playtest import Clock
     from tree_score import lines_from, outcomes
     pt = Playtest(Path(args.db))

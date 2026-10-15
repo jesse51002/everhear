@@ -22,7 +22,9 @@ import com.voiceforgaming.vfg.session.VoiceStatus;
 import com.voiceforgaming.vfg.setup.AssetInstaller;
 import com.voiceforgaming.vfg.setup.Assets;
 import com.voiceforgaming.vfg.setup.EngineSlot;
+import com.voiceforgaming.vfg.setup.ModelChoice;
 import com.voiceforgaming.vfg.setup.TurnSetup;
+import com.voiceforgaming.vfg.speech.Hotwords;
 import com.voiceforgaming.vfg.speech.LineAssembler;
 import com.voiceforgaming.vfg.speech.SpeechEngine;
 import com.voiceforgaming.vfg.speech.Transcriber;
@@ -31,7 +33,9 @@ import com.voiceforgaming.vfg.turn.TurnDetector;
 import com.voiceforgaming.vfg.turn.TurnDetectors;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Collection;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -63,6 +67,12 @@ import org.slf4j.LoggerFactory;
  * thread: its model is installed and loaded on {@code vfg-kws-setup} after the spotter's, and one
  * that does not install or load leaves the spotter alone, with one log line. The two share a
  * {@link CastGate}, so a phrase either hears casts once.
+ *
+ * <p>The speech model is chosen by {@link ModelChoice}: Parakeet TDT 0.6B v2 by default, which falls
+ * back to 110M when it will not load; while it downloads (482 MB), the 110M listens, and the 0.6B
+ * is swapped into the running engine on {@code vfg-stt-upgrade} once it is in. A Parakeet model
+ * decodes with the {@link Hotwords} unless {@code hotwords} is off: the players in the tab list
+ * ({@link #onPlayers}) and the server's incantation phrases, from the bridge.
  */
 public final class VoiceService {
 	private static final Logger LOG = LoggerFactory.getLogger("vfg");
@@ -78,7 +88,12 @@ public final class VoiceService {
 	private final StatusBoard status = new StatusBoard();
 	private final EngineSlot<SpeechEngine, TurnDetector> slot = new EngineSlot<>();
 	private final TurnSetup turnSetup = new TurnSetup(status, Thread::sleep);
+	private final Hotwords hotwords = new Hotwords();
+	private final ModelChoice modelChoice;
+	private final Object upgradeLock = new Object();
+	private Thread upgradeThread;
 	private volatile String requestedModel;
+	private volatile boolean requestedHotwords;
 	private final AtomicBoolean spotterSetup = new AtomicBoolean();
 	private final AtomicBoolean voskWarned = new AtomicBoolean();
 	private volatile boolean stopping;
@@ -105,6 +120,7 @@ public final class VoiceService {
 	public VoiceService(Path gameDir, Path configDir, UUID playerUuid, String playerName, SessionGate.Notices notices) {
 		this.configFile = configDir.resolve(VfgConfig.FILE_NAME);
 		this.vfgRoot = Assets.root(gameDir);
+		this.modelChoice = new ModelChoice(vfgRoot);
 		this.playerUuid = playerUuid;
 		this.playerName = playerName;
 		this.config = VfgConfig.load(configFile);
@@ -179,10 +195,13 @@ public final class VoiceService {
 			});
 		this.incantations = new IncantationClient(
 			() -> new IncantationClient.Target(config.incantationsUrl(), config.effectiveClientToken()),
-			(version, list) -> {
-				LOG.info("incantations: {} for {} (version {})", list.size(), this.playerName, version);
+			(version, list, serverPhrases) -> {
+				LOG.info("incantations: {} for {} (version {}); hotwords: {}", list.size(), this.playerName, version,
+					serverPhrases == null ? "the player's own phrases (the bridge sends no server_phrases)"
+						: serverPhrases.size() + " phrases on the server");
 				spotter.setIncantations(list);
 				vosk.setIncantations(list);
+				hotwords.phrases(serverPhrases, list);
 			});
 	}
 
@@ -206,12 +225,18 @@ public final class VoiceService {
 		casts.shutdown(500);
 		sender.shutdown(2000);
 		Thread s;
+		Thread u;
 		synchronized (this) {
 			s = setupThread;
+			u = upgradeThread;
 		}
 		if (s != null) {
 			s.interrupt();
 		}
+		if (u != null) {
+			u.interrupt();
+		}
+		modelChoice.end(); // a clean stop: whatever was loading did not crash the game
 		slot.release();
 	}
 
@@ -246,6 +271,22 @@ public final class VoiceService {
 
 	public void onLeave() {
 		gate.onLeave();
+		hotwords.players(List.of());
+	}
+
+	/**
+	 * The names in the client's tab list, the players online, for the hotwords; on the client thread,
+	 * as often as it likes: an unchanged list costs a comparison.
+	 */
+	public void onPlayers(Collection<String> names) {
+		if (hotwords.players(names)) {
+			LOG.debug("hotwords: {} players online", hotwords.players().size());
+		}
+	}
+
+	/** The hotwords as they are now (Voice settings, tests). */
+	public Hotwords hotwords() {
+		return hotwords;
 	}
 
 	public void toggleMute() {
@@ -274,7 +315,8 @@ public final class VoiceService {
 		spotter.maxAliases(next.incantationSpotterAliases);
 		vosk.configure(next.incantations && next.vosk);
 		vosk.confirmSayings(next.voskConfirm);
-		if (!Objects.equals(next.model, requestedModel) && status.get().setup() != VoiceStatus.Setup.UNSUPPORTED) {
+		if ((!Objects.equals(next.model, requestedModel) || next.hotwords != requestedHotwords)
+				&& status.get().setup() != VoiceStatus.Setup.UNSUPPORTED) {
 			startSetup(next.model);
 		}
 		gate.recheck();
@@ -336,6 +378,7 @@ public final class VoiceService {
 			incantations.stop();
 			spotter.setIncantations(List.of());
 			vosk.setIncantations(List.of());
+			hotwords.phrases(null, List.of());
 		}
 	}
 
@@ -373,11 +416,16 @@ public final class VoiceService {
 
 	private void startSetup(String model) {
 		requestedModel = model;
+		requestedHotwords = config.hotwords;
 		status.setupRunning(0);
 		gate.recheck(); // stops listening until the engine is ready again; never called holding this lock
 		synchronized (this) {
 			if (setupThread != null && setupThread.isAlive()) {
 				setupThread.interrupt();
+			}
+			if (upgradeThread != null) {
+				upgradeThread.interrupt();
+				upgradeThread = null;
 			}
 			Thread t = new Thread(() -> runSetup(model), "vfg-setup");
 			t.setDaemon(true);
@@ -401,10 +449,24 @@ public final class VoiceService {
 			finishSetup(VoiceStatus.Setup.UNSUPPORTED, "unsupported platform");
 			return;
 		}
-		VfgConfig c = config;
+		VfgConfig chosen = config;
 		Assets.Asset natives = Assets.natives(platform);
 		Assets.Asset vad = Assets.vad();
-		Assets.Asset modelAsset = Assets.model(model);
+		ModelChoice.Plan plan = modelChoice.plan(model);
+		if (plan.crashed()) {
+			modelChoice.end();
+			LOG.warn("speech engine: {} began loading {} times in a row and never finished (the game closed, or ran "
+				+ "out of memory); {} is chosen now, in Voice settings: pick {} again to try it", model, plan.unfinished(),
+				plan.loadNow(), model);
+			VfgConfig next = config.copy();
+			next.model = plan.loadNow();
+			next.saveQuietly(configFile);
+			config = next;
+			requestedModel = plan.loadNow();
+			chosen = next;
+		}
+		VfgConfig c = chosen;
+		Assets.Asset modelAsset = Assets.model(plan.loadNow());
 		AssetInstaller installer = new AssetInstaller(vfgRoot,
 			(done, total) -> status.setupRunning(total <= 0 ? 0 : (int) (done * 100 / total)));
 		try {
@@ -421,24 +483,42 @@ public final class VoiceService {
 		}
 		slot.release();
 		SpeechEngine loaded;
+		VoiceStatus.Stt stt = new VoiceStatus.Stt(plan.loadNow(), plan.crashed() ? VoiceStatus.Stt.Note.CRASHED
+			: plan.upgradeTo() != null ? VoiceStatus.Stt.Note.UPGRADING : VoiceStatus.Stt.Note.NONE, 0, null);
 		try {
-			long t0 = System.nanoTime();
-			loaded = SpeechEngine.load(Assets.folder(vfgRoot, natives), Assets.isParakeet(modelAsset),
-				Assets.folder(vfgRoot, modelAsset), Assets.folder(vfgRoot, vad).resolve(Assets.VAD_FILE), c.sttThreads,
-				(float) c.vadThreshold);
-			slot.put(loaded);
-			LOG.info("speech engine loaded ({}, {} ms)", model, (System.nanoTime() - t0) / 1_000_000);
-			status.turnModel(c.turnModel.equals(TurnDetectors.OFF) ? VoiceStatus.TurnModel.OFF
-				: VoiceStatus.TurnModel.LOADING, null);
-			finishSetup(VoiceStatus.Setup.READY, null);
+			loaded = loadEngine(natives, vad, plan.loadNow(), c);
 		} catch (Throwable t) {
-			String message = t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
-			if (Assets.isWindows()) {
-				message += "; install the Microsoft Visual C++ Redistributable (x64)";
+			String message = message(t);
+			if (!plan.loadNow().equals(Assets.PARAKEET_06B)) {
+				engineFailed(message, t);
+				return;
 			}
-			LOG.error("engine failed: {}", message, t);
-			finishSetup(VoiceStatus.Setup.ENGINE_FAILED, message);
-			return;
+			// The 0.6B would not load (out of memory, a broken file): the 110M stands in.
+			LOG.warn("speech engine: {} failed to load ({}); falling back to {}", plan.loadNow(), message,
+				Assets.PARAKEET_110M);
+			try {
+				new AssetInstaller(vfgRoot, (done, total) -> status.setupRunning(total <= 0 ? 0 : (int) (done * 100 / total)))
+					.install(Assets.model(Assets.PARAKEET_110M));
+				loaded = loadEngine(natives, vad, Assets.PARAKEET_110M, c);
+				stt = new VoiceStatus.Stt(Assets.PARAKEET_110M, VoiceStatus.Stt.Note.FALLBACK, 0, message);
+			} catch (AssetInstaller.SetupException e) {
+				LOG.warn("setup failed: {}", e.getMessage());
+				finishSetup(VoiceStatus.Setup.SETUP_FAILED, e.getMessage());
+				return;
+			} catch (InterruptedException e) {
+				return;
+			} catch (Throwable t2) {
+				engineFailed(message(t2), t2);
+				return;
+			}
+		}
+		slot.put(loaded);
+		status.stt(stt);
+		status.turnModel(c.turnModel.equals(TurnDetectors.OFF) ? VoiceStatus.TurnModel.OFF
+			: VoiceStatus.TurnModel.LOADING, null);
+		finishSetup(VoiceStatus.Setup.READY, null);
+		if (plan.upgradeTo() != null) {
+			startUpgrade(plan.upgradeTo(), plan.loadNow(), loaded, c);
 		}
 		boolean wantVosk = c.vosk && !vosk.hasModel();
 		if (c.incantations && (!spotter.hasModel() || wantVosk) && spotterSetup.compareAndSet(false, true)) {
@@ -462,6 +542,118 @@ public final class VoiceService {
 			t.start();
 		}
 		setUpTurn(c.turnModel, natives, loaded);
+	}
+
+	/**
+	 * Loads the engine for {@code model} (with the hotwords, for Parakeet, unless they are off),
+	 * marking the 0.6B's load as begun until it returns or throws ({@link ModelChoice}).
+	 */
+	private SpeechEngine loadEngine(Assets.Asset natives, Assets.Asset vad, String model, VfgConfig c) {
+		Assets.Asset asset = Assets.model(model);
+		boolean mark = ModelChoice.marked(model);
+		if (mark) {
+			modelChoice.begin(model);
+		}
+		try {
+			long t0 = System.nanoTime();
+			SpeechEngine e = SpeechEngine.load(Assets.folder(vfgRoot, natives), Assets.isParakeet(asset),
+				Assets.folder(vfgRoot, asset), Assets.folder(vfgRoot, vad).resolve(Assets.VAD_FILE), c.sttThreads,
+				(float) c.vadThreshold, c.hotwords && Assets.isParakeet(asset) ? hotwords : null, boosts(model));
+			LOG.info("speech engine loaded ({}, {}, {} ms)", model, e.hotwords() ? "hotwords" : "greedy",
+				(System.nanoTime() - t0) / 1_000_000);
+			return e;
+		} finally {
+			if (mark) {
+				modelChoice.end();
+			}
+		}
+	}
+
+	/** A model's own hotword boosts: the 0.6B's ({@link Hotwords#PARAKEET_06B}), else the hotwords' own. */
+	static Hotwords.Settings boosts(String model) {
+		return Assets.PARAKEET_06B.equals(model) ? Hotwords.PARAKEET_06B : null;
+	}
+
+	private static String message(Throwable t) {
+		return t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
+	}
+
+	private void engineFailed(String message, Throwable t) {
+		if (Assets.isWindows()) {
+			message += "; install the Microsoft Visual C++ Redistributable (x64)";
+		}
+		LOG.error("engine failed: {}", message, t);
+		finishSetup(VoiceStatus.Setup.ENGINE_FAILED, message);
+	}
+
+	private void startUpgrade(String model, String meanwhile, SpeechEngine engine, VfgConfig c) {
+		Thread t = new Thread(() -> upgrade(model, meanwhile, engine, c), "vfg-stt-upgrade");
+		t.setDaemon(true);
+		synchronized (this) {
+			if (upgradeThread != null) {
+				upgradeThread.interrupt();
+			}
+			upgradeThread = t;
+		}
+		t.start();
+	}
+
+	/**
+	 * On {@code vfg-stt-upgrade}: downloads {@code model} while {@code meanwhile} listens (a failed
+	 * download is tried again after 30 s, 2 min, then every 10 min, carrying on where it stopped),
+	 * loads its recognizer and swaps it into {@code engine}; one that will not load leaves
+	 * {@code meanwhile}, with a log line and a note. A replaced or stopped setup ends it.
+	 */
+	private void upgrade(String model, String meanwhile, SpeechEngine engine, VfgConfig c) {
+		synchronized (upgradeLock) { // a replaced upgrade finishes its download first; the next finds it there
+			Assets.Asset asset = Assets.model(model);
+			AssetInstaller installer = new AssetInstaller(vfgRoot, (done, total) -> {
+				if (!Thread.currentThread().isInterrupted()) {
+					status.stt(new VoiceStatus.Stt(meanwhile, VoiceStatus.Stt.Note.UPGRADING,
+						total <= 0 ? 0 : (int) (done * 100 / total), null));
+				}
+			});
+			LOG.info("speech engine: {} listens while {} downloads ({} MB)", meanwhile, model, asset.bytes() / 1_000_000);
+			try {
+				for (int failures = 0; ; failures++) {
+					if (Thread.currentThread().isInterrupted() || stopping) {
+						return;
+					}
+					try {
+						installer.install(asset);
+						break;
+					} catch (AssetInstaller.SetupException e) {
+						long wait = TurnSetup.RETRY_WAITS_MILLIS[Math.min(failures, TurnSetup.RETRY_WAITS_MILLIS.length - 1)];
+						LOG.warn("speech engine: {} not downloaded ({}); {} listens, trying again in {} s", model,
+							e.getMessage(), meanwhile, wait / 1000);
+						status.stt(new VoiceStatus.Stt(meanwhile, VoiceStatus.Stt.Note.UPGRADE_RETRYING, 0, e.getMessage()));
+						Thread.sleep(wait);
+					}
+				}
+			} catch (InterruptedException e) {
+				return;
+			}
+			if (Thread.currentThread().isInterrupted() || stopping) {
+				return;
+			}
+			Path dir = Assets.folder(vfgRoot, asset);
+			modelChoice.begin(model);
+			try {
+				long t0 = System.nanoTime();
+				SpeechEngine.Recognition r = SpeechEngine.recognition(dir, true, c.sttThreads, c.hotwords, boosts(model));
+				if (!engine.replaceRecognizer(r)) {
+					return; // the engine was released meanwhile
+				}
+				LOG.info("speech engine: {} in, in place of {} ({}, {} ms)", model, meanwhile,
+					r.hotwords() ? "hotwords" : "greedy", (System.nanoTime() - t0) / 1_000_000);
+				status.stt(new VoiceStatus.Stt(model, VoiceStatus.Stt.Note.NONE, 0, null));
+			} catch (Throwable t) {
+				LOG.warn("speech engine: {} failed to load ({}); {} stays", model, message(t), meanwhile);
+				status.stt(new VoiceStatus.Stt(meanwhile, VoiceStatus.Stt.Note.FALLBACK, 0, message(t)));
+			} finally {
+				modelChoice.end();
+			}
+		}
 	}
 
 	/**

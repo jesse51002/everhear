@@ -48,7 +48,7 @@ class SniperNest(Scenario):
                      for p in (ctx.world.player(n) for n in names) if p is not None]
         if not sites:
             self.result("no sniper nest: %s" % ("nobody is online" if a.players in ("@a", "@r")
-                                                else a.players + " is not online"), players=[], nests=0)
+                                                else a.players + " is not online"), players=[], nests=0, failed=True)
             self.end()
             return
         self.state.sites = sites
@@ -104,5 +104,5 @@ class SniperNest(Scenario):
         at = "; ".join(("%s's at %s" % (w, at)) if w else "at " + at for w, at in self.state.built)
         summary = "built %d %s: %s%s" % (n, what, at, ", spawn set there" if a.spawn else "")
         self.result(summary, players=[w for w, _ in self.state.built], at=[at for _, at in self.state.built],
-                   height=a.height, spawn=a.spawn, nests=n)
+                   height=a.height, spawn=a.spawn, nests=n, failed=n == 0)
         self.end()

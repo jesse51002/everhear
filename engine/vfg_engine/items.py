@@ -17,7 +17,9 @@ modifiers are `everhear:item/<id>` on the holder while held.
 
 A give is built from the class: its base, its name, a stack of one, and the id. A give naming
 another base is refused, naming the class's base. Our items never carry vanilla's
-`attribute_modifiers`, so the item's code is the one way it changes an attribute.
+`attribute_modifiers`, so the item's code is the one way it changes an attribute. A give that took
+starts its holder's instance at once, so a click right after it is heard; if the stack did not
+land where the item counts, the next snapshots end it after GIVE_GRACE_S.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from .records import Record
 log = logging.getLogger("vfg_engine")
 
 LINGER_S = 15.0     # an item that listens for Land keeps hearing it this long after it is let go
+GIVE_GRACE_S = 1.0  # a given item's instance waits this long for the snapshot to show it held
 
 SLOTS = {
     "mainhand": ("mainhand",),
@@ -70,9 +73,12 @@ def reconcile(rt):
         if (rec.cid, rec.user) in holding:
             if rec.notes.pop("lingering", None) is not None:
                 log.info("%s is held again", rec.iid)
+            rec.notes.pop("given_until", None)
             continue
         p = rt.snapshot.players.get(rec.user)
         reason = "left" if p is None else "died" if not p.alive else "unheld"
+        if reason == "unheld" and rec.notes.get("given_until", 0) > rt.now:
+            continue                         # just given: the snapshot may not show it yet
         if reason == "unheld" and any(s.kind == "land" for s in rec.subs):
             # its arrow or trident may still be flying: it hears that Land for LINGER_S more
             until = rec.notes.setdefault("lingering", rt.now + LINGER_S)
@@ -97,6 +103,28 @@ def reconcile(rt):
             log.error("item %s for %s not made: %s", cid, name, exc)
             continue
         rt.start(rec)
+
+
+def given(rt, player: str, item: str):
+    """A give took: start the holder's instance at once, so a click right after the give finds
+    it. If the stack did not land where the item counts (a full main hand), the next snapshots
+    end it after GIVE_GRACE_S, as any item let go."""
+    info = rt.classes.get(item)
+    p = rt.snapshot.players.get(player)
+    if info is None or info.kind != "item" or p is None or not p.alive:
+        return
+    if "%s|%s" % (item, player) in rt.broken:
+        return
+    if any(r.kind == "item" and r.cid == item and r.user == player for r in rt.records.values()):
+        return
+    try:
+        rec = rt.add(Record(rt.new_iid("item", item), "item", item, player, rt.now, source=player,
+                            notes={"slot": "given", "given_until": rt.now + GIVE_GRACE_S}))
+    except ValueError as exc:
+        rt.broken["%s|%s" % (item, player)] = str(exc)
+        log.error("item %s for %s not made: %s", item, player, exc)
+        return
+    rt.start(rec)
 
 
 def give_op(rt, player: str, item: str, base: str | None = None) -> GiveItem:

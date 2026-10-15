@@ -180,6 +180,7 @@ class FakeIo:
         self.world = "fake-world-1"
         self.watched_mined: list[str] = []
         self.block_data: dict[tuple, list] = {}      # (dim, x, y, z) -> [(path, how, snbt)] in order
+        self.weather = "clear"                       # "clear", "rain" or "thunder"
         self.mirror_radius = 32
         self.watch_calls = 0
 
@@ -215,6 +216,10 @@ class FakeIo:
         self.queries.append(command)
         if self.query_delay_s:
             time.sleep(self.query_delay_s)
+        if command.startswith("execute if predicate") and "weather_check" in command:
+            now = {"raining": self.weather in ("rain", "thunder"), "thundering": self.weather == "thunder"}
+            asked = "thundering" if "thundering" in command else "raining"
+            return "Test passed" if now[asked] else "Test failed"
         return self.query_reply(command)
 
     def flush(self, ops):
@@ -336,6 +341,9 @@ class FakeIo:
                 return OpResult(False, "", "unknown gamerule %s" % op.name)
             self.gamerules[op.name] = op.value
             return OpResult(True, "Gamerule %s is now set to: %s" % (op.name, op.value))
+        if isinstance(op, Command) and op.text.split()[:1] == ["weather"]:
+            self.weather = op.text.split()[1]
+            return OpResult(True, "Changing to %s" % self.weather)
         if isinstance(op, (Particle, Sound, Message, Command)):
             return OpResult(True, "")
         if isinstance(op, Fill):

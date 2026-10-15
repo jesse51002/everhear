@@ -273,6 +273,18 @@ class World:
         self.engine: dict[str, Any] | None = None  # the last `vfg engine overview --json`, or why not
         self.engine_at = float("-inf")
         self.engine_fetching: asyncio.Task | None = None
+        self.first: asyncio.Task | None = None     # the start's engine read (__main__), bounded by its own wait
+
+    async def first_read(self) -> bool:
+        """The start's engine read waited for, while it is still going: the router's calls wait for
+        it, the conversation agent's never. It bounds itself (__main__.ENGINE_FIRST_S), and never
+        raises here, cancelled or failed. True when it was still going: a glance taken before it
+        may have changed."""
+        t = self.first
+        if t is None or t.done():
+            return False
+        await asyncio.wait({t})
+        return True
 
     async def fresh_state(self, wait: float = STATE_WAIT_S, younger: float = STATE_FRESH_S) -> dict[str, Any] | None:
         """The state now: a snapshot younger than `younger` s, else a fetch, waited for up to
@@ -416,7 +428,7 @@ class World:
                     known=known)
 
     async def close(self) -> None:
-        for t in (self.fetching, self.engine_fetching):
+        for t in (self.first, self.fetching, self.engine_fetching):
             if t is not None and not t.done():
                 t.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):

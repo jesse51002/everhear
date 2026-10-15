@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """The Respond bench: Respond's prompt before and after Prototype_Jev_Routing's rewrite (_Respond's
-prompt_), on the lines D2 sends it from the 2026-10-08 whole asks and on a small invented set.
-respond_score.py scores it; results in respond_bench.md.
+prompt_), on the lines D2 sends it from the 2026-10-08 whole asks and on a small invented set; and
+the conversation agent of Prototype_Conversation_And_Router (`front`) on the invented set and on the
+lines said to the AI on the night of 2026-10-12/13 (`night`). respond_score.py scores it; results in
+respond_bench.md.
 
 THE PLAYTEST INPUTS (`playtest`): every whole-ask input (whole_asks_2026-10-08.jsonl) that D2 with
 Jev's new state sends to Respond, walked with trees_questions.route_d from its recorded answers
@@ -20,27 +22,42 @@ one of the prompts' own examples, each with a short conversation before it and t
 said in, and what Respond should do with it by the spec: answer a rule or preference about the
 future only, a question it can answer from knowledge and plain banter; hand up an ask for
 something now, a change to something already going on, and a rule the game itself would have to
-enforce.
+enforce. For `front` the same lines, their open task shown in today's TASKS and WORK UNDER WAY
+saying nothing is under way; the old versions see the OPEN TASKS of their time.
+
+THE NIGHT (`night`, `front` only): the 64 lines Jev sent to the AI on the night of 2026-10-12/13,
+each with the conversation up to it from the night's feed, the world as unknown but who is online,
+TASKS as the box's table had them then and WORK UNDER WAY as the night's own brain loops would have
+shown it with no queue: night.py says how, and the hand labels. `night-to_ai` is the same with every
+live line's class written `to_ai`, as after Prototype_Addressing_The_AI. `--night` is the session
+folder unpacked from session-logs-2026-10-13-033024.tgz, `--brain-log` the night's brain log.
 
 THE VERSIONS (`VERSIONS`): `old` is Respond on main at 9f32e06 (its prompt and its answer's field
 descriptions); each later one a rewrite, its prompt kept in respond_prompts/ so the bench does not
-move with the brain's own; v5 is brain/prompts/respond.md (but for its group sentence, made
-neutral after the bench) and brain.respond.Response. All on Respond's production model and
-providers (config.py: DeepSeek V4 Flash, reasoning off, parasail first), one call at a time, as
-the loop calls it. A failed call is a hand-up, as the loop makes it; a hand-up's reply is kept in
-the row (`reply`), though the loop drops it.
+move with the brain's own; v5 is what brain/prompts/respond.md was until this spec. All on DeepSeek
+V4 Flash, reasoning off, parasail first (config.CHEAP, config.FAST), with the opening and tail of
+Respond before this spec (Legacy), one call at a time, as the loop called it. A failed call is a
+hand-up, as the loop made it; a hand-up's reply is kept in the row (`reply`), though the loop
+dropped it. `front` is the conversation agent as built: brain.respond.Respond and its Response, its
+prompt brain/prompts/respond.md, called through Respond.answer() with the guard, the DONE check and
+the cut, on DeepSeek V4.1 Flash with reasoning off on together, coreweave, parasail (config.V41,
+V41_HOSTS) and the agent's own timeout. A failed call is a hand-off with no reply, as the core
+makes it; the row keeps what the model wrote (`raw_up`, `raw_reply`) beside what code made of it.
 
     (cd brain && uv sync --frozen --inexact)
     PY=brain/.venv/bin/python; L=integration/replay; DB=DIR/vfg/vfg.db; D2=WHOLE_OUT/new/D2/rows.jsonl
     $PY $L/respond_bench.py run old playtest --db $DB --d2 $D2 --out OUT --limit 5   # a pilot
     $PY $L/respond_bench.py run old playtest --db $DB --d2 $D2 --out OUT --half first
     $PY $L/respond_bench.py run old invented --out OUT
+    NIGHT=NIGHT_DIR; LOG=aws-backup/brain-log-2026-10-13.log
+    $PY $L/respond_bench.py run front night --night $NIGHT --brain-log $LOG --out OUT
+    $PY $L/respond_bench.py recorded --night $NIGHT --brain-log $LOG --out OUT     # V4 Flash's night, no call
     python3 $L/respond_score.py OUT [OUT2 …]                                       # OUT/score.md
 
 Writes OUT/<version>/<set>/rows.jsonl, one row an input: the answer as the model gave it, the
 field it wrote first, ms, tokens and cost. A run into a file that has rows goes on after them;
 `--dry` writes each prompt to OUT/<version>/<set>/prompts/ and calls nothing. The OpenRouter key
-as structured() reads it, never printed.
+as structured() reads it, never printed; the usage rows queue in OUT (playtest.queue_usage).
 
 THE GUARD (`guard`): brain.respond.promises() on every reply the runs recorded, with no call made:
 what it hands up, against the promises and offers judged by hand (JUDGED), and each version's
@@ -53,11 +70,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+import hashlib
+import io
 import json
 import sys
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -73,20 +93,27 @@ from pydantic import BaseModel, Field  # noqa: E402
 
 from brain import actions, config  # noqa: E402
 from brain.__main__ import asker  # noqa: E402
-from brain.context import LIVE, Context, Row  # noqa: E402
+from brain.call import menu_lines  # noqa: E402
+from brain.context import LEGACY_TO_AI, Context, Row, show  # noqa: E402
+from brain.context import LIVE as TO_AI  # noqa: E402
+from brain.respond import PROMPT as FRONT_PROMPT  # noqa: E402
 from brain.respond import Respond, promises  # noqa: E402
 from brain.tasks import Tasks  # noqa: E402
 from brain.world import Seen, running_lines  # noqa: E402
+from night import UNDER_WAY_NONE  # noqa: E402
 from trees_questions import route_d  # noqa: E402
 
 INPUTS = HERE / "whole_asks_2026-10-08.jsonl"
 PROMPTS = HERE / "respond_prompts"
 CLASS_OF = {"brain": "action_oriented", "respond": "conversational", "context": "context"}
-SETS = ("playtest", "invented")
+# A line said to the AI: to_ai, or Jev's two classes for it when the 10-08 lines were benched.
+LIVE = (*TO_AI, *LEGACY_TO_AI)
+SETS = ("playtest", "invented", "night", "night-to_ai")
+NIGHT_SETS = ("night", "night-to_ai")
 
 # ------------------------------------------------------------------ the versions
 
-# Each version's answer: always {reason, hand_up, reply}, in that order, hand_up true by default;
+# Each old version's answer: always {reason, hand_up, reply}, in that order, hand_up true by default;
 # the field descriptions (which the model reads in the schema) differ, and from v4 `reason` is
 # required, so the schema makes the model write it (REQUIRED). What each version changed:
 # - v1: the spec's five points and its examples, and the group sentence;
@@ -119,6 +146,17 @@ FIELDS["v3"] = FIELDS["v4"] = FIELDS["v5"] = FIELDS["v2"]
 PROMPT_OF = {"v4": "v3"}   # v4 is v3's prompt with `reason` required
 REQUIRED = {"v4", "v5"}
 VERSIONS = {name: (PROMPTS / f"{PROMPT_OF.get(name, name)}.md", fields) for name, fields in FIELDS.items()}
+# The conversation agent of Prototype_Conversation_And_Router, as built: its own prompt, answer and checks.
+FRONT = "front"
+VERSIONS[FRONT] = (FRONT_PROMPT, None)
+
+
+def model_of(version: str, cfg) -> tuple[str, str, tuple[str, ...], float]:
+    """(model, reasoning, providers, timeout) a version runs on: the old ones on V4 Flash as they were
+    benched, `front` on V4.1 Flash with no reasoning, on Together first, with the agent's timeout."""
+    if version == FRONT:
+        return config.V41, "off", config.V41_HOSTS, cfg.respond_timeout_s
+    return config.CHEAP, "off", config.FAST, 20.0
 
 
 def response(fields: dict[str, str], required: bool = False) -> type[BaseModel]:
@@ -129,8 +167,37 @@ def response(fields: dict[str, str], required: bool = False) -> type[BaseModel]:
     return Response
 
 
-# The model's own text, to read the field it wrote first: structured() parses it away.
+class Legacy:
+    """Respond's opening and tail before this spec (main at 94e517e, the same as when v1 to v5 were
+    benched): what the old versions read, so they do not move with the conversation agent's. On the
+    game engine its menu is the engine's ops, every action the brain has (as game-engine's Respond
+    had it before the merge)."""
+
+    def __init__(self, catalog, ask, *, owner: str = "", checkpoint: int = 5, prompt: Path = PROMPTS / "v5.md"):
+        self.catalog, self.ask, self.checkpoint = catalog, ask, checkpoint
+        rules = prompt.read_text(encoding="utf-8").rstrip("\n")
+        self.rules = rules.replace("{owner}", owner or "not named (VFG_OWNER is not set)")
+
+    def opening(self) -> str:
+        names = self.catalog.names()
+        return (f"{self.rules}\n\nWHAT THE BRAIN CAN DO (its actions, on what ENGINE lists; anything else is "
+                f"made new by a coding implementer):\n{menu_lines(self.catalog, names)}\n\n"
+                "THE CONVERSATION SO FAR (oldest first; each row: its time in UTC, who, and for a "
+                "player's line Jev's class):\n")
+
+    @staticmethod
+    def tail(row: Row, seen: Seen, tasks: str, new: list[Row]) -> str:
+        how = "typed" if row.source == "chat" else "said"
+        return (f"\n{seen.show()}\n\n{tasks}\n\n"
+                f"NEW SINCE THE LAST READ (rows no call had read; they end the conversation above):\n"
+                f"{show(new) or 'nothing'}\n\n"
+                f"THE LINE #{row.seq}, {row.hms}: {row.who} {how}: {row.text}\n")
+
+
+# The model's own text, to read the field it wrote first and, for `front`, what it answered before
+# the code's checks: structured() parses it away.
 _held: list[str] | None = None
+_hosts: list[str] = []   # the provider that answered each attempt, as OpenRouter names it
 _content = vfg_llm._content
 
 
@@ -138,6 +205,7 @@ def _content_kept(got: dict) -> str:
     text = _content(got)
     if _held is not None:
         _held.append(text)
+        _hosts.append(str(got.get("provider") or ""))
     return text
 
 
@@ -149,6 +217,32 @@ def first_field(texts: list[str]) -> str:
         return next(iter(json.loads(texts[-1])), "")
     except (ValueError, TypeError, IndexError, StopIteration):
         return ""
+
+
+def raw_answer(texts: list[str]) -> dict:
+    """What the model wrote in its last attempt, as JSON, or {}."""
+    try:
+        got = json.loads(texts[-1])
+        return got if isinstance(got, dict) else {}
+    except (ValueError, TypeError, IndexError):
+        return {}
+
+
+# ------------------------------------------------------------------ the items
+
+
+@dataclass
+class Item:
+    """One call: its row's fixed fields, and what Respond is given: the line, the context it is the
+    end of, the world, the tasks text, WORK UNDER WAY, what is new and the players with work under way."""
+    fixed: dict
+    row: Row
+    ctx: Context
+    seen: Seen
+    tasks: str
+    new: list[Row]
+    under_way: str = ""
+    busy: set[str] = field(default_factory=set)
 
 
 # ------------------------------------------------------------------ the invented set
@@ -273,22 +367,21 @@ def at_plus(base: str, seconds: float) -> str:
     return t.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-@dataclass
-class Item:
-    """One call: its row's fixed fields, the tail, the cached blocks."""
-    row: dict
-    tail: str
-    blocks: list
+def invented_tasks(k: int, it: dict, legacy: bool) -> tuple[str, set[str]]:
+    """The line's open task, an implementer on it, as the old versions saw it (OPEN TASKS, the form
+    before named tasks) or as the conversation agent does (Tasks.show); and its players."""
+    at = at_plus(INVENTED_AT, 300 * k + 9)
+    tasks = it.get("tasks", [])
+    if legacy:
+        rows = [f"- {tid} for {player}, since {at[11:19]}, an implementer is on it: {brief}"
+                for tid, player, brief in tasks]
+        return "OPEN TASKS:\n" + ("\n".join(rows) or "none"), {p for _, p, _ in tasks}
+    shown = Tasks([{"name": tid, "description": brief, "player": player, "status": "open", "created_at": at,
+                    "updated_at": at} for tid, player, brief in tasks], clock=lambda: at)
+    return shown.show([tid for tid, _, _ in tasks]), {p for _, p, _ in tasks}
 
 
-def invented_tasks(it: dict, base: str) -> Tasks:
-    """The invented line's tasks, as the brain's tasks table holds them: open, made just before it."""
-    return Tasks(rows=[{"name": name, "description": description, "player": player, "status": "open",
-                        "created_at": at_plus(base, 9), "updated_at": at_plus(base, 9)}
-                       for name, player, description in it.get("tasks", [])])
-
-
-def invented_items(respond: Respond, catalog, limit: int = 0):
+def invented_items(limit: int = 0, legacy: bool = True):
     for k, it in enumerate(INVENTED[:limit or None]):
         base = at_plus(INVENTED_AT, 300 * k)   # each line its own few minutes
         ctx = Context()
@@ -307,10 +400,10 @@ def invented_items(respond: Respond, catalog, limit: int = 0):
         seen = Seen(players=f"PLAYERS ONLINE:\n{players}",
                     clock=it.get("clock", "TIME: day (6000, day 2). WEATHER: clear."),
                     running=running_lines(it.get("instances", [])), places="", incantations="INCANTATIONS: none")
-        tail = respond.tail(row, seen, invented_tasks(it, base).show(), [])
+        tasks, busy = invented_tasks(k, it, legacy)
         fixed = {"id": it["id"], "set": "invented", "point": it["point"], "want": it["want"], "who": it["who"],
                  "text": it["text"], "context_rows": len(ctx.rows)}
-        yield Item(fixed, tail, ctx.cached(respond.opening(), respond.checkpoint))
+        yield Item(fixed, row, ctx, seen, tasks, [], UNDER_WAY_NONE, busy)
 
 
 # ------------------------------------------------------------------ the playtest inputs
@@ -333,8 +426,9 @@ def d2_outcomes(path: Path) -> dict[str, dict]:
     return got
 
 
-def playtest_items(pt: Playtest, inputs: list[dict], d2: dict[str, dict], respond: Respond, want: set[str]):
-    """For each input of `want`, in time order, the call Respond would get at its moment (the docstring)."""
+def playtest_items(pt: Playtest, inputs: list[dict], d2: dict[str, dict], want: set[str]):
+    """For each input of `want`, in time order, the call Respond would get at its moment (the docstring).
+    The context is the Clock's own, as it is at the item's moment: use each item before the next."""
     entries = pt.entries({})   # every GAME, SYS and AI row; no line, the inputs' rows go in below
     by_entry = {}
     for inp in inputs:
@@ -360,32 +454,170 @@ def playtest_items(pt: Playtest, inputs: list[dict], d2: dict[str, dict], respon
         if e.line_id in want:
             inp = by_entry[e.line_id]
             new = [r for r in clock.ctx.unprocessed() if r.seq != e.row.seq]
-            tail = respond.tail(e.row, pt.seen(e.seen, inp["who"], items=False), pt.open_tasks(e.seen), new)
             fixed = {"id": inp["id"], "set": "playtest", "lines": inp["lines"], "at": inp["at"], "who": inp["who"],
                      "label": inp["label"], "half": inp["half"], "merged": inp["merged"],
                      "d2": d2[inp["id"]]["path"], "text": inp["text"], "new": len(new),
                      "context_rows": len(clock.ctx.rows)}
-            yield Item(fixed, tail, clock.ctx.cached(respond.opening(), respond.checkpoint))
+            yield Item(fixed, e.row, clock.ctx, pt.seen(e.seen, inp["who"], items=False), pt.open_tasks(e.seen),
+                       new)
         clock.read(e.seen)
+
+
+# ------------------------------------------------------------------ the night
+
+
+def night_items(args, recorded: dict[int, dict]):
+    """The night's 64 lines (night.py), in feed order, each Item with its hand label and whether V4
+    Flash answered it that night."""
+    from night import HAND, Night
+    nt = Night(Path(args.night), Path(args.brain_log))
+    classes = "to_ai" if args.set == "night-to_ai" else "night"
+    for c in nt.calls(classes):
+        fixed = {"id": f"#{c.n}", "set": args.set, "n": c.n, "label": c.label, "hand": HAND[c.label],
+                 "who": c.row.who, "text": c.row.text, "typed": c.row.source == "chat", "at": c.at,
+                 "night_class": next((r.cls for r in nt_rows(nt, c.n)), ""), "v4": c.n in recorded,
+                 "new": len(c.new), "under_way": c.loops, "busy": sorted(c.busy), "context_rows": len(c.ctx.rows)}
+        yield Item(fixed, c.row, c.ctx, c.seen, c.tasks, c.new, c.under_way, c.busy)
+
+
+def nt_rows(nt, n: int):
+    """The line's own feed row, as the night had it (its class before any rewrite)."""
+    from brain.context import parse
+    return [parse(line, seq=seq, at=at) for seq, at, line in nt.feed if seq == n]
+
+
+def recorded_night(args) -> None:
+    """V4 Flash's own answers on the night (night.py), written as a version's rows, OUT/v4-night/night/
+    rows.jsonl, beside the runs': no call is made. Its replies are said as they were (the guard, which
+    never fired that night, is in them); a line it never had (Jev classed it action_oriented, or #177,
+    dropped at the stop) has no row."""
+    from night import HAND, LABEL_OF, Night
+    nt = Night(Path(args.night), Path(args.brain_log))
+    rec = nt.recorded()
+    out = Path(args.out) / "v4-night" / "night"
+    out.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for n in sorted(rec):
+        r = rec[n]
+        line = nt_rows(nt, n)[0]
+        rows.append({"id": f"#{n}", "set": "night", "n": n, "label": LABEL_OF[n], "hand": HAND[LABEL_OF[n]],
+                     "who": line.who, "text": line.text, "typed": line.source == "chat",
+                     "night_class": line.cls, "v4": True, "up": r["up"], "raw_up": r["up"] and not r["guard"],
+                     "reason": r["reason"], "reply": r["reply"], "raw_reply": r["reply"],
+                     "guard": "fired" if r["guard"] else "", "done_drop": False, "cut": False,
+                     "ms": r["ms"], "cost": r["cost"], "prompt_tokens": r["prompt_tokens"],
+                     "cached_tokens": r["cached_tokens"], "completion_tokens": r["completion_tokens"],
+                     "first": "reason", "recorded": r["at"]})
+    (out / "rows.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows),
+                                    encoding="utf-8")
+    (out / "meta-all.json").write_text(json.dumps({
+        "version": "v4-night", "set": "night", "what": "Respond's answers on the night, from its brain log",
+        "model": "~deepseek/deepseek-v4-flash-latest", "reasoning": "off", "brain_log": str(args.brain_log),
+        "calls": len(rows)}, indent=1))
+    print(f"v4-night: {len(rows)} recorded answers, {sum(r['up'] for r in rows)} handed up, "
+          f"{sum(bool(r['guard']) for r in rows)} by the guard, to {out / 'rows.jsonl'}")
 
 
 # ------------------------------------------------------------------ the run
 
 
-async def run(args) -> None:
+async def ask_front(respond: Respond, it: Item) -> dict:
+    """One call of the conversation agent, as the core makes it: Respond.answer() with its checks,
+    the model's own answer kept beside what code made of it, and the log lines the checks wrote."""
     global _held
+    _held = []
+    _hosts.clear()
+    logged = io.StringIO()
+    t0 = time.perf_counter()
+    try:
+        with contextlib.redirect_stdout(logged):
+            answer = await respond.answer(it.row, it.ctx, it.seen, it.tasks, it.under_way, it.new, busy=it.busy)
+    except Exception as err:  # noqa: BLE001 — an LlmError in production: a hand-off with no reply
+        row = {"up": True, "reply": "", "error": f"{type(err).__name__}: {err}"[:300],
+               "ms": int((time.perf_counter() - t0) * 1000), "cost": float(getattr(err, "cost", 0.0) or 0.0)}
+    else:
+        v, raw = answer.value, raw_answer(_held)
+        # respond's log lines (`<time> respond guard #58 …`), the area and time cut off
+        logs = [x.split(" ", 2)[2] for x in logged.getvalue().splitlines() if x.count(" ") >= 2]
+        # the guard handing a reply off (`guard #58 a promise, handed off, …`), and the checks beside a
+        # hand-off (`guard #58 beside a hand-off, dropped: an offer|it says it is done: …`)
+        mine = [x for x in logs if x.startswith(f"guard #{it.row.seq} ")]
+        fired = [x for x in mine if "beside a hand-off" not in x]
+        guard = ("" if not fired else "an offer" if "an offer" in fired[0] else
+                 "a promise" if "a promise" in fired[0] else "fired")
+        raw_up = bool(raw.get("hand_off", True))
+        raw_reply = str(raw.get("reply", "") or "").strip()
+        row = {"up": bool(v.hand_off), "reason": v.reason, "reply": v.reply, "raw_up": raw_up, "raw_reply": raw_reply,
+               "guard": guard or ("fired" if not raw_up and v.hand_off else ""),
+               "done_drop": any("says it is done" in x for x in mine),
+               "offer_drop": any("beside a hand-off" in x and "an offer" in x for x in mine),
+               "cut": any("cut to" in x for x in logs), "logs": logs,
+               "ms": answer.ms, "cost": answer.cost, "prompt_tokens": answer.prompt_tokens,
+               "cached_tokens": answer.cached_tokens, "completion_tokens": answer.completion_tokens,
+               "first": first_field(_held), "attempts": len(_held), "host": _hosts[-1] if _hosts else ""}
+    _held = None
+    return row
+
+
+async def ask_old(respond: Legacy, it: Item, output, version: str) -> dict:
+    global _held
+    _held = []
+    t0 = time.perf_counter()
+    tail = respond.tail(it.row, it.seen, it.tasks, it.new)
+    try:
+        answer = await respond.ask(tail, output, cached=it.ctx.cached(respond.opening(), respond.checkpoint),
+                                   component="respond", call_id=f"replay respond {version} {it.fixed['id']}"[:64])
+    except Exception as err:  # noqa: BLE001 — an LlmError in production; any failure is a hand-up
+        row = {"up": True, "error": f"{type(err).__name__}: {err}"[:300],
+               "ms": int((time.perf_counter() - t0) * 1000), "cost": 0.0}
+    else:
+        v = answer.value
+        row = {"up": bool(v.hand_up), "reason": v.reason, "reply": v.reply, "ms": answer.ms, "cost": answer.cost,
+               "prompt_tokens": answer.prompt_tokens, "cached_tokens": answer.cached_tokens,
+               "completion_tokens": answer.completion_tokens, "first": first_field(_held), "attempts": len(_held)}
+    _held = None
+    return row
+
+
+def prompt_text(respond, it: Item) -> str:
+    """The whole prompt a call sends, for --dry."""
+    if isinstance(respond, Legacy):
+        tail = respond.tail(it.row, it.seen, it.tasks, it.new)
+    else:
+        tail = respond.tail(row=it.row, seen=it.seen, tasks=it.tasks, new=it.new, under_way=it.under_way)
+    return "".join(b for b, _ in it.ctx.cached(respond.opening(), respond.checkpoint)) + tail
+
+
+async def run(args) -> None:
+    front = args.version == FRONT
+    if args.set in NIGHT_SETS and not front:
+        sys.exit("night: the conversation agent's set; the old versions ran on V4 Flash before it (respond_bench.md)")
     prompt, fields = VERSIONS[args.version]
-    output = response(fields, args.version in REQUIRED)
     cfg = config.load()
+    model, reasoning, providers, timeout = model_of(args.version, cfg)
+    timeout = args.timeout or timeout
     catalog = actions.load(cfg.repo)
-    ask = asker(cfg.respond_model, cfg.respond_reasoning, args.timeout, cfg.respond_providers)
+    ask = playtest.replayed(asker(model, reasoning, timeout, providers)) if front else \
+        asker(model, reasoning, timeout, providers)
     out = Path(args.out) / args.version / args.set
     out.mkdir(parents=True, exist_ok=True)
     playtest.queue_usage(out)
+    output = None if front else response(fields, args.version in REQUIRED)
     if args.set == "invented":
-        respond = Respond(catalog, ask, owner=INVENTED_OWNER, checkpoint=cfg.checkpoint, prompt=prompt)
-        items = invented_items(respond, catalog, args.limit)
-        total, owner = min(args.limit or len(INVENTED), len(INVENTED)), INVENTED_OWNER
+        owner = INVENTED_OWNER
+        items = invented_items(args.limit, legacy=not front)
+        total = min(args.limit or len(INVENTED), len(INVENTED))
+    elif args.set in NIGHT_SETS:
+        if not args.night or not args.brain_log:
+            sys.exit("night: --night and --brain-log are needed")
+        from night import Night
+        nt = Night(Path(args.night), Path(args.brain_log))
+        owner, recorded = nt.owner, nt.recorded()
+        items = night_items(args, recorded)
+        total = 64
+        if args.limit:
+            items = (it for k, it in enumerate(items) if k < args.limit)
+            total = min(args.limit, total)
     else:
         if not args.db or not args.d2:
             sys.exit("playtest: --db and --d2 are needed")
@@ -396,9 +628,10 @@ async def run(args) -> None:
                   and args.half in ("all", i["half"])]
         if args.limit:
             chosen = chosen[:args.limit]
-        respond = Respond(catalog, ask, owner=cfg.owner, checkpoint=cfg.checkpoint, prompt=prompt)
-        items = playtest_items(pt, inputs, d2, respond, {i["id"] for i in chosen})
+        items = playtest_items(pt, inputs, d2, {i["id"] for i in chosen})
         total, owner = len(chosen), cfg.owner
+    respond = Respond(catalog, ask, owner=owner, checkpoint=cfg.checkpoint, prompt=prompt) if front else \
+        Legacy(catalog, ask, owner=owner, checkpoint=cfg.checkpoint, prompt=prompt)
     rows_file = out / "rows.jsonl"
     have = read_rows(rows_file)
     done = {r["id"] for r in have}
@@ -406,47 +639,45 @@ async def run(args) -> None:
     if args.dry:
         (out / "prompts").mkdir(exist_ok=True)
         for it in items:
-            text = "".join(b for b, _ in it.blocks) + it.tail
-            (out / "prompts" / f"{it.row['id']}.txt").write_text(text, encoding="utf-8")
+            (out / "prompts" / f"{it.fixed['id'].lstrip('#')}.txt").write_text(prompt_text(respond, it),
+                                                                                encoding="utf-8")
         print(f"{args.version} {args.set}: {total} prompts written to {out / 'prompts'}")
         return
     (out / f"meta-{args.half}{'-limit' if args.limit else ''}.json").write_text(json.dumps({
         "started": datetime.now(UTC).isoformat(timespec="seconds"), "version": args.version, "set": args.set,
-        "prompt": str(prompt), "fields": fields, "reason_required": args.version in REQUIRED,
-        "model": cfg.respond_model, "reasoning": cfg.respond_reasoning,
-        "providers": cfg.respond_providers, "timeout": args.timeout, "owner": owner, "checkpoint": cfg.checkpoint,
-        "half": args.half, "inputs": total, "already": len(done), "d2": args.d2}, indent=1, default=str))
-    print(f"{args.version} {args.set}: {total} inputs ({args.half}), {len(done)} already, ${spent:.3f}", flush=True)
-    async with httpx.AsyncClient(timeout=args.timeout + 10) as http:
+        "prompt": str(prompt), "fields": fields, "reason_required": front or args.version in REQUIRED,
+        "model": model, "reasoning": reasoning, "providers": providers, "timeout": timeout, "owner": owner,
+        "checkpoint": cfg.checkpoint, "repo": str(cfg.repo), "server": cfg.server, "half": args.half,
+        "inputs": total, "already": len(done), "d2": args.d2, "night": args.night, "brain_log": args.brain_log,
+        "sha256": {str(p): hashlib.sha256(p.read_bytes()).hexdigest()[:16]
+                   for p in (Path(prompt), Path(sys.modules[Respond.__module__].__file__))}},
+        indent=1, default=str))
+    print(f"{args.version} {args.set}: {total} inputs ({args.half}), {len(done)} already, ${spent:.3f}; "
+          f"{model}, reasoning {reasoning}, {','.join(providers)}", flush=True)
+    async with httpx.AsyncClient(timeout=timeout + 10) as http:
         vfg_llm.client = http
         with rows_file.open("a", encoding="utf-8") as f:
             for it in items:
-                if it.row["id"] in done:
+                if it.fixed["id"] in done:
                     continue
-                row = dict(it.row)
-                _held = []
-                t0 = time.perf_counter()
-                try:
-                    answer = await respond.ask(it.tail, output, cached=it.blocks, component="respond",
-                                               call_id=f"replay respond {args.version} {it.row['id']}"[:64])
-                except Exception as err:  # noqa: BLE001 — an LlmError in production; any failure is a hand-up
-                    row.update(up=True, error=f"{type(err).__name__}: {err}"[:300],
-                               ms=int((time.perf_counter() - t0) * 1000), cost=0.0)
-                else:
-                    v = answer.value
-                    row.update(up=bool(v.hand_up), reason=v.reason, reply=v.reply, ms=answer.ms, cost=answer.cost,
-                               prompt_tokens=answer.prompt_tokens, cached_tokens=answer.cached_tokens,
-                               completion_tokens=answer.completion_tokens, first=first_field(_held),
-                               attempts=len(_held))
-                _held = None
+                got = await (ask_front(respond, it) if front else ask_old(respond, it, output, args.version))
+                if args.stop_402 and " 402" in got.get("error", ""):
+                    print(f"{it.fixed['id']}: OpenRouter 402, stopping with nothing written for it "
+                          f"({got['error'][:120]})", flush=True)
+                    vfg_llm.client = None
+                    sys.exit(3)
+                row = {**it.fixed, **got}
                 spent += row["cost"]
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
                 f.flush()
+                reply = row.get("reply", "").strip()
                 what = ("ERROR " + row["error"][:60] if "error" in row else
-                        ("UP" + (" +reply" if row["reply"].strip() else "")) if row["up"] else
-                        f"reply {row['reply'][:60]!r}")
+                        ("UP" + (f" {reply[:40]!r}" if reply else "") + (f" [guard {row['guard']}]"
+                                                                         if row.get("guard") else "")
+                         + (" [done dropped]" if row.get("done_drop") else "")) if row["up"] else
+                        f"reply {reply[:60]!r}" if reply else "silent")
                 tag = row.get("label") or f"{row['point']}>{row['want']}"
-                print(f"{row['id'][-6:]} {tag[:14]:14} {row['ms']:5} ms ${row['cost']:.4f} | {what} | "
+                print(f"{row['id'][-6:]:>6} {tag[:14]:14} {row['ms']:5} ms ${row['cost']:.4f} | {what} | "
                       f"{row['text'][:50]!r}", flush=True)
                 if spent > args.budget:
                     print(f"stopping: ${spent:.3f} spent, over --budget {args.budget}", flush=True)
@@ -489,16 +720,13 @@ JUDGED = (
 
 def open_tasks(args) -> dict[str, str]:
     """OPEN TASKS as each input's call showed it: the playtest's at the input's moment, the invented set's own."""
-    out = {}
-    for k, it in enumerate(INVENTED):   # as invented_items shows them, in Tasks.show()'s own lines
-        out[it["id"]] = invented_tasks(it, at_plus(INVENTED_AT, 300 * k)).show()
+    out = {it["id"]: invented_tasks(k, it, legacy=True)[0] for k, it in enumerate(INVENTED)}
     pt = Playtest(Path(args.db))
     inputs = read_rows(Path(args.inputs))
     d2 = d2_outcomes(Path(args.d2))
     want = {i["id"] for i in inputs if d2.get(i["id"], {}).get("out") == "respond"}
-    respond = Respond(actions.load(config.load().repo), None)
-    for item in playtest_items(pt, inputs, d2, respond, want):
-        out[item.row["id"]] = "OPEN TASKS:" + item.tail.split("\nOPEN TASKS:")[1].split("\n\nNEW SINCE")[0]
+    for item in playtest_items(pt, inputs, d2, want):
+        out[item.fixed["id"]] = item.tasks
     return out
 
 
@@ -508,12 +736,14 @@ def guard(args) -> None:
     said = []   # (run, version, set, row) for every reply a player would have seen
     for out in map(Path, args.outs):
         for f in sorted(out.glob("*/*/rows.jsonl")):
+            if f.parts[-3] in (FRONT, "v4-night"):
+                continue   # the conversation agent's rows: respond_score.py reads its checks from them
             said += [(out.name, f.parts[-3], f.parts[-2], r) for r in read_rows(f)
                      if not r["up"] and r.get("reply", "").strip()]
     judged = {}
     for run, v, end, piece in JUDGED:
         hit = [r for (rn, vv, _, r) in said if (rn, vv) == (run, v) and r["id"].endswith(end)
-               and piece in r["reply"].lower().replace("\u2019", "'")]
+               and piece in r["reply"].lower().replace("’", "'")]
         if len(hit) == 1:
             judged[(run, v, hit[0]["id"])] = piece
     fires = {(run, v, r["id"]): promises(r["reply"], tasks.get(r["id"], ""), r["who"]) for run, v, _, r in said}
@@ -564,11 +794,20 @@ def main() -> None:
     r.add_argument("--db", help="the playtest's vfg.db (playtest)")
     r.add_argument("--d2", help="whole_asks_bench.py's new/D2/rows.jsonl: D2's recorded answers (playtest)")
     r.add_argument("--inputs", default=str(INPUTS))
+    r.add_argument("--night", help="the night's session folder, unpacked from session-logs-2026-10-13-033024.tgz")
+    r.add_argument("--brain-log", help="the night's brain log, brain-log-2026-10-13.log")
     r.add_argument("--half", choices=("first", "second", "all"), default="all", help="playtest: the inputs' half")
     r.add_argument("--limit", type=int, default=0, help="the first N inputs only (a pilot)")
-    r.add_argument("--timeout", type=float, default=20.0, help="a call's timeout, s (the brain's own)")
+    r.add_argument("--timeout", type=float, default=0.0,
+                   help="a call's timeout, s; default the version's: 20 for the old ones, the agent's own for front")
     r.add_argument("--budget", type=float, default=0.6, help="stop past this many dollars in the file")
     r.add_argument("--dry", action="store_true", help="write the prompts, call nothing")
+    r.add_argument("--stop-402", action="store_true",
+                   help="on OpenRouter's 402 (no credit), write nothing for that input and exit 3, to go on later")
+    n = sub.add_parser("recorded", help="V4 Flash's own answers on the night, as rows: no call")
+    n.add_argument("--night", required=True)
+    n.add_argument("--brain-log", required=True)
+    n.add_argument("--out", required=True)
     g = sub.add_parser("guard", help="brain.respond.promises() on the recorded runs, no call made")
     g.add_argument("outs", nargs="+", help="the runs' OUTs")
     g.add_argument("--db", required=True, help="the playtest's vfg.db")
@@ -577,6 +816,8 @@ def main() -> None:
     args = ap.parse_args()
     if args.cmd == "guard":
         guard(args)
+    elif args.cmd == "recorded":
+        recorded_night(args)
     else:
         asyncio.run(run(args))
 

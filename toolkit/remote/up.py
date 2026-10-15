@@ -1,9 +1,13 @@
 # up.py: vfg up. ARGS: {"mc": "/opt/mc", "vfg": "/opt/vfg", "wait": 90}
 # Starts minecraft, vfg-bridge, vfg-jev and vfg-engine (the game engine spec's one engine process)
-# if they are down, then waits until all four are active and RCON answers `list`.
+# if they are down, then waits until all four are active and RCON answers `list`. The test
+# server's unit, minecraft-test, where it is installed, is only reported, and started without
+# waiting when it is down (reset first when it gave up): vfg up never waits for it nor fails on it,
+# since vfg test restarts it after every test and brings it up itself.
 import subprocess
 
 UNITS = ["minecraft", "vfg-bridge", "vfg-jev", "vfg-engine"]
+TEST_UNIT = "minecraft-test"
 
 
 def run(argv, timeout=60):
@@ -43,6 +47,22 @@ def rcon_list():
         return False, str(e)
     except Exception as e:
         return False, str(e)
+
+
+def test_server():
+    """minecraft-test's row, or None where it is not installed: its state, and a start asked
+    (--no-block) when it is down."""
+    if first_line(run(["systemctl", "show", "-p", "LoadState", "--value", TEST_UNIT], 15)[1]) in ("", "not-found"):
+        return None
+    state = is_active(TEST_UNIT)
+    if state in ("active", "activating", "reloading", "deactivating"):
+        return state
+    if state == "failed":
+        run(["sudo", "-n", "systemctl", "reset-failed", TEST_UNIT], 15)
+    rc, text = run(["sudo", "-n", "systemctl", "start", "--no-block", TEST_UNIT], 15)
+    if rc == 0:
+        return "%s  starting (not waited for)" % state
+    return "%s  start failed  %s" % (state, journal(TEST_UNIT) or last_line(text))
 
 
 def main():
@@ -92,10 +112,13 @@ def main():
         if info["note"]:
             cols.append(info["note"])
         rows.append((u, "  ".join(cols)))
+    test = test_server()
+    if test is not None:
+        rows.append((TEST_UNIT, test))
     seq = last_feed_seq(os.path.join(ARGS["vfg"], "feed.log"))
     rows.append(("feed", "no feed.log yet" if seq is None else "last seq %d" % seq))
     for name, text in rows:
-        print("%-12s%s" % (name, text))
+        print("%-12s%s" % (name + " " if len(name) >= 12 else name, text))
     sys.stdout.flush()
 
     for u in UNITS:

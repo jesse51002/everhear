@@ -22,14 +22,16 @@
   the tool unless an earlier step of the loop read that class's Config: the brain sends back the
   whole class as written, comments and all, so it must have seen it. An engine action that ran
   makes the world read the engine again for the next loop (World.engine_changed).
-- The ending's pieces, which the loop puts together once a step lands and ends (loop.py): a hand-off's
-  task opened under a name no task, action or engine class has (names.unique), its brief
+- The ending's pieces, which the loop puts together once a step lands and ends (loop.py), and the
+  front turn when the router places a line with an implementer: a hand-off's task opened under a
+  name no task, action or engine class has (names.unique), its brief
   rendered from its parts (call.HandOff.brief), and its `AI task <name> | new: …` row; a follow-up's
   task opened again, with its `AI task <name> | follow-up: …` row, the cancel words written here for
   a "never mind"; the reply; the record; then each implementer started and each follow-up sent.
 No row is written per action: what a step ran stays inside its loop, which leaves the context one
-record. Every `vfg say` and AI row a turn writes is noted (WROTE, Echoes), so the player's next turn
-can wait for them to come back on the watch, and read what this one did.
+record. Every `vfg say` and AI row a player's turn writes is noted (WROTE, Echoes), so the player's
+next turn can wait for them to come back on the watch, and read what this one did; a loop holds no
+turn, and writes with WROTE unset.
 """
 
 from __future__ import annotations
@@ -67,7 +69,12 @@ DID_NOT_RUN = "did not run"  # the box out of reach, or the action not deployed:
 CHANGED_NOTHING = "changed nothing"  # it ran, and its facts say it changed nothing: not what was meant
 VALUE_REFUSED = 2            # vfg's exit for a value or a key it refused
 
-# The rows the running turn has written, as Echoes futures: set by the turn (loop.py), noted by say() and post().
+# The head of THE LOOP SO FAR, before a loop's first step block.
+LOOP_SO_FAR = ("THE LOOP SO FAR (your earlier steps for this event: what each ran and read, what it meant to end with, "
+               "and what each tool came to; nothing of them reached the players unless it says so):\n\n")
+
+# The rows the running turn has written, as Echoes futures: set by the turn (loop.py), noted by say() and post();
+# None outside a turn (a loop, a report), where nobody waits for them.
 WROTE: contextvars.ContextVar[list[asyncio.Future] | None] = contextvars.ContextVar("wrote", default=None)
 
 
@@ -160,32 +167,41 @@ class StepRun:
     actions: list[Result] = field(default_factory=list)
     reads: list[Result] = field(default_factory=list)
     refused: list[Result] = field(default_factory=list)  # tools refused before anything ran
+    said: str | None = None  # the chat line its ending said, when code wrote another than the step's (loop.end)
 
     @property
     def landed(self) -> bool:
         """Every action landed and no tool was refused: the step's ending may go out."""
         return all(r.ok for r in self.actions) and not self.refused
 
-    def show(self) -> str:
+    def show(self, sent: bool = False) -> str:
         """The step as THE LOOP SO FAR shows it to the steps after it: what it ran, read and
-        meant to end with, and what each came to. The first step's block opens the section."""
+        meant to end with, and what each came to. The first step's block opens the section.
+        `sent`: its ending went out (an ended step that a later step follows, because a line was
+        added to the loop while it ran, or the loop was taken up again), so the block says what
+        the players got rather than that nothing was sent."""
         s = self.step
-        head = ("THE LOOP SO FAR (your earlier steps for this event: what each ran and read, what it meant to end "
-                "with, and what each tool came to; nothing of them reached the players unless it says so):\n\n"
-                if self.n == 1 else "")
+        head = LOOP_SO_FAR if self.n == 1 else ""
         how = f", {s.order.replace('_', ' ')}" if len(self.actions) > 1 else ""
         lines = [f"STEP {self.n}{how}:"]
         lines += [r.show() for r in self.refused + self.actions + self.reads]
         if not (self.refused or self.actions or self.reads):
             lines.append("- ran nothing")
+        reply = s.reply.strip() if self.said is None else self.said.strip()
         if s.end == NEXT:
             lines.append("YOU ENDED IT next: these results are what it was for; nothing was sent.")
+        elif sent:
+            went = [f"hand off {h.name}" for h in s.hand_offs]
+            went += [f"{'cancel' if f.cancel else 'follow up'} {f.task}" for f in s.follow_ups]
+            went += [f"reply “{one_line(reply)}”"] if reply else []
+            went += [f"record “{one_line(s.record)}”"] if s.record.strip() else []
+            lines.append(f"ENDED {s.end} AND SENT: {', '.join(went) or 'nothing in chat'}.")
         else:
             meant = [f"end {s.end}"]
             meant += [f"hand off {h.name}" for h in s.hand_offs]
             meant += [f"{'cancel' if f.cancel else 'follow up'} {f.task}" for f in s.follow_ups]
-            if s.reply.strip():
-                meant.append(f"reply {s.reply.strip()!r}")
+            if reply:
+                meant.append(f"reply {reply!r}")
             if s.record.strip():
                 meant.append(f"record {s.record.strip()!r}")
             lines.append(f"NOT SENT: you meant to {', '.join(meant)}, but not everything landed, so none of it went "

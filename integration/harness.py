@@ -60,15 +60,15 @@ ISO_RE = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")
 # §7: TYPE#seq HH:MM:SS fields | text  (fields never hold a |)
 FEED_RE = re.compile(r"^(LINE|GAME|AI|SYS)#(\d+) (\d\d:\d\d:\d\d) (?:([^|]*?) )?\| (.*)$")
 # §7's field grammar, written from the contract text (an old line may end with the retired re-ask's marker)
-C_LINE = re.compile(r"^[A-Za-z0-9_]{1,16} (voice|chat) (action_oriented|conversational|context) (\d\.\d\d|-) "
+C_LINE = re.compile(r"^[A-Za-z0-9_]{1,16} (voice|chat) (to_ai|context) (\d\.\d\d|-) "
                     r"(-?\d+dB|-)( was=not_relevant)?$")
 C_GAME = re.compile(r"^[a-z_]+ ([A-Za-z0-9_]{1,16}|-)$")
 C_AI = re.compile(r"^(say|action|task|result|note) ([a-z][a-z0-9_]{1,31}|-)$")   # a task's name, or -
 # vfg history's output (toolkit/remote/history.py)
 H_LINE = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \S+ (voice|chat|ai) "
-                    r"(?:(?:action_oriented|conversational|context|not_relevant) (?:\d\.\d\d|-)|-) \| .*$")
+                    r"(?:(?:to_ai|context|not_relevant) (?:\d\.\d\d|-)|-) \| .*$")
 H_EVENT = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d (join|leave|death|advancement|server) \S+ \| .*$")
-FED = ("action_oriented", "conversational", "context")   # the classes Jev feeds
+FED = ("to_ai", "context")   # the classes Jev feeds
 
 SYS_OPEN = "jev unavailable — passing every line as context"
 SYS_BACK = "jev back — filtering again"
@@ -650,15 +650,15 @@ def path1(box, rep, ctx):
     rep.check(all(row.get(k) == v for k, v in want.items()), "the lines row holds the §4 columns from the body",
               "%r" % row)
     judged = box.wait_judged("build me a castle", 6, fed=True)
-    rep.check(judged and judged["jev_class"] == "action_oriented" and judged["jev_confidence"] == 0.9
+    rep.check(judged and judged["jev_class"] == "to_ai" and judged["jev_confidence"] == 0.9
               and ISO_RE.match(judged["jev_judged_at"] or "") and ISO_RE.match(judged["fed_at"] or ""),
-              "Jev judged it action_oriented 0.90; jev_judged_at and fed_at set", "%r" % judged)
-    rx = line_regex(hms(start), "Steve voice action_oriented 0.90 -8dB", "build me a castle")
+              "Jev judged it to_ai 0.90; jev_judged_at and fed_at set", "%r" % judged)
+    rx = line_regex(hms(start), "Steve voice to_ai 0.90 -8dB", "build me a castle")
     got = box.wait_watch(rx, 8)
     time.sleep(0.5)
     got = box.watch_match(rx)
     rep.check(got and len(got) == 1,
-              "vfg watch printed it once: LINE#n %s Steve voice action_oriented 0.90 -8dB | build me a castle"
+              "vfg watch printed it once: LINE#n %s Steve voice to_ai 0.90 -8dB | build me a castle"
               % hms(start), "matching lines: %r\nlast watch lines: %r" % (got, box.watch_lines()[-5:]))
     if got:
         seq = int(FEED_RE.match(got[0]).group(2))
@@ -675,7 +675,7 @@ def path1(box, rep, ctx):
 
 
 def path2(box, rep, ctx):
-    rep.path("2", "typed chat, Jev's four classes and watched game events reach vfg watch (§3 §5 §6)")
+    rep.path("2", "typed chat, Jev's three classes and watched game events reach vfg watch (§3 §5 §6)")
     r = box.vfg("watchers", "set", "join,death,server", "--players", "Steve", "--contains", "Can't keep up")
     rep.check(r.returncode == 0 and box.wait_log(
         "bridge", r"watch\.json loaded: events=join,death,server players=1 contains=1", 5),
@@ -713,8 +713,8 @@ def path2(box, rep, ctx):
         rep.check(got and len(got) == 1, "watched -> once in vfg watch: GAME %s | %s" % (fields, text[:40]),
                   "last watch lines: %r" % box.watch_lines()[-8:])
     for who, fields, text in (("Alex", "chat context 0.70 -", "that cave by spawn"),
-                              ("Steve", "chat action_oriented 0.90 -", "make it taller"),
-                              ("Alex", "chat conversational 0.85 -", "thanks AI, love it")):
+                              ("Steve", "chat to_ai 0.90 -", "make it taller"),
+                              ("Alex", "chat to_ai 0.85 -", "thanks AI, love it")):
         got = box.wait_watch(line_regex(stamp, "%s %s" % (who, fields), text), 8)
         rep.check(got and len(got) == 1, "typed chat -> Jev -> vfg watch: LINE %s %s | %s" % (who, fields, text),
                   "last watch lines: %r" % box.watch_lines()[-8:])
@@ -742,18 +742,18 @@ def path2(box, rep, ctx):
               [("Alex", "that cave by spawn"), ("Steve", "make it taller"), ("Alex", "lol"),
                ("Alex", "thanks AI, love it")],
               "chat lines stored with source=chat, nothing else", "%r" % chat)
-    # A conversational line flushes the batch at once, the context line waiting in it first (§5).
+    # A to_ai line flushes the batch at once, the context line waiting in it first (§5).
     time.sleep(6)   # the batch above has flushed: the next context line starts one of its own
     _, _, c_body = box.voice("Alex", "the base is past the river", -13.0)
     box.wait_judged("the base is past the river", 6)
     sent = time.time()
     _, _, v_body = box.voice("Steve", "thanks for that", -11.0)
     rx_c = line_regex(c_body["started_at"][11:19], "Alex voice context 0.70 -13dB", "the base is past the river")
-    rx_v = line_regex(v_body["started_at"][11:19], "Steve voice conversational 0.85 -11dB", "thanks for that")
+    rx_v = line_regex(v_body["started_at"][11:19], "Steve voice to_ai 0.85 -11dB", "thanks for that")
     gc, gv = box.wait_watch(rx_c, 4), box.wait_watch(rx_v, 4)
     took = time.time() - sent
     order = gc and gv and int(FEED_RE.match(gc[0]).group(2)) < int(FEED_RE.match(gv[0]).group(2))
-    rep.check(order and took < 3, "a conversational line flushes the waiting context at once, the context "
+    rep.check(order and took < 3, "a to_ai line flushes the waiting context at once, the context "
               "first (%.1f s, not the 5 s batch)" % took, "%r" % box.watch_lines()[-4:])
     r = box.vfg("watchers", "set", WATCHERS)
     box.wait_log("bridge", r"watch\.json loaded: events=%s players=0 contains=0" % WATCHERS, 5)
@@ -849,11 +849,11 @@ def path4(box, rep, ctx):
     r, out = run("--since", date, "--limit", "1000")
     db = box.sql("SELECT * FROM lines WHERE at >= ? ORDER BY at, rowid", (date + "T00:00:00.000Z",))
     castle = box.line_by_text("build me a castle")
-    want = "%s Steve voice action_oriented 0.90 | build me a castle" % stamp(castle["at"])
+    want = "%s Steve voice to_ai 0.90 | build me a castle" % stamp(castle["at"])
     rep.check(r.returncode == 0 and len(out) == len(db) and want in out,
               "--since <date>: every line of the day, the castle as %r" % want[20:],
               "exit %s, %d vs %d rows, stderr %s" % (r.returncode, len(out), len(db), r.stderr))
-    rep.check(all(H_LINE.match(l) for l in out), "every line has history's shape, with Jev's four classes",
+    rep.check(all(H_LINE.match(l) for l in out), "every line has history's shape, with Jev's three classes",
               "%r" % [l for l in out if not H_LINE.match(l)])
     ctx["history_out"] = out
     r, out = run("--since", date, "--source", "ai")
@@ -863,19 +863,20 @@ def path4(box, rep, ctx):
     nchat = len([d for d in db if d["source"] == "chat"])
     rep.check(len(out) == nchat and any(l.endswith("Alex chat context 0.70 | that cave by spawn") for l in out)
               and any(l.endswith("Alex chat not_relevant 0.80 | lol") for l in out)
-              and any(l.endswith("Alex chat conversational 0.85 | thanks AI, love it") for l in out),
+              and any(l.endswith("Alex chat to_ai 0.85 | thanks AI, love it") for l in out),
               "--source chat: only chat, with Jev's class", "%r" % out)
     r, out = run("--since", date, "--player", "steve", "--source", "voice")
     rep.check(out and all(" Steve voice " in l for l in out) and any(l.endswith("| build me a castle") for l in out),
               "--player steve (any case) --source voice", "%r" % out)
-    for cls, text in (("not_relevant", "| lol"), ("conversational", "| thanks AI, love it"),
-                      ("action_oriented", "| make it taller")):
+    for cls, texts in (("not_relevant", ("| lol",)), ("to_ai", ("| thanks AI, love it", "| make it taller")),
+                       ("context", ("| that cave by spawn",))):
         r, out = run("--since", date, "--class", cls)
-        rep.check(out and all(" %s " % cls in l for l in out) and any(l.endswith(text) for l in out),
+        rep.check(out and all(" %s " % cls in l for l in out) and all(any(l.endswith(t) for l in out) for t in texts),
                   "--class %s" % cls, "%r" % out)
-    r, _ = run("--class", "direct_ask")
-    rep.check(r.returncode == 2 and "--class takes" in r.stderr, "--class direct_ask, the old name, is refused",
-              r.stderr)
+    for old in ("direct_ask", "action_oriented", "conversational"):
+        r, _ = run("--class", old)
+        rep.check(r.returncode == 2 and "--class takes" in r.stderr, "--class %s, an old name, is refused" % old,
+                  r.stderr)
     r, out = run("--events", "--since", date, "--limit", "1000")
     ev = box.sql("SELECT * FROM events WHERE at >= ?", (date + "T00:00:00.000Z",))
     rep.check(len(out) == len(ev) and any(l.endswith("death Steve | Steve was slain by Zombie") for l in out)
@@ -1079,13 +1080,13 @@ def path8(box, rep, ctx):
               "edge payloads accepted and stored as sent (2000 characters, quotes and unicode, 0 dB); the mod's "
               "blank player_uuid stored as NULL", "%r %r" % (edge_ok, rec.get("good.dropped")))
     start = payload["started_at"][11:19]
-    got = box.wait_watch(line_regex(start, "Steve voice action_oriented 0.90 -8dB", "build a tower by the lake"), 8)
+    got = box.wait_watch(line_regex(start, "Steve voice to_ai 0.90 -8dB", "build a tower by the lake"), 8)
     rep.check(got and len(got) == 1, "the mod's line goes on through Jev: once in vfg watch as "
-              "LINE#n %s Steve voice action_oriented 0.90 -8dB | build a tower by the lake" % start,
+              "LINE#n %s Steve voice to_ai 0.90 -8dB | build a tower by the lake" % start,
               "%r" % box.watch_lines()[-5:])
     long_pl = json.loads(rec["long.payload"][0])
     cut = long_pl["text"][:499] + "…"
-    got = box.wait_watch(line_regex(long_pl["started_at"][11:19], "Steve voice action_oriented 0.90 -12dB", cut), 8)
+    got = box.wait_watch(line_regex(long_pl["started_at"][11:19], "Steve voice to_ai 0.90 -12dB", cut), 8)
     rep.check(got and len(got) == 1, "its 2000-character line reaches vfg watch cut to 500 characters with …",
               "%r" % [short(l, 120) for l in box.watch_lines()[-4:]])
 
@@ -1102,18 +1103,18 @@ def path9(box, rep, ctx):
                      "setup: Steve's 'the big one' and Alex's 'is that the big one?' judged not_relevant",
                      "%r %r" % (a, b)):
         return
-    # the ask's routing call, canned in D2's terms: act, and let down -> action_oriented, d_what's confidence
+    # the ask's routing call, canned in its own terms: the AI by name -> to_ai, to_the_ai's confidence
     box.fake_jev_api("/next", {"answers": {
-        "d_what": {"type": "choice", "choice": "the_ai_must_act", "confidence": 0.87},
-        "d_feel": {"type": "choice", "choice": "let_down_wanted_something_done", "confidence": 0.93}},
+        "to_the_ai": {"type": "choice", "choice": "says_its_name", "confidence": 0.87},
+        "keep": {"type": "choice", "choice": "ignore_it", "confidence": 0.93}},
         "usage": {"input_tokens": 1500}})
     s, d, ask = box.voice("Steve", "make it bigger", -9.0)
     group = "the big one … make it bigger"
-    gg = box.wait_watch(line_regex(ask["started_at"][11:19], "Steve voice action_oriented 0.87 -9dB", group), 8)
+    gg = box.wait_watch(line_regex(ask["started_at"][11:19], "Steve voice to_ai 0.87 -9dB", group), 8)
     frow = box.sql("SELECT at FROM feed WHERE seq = ?", (int(FEED_RE.match(gg[0]).group(2)),)) if gg else []
     rep.check(gg and len(gg) == 1 and frow and frow[0]["at"] == ask["started_at"],
               "one LINE for the ask, under its fields and time, its text the group: "
-              "'Steve voice action_oriented 0.87 -9dB | %s'" % group, "%r" % box.watch_lines()[-4:])
+              "'Steve voice to_ai 0.87 -9dB | %s'" % group, "%r" % box.watch_lines()[-4:])
     calls = [c["body"] for c in box.fake_jev_api("/calls")
              if any("part_of_the_ask" in (q.get("criteria") or {})
                     and "“make it bigger”" in q.get("instructions", "")
@@ -1142,7 +1143,7 @@ def path9(box, rep, ctx):
     box.fake_jev_api("/mode", "ok")
     g_back = box.wait_watch(r"^SYS#\d+ \d\d:\d\d:\d\d \| %s$" % re.escape(SYS_BACK), 12)
     stamp = box.console("[Server thread/INFO]: <Steve> make it wider")
-    g_n = box.wait_watch(line_regex(stamp, "Steve chat action_oriented 0.90 -", "make it wider"), 8)
+    g_n = box.wait_watch(line_regex(stamp, "Steve chat to_ai 0.90 -", "make it wider"), 8)
     rep.check(g_back and g_n, "Jev back: one SYS 'jev back — filtering again', next line judged normally",
               "%r" % box.watch_lines()[-4:])
 
@@ -1171,8 +1172,8 @@ def path9(box, rep, ctx):
     rep.check(types == ["AI", "GAME", "LINE", "SYS"], "the run fed every type: %s" % ", ".join(types))
     grouped = [context.parse(l, now=now()) for l in (gg or [])]
     rep.check(grouped and (grouped[0].who, grouped[0].source, grouped[0].cls, grouped[0].text)
-              == ("Steve", "voice", "action_oriented", group)
-              and grouped[0].show() == "%s Steve (action_oriented): %s" % (ask["started_at"][11:19], group),
+              == ("Steve", "voice", "to_ai", group)
+              and grouped[0].show() == "%s Steve (to_ai): %s" % (ask["started_at"][11:19], group),
               "context.parse reads the group LINE as one row: Steve's, the ask's class, the whole group its "
               "text, shown to a model as one line", "%r" % grouped)
     opened = [context.parse(l, now=now()) for l in (g_c or [])]
@@ -1247,10 +1248,10 @@ def path7(box, rep, ctx):
     rep.check(all(box.line_by_text(x)["jev_class"] is None for x in ("build a wall here", "haha", "make it rain")),
               "while Jev is down the lines wait unjudged")
     box.start_jev()
-    oks = [box.wait_watch(line_regex(e1["started_at"][11:19], "Steve voice action_oriented 0.90 -10dB",
+    oks = [box.wait_watch(line_regex(e1["started_at"][11:19], "Steve voice to_ai 0.90 -10dB",
                                      "build a wall here"), 8),
            box.wait_watch(line_regex(e2["started_at"][11:19], "Alex voice context 0.70 -14dB", "our base is by the river"), 8),
-           box.wait_watch(line_regex(stamp, "Steve chat action_oriented 0.90 -", "make it rain"), 8)]
+           box.wait_watch(line_regex(stamp, "Steve chat to_ai 0.90 -", "make it rain"), 8)]
     haha = box.wait_judged("haha", 4)
     rep.check(all(o and len(o) == 1 for o in oks) and haha and haha["jev_class"] == "not_relevant" and not haha["fed_at"],
               "restarted, it judges the backlog in order and feeds each kept line once", "%r" % oks)
@@ -1291,7 +1292,7 @@ def path7(box, rep, ctx):
     box.start_jev()
     time.sleep(3)
     after = len(feed_lines_with_text(box, "make a bridge over the river"))
-    in_watch = box.watch_match(line_regex(body["started_at"][11:19], "Steve voice action_oriented 0.90 -8dB",
+    in_watch = box.watch_match(line_regex(body["started_at"][11:19], "Steve voice to_ai 0.90 -8dB",
                                           "make a bridge over the river"))
     rep.check(died and box.procs["jev"].returncode is None and before == 1 and r and r["fed_at"] is None
               and after == 1 and len(in_watch) == 1,
@@ -1311,7 +1312,7 @@ def path7(box, rep, ctx):
     r = box.line_by_text("make that one taller")
     box.start_jev()
     known = box.wait_log("jev", r"%s was already fed as LINE#\d+ before a restart" % (d or {}).get("id"), 8)
-    in_watch = box.wait_watch(line_regex(body["started_at"][11:19], "Steve voice action_oriented 0.90 -8dB", group), 8)
+    in_watch = box.wait_watch(line_regex(body["started_at"][11:19], "Steve voice to_ai 0.90 -8dB", group), 8)
     rep.check(died and r and r["fed_at"] is None and known and in_watch and len(in_watch) == 1
               and len(feed_lines_with_text(box, "make that one taller")) == 1,
               "SIGKILL right after a group's feed write, before fed_at: the restart finds the group as the ask's "
@@ -1331,10 +1332,10 @@ def path7(box, rep, ctx):
         fcntl.flock(lock, fcntl.LOCK_UN)
         lock.close()
     box.start_jev()
-    got = box.wait_watch(line_regex(body["started_at"][11:19], "Steve voice action_oriented 0.90 -9dB",
+    got = box.wait_watch(line_regex(body["started_at"][11:19], "Steve voice to_ai 0.90 -9dB",
                                     "make it twice as big"), 8)
     uses = [len(box.sql("SELECT id FROM usage WHERE ref = ?", (ref,))) for ref in (r["id"], "gather:" + r["id"])]
-    rep.check(held and r["jev_class"] == "action_oriented" and r["fed_at"] is None and got and len(got) == 1
+    rep.check(held and r["jev_class"] == "to_ai" and r["fed_at"] is None and got and len(got) == 1
               and len(feed_lines_with_text(box, "make it twice as big")) == 1 and uses == [1, 1],
               "SIGKILL while an ask's group waits for the feed: restarted, the ask is fed once, alone (a group is "
               "held in memory only), and neither judged nor gathered again",
@@ -1384,8 +1385,8 @@ def path7(box, rep, ctx):
 
 
 def path6(box, rep, ctx):
-    rep.path("6", "usage rows: one per Jev call for component jev; the brain's steps, Respond's and an "
-                  "implementer's; an older brain's orchestrator and planner rows")
+    rep.path("6", "usage rows: one per Jev call for component jev; the brain's steps, the conversation agent's, "
+                  "the router's and an implementer's; an older brain's orchestrator and planner rows")
     judged = box.sql("SELECT id, text, jev_confidence FROM lines WHERE source != 'ai' AND jev_class IS NOT NULL")
     bad = []
     for r in judged:
@@ -1407,9 +1408,10 @@ def path6(box, rep, ctx):
     stray = box.sql("SELECT u.ref FROM usage u JOIN lines l ON l.id = u.ref WHERE l.source = 'ai'")
     rep.check(not stray, "no usage row points at an ai line")
     # Rows as `vfg usage add` takes them: brain/implementers/usage.py's usage_args() and the like. The brain's
-    # and Respond's own rows are structured()'s (below): a step of the brain's loop is `#<seq> s<n>` for a
-    # line, `<task> s<n>` for a report; Respond's is its line's `#<seq>`. A box that ran an older brain also
-    # holds `orchestrator` rows (and `planner` ones), which the table and vfg still take.
+    # own rows are structured()'s (below): a step of a brain loop is `#<seq> s<n>` for a line, `<task> s<n>` for
+    # what a report left; the conversation agent's (`respond`) and the router's are the line's `#<seq>`, or a
+    # report's task. A box that ran an older brain also holds `orchestrator` rows (and `planner` ones), which the
+    # table and vfg still take.
     rows = [
         (["--component", "brain", "--model", "google/gemini-3.8-flash", "--in", "31512", "--out", "210", "--cost",
           "0.003834", "--cache-read", "29216", "--ref", "#812 s1"],
@@ -1423,6 +1425,9 @@ def path6(box, rep, ctx):
         (["--component", "respond", "--model", "~deepseek/deepseek-v4-flash-latest", "--in", "7100", "--out", "30",
           "--cost", "0.000410", "--cache-read", "6900", "--ref", "#813"],
          ("respond", "~deepseek/deepseek-v4-flash-latest", 7100, 30, 0.00041, 6900, None, "#813")),
+        (["--component", "router", "--model", "deepseek/deepseek-v4.1-flash", "--in", "30500", "--out", "60",
+          "--cost", "0.000420", "--cache-read", "29800", "--ref", "#814"],
+         ("router", "deepseek/deepseek-v4.1-flash", 30500, 60, 0.00042, 29800, None, "#814")),
         (["--component", "orchestrator", "--model", "google/gemini-3.8-flash", "--in", "3120", "--out", "96",
           "--cost", "0.000690", "--cache-read", "2880", "--ref", "#790"],
          ("orchestrator", "google/gemini-3.8-flash", 3120, 96, 0.00069, 2880, None, "#790")),
@@ -1449,6 +1454,7 @@ def path6(box, rep, ctx):
                    20012),
                   ("brain", "google/gemini-3.8-flash", 34100, 60, 0.0031, "galick_gun_styrk s1", 0,
                    "google/gemini-3.8-flash twice failed to match Step: - end: end reply needs the reply", 3100),
+                  ("router", "deepseek/deepseek-v4.1-flash", 30100, 55, 0.0004, "#817", 1, None, 1300),
                   ("planner", "~deepseek/deepseek-v4-flash-latest", 2400, 60, 0.00062, "castle_steve #2", 1, None,
                    1800),
                   ("alias", "~deepseek/deepseek-v4-flash-latest", 300, 20, 0.00005, "fire ball", 1, None, 840))]
@@ -1456,7 +1462,7 @@ def path6(box, rep, ctx):
         f.write("".join(json.dumps(q) + "\n" for q in queued))
     r = box.vfg("usage", "flush")
     got = box.sql("SELECT component, cost_usd, ref, ok, error, ms FROM usage WHERE ref IN ('#816 s1', "
-                  "'#816 s2', 'galick_gun_styrk s1', 'castle_steve #2', 'fire ball') ORDER BY id")
+                  "'#816 s2', 'galick_gun_styrk s1', '#817', 'castle_steve #2', 'fire ball') ORDER BY id")
     rep.check(r.returncode == 0 and [tuple(g.values()) for g in got] == [
         (q["component"], q["cost_usd"], q["ref"], q["ok"], q["error"], q["ms"]) for q in queued],
         "vfg usage flush sends structured()'s queued rows, a failed call's with its cost (NULL when not known), ok, "

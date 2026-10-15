@@ -272,3 +272,46 @@ def test_no_held_events_on_a_join_or_a_restart(rig):
     r.engine.start()
     r.tick(2)
     assert [op.text for op in r.io.ops_of(Command)] == []      # restored, nothing came into a hand
+
+
+CLICKER = '''
+class Clicker(Item):
+    class Config(ItemConfig):
+        summary = "Says each click."
+        base = "carrot_on_a_stick"
+        name = "Clicker"
+        active_in = "mainhand"
+
+    def start(self, ctx):
+        self.listen(Use, "on_use")
+
+    def on_use(self, ctx, ev):
+        self.command("say click")
+'''
+
+
+def test_a_give_starts_the_holders_instance_at_once(rig):
+    from vfg_engine.io import Command
+    r = rig({"clicker": CLICKER})
+    r.start()
+    r.io.join("Steve")
+    r.tick()
+    assert r.op("give", player="Steve", item="clicker")["ok"]
+    assert [rec.user for rec in r.records("item", "clicker")] == ["Steve"]   # before any snapshot shows it
+    r.io.use("Steve")                                 # a click right after the give
+    r.io.snapshot_raises = OSError("this tick's snapshot is late")
+    r.tick()                                          # the use is read; no snapshot shows the item yet
+    r.io.snapshot_raises = None
+    assert "say click" in [op.text for op in r.io.ops_of(Command)]
+
+
+def test_a_given_item_that_did_not_land_in_hand_ends_after_its_grace(rig):
+    r = rig({"clicker": CLICKER})
+    r.start()
+    r.io.join("Steve")
+    r.io.hold("Steve", "fire_staff_stand_in")         # the main hand is full: the give goes elsewhere
+    r.tick()
+    r.op("give", player="Steve", item="clicker")
+    assert r.records("item", "clicker")
+    r.run_for(1.5)
+    assert not r.records("item", "clicker")

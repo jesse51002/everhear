@@ -4,7 +4,8 @@
 #
 # Idempotent: run again, it changes nothing that is already right. deploy.sh provision copies it
 # beside python.sh, minecraft.service, rcon.py and env.example in /tmp/vfg-provision/ and runs it
-# with sudo.
+# with sudo; and beside testserver.sh, testserver.py and minecraft-test.service, the test server
+# its step 11 sets up.
 # With --restore, and only when /opt/mc/world does not exist, it extracts /tmp/mc-backup.tgz
 # (and /tmp/vfg-backup.tgz if it was sent) into /opt. It never prints the RCON password.
 # --accept-eula writes eula=true for a server that has no eula.txt yet: deploy.sh passes it when
@@ -32,7 +33,7 @@ for arg in "$@"; do
   esac
 done
 [[ $(id -u) -eq 0 ]] || die "run it as root (deploy.sh provision does)"
-for f in python.sh minecraft.service rcon.py env.example; do
+for f in python.sh minecraft.service rcon.py env.example testserver.sh testserver.py minecraft-test.service; do
   [[ -f $HERE/$f ]] || die "$f is missing beside provision.sh"
 done
 
@@ -207,20 +208,40 @@ systemctl enable --now nftables
 nft -f /etc/nftables/vfg.nft
 nft list table inet vfg > /dev/null || die "the nftables rule did not load"
 
-# 11. The heap: memory in whole GiB (rounded up: an m7i.xlarge reports a little under 16) minus 4.
+# 11. The test server beside it, for implementers' tests (testserver.sh): /opt/mc-test, unit
+# minecraft-test. Before the heap and the live unit, so that a new box's live server starts with
+# room left for it. The live server does not need it, so a failure here only says so. It writes
+# the heap (step 12's rule) and never restarts the live server; a heap it changed restarts the
+# live server here, below, as any change of step 12's does.
+heap_conf=/etc/systemd/system/minecraft.service.d/heap.conf
+heap_before=$(cat "$heap_conf" 2> /dev/null || true)
+if ! bash "$HERE/testserver.sh"; then
+  log "the test server is not set up (see above); the live server is fine: deploy.sh testserver tries again"
+fi
+if [[ $(cat "$heap_conf" 2> /dev/null || true) != "$heap_before" ]]; then
+  RESTART_MC=1
+fi
+
+# 12. The heap: memory in whole GiB (rounded up: an m7i.xlarge reports a little under 16) minus 4,
+# minus, only where the test server is installed (its marker and its unit), its MemoryMax in whole
+# GiB (testserver.sh writes the same rule). A box whose test server failed keeps the whole heap.
 mem_kib=$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)
-heap=$(( (mem_kib + 1048575) / 1048576 - 4 ))
+test_mib=0
+if [[ -f /opt/mc-test/.vfg-test-server && -f /etc/systemd/system/minecraft-test.service ]]; then
+  test_mib=$(sed -n 's/^MemoryMax=\([0-9]*\)M$/\1/p' /etc/systemd/system/minecraft-test.service)
+fi
+heap=$(( (mem_kib + 1048575) / 1048576 - 4 - (${test_mib:-0} + 1023) / 1024 ))
 (( heap >= 2 )) || heap=2
 install -d -m 755 /etc/systemd/system/minecraft.service.d
 heap_new=$(mktemp)
 printf '[Service]\nEnvironment=MC_HEAP=%dG\n' "$heap" > "$heap_new"
-if install_if_changed "$heap_new" /etc/systemd/system/minecraft.service.d/heap.conf 644; then
+if install_if_changed "$heap_new" "$heap_conf" 644; then
   log "heap: ${heap}G"
   RESTART_MC=1
 fi
 rm -f "$heap_new"
 
-# 12. The unit.
+# 13. The unit.
 if install_if_changed "$HERE/minecraft.service" /etc/systemd/system/minecraft.service 644; then
   log "installed minecraft.service"
   RESTART_MC=1
@@ -242,7 +263,7 @@ else
   STARTED=1
 fi
 
-# 13. Once RCON is up, stop admin commands being echoed into the console. The world keeps the rule.
+# 14. Once RCON is up, stop admin commands being echoed into the console. The world keeps the rule.
 if (( STARTED )); then
   log "waiting up to 5 minutes for RCON"
   ready=0
@@ -262,4 +283,5 @@ for attempt in $(seq 1 30); do
   (( attempt < 30 )) || die "could not set log_admin_commands over RCON"
   sleep 2
 done
+
 log "done"

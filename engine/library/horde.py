@@ -78,7 +78,7 @@ class Horde(Scenario):
         if not names and self.state.waves == 0:
             who = self.args.players
             self.result("no horde: %s" % ("nobody is online" if who in ("@a", "@r") else who + " is not online"),
-                        players=[], count=0)
+                        players=[], count=0, failed=True)
             self.end()
             return
         self.state.waves += 1
@@ -95,8 +95,7 @@ class Horde(Scenario):
         n = min(a.per_player, a.cap - len(self.spawned))
         summoned = 0
         if p is not None and p.alive and n > 0:
-            # NEEDS: live reads kept off the 50 ms cut (or the call retried): safe_spots' two probes take
-            # 6-15 ms on realmc, but once took 52 ms under load and the cut ended the whole horde
+            # safe_spots' two probes are live reads: their wait has its own I/O budget, off the 50 ms cut
             for spot in safe_spots(ctx, p, n, a.spread):     # one wave mixes kinds: spots once, then each spawn
                 kind = random.choice(a.mobs)
                 self.spawn(kind, spot, dim=p.dim, nbt=self.nbt(kind), keep=a.stay)
@@ -131,7 +130,7 @@ class Horde(Scenario):
     def no_room(self):
         a = self.args
         self.result("no horde: no safe ground within %d blocks of %s" % (a.spread, a.players), players=a.players,
-                    waves=self.state.waves, count=0)
+                    waves=self.state.waves, count=0, failed=True)
         self.end()
 
     def nbt(self, kind):

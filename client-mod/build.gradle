@@ -166,7 +166,7 @@ test {
 
 tasks.register('engineTest', Test) {
 	group = 'verification'
-	description = 'Runs the real VAD and Moonshine over the model\'s test clip (downloads about 120 MB once).'
+	description = 'Runs the real VAD and every speech model over a test clip, hotwords too (downloads about 750 MB once).'
 	testClassesDirs = sourceSets.test.output.classesDirs
 	classpath = sourceSets.test.runtimeClasspath
 	useJUnitPlatform {
@@ -268,20 +268,27 @@ tasks.register('castCheck', JavaExec) {
 }
 
 // ---------------------------------------------------------------------------
-// ./gradlew sttCompare: Moonshine base (the mod's), Moonshine tiny and Parakeet on the
-// same audio and the same VAD segments. A measurement; it changes nothing in the mod.
-// Downloads about 620 MB of models once into build/vfg-test-assets/.
+// ./gradlew sttCompare: Parakeet 0.6B v2 (the mod's) and 110M, greedy and with hotwords, and
+// Moonshine base and tiny, on the same audio and the same VAD segments. A measurement; it changes
+// nothing in the mod. Downloads about 730 MB of models once into build/vfg-test-assets/.
 // ---------------------------------------------------------------------------
 
 tasks.register('sttCompare', JavaExec) {
 	group = 'verification'
-	description = 'Compares speech-to-text models on the speech test audio: WER, speed, size, memory.'
+	description = 'Compares speech-to-text models, greedy and with hotwords, on the Minecraft and addressing sets: WER, hotwords through and false, speed, memory.'
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = 'com.voiceforgaming.vfg.tools.SttCompare'
 	jvmArgs '--enable-native-access=ALL-UNNAMED'
 	systemProperty 'vfg.testAssets', layout.buildDirectory.dir('vfg-test-assets').get().asFile.absolutePath
-	def runDir = layout.buildDirectory.dir('stt-compare').get().asFile
+	def runDir = project.hasProperty('sttOut') ? file(project.property('sttOut')) : layout.buildDirectory.dir('stt-compare').get().asFile
 	systemProperty 'vfg.compareOut', runDir.absolutePath
+	// -PsttSet=<file>: another addressing set; -PsttTune=<file>: configurations to try; -PsttMinecraft=false;
+	// -PsttMoonshine=false; -PsttJobs=N: models' JVMs at once; -PsttThreads=N; -PsttOut=<dir>
+	['sttSet', 'sttTune', 'sttMinecraft', 'sttMoonshine', 'sttJobs', 'sttThreads'].each { p ->
+		if (project.hasProperty(p)) {
+			systemProperty "vfg.${p}", project.property(p).toString()
+		}
+	}
 	workingDir = runDir
 	doFirst { runDir.mkdirs() }
 }

@@ -124,7 +124,7 @@ class TestWho(CastCase):
         os.remove(self.export_path)
         self.assertEqual(self.cast()[0], 404)
         self.assertEqual(self.request("GET", "/v1/incantations?player=Steve"),
-                         (200, {"version": 0, "player": "Steve", "incantations": []}))
+                         (200, {"version": 0, "player": "Steve", "incantations": [], "server_phrases": []}))
         self.assertEqual(self.line("fire ball")[0], 202)
         self.assertEqual(self.rows("SELECT text, dropped FROM lines"), [("fire ball", None)])
 
@@ -257,6 +257,37 @@ class TestList(CastCase):
         self.assertEqual(self.get("player=Steve")[1]["incantations"],
                          [{"phrase": "fire ball", "aliases": [], "cooldown_s": 0.0},     # its ability not loaded
                           {"phrase": "meteor", "aliases": [], "cooldown_s": 4.0}])
+
+    def test_server_phrases_are_every_players_phrases_once_each_with_no_aliases(self):
+        self.write_export(binding("Steve", "fire ball", aliases=["fireball", "fire bowl"]), binding("Steve", "ice wall"),
+                          binding("Alex", "rock slide", aliases=["rocks lied"]), binding("Alex", "Fire Ball"),
+                          binding("Notch", "ice wall"), binding("Notch", "light  up"), version=2)
+        for player in ("Steve", "Alex", "Notch", "Herobrine"):
+            status, doc = self.get("player=" + player)
+            self.assertEqual(status, 200)
+            self.assertEqual(doc["server_phrases"], ["fire ball", "ice wall", "light up", "rock slide"], player)
+        self.assertEqual(self.get("player=Herobrine")[1]["incantations"], [])
+        self.write_export(version=3)
+        self.assertEqual(self.get("player=Steve")[1]["server_phrases"], [])
+
+    def test_a_held_request_answers_when_another_players_phrases_change(self):
+        # the engine bumps its export's version on every binding change, whoever's it is
+        got = []
+        t = threading.Thread(target=lambda: got.append(self.get("player=Steve&after=1&wait=10")))
+        t.start()
+        time.sleep(0.1)                          # held: Steve's own list is unchanged by what follows
+        steve = [binding("Steve", "fire ball"), binding("Steve", "ice wall")]
+        self.write_export(*steve, binding("Alex", "rock slide"), binding("Alex", "stone skin"), version=2)
+        t.join(5)
+        self.assertEqual(got[0][0], 200)
+        doc = got[0][1]
+        self.assertEqual(doc["version"], 2)
+        self.assertEqual([e["phrase"] for e in doc["incantations"]], ["fire ball", "ice wall"])
+        self.assertIn("stone skin", doc["server_phrases"])
+        self.assertEqual(self.get("player=Steve&after=2&wait=0.1"), (304, None))
+        self.write_export(*steve, binding("Alex", "stone skin"), version=3)
+        doc = self.get("player=Steve&after=2&wait=10")[1]
+        self.assertNotIn("rock slide", doc["server_phrases"])
 
     def test_304_when_nothing_changes(self):
         start = time.monotonic()
@@ -586,7 +617,7 @@ class TestJevCasts(CastCase):
     def test_a_kept_cast_may_come_after_jev_routed_the_line(self):
         _, line = self.line("ok watch this everybody, look at me, fire ball")
         conn = sqlite3.connect(self.db_path)
-        conn.execute("UPDATE lines SET jev_class = 'action_oriented'")   # routed first, as a long line is
+        conn.execute("UPDATE lines SET jev_class = 'to_ai'")   # routed first, as a long line is
         conn.commit()
         conn.close()
         status, doc = self.jev(line["id"], keep=True)

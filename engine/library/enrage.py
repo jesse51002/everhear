@@ -1,12 +1,13 @@
 """Enrage: a boss grows faster and stronger each time its health falls below a share of what it
 had when it was granted (0.5, then 0.25 by default), with a roar and a warning to every player.
-Passive: granted at spawn to every boss_fight body (horde_king, dragon_head, ice_queen), it watches
+Faster is a movement_speed modifier (every mob has one, an ender dragon too, which takes no potion);
+stronger is Strength (for whatever takes potions). Passive: granted at spawn to every boss_fight body (horde_king, dragon_head, ice_queen), it watches
 its own body alone, so with several bodies (a three-headed dragon) each enrages on its own health,
 not the bodies' total (the old boss() tracked one phase for the whole fight; this is simpler, and
 each body still roars and buffs itself as it weakens). Its warning names the body by its own live
 name (ctx.user.name: WRITING.md), whatever the boss was spawned or overridden as."""
 
-from vfg_engine import Ability, AbilityConfig, State, UNTIL_STOPPED
+from vfg_engine import UNTIL_STOPPED, Ability, AbilityConfig, Field, State
 from vfg_engine.kit import speak
 
 
@@ -14,6 +15,7 @@ class Enrage(Ability):
     class Config(AbilityConfig):
         summary = "Faster and stronger each time its health falls below a share (0.5, then 0.25), with a roar."
         shares: list[float] = [0.5, 0.25]   # of its starting health, highest first; the old boss_phases
+        speed_per_phase: float = Field(0.25, ge=0, le=2)   # its speed, up by this share of its own each phase
         damage = 0
         duration_s = UNTIL_STOPPED          # passive: runs for as long as it is granted
         charge_s = 0
@@ -43,15 +45,9 @@ class Enrage(Ability):
             return
         self.state.phase += 1
         amp = self.state.phase - 1
-        # NEEDS: keep_potion never reaches an actor body live: granted to a player it lands fine
-        # (proven: the same two calls, same ability, same timing, give Steve speed and strength
-        # that `t.effect` sees), but granted to an Actor (this ability's one real use: a boss) the
-        # GiveEffect it queues never shows as an active effect on the body, in Minecraft or in the
-        # engine's own log (no "did not take" line either) -- most likely marks.py's step(), which
-        # only re-sends a kept potion `if rt.online(rec.user)`, treating an actor's uuid as if it
-        # answers False where a player's name answers True. Unit-tested fine on FakeIo; this only
-        # shows live. dragon_head's and this class's own live tests both hit it.
-        self.keep_potion("speed", amp, seconds=5)
+        # faster: a movement_speed modifier, which every mob has (an ender dragon too: it takes no
+        # potion at all, "immune to effects"); stronger: Strength, for whatever takes potions
+        self.modifier("movement_speed", self.config.speed_per_phase * self.state.phase, "add_multiplied_base")
         self.keep_potion("strength", amp, seconds=5)
         self.sound("minecraft:entity.ravager.roar", volume=4, pitch=0.7)
         speak(self, ctx, "%s is enraged" % ctx.user.name, voice="", color="red", where="actionbar")

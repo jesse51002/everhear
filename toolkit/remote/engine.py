@@ -9,9 +9,8 @@
 # "timeout" seconds, which the engine is told, and MARGIN_S more, so its own "did not answer in
 # time" is the one that comes back; the first one that gets no answer stops the rest.
 #
-#   {"vfg": "/opt/vfg", "mc": "/opt/mc", "op": "test", "server": "main", "name": "fire_staff_steve",
-#    "tests": "<tar of tests/>", "content": "<tar of content/>" | null, "bindings": [...], "timeout": 60,
-#    "boot": 60, "tail": 15, "live": {"vfg", "mc"}?}   on the TEST server: livetest (run_test)
+# A test of content is not this program's: vfg test runs livetest on the test server through
+# test.py, in its sandbox.
 # A deploy is the made content of one server, made/<server>/content/ on the PC, into
 # <vfg>/made/<server>/content/ here: unpacked beside it, then swapped in under run/deploy.lock, and
 # left as it is when every file is the same. Then, with
@@ -133,15 +132,23 @@ def on_disk(folder):
 
 
 class Locked(object):
-    """run/deploy.lock, the one every deploy here takes."""
+    """run/deploy.lock, the one every deploy here takes. Opened read-only, never through a link,
+    and only when it is a plain file: on a test server run/ is the test user's to write too."""
 
     def __init__(self, path):
         self.path = path
 
     def __enter__(self):
         import fcntl
+        import stat
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            self.fd = os.open(self.path, os.O_RDONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o644)
+        except OSError as e:
+            die(1, "deploy refused: %s cannot be used as its lock (%s)" % (self.path, e.strerror or e))
+        if not stat.S_ISREG(os.fstat(self.fd).st_mode):
+            os.close(self.fd)
+            die(1, "deploy refused: %s is not a plain file: not used as its lock" % self.path)
         fcntl.flock(self.fd, fcntl.LOCK_EX)
         return self
 
@@ -152,12 +159,12 @@ class Locked(object):
 
 
 def deploy(server, b64, folder="content"):
-    """made/<server>/<folder>/ (content, or tests) from the tar: unpacked into .incoming-<pid>/
-    beside it, then swapped in whole under run/deploy.lock, unless every file is the same already."""
+    """made/<server>/content/ from the tar: unpacked into .incoming-<pid>/ beside it, then swapped
+    in whole under run/deploy.lock, unless every file is the same already."""
     if not SERVER_RE.match(server or ""):
         die(1, "deploy refused: %r is not a server's name" % server)
-    if folder not in ("content", "tests"):
-        die(1, "deploy refused: %r is not content or tests" % folder)
+    if folder != "content":
+        die(1, "deploy refused: %r is not content" % folder)
     root = os.path.join(BASE, "made", server)
     dest = os.path.join(root, folder)
     try:
@@ -203,85 +210,6 @@ def deploy(server, b64, folder="content"):
             "swapped": swapped}
 
 
-# ------------------------------------------------------------------ a test, on the test server
-
-TEST_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
-
-
-def tail(path, n):
-    """The last n lines of a file, or []."""
-    try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            return [l.rstrip("\n") for l in f.readlines()[-n:]] if n > 0 else []
-    except OSError:
-        return []
-
-
-def run_test():
-    """vfg test: made/<server>/content/ and tests/ deployed here, then livetest run against this
-    server (engine/vfg_engine/livetest.py: one engine started for the test, then stopped; its state
-    in <vfg>/state/engine), with the library and this server's content, and the task's bindings
-    bound first. Its report, its exit code and, after a failure, the last lines of its engine's log."""
-    import subprocess
-    server, name = ARGS.get("server") or "", ARGS.get("name") or ""
-    if not TEST_NAME_RE.match(name):
-        die(2, "%r is not a test's name" % name)
-    live = ARGS.get("live") or {}
-    if live:
-        # the live server under another path: the same folder once links are followed, or the same
-        # RCON port (as remote/test.py checks it)
-        pairs = (("vfg folder", BASE, live.get("vfg")), ("Minecraft folder", ARGS["mc"], live.get("mc")))
-        same = [what for what, here, there in pairs if there and os.path.realpath(here) == os.path.realpath(there)]
-        if not same and live.get("mc"):
-            try:
-                port = read_props(os.path.join(ARGS["mc"], "server.properties")).get("rcon.port")
-                if port and port == read_props(os.path.join(live["mc"], "server.properties")).get("rcon.port"):
-                    same = ["RCON port %s" % port]
-            except OSError:
-                pass
-        if same:
-            die(3, "this test server is the live one (the same %s): a test never runs there" % same[0])
-    deployed = {"tests": deploy(server, ARGS.get("tests") or "", "tests")}
-    if ARGS.get("content"):
-        deployed["content"] = deploy(server, ARGS["content"], "content")
-    # The engine's package, its venv and its library: the test server's own when it has them, else
-    # the live server's on the same host (the box's /opt/vfg/engine), run here on the test server.
-    homes = [os.path.join(BASE, "engine")] + ([os.path.join(live["vfg"], "engine")] if live.get("vfg") else [])
-    engine = next((h for h in homes if os.access(os.path.join(h, ".venv", "bin", "python"), os.X_OK)), None)
-    if engine is None:
-        die(3, "no engine to test with (%s): provision it with the engine"
-            % ", ".join(os.path.join(h, ".venv", "bin", "python") for h in homes))
-    python = os.path.join(engine, ".venv", "bin", "python")
-    state = os.path.join(BASE, "state", "engine")
-    os.makedirs(state, exist_ok=True)
-    cmd = [python, "-m", "vfg_engine.livetest", "--properties", os.path.join(ARGS["mc"], "server.properties"),
-           "--state-dir", state, "--content", os.path.join(engine, "library"),
-           "--content", os.path.join(BASE, "made", server, "content"),
-           "--test", os.path.join(BASE, "made", server, "tests", name + ".py"),
-           "--boot", str(float(ARGS.get("boot") or 60)), "--timeout", str(float(ARGS.get("timeout") or 60))]
-    if ARGS.get("bindings"):
-        path = os.path.join(state, "bindings.%d.json" % os.getpid())
-        atomic_write(path, json.dumps(ARGS["bindings"], ensure_ascii=False), 0o600)
-        cmd += ["--bindings", path]
-    env = dict(os.environ, PYTHONPATH=engine, PYTHONUNBUFFERED="1")
-    limit = float(ARGS.get("timeout") or 60) + float(ARGS.get("boot") or 60) + 30
-    try:
-        p = subprocess.run(cmd, cwd=engine, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, timeout=limit)
-        code, o, e = p.returncode, p.stdout, p.stderr
-    except subprocess.TimeoutExpired as x:
-        code, o, e = 5, x.stdout or b"", (x.stderr or b"") + b"\nlivetest did not end within its limit"
-    finally:
-        if ARGS.get("bindings"):
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-    return {"deployed": deployed, "test": {
-        "code": code, "out": o.decode("utf-8", "replace"), "err": e.decode("utf-8", "replace")[-4000:],
-        "log": tail(os.path.join(state, "engine.log"), int(ARGS.get("tail") or 0)) if code != 0 else []}}
-
-
 def main():
     timeout = float(ARGS.get("timeout") or 10)
     out = {"replies": []}
@@ -301,8 +229,6 @@ def main():
                     die(1, "reload refused: %r is not a file in made/%s/content" % (p, server))
             paths = [os.path.join(dest, *str(p).split("/")) for p in wanted]
             ask_all([{"op": "reload", "args": {"paths": paths}}], timeout, out)
-    elif ARGS.get("op") == "test":
-        out.update(run_test())
     else:
         die(2, "unknown op %r" % ARGS.get("op"))
     print(json.dumps(out, ensure_ascii=False))

@@ -517,8 +517,11 @@ class Casts:
 
     def listing(self, player, after=None, wait=None):
         """(200, the player's list) at once, or when ``after`` is the version, once it changes;
-        (304, None) when it has not changed in ``wait`` s. The version is the export's: a missing
-        or unreadable export is version 0, with none."""
+        (304, None) when it has not changed in ``wait`` s. The list holds the player's own
+        incantations, and ``server_phrases``, every phrase on the server (server_phrases()). The
+        version is the export's, which every binding change bumps whoever's it is, so a held request
+        answers when any player's phrases change; a missing or unreadable export is version 0, with
+        none."""
         wait = self.LIST_WAIT_DEFAULT if wait is None else min(wait, self.LIST_WAIT_MAX)
         deadline = time.monotonic() + wait
         key = self.engine.file_key()
@@ -535,11 +538,21 @@ class Casts:
 
     def _list(self, player):
         """The player's list: the engine's bindings for them, one per phrase, each with the aliases
-        the spotter listens for and its ability's cooldown_s (0 while it is not loaded)."""
-        version = self.engine.bindings()["version"]
+        the spotter listens for and its ability's cooldown_s (0 while it is not loaded); and every
+        phrase on the server."""
+        export = self.engine.bindings()
         out = [{"phrase": e["phrase"], "aliases": self.spotted(e), "cooldown_s": e.get("cooldown_s") or 0.0}
                for e in self._one_per_phrase(self._entries(player))]
-        return {"version": version, "player": player, "incantations": out}
+        return {"version": export["version"], "player": player, "incantations": out,
+                "server_phrases": self.server_phrases(export["incantations"])}
+
+    @staticmethod
+    def server_phrases(entries):
+        """Every incantation phrase on the server, whoever's (the player's own and every other
+        player's), normalised, once each, sorted; phrases alone, no aliases. The mod boosts them as
+        speech-to-text hotwords, since players talk about each other's spells, and a hotword boosts
+        the real word, not another spelling of it (Prototype_Addressing_The_AI)."""
+        return sorted(set(p for p in (sounds.normalize(e.get("phrase")) for e in entries) if p))
 
     @staticmethod
     def spotted(entry):

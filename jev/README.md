@@ -1,8 +1,8 @@
 # jev — the Jev filter
 
-On the EC2 box. It asks Jev (TypeSafe) what should become of each new line a player says or types,
-writes the verdict into the transcript history, and feeds the lines it keeps to the brain in
-batches. Before that, a voice line from a player with an incantation gets the cast check: if it
+On the EC2 box. It asks Jev (TypeSafe) whether each new line a player says or types is said to the
+AI or to a friend, and what should become of it; writes the verdict into the transcript history; and
+feeds the lines it keeps to the brain in batches. Before that, a voice line from a player with an incantation gets the cast check: if it
 was said to cast one, the bridge casts it. A short line surely cast never reaches the brain; a long
 one (a cast inside other talk), or a short one Jev is not sure of, is routed as ever too: "I'd
 rather it do both if it's not sure."
@@ -79,43 +79,62 @@ sounds.py`'s `normalize`, `Casts._one_per_phrase`), not the bridge itself: this 
 alone. `tests/test_bridge_pin.py` holds the copy to the bridge's own code. `VFG_JEV_CAST_MIN` over 1 turns the
 check off, and so does a missing `VFG_CLIENT_TOKEN` (said once, at the start).
 
-**One call a line, two questions** (D2, chosen on 2026-10-11): what should happen with the line —
-the AI must act, answer in chat, remember it, or ignore it — and, if the AI only replied in chat,
-whether the speaker would be fine, let down, or not notice. The answers walk onto four classes:
+**The rule** (Prototype_Addressing_The_AI, 2026-10-13): a line goes to the AI only when it names the
+AI — its names are "AI" and "brain" — and is said to it, or when it answers a question the AI asked,
+whichever player the AI asked. Jesse: "you have to mention AI or be explicitly responding to
+something AI asked. Those are the only two times that it can go to the AI." Jev judges a misheard
+name too: speech-to-text writes "AI" as "I", "eye", "A" or runs it into the next word, and Jev decides
+whether that is what was meant; it is not a word match. A line said between players goes to context
+or is dropped, however much it sounds like an ask, and a line about the AI ("it never hears me")
+is not to it. Typed chat is under the same rule. A player who forgets the name gets nothing, and is
+told nothing.
+
+**One call a line, two questions** (`prompt.ROUTING`): is the speaker talking to the AI or to a
+friend in line [1] (`to_the_ai`: the AI by name, its name misheard, answering a question it asked,
+or neither), and, if it is not said to the AI, should it be remembered (`keep`). The answers walk
+onto three classes:
 
 | Class | Answers | Goes to |
 |---|---|---|
-| `action_oriented` | act, and the speaker would be let down by a reply alone | the brain |
-| `conversational` | answer; or act, with the second answer anything else or missing | Respond |
-| `context` | remember | the feed, read by no model |
-| `not_relevant` | ignore | nowhere; never fed |
+| `to_ai` | by name, its name misheard, or answering it, whatever `keep` says | Respond first (the brain's) |
+| `context` | neither, and remember (or `keep` missing) | the feed, read by no model |
+| `not_relevant` | neither, and ignore | nowhere; never fed |
 
-The confidence stored and fed is the first answer's. An answer without the first question counts as
-Jev failing.
+The confidence stored and fed is `to_the_ai`'s, whatever the class. An answer without `to_the_ai`
+counts as Jev failing. The wording is `b4` of `integration/jev_addressing_bench.py`, benched on
+every line Jev judged on the night of 2026-10-13 (226) with the real API, against the night's hand
+labels: every line the AI was named in went (9 of 9), all 25 lines said between players and all 7
+unclear ones were kept from it in each of five runs (the night's routing sent all 32), 5 of the 6
+answers went, and 159 of the other 161 lines stayed out; the 17 real asks without the name as heard (one typed, two
+whose "AI" speech-to-text mangled past reading) were lost, as the rule means. Jev reads every
+player's lines and the AI's, so it sees who is talking to whom; it judges a line about 0.9 s after
+it ends, before a friend has answered it. The call costs what it did: about 6,900 input tokens, 1%
+more than the two questions before it.
 
 **The gather call.** Speech-to-text cuts a player at every pause, so one ask can arrive in pieces. A
-line classed `action_oriented` or `conversational` gets one more call before it is fed, over its
-speaker's lines that Jev classed `context` or `not_relevant` after it judged their last line to the
-AI, said before this one and 3 minutes before it at most (the newest 10): is each part of this ask?
-That is judge order, not the order said, because a voice line is stored only once its speech is
-text, after a line typed later may have been judged: each line is offered to the speaker's next line
-to the AI judged after it, and to no other. A line passed as `context` with no confidence, while Jev
-failed open or after it refused the line twice, is never gathered. The yes lines go with the ask as
-one feed line, in the order said, the ask last, joined with ` … ` —
-`the castle by the river … the big one … make it bigger` — with the ask's fields and time, the
-oldest dropped first when it would be over the feed's 500 characters. A gathered line keeps its own
-class and is fed, or not, as before. No such lines, no call. A gather call that fails leaves the ask
-to go alone, and does not count towards failing open. The group is held in memory until the ask is
-fed, so a crash between the two feeds the ask alone; a restart finds a group already fed by the ask
-at its end.
+line classed `to_ai` gets one more call before it is fed, over its speaker's lines that Jev classed
+`context` or `not_relevant` after it judged their last line to the AI, said before this one and 3
+minutes before it at most (the newest 10): is each part of this ask? That is judge order, not the
+order said, because a voice line is stored only once its speech is text, after a line typed later
+may have been judged: each line is offered to the speaker's next line to the AI judged after it, and
+to no other. A line passed as `context` with no confidence, while Jev failed open or after it
+refused the line twice, is never gathered. The yes lines go with the ask as one feed line, in the
+order said, the ask last, joined with ` … ` — `the castle by the river … the big one … AI, make
+it bigger` — with the ask's fields and time, the oldest dropped first when it would be over the feed's
+500 characters. A gathered line keeps its own class and is fed, or not, as before. No such lines, no
+call. A gather call that fails leaves the ask to go alone, and does not count towards failing open.
+The group is held in memory until the ask is fed, so a crash between the two feeds the ask alone; a
+restart finds a group already fed by the ask at its end.
 
-An `action_oriented` or `conversational` line flushes the batch at once, since both get a live
-answer; otherwise a batch goes `VFG_BATCH_SECONDS` after its first line. If Jev fails for 10 s the
-filter fails open: every line passes as `context`, with one `SYS` line in the feed when that starts
-and another when Jev is back.
+A `to_ai` line flushes the batch at once, since it gets a live answer; otherwise a batch goes
+`VFG_BATCH_SECONDS` after its first line. If Jev fails for 10 s the filter fails open: every line
+passes as `context`, with one `SYS` line in the feed when that starts and another when Jev is back.
 
-Jev's state is the fixed rules (the setting and how to read the state; the classes are defined only
-in the questions' options), `lookout.md` (what to watch for), a block of invented examples under
+Jev's state is the fixed rules (the setting, the AI's names and the rule, and how to read the state;
+the classes are defined only in the questions' options), `lookout.md` (what to watch for), a block of
+invented examples (never a session's lines: a bench of Jev on them is worth nothing once its prompt
+holds them; the gather call keeps the rules and examples it was benched with, word for word, `GATHER_RULES` and
+`GATHER_EXAMPLES`, since the rule's lowered its yes on real pieces from 0.88 to 0.75) under
 what should become of each, the brain's action menu `menu.md` (one `name — what it does` a line;
 missing or empty is fine), then the history: the lines said, the AI's included, and the brain's own
 records of what it did — the feed's `AI` rows of kind `action`, `task` and `result` — so a follow-up
@@ -128,7 +147,8 @@ The journal has one line per call, the routing call's with both answers, the cas
 its answer and what became of the line:
 
 ```text
-judge <id> Steve voice action_oriented 0.91 · act 0.91, let down 0.88 · 230ms 7012tok
+judge <id> Steve voice to_ai 0.98 · by name 0.98, ignore 0.22 · 230ms 7012tok
+judge <id> Alex chat not_relevant 0.93 · neither 0.93, ignore 0.80 · 240ms 6900tok
 gather <ask id> Steve · 3 asked, 1 yes: <id> 0.91 · no: <id> 0.80, <id> 0.77 · 210ms 7400tok
 cast-check <id> Steve · hot fireball p 0.92 → fired · 210ms 1700tok
 cast-check <id> Steve · ice beam p 0.88 → cooldown (0.4 s left of its 3 s cooldown) · 190ms 1650tok
@@ -139,10 +159,8 @@ cast-check <id> Steve · ice beam p 0.63 → fired, the line kept, not sure (und
 ```
 
 `p` is the probability of the option Jev chose, the number held to `VFG_JEV_CAST_MIN` (`p -` when
-the answer gave none).
-
-```text
-```
+the answer gave none). The routing call's answers in short are `by name`, `name misheard`, `answers
+it` or `neither`, then `remember` or `ignore` (`keep -` when it is missing).
 
 A routing call Jev answers writes one `usage` row, `ref` the line's id, one row for both calls when
 it was refused once first; a call that fails, or is refused twice, writes none. An answered gather
@@ -153,13 +171,17 @@ and the probe that finds Jev back one with `ref` `probe`.
 
 On the box it is the systemd unit `vfg-jev`: `/opt/vfg/python/bin/python3 -u /opt/vfg/jev/jev_filter.py`.
 To judge one text and write nothing: `python3 jev_filter.py --judge "<text>"`, which prints the class
-with both answers, with `--raw` to see Jev's answer as sent. The cast check alone, on the engine's
+with both answers (no history, so nothing for it to answer), with `--raw` to see Jev's answer as sent. The cast check alone, on the engine's
 export as it is, with no RECENT: `python3 jev_filter.py --cast "<text>" --player Steve`; it writes
 nothing and casts nothing.
 
 Deploy from the repo's root on the owner's PC: `jev/deploy.sh`. It streams this folder (without
-`tests/`) to `/opt/vfg/jev/` over SSH, swaps it in and restarts the unit. Set the key once with
-`bridge/deploy/set-secret.sh TYPESAFE_API_KEY`.
+`tests/`) to `/opt/vfg/jev/` over SSH, swaps it in and restarts the unit. It refuses a box whose
+bridge predates `to_ai`, since Jev's classes are the CHECK the bridge's schema sets: run
+`bridge/deploy/deploy.sh` there instead, which deploys Jev with the bridge. Whenever Jev is on the
+box, `bridge/deploy/deploy.sh` stops it before the schema and runs `jev/deploy.sh` from the same
+checkout after, leaving it stopped if that fails. Set the key once
+with `bridge/deploy/set-secret.sh TYPESAFE_API_KEY`.
 
 ## Test it
 
@@ -172,8 +194,19 @@ line with `big one` in it is part of the ask; a line holding a phrase is its cas
 `tests/fake_lib/` for the bridge's feed writer. Every rule runs on a fake clock in `test_filter.py`,
 and the cast check's in `test_cast_check.py`, with a fake bridge; `test_e2e.py` runs `jev_filter.py`
 as a process against the stand-ins, once with a stand-in for the bridge's cast path, and stops it
-with SIGTERM. `test_drift.py` checks Jev's wording against
-the wording benched in `integration/replay/` (skipped where that is not there).
+with SIGTERM. `test_drift.py` checks Jev's wording against the wording benched, `b4` of
+`integration/jev_addressing_bench.py`, and the brain's `brain/prompts/lookout.md` against the default
+lookout (each skipped where its file is not there).
+
+The bench itself (real API, a session's own data, which stays out of the repo):
+
+```sh
+B=<build dir>; N=$B/night/vfg
+python3 integration/jev_addressing_bench.py run prod --db $N/vfg.db --labels $B/jev-bench/labels.json \
+    --lookout $N/lookout.md --menu $N/menu.md          # every line judged, about a minute, $0.07
+python3 integration/jev_addressing_bench.py score --labels $B/jev-bench/labels.json prod d2
+python3 integration/jev_addressing_bench.py probe prod --labels $B/jev-bench/labels.json   # invented lines
+```
 
 ## Settings
 
@@ -187,7 +220,7 @@ From the environment (systemd reads `/opt/vfg/.env`):
 | `VFG_MENU` | `/opt/vfg/menu.md`, the brain's action menu (`vfg jev menu set`) |
 | `VFG_BATCH_SECONDS`, `VFG_POLL_MS` | `5`, `50` |
 | `VFG_JEV_URL`, `VFG_JEV_MODEL`, `VFG_JEV_TIMEOUT` | `https://api.typesafe.ai/v1/systemone`, `jev-latest`, `3` s |
-| `VFG_JEV_STATE_TOKENS`, `VFG_JEV_HISTORY_HOURS` | `8000`, `3` |
+| `VFG_JEV_STATE_TOKENS`, `VFG_JEV_HISTORY_HOURS` | `8280`, `3`: 8,280 since the rule's longer rules and examples (+837 bytes), so the menu and history keep the room they had at 8,000 |
 | `VFG_JEV_CAST_MIN` | `0.5`: the cast check's threshold, on the chosen option's probability; over 1, no cast check |
 | `VFG_JEV_CAST_MIN_LONG` | `0.7`: a long line's (over 6 words); over 1, no long line is checked |
 | `VFG_JEV_CAST_SURE` | `0.7`: a short cast this sure drops its line; under it, cast and routed too; over 1, no line dropped |

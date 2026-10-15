@@ -6,7 +6,7 @@ stops at the first wall, per death_gaze/main.py's own "up to the first wall" and
 def test(t):
     husk = t.mob("husk", 0, 0, 10, health=40)
     t.grant("death_gaze")
-    t.sneak(times=3)          # "held": each crouch's 0.15 s window gives on_sneaking's 0.1 s check a chance to land
+    t.sneak(times=1)          # one 0.15 s crouch: "held" counts it at the Sneak itself (kit.sneak_gesture)
     t.watch(2)
     t.check("the husk is killed", t.killed(husk))
     t.check("Steve is not hurt", t.unhurt())

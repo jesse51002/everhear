@@ -45,7 +45,7 @@ class PlaceBarrier(Scenario):
 
     def start(self, ctx):
         if self.args.at is None:
-            self.result("no barrier: no place given")
+            self.result("no barrier: no place given", failed=True)
             self.end()
 
     def tick(self, ctx):
