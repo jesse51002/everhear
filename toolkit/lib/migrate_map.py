@@ -64,15 +64,15 @@ MAP = {
     "ice_beam_cast": {"ability": "ice_beam"},
     # speed_dash → made/main's own speed_dash ability (a push forward), as inventory G4 plans it.
     "speed_dash": {"ability": "speed_dash"},
-    # made/main's three made on 2026-10-13, after the port (inventory G4 has none of them): no engine class yet.
-    "black_hole_krown": {"refuse": "black_hole_krown is made/main's, made after the port, and has no engine class "
-                                   "yet: port it into made/main/content/ as an ability, then bind its phrase by hand (engine_bind)."},
-    "vortex_charge_krown": {"refuse": "vortex_charge_krown is made/main's, made after the port, and has no engine "
-                                      "class yet: port it into made/main/content/ as an ability, then bind its "
-                                      "phrase by hand (engine_bind)."},
-    "red_sword_krown": {"refuse": "red_sword_krown gave a sword, and has no engine class yet (made/main's, made "
-                                  "after the port): port it as an item and its sweep as an ability, then give the "
-                                  "item with engine_give; an incantation casts an ability or starts a scenario."},
+    # made/main's three made on 2026-10-13, after the port (inventory G4 has none of them).
+    # vortex_charge_krown → made/main's own vortex_charge_krown ability (ported 2026-10-15).
+    "vortex_charge_krown": {"ability": "vortex_charge_krown"},
+    "red_sword_krown": {"refuse": "red_sword_krown gave a sword; an incantation can only cast an ability or start a "
+                                  "scenario: give the red_sword_krown item with engine_give, or bind "
+                                  "red_sword_krown_sweep to the phrase by hand."},
+    "black_hole_krown": {"refuse": "black_hole_krown is not ported: it never worked (it pulled nobody in), so it "
+                                   "was left behind (Jesse, 2026-10-15). For a black hole, ask the AI for a new one, "
+                                   "and bind its phrase by hand once it is built."},
 
     # ---- the library's utilities, each a scenario that takes args now (DESIGN2 §7).
     "command": {"scenario": "command", "values": {"commands": "commands"}},
