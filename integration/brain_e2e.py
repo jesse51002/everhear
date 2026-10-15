@@ -21,11 +21,11 @@ Stand-ins: SSH (toolkit/tests/fake_ssh, which runs the remote command here), Min
        pages; nothing is fetched).
 
 Every line to the AI takes its player's turn for two quick calls (Prototype_Conversation_And_Router):
-the conversation agent answers, and a hand-off goes to the router, which places the work, here a
-new brain loop each time; the loop runs behind the turn and replies with the result. The agent's
-line to a hand-off is held until the router has placed it (the router does not reason: one line
-per ask from the front), so an ask gets the agent's acknowledgement, when it wrote one, and then
-the loop's reply.
+the conversation agent answers, and its line goes out the moment it answers, every time, hand-off
+or not (no hold); a hand-off goes to the router, which places the work, here a new brain loop each
+time, and the loop runs behind the turn and replies with the result. The router's own line, when
+it has one, goes out after the agent's. So an ask gets the agent's line, when it wrote one, and
+then the loop's reply.
 
 Nothing touches ~/.vfg, ~/.ssh or any remote host but OpenRouter: HOME, VFG_HOME and VFG_REPO
 point into a temp folder. The table at the end times each line from the moment it was fed to
@@ -692,8 +692,10 @@ class Run:
         return front_of(self.box.log(), ref)
 
     def ack_lines(self, ask):
-        """The chat lines the front turn said for the ask: its acknowledgement, or nothing."""
-        return 0 if (self.front("#%d" % ask["seq"]) or {}).get("said") in (None, []) else 1
+        """The chat lines the front turn said for the ask, besides its loop's reply: the agent's
+        line, said at once, when it wrote one, and the router's own after it, when it has one (no
+        hold: both can go out for the same ask)."""
+        return len((self.front("#%d" % ask["seq"]) or {}).get("said") or [])
 
     def table(self):
         print("\nTIMING: a line fed -> its reply said (the feed rows' times); its front turn and loop from brain.log")

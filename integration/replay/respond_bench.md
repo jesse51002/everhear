@@ -920,3 +920,90 @@ The rows hold the night's speech: OUT stays outside the repo, as the session fol
 - **The model naming Jev or the filter**: 0–2 a round, though the prompt forbids it since round 3. A rule in the prompt does not hold every time for a model with no reasoning; only a check in code does.
 
 **So the agent passes the spec's three bars on the last run, and the p90 bar with a wide margin on every run.** The two hand-off and promise bars rest on a prompt and on code checks that each cover what they have seen. At these rates, expect under one miss or new wording a night like 2026-10-12's 64 lines. Live play is where that will show.
+
+## front2: the four-choices, no-hold rewrite
+
+DESIGN2.md (Jesse, 2026-10-15): `Response` becomes `{reason, choice, reply}`, `choice` one of
+`reply`, `look`, `do` or `quiet` (`hand_off` stays a read-only property, true for `look` or `do`);
+no hold anywhere — the agent's line goes out the moment it answers, every time, hand-off or not,
+and the router's own line, when it has one, goes out after it, never in its place; and replies
+beside a `look` or a `do` say back specifically what was heard (the thing, for whom, how many,
+where), never a bare "On it!" or "Coming up!". `front2` is `front`'s own harness (VERSIONS[FRONT2],
+respond_bench.py), pointed at the same live `brain/prompts/respond.md` and `brain.respond.Respond`
+— a run's meta.json's sha256 is what tells the two apart. respond.md f08573a2…, respond.py
+0082d7f7… (both current at this writing).
+
+Run: a 3-call pilot, then `night` twice, `night-to_ai` once, the invented set once, $0.055 in all
+(`$L/respond_bench.py recorded` added nothing: V4 Flash's night is unchanged). Rows and `score.md`
+are in the build's `bench-data/runs-front2/`.
+
+| | Round 4 (`front`) | front2 |
+|---|---|---|
+| **`do` handed off, `night`** (bar: all) | 84 of 84 | **56 of 56** (2 runs) |
+| **`look` handed off, `night`** (new choice; counted with `do` before this round) | — | **4 of 4** |
+| on V4 Flash's `do`+`look` lines | 6 of 6 (3 runs) | **8 of 8** (2 runs) |
+| `do`+`look` handed off, `night-to_ai` | 28 of 28 | **30 of 30** |
+| Invented set: asks handed off; all right | 10 of 10; 19 of 20 (i04) | **10 of 10; 19 of 20** (i04, the same line) |
+| **Replies with no hand-off that promise or offer**, all three sets | 0 of 47 (`night` only; 2 borderline) | **0 of 40** (2 flagged by the pointer regex, both negated: "not something I can check/touch") |
+| **Done-claims or offers said beside a hand-off**, all three sets | 0 of 137 (`night` only; 2 borderline) | **0 of 164** (24 flagged by the blunt pointer: "bound to 'burn'" naming the trigger word, and "Checking…" look replies, which claim nothing; none a real done-claim by my reading) |
+| **Bare acknowledgement** ("On it!", "Got it!", "Coming up!", "Still on it." and close variants) — the new measure, aim none | not measured before this round | **0 of 164** look/do replies said |
+| Sentences per look/do reply said | not measured | 135 one sentence, 29 two; **0 over two** |
+| Reply length | not measured | median 63 chars, p90 106, max 135; **0 over 150** |
+| DONE check fired; offer beside a hand-off dropped | 3; 0 | `night` 2; 1 (r1 #266, r2 #87 done; r2 #233 offer); `to_ai` 1; 1 (r1 #144 done; r1 #233 offer) |
+| **Guard fired** | `night` 1 of 192; `to_ai` 1 of 64; invented 0 | `night` **1 of 128** (r1 #177, a promise); `to_ai` 0 of 64; invented 0 |
+| **p90** (median) | `night` 0.87 s (0.63); `to_ai` 0.81 s; invented 0.69 s | `night` **0.74 s** (0.55, 2 runs); `to_ai` 0.75 s (0.58); invented 0.84 s (0.50) |
+| **Talk lines handed off** (no bar) | `night` 37 of 81 (46%); `to_ai` 14 of 27 (52%) | `night` 34 of 54 (63%, 2 runs); `to_ai` 15 of 27 (56%) |
+| A final reply names Jev or the filter | 2 | **0** |
+| Cost a call | $0.00023 | $0.00022 (`night`), $0.00029 (`to_ai`), $0.00030 (invented) |
+| Agent (respond.md, respond.py hashes) | f3034d3e, 39909119 | **f08573a2, 0082d7f7** |
+
+**Every bar holds, on both measures this round adds.** `do` and `look` are both handed off every
+time, in both `night` runs, `night-to_ai`, and the invented set. Nothing said without a hand-off
+promises or offers for real; nothing beside a hand-off claims done for real (the pointer regexes
+flag mentions of "bound to the word …", which name the incantation's trigger, not a claim that the
+work is finished). p90 sits at 0.74–0.84 s, well inside the 3 s bar.
+
+**No bare acknowledgement went out: 0 of 164.** Every `look` or `do` reply named the thing, who it
+was for, or how many, as respond.md's examples now do ("Got it: 64 cooked steak for you, Krown.",
+"Checking what you've got bound, KrownJM.", "Still on it: teleporting you to Styrkaeopteryx, Krown."
+— see _Every line, run by run_ and _the acknowledgements said with a hand-off_, above, for the
+whole list). None is a bare "On it!" or "Coming up!".
+
+**Replies stay short.** 135 of 164 look/do replies are one sentence, 29 are two; none runs to three.
+By characters: median 63, p90 106, the longest 135 — every one under the 150-character aim, let
+alone the 200 hard cut. Casual `reply`/`quiet` lines (not counted above) read the same as before:
+a few words, in style ("Aye, matey.", "Trade secret, Styrka.").
+
+**No bare or over-long reply to list: there are none of either in the four runs.**
+
+**front2's only miss is historical, not its own.** The one `do` line not handed off in the whole
+comparison is V4 Flash's own, the night of 2026-10-12/13, `#87` "That's not what I said can you":
+*"The line says 'That's not what I said can you' and follows a previous request to bind a fireball
+spell. It's cut off but likely refers to the earlier ask, which is already being handled. It
+doesn't clearly demand a new action beyond the ongoing one."* front2 handed `#87` off in both runs
+(round 4 fixed it, and it has stuck): r1 replied "Sorry, what did you mean instead, Krown? The
+fireball incantation's still being set up — tell me the fix and I'll pass it on."; r2 handed it off
+too but the DONE check dropped its line ("Sorry Krown, what did you mean instead? Wanting the
+fireball fixed now." — read as claiming the fix is already wanted/done, so nothing went out beside
+the hand-off). Across both `night` runs, `night-to_ai`, and the invented set, front2 missed no `do`
+or `look` line of its own.
+
+**What else showed up, not against any bar:**
+
+- **Four other DONE-check/offer drops, all correct catches, not misses:** `night` `#266` r1
+  ("Freeze is unbound for you, Styrkaeopteryx." — claims done before the unbind has run) and
+  `night` `#233` r2 (an offer, "Want to test the flame aura on someone, Krown? Say the word and
+  I'll set it up.", dropped); `night-to_ai` `#144` r1 ("Got it: the freeze aura isn't hurting
+  anything. Having it fixed to actually deal frost damage, Styrkaeopteryx." — "fixed" claims done)
+  and `night-to_ai` `#233` r1 (another offer, "…want me to look at what's odd with it?", dropped).
+  Each left its hand-off with nothing said beside it, rather than a false claim or offer going out.
+- **One guard catch:** `#177` r1, a cut-off line ("I think it might have not cooled down in terms
+  of"), moved from a bare `reply` to `do` because its reply promised ("I'll sort the cooldown"); r2
+  answered the same line as `do` directly, no guard needed.
+- **Talk lines handed off rose a little past round 4's 46/52%** (63% on `night`, 56% on
+  `night-to_ai`), in the same range the five fix rounds moved in (round 1 36% to round 4 46%): noise
+  between runs, not a new trend tied to this rewrite.
+- **The invented set's one wrong answer is the same borderline line as round 4's**, i04 ("and don't
+  build anything near spawn unless I say it's ok"), handed off as `do`+`look` ("Got it, Sam: holding
+  off near spawn unless you say so. Checking where Riley's tower landed.") instead of answered as a
+  future rule: it reads the spawn question before it (Riley's tower) as something to check.

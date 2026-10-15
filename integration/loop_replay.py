@@ -760,8 +760,9 @@ def canned(rec_of, ds: Dataset):
     """--fake-model: structured() with no model. A Step replies and runs nothing; a ReportAnswer is
     the night's reply and status, handing off where Gemini's round-5 report loop ran actions or
     handed off; a Route then starts a new loop where that loop ran actions (events 16, 18, 21, 24),
-    else follows the task up; a Response hands off. Each call's usage row is written as
-    structured() writes it, at no cost, so every count downstream is real."""
+    else follows the task up; a Response answers `do` (Prototype_Conversation_And_Router's four
+    choices), the same as a hand-off was. Each call's usage row is written as structured() writes
+    it, at no cost, so every count downstream is real."""
     import vfg_llm
     g5 = round5(ds)
 
@@ -776,7 +777,7 @@ def canned(rec_of, ds: Dataset):
             value = output.model_validate({"end": "reply", "reply": "(a canned step) I heard you",
                                            "record": "(a canned step) nothing ran"})
         elif name == "Response":
-            value = output.model_validate({"reason": "canned", "hand_off": True, "reply": ""})
+            value = output.model_validate({"reason": "canned", "choice": "do", "reply": ""})
         elif name == "ReportAnswer":
             night = (rec.event or {}).get("original") or {}
             acted = gemini(rec)[0]
@@ -886,7 +887,7 @@ async def wire(where: str, out: Path, *, route: bool = True, fake_model: bool = 
     brain = Brain(ctx=Context(), call=call, respond=respond, router=router, acts=acts, world=world, tasks=tasks,
                   implementers=fake, later=later, catalog=catalog, refs=refs, now=clock.now, clock=clock, start=0,
                   load=None, menu=None, steps=cfg.loop_steps, cap=cfg.loop_cap, take_up_s=cfg.loop_take_up_s,
-                  hold=cfg.hold, waiting=cfg.turn_waiting, settle_s=cfg.turn_settle_s)
+                  waiting=cfg.turn_waiting, settle_s=cfg.turn_settle_s)
 
     # Each report's agent answer, and each router answer, into the event's record as it comes.
     real_report, real_route, real_report_route = respond.report, router.route, brain.report_route

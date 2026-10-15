@@ -235,14 +235,19 @@ USE_NOW = re.compile(r"(?:^|[.!?;]\s+)(?:just\s+|now\s+)?(?:say|shout|type|hold|
 
 # What a model writes in `to` when it is not an action: the step's own words, which tell the fix.
 ENDINGS, ORDERS = ("next", "reply", "silent", "handoff"), ("together", "in_turn")
-STEP_FIELDS = ("action", "actions", "fields", "hand_off", "hand_offs", "follow_up", "follow_ups", "read_items", "end")
+# Real fields of the step or its action (never "action": there is no such field any more, renamed to
+# `fields` so DeepSeek stopped echoing the action's name into it (ActBase.fields's note); "action" and
+# "actions" get their own hint below, never this one, since "write it there" names no field a model
+# could find for either (the live run's "stop my effects" named it twice, #39).
+STEP_FIELDS = ("fields", "hand_off", "hand_offs", "follow_up", "follow_ups", "read_items", "end")
 PLAYER_NAME = re.compile(r"^[A-Za-z0-9_]{3,16}$")
 
 
 def unknown_action(to: str, catalog: Catalog, given: list) -> str:
     """The send-back for a `to` not on the menu, naming the likely fix: `to` holds an ending, an
-    order or one of the step's own fields (DeepSeek on the live tests: "together", "follow_up",
-    "hand_offs"), a field of an action ("commands"), or a player; else the plain refusal."""
+    order, one of the step's own fields (DeepSeek on the live tests: "together", "follow_up",
+    "hand_offs"), a field of an action ("commands"), a player, or the word "action"/"actions" itself,
+    which names no field (`fields` holds an action's own values); else the plain refusal."""
     name = to.strip()
     low = name.lower().replace("-", "_").replace(" ", "_")
     fix = f"{name} is not on the menu: `to` is the name of one action on the menu, as `command`"
@@ -250,6 +255,9 @@ def unknown_action(to: str, catalog: Catalog, given: list) -> str:
         return f"{fix}; {name} is an ending: it goes in `end`"
     if low in ORDERS:
         return f"{fix}; {name} is an order: it goes in `order`"
+    if low in ("action", "actions"):
+        return (f'{fix}; `to` holds the action\'s own name as THE MENU lists it (command, teleport, stop, '
+                f'edit…), never the word "{name}"')
     if low in STEP_FIELDS:
         return f"{fix}; {name} is a field of the step, not an action: write it there, or name the action"
     owners = [n for n in catalog.names() if low in getattr(catalog.get(n), "model_fields", {})]

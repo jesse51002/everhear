@@ -71,11 +71,23 @@ for p in (REPO / "brain", REPO / "bridge"):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-from brain.context import Context, Row, parse  # noqa: E402
+from brain.context import TO_AI, Context, Row, parse  # noqa: E402
 from brain.tasks import Tasks  # noqa: E402
 from brain.world import Seen  # noqa: E402
 
-LIVE = ("action_oriented", "conversational")
+# Since Prototype_Addressing_The_AI merged (2026-10-13, after this night), context.parse() reads the
+# night's own classes, action_oriented and conversational, as to_ai too: row.cls is always "to_ai"
+# for a line said to the AI, whichever class the feed line itself carries.
+LIVE = (TO_AI,)
+RAW_LINE_CLASS = re.compile(r"^LINE#\d+ \d\d:\d\d:\d\d \S+ \S+ (\S+)")
+
+
+def raw_class(line: str) -> str:
+    """A feed LINE's own class, straight from the line: action_oriented or conversational, as the
+    night had it, before context.parse() reads an old one as to_ai (Prototype_Addressing_The_AI).
+    "" for a line that is not a LINE row."""
+    m = RAW_LINE_CLASS.match(line)
+    return m.group(1) if m else ""
 UNDER_WAY_LAG_S = 2.0   # from a line fed to its loop's start: the conversation agent's call and the router's
 TAKE_UP_S = 120.0       # an ended loop is shown until this long after its start (VFG_LOOP_TAKE_UP_S)
 WORDS_MAX = 80          # a loop's line in WORK UNDER WAY, in characters (loops.WORDS_MAX)
@@ -269,8 +281,10 @@ class Night:
                 row = parse(line, seq=seq, at=at)
                 if row is None:
                     continue
-                if row.type == "LINE" and row.cls in LIVE and classes == "to_ai":
-                    row.cls = "to_ai"
+                if row.type == "LINE" and row.cls in LIVE:
+                    # classes="to_ai": every live line reads to_ai, as after Prototype_Addressing_The_AI;
+                    # else the night's own class (context.parse() normalizes both to to_ai now).
+                    row.cls = "to_ai" if classes == "to_ai" else (raw_class(line) or row.cls)
                 row.processed = row.processed or seq <= last_read
                 ctx.add(row)
             row = ctx.rows[-1]

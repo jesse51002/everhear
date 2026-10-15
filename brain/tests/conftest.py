@@ -149,10 +149,10 @@ def step(*actions: dict, end: str = "reply", reply: str = "", record: str = "", 
             "follow_ups": list(follow_ups), "end": end, "reply": reply, "record": record}
 
 
-def answer(reply: str = "", hand_off: bool = True, reason: str = "it asks for something") -> dict:
-    """The conversation agent's answer to a line: a reply, a hand-off (with its acknowledgement, or
-    none), or silence."""
-    return {"reason": reason, "hand_off": hand_off, "reply": reply}
+def answer(reply: str = "", choice: str = "do", reason: str = "it asks for something") -> dict:
+    """The conversation agent's answer to a line: `reply`, talk; `look` or `do`, a hand-off (with
+    its acknowledgement, or none); or `quiet`, silence."""
+    return {"reason": reason, "choice": choice, "reply": reply}
 
 
 def report_answer(reply: str = "", status: str = "done", record: str = "", hand_off: bool = False, left: str = "",
@@ -314,10 +314,10 @@ class FakeRefs:
 class Kit:
     """A Brain wired to fakes, its parts at hand: the conversation agent, the router and the brain's
     steps all answered by one FakeAsk. A turn does not wait for its rows to come back (settle_s 0)
-    unless a test sets the brain's settle_s. The router holds the agent's line (`hold`) unless a
-    test says it reasons."""
+    unless a test sets the brain's settle_s. There is no hold: the agent's line always goes out the
+    moment it answers."""
 
-    def __init__(self, tmp: Path, ctx: Context | None = None, *, cat=None, hold: bool = True, **answers: Any):
+    def __init__(self, tmp: Path, ctx: Context | None = None, *, cat=None, **answers: Any):
         # Unless a test says otherwise, the agent hands every line off saying nothing, and the router starts a
         # new loop for it: a line comes to the brain's loop as it always did, and the loop's reply is the only one.
         answers.setdefault("Response", answer())
@@ -338,8 +338,7 @@ class Kit:
                          world=self.world, repo=REPO_COPY, server="main")
         self.brain = Brain(ctx=self.ctx, call=self.call, respond=self.respond, router=self.router, acts=self.acts,
                            world=self.world, tasks=self.tasks, implementers=self.impl, later=self.later,
-                           catalog=self.cat, refs=FakeRefs(), now=lambda: NOW, clock=self.tick, hold=hold,
-                           settle_s=0)
+                           catalog=self.cat, refs=FakeRefs(), now=lambda: NOW, clock=self.tick, settle_s=0)
 
     async def send(self, row: dict) -> bool:
         """`vfg task set`, as __main__ sends it."""

@@ -75,8 +75,9 @@ class Config:
     respond_providers: tuple[str, ...] = V41_HOSTS  # VFG_RESPOND_PROVIDERS
     respond_timeout_s: float = 20.0                 # VFG_RESPOND_TIMEOUT_S: one call, retries included; a hung
                                                     # one holds the player's turn, then hands the line off
-    # The router (router.py), which picks who does the work: no reasoning to start, so its answer is quick
-    # and the conversation agent's line is held for it (hold, below); low if its replay falls short.
+    # The router (router.py), which picks who does the work: no reasoning to start, so its answer is quick;
+    # low if its replay falls short. Reasoning no longer changes what is said: the agent's line always goes
+    # out at once, hand-off or not, and the router's own line, when it has one, after it.
     router_model: str = V41                         # VFG_ROUTER_MODEL
     router_reasoning: str = "off"                   # VFG_ROUTER_REASONING
     router_providers: tuple[str, ...] = V41_HOSTS   # VFG_ROUTER_PROVIDERS
@@ -99,14 +100,6 @@ class Config:
     def effort_of(reasoning: str) -> bool | str:
         """What structured() takes: False for off, else the effort."""
         return reasoning if thinks(reasoning) else False
-
-    @property
-    def hold(self) -> bool:
-        """Whether the conversation agent's line to a hand-off is held until the router has
-        answered, so the player gets one line per ask: only while the router does not reason,
-        and so answers in a second or two. A router that thinks holds nothing: the agent's line
-        goes out at once, and the router's own after it (the spec, _One line per ask_)."""
-        return not thinks(self.router_reasoning)
 
     @property
     def lock_file(self) -> Path:

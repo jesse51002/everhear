@@ -1,8 +1,10 @@
-"""The conversation agent (Respond): the schema it decides first in, the prompt's opening and tail
-(the world, TASKS, WORK UNDER WAY, what is new, then the line or the report), its call's usage row,
-and what code does after the call: the guard on a reply that promises with no hand-off, the DONE
-check on a hand-off's reply, the cut of a reply too long for one chat line, and a report answer's
-fixes (what is left, the record's name). Its own promises(), `busy` included."""
+"""The conversation agent (Respond): the schema it decides first in (reason, choice, reply, `choice`
+one of reply/look/do/quiet), the prompt's opening and tail (the world, TASKS, WORK UNDER WAY, what
+is new, then the line or the report), its call's usage row, and what code does after the call: the
+guard that moves a reply/quiet that promises or offers to `do`, the quiet-with-a-reply and
+reply-with-nothing fixes, the DONE check on a look/do's reply, the cut of a reply too long for one
+chat line, and a report answer's fixes (what is left, the record's name). Its own promises(), `busy`
+included."""
 
 import pytest
 from vfg_llm import LlmError
@@ -48,9 +50,11 @@ async def said(answer: dict, text: str = "lol make it rain", *, tasks: str = TAS
 
 def test_it_decides_first_and_always_writes_its_reason():
     schema = Response.model_json_schema()                  # what the model is shown, and writes in this order
-    assert list(schema["properties"]) == ["reason", "hand_off", "reply"]
-    # every property required, its default kept: a hand_off left out would hand off the talk beside it
-    assert schema["required"] == ["reason", "hand_off", "reply"] and schema["properties"]["hand_off"]["default"] is True
+    assert list(schema["properties"]) == ["reason", "choice", "reply"]
+    # every property required, its default kept: a choice left out would default to do
+    assert schema["required"] == ["reason", "choice", "reply"]
+    assert schema["properties"]["choice"]["enum"] == ["reply", "look", "do", "quiet"]
+    assert schema["properties"]["choice"]["default"] == "do"
     assert schema["properties"]["reply"]["default"] == ""
     report = ReportAnswer.model_json_schema()
     assert list(report["properties"]) == ["reason", "hand_off", "left", "status", "reply", "record"]
@@ -59,14 +63,22 @@ def test_it_decides_first_and_always_writes_its_reason():
     assert report["properties"]["status"]["enum"] == ["done", "failed"]
 
 
+def test_hand_off_is_true_for_look_or_do_and_is_read_only():
+    for choice, expect in (("reply", False), ("look", True), ("do", True), ("quiet", False)):
+        assert Response(reason="x", choice=choice, reply="").hand_off is expect
+    got = Response(reason="x", choice="do", reply="")
+    with pytest.raises(AttributeError):       # existing callers (loop.py, the benches) read it; nobody sets it
+        got.hand_off = False
+
+
 # ------------------------------------------------------------------ a line
 
 async def test_a_line_is_one_call_its_usage_row_respond_and_its_seq_its_prompt_the_opening_then_the_tail():
-    r, ask = agent(Response={"reason": "a greeting", "hand_off": False, "reply": "hey Steve!"})
+    r, ask = agent(Response={"reason": "a greeting", "choice": "reply", "reply": "hey Steve!"})
     ctx, row = line(7, "Steve", "hi AI", "GAME#5 18:29:40 join Steve | Steve joined the game")
     new = [ctx.rows[0]]
     got = await r.answer(row, ctx, SEEN, TASKS, UNDER, new)
-    assert (got.value.hand_off, got.value.reply) == (False, "hey Steve!")
+    assert (got.value.choice, got.value.hand_off, got.value.reply) == ("reply", False, "hey Steve!")
     call, = ask.calls
     assert (call["output"], call["component"], call["call_id"]) == ("Response", "respond", "#7")
     assert call["cached"] == ctx.cached(r.opening(), 5)     # the opening marked, then the conversation's blocks
@@ -83,7 +95,7 @@ async def test_a_line_is_one_call_its_usage_row_respond_and_its_seq_its_prompt_t
 
 
 async def test_work_under_way_is_the_cores_text_its_heading_put_on_when_it_has_none():
-    r, ask = agent(Response={"reason": "talk", "hand_off": False, "reply": ""})
+    r, ask = agent(Response={"reason": "talk", "choice": "quiet", "reply": ""})
     ctx, row = line()
     for under, shown in (("", "WORK UNDER WAY: nothing"),
                          ("WORK UNDER WAY: no brain loops", "WORK UNDER WAY: no brain loops"),
@@ -94,15 +106,18 @@ async def test_work_under_way_is_the_cores_text_its_heading_put_on_when_it_has_n
         assert f"{TASKS}\n\n{shown}\n\nNEW SINCE THE LAST READ" in ask.calls[-1]["prompt"]
 
 
-async def test_a_hand_off_may_carry_its_acknowledgement_and_silence_is_an_empty_reply():
-    assert (await said({"reason": "rain now", "hand_off": True, "reply": "On it!"})).reply == "On it!"
-    got = await said({"reason": "rain now"})                   # the defaults: a hand-off, nothing said
-    assert (got.hand_off, got.reply) == (True, "")
-    got = await said({"reason": "thanks", "hand_off": False, "reply": "  "}, "thanks AI")
-    assert (got.hand_off, got.reply) == (False, "")
-    # with a hand-off a promise is the acknowledgement: no guard
+async def test_do_or_look_may_carry_a_reply_and_quiet_or_an_empty_reply_says_nothing():
+    got = await said({"reason": "rain now", "choice": "do", "reply": "On it: making it rain."})
+    assert (got.choice, got.hand_off, got.reply) == ("do", True, "On it: making it rain.")
+    got = await said({"reason": "rain now", "choice": "do"})           # the default: reply left out, "" kept
+    assert (got.choice, got.hand_off, got.reply) == ("do", True, "")
+    got = await said({"reason": "thanks", "choice": "quiet", "reply": "  "}, "thanks AI")
+    assert (got.choice, got.hand_off, got.reply) == ("quiet", False, "")
+    got = await said({"reason": "checking", "choice": "look", "reply": "Checking what's in your hotbar, Steve."})
+    assert (got.choice, got.hand_off, got.reply) == ("look", True, "Checking what's in your hotbar, Steve.")
+    # with do or look a promise is kept whole as the line: no guard
     promise = "I'll make it rain!"
-    assert (await said({"reason": "rain", "hand_off": True, "reply": promise})).reply == promise
+    assert (await said({"reason": "rain", "choice": "do", "reply": promise})).reply == promise
 
 
 async def test_a_failed_call_is_the_callers_to_handle():
@@ -114,35 +129,40 @@ async def test_a_failed_call_is_the_callers_to_handle():
 
 # ------------------------------------------------------------------ the guard
 
-async def test_a_reply_with_no_hand_off_that_promises_is_handed_off_with_it_and_one_that_offers_without(capsys):
-    got = await said({"reason": "a question", "hand_off": False, "reply": "Want me to make it rain?"})
-    assert (got.hand_off, got.reply) == (True, "")                    # a question waiting for a yes: dropped
-    assert got.reason == "a question · handed off in code: an offer"
-    assert ('respond guard #7 an offer, handed off, dropped: an offer: "Want me to make it rain?"'
+async def test_a_reply_or_quiet_that_promises_becomes_do_and_one_that_offers_is_dropped(capsys):
+    got = await said({"reason": "a question", "choice": "reply", "reply": "Want me to make it rain?"})
+    assert (got.choice, got.hand_off, got.reply) == ("do", True, "")      # a question waiting for a yes: dropped
+    assert got.reason == "a question · moved to do in code: an offer"
+    assert ('respond guard #7 an offer -> do, dropped: an offer: "Want me to make it rain?"'
             in capsys.readouterr().out)                                # the log alone
-    got = await said({"reason": "rain", "hand_off": False, "reply": "Sure, I'll make it rain!"})
-    assert (got.hand_off, got.reply, got.reason) == (True, "Sure, I'll make it rain!",
-                                                     "rain · handed off in code: a promise")
-    assert ('respond guard #7 a promise, handed off, kept as the acknowledgement: "Sure, I\'ll make it rain!"'
+    got = await said({"reason": "rain", "choice": "reply", "reply": "Sure, I'll make it rain!"})
+    assert (got.choice, got.hand_off, got.reply, got.reason) == ("do", True, "Sure, I'll make it rain!",
+                                                                 "rain · moved to do in code: a promise")
+    assert ('respond guard #7 a promise -> do, kept as the line: "Sure, I\'ll make it rain!"'
             in capsys.readouterr().out)
-    long = "Sure thing, I'll make it rain on the whole base!"                  # over the prompt's 40: kept whole
-    assert (await said({"reason": "rain", "hand_off": False, "reply": long})).reply == long
-    got = await said({"reason": "rain", "hand_off": False, "reply": "Done! Enjoy the rain."})  # says it is done
-    assert (got.hand_off, got.reply) == (True, "")
-    assert 'a promise, handed off, dropped: it says it is done: "Done! Enjoy the rain."' in capsys.readouterr().out
-    ack = "Got it, I'll ask you before giving Alex anything."  # a rule for later: said
-    got = await said({"reason": "a rule for later", "hand_off": False, "reply": ack}, "ask me first next time")
-    assert (got.hand_off, got.reply) == (False, ack)
+    long = "Sure thing, I'll make it rain on the whole base!"                  # over the prompt's ~150: kept whole
+    assert (await said({"reason": "rain", "choice": "reply", "reply": long})).reply == long
+    got = await said({"reason": "rain", "choice": "reply", "reply": "Done! Enjoy the rain."})  # says it is done
+    assert (got.choice, got.reply) == ("do", "")
+    assert 'a promise -> do, dropped: it says it is done: "Done! Enjoy the rain."' in capsys.readouterr().out
+    ack = "Got it, I'll ask you before giving Alex anything."  # a rule for later: said as a reply
+    got = await said({"reason": "a rule for later", "choice": "reply", "reply": ack}, "ask me first next time")
+    assert (got.choice, got.reply) == ("reply", ack)
+    # a quiet answer that promises becomes do too
+    got = await said({"reason": "rain", "choice": "quiet", "reply": "I'll make it rain!"})
+    assert (got.choice, got.reply) == ("do", "I'll make it rain!")
 
 
-async def test_a_status_passes_for_a_player_with_work_under_way_a_loop_or_a_task_and_is_a_promise_else():
-    status = {"reason": "asks after it", "hand_off": False, "reply": "Hang tight, it's coming."}
-    assert (await said(status, "is it done yet", busy={"Steve"})).hand_off is False          # a loop thinking
-    tasks = Tasks(rows=[{**FROST, "player": "Steve"}]).show(["frost_bow_alex"])               # an implementer
-    assert (await said(status, "is it done yet", tasks=tasks)).hand_off is False
-    for busy in ((), ("Alex",)):                       # nothing of his: a promise, kept as the acknowledgement
+async def test_a_status_passes_for_a_player_with_work_under_way_a_loop_or_a_task_and_becomes_do_else():
+    status = {"reason": "asks after it", "choice": "reply", "reply": "Hang tight, it's coming."}
+    got = await said(status, "is it done yet", busy={"Steve"})                             # a loop thinking
+    assert (got.choice, got.hand_off) == ("reply", False)
+    tasks = Tasks(rows=[{**FROST, "player": "Steve"}]).show(["frost_bow_alex"])             # an implementer
+    got = await said(status, "is it done yet", tasks=tasks)
+    assert (got.choice, got.hand_off) == ("reply", False)
+    for busy in ((), ("Alex",)):                 # nothing of his: a promise, moved to do, kept as the line
         got = await said(status, "is it done yet", busy=busy)
-        assert (got.hand_off, got.reply) == (True, "Hang tight, it's coming.")
+        assert (got.choice, got.hand_off, got.reply) == ("do", True, "Hang tight, it's coming.")
 
 
 def test_promises_takes_the_players_with_work_under_way_and_nothing_else_changes():
@@ -178,6 +198,18 @@ def test_promises_takes_the_players_with_work_under_way_and_nothing_else_changes
     assert promises("Done a moment ago, have a look.", TASKS, "Steve") == ""
 
 
+# ------------------------------------------------------------------ quiet and reply, normalized
+
+async def test_a_quiet_answer_with_a_reply_said_anyway_becomes_reply_and_a_reply_with_nothing_becomes_quiet(capsys):
+    got = await said({"reason": "a laugh", "choice": "quiet", "reply": "Haha, fair enough."}, "lol")
+    assert (got.choice, got.hand_off, got.reply) == ("reply", False, "Haha, fair enough.")
+    assert 'respond guard #7 quiet -> reply: "Haha, fair enough."' in capsys.readouterr().out
+    got = await said({"reason": "nothing to add", "choice": "reply", "reply": ""}, "ok cool")
+    assert (got.choice, got.hand_off, got.reply) == ("quiet", False, "")
+    got = await said({"reason": "nothing to add", "choice": "reply", "reply": "   "}, "ok cool")  # blank: quiet too
+    assert (got.choice, got.reply) == ("quiet", "")
+
+
 # ------------------------------------------------------------------ the DONE check
 
 DONE = {  # a hand-off's reply -> whether it says the thing is done
@@ -208,20 +240,25 @@ def test_claims_done_reads_a_clause_at_a_time_and_a_hedge_or_a_question_claims_n
     assert {reply: claims_done(reply) for reply in DONE} == DONE
 
 
-async def test_a_hand_offs_reply_that_says_it_is_done_or_offers_is_dropped_and_a_replys_alone_is_not_checked(capsys):
-    got = await said({"reason": "rain now", "hand_off": True, "reply": "Done! Enjoy the rain."})
-    assert (got.hand_off, got.reply) == (True, "")
-    assert 'respond guard #7 beside a hand-off, dropped: it says it is done: "Done! Enjoy the rain."' in \
+async def test_a_do_or_looks_reply_that_says_it_is_done_or_offers_is_dropped_and_a_replys_alone_is_not_checked(
+        capsys):
+    got = await said({"reason": "rain now", "choice": "do", "reply": "Done! Enjoy the rain."})
+    assert (got.choice, got.reply) == ("do", "")
+    assert 'respond guard #7 beside do, dropped: it says it is done: "Done! Enjoy the rain."' in \
         capsys.readouterr().out
-    got = await said({"reason": "bigger", "hand_off": True, "reply": "If it's not big enough, I can make it bigger."})
-    assert (got.hand_off, got.reply) == (True, "")                     # an offer: the work is handed off already
-    assert 'respond guard #7 beside a hand-off, dropped: an offer: "If it' in capsys.readouterr().out
+    got = await said({"reason": "bigger", "choice": "do", "reply": "If it's not big enough, I can make it bigger."})
+    assert (got.choice, got.reply) == ("do", "")                       # an offer: the work is handed off already
+    assert 'respond guard #7 beside do, dropped: an offer: "If it' in capsys.readouterr().out
+    got = await said({"reason": "checking", "choice": "look", "reply": "Yep, you've got a sword, all set."})
+    assert (got.choice, got.reply) == ("look", "")                         # a look that claims done is dropped too
+    assert 'respond guard #7 beside look, dropped: it says it is done: "Yep, you\'ve got a sword, all set."' in \
+        capsys.readouterr().out
     for ack in ("On it!", "Coming up!", "Still on it.", "Sorry, fixing it.", "Got it.",
                 "Got it — ice aura fixed up next."):
-        assert (await said({"reason": "rain now", "hand_off": True, "reply": ack})).reply == ack
-    got = await said({"reason": "asks after it", "hand_off": False, "reply": "All set a moment ago, have a look!"},
+        assert (await said({"reason": "rain now", "choice": "do", "reply": ack})).reply == ack
+    got = await said({"reason": "asks after it", "choice": "reply", "reply": "All set a moment ago, have a look!"},
                      "is my bridge done", busy={"Steve"})
-    assert (got.hand_off, got.reply) == (False, "All set a moment ago, have a look!")
+    assert (got.choice, got.reply) == ("reply", "All set a moment ago, have a look!")  # a reply alone: not checked
 
 
 # ------------------------------------------------------------------ the cut
@@ -235,12 +272,12 @@ def test_cut_makes_one_line_and_cuts_at_a_word():
 
 async def test_a_reply_past_300_characters_is_cut_at_a_word_to_200_and_one_just_over_200_goes_out(capsys):
     long = "Beacons need a pyramid of iron, gold, emerald, diamond or netherite blocks under them, " * 4
-    got = await said({"reason": "a question", "hand_off": False, "reply": long}, "what's a beacon for")
+    got = await said({"reason": "a question", "choice": "reply", "reply": long}, "what's a beacon for")
     assert len(long.strip()) > 300 and len(got.reply) <= 200 and got.reply.endswith("…")
     assert long.startswith(got.reply[:-1]) and not got.reply[:-1].endswith(" ")
     assert f"respond #7 reply of {len(long.strip())} characters cut to 200" in capsys.readouterr().out
     fine = "x" * 250
-    assert (await said({"reason": "a question", "hand_off": False, "reply": fine})).reply == fine
+    assert (await said({"reason": "a question", "choice": "reply", "reply": fine})).reply == fine
 
 
 # ------------------------------------------------------------------ a report
@@ -303,17 +340,34 @@ async def test_a_reports_failed_call_is_the_callers_to_handle():
 
 def test_the_rules_say_its_new_job_and_name_no_class_of_jevs():
     rules = PROMPT.read_text(encoding="utf-8")
-    for part in ("DECIDE FIRST", "`reason` first, then `hand_off`, then `reply`", "HAND OFF, always",
-                 "THE REPLY WITH A HAND-OFF", "WORK UNDER WAY", "is it done yet?", "Still on it.", "A REPORT",
-                 "Work under way is never a reason to keep a line", "A correction of what the AI just did",
-                 "A clarification of, or an addition to, an ask being done", "the past tense",
-                 "Players cannot bind, unbind or change", "unless the conversation shows the AI already did it",
-                 "however it is put", "\"I meant a tall one\"", "never Jev or any filter",
-                 "A need in the game said as a complaint", "Venting that the AI's own work is slow",
-                 "`left`", "`record`", "{owner}"):
+    for part in ("DECIDE FIRST", "Write `reason` first, then `choice`, then `reply`", "DO, always",
+                 "LOOK, a question only a look at the live game can answer", "REPLIES IN DEPTH",
+                 "HARDENED AGAINST HALLUCINATION", "say back specifically what you heard",
+                 "Never a bare \"On it\"", "When you are not sure, choose `look`",
+                 "Never invent a name, a number or a result", "WORK UNDER WAY", "is it done yet?",
+                 "Still on it:", "A REPORT", "Work under way is never a reason to keep a line",
+                 "A correction of what the AI just did", "A clarification of, or an addition to, an ask being done",
+                 "the past tense", "Players cannot bind, unbind or change",
+                 "unless the conversation shows the AI already did it", "however it is put",
+                 "\"I meant a tall one\"", "never Jev or any filter", "A need in the game said as a complaint",
+                 "Venting that the AI's own work is slow", "`left`", "`record`", "{owner}",
+                 # its own correction/clarification/repeat examples say back what was heard, never bare
+                 "Sorry, the tall one, not the short one: fixing it, Steve.",
+                 "Got it: a door on your tower too, Alex.",
+                 "Say back what you heard in your own words, specifically; never parrot the whole line"):
         assert part in rules
-    for label in ("action_oriented", "conversational", "to_ai", "hand_up", "hand up"):  # Jev's classes are changing
+    for label in ("action_oriented", "conversational", "to_ai", "hand_up", "hand up",  # Jev's classes are changing
+                 "Krown",                                                # the owner's own name: invented ones only
+                 "Sorry, fixing it.\"", "\"Got it.\"",                    # the bare acknowledgements it used to have
+                 "repeat players' words back verbatim"):
         assert label not in rules
+
+
+# ------------------------------------------------------------------ the brain's check (promises() alone)
+
+def test_the_brains_check_is_for_promises_alone_an_offer_is_a_question_it_may_ask():
+    assert promises("Fire Aspect's max is 2 on /enchant, but I can set 5", offers=False) == ""
+    assert promises("Want me to make it rain? Got it, making sure it rains", offers=False) == "a promise"
 
 
 # ------------------------------------------------------------------ promises(), on the lines it was tuned on
@@ -373,21 +427,17 @@ def test_promises_catches_an_offer_or_a_promise_and_lets_talk_and_a_speakers_own
         ("TASKS: none yet", "Steve"))] == [False, False, True, True, True]
 
 
-def test_the_brains_check_is_for_promises_alone_an_offer_is_a_question_it_may_ask():
-    assert promises("Fire Aspect's max is 2 on /enchant, but I can set 5", offers=False) == ""
-    assert promises("Want me to make it rain? Got it, making sure it rains", offers=False) == "a promise"
-
-
 # ------------------------------------------------------------------ Jev unnamed
 
 async def test_a_sentence_that_names_jev_or_the_filter_is_dropped_from_a_line_reply_and_a_reports(capsys):
-    got = await said({"reason": "talk", "hand_off": False, "reply": "Ha, nice try. Ask Jev for the receipts."}, "hi AI")
-    assert (got.hand_off, got.reply) == (False, "Ha, nice try.")
+    got = await said({"reason": "talk", "choice": "reply", "reply": "Ha, nice try. Ask Jev for the receipts."},
+                     "hi AI")
+    assert (got.choice, got.hand_off, got.reply) == ("reply", False, "Ha, nice try.")
     assert 'respond guard #7 names Jev, sentence dropped: "Ask Jev for the receipts."' in capsys.readouterr().out
-    got = await said({"reason": "talk", "hand_off": False, "reply": "That's the filter's call, not mine"}, "hi AI")
-    assert got.reply == ""                                            # nothing left: silence
+    got = await said({"reason": "talk", "choice": "reply", "reply": "That's the filter's call, not mine"}, "hi AI")
+    assert (got.choice, got.reply) == ("quiet", "")                              # nothing left: quiet
     for fine in ("Jeval's a funny name.", "Filtered water beats a potion of water breathing."):
-        assert (await said({"reason": "talk", "hand_off": False, "reply": fine}, "hi AI")).reply == fine
+        assert (await said({"reason": "talk", "choice": "reply", "reply": fine}, "hi AI")).reply == fine
     got, _ = await report({"reason": "all landed", "hand_off": False, "status": "done",
                            "reply": "Your frost bow is ready. JEV let it through!", "record": "frost_bow_alex done: x"})
     assert got.reply == "Your frost bow is ready."

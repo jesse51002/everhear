@@ -55,9 +55,20 @@ CLAIM = re.compile(r"\b(done|all set|ready|fixed|there you go|here you go|all yo
                    r"teleported|stopped|removed|unbound|bound|set to|turned off|is off|off now|cleared)\b", re.I)
 # An offer beside a hand-off, which the prompt rules out: a pointer.
 OFFER = re.compile(r"\b(want me|i can|i could|say the word|if you want)\b", re.I)
+# A bare acknowledgement beside a hand-off: the whole reply, nothing else, never says what was
+# heard (respond.md, _Replies in depth_: never a bare "On it!" or "Coming up!" — DESIGN2.md, Jesse:
+# "if it just says on it, it's really hard to tell what it is talking about").
+VAGUE_ACK = re.compile(r"^(on it|got it|coming( right)? up|still on it)\s*[!.]*$", re.I)
+SENTENCE = re.compile(r"(?<=[.!?…])\s+")
 NIGHT_LABELS = ("do", "look", "talk", "F", "U")
 NIGHT_SETS = ("night", "night-to_ai")
 FRONT, RECORDED = "front", "v4-night"
+# The conversation agent's own versions, each the agent as built at some point (respond_bench.py's
+# VERSIONS[FRONT] and VERSIONS[FRONT2]): their rows carry `raw_up` (ask_front), never an old
+# version's `hand_up`. front2 is the agent after Prototype_Conversation_And_Router's four-choices,
+# no-hold rewrite (DESIGN2.md): its rows carry `choice` too.
+FRONT2 = "front2"
+NEW_AGENTS = (FRONT, FRONT2)
 P90_BAR_MS = 3000
 
 
@@ -90,6 +101,17 @@ def said(r: dict) -> str:
 def alone(r: dict) -> str:
     """A reply said with no hand-off: the one that must never promise or claim."""
     return "" if r["up"] else r.get("reply", "").strip()
+
+
+def is_vague_ack(reply: str) -> bool:
+    """Whether a look/do reply is a bare acknowledgement (VAGUE_ACK) rather than saying back what
+    was heard."""
+    return bool(VAGUE_ACK.match((reply or "").strip()))
+
+
+def sentence_count(text: str) -> int:
+    text = (text or "").strip()
+    return len([s for s in SENTENCE.split(text) if s.strip()]) if text else 0
 
 
 def ms_of(rows: list[dict]) -> list[int]:
@@ -168,8 +190,9 @@ def report(R: Runs, w, gate_b: Path | None = None) -> dict:
     if inv_versions:
         invented_report(R, w, summary, inv_versions)
     for s in NIGHT_SETS:
-        if R.night[s]:
-            summary.setdefault("night", {})[s] = night_report(R, w, s)
+        for v in NEW_AGENTS:
+            if any((v, run) in R.night[s] for run in R.runs):
+                summary.setdefault("night", {}).setdefault(s, {})[v] = night_report(R, w, s, v)
     if gate_b is not None:
         gate = {r["id"]: bool(r["up"]) for r in read(gate_b)}
         w("\n## old against Respond B's recorded run\n")
@@ -288,21 +311,29 @@ def invented_report(R: Runs, w, summary: dict, inv_versions: list[str]) -> None:
         w(f"| {v} | {runs} | " + " | ".join(cells) + f" | {st.median(ms) / 1000:.2f} s, {p90(ms) / 1000:.2f} s | "
           f"${sum(x.get('cost', 0) for x in got):.3f} |")
         summary["versions"].setdefault(v, {})["invented"] = {"right": right[v], "of": answers[v], "runs": runs}
-    fronts = [x for run in R.runs for x in R.inv.get((FRONT, run), [])]
-    if fronts:
-        w("")
-        checks(fronts, w, "The conversation agent on the invented set")
+    for v in NEW_AGENTS:
+        agent_rows = [x for run in R.runs for x in R.inv.get((v, run), [])]
+        if agent_rows:
+            w("")
+            checks(agent_rows, w, f"{v} on the invented set")
 
 
 # ------------------------------------------------------------------ the night
 
 
 def night_tally(rows: list[dict]) -> dict:
-    """One version's rows on the night: hand-offs by label, the replies, the checks, time and cost."""
+    """One version's rows on the night: hand-offs by label, the replies, the checks, time and cost,
+    and the new measure: among look/do replies, how many are a bare acknowledgement (VAGUE_ACK: "On
+    it!", "Got it!", "Coming up!", "Still on it." and close variants, the aim none) rather than
+    specific about what was heard, and the reply-length distribution (sentences, and how many run
+    past two sentences or 150 characters: respond.md, _Replies in depth_)."""
     by = {lab: [r for r in rows if r["label"] == lab] for lab in NIGHT_LABELS}
     talk = by["F"] + by["talk"]
     ms = ms_of(rows)
     prompt = sum(r.get("prompt_tokens", 0) for r in rows)
+    hand_said = [r for r in rows if r["up"] and said(r)]
+    sentences = [sentence_count(said(r)) for r in hand_said]
+    lengths = [len(said(r)) for r in hand_said]
     return {
         "n": len(rows),
         "up": {lab: [sum(r["up"] for r in by[lab]), len(by[lab])] for lab in NIGHT_LABELS},
@@ -310,6 +341,9 @@ def night_tally(rows: list[dict]) -> dict:
         "talk_up": [sum(r["up"] for r in talk), len(talk)],
         "alone": sum(1 for r in rows if alone(r)), "silent": sum(1 for r in rows if not r["up"] and not said(r)),
         "acks": sum(1 for r in rows if r["up"] and said(r)), "bare": sum(1 for r in rows if r["up"] and not said(r)),
+        "vague_ack": sum(1 for r in hand_said if is_vague_ack(said(r))),
+        "sentences": sentences, "over_two_sentences": sum(1 for n in sentences if n > 2),
+        "over_150_chars": sum(1 for n in lengths if n > 150),
         "guard": sum(1 for r in rows if r.get("guard")), "done_drop": sum(1 for r in rows if r.get("done_drop")),
         "offer_drop": sum(1 for r in rows if r.get("offer_drop")),
         "cut": sum(1 for r in rows if r.get("cut")), "failed": sum(1 for r in rows if "error" in r),
@@ -325,18 +359,21 @@ def night_md(name: str, run: str, t: dict, bold: bool = False) -> str:
     cells = " | ".join(f"{a} of {b}" for a, b in (t["up"][lab] for lab in ("look", "talk", "F", "U")))
     head = f"**{name}** | **{run}**" if bold else f"{name} | {run}"
     bar = "" if t["p90"] <= P90_BAR_MS else " ✗"
+    vague = "" if t["vague_ack"] == 0 else " ✗"
     return (f"| {head} | {t['n']} | **{d} of {dn}**{'' if d == dn else ' ✗'} ({t['do_model']} by the model) | "
             f"{cells} | **{k} of {kn} "
-            f"({pct(k, kn)})** | {t['alone']} | {t['acks']} | {t['bare']} | {t['silent']} | {t['guard']} | "
-            f"{t['done_drop']} | {t['offer_drop']} | {t['failed']} | {t['median'] / 1000:.2f} s, "
+            f"({pct(k, kn)})** | {t['alone']} | {t['acks']} | **{t['vague_ack']}**{vague} | {t['bare']} | "
+            f"{t['silent']} | {t['guard']} | {t['done_drop']} | {t['offer_drop']} | {t['failed']} | "
+            f"{t['over_two_sentences']} | {t['over_150_chars']} | {t['median'] / 1000:.2f} s, "
             f"**{t['p90'] / 1000:.2f} s**{bar} | "
             f"${t['cost']:.4f} ({t['cost'] / max(1, t['n']):.5f} a call, {100 * t['cached']:.0f}% cached) |")
 
 
 NIGHT_HEAD = ("| Version | Run | Calls | **do: handed off** | look | talk | F | U | "
               "**Talk lines (F and talk) handed off** | "
-              "Replies alone | Acknowledgements with a hand-off | Hand-offs with nothing said | Silences | Guard "
-              "fired | DONE check fired | Offer beside a hand-off dropped | Failed | Latency median, **p90** | Cost |")
+              "Replies alone | Acknowledgements with a hand-off | **Vague ack (bare)** | Hand-offs with nothing "
+              "said | Silences | Guard fired | DONE check fired | Offer beside a hand-off dropped | Failed | "
+              "Over 2 sentences | Over 150 chars | Latency median, **p90** | Cost |")
 
 
 def checks(rows: list[dict], w, what: str) -> None:
@@ -366,45 +403,45 @@ def checks(rows: list[dict], w, what: str) -> None:
               f"hand_off {str(r.get('raw_up')).lower()}, “{clean(r.get('raw_reply', ''), 100)}”")
 
 
-def night_report(R: Runs, w, s: str) -> dict:
+def night_report(R: Runs, w, s: str, version: str = FRONT) -> dict:
     got = R.night[s]
-    runs = [run for run in R.runs if (FRONT, run) in got]
+    runs = [run for run in R.runs if (version, run) in got]
     rec = next((rows for (v, _), rows in R.night["night"].items() if v == RECORDED), [])
-    fronts = [r for run in runs for r in got[(FRONT, run)]]
+    fronts = [r for run in runs for r in got[(version, run)]]
     out: dict = {"runs": runs}
-    w(f"\n## The night of 2026-10-12/13 (`{s}`)\n")
-    base = got[(FRONT, runs[0])] if runs else rec
+    w(f"\n## The night of 2026-10-12/13 (`{s}`), {version}\n")
+    base = got[(version, runs[0])] if runs else rec
     c = Counter(r["label"] for r in base)
     w(f"{len(base)} lines Jev sent to the AI: " + ", ".join(f"{c[x]} {x}" for x in NIGHT_LABELS)
       + " (night.py: `do` asks for something in the game, the bar; `look` a question only a look answers; `talk` "
       "said to the AI, talk; `F` not said to the AI; `U` unclear). V4 Flash's own answers that night "
       f"(`{RECORDED}`) are on the {len(rec)} lines Jev classed conversational; the others went to the brain.\n")
     w(NIGHT_HEAD)
-    w("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    w("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for run in runs:
-        t = night_tally(got[(FRONT, run)])
-        out[run] = {k: x for k, x in t.items() if k != "ms"}
-        w(night_md(FRONT, run, t))
+        t = night_tally(got[(version, run)])
+        out[run] = {k: x for k, x in t.items() if k not in ("ms", "sentences")}
+        w(night_md(version, run, t))
     if len(runs) > 1:
         t = night_tally(fronts)
-        out["all"] = {k: x for k, x in t.items() if k != "ms"}
-        w(night_md(FRONT, f"all {len(runs)}", t, bold=True))
+        out["all"] = {k: x for k, x in t.items() if k not in ("ms", "sentences")}
+        w(night_md(version, f"all {len(runs)}", t, bold=True))
     if s == "night" and rec:
         w("\nOn the lines V4 Flash answered that night, the same lines only:\n")
         w(NIGHT_HEAD)
-        w("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+        w("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
         t = night_tally(rec)
-        out[RECORDED] = {k: x for k, x in t.items() if k != "ms"}
+        out[RECORDED] = {k: x for k, x in t.items() if k not in ("ms", "sentences")}
         w(night_md(f"{RECORDED} (the night)", "1", t))
         mine = [r for r in fronts if r.get("v4")]
         t = night_tally(mine)
-        out["front_on_v4_lines"] = {k: x for k, x in t.items() if k != "ms"}
-        w(night_md(FRONT, f"all {len(runs)}, same lines", t, bold=True))
+        out[f"{version}_on_v4_lines"] = {k: x for k, x in t.items() if k not in ("ms", "sentences")}
+        w(night_md(version, f"all {len(runs)}, same lines", t, bold=True))
 
     w("\n### Every line, run by run\n")
     w("UP: handed off, with the acknowledgement said beside it; a quote alone: a reply with no hand-off; "
       "(silent): nothing said, nothing handed off.\n")
-    names = ([RECORDED] if s == "night" and rec else []) + [f"{FRONT} {run}" for run in runs]
+    names = ([RECORDED] if s == "night" and rec else []) + [f"{version} {run}" for run in runs]
     w("| Line | Label | Jev that night | Who | Text | " + " | ".join(names) + " |")
     w("|---|---|---|---|---|" + "---|" * len(names))
     by_rec = {r["id"]: r for r in rec}
@@ -412,7 +449,7 @@ def night_report(R: Runs, w, s: str) -> dict:
         cells = []
         for name in names:
             x = by_rec.get(r["id"]) if name == RECORDED else next(
-                (y for y in got[(FRONT, name.split()[1])] if y["id"] == r["id"]), None)
+                (y for y in got[(version, name.split()[-1])] if y["id"] == r["id"]), None)
             if x is None:
                 cells.append("-")
                 continue
@@ -424,21 +461,21 @@ def night_report(R: Runs, w, s: str) -> dict:
         w(f"| `{r['id']}` | {r['label']} | {r.get('night_class', '')}{' typed' if r.get('typed') else ''} | "
           f"{r['who']} | {clean(r['text'], 70)} | " + " | ".join(cells) + " |")
 
-    w("\n### The misses: `do` lines not handed off, with the agent's reason\n")
-    misses = [(run, r) for run in runs for r in got[(FRONT, run)]]
+    w(f"\n### The misses ({version}): `do` lines not handed off, with the agent's reason\n")
+    misses = [(run, r) for run in runs for r in got[(version, run)]]
     misses += [(RECORDED, r) for r in rec] if s == "night" else []
     for run, r in misses:
         if r["label"] == "do" and not r["up"]:
             why = clean(r.get("reason", ""), 300)
             w(f"- {run} `{r['id']}` {clean(r['text'], 90)} → “{said(r)}” — reason: {why}")
-    w("\n### Talk and unclear lines handed off, with the agent's reason\n")
+    w(f"\n### Talk and unclear lines handed off ({version}), with the agent's reason\n")
     for run in runs:
-        for r in got[(FRONT, run)]:
+        for r in got[(version, run)]:
             if r["label"] in ("F", "talk", "U") and r["up"]:
                 w(f"- {run} `{r['id']}` [{r['label']}] {clean(r['text'], 70)} → UP “{said(r)}” — "
                   f"{clean(r.get('reason', ''), 200)}")
     if fronts:
-        checks(fronts, w, f"The conversation agent on `{s}`")
+        checks(fronts, w, f"{version} on `{s}`")
     hosts = Counter(r.get("host") or "?" for r in fronts if "error" not in r)
     w("\nHosts that answered: " + ", ".join(f"{h} {n}" for h, n in hosts.most_common()) + ".")
     return out

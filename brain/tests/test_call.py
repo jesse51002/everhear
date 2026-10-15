@@ -377,7 +377,10 @@ def test_with_nothing_landed_a_step_that_runs_nothing_may_not_claim_it_done_or_e
     ("next", "next is an ending: it goes in `end`"),
     ("follow_up", "follow_up is a field of the step, not an action"),
     ("hand_offs", "hand_offs is a field of the step, not an action"),
-    ("action", "action is a field of the step, not an action"),
+    ("action", '`to` holds the action\'s own name as THE MENU lists it (command, teleport, stop, edit…), never '
+               'the word "action"'),
+    ("actions", '`to` holds the action\'s own name as THE MENU lists it (command, teleport, stop, edit…), never '
+                'the word "actions"'),
     ("commands", "commands is a field of command: name the action in `to`, and the field as a `key`"),
     ("KrownJM", "KrownJM looks like a player: players go in the action's values, as `player`"),
 ])
