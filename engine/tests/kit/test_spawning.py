@@ -86,7 +86,8 @@ def test_safe_spots_stand_on_ground_with_room_never_on_the_player(rig):
     block = lambda x, y, z: r.io.block_at("minecraft:overworld", math.floor(x), int(y), math.floor(z))  # noqa: E731
     for x, y, z in spots:                         # on the ground or on top of the wall, with room
         assert block(x, y - 1, z) == "minecraft:stone" and block(x, y, z) == block(x, y + 1, z) == "minecraft:air"
-        assert math.hypot(x - 0.5, z - 0.5) >= 1.5
+        dist = math.hypot(x - 0.5, z - 0.5)
+        assert 1.5 <= dist <= 8.0, "distance %.2f not in [1.5, 8.0]" % dist
     assert r.problems() == []
 
 

@@ -16,6 +16,7 @@ top. The library's README says what each test covers."""
 from __future__ import annotations
 
 import os
+import random
 import shutil
 import textwrap
 
@@ -49,6 +50,8 @@ class Rig:
             shutil.copy(src, self.dir / (cid + ".py"))
         for name, source in (extra or {}).items():
             (self.dir / (name + ".py")).write_text(HEADER + textwrap.dedent(source))
+        # Seed random for deterministic spawning and other random choices
+        random.seed(42)
         self.io = FakeIo()
         self.clock = Clock()
         # the call limits are real time, so a loaded PC could trip them: these tests run on the fake

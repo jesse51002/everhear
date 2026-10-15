@@ -60,7 +60,6 @@ FILES = {
     "engine/library/README.md": "The library.\n",
     "made/main/content/frost_ring_alex.py": FROST_RING,
     "made/main/content/broken_alex.py": "class BrokenAlex(\n",
-    "engine/examples/giant.py": '"""Giant: twice the size."""\n',
 }
 
 ROUTE = {"task": "ice_staff_steve", "classes": [
@@ -244,8 +243,8 @@ def test_a_class_is_read_from_its_file_and_the_examples_stand_in_for_a_missing_l
         ("meteor", "scenario", "library", "Meteor: rocks fall on a place."),  # its class's docstring, as vfg_engine.Scenario
         ("broken_alex", "?", "made", ""), ("frost_ring_alex", "mark", "made",
                                            "Frost Ring: ice round a player's feet for a while.")]
-    no_library = Repo(tmp_path / "b", files={"engine/examples/giant.py": '"""Giant: twice the size."""\n'})
-    assert examples.content_classes(no_library.dir, "main") == []          # the engine's own examples: never read
+    no_library = Repo(tmp_path / "b", files={})
+    assert examples.content_classes(no_library.dir, "main") == []
     assert examples.library_dir(no_library.dir) == "engine/library"
 
 

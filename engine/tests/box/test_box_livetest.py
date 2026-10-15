@@ -84,7 +84,7 @@ def runner(env, *argv, timeout=60):
 
 
 def args(props, state, test, *more):
-    return ["--properties", props, "--state-dir", state, "--content", os.path.join(ENGINE_DIR, "examples"),
+    return ["--properties", props, "--state-dir", state, "--content", os.path.join(os.path.dirname(ENGINE_DIR), "integration", "engine_e2e_content"),
             "--test", test, *more]
 
 
@@ -109,7 +109,7 @@ def test_a_marker_for_another_port_is_refused(sub_env, short_tmp):
 def engine_test_env(sub_env, short_tmp, **more):
     """The environment a test's engine is given: every path set, none the live server's."""
     return dict(sub_env, VFG_TEST="1", VFG_ENGINE_STATE=os.path.join(short_tmp, "s.json"),
-                VFG_ENGINE_EXPORT=os.path.join(short_tmp, "e.json"), VFG_ENGINE_CONTENT=os.path.join(ENGINE_DIR, "examples"),
+                VFG_ENGINE_EXPORT=os.path.join(short_tmp, "e.json"), VFG_ENGINE_CONTENT=os.path.join(os.path.dirname(ENGINE_DIR), "integration", "engine_e2e_content"),
                 VFG_PROTECTED=os.path.join(short_tmp, "p.json"), **more)
 
 
@@ -198,10 +198,10 @@ def test_a_passing_test(short_tmp, monkeypatch):
     monkeypatch.delenv("VFG_LIVETEST_BUDGET_S", raising=False)
     code, result, out = run_inproc(short_tmp, (
         "def test(t):\n"
-        "    t.check('the engine has the examples', 'fireball' in [c['id'] for c in t.op('classes')['classes']])\n"
+        "    t.check('the engine has the examples', 'e2e_fireball' in [c['id'] for c in t.op('classes')['classes']])\n"
         "    t.check('Steve is not hurt', t.hurt('Steve', at_least=1).__class__(not t.hurt('Steve')[0], 'fine'))\n"))
     assert (code, result["code"], result["passed"], result["failed"]) == (0, 0, 2, 0)
-    assert sorted(result["engine"]["loaded"]) == ["fire_staff", "fireball", "giant", "shrunk"]
+    assert sorted(result["engine"]["loaded"]) == ["e2e_fireball", "fire_staff", "giant", "shrunk"]
     assert result["engine"]["exit"] == 0   # stopped cleanly
     assert "AT         Steve: the caster" in out and "RESULT: 2 passed, 0 failed, 0 can't tell" in out
     assert not os.path.exists(os.path.join(short_tmp, "state", "engine.sock"))

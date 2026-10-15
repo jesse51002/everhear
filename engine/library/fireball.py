@@ -3,7 +3,7 @@ none there, to the point they are looking at), up to `reach` blocks away. There 
 with on-fire damage, then a TNT blast goes off and breaks blocks, sparing the caster (two seconds
 of Resistance V, the kit's own `blast`). The Rocket Launcher item (its own file) casts it too.
 
-(engine/examples/fireball.py's Config and power-scaled damage, with fireball_cast's aim, flight and
+(the game engine spec's Fireball example's Config and power-scaled damage, with fireball_cast's aim, flight and
 numbers (reach 80, width 1.2, speed 40, a magma block, blast power 3) and made/main's hot_fireball's
 (reach 100, speed 30, a ball of flame, 40 on-fire damage to the mob it finds, blast power 6) merged
 in: hot_fireball's numbers are the defaults below, since it is what last ran on the box. One

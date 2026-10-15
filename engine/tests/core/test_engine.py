@@ -55,8 +55,8 @@ def test_a_request_cancelled_before_its_tick_is_never_carried_out(rig):
     r.io.join("Steve")
     r.io.join("Alex", pos=(0.0, 64.0, 6.0))
     r.tick()
-    r.op("grant", who="Steve", ability="fireball")
-    r.op("bind", player="Steve", phrase="fire ball", ability="fireball")
+    r.op("grant", who="Steve", ability="e2e_fireball")
+    r.op("bind", player="Steve", phrase="fire ball", ability="e2e_fireball")
     r.io.look_at("Steve", (0.0, 64.0, 6.0))
     late = r.engine.submit("cast", {"player": "Steve", "phrase": "fire ball", "cast_id": "late"})
     assert late.cancel()                       # the socket gave up on it (its 1 s passed)
@@ -64,7 +64,7 @@ def test_a_request_cancelled_before_its_tick_is_never_carried_out(rig):
     r.run_for(5)
     assert late.cancelled() and kept.result(timeout=0)["ok"]
     assert not r.io.ops_of(Damage)             # the cast never fired
-    assert not r.records("ability", "fireball")[0].runs
+    assert not r.records("ability", "e2e_fireball")[0].runs
     assert any("cancelled" in m for m in r.lines())
 
 
@@ -96,7 +96,7 @@ def test_instances_classes_and_log_ops(rig):
     assert [x["id"] for x in r.op("instances", kind="mark")["instances"]] == ["giant"]
     assert r.op("instances", user="alex")["instances"] == []
     classes = r.op("classes")["classes"]
-    assert {c["id"]: c["kind"] for c in classes} == {"fire_staff": "item", "fireball": "ability",
+    assert {c["id"]: c["kind"] for c in classes} == {"fire_staff": "item", "e2e_fireball": "ability",
                                                     "giant": "mark", "shrunk": "mark"}
     lines = r.op("log", n=3)["lines"]
     assert len(lines) == 3 and {"t", "level", "msg"} <= set(lines[0])
@@ -152,7 +152,7 @@ def test_a_fireball_thrown_then_the_staff_dropped_still_lands(rig):
     r.run_for(5)
     assert any(d.damage_type == "minecraft:explosion" and d.target == "Alex" for d in r.io.ops_of(Damage))
     assert not r.records("ability")             # and the lent grant went once it was done
-    assert not r.rt.players["Steve"].has("fireball")
+    assert not r.rt.players["Steve"].has("e2e_fireball")
 
 
 def test_a_ticks_damage_on_one_target_by_one_dealer_goes_as_one_op(rig):
@@ -220,7 +220,7 @@ def test_instances_say_which_abilities_are_lent(rig):
     r.io.join("Alex")
     r.io.hold("Steve", "fire_staff")
     r.tick()
-    r.op("grant", who="Alex", ability="fireball")
+    r.op("grant", who="Alex", ability="e2e_fireball")
     r.io.use("Steve")                         # the staff lends Steve fireball
     r.tick()
     rows = {row["user"]: row for row in r.op("instances", kind="ability")["instances"]}

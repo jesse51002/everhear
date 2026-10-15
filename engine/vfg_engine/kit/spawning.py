@@ -30,8 +30,8 @@ def _is_player(ctx, x) -> bool:
 
 
 def safe_spots(ctx, near, count: int = 1, spread: float = 8.0, dim: str | None = None) -> list:
-    """Up to `count` spots where a mob or a player can stand, within `spread` blocks of `near` (a
-    position, a player, a Spot; round a player never on top of them): solid ground under it and
+    """Up to `count` spots where a mob or a player can stand, within `spread` blocks of `near` on the flat, to the
+    spot's middle (`near` a position, a player, a Spot; round a player never on top of them): solid ground under it and
     two blocks of air. With spread 0, `near` itself (or a block above or below it) or nothing.
     Each is (x + 0.5, y, z + 0.5) on top of its ground. Fewer come back where there is no room."""
     centre, d = where(ctx, near, dim)
@@ -42,6 +42,10 @@ def safe_spots(ctx, near, count: int = 1, spread: float = 8.0, dim: str | None =
         if spread > 0:
             a, r = random.uniform(0, 2 * math.pi), away + (float(spread) - away) * math.sqrt(random.random())
             x, z = math.floor(centre[0] + r * math.cos(a)), math.floor(centre[2] + r * math.sin(a))
+            # the block's middle, where the mob stands, must keep within away..spread too (the
+            # floor can carry it past spread): checked before any probe is spent on it
+            if not away <= math.hypot(x + 0.5 - centre[0], z + 0.5 - centre[2]) <= spread:
+                continue
         else:
             x, z = math.floor(centre[0]), math.floor(centre[2])
         if (x, z) not in columns:

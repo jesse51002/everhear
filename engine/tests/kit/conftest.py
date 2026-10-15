@@ -4,6 +4,7 @@ inside a content call, in the engine's loop, under its limits."""
 
 from __future__ import annotations
 
+import random
 import textwrap
 
 import pytest
@@ -28,6 +29,8 @@ class Rig:
     def __init__(self, tmp_path, files=None, **settings):
         self.dir = tmp_path / "content"
         self.dir.mkdir(exist_ok=True)
+        # Seed random for deterministic spawning and other random choices
+        random.seed(42)
         self.io = FakeIo()
         self.clock = Clock()
         # the call limits are real time, so a loaded PC could trip them: these tests run on the fake

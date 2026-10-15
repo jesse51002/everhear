@@ -1,6 +1,6 @@
 """The spec's FireStaff and Fireball load and run exactly as the spec writes them (the code blocks
 in its "Ticks and subscriptions" and "Abilities and their config" sections), with only the import
-line added; and engine/examples/ (the completed versions) deal what their damage formula says."""
+line added; and integration/engine_e2e_content/ (the completed versions) deal what their damage formula says."""
 
 import math
 import os
@@ -130,7 +130,7 @@ def test_the_completed_examples_deal_their_formula(rig):
     r.io.use("Steve")
     r.run_for(5)
     dealt = sum(d.amount for d in r.io.ops_of(Damage) if d.target == "Alex")
-    declared = r.rt.classes["fireball"].config.damage(_Power1())
+    declared = r.rt.classes["e2e_fireball"].config.damage(_Power1())
     assert math.isclose(dealt, declared)
     assert math.isclose(r.io.players["Alex"].health, 20 - declared)
     assert not any("damage drift" in m for m in r.lines())

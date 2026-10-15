@@ -19,7 +19,7 @@ class FireStaff(Item):
         self.listen(Use, "on_use")       # only this holder's uses
 
     def on_use(self, ctx, ev):
-        ctx.user.cast("fireball")        # an ability, by name
+        ctx.user.cast("e2e_fireball")        # an ability, by name
 
     def tick(self, ctx):                 # every 0.5 s while held
         x, y, z = ctx.user.eye

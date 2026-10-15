@@ -249,11 +249,18 @@ vfg engine migrate [--players a,b] [--dry-run] [--force]   # below
 - **Content** is written on this PC in `made/<VFG_SERVER>/content/<file>.py` (gitignored, as
   `made/` is) and deployed whole to `/opt/vfg/made/<server>/content/`: the folder packed (no
   caches, no dotfiles, 20 MB at most), unpacked beside it on the box and swapped in under
-  `run/deploy.lock`, left as it is when every file is the same. `reload` deploys first, then sends
-  `reload` with the named files' paths there (none named: every content folder, the library's
-  too), and prints what loaded, each check that failed and why (the old version keeps running), how
-  many running instances switched and which stopped; exit 1 when a check failed. `--json` is the
-  reload's reply with `"deployed": {"folder", "files", "changed", "removed", "swapped"}`.
+  `run/deploy.lock`, left as it is when every file is the same. Before deploying, this server's
+  copies of library classes are brought up to the library's code when it changed and the copy is
+  unchanged except Config values (rebuilt from the library's file now, values put back, old copy
+  kept as `*.before-rebase.py`); a made class that shadows a library id (runs in its place for
+  everyone) is refused unless it is this server's own copy made by `config set`. `reload` deploys
+  first, then sends `reload` with the named files' paths there (none named: every content folder,
+  the library's too), and prints what loaded, each check that failed and why (the old version keeps
+  running), how many running instances switched and which stopped; exit 1 when a check failed. A
+  partial reload of some paths loads only content files: a path is refused unless its folder
+  (symlinks resolved) is one of the content folders and it is a `.py` file whose name does not start with `_` or `.`.
+  `--json` is the reload's reply with `"deployed": {"folder", "files", "changed", "removed",
+  "swapped"}`.
 - **`overview`** asks the engine for its `classes`, `instances`, `places` and `incantations` in one
   SSH call and prints the four, or with `--json` `{"ok": true, "classes": [...], "instances": [...],
   "places": [...], "incantations": [...]}`, each as its op gives it, the places as rows by name.
@@ -288,7 +295,11 @@ vfg engine migrate [--players a,b] [--dry-run] [--force]   # below
   again, and the error is the answer, saying so. A Config already as written changes nothing
   (`"changed": []`). A library class's first rewrite copies its file into `made/<server>/content/`
   first and splices there: that copy then runs in the library's place (`copied_from` in the facts;
-  the library's file never changes); refused, the copy is removed again. **`config undo <class>`**
+  the library's file never changes); refused, the copy is removed again. When a library class changes
+  and this server's copy is unchanged except Config values, the copy is rebased: rebuilt from the
+  library's new file with this server's values put back, the old kept as `*.before-rebase.py`, logged
+  as op "rebase"; a hand-edited copy is left alone with a warning (`config get` also warns when it
+  detects a hand edit). **`config undo <class>`**
   splices the Config of that class's last kept version back into the file as it is now, checked,
   deployed and reloaded the same way, and moves the version to `undone/`, so the next undo goes one
   further back; undoing a library class's first rewrite removes the copy, deploys and runs a full
@@ -425,8 +436,7 @@ save with neither (scripts and actions only) restores nothing, exit 1.
   spawns, so the provider reads it from the cache (`lib/prefix.py`): `engine/WRITING.md` whole,
   `engine/KIT.md` whole when it is there, then every library class (`engine/library/<id>.py`) by
   id, `=== fireball (ability) — <its first line> ===` and its `class Config` and `class Args` as
-  written (a file that does not read says why). Nothing from `made/`, no date, no count. With no
-  library class, one line names `engine/examples/`.
+  written (a file that does not read says why). Nothing from `made/`, no date, no count.
 - **`--cache-read N` and `--cache-write N`** on `vfg usage add` are the input tokens read from and
   written to the prompt cache, in two columns of `usage` that the bridge adds on start; until it
   has, the row goes in without them and one line on stderr says so. **`--largest N`** is a run's

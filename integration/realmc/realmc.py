@@ -1049,6 +1049,13 @@ class TestUnit(object):
         pid = read_pid(self.java_pidfile)
         return pid if pid and pid_has(pid, self.java_marker) and not gone(pid) else None
 
+    def state_file_says(self):
+        try:
+            with open(self.state_file) as f:
+                return f.read().strip() or "inactive"
+        except OSError:
+            return "inactive"
+
     def state(self):
         """What is-active prints: the state file, unless nothing runs behind it."""
         try:
@@ -1112,7 +1119,10 @@ class TestUnit(object):
             return 0
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
-            s = self.state()
+            # the state file itself, not state(): until the supervisor has exec'd, its /proc environ
+            # lacks REALMC_UNIT, so sup_pid() misses it and state() would read "failed"; whether it
+            # still runs is proc's to say
+            s = self.state_file_says()
             if s == "active" and self.java_pid():
                 return 0
             if s == "failed" or proc.poll() is not None:

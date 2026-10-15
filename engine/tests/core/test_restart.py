@@ -8,7 +8,7 @@ import json
 from vfg_engine.engine import Engine
 from vfg_engine.io import RemoveModifier
 
-EXAMPLES = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "examples")
+EXAMPLES = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), "integration", "engine_e2e_content")
 
 
 PULSE = '''
@@ -52,7 +52,7 @@ def _first_life(rig):
     assert r.op("grant", who="Steve", ability="pulse")["ok"]
     assert r.op("apply", who="Steve", mark="giant")["ok"]
     assert r.op("start", scenario="calm")["ok"]
-    assert r.op("bind", player="Steve", phrase="Fire Ball!", ability="fireball")["ok"]
+    assert r.op("bind", player="Steve", phrase="Fire Ball!", ability="e2e_fireball")["ok"]
     r.io.look_at("Steve", (0.0, 64.0, 6.0))
     r.io.use("Steve")
     r.run_for(3.0)
@@ -63,20 +63,20 @@ def test_a_restart_rebuilds_every_instance_from_saved_state(rig):
     r = _first_life(rig)
     r.engine.close()
     saved = json.loads((r.tmp / "state.json").read_text())
-    assert {d["cid"] for d in saved["records"]} >= {"pulse", "giant", "calm", "fire_staff", "fireball"}
+    assert {d["cid"] for d in saved["records"]} >= {"pulse", "giant", "calm", "fire_staff", "e2e_fireball"}
     giant_end = next(d["ends"] for d in saved["records"] if d["cid"] == "giant")
     count = next(d["state"]["n"] for d in saved["records"] if d["cid"] == "pulse")
-    cooldown = saved["players"]["Steve"]["cooldowns"]["fireball"]
+    cooldown = saved["players"]["Steve"]["cooldowns"]["e2e_fireball"]
 
     r.io.closed = False
     e2 = Engine(r.io, r.settings, clock=r.clock)
     r.engine = e2
     e2.start()
     rt = e2.rt
-    assert {rec.cid for rec in rt.records.values()} >= {"pulse", "giant", "calm", "fire_staff", "fireball"}
+    assert {rec.cid for rec in rt.records.values()} >= {"pulse", "giant", "calm", "fire_staff", "e2e_fireball"}
     assert next(rec.ends for rec in rt.records.values() if rec.cid == "giant") == giant_end
-    assert rt.players["Steve"].cooldowns["fireball"] == cooldown
-    assert rt.players["Steve"].grants.keys() >= {"pulse", "fireball"}
+    assert rt.players["Steve"].cooldowns["e2e_fireball"] == cooldown
+    assert rt.players["Steve"].grants.keys() >= {"pulse", "e2e_fireball"}
     r.run_for(2.0)
     assert next(rec.state.n for rec in rt.records.values() if rec.cid == "pulse") >= count + 2
     # the world setting is still held, the incantation still bound

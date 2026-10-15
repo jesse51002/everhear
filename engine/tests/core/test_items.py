@@ -84,8 +84,8 @@ def test_each_holder_casts_with_their_own_cooldown(rig):
     r.io.use("Steve")
     r.io.use("Alex")
     r.tick()
-    assert sorted(rec.user for rec in r.records("ability", "fireball")) == ["Alex", "Steve"]
-    assert all(rec.runs for rec in r.records("ability", "fireball"))
+    assert sorted(rec.user for rec in r.records("ability", "e2e_fireball")) == ["Alex", "Steve"]
+    assert all(rec.runs for rec in r.records("ability", "e2e_fireball"))
     assert not r.io.ops_of(Damage)
 
 

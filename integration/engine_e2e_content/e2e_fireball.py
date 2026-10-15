@@ -1,12 +1,13 @@
-"""Fireball, from the game engine spec ("Abilities and their config"), completed so that what it
+"""E2E Fireball, from the game engine spec ("Abilities and their config"), completed so that what it
 deals is what its damage formula adds up: the point the caster looks at burns everyone within
 `radius` for `burn_s` seconds (burn_per_s_base, scaled, each second), then explodes
-(explosion_base, scaled). One target in the radius the whole time takes exactly damage(ctx)."""
+(explosion_base, scaled). One target in the radius the whole time takes exactly damage(ctx).
+This is the e2e test's version (integration/engine_e2e.py)."""
 
 from vfg_engine import Ability, AbilityConfig, Field, State
 
 
-class Fireball(Ability):
+class E2eFireball(Ability):
     class Config(AbilityConfig):
         summary = "Burns for burn_s seconds, then explodes in a radius; both scale with power."
         burn_per_s_base: float = Field(1, ge=0, le=5)

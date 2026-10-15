@@ -12,7 +12,7 @@ from vfg_engine.engine import Engine, Settings
 from vfg_engine.testing import FakeIo
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-EXAMPLES = os.path.join(os.path.dirname(os.path.dirname(HERE)), "examples")
+EXAMPLES = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(HERE))), "integration", "engine_e2e_content")
 HEADER = "from vfg_engine import *\n"
 
 

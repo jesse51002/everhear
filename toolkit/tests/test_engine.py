@@ -107,7 +107,7 @@ class TestReads(Case):
         self.assertOk(r)
         self.assertEqual(r.stdout.splitlines(), [
             "engine     running since 2026-10-12T18:40:00.000Z", "tick       4821 at 10 a second; p50 1.2 ms, p95 3.4 ms",
-            "players    2: Alex, Steve", "instances  0", "classes    6", "slow       0", "orphans    0"])
+            "players    2: Alex, Steve", "instances  0", "classes    7", "slow       0", "orphans    0"])
         self.assertOk(self.vfg("engine", "grant", "Steve", "fireball"))
         self.assertOk(self.vfg("engine", "start", "horde"))
         self.assertIn("instances  2: ability 1, scenario 1\n", self.vfg("engine", "status").stdout)
@@ -148,8 +148,10 @@ class TestReads(Case):
             "ability   fireball    Burns for burn_s seconds, then explodes in a radius.  (made/main/content/fireball.py)",
             "item      fire_staff  Right-click to cast Fireball. Holding it adds 20% speed.  "
             "(made/main/content/fire_staff.py)",
-            "mark      giant       Twice the size for a while.  (/opt/vfg/engine/vfg_engine/examples/marks.py)",
-            "                       factor (float 1..16; default 2.0): how much bigger",
+            "mark      frozen      Slowed and damaged by cold.  (/opt/vfg/engine/library/frozen.py)",
+            "                       seconds (float 0..600; default 10.0): how long to freeze",
+            "mark      giant       Twice as big for a while.  (made/main/content/giant.py)",
+            "                       factor (float 0.0625..16; default 2.0): how much bigger",
             "actor     ice_queen   A boss of ice.  (made/main/content/ice_queen.py)",
             "scenario  command     Runs Minecraft commands, at once.  (/opt/vfg/engine/library/command.py)",
             "                       commands (list[Command]; default []): the commands",
@@ -170,7 +172,7 @@ class TestReads(Case):
         self.assertEqual([x["op"] for x in self.box.programs()[-1]["requests"]],
                          ["classes", "instances", "places", "incantations"])
         self.assertEqual((got["ok"], [c["id"] for c in got["classes"]], [i["id"] for i in got["instances"]]),
-                         (True, ["fireball", "fire_staff", "giant", "horde", "command", "ice_queen"], ["fireball"]))
+                         (True, ["fireball", "fire_staff", "frozen", "giant", "horde", "command", "ice_queen"], ["fireball"]))
         self.assertEqual(got["places"], [{"name": "home", "dim": "minecraft:overworld", "pos": [1.0, 64.0, 2.0],
                                           "yaw": 0.0, "by": "home_steve", "at": 1791830460.0}])   # a list, by name
         self.assertEqual([(e["phrase"], e["ability"], e["scenario"]) for e in got["incantations"]],
@@ -188,7 +190,7 @@ class TestReads(Case):
         self.assertEqual(r.returncode, 1)
         got = json.loads(r.stdout)
         self.assertEqual((got["ok"], len(got["classes"]), "instances" in got, len(got["places"]), got["error"]),
-                         (False, 6, False, 1, "instances: the engine failed on instances: KeyError"))
+                         (False, 7, False, 1, "instances: the engine failed on instances: KeyError"))
         self.engine.stop()
         self.assertOneLine(self.vfg("engine", "overview", "--json"), 6, "the engine is not running")
 
@@ -354,8 +356,8 @@ class TestConfig(Case):
         self.assertIn("Field(4", r.stdout)
         self.assertRegex(r.stderr, "^vfg: the box runs another version of this Config than made/main/content/fireball.py")
         self.assertOneLine(self.vfg("engine", "config", "get", "nope"), 1, "^vfg: no class nope$")
-        self.assertOneLine(self.vfg("engine", "config", "get", "giant"), 1, "giant's Config is in "
-                           "/opt/vfg/engine/vfg_engine/examples/marks.py, neither the library's nor in made/main/content/")
+        self.assertOneLine(self.vfg("engine", "config", "get", "frozen"), 1, "frozen's Config is in "
+                           "/opt/vfg/engine/library/frozen.py, neither the library's nor in made/main/content/: only those are rewritten here")
 
     def test_set_splices_it_in_keeps_the_old_file_and_reloads(self):
         new = bigger(self.config)
@@ -1199,13 +1201,13 @@ class TestRealEngine(Case):
         engine_dir = os.path.join(REPO, "engine")
         if not os.path.isfile(os.path.join(engine_dir, "vfg_engine", "__main__.py")):
             self.skipTest("no engine/vfg_engine/__main__.py")
-        examples = os.path.join(engine_dir, "examples")
-        if not os.path.isfile(os.path.join(examples, "fireball.py")):
-            self.skipTest("no engine/examples/fireball.py")
+        e2e_content = os.path.join(os.path.dirname(os.path.dirname(engine_dir)), "integration", "engine_e2e_content")
+        if not os.path.isfile(os.path.join(e2e_content, "e2e_fireball.py")):
+            self.skipTest("no integration/engine_e2e_content/e2e_fireball.py")
         os.remove(os.path.join(self.content, "fire_staff.py"))
-        shutil.copy(os.path.join(examples, "fireball.py"), os.path.join(self.content, "fireball.py"))
+        shutil.copy(os.path.join(e2e_content, "e2e_fireball.py"), os.path.join(self.content, "e2e_fireball.py"))
         os.makedirs(self.boxed, exist_ok=True)
-        shutil.copy(os.path.join(examples, "fireball.py"), os.path.join(self.boxed, "fireball.py"))
+        shutil.copy(os.path.join(e2e_content, "e2e_fireball.py"), os.path.join(self.boxed, "e2e_fireball.py"))
         here = os.path.join(self.box.rvfg, "engine")
         os.makedirs(here, exist_ok=True)
         env = dict(os.environ, PYTHONPATH=engine_dir, VFG_ENGINE_SOCKET=os.path.join(here, "engine.sock"),

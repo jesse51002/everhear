@@ -217,7 +217,7 @@ TABLE = [
     (bash("cat"), DENY.cat),
     (bash("vfg state | cat"), DENY.pipe),
     (bash("sed -n '1,80p' engine/library/fireball.py"), None),
-    (bash("sed -n 120p made/main/content/x.py && sed -n '40,$p' engine/examples/fireball.py"), None),
+    (bash("sed -n 120p made/main/content/x.py && sed -n '40,$p' engine/library/fireball.py"), None),
     (bash("sed -n 1,20p /etc/passwd"), SCOPE),
     (bash("sed -i s/a/b/ made/main/content/x.py"), DENY.sed),
     (bash("sed -n '/def/p' engine/library/fireball.py"), DENY.sed),

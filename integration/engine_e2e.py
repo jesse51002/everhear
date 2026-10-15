@@ -6,14 +6,14 @@ spec's Done list, checked in the world. No EC2.
 
 Real:  a realmc server (`up NAME --fresh`) with Carpet's Steve and Alex, and its stand-in box. The
        engine is installed into the stand-in as `deploy.sh engine` installs it on the box:
-       engine/vfg_engine/, the examples and the datapack rsynced to <vfg>/engine/, then
+       engine/vfg_engine/, the datapack rsynced to <vfg>/engine/, then
        engine/deploy/install.sh (the venv on the box's Python 3.12 with pydantic by hash, the
        datapack copied into the world and loaded). The engine runs as the vfg-engine unit runs it,
        `<vfg>/engine/.venv/bin/python -m vfg_engine` in <vfg>/engine, with the stand-in's paths.
        The bridge runs as vfg-bridge does (`python -m vfg_bridge` on the box's Python, against the
        stand-in's vfg.db and the engine's export and socket).
 Driven: `vfg engine …` and `vfg action run engine_*` through realmc's vfg (VFG_SERVER=NAME), whose
-       content deploy sends made/NAME/content/ (written fresh each run: the four examples and the
+       content deploy sends made/NAME/content/ (written fresh each run: 
        test classes below) to <vfg>/made/NAME/content/, the engine's VFG_ENGINE_CONTENT; the
        bridge's HTTP API, as the mod calls it; Carpet's Steve and Alex (realmc/players.py).
 
@@ -50,6 +50,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 REALMC = os.path.join(HERE, "realmc")
 ENGINE_SRC = os.path.join(REPO, "engine")
+E2E_CONTENT_SRC = os.path.join(HERE, "engine_e2e_content")
 sys.path.insert(0, REALMC)
 
 import players  # noqa: E402
@@ -217,7 +218,7 @@ class E2eRule(Scenario):
         self.result("holding %s at %s" % (self.args.rule, self.args.value))   # it runs on
 ''',
 }
-CLASSES = sorted(["fire_staff", "fireball", "giant", "shrunk"] + [n[:-3] for n in CONTENT])
+CLASSES = sorted(["fire_staff", "e2e_fireball", "giant", "shrunk"] + [n[:-3] for n in CONTENT])
 
 fails = 0
 ticks = []        # (when, p50, p95, tick) from status along the way
@@ -569,7 +570,7 @@ def step2_items(vfg, engine, w, p, spots):
     code, out, err = vfg("engine", "grant", "Steve", "e2e_retort")
     check("E2E Retort granted to Steve (it answers each of his melee hits)", code == 0, out + err)
 
-    row = meta_row(vfg, "fireball")
+    row = meta_row(vfg, "e2e_fireball")
     declared = (row.get("required") or {}).get("damage")          # meta shows a formula at power 1
     print("          fireball declares %s at power 1 (meta: %s at 0, %s at 10, %s at 20)" % (
         declared, damage_at(row, 0), damage_at(row, 10), damage_at(row, 20)))
@@ -676,31 +677,31 @@ def step3_marks(vfg, engine, w, p):
 
 def step4_rewrite(vfg, engine, content, box_content, marker):
     print("== 4. reload and rewrite: fireball's Config")
-    pc = os.path.join(content, "fireball.py")
-    boxed = os.path.join(box_content, "fireball.py")
-    code, out, err = vfg("engine", "grant", "Steve", "fireball")
-    running = [i["instance"] for i in instances(vfg, kind="ability", user="Steve") if i.get("id") == "fireball"]
+    pc = os.path.join(content, "e2e_fireball.py")
+    boxed = os.path.join(box_content, "e2e_fireball.py")
+    code, out, err = vfg("engine", "grant", "Steve", "e2e_fireball")
+    running = [i["instance"] for i in instances(vfg, kind="ability", user="Steve") if i.get("id") == "e2e_fireball"]
     check("Steve granted fireball: a running instance", code == 0 and len(running) == 1, str(running))
-    code, doc, err = vfg.json("engine", "config", "get", "fireball")
+    code, doc, err = vfg.json("engine", "config", "get", "e2e_fireball")
     source = doc.get("source") or ""
     check("vfg engine config get fireball", code == 0 and "class Config(AbilityConfig)" in source,
           "%s lines %s to %s" % (doc.get("file"), doc.get("start"), doc.get("end")))
     to12 = source.replace("explosion_base: float = Field(8,", "explosion_base: float = Field(12,")
-    code, out, err = vfg("engine", "config", "set", "fireball", input=to12)
+    code, out, err = vfg("engine", "config", "set", "e2e_fireball", input=to12)
     m = re.search(r"(\d+) running instances? switched", out)
     check("config set: explosion 8 -> 12, reloaded for everyone", code == 0 and m and int(m.group(1)) >= 1,
           (out + err)[:300])
-    row = meta_row(vfg, "fireball")
+    row = meta_row(vfg, "e2e_fireball")
     check("  meta shows it: explosion_base 12, damage at power 0 15",
           own(row, "explosion_base") == 12 and damage_at(row, 0) == 15,
           "explosion_base=%s damage@0=%s" % (own(row, "explosion_base"), damage_at(row, 0)))
-    still = [i["instance"] for i in instances(vfg, kind="ability", user="Steve") if i.get("id") == "fireball"]
+    still = [i["instance"] for i in instances(vfg, kind="ability", user="Steve") if i.get("id") == "e2e_fireball"]
     check("  the running instance switched in place", still == running, str(still))
 
     with open(pc) as f:
         before = f.read()
     dropped = "".join(ln for ln in to12.splitlines(True) if "radius: float = Field(" not in ln)
-    code, out, err = vfg("engine", "config", "set", "fireball", input=dropped)
+    code, out, err = vfg("engine", "config", "set", "e2e_fireball", input=dropped)
     with open(pc) as f:
         after_pc = f.read()
     with open(boxed) as f:
@@ -712,7 +713,7 @@ def step4_rewrite(vfg, engine, content, box_content, marker):
     in_formula = to12.replace("return self.burn_s + 1", "return %s * 0 + self.burn_s + 1" % touch)
     in_value = to12.replace("radius: float = Field(3,", "radius: float = Field(%s * 0 + 3," % touch)
     for what, text, word in (("code in a formula", in_formula, "formula"), ("__import__ in a value", in_value, "value")):
-        code, out, err = vfg("engine", "config", "set", "fireball", input=text)
+        code, out, err = vfg("engine", "config", "set", "e2e_fireball", input=text)
         with open(pc) as f:
             after_pc = f.read()
         with open(boxed) as f:
@@ -722,18 +723,18 @@ def step4_rewrite(vfg, engine, content, box_content, marker):
         check("  the PC file and the box's unchanged, and the code never ran",
               after_pc == before and after_box == before and not os.path.exists(marker), "")
     out_of_bounds = to12.replace("explosion_base: float = Field(12,", "explosion_base: float = Field(40,")
-    code, out, err = vfg("engine", "config", "set", "fireball", input=out_of_bounds)
+    code, out, err = vfg("engine", "config", "set", "e2e_fireball", input=out_of_bounds)
     with open(pc) as f:
         after_pc = f.read()
     with open(boxed) as f:
         after_box = f.read()
     check("a rewrite the engine's checks refuse (explosion 40, over its bound of 30)", code == 1 and "30" in err, err[:240])
     check("  the PC file is put back, and the box's", after_pc == before and after_box == before, "")
-    row = meta_row(vfg, "fireball")
+    row = meta_row(vfg, "e2e_fireball")
     check("  the old version keeps running: explosion_base 12", own(row, "explosion_base") == 12,
           str(own(row, "explosion_base")))
-    code, out, err = vfg("engine", "config", "undo", "fireball")
-    row = meta_row(vfg, "fireball")
+    code, out, err = vfg("engine", "config", "undo", "e2e_fireball")
+    row = meta_row(vfg, "e2e_fireball")
     with open(pc) as f:
         undone = f.read()
     check("config undo: explosion_base 8 again, on the PC, the box and in the engine",
@@ -750,8 +751,8 @@ def step4_rewrite(vfg, engine, content, box_content, marker):
 def step5_incantations(vfg, engine, br, w, p, spots):
     print("== 5. incantations: bound in the engine, cast through the bridge")
     target = spots["target"]
-    code, out, err = vfg("engine", "bind", "Steve", "fire ball", "fireball")
-    check("vfg engine bind Steve 'fire ball' fireball (after the grant)", code == 0 and "now casts fireball" in out, out)
+    code, out, err = vfg("engine", "bind", "Steve", "fire ball", "e2e_fireball")
+    check("vfg engine bind Steve 'fire ball' e2e_fireball (after the grant)", code == 0 and "now casts e2e_fireball" in out, out)
     nokey = "aliases from code only: the alias call failed" in err
     check("  with no OpenRouter key the alias call fails as a note; the code's aliases stand, exit 0",
           nokey and "aliases fireball" in out, err[:240])
@@ -777,7 +778,7 @@ def step5_incantations(vfg, engine, br, w, p, spots):
     check("  by about fireball's 11.55", 11.2 <= dealt <= 11.56, "%.2f" % dealt)
     row = br.row("SELECT incantation_id, action, status, layer FROM casts ORDER BY at DESC LIMIT 1")
     check("  recorded as engine:steve.fire_ball, its action the ability",
-          row and row["incantation_id"] == "engine:steve.fire_ball" and row["action"] == "fireball", str(row))
+          row and row["incantation_id"] == "engine:steve.fire_ball" and row["action"] == "e2e_fireball", str(row))
     now = time.time()
     code, ans, ms = br.cast("Steve", "fire ball", now - 0.5, now - 0.1)
     check("a second cast within the cooldown answers cooldown", code == 202 and ans.get("status") == "cooldown",
@@ -994,7 +995,7 @@ def step9_restart(vfg, engine, br, w, p):
     wait_for(lambda: w.attr("Steve", "scale") == 2.0 and w.mods("Steve", "movement_speed").get("everhear:item/fire_staff"), 3)
     before = {(r["kind"], r["id"], r.get("user")): r.get("ends") for r in instances(vfg)}
     code, inc_before, err = vfg.json("engine", "incantations")
-    check("before: Steve's grants, his staff and Giant", {("ability", "fireball", "Steve"), ("ability", "e2e_retort", "Steve"),
+    check("before: Steve's grants, his staff and Giant", {("ability", "e2e_fireball", "Steve"), ("ability", "e2e_retort", "Steve"),
                                                           ("item", "fire_staff", "Steve"), ("mark", "giant", "Steve")} <= set(before),
           str(sorted(before)))
     code, secs = engine.stop()
@@ -1035,9 +1036,9 @@ def step9_restart(vfg, engine, br, w, p):
 
 def step10_actions(vfg, engine, w):
     print("== 10. the brain's engine actions, through vfg action run")
-    code, line, err = vfg.action("engine_grant", "player=Alex", "ability=fireball")
-    mine = [r for r in instances(vfg, kind="ability", user="Alex") if r.get("id") == "fireball"]
-    check("vfg action run engine_grant player=Alex ability=fireball", code == 0 and line.get("ok") and mine,
+    code, line, err = vfg.action("engine_grant", "player=Alex", "ability=e2e_fireball")
+    mine = [r for r in instances(vfg, kind="ability", user="Alex") if r.get("id") == "e2e_fireball"]
+    check("vfg action run engine_grant player=Alex ability=e2e_fireball", code == 0 and line.get("ok") and mine,
           "%s; Alex's: %s" % (line.get("summary") or line, [r["instance"] for r in mine]))
     code, line, err = vfg.action("engine_give", "player=Alex", "item=fire_staff")
     got, secs = wait_for(lambda: w.mods("Alex", "movement_speed").get("everhear:item/fire_staff"), 3)
@@ -1063,7 +1064,7 @@ def install(srv):
         except FileNotFoundError:
             pass
     rsync = ["rsync", "--recursive", "--delete", "--exclude=__pycache__/"]
-    subprocess.run(rsync + [os.path.join(ENGINE_SRC, "vfg_engine"), os.path.join(ENGINE_SRC, "examples"), e + "/"], check=True)
+    subprocess.run(rsync + [os.path.join(ENGINE_SRC, "vfg_engine"), e + "/"], check=True)
     subprocess.run(rsync + [os.path.join(ENGINE_SRC, "datapack", "everhear"), os.path.join(e, "datapack") + "/"], check=True)
     for name in ("install.sh", "requirements.txt"):
         shutil.copy(os.path.join(ENGINE_SRC, "deploy", name), os.path.join(e, "deploy", name))
@@ -1089,14 +1090,14 @@ def stray_engine(sock, folder):
 
 
 def write_content(name, srv):
-    """made/<name>/content/ on this PC, fresh: the four examples and the test's classes; the box's
-    folder emptied, so the deploy sends it whole."""
+    """made/<name>/content/ on this PC, fresh: content from integration/engine_e2e_content/ and test's classes;
+    the box's folder emptied, so the deploy sends it whole."""
     content = os.path.join(REPO, "made", name, "content")
     shutil.rmtree(content, ignore_errors=True)
     os.makedirs(content)
-    for f in sorted(os.listdir(os.path.join(ENGINE_SRC, "examples"))):
+    for f in sorted(os.listdir(E2E_CONTENT_SRC)):
         if f.endswith(".py"):
-            shutil.copy(os.path.join(ENGINE_SRC, "examples", f), content)
+            shutil.copy(os.path.join(E2E_CONTENT_SRC, f), content)
     for f, source in CONTENT.items():
         with open(os.path.join(content, f), "w") as out:
             out.write(source)

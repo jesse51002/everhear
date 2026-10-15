@@ -24,9 +24,9 @@
 #                                     after (jev/deploy.sh): the CHECK on Jev's classes is the
 #                                     bridge's, so the two never run apart. Then the test server is
 #                                     kept current, as `testserver` does.
-#   deploy.sh engine                  the game engine alone: engine/vfg_engine/, engine/library/ (the
-#                                     server's base content) and engine/examples/ to
-#                                     /opt/vfg/engine/, its venv (/opt/vfg/engine/.venv, pydantic
+#   deploy.sh engine                  the game engine alone: engine/vfg_engine/ and engine/library/ (the
+#                                     server's base content) to /opt/vfg/engine/, its venv
+#                                     (/opt/vfg/engine/.venv, pydantic
 #                                     pinned by hash) and its datapack (into /opt/mc/world/datapacks/,
 #                                     loaded over RCON when it changed) by engine/deploy/install.sh,
 #                                     and vfg-engine.service; restarts vfg-engine, which saves its
@@ -210,7 +210,7 @@ done
 REMOTE
 }
 
-# send_engine -- the engine's package, library, examples, datapack and install pieces to
+# send_engine -- the engine's package, library, datapack and install pieces to
 # /opt/vfg/engine/, then engine/deploy/install.sh there as ec2-user: the venv, and the datapack
 # into the world. The library is the first of the unit's content folders (VFG_ENGINE_CONTENT).
 send_engine() {
@@ -218,9 +218,9 @@ send_engine() {
     || die "run it from the repo: no engine in $ENGINE"
   remote 'test -x /opt/vfg/uv/uv && mkdir -p /opt/vfg/engine/datapack /opt/vfg/engine/deploy' \
     || die "the box has no /opt/vfg/uv/uv, which makes the engine's venv: deploy.sh provision first"
-  log "sending engine/vfg_engine/, library/, examples/, datapack/everhear/ and deploy/ to /opt/vfg/engine/"
+  log "sending engine/vfg_engine/, library/, datapack/everhear/ and deploy/ to /opt/vfg/engine/"
   local folders=("$ENGINE/vfg_engine") folder
-  for folder in library examples; do
+  for folder in library; do
     if [[ -d $ENGINE/$folder ]]; then folders+=("$ENGINE/$folder"); fi
   done
   push --recursive --delete --exclude='__pycache__/' --exclude='*.pyc' --chmod=D755,F644 \

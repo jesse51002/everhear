@@ -28,7 +28,7 @@ def ctl(env, req):
 def engine_env(sub_env, short_tmp):
     sub_env.update(VFG_ENGINE_STATE=os.path.join(short_tmp, "state.json"),
                    VFG_ENGINE_EXPORT=os.path.join(short_tmp, "incantations.json"),
-                   VFG_ENGINE_CONTENT=os.path.join(ENGINE_DIR, "examples"))
+                   VFG_ENGINE_CONTENT=os.path.join(os.path.dirname(ENGINE_DIR), "integration", "engine_e2e_content"))
     return sub_env
 
 
@@ -54,9 +54,9 @@ def test_the_engine_on_fake_io_through_ctl(engine_env):
         code, status = ctl(engine_env, {"op": "status"})
         assert code == 0 and status["tick_hz"] == 10.0 and status["classes"] == 4
         code, classes = ctl(engine_env, {"op": "classes"})
-        assert {c["id"] for c in classes["classes"]} == {"fireball", "fire_staff", "giant", "shrunk"}
+        assert {c["id"] for c in classes["classes"]} == {"e2e_fireball", "fire_staff", "giant", "shrunk"}
         code, bound = ctl(engine_env, {"op": "bind", "args": {"player": "Steve", "phrase": "Fire Ball",
-                                                              "ability": "fireball"}})
+                                                              "ability": "e2e_fireball"}})
         assert code == 0 and bound["id"] == "steve.fire_ball"
         with open(engine_env["VFG_ENGINE_EXPORT"]) as f:
             export = json.load(f)

@@ -7,17 +7,17 @@ import os
 from vfg_engine import rewrite
 from vfg_engine.io import Damage
 
-EXAMPLES = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "examples")
+EXAMPLES = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))), "integration", "engine_e2e_content")
 
 
-FIREBALL = os.path.join(EXAMPLES, "fireball.py")
+FIREBALL = os.path.join(EXAMPLES, "e2e_fireball.py")
 
 
 def test_meta_rows(rig):
     r = rig(examples=True)
     r.start()
     rows = {row["id"]: row for row in r.op("meta")["rows"]}
-    fb = rows["fireball"]
+    fb = rows["e2e_fireball"]
     assert list(fb) == ["id", "kind", "class", "summary", "required", "damage", "fields"]
     assert fb["required"]["damage"] == 11.55 and fb["required"]["duration_s"] == 4.0
     assert fb["required"]["charge_s"] == 0.0 and fb["required"]["cooldown_s"] == 5.0
@@ -32,7 +32,7 @@ def test_meta_rows(rig):
 
 def test_find_config_takes_the_class_as_written():
     source = open(FIREBALL).read()
-    start, end = rewrite.find_config(source, "Fireball")
+    start, end = rewrite.find_config(source, "E2eFireball")
     lines = source.splitlines()
     assert lines[start - 1].strip() == "class Config(AbilityConfig):"
     assert lines[end - 1].strip() == "return self.burn_s + 1"
@@ -40,52 +40,52 @@ def test_find_config_takes_the_class_as_written():
 
 def test_splice_puts_the_new_config_in_exactly_that_place():
     source = open(FIREBALL).read()
-    start, end = rewrite.find_config(source, "Fireball")
+    start, end = rewrite.find_config(source, "E2eFireball")
     old = "\n".join(source.splitlines()[start - 1:end])
     new_config = old.replace("Field(8, ge=0, le=30)", "Field(12, ge=0, le=30)  # brain: stronger")
-    out = rewrite.splice(source, "Fireball", new_config)
+    out = rewrite.splice(source, "E2eFireball", new_config)
     assert out == source.replace("Field(8, ge=0, le=30)", "Field(12, ge=0, le=30)  # brain: stronger")
-    assert rewrite.static_checks(source, out, "Fireball") == []
+    assert rewrite.static_checks(source, out, "E2eFireball") == []
     # dedented as the brain might send it: put back at the right indent
     import textwrap
-    assert rewrite.splice(source, "Fireball", textwrap.dedent(new_config)) == out
+    assert rewrite.splice(source, "E2eFireball", textwrap.dedent(new_config)) == out
 
 
 def test_static_checks_refuse_a_dropped_field_and_a_change_outside():
     source = open(FIREBALL).read()
-    start, end = rewrite.find_config(source, "Fireball")
+    start, end = rewrite.find_config(source, "E2eFireball")
     old = "\n".join(source.splitlines()[start - 1:end])
-    dropped = rewrite.splice(source, "Fireball", old.replace("        radius: float = Field(3, ge=1, le=8)\n", ""))
-    assert any("dropped radius" in p for p in rewrite.static_checks(source, dropped, "Fireball"))
+    dropped = rewrite.splice(source, "E2eFireball", old.replace("        radius: float = Field(3, ge=1, le=8)\n", ""))
+    assert any("dropped radius" in p for p in rewrite.static_checks(source, dropped, "E2eFireball"))
     outside = source.replace("self.end()", "pass")
-    assert any("outside" in p for p in rewrite.static_checks(source, outside, "Fireball"))
-    assert any("parse" in p for p in rewrite.static_checks(source, source + "\n  def (", "Fireball"))
+    assert any("outside" in p for p in rewrite.static_checks(source, outside, "E2eFireball"))
+    assert any("parse" in p for p in rewrite.static_checks(source, source + "\n  def (", "E2eFireball"))
 
 
 def test_a_rewrite_passes_the_reload_and_every_running_fireball_switches(rig, tmp_path):
     r = rig()
     source = open(FIREBALL).read()
-    r.write("fireball", source, header=False)
+    r.write("e2e_fireball", source, header=False)
     r.write("fire_staff", open(os.path.join(EXAMPLES, "fire_staff.py")).read(), header=False)
     r.start()
     for n, x in (("Steve", 0.0), ("Alex", 10.0)):
         r.io.join(n, pos=(x, 64.0, 0.0))
-        r.op("grant", who=n, ability="fireball")
-    config = r.op("config_get", **{"class": "fireball"})
+        r.op("grant", who=n, ability="e2e_fireball")
+    config = r.op("config_get", **{"class": "e2e_fireball"})
     assert config["source"].startswith("    class Config(AbilityConfig):")
-    new = rewrite.splice(source, "Fireball", config["source"].replace("Field(8, ge=0, le=30)", "Field(12, ge=0, le=30)"))
-    assert rewrite.static_checks(source, new, "Fireball") == []
-    (r.dir / "fireball.py").write_text(new)
+    new = rewrite.splice(source, "E2eFireball", config["source"].replace("Field(8, ge=0, le=30)", "Field(12, ge=0, le=30)"))
+    assert rewrite.static_checks(source, new, "E2eFireball") == []
+    (r.dir / "e2e_fireball.py").write_text(new)
     reply = r.op("reload")
     assert reply["ok"] and reply["switched"] == 2
-    assert r.op("meta", id="fireball")["rows"][0]["fields"]["explosion_base"] == 12.0
+    assert r.op("meta", id="e2e_fireball")["rows"][0]["fields"]["explosion_base"] == 12.0
     # out of bounds: refused by the engine, the old numbers stay
-    bad = rewrite.splice(source, "Fireball", config["source"].replace("Field(8, ge=0, le=30)", "Field(80, ge=0, le=30)"))
-    assert rewrite.static_checks(source, bad, "Fireball") == []          # the text is fine ...
-    (r.dir / "fireball.py").write_text(bad)
+    bad = rewrite.splice(source, "E2eFireball", config["source"].replace("Field(8, ge=0, le=30)", "Field(80, ge=0, le=30)"))
+    assert rewrite.static_checks(source, bad, "E2eFireball") == []          # the text is fine ...
+    (r.dir / "e2e_fireball.py").write_text(bad)
     reply = r.op("reload")
     assert reply["ok"] is False and reply["errors"][0]["check"] == "bounds"   # ... the bounds are not
-    assert r.rt.classes["fireball"].config.explosion_base == 12.0
+    assert r.rt.classes["e2e_fireball"].config.explosion_base == 12.0
     r.io.join("Sam", pos=(0.0, 64.0, 6.0))
     r.io.look_at("Steve", (0.0, 64.0, 6.0))
     r.tick()
@@ -97,14 +97,14 @@ def test_a_rewrite_passes_the_reload_and_every_running_fireball_switches(rig, tm
 
 def _fireball_config():
     source = open(FIREBALL).read()
-    start, end = rewrite.find_config(source, "Fireball")
+    start, end = rewrite.find_config(source, "E2eFireball")
     return source, "\n".join(source.splitlines()[start - 1:end])
 
 
 def _check(change):
     source, config = _fireball_config()
-    new = rewrite.splice(source, "Fireball", change(config))
-    return rewrite.static_checks(source, new, "Fireball")
+    new = rewrite.splice(source, "E2eFireball", change(config))
+    return rewrite.static_checks(source, new, "E2eFireball")
 
 
 def test_code_in_a_formula_body_is_refused():
@@ -151,9 +151,9 @@ def test_values_comments_and_layout_may_change():
 
 def test_undo_of_a_kept_version_passes():
     source, config = _fireball_config()
-    new = rewrite.splice(source, "Fireball", config.replace("Field(8, ge=0, le=30)", "Field(12, ge=0, le=30)"))
-    assert rewrite.static_checks(source, new, "Fireball") == []
-    assert rewrite.static_checks(new, source, "Fireball") == []      # putting the old one back
+    new = rewrite.splice(source, "E2eFireball", config.replace("Field(8, ge=0, le=30)", "Field(12, ge=0, le=30)"))
+    assert rewrite.static_checks(source, new, "E2eFireball") == []
+    assert rewrite.static_checks(new, source, "E2eFireball") == []      # putting the old one back
     for name, cls in (("giant.py", "Giant"), ("shrunk.py", "Shrunk"), ("fire_staff.py", "FireStaff")):
         src = open(os.path.join(EXAMPLES, name)).read()
         assert rewrite.static_checks(src, src, cls) == []

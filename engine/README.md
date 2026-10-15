@@ -19,7 +19,6 @@ engine/
     livetest.py          python -m vfg_engine.livetest: one test of content, on the test server
   datapack/everhear/     the datapack, copied into the world
   library/               the server's base content, shipped with the engine (the library port's)
-  examples/              the spec's Fire Staff, Fireball and two marks, as working content
   deploy/                vfg-engine.service, requirements.txt (hashed), install.sh
   tests/core, mc, box    the core on FakeIo; against a real 26.3 server; the process and socket
 ```
@@ -54,7 +53,7 @@ for trying content and the socket:
 
 ```sh
 cd engine && VFG_ENGINE_SOCKET=/tmp/e.sock VFG_ENGINE_LOG=/tmp/e.log VFG_ENGINE_STATE=/tmp/e.json \
-  VFG_ENGINE_EXPORT=/tmp/e-inc.json VFG_ENGINE_CONTENT=$PWD/examples uv run python -m vfg_engine --fake-io
+  VFG_ENGINE_EXPORT=/tmp/e-inc.json VFG_ENGINE_CONTENT=$PWD/library uv run python -m vfg_engine --fake-io
 echo '{"op": "classes"}' | VFG_ENGINE_SOCKET=/tmp/e.sock uv run python -m vfg_engine.ctl
 ```
 
@@ -64,7 +63,6 @@ echo '{"op": "classes"}' | VFG_ENGINE_SOCKET=/tmp/e.sock uv run python -m vfg_en
 |---|---|
 | `/opt/vfg/engine/vfg_engine/` | the package (`deploy.sh` rsyncs `engine/vfg_engine/`) |
 | `/opt/vfg/engine/library/` | the library: the server's base content, the first content folder |
-| `/opt/vfg/engine/examples/` | the example content, deployed but loaded only if `VFG_ENGINE_CONTENT` names it |
 | `/opt/vfg/engine/.venv/` | the venv: Python 3.12 (`/opt/vfg/python`), pydantic and its four dependencies |
 | `/opt/vfg/engine/state.json` | the saved state: every instance, binding and world-setting hold |
 | `/opt/vfg/engine/incantations.json` | the incantation export the bridge reads, written whole on every change |
@@ -187,7 +185,7 @@ bridge/deploy/deploy.sh engine      # the engine alone; restarts vfg-engine only
 
 `deploy.sh engine` (and `deploy.sh`, which does the same in its course):
 
-1. rsyncs `engine/vfg_engine/`, `engine/library/` and `engine/examples/` to `/opt/vfg/engine/`, `engine/datapack/everhear/`
+1. rsyncs `engine/vfg_engine/` and `engine/library/` to `/opt/vfg/engine/`, `engine/datapack/everhear/`
    to `/opt/vfg/engine/datapack/`, and `install.sh` and `requirements.txt` to `/opt/vfg/engine/deploy/`;
 2. runs `install.sh` there as `ec2-user`: the venv is made when it is missing or the box's Python
    changed under it (`uv venv`, the box's uv), then `uv pip sync --require-hashes --no-build` makes it
@@ -303,7 +301,7 @@ cd engine && uv run --group dev python -m pytest tests/mc -q        # against a 
 `tests/box` runs the socket and `ctl` against a fake engine, and the process (`main`) in a subprocess
 on one: a reply on every error, the timeouts and the queue, the stop answering what waits, mode 600,
 one engine at a time, SIGTERM and SIGINT with the state saved, the JSON log, and exit codes 0, 1 and 78;
-then the real core as a process on FakeIo with `examples/`, through `ctl`, across a restart; and the
+then the real core as a process on FakeIo with `library/`, through `ctl`, across a restart; and the
 livetest runner: its refusals (no marker, the engine under `VFG_TEST=1` too), a test file it cannot
 run, an engine that does not start, and whole runs (the real engine on FakeIo, a fake RCON) to PASS,
 FAIL, a raising test and `--timeout`, the stage cleared after, the wall time against the budget; and `t`
@@ -321,11 +319,11 @@ does all of it, then proves the engine end to end:
 
 ```sh
 eval "$(integration/realmc/env NAME)"; BOX=$REALMC_DIR; E=$BOX/vfg/engine; mkdir -p $E/datapack $E/deploy
-rsync -r --delete --exclude=__pycache__/ engine/vfg_engine engine/examples $E/
+rsync -r --delete --exclude=__pycache__/ engine/vfg_engine $E/
 rsync -r --delete engine/datapack/everhear $E/datapack/
 cp engine/deploy/install.sh engine/deploy/requirements.txt $E/deploy/; cp bridge/deploy/rcon.py $BOX/mc/
 VFG_DIR=$BOX/vfg MC_DIR=$BOX/mc UV=$(command -v uv) bash $E/deploy/install.sh
-VFG_MC_PROPERTIES=$BOX/mc/server.properties VFG_ENGINE_CONTENT=$E/examples VFG_ENGINE_STATE=$E/state.json \
+VFG_MC_PROPERTIES=$BOX/mc/server.properties VFG_ENGINE_CONTENT=$E/library VFG_ENGINE_STATE=$E/state.json \
   VFG_ENGINE_EXPORT=$E/incantations.json VFG_ENGINE_LOG=$E/engine.log \
   VFG_ENGINE_SOCKET=$XDG_RUNTIME_DIR/NAME.sock PYTHONPATH=$E $E/.venv/bin/python -m vfg_engine
 ln -sfn $XDG_RUNTIME_DIR/NAME.sock $E/engine.sock   # then VFG_SERVER=NAME vfg engine status
