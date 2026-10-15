@@ -34,12 +34,12 @@ agent answers (brain.log's `respond #<seq>` line), and a hand-off goes to the ro
 the work (`router #<seq> -> …`); the turn's `front #<seq>` line says both and the lines said. A
 brain loop runs behind the turn (`loop <ref> …: …; L3 saved, 1 of 10 steps, lines #5`). Three brains,
 one after another, on the one server and feed:
-1. On the defaults (the router without reasoning: the hold). Kept from Prototype_Brain_Loop, each
-   now through the front turn: a one-step ask whose actions all land (the agent's held
-   acknowledgement, then the loop's reply and its one record); actions together and in turn; a
-   refused command the next step fixes; another player's items read; item asks by slot; the brain's
-   own copy started, edited and stopped; three of Steve's lines waiting for his turn and a fourth
-   turned away by a private message naming them; a line the agent answers itself. New:
+1. On the defaults. Kept from Prototype_Brain_Loop, each now through the front turn: a one-step
+   ask whose actions all land (the agent's line, said at once, then the loop's reply and its one
+   record); actions together and in turn; a refused command the next step fixes; another player's
+   items read; item asks by slot; the brain's own copy started, edited and stopped; three of
+   Steve's lines waiting for his turn and a fourth turned away by a private message naming them; a
+   line the agent answers itself. New:
    - Steve's second line waits only for his first line's front turn, not its loop: his two loops
      run side by side, and Alex's line is answered beside them;
    - a step held past 45 s (a slow stand-in: 65 s at low, 47 s with no reasoning) lands inside its
@@ -49,13 +49,15 @@ one after another, on the one server and feed:
      and a line to the same loop once it has ended, inside its 2 minutes: taken up again, its next
      step read from the cache; after the 2 minutes, a line on that thing starts a new loop;
    - the router starts an implementer with its brief (the stand-in records it), follows it up while
-     it runs, and answers the same ask said again with a line of its own in place of the agent's
-     (nowhere, one line); the implementer's report reaches the conversation agent while Steve's
-     turn is busy (his agent's call held), and is told at once;
-   - one line per ask, all through this brain: a hand-off placed somewhere says the agent's line,
-     held until the router answered; one placed nowhere says the router's in its place.
-2. VFG_ROUTER_REASONING=low: nothing is held: the agent's line goes out before the router answers,
-   and the router's own after it.
+     it runs, and answers the same ask said again nowhere; its own line, there, would only repeat
+     the agent's status, so it is dropped (fix 1): the agent's line alone goes out; the
+     implementer's report reaches the conversation agent while Steve's turn is busy (his agent's
+     call held by the slow stand-in), and is told at once;
+   - no hold anywhere now: a hand-off placed somewhere says at most the agent's line, out before
+     the router answers; one placed nowhere says the agent's line, the router's own after it when
+     it wrote one and the agent's does not already say it, or either alone.
+2. VFG_ROUTER_REASONING=low: the agent's line goes out before the router answers, and the router's
+   own after it, as every brain does now.
 3. VFG_LOOP_STEPS=1, VFG_LOOP_CAP=2: a line's loop gets one step and each line added one more, never
    past two: the line added to an ended loop takes it to the cap, its last step replies or hands off
    and it is deleted; the next line on that thing starts a new loop.
@@ -501,7 +503,8 @@ class Run:
         return wait_for(find, timeout) if timeout else find()
 
     def ack_lines(self, a):
-        """The chat lines the line's front turn said (0 or 1 under the hold)."""
+        """The chat lines the line's front turn said, besides its loop's reply: 0, 1 or 2 (no hold:
+        the agent's and the router's own can both go out for the same ask)."""
         return len((self.front(a) or {}).get("said") or [])
 
     def front_said_rows(self, a):
@@ -693,10 +696,10 @@ def start_brain(run, rep, label="defaults"):
     seq = live.last_seq()
     r = live.start(extra)
     up = wait_for(lambda: re.search(r"^\S+ start pid \d+;(.*)$", live.log_since(mark), re.M), 180)
-    want = {"defaults": ["router deepseek/deepseek-v4.1-flash off 30 s, the hold on",
+    want = {"defaults": ["router deepseek/deepseek-v4.1-flash off 30 s",
                          "brain deepseek/deepseek-v4.1-flash %s %d s a step, 10 steps a line up to 20, "
                          "taken up within 120 s" % (run.reasoning or "low", run.step_timeout)],
-            "low": ["router deepseek/deepseek-v4.1-flash low 60 s, no hold"],
+            "low": ["router deepseek/deepseek-v4.1-flash low 60 s"],
             "budget": ["1 steps a line up to 2"]}[label]
     rep.check(r.returncode == 0 and up and all(w in up.group(1) for w in want),
               "vfg brain start: the brain is up on realmc %s, %s: %s" % (
@@ -758,18 +761,18 @@ def setup(run):
     return start_brain(run, rep)
 
 
-def held_ack(run, a):
-    """The agent's acknowledgement to a hand-off the router placed somewhere, under the hold: one
-    front line, the agent's, said after the router answered. (ok, detail)."""
+def agent_said_first(run, a):
+    """The agent's line to a hand-off the router placed somewhere: no hold, so one front line, the
+    agent's, said at once, before the router answered. (ok, detail)."""
     f = run.front(a) or {}
     rows = run.front_said_rows(a)
     rc = run.call_span("#%d" % a["seq"], "router")
     if f.get("to") in (None, "nowhere"):
         return False, "not a hand-off placed somewhere: %r" % f
     if not f.get("said"):
-        return True, "the agent wrote no acknowledgement: nothing said by the front turn"
-    held = rows and rc and parse_iso(rows[0]["at"]) >= rc[1] - 0.3
-    return (f["said"] == ["agent"] and held,
+        return True, "the agent wrote no line: nothing said by the front turn"
+    early = bool(rows and rc and parse_iso(rows[0]["at"]) < rc[1])
+    return (f["said"] == ["agent"] and early,
             "said %s; its row %s; the router answered at %s" % (
                 f.get("said"), rows and rows[0]["at"],
                 rc and dt.datetime.fromtimestamp(rc[1], dt.timezone.utc).strftime("%H:%M:%S.%f")[:-3]))
@@ -780,7 +783,7 @@ def held_ack(run, a):
 def one_step(run):
     rep, live = run.rep, run.live
     rep.head("1. A one-step ask: the agent hands it off, the router starts a loop, its actions land, the reply goes "
-             "out after the agent's held line")
+             "out after the agent's line, said at once")
     before = live.count_items("Steve", "cooked_beef")
     a = run.ask("Steve", "give me 64 steak")
     ref = "#%d" % a["seq"]
@@ -790,8 +793,9 @@ def one_step(run):
     rep.check(f.get("agent") == "handoff" and f.get("to") == "new_loop",
               "its front turn: the agent handed it off (%r), the router started a new loop %s"
               % (f.get("reply"), f.get("where")), run.evidence(ref))
-    ok, why = held_ack(run, a)
-    rep.check(ok, "one line from the front turn, the agent's, held until the router answered: %s" % why, why)
+    ok, why = agent_said_first(run, a)
+    rep.check(ok, "one line from the front turn, the agent's, said at once, before the router answered: %s" % why,
+              why)
     w = run.work(a, 10)
     rep.check(w and w["steps"] == 1 and w["ended"] == "reply" and a["reply"] and w["state"] == "saved",
               "its loop: one step, ended reply, saved (%s, %s of %s steps): %r" % (
@@ -1166,8 +1170,9 @@ def added_lines(run):
 
 def implementer(run):
     """The router starts an implementer (the stand-in model: its first answer after 32 s, then 3 s),
-    follows it up while it runs, and answers the same ask said again with its own line; the
-    report reaches the conversation agent while Steve's agent's call is held (his turn busy)."""
+    follows it up while it runs, and answers the same ask said again nowhere, after the agent's
+    line, with its own; the report reaches the conversation agent while Steve's agent's call is
+    held by the slow stand-in (his turn busy)."""
     rep, live = run.rep, run.live
     rep.head("12. The router starts an implementer with its brief and follows it up; the same ask again gets the "
              "router's line alone; the report reaches the conversation agent while Steve's turn is busy")
@@ -1185,10 +1190,18 @@ def implementer(run):
     if not tid:
         return
     run.names.append(tid)
-    ok, why = held_ack(run, a)
-    rep.check(ok, "one line from the front turn, the agent's, held until the router answered: %s" % why, why)
+    ok, why = agent_said_first(run, a)
+    rep.check(ok, "one line from the front turn, the agent's, said at once, before the router answered: %s" % why,
+              why)
     opened = wait_for(lambda: [r for r in live.ai(a["seq"], ("task",), tid) if r["text"].startswith("new: ")], 15) or []
-    row = live.task_row(tid) or {}
+
+    def task_ready():
+        # No hold: the agent's line (and this check) now starts as soon as it answers, before the router's
+        # own call even begins, so the task's row and its brief (written by Tasks.open, queued, before the
+        # "AI task … new: …" row post()'s its own queue) may land in vfg.db a moment after `opened` above.
+        r = live.task_row(tid)
+        return r if r and r.get("brief") else None
+    row = wait_for(task_ready, 15) or {}
     brief = row.get("brief") or ""
     heads = [h for h in BRIEF_HEADS if h + "\n" in brief]
     done_when = brief.split("DONE WHEN\n", 1)[1].splitlines() if "DONE WHEN\n" in brief else []
@@ -1208,18 +1221,19 @@ def implementer(run):
     b = run.ask("Steve", "and make the boomerang axe set mobs on fire when it hits them", timeout=60)
     fb = run.front(b) or {}
     fu = wait_for(lambda: [r for r in live.ai(b["seq"], ("task",), tid) if r["text"].startswith("follow-up: ")], 10)
-    # The same ask again while it is built: nowhere, one line: the router's in place of the agent's when it wrote
-    # one, else the agent's held one (router.md: it leaves its reply empty when the agent's covers it).
+    # The same ask again while it is built: nowhere; no hold, so the agent's line goes out first. Its line
+    # here is a status ("Still on it"), with Steve's own task open under TASKS: never a promise (respond.
+    # promises()), so fix 1 drops the router's own line as a repeat of the agent's: the agent's line alone
+    # goes out. How many lines the turn said comes from the front log line's own `said` (front_of), never a
+    # time window over live.ai() rows: the router's own call can land over a second after the agent's
+    # already went out (no hold), so a window anchored on either the reply's or the front line's own time
+    # still races it.
     c = run.ask("Steve", "hey can you make me that boomerang axe", timeout=40)
     fc = run.front(c) or {}
-    time.sleep(2)
-    said_c = [r for r in live.ai(c["seq"]) if parse_iso(r["at"]) <= (c.get("reply_at") or 0) + 1.0]
-    rep.check(fc.get("to") == "nowhere" and fc.get("said") in (["router"], ["agent"]) and c.get("reply")
-              and len(said_c) == 1,
-              "the same ask again while it is built: the router sent it nowhere, one line went out, %s: %r (the "
-              "agent's was %r)" % ("the router's in place of the agent's" if fc.get("said") == ["router"]
-                                   else "the agent's held one, the router writing none", c.get("reply"),
-                                   fc.get("reply")), "%r; %s" % (fc, run.evidence_of(c)))
+    rep.check(fc.get("to") == "nowhere" and fc.get("said") == ["agent"] and c.get("reply"),
+              "the same ask again while it is built: the router sent it nowhere; its own line dropped, the "
+              "agent's already said it: %r" % c.get("reply"),
+              "%r; %s" % (fc, run.evidence_of(c)))
     # Steve's turn, busy when the report comes (about 36 s into the run): his agent's call held 17 s (under
     # its 20 s timeout) from about 26 s in.
     wait_for(lambda: time.time() >= t1 + 25, 45, 0.5)
@@ -1253,25 +1267,28 @@ def implementer(run):
 
 
 def one_line_per_ask(run):
-    """Under the hold, all through the default brain: every hand-off placed somewhere said at most
-    the agent's line, after the router answered; every one placed nowhere at most one line."""
+    """No hold anywhere now, all through the default brain: every hand-off placed somewhere said at
+    most the agent's line, out before the router answered; every one placed nowhere said the
+    agent's line, the router's own after it when it wrote one, or either alone."""
     rep = run.rep
-    rep.head("13. One line per ask while the router does not reason, all through the default brain")
+    rep.head("13. The front turn, all through the default brain: the agent's line out at once, hand-off or not; "
+             "the router's own, if it wrote one, after it")
     placed = [a for a in run.asks if a.get("phase") == "defaults" and (run.front(a) or {}).get("to")
               not in (None, "nowhere")]
     nowhere = [a for a in run.asks if a.get("phase") == "defaults" and (run.front(a) or {}).get("to") == "nowhere"]
     bad = []
     for a in placed:
-        ok, why = held_ack(run, a)
+        ok, why = agent_said_first(run, a)
         if not ok:
             bad.append("#%d %s" % (a["seq"], why))
-    rep.check(placed and not bad, "%d hand-offs placed somewhere: each said the agent's line or none, held until the "
-              "router answered (%d said one)" % (len(placed), sum(1 for a in placed if run.ack_lines(a))),
+    rep.check(placed and not bad, "%d hand-offs placed somewhere: each said the agent's line, out before the router "
+              "answered, or none (%d said one)" % (len(placed), sum(1 for a in placed if run.ack_lines(a))),
               "; ".join(bad))
-    many = [a for a in nowhere if len((run.front(a) or {}).get("said") or []) > 1]
-    rep.check(not many, "%d placed nowhere: each said one line at most (%s)" % (
-        len(nowhere), ", ".join("#%d %s" % (a["seq"], "+".join((run.front(a) or {}).get("said") or ["nothing"]))
-                                for a in nowhere) or "none"), "%r" % [a["seq"] for a in many])
+    badn = [a for a in nowhere if (run.front(a) or {}).get("said") not in ([], ["agent"], ["router"],
+                                                                           ["agent", "router"])]
+    rep.check(not badn, "%d placed nowhere: each said the agent's line, the router's own, both in that order, or "
+              "neither (%s)" % (len(nowhere), ", ".join("#%d %s" % (a["seq"], "+".join((run.front(a) or {}).get(
+                  "said") or ["nothing"])) for a in nowhere) or "none"), "%r" % [a["seq"] for a in badn])
 
 
 # ------------------------------------------------------------- 2. the router at low: no hold

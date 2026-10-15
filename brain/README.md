@@ -8,12 +8,12 @@ feed with `vfg watch`, keeps every row in one shared context, and runs three age
 conversation agent and the router with no reasoning, the brain's steps at low (Settings, below):
 
 - **the conversation agent** ([`respond.py`](brain/respond.py), its class still `Respond`), for every
-  line said to the AI and every implementer's report: one call that answers at once, with a reply,
-  a reply and a hand-off, or silence. It has no actions and picks nothing.
-- **the router** ([`router.py`](brain/router.py)), for every hand-off: one call whose whole job is
-  to pick who does the work: a new brain loop, a loop already on that thing, a new implementer,
-  whose brief it writes, an implementer already on it, or nowhere, with a line of its own. Code
-  places the work there.
+  line said to the AI and every implementer's report: one call that answers at once, with `reply`,
+  `look`, `do` or `quiet` (The conversation agent, below). It has no actions and picks nothing.
+- **the router** ([`router.py`](brain/router.py)), for every hand-off (a `look` or a `do`, told
+  which): one call whose whole job is to pick who does the work: a new brain loop, a loop already
+  on that thing, a new implementer, whose brief it writes, an implementer already on it, or
+  nowhere, with a line of its own, said after the agent's. Code places the work there.
 - **the brain**, the loops: an agentic loop of steps, each step one call. A step runs actions from
   the menu, written in full, together or in turn; reads another player's items; hands new work off
   to a coding implementer (`brain/implementers/`) with a brief in parts; follows a task up, or
@@ -56,37 +56,53 @@ prompt says so, and to read them as one ask.
 
 **The conversation agent** takes every line said to the AI first: DeepSeek V4.1 Flash, reasoning
 off, on the same context, answering at once, with no actions of its own. It keeps up the banter. It
-ends a line in one of three ways:
+ends a line with one choice:
 
-- **a reply**, and nothing to do: talk; a rule or a preference about the future only ("talk like a
-  pirate from now on"), which holds because the brain reads the same conversation; and a question
-  about work under way ("is it done yet?"), answered from WORK UNDER WAY and TASKS;
-- **a hand-off**, with a short acknowledgement ("On it!", "Still on it.") or none: anything that asks
-  for something now, a change to what is already going on in the world, a correction of what the AI
-  just did or an addition to an ask, a rule the game itself would have to enforce ("from now on keep
-  creepers away from the base"), an answer to the AI's question, a question only a look at the game
-  answers, the same ask again while it is under way, and anything it is unsure of;
-- **silence**: nothing needs saying and nothing needs doing.
+- **`reply`**, and nothing to do: talk; a rule or a preference about the future only ("talk like a
+  pirate from now on"), which holds because the brain reads the same conversation; a Minecraft
+  question answered from what it knows; and a question about work under way ("is it done yet?"),
+  answered from WORK UNDER WAY and TASKS;
+- **`look`**, a hand-off: a question about the live game it cannot answer for sure from what is
+  shown — what someone holds, where someone or something is, what is bound, whether a thing works,
+  how many of something — passed on to be looked up;
+- **`do`**, a hand-off: anything that asks for something now, a change to what is already going on
+  in the world, a correction of what the AI just did or an addition to an ask, a rule the game
+  itself would have to enforce ("from now on keep creepers away from the base"), an answer to the
+  AI's question, the same ask again while it is under way, and anything it is unsure of;
+- **`quiet`**: nothing needs saying and nothing needs doing.
 
-It decides first (`reason`, which it must write, then `hand_off`, then `reply`), and handing off is
-the default ([`gate_bench.md`](../integration/replay/gate_bench.md),
-[`respond_bench.md`](../integration/replay/respond_bench.md)). It picks nothing, but it is shown what
-is running: WORK UNDER WAY in brief, every brain loop thinking or ended a moment ago, every player's,
-and TASKS one line a task. Four checks in code, after the call, none sent back:
+`look` and `do` both read `hand_off` true (a read-only property kept for loop.py and the benches,
+which still read one flag); the router is told the choice itself, to tell a look from a do.
 
+It decides first (`reason`, which it must write, then `choice`, then `reply`), and `do` is the
+default, the safer guess between the two costs: a wrong hand-off a second and a fraction of a cent,
+a missed one the player's ask ([`gate_bench.md`](../integration/replay/gate_bench.md),
+[`respond_bench.md`](../integration/replay/respond_bench.md)). It is hardened against hallucinating:
+it answers only from what is shown — the conversation, THE WORLD NOW, WORK UNDER WAY, TASKS — and
+general Minecraft knowledge, and chooses `look` rather than invent a name, a number or a result. It
+picks nothing, but it is shown what is running: WORK UNDER WAY in brief, every brain loop thinking
+or ended a moment ago, every player's, and TASKS one line a task. Checks in code, after the call,
+none sent back:
+
+- **the guard** (`promises()`): a `reply` or `quiet` whose line offers or promises something in the
+  game, "want me to …?" or "I'll fix it", becomes `do` instead: a promise is kept whole as `do`'s
+  line, unless it says the thing is done, and an offer is dropped. "Coming up" is a status, not a
+  promise, for a player with work under way: a loop thinking, an implementer running, or an open
+  task;
+- **`quiet` with a line said anyway** becomes `reply` (logged, the model named the wrong one);
+  **`reply` with nothing said** becomes `quiet`;
+- **beside `look` or `do`**, a line that offers, or says the thing is done, ready, gone or there
+  (`claims_done()`), is dropped: nothing has happened yet, and with `look` nothing has been checked
+  yet;
 - **Jev unnamed** (`unnamed()`): a sentence that names Jev or the filter is dropped, a report's
   reply's too;
+- **the cut**: a reply over 300 characters is cut at a word to 200; no sentence cap in code, the
+  prompt's guidance alone, usually one or two sentences.
 
-- **the guard** (`promises()`): a reply with no hand-off that offers or promises something in the
-  game, "want me to …?" or "I'll fix it", is handed off instead: a promise is kept as the hand-off's
-  acknowledgement, unless it says the thing is done, and an offer is dropped. "Coming up" is a
-  status, not a promise, for a player with work under way: a loop thinking, an implementer running,
-  or an open task;
-- **beside a hand-off**, a reply that offers, or says the thing is done, ready, gone or there
-  (`claims_done()`), is dropped: nothing has happened yet;
-- **the cut**: a reply over 300 characters is cut at a word to 200.
+With `look` or `do`, the reply says back specifically what was heard — the thing, for whom, how
+many, where — never a bare "On it" or "Coming up" alone, and never that it is done.
 
-A call that fails, or runs past `VFG_RESPOND_TIMEOUT_S` (20 s), hands the line off with no reply.
+A call that fails, or runs past `VFG_RESPOND_TIMEOUT_S` (20 s), fails into `do` with no reply.
 
 ## The router
 
@@ -102,7 +118,7 @@ that choice uses:
 | `loop` | `loop`, an id WORK UNDER WAY offers (`L3`) | the loop already on that thing, thinking or ended and still offered: a repeat, a correction, an addition, a "never mind" |
 | `new_implementer` | one hand-off: the task's name, description and whole brief, as the brain writes one | a new task, its implementer started on the brief |
 | `implementer` | one follow-up a task the line changes: the task under TASKS, its brief and description, or `cancel` | that task's implementer: a message into its run, or its session resumed; a cancel sends the cancel words (The ending, below) |
-| `nowhere` | `reply`, or none | nobody: the line asks for nothing, or the thing is under way and the line only presses for it ("hurry up", "is it done?"); the reply, when it has one, says so |
+| `nowhere` | `reply`, or none | nobody: the line asks for nothing, or the thing is under way and the line only presses for it ("hurry up", "is it done?"); the reply, when it has one, goes out after the agent's line, never in its place |
 
 **While an implementer is on a thing** (TASKS: `an implementer is on it`), its rules send a line
 that asks that thing to change, stop or be unbound to that task, or to the loop already on it, or
@@ -116,7 +132,8 @@ checkpoints marked, as a step's; then the tail, never cached: this server's own 
 world (every player without their items, and RUNNING NOW in full, every value of every copy: "make
 it bigger" may be one value of a running copy, a brain's edit and not an implementer's build), TASKS
 in full, WORK UNDER WAY in full, and the event: `THE LINE` with the conversation agent's answer and
-reason, or `THE REPORT` with what it left. Its schema is the same for every catalog, loop and task,
+reason, and whether it passed the line on to be looked up or to be done, or `THE REPORT` with what
+it left. Its schema is the same for every catalog, loop and task,
 every property required, so the cached prefix holds; what depends on the moment is a validator.
 
 **Sent back** by a validator, once: a reason whose last "so:" names another choice than `to`;
@@ -136,13 +153,14 @@ opened (`AI task <name> | new: …`) and its implementer started; `implementer`,
 a new loop instead when none was left; `nowhere`, nothing. A router call that fails, or runs past
 `VFG_ROUTER_TIMEOUT_S` (30 s), places the line in a new loop.
 
-**One line per ask: the hold.** While `VFG_ROUTER_REASONING` is `off` (`Config.hold`), the
-conversation agent's line to a hand-off is held until the router has answered, and then one line is
-said: the agent's when the work was placed somewhere; the router's in its place when it went nowhere
-(the agent's when the router wrote none); and, when a new task would not open, code's `sorry, I
-couldn't start “<the player's words>” — say it again?` in its place, since nothing was started. With
-the router reasoning, nothing is held: the agent's line goes out at once, and the router's own, or
-code's, after it. A reply with no hand-off always goes out at once.
+**No hold.** The agent's line goes out the moment it answers, every time, hand-off or not: there is
+nothing to wait for, and `VFG_ROUTER_REASONING` no longer changes what is said (`Config.hold` is
+gone). A hand-off's line goes out before the router has even run — before any task is opened or
+followed up — so it is never tagged `--task <name>`. The router's own line, when it has one, always
+goes out after the agent's, never in its place, so it is never said twice: `nowhere`'s reply, said
+after the agent's to correct or add to it, never to repeat it; or, when a new task would not open,
+code's `sorry, I couldn't start “<the player's words>” — say it again?`, after it, since nothing was
+started.
 
 ## One turn per player
 
@@ -574,9 +592,9 @@ follows the new feed from the `last_seq` that gives. **The first start on a new 
 fetches the command references** (about 95 s, in the background, into `~/.vfg/brain/refs/<version>/`,
 tried again every 5 minutes while it fails); until they are in, the opening says the command list is
 not loaded, and a refused command's result comes without its reference. Its last line says what
-it runs on: `start pid <pid>; … respond <model> <reasoning> <s> s; router <model> <reasoning> <s> s,
-the hold on|no hold; brain <model> <reasoning> <s> s a step, <n> steps a line up to <cap>, taken up
-within <s> s; turns: <n> waiting, <s> s settle; owner …; server …`.
+it runs on: `start pid <pid>; … respond <model> <reasoning> <s> s; router <model> <reasoning> <s> s;
+brain <model> <reasoning> <s> s a step, <n> steps a line up to <cap>, taken up within <s> s; turns:
+<n> waiting, <s> s settle; owner …; server …`.
 
 **Deploy the bridge before the first start with the router**: the router's usage rows are
 component `router`, which a box's `usage` CHECK from before it refuses. `vfg usage flush` stores
@@ -596,7 +614,7 @@ From the environment, then `~/.vfg/config`:
 | `VFG_OWNER` | none: the owner's Minecraft name, named in the opening; the owner's word wins |
 | `VFG_RESPOND_MODEL`, `VFG_RESPOND_REASONING`, `VFG_RESPOND_PROVIDERS` | `deepseek/deepseek-v4.1-flash`, `off`, `together,coreweave,parasail`: the conversation agent (providers tried first, in that order, fallbacks allowed; `none`: OpenRouter's choice) |
 | `VFG_RESPOND_TIMEOUT_S` | `20` s per conversation agent call, its retries included; past it the line is handed off with no reply |
-| `VFG_ROUTER_MODEL`, `VFG_ROUTER_REASONING`, `VFG_ROUTER_PROVIDERS` | `deepseek/deepseek-v4.1-flash`, `off`, `together,coreweave,parasail`: the router; with its reasoning anything but `off`, nothing is held (the hold, The router) |
+| `VFG_ROUTER_MODEL`, `VFG_ROUTER_REASONING`, `VFG_ROUTER_PROVIDERS` | `deepseek/deepseek-v4.1-flash`, `off`, `together,coreweave,parasail`: the router; its reasoning no longer changes what is said (there is no hold), only `VFG_ROUTER_TIMEOUT_S`'s default, below |
 | `VFG_ROUTER_TIMEOUT_S` | `30` s per router call, its retries included, or `60` when `VFG_ROUTER_REASONING` is not `off`; set, it wins. Past it the line goes to a new loop |
 | `VFG_BRAIN_MODEL`, `VFG_BRAIN_REASONING` | `deepseek/deepseek-v4.1-flash`, `low`: every step of every loop (`off`: no reasoning) |
 | `VFG_BRAIN_PROVIDERS` | `together,coreweave,parasail`: tried first, in that order, fallbacks allowed, for the loop's steps, so a loop's steps stay on one host and its cache (`none`: OpenRouter's choice) |

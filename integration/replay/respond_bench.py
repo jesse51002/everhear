@@ -147,14 +147,19 @@ PROMPT_OF = {"v4": "v3"}   # v4 is v3's prompt with `reason` required
 REQUIRED = {"v4", "v5"}
 VERSIONS = {name: (PROMPTS / f"{PROMPT_OF.get(name, name)}.md", fields) for name, fields in FIELDS.items()}
 # The conversation agent of Prototype_Conversation_And_Router, as built: its own prompt, answer and checks.
+# `front` is the agent as it stood for round 4 of that spec's build (respond_bench.md); `front2` is the
+# agent as built now, after the four-choices, no-hold rewrite (DESIGN2.md): both point at the live
+# brain.respond.PROMPT and Respond class, so each run's meta.json's sha256 is what tells them apart.
 FRONT = "front"
-VERSIONS[FRONT] = (FRONT_PROMPT, None)
+FRONT2 = "front2"
+VERSIONS[FRONT] = VERSIONS[FRONT2] = (FRONT_PROMPT, None)
 
 
 def model_of(version: str, cfg) -> tuple[str, str, tuple[str, ...], float]:
     """(model, reasoning, providers, timeout) a version runs on: the old ones on V4 Flash as they were
-    benched, `front` on V4.1 Flash with no reasoning, on Together first, with the agent's timeout."""
-    if version == FRONT:
+    benched, `front`/`front2` on V4.1 Flash with no reasoning, on Together first, with the agent's
+    timeout."""
+    if version in (FRONT, FRONT2):
         return config.V41, "off", config.V41_HOSTS, cfg.respond_timeout_s
     return config.CHEAP, "off", config.FAST, 20.0
 
@@ -477,9 +482,19 @@ def night_items(args, recorded: dict[int, dict]):
 
 
 def nt_rows(nt, n: int):
-    """The line's own feed row, as the night had it (its class before any rewrite)."""
+    """The line's own feed row, as the night had it (its class before context.parse()'s rewrite to
+    to_ai, since Prototype_Addressing_The_AI: night.raw_class)."""
     from brain.context import parse
-    return [parse(line, seq=seq, at=at) for seq, at, line in nt.feed if seq == n]
+    from night import raw_class
+    rows = []
+    for seq, at, line in nt.feed:
+        if seq != n:
+            continue
+        row = parse(line, seq=seq, at=at)
+        if row is not None and row.type == "LINE":
+            row.cls = raw_class(line) or row.cls
+        rows.append(row)
+    return rows
 
 
 def recorded_night(args) -> None:
@@ -535,18 +550,20 @@ async def ask_front(respond: Respond, it: Item) -> dict:
         v, raw = answer.value, raw_answer(_held)
         # respond's log lines (`<time> respond guard #58 …`), the area and time cut off
         logs = [x.split(" ", 2)[2] for x in logged.getvalue().splitlines() if x.count(" ") >= 2]
-        # the guard handing a reply off (`guard #58 a promise, handed off, …`), and the checks beside a
-        # hand-off (`guard #58 beside a hand-off, dropped: an offer|it says it is done: …`)
+        # the guard moving a reply/quiet to do (`guard #58 a promise -> do, kept as the line: …`), and the
+        # checks beside a look or do (`guard #58 beside do, dropped: an offer|it says it is done: …`)
         mine = [x for x in logs if x.startswith(f"guard #{it.row.seq} ")]
-        fired = [x for x in mine if "beside a hand-off" not in x]
-        guard = ("" if not fired else "an offer" if "an offer" in fired[0] else
-                 "a promise" if "a promise" in fired[0] else "fired")
-        raw_up = bool(raw.get("hand_off", True))
+        promo = [x for x in mine if " -> do, " in x]   # a promise or an offer, moved to do
+        guard = ("" if not promo else "an offer" if "an offer" in promo[0] else
+                 "a promise" if "a promise" in promo[0] else "fired")
+        raw_choice = str(raw.get("choice") or "do")
+        raw_up = raw_choice in ("look", "do")
         raw_reply = str(raw.get("reply", "") or "").strip()
-        row = {"up": bool(v.hand_off), "reason": v.reason, "reply": v.reply, "raw_up": raw_up, "raw_reply": raw_reply,
+        row = {"up": bool(v.hand_off), "choice": v.choice, "reason": v.reason, "reply": v.reply,
+               "raw_up": raw_up, "raw_choice": raw_choice, "raw_reply": raw_reply,
                "guard": guard or ("fired" if not raw_up and v.hand_off else ""),
                "done_drop": any("says it is done" in x for x in mine),
-               "offer_drop": any("beside a hand-off" in x and "an offer" in x for x in mine),
+               "offer_drop": any(x.startswith(f"guard #{it.row.seq} beside ") and "an offer" in x for x in mine),
                "cut": any("cut to" in x for x in logs), "logs": logs,
                "ms": answer.ms, "cost": answer.cost, "prompt_tokens": answer.prompt_tokens,
                "cached_tokens": answer.cached_tokens, "completion_tokens": answer.completion_tokens,
@@ -585,7 +602,7 @@ def prompt_text(respond, it: Item) -> str:
 
 
 async def run(args) -> None:
-    front = args.version == FRONT
+    front = args.version in (FRONT, FRONT2)
     if args.set in NIGHT_SETS and not front:
         sys.exit("night: the conversation agent's set; the old versions ran on V4 Flash before it (respond_bench.md)")
     prompt, fields = VERSIONS[args.version]
@@ -732,7 +749,7 @@ def guard(args) -> None:
     said = []   # (run, version, set, row) for every reply a player would have seen
     for out in map(Path, args.outs):
         for f in sorted(out.glob("*/*/rows.jsonl")):
-            if f.parts[-3] in (FRONT, "v4-night"):
+            if f.parts[-3] in (FRONT, FRONT2, "v4-night"):
                 continue   # the conversation agent's rows: respond_score.py reads its checks from them
             said += [(out.name, f.parts[-3], f.parts[-2], r) for r in read_rows(f)
                      if not r["up"] and r.get("reply", "").strip()]

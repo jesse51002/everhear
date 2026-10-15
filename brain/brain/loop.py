@@ -18,18 +18,18 @@ at or below the one it follows from), the context is read again and followed fro
 The front turn, one per player at a time (turns.py; at most VFG_TURN_WAITING lines wait, one more
 is turned away with a private message naming them): what no call has read yet is taken (`vfg
 context mark`, nobody waiting), the actions reloaded, the world glanced at; then two quick calls.
-The conversation agent (respond.py) answers at once: a reply, silence, or a reply and a hand-off;
-it fails into a hand-off. A hand-off goes to the router (router.py), which picks who does the work,
-and code places it: a new brain loop; a loop already on that thing (loops.py: one thinking reads
-the line before its next step, an ended one is taken up again); a new implementer, started on the
-router's brief; an implementer already on it, followed up (a message, its session resumed, or a
-cancel); or nowhere, with a line of the router's own. The router failing starts a new loop. While
-the router does not reason, the agent's line to a hand-off is held until the router has answered,
-so the player gets one line per ask: the agent's when the work was placed, the router's in its
-place when it went nowhere. A router that reasons holds nothing: the agent's line goes out at once
-and the router's own after it. The turn ends once the line is placed, then waits, at most
-VFG_TURN_SETTLE_S, for the AI rows it wrote to come back on the watch, so the player's next line is
-routed knowing where this one went. It never waits for the work.
+The conversation agent (respond.py) answers at once: a reply, silence, or a reply and a hand-off to
+be looked up or done; it fails into a hand-off (to be done). Its line goes out the moment it
+answers, every time, hand-off or not: there is no hold. A hand-off goes to the router (router.py),
+told which of the two it is, which picks who does the work, and code places it: a new brain loop;
+a loop already on that thing (loops.py: one thinking reads the line before its next step, an ended
+one is taken up again); a new implementer, started on the router's brief; an implementer already
+on it, followed up (a message, its session resumed, or a cancel); or nowhere, with a line of the
+router's own. The router failing starts a new loop. The router's own line (nowhere's reply, or
+code's apology when a task would not open) goes out after the agent's, when there is one. The turn
+ends once the line is placed, then waits, at most VFG_TURN_SETTLE_S, for the AI rows it wrote to
+come back on the watch, so the player's next line is routed knowing where this one went. It never
+waits for the work.
 
 Brain loops hold no turn: each is an asyncio task of its own, so they run side by side, a player's
 too. A loop reads the world and TASKS once at its start; then steps (call.py, act.py) until one
@@ -144,7 +144,7 @@ class Brain:
                  now: Callable[[], datetime] = utc_now, clock: Callable[[], float] = time.monotonic,
                  menu: Callable[[str], object] | None = None, start: int = 0,
                  load: Callable[[], Awaitable[tuple[Context, int, list[dict]]]] | None = None,
-                 steps: int = GRANT, cap: int = CAP, take_up_s: float = TAKE_UP_S, hold: bool = True,
+                 steps: int = GRANT, cap: int = CAP, take_up_s: float = TAKE_UP_S,
                  waiting: int = WAITING, settle_s: float = SETTLE_S):
         self.ctx = ctx
         self.start = start            # the feed's highest seq when the context was read: what is new is past it
@@ -162,7 +162,6 @@ class Brain:
         self.clock = clock            # a loop's seconds, and its take-up window
         self.menu = menu              # sets Jev's menu again when the actions change
         self.load = load              # reads the context again, (ctx, start, task rows), after the feed restarted
-        self.hold = hold              # the agent's line to a hand-off waits for the router (Config.hold)
         self.settle_s = settle_s
         self.loops = Loops(steps, cap, take_up_s, clock=clock, now=now)
         self.turns = Turns(waiting_max=waiting, spawn=self.spawn, turned_away=self.turned_away)
@@ -388,16 +387,19 @@ class Brain:
     # ------------------------------------------------------------- the front turn
 
     async def front(self, row: Row) -> None:
-        """A line to the AI, in its player's turn: the conversation agent answers at once, and a
-        hand-off goes to the router, whose choice code places (place()); the module's docstring
-        says the rest. The line itself is never among the NEW rows either call reads, though it
-        may already be marked read: it waited for its turn while an earlier call read it."""
+        """A line to the AI, in its player's turn: the conversation agent answers at once, and its
+        line goes out the moment it answers, every time, hand-off or not. A hand-off goes to the
+        router, told the agent's choice (`look` or `do`), which picks who does the work; code
+        places it (place()). The router's own line (nowhere's reply, or code's apology when a task
+        would not open) goes out after the agent's, when it has one. The module's docstring says
+        the rest. The line itself is never among the NEW rows either call reads, though it may
+        already be marked read: it waited for its turn while an earlier call read it."""
         self.waiting.pop(row.seq, None)
         new = [r for r in self.take() if r.seq != row.seq]
         self.reload()
         seen = await self.world.glance()
         running = self.implementers.running()
-        reply, hand, reason = "", True, ""
+        reply, hand, reason, choice = "", True, "", "do"
         try:
             answer = await self.respond.answer(row, self.ctx, seen, self.tasks.show(running),
                                                self.loops.show(brief=True), new, busy=self.busy())
@@ -408,7 +410,7 @@ class Brain:
         else:
             self.usage("respond", answer, f"#{row.seq}")
             said = answer.value
-            reply, hand, reason = said.reply.strip(), said.hand_off, said.reason
+            reply, hand, reason, choice = said.reply.strip(), said.hand_off, said.reason, said.choice
             agent = f"{'handoff' if hand else 'reply' if reply else 'silent'} {answer.ms} ms"
             log("respond", f"#{row.seq} {row.who}: {row.text[:80]!r} -> {reply!r}"
                            f"{', handed off' if hand else ''} ({reason})")
@@ -418,15 +420,16 @@ class Brain:
             log("front", f"#{row.seq} {row.who}: agent {agent}; said {'agent' if reply else 'nothing'}")
             return
         said_lines = []
-        if reply and not self.hold:  # the router thinks: nothing is held, and the agent's line goes out now
+        if reply:  # no hold: the agent's line goes out the moment it answers, every time
             await self.acts.say(reply)
             said_lines.append("agent")
         route, offered = None, [x.id for x in self.loops.offered()]
+        tasks_text = self.board(seen)
         try:
-            got = await self.router.route(RouterEvent("LINE", row, said=reply, reason=reason), self.ctx,
-                                          self.in_full(seen), self.board(seen), self.loops.show(brief=False),
-                                          loops=offered, tasks=self.tasks.names(), refs=self.refs,
-                                          busy=self.under_way(row.who))
+            got = await self.router.route(RouterEvent("LINE", row, said=reply, reason=reason, choice=choice),
+                                          self.ctx, self.in_full(seen), tasks_text,
+                                          self.loops.show(brief=False), loops=offered, tasks=self.tasks.names(),
+                                          refs=self.refs, busy=self.under_way(row.who))
         except LlmError as e:  # the line still needs doing: a loop of its own
             log("router", f"#{row.seq} FAILED ({spent(e)}; {e}): a new loop")
             self.flush()
@@ -440,11 +443,16 @@ class Brain:
             router += f" {route.to} {route.target() or '-'}, so"
         task = where.split(", ")[0] if to in (NEW_IMPLEMENTER, IMPLEMENTER) else ""  # the line's row names one
         own = route.reply.strip() if route is not None and to == NOWHERE else ""
+        # The router's own line, to nowhere: said only when the agent said nothing, or when the agent's line
+        # promised work the router is not placing (a status for a player with work under way is not a promise:
+        # promises(), busy as the agent's own check reads it). Otherwise it only repeats the agent's, dropped.
+        if own and reply and promises(reply, self.tasks.show(self.implementers.running()), row.who,
+                                      busy=self.busy()) != "a promise":
+            log("router", f"#{row.seq} nowhere: its line dropped, the agent's already said it: {reply!r}")
+            own = ""
         if instead:          # a task that would not open: never promised
             line, which = instead, "code"
-        elif self.hold:      # one line per ask: the router's in its place when the work went nowhere
-            line, which = (own, "router") if own else (reply, "agent")
-        else:                # the agent's went out already; the router's own after it
+        else:                # the agent's line already went out; the router's own, if it has one, after it
             line, which = own, "router"
         if line:
             await self.acts.say(line, task)

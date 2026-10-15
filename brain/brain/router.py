@@ -14,8 +14,9 @@ work there (loop.py), with no model:
   addition, or "never mind" (cancel), as the brain's follow-up (call.FollowUp); a line about two
   tasks' things follows each up, one follow-up a task;
 - nowhere: nothing to do: the thing is under way already ("hurry up"), or the line asks for nothing
-  (a greeting, a reaction, a remark to another player), with a reply of its own or none, said in
-  place of the conversation agent's while the router does not reason (the hold).
+  (a greeting, a reaction, a remark to another player), with a reply of its own or none, said after
+  the conversation agent's line, never in its place: the agent's line goes out the moment it
+  answers, every time, hand-off or not.
 
 Why a call of its own. Picking the task was the brain's hardest job, and the reason it ran on
 Gemini: on the 2026-10-08 replay DeepSeek V4 Flash lumped nine powers into one task, where Gemini
@@ -235,8 +236,9 @@ def route_type(catalog: Catalog, *, loops: Collection[str], tasks: Collection[st
 class RouterEvent:
     kind: Literal["LINE", "REPORT"]
     row: Row | None = None        # LINE: the line
-    said: str = ""                # the conversation agent's reply ("" = none); for a LINE it is held or sent already
+    said: str = ""                # the conversation agent's reply ("" = none); for a LINE it already went out
     reason: str = ""              # the conversation agent's reason
+    choice: str = ""              # LINE: the agent's choice behind the hand-off, "look" or "do" ("" = it failed)
     task: dict | None = None      # REPORT: the task's row (tasks.py)
     status: str = ""              # REPORT: the task's status as the conversation agent wrote it
     report: str = ""              # REPORT: the implementer's report whole, its DESCRIPTION line cut off
@@ -257,7 +259,8 @@ class RouterEvent:
             how = "typed" if r.source == "chat" else "said"
             text = f"THE LINE #{r.seq}, {r.hms}: {r.who} {how}: {r.text}\n{said}"
             if self.reason.strip():
-                text += f"\n(the conversation agent handed it off: {one_line(self.reason)})"
+                to = "looked up" if self.choice == "look" else "done"
+                text += f"\n(the conversation agent passed it on to be {to}: {one_line(self.reason)})"
             return text
         t = self.task or {}
         name = t.get("name") or "?"
